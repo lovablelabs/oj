@@ -916,7 +916,7 @@ function extractProxy(proxy) {
   return Object.keys(out).length ? out : null;
 }
 
-function extractOptimizeDeps(od) {
+function extractOptimizeDeps(od, rawOd) {
   if (!od || typeof od !== "object") return null;
   const strArr = (v) =>
     typeof v === "string" ? [v] : Array.isArray(v) ? v.filter((x) => typeof x === "string") : undefined;
@@ -930,6 +930,16 @@ function extractOptimizeDeps(od) {
   if (ent) out.entries = ent;
   if (interop) out.needsInterop = interop;
   if (typeof od.force === "boolean") out.force = od.force;
+  // The RESOLVED config always carries noDiscovery (false by default), and
+  // adopting the default would force-enable full dep auto-discovery for every
+  // app; only a value the user wrote (visible in the raw config) crosses. A
+  // config()-hook-set value is missed by this gate, the safe direction.
+  if (typeof od.noDiscovery === "boolean" && typeof rawOd?.noDiscovery === "boolean") {
+    out.noDiscovery = od.noDiscovery;
+  }
+  for (const key of ["esbuildOptions", "rolldownOptions"]) {
+    if (od[key] && typeof od[key] === "object") out[key] = markFunctions(od[key]);
+  }
   return Object.keys(out).length ? out : null;
 }
 
@@ -1262,7 +1272,22 @@ function extractServerFlags(s, legacy, appType) {
       if (typeof s.hmr.overlay === "boolean") h.overlay = s.hmr.overlay;
       if (Object.keys(h).length) out.hmr = h;
     }
-    if (s.fs && typeof s.fs === "object" && typeof s.fs.strict === "boolean") out.fsStrict = s.fs.strict;
+    if (s.fs && typeof s.fs === "object") {
+      if (typeof s.fs.strict === "boolean") out.fsStrict = s.fs.strict;
+      if (Array.isArray(s.fs.deny)) out.fsDeny = s.fs.deny.filter((x) => typeof x === "string");
+    }
+    if (s.warmup && typeof s.warmup === "object") {
+      const warmup = {};
+      for (const key of ["clientFiles", "ssrFiles"]) {
+        const files = Array.isArray(s.warmup[key])
+          ? s.warmup[key].filter((x) => typeof x === "string")
+          : [];
+        if (files.length) warmup[key] = files;
+      }
+      // The resolved default is empty arrays on every config; only user lists
+      // cross (mirrors the hmr handling above).
+      if (Object.keys(warmup).length) out.warmup = warmup;
+    }
     // server.watch.ignored: string globs only (RegExp/functions cannot cross the bridge).
     if (s.watch && typeof s.watch === "object" && s.watch.ignored != null) {
       const raw = Array.isArray(s.watch.ignored) ? s.watch.ignored : [s.watch.ignored];
@@ -1364,10 +1389,16 @@ function warnUnsupported(c) {
     const rest = Object.keys(c.esbuild).filter((k) => !JSX_ESBUILD_KEYS.includes(k));
     if (rest.length) warn(`esbuild options ${rest.join(", ")} are not applied (jsx* are)`);
   }
-  if (c.optimizeDeps?.esbuildOptions || c.optimizeDeps?.rollupOptions) {
-    warn("optimizeDeps.esbuildOptions/rollupOptions are not applied; include/exclude/entries are");
-  }
   if (c.worker) warn("worker config is not applied");
+  if (Array.isArray(c.optimizeDeps?.esbuildOptions?.plugins) && c.optimizeDeps.esbuildOptions.plugins.length) {
+    warn("optimizeDeps.esbuildOptions.plugins are not applied (scalar esbuild options are)");
+  }
+  if (Array.isArray(c.optimizeDeps?.rolldownOptions?.plugins) && c.optimizeDeps.rolldownOptions.plugins.length) {
+    warn("optimizeDeps.rolldownOptions.plugins are not applied (transform/resolve options are)");
+  }
+  if (c.optimizeDeps?.rollupOptions) {
+    warn("optimizeDeps.rollupOptions is not applied (use rolldownOptions or esbuildOptions)");
+  }
   if (typeof c.build?.assetsInlineLimit === "function") {
     warn("build.assetsInlineLimit is a function and cannot be applied; the 4096 byte default is used");
   }
@@ -1499,7 +1530,7 @@ try {
       dedupe: Array.isArray(c.resolve?.dedupe)
         ? c.resolve.dedupe.filter((x) => typeof x === "string")
         : null,
-      optimizeDeps: extractOptimizeDeps(c.optimizeDeps),
+      optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
       build: extractBuild(c.build),
       oxc: extractOxc(c.oxc),
       esbuild: extractEsbuild(c.esbuild),

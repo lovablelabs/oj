@@ -863,9 +863,38 @@ pub fn optimize_deps_force(config: &OjConfig) -> bool {
 /// (Vite <=7): opaque bundler options forwarded to oj's dep bundling.
 pub fn optimize_deps_bundler_options(config: &OjConfig) -> Option<serde_json::Value> {
     let od = config.optimize_deps.as_ref()?;
-    od.rolldown_options
-        .clone()
-        .or_else(|| od.esbuild_options.clone())
+    let Some(options) = od.rolldown_options.as_ref() else {
+        return od.esbuild_options.clone();
+    };
+    // The optimizer uses esbuild. Translate the nested Rolldown transform and
+    // resolver options instead of dropping them at the sidecar boundary.
+    let mut out = options.as_object()?.clone();
+    if let Some(transform) = options.get("transform").and_then(|v| v.as_object()) {
+        for key in ["define", "target", "keepNames", "drop"] {
+            if let Some(value) = transform.get(key) {
+                out.insert(key.to_string(), value.clone());
+            }
+        }
+        // rolldown's transform.jsx is often an object (the oxc shape); esbuild's
+        // `jsx` is a string enum and rejects anything else, failing the whole
+        // optimizer run. Only the string form can cross.
+        if let Some(jsx) = transform.get("jsx").filter(|v| v.is_string()) {
+            out.insert("jsx".to_string(), jsx.clone());
+        }
+    }
+    if let Some(resolve) = options.get("resolve").and_then(|v| v.as_object()) {
+        for (from, to) in [
+            ("conditionNames", "conditions"),
+            ("mainFields", "mainFields"),
+            ("extensions", "resolveExtensions"),
+            ("alias", "alias"),
+        ] {
+            if let Some(value) = resolve.get(from) {
+                out.insert(to.to_string(), value.clone());
+            }
+        }
+    }
+    Some(serde_json::Value::Object(out))
 }
 
 /// `server.warmup.clientFiles` / `server.warmup.ssrFiles`: modules to compile
@@ -1464,6 +1493,27 @@ mod tests {
         assert_eq!(
             optimize_deps_bundler_options(&cfg).unwrap().get("target").unwrap(),
             "es2020"
+        );
+    }
+
+    #[test]
+    fn rolldown_transform_jsx_crosses_only_as_a_string() {
+        // esbuild's `jsx` is a string enum; the oxc object shape would fail
+        // the whole optimizer run, so it must be dropped at translation.
+        let obj: OjConfig = serde_json::from_str(
+            r#"{"optimizeDeps":{"rolldownOptions":{"transform":{"jsx":{"runtime":"automatic"},"target":"es2020"}}}}"#,
+        )
+        .unwrap();
+        let out = optimize_deps_bundler_options(&obj).unwrap();
+        assert!(out.get("jsx").is_none(), "object jsx must not cross: {out}");
+        assert_eq!(out.get("target").unwrap(), "es2020");
+        let string: OjConfig = serde_json::from_str(
+            r#"{"optimizeDeps":{"rolldownOptions":{"transform":{"jsx":"preserve"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            optimize_deps_bundler_options(&string).unwrap().get("jsx").unwrap(),
+            "preserve"
         );
     }
 

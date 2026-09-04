@@ -104,8 +104,18 @@ impl OptimizedDeps {
 
 /// Dependency-optimizer inputs derived from the resolved config
 /// (`optimizeDeps.include/exclude/entries`, `resolve.dedupe`, `resolve.alias`).
+/// `optimizeDeps.noDiscovery` when the user set it, else the OJ_OPTIMIZE_SCAN
+/// opt-in. One function so the optimizer run and its cache key can never
+/// disagree about which mode a prebundle was built in.
+fn effective_auto_discover(no_discovery: Option<bool>) -> bool {
+    no_discovery.map(|disabled| !disabled).unwrap_or_else(|| {
+        std::env::var("OJ_OPTIMIZE_SCAN").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
 #[derive(Default, Clone)]
 pub struct OptimizeInput {
+    pub no_discovery: Option<bool>,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub entries: Vec<String>,
@@ -225,6 +235,10 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         hasher.update(b"=");
         hasher.update(replacement.as_bytes());
     }
+    // The cache key must cover the EFFECTIVE decision: OJ_OPTIMIZE_SCAN is a
+    // fallback input to it, and hashing the raw Option let an env toggle serve
+    // the other mode's stale prebundle.
+    hasher.update(format!("\0discovery:{}", effective_auto_discover(input.no_discovery)).as_bytes());
     if let Some(opts) = &input.bundler_options {
         hasher.update(b"\0o");
         hasher.update(opts.to_string().as_bytes());
@@ -330,8 +344,7 @@ async fn run_optimizer(
     // it) is opt-in via OJ_OPTIMIZE_SCAN=1: it can break apps with UMD/CommonJS
     // interop quirks, so by default oj pre-bundles only the explicit
     // optimizeDeps.include list and serves the rest through wrap_cjs.
-    let auto_discover = std::env::var("OJ_OPTIMIZE_SCAN")
-        .is_ok_and(|v| !v.is_empty() && v != "0");
+    let auto_discover = effective_auto_discover(input.no_discovery);
     // The config travels as a JSON argument into the engine call (the old
     // subprocess packed it into one argv string, an OS argv-length hazard on
     // big include/alias lists) and the metadata comes back as the call's
