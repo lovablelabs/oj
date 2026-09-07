@@ -117,6 +117,9 @@ export function Playground() {
       disposed = true;
       clearTimeout(debounce);
       sessionRef.current?.view?.destroy();
+      // wasm-bindgen objects hold linear memory until freed; React StrictMode
+      // remounts would otherwise leak a project per mount.
+      (sessionRef.current?.project as any)?.free?.();
       sessionRef.current = null;
     };
   }, []);

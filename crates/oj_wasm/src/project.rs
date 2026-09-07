@@ -160,14 +160,25 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
 
     // <script type="module" src="..."> becomes an inline import of the module
     // specifier (a script src never goes through the import map; an inline
-    // `import` does), and <link rel="stylesheet" href="..."> is inlined.
-    let script_re =
-        regex::Regex::new(r#"<script\s[^>]*type="module"[^>]*\ssrc="([^"]+)"[^>]*>\s*</script>"#).unwrap();
-    let link_re = regex::Regex::new(r#"<link\s[^>]*rel="stylesheet"[^>]*\shref="([^"]+)"[^>]*/?>"#).unwrap();
+    // `import` does), and <link rel="stylesheet" href="..."> is inlined. Tags
+    // are matched whole and their attributes read separately, so attribute
+    // order and quote style don't matter.
+    let script_re = regex::Regex::new(r"<script\b[^>]*>\s*</script>").unwrap();
+    let link_re = regex::Regex::new(r"<link\b[^>]*/?>").unwrap();
+    let attr = |tag: &str, name: &str| -> Option<String> {
+        let re = regex::Regex::new(&format!(r#"\b{name}\s*=\s*["']([^"']*)["']"#)).unwrap();
+        re.captures(tag).map(|c| c[1].to_string())
+    };
 
     let out_html = script_re.replace_all(html, |caps: &regex::Captures| {
-        let src = &caps[1];
-        match resolve(files, "/", src) {
+        let tag = &caps[0];
+        let (Some(kind), Some(src)) = (attr(tag, "type"), attr(tag, "src")) else {
+            return caps[0].to_string();
+        };
+        if kind != "module" {
+            return caps[0].to_string();
+        }
+        match resolve(files, "/", &src) {
             Some(path) => {
                 queue.push_back(path.clone());
                 format!(
@@ -186,8 +197,14 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
     });
     let out_html = link_re
         .replace_all(&out_html, |caps: &regex::Captures| {
-            let href = &caps[1];
-            let Some(path) = resolve(files, "/", href) else {
+            let tag = &caps[0];
+            let (Some(rel), Some(href)) = (attr(tag, "rel"), attr(tag, "href")) else {
+                return caps[0].to_string();
+            };
+            if rel != "stylesheet" {
+                return caps[0].to_string();
+            }
+            let Some(path) = resolve(files, "/", &href) else {
                 errors.push(BuildError {
                     path: "/index.html".to_string(),
                     message: format!("stylesheet href {href} does not match any file"),
@@ -374,6 +391,36 @@ mod tests {
         assert!(!result.ok);
         assert!(result.errors.iter().any(|e| e.message.contains("./nope")));
         assert!(result.modules.iter().any(|m| m.id == "@app/src/main.tsx"));
+    }
+
+    #[test]
+    fn html_attributes_match_in_any_order_and_quote_style() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><head><link href='/src/global.css' rel='stylesheet'></head>\
+             <body><div id=\"root\"></div><script src='/src/main.tsx' type='module'></script></body></html>"
+                .to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(result.html.contains("--x: 1"));
+    }
+
+    #[test]
+    fn non_module_scripts_and_non_stylesheet_links_are_kept() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><head><link rel=\"icon\" href=\"/favicon.png\" /></head>\
+             <body><script src=\"/legacy.js\"></script><script type=\"module\" src=\"/src/main.tsx\"></script></body></html>"
+                .to_string(),
+        );
+        let result = build(&files);
+        assert!(result.html.contains("<link rel=\"icon\""), "{}", result.html);
+        assert!(result.html.contains("<script src=\"/legacy.js\"></script>"), "{}", result.html);
+        assert!(result.html.contains("import \"@app/src/main.tsx\";"));
     }
 
     #[test]
