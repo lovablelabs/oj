@@ -21,11 +21,13 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.4",
     "@tailwindcss/postcss": "^4.2.0",
     "@vitejs/plugin-react": "^6.0.0",
     "esbuild": "^0.27.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^4.2.0",
-    "vite": "^8.2.0"
+    "vite": "^8.2.0",
+    "wrangler": "^4.129.0"
   }
 }

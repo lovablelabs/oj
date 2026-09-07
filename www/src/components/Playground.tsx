@@ -45,9 +45,14 @@ export function Playground() {
 
     (async () => {
       try {
-        const wasmUrl = "/oj-wasm/oj_wasm.js";
+        // The wasm-bindgen module is a public asset resolved in the browser at
+        // runtime; the import must stay opaque to every bundler that sees this
+        // file (oj's rolldown, wrangler's esbuild for the SSR worker), so it
+        // goes through Vite's own dynamicImport trick. Built here, not at
+        // module scope: Workers disallow Function construction at runtime.
+        const dynamicImport = new Function("u", "return import(u)") as (u: string) => Promise<any>;
         const [wasm, view, state, setup, langJs, langCss, langHtml] = await Promise.all([
-          import(/* @vite-ignore */ wasmUrl),
+          dynamicImport("/oj-wasm/oj_wasm.js"),
           import("@codemirror/view"),
           import("@codemirror/state"),
           import("codemirror"),
