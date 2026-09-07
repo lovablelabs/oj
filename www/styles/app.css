@@ -414,26 +414,6 @@ a:hover {
 .foot__link:hover {
   color: var(--color-accent);
 }
-svg.trail {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 1000;
-  pointer-events: none;
-}
-svg.trail path {
-  fill: none;
-  stroke: var(--color-accent);
-  stroke-width: 7px;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  opacity: 0.85;
-}
-@media (pointer: coarse), (prefers-reduced-motion: reduce) {
-  svg.trail {
-    display: none;
-  }
-}
 
 /* ---- wasm playground ---- */
 

@@ -1,7 +1,7 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 
 import "../../styles/app.css";
-import { Nav, Footer, Trail } from "../components/site";
+import { Nav, Footer } from "../components/site";
 
 export const rootRoute = createRootRoute({
   head: () => ({
@@ -36,7 +36,6 @@ function RootComponent() {
         <HeadContent />
       </head>
       <body>
-        <Trail />
         <Nav />
         <main className="main">
           <Outlet />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const GITHUB = "https://github.com/lovablelabs/oj";
 
@@ -86,68 +86,3 @@ export function Footer() {
   );
 }
 
-export function Trail() {
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const pathRef = useRef<SVGPathElement | null>(null);
-
-  useEffect(() => {
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    if (window.matchMedia?.("(pointer: coarse)").matches) return;
-    const svg = svgRef.current;
-    const path = pathRef.current;
-    if (!svg || !path) return;
-
-    const segments = 100;
-    const points: { x: number; y: number }[] = [];
-    const mouse = { x: 0, y: 0 };
-    let raf = 0;
-
-    const move = (event: MouseEvent) => {
-      mouse.x = event.clientX;
-      mouse.y = event.clientY;
-      if (points.length === 0) {
-        for (let i = 0; i < segments; i++) points.push({ x: mouse.x, y: mouse.y });
-      }
-    };
-    const anim = () => {
-      let px = mouse.x;
-      let py = mouse.y;
-      points.forEach((p, index) => {
-        p.x = px;
-        p.y = py;
-        const n = points[index + 1];
-        if (n) {
-          px = px - (p.x - n.x) * 0.6;
-          py = py - (p.y - n.y) * 0.6;
-        }
-      });
-      if (points.length) {
-        path.setAttribute("d", `M ${points.map((p) => `${p.x} ${p.y}`).join(" L ")}`);
-      }
-      raf = requestAnimationFrame(anim);
-    };
-    const resize = () => {
-      const ww = window.innerWidth;
-      const wh = window.innerHeight;
-      svg.style.width = ww + "px";
-      svg.style.height = wh + "px";
-      svg.setAttribute("viewBox", `0 0 ${ww} ${wh}`);
-    };
-
-    document.addEventListener("mousemove", move);
-    window.addEventListener("resize", resize);
-    resize();
-    raf = requestAnimationFrame(anim);
-    return () => {
-      cancelAnimationFrame(raf);
-      document.removeEventListener("mousemove", move);
-      window.removeEventListener("resize", resize);
-    };
-  }, []);
-
-  return (
-    <svg ref={svgRef} className="trail" viewBox="0 0 1 1" aria-hidden="true">
-      <path ref={pathRef} d="" />
-    </svg>
-  );
-}
