@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "oj dev .",
-    "build": "oj build .",
-    "build:wasm": "wasm-pack build ../crates/oj_wasm --release --target web --no-typescript --no-pack --out-dir ../../www/public/oj-wasm",
-    "deploy": "npm run build:wasm && oj build . && wrangler deploy"
+    "dev": "npm run build:wasm && oj dev .",
+    "build": "npm run build:wasm && oj build .",
+    "build:wasm": "wasm-pack build ../crates/oj_wasm --release --target web --no-typescript --no-pack --out-dir ../../www/public/oj-wasm && rm -f public/oj-wasm/.gitignore",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

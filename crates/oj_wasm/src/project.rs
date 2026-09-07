@@ -9,9 +9,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
+use std::sync::LazyLock;
 
 use oj_compiler::{compile_module, CompileOptions};
 use oj_css::{compile_css, compile_sass, css_modules_esm, is_sass};
+use regex::Regex;
 use serde::Serialize;
 
 /// Prefix that turns an in-memory absolute path into a bare import-map
@@ -83,6 +85,17 @@ fn is_bare(spec: &str) -> bool {
     !(spec.starts_with("./") || spec.starts_with("../") || spec.starts_with('/'))
 }
 
+/// `https://...`, `data:...`: an absolute url the browser resolves itself; it
+/// must neither be rewritten nor land in the bare set (mapping it to a CDN
+/// would double-wrap a working url).
+fn has_scheme(spec: &str) -> bool {
+    spec.split_once(':').is_some_and(|(scheme, _)| {
+        let mut chars = scheme.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
 /// Resolve a relative or root-absolute specifier against the file map, probing
 /// script extensions and directory indexes the way the native resolver does.
 pub fn resolve(files: &BTreeMap<String, String>, importer_dir: &str, spec: &str) -> Option<String> {
@@ -112,6 +125,39 @@ pub fn resolve(files: &BTreeMap<String, String>, importer_dir: &str, spec: &str)
 
 fn ext_of(path: &str) -> &str {
     Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("")
+}
+
+static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<script\b[^>]*>\s*</script>").unwrap());
+static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<link\b[^>]*/?>").unwrap());
+static TYPE_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("type"));
+static SRC_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("src"));
+static REL_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("rel"));
+static HREF_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("href"));
+static STYLE_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</(style)").unwrap());
+
+fn attr_re(name: &str) -> Regex {
+    Regex::new(&format!(r#"\b{name}\s*=\s*(?:["']([^"']*)["']|([^\s>"']+))"#)).unwrap()
+}
+
+/// The value of one html attribute in `tag`: quoted (either style) or bare.
+fn attr(tag: &str, name: &str) -> Option<String> {
+    let re: &Regex = match name {
+        "type" => &TYPE_RE,
+        "src" => &SRC_RE,
+        "rel" => &REL_RE,
+        "href" => &HREF_RE,
+        _ => unreachable!("attr() is only called for the four known names"),
+    };
+    re.captures(tag)
+        .and_then(|c| c.get(1).or_else(|| c.get(2)))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Make css safe inside a `<style>` element: the only sequence that can end it
+/// early is `</style`, and `<\/style` is byte-identical once css unescapes the
+/// `\/` (an escaped `/`), so strings like `content: "</style>"` still render.
+fn escape_style_text(css: &str) -> String {
+    STYLE_CLOSE_RE.replace_all(css, "<\\/$1").into_owned()
 }
 
 fn module_id(path: &str) -> String {
@@ -146,6 +192,12 @@ fn compile_stylesheet(path: &str, source: &str) -> Result<(String, Option<Vec<(S
     let plain = if is_sass(path) { compile_sass(source, None)? } else { source.to_string() };
     // Module scoping keys off the url (`.module.` in the filename).
     let out = compile_css(&id, &plain, false)?;
+    // Without the dev server's rebase pass an `@import` survives verbatim and
+    // would resolve against the preview document, silently loading nothing;
+    // fail loudly instead until the graph walks css imports too.
+    if out.css.contains("@import") {
+        return Err("css @import is not supported in the wasm playground yet; inline the file or import it from a JS module".to_string());
+    }
     Ok((out.css, out.exports))
 }
 
@@ -162,15 +214,8 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
     // specifier (a script src never goes through the import map; an inline
     // `import` does), and <link rel="stylesheet" href="..."> is inlined. Tags
     // are matched whole and their attributes read separately, so attribute
-    // order and quote style don't matter.
-    let script_re = regex::Regex::new(r"<script\b[^>]*>\s*</script>").unwrap();
-    let link_re = regex::Regex::new(r"<link\b[^>]*/?>").unwrap();
-    let attr = |tag: &str, name: &str| -> Option<String> {
-        let re = regex::Regex::new(&format!(r#"\b{name}\s*=\s*["']([^"']*)["']"#)).unwrap();
-        re.captures(tag).map(|c| c[1].to_string())
-    };
-
-    let out_html = script_re.replace_all(html, |caps: &regex::Captures| {
+    // order and quote style (double, single, none) don't matter.
+    let out_html = SCRIPT_RE.replace_all(html, |caps: &regex::Captures| {
         let tag = &caps[0];
         let (Some(kind), Some(src)) = (attr(tag, "type"), attr(tag, "src")) else {
             return caps[0].to_string();
@@ -195,7 +240,13 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
             }
         }
     });
-    let out_html = link_re
+    if queue.is_empty() {
+        errors.push(BuildError {
+            path: "/index.html".to_string(),
+            message: "no <script type=\"module\" src=...> entry found in /index.html".to_string(),
+        });
+    }
+    let out_html = LINK_RE
         .replace_all(&out_html, |caps: &regex::Captures| {
             let tag = &caps[0];
             let (Some(rel), Some(href)) = (attr(tag, "rel"), attr(tag, "href")) else {
@@ -212,7 +263,11 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
                 return caps[0].to_string();
             };
             match compile_stylesheet(&path, &files[&path]) {
-                Ok((css, _)) => format!("<style data-oj-id={}>{css}</style>", serde_json::Value::String(module_id(&path))),
+                Ok((css, _)) => format!(
+                    "<style data-oj-id={}>{}</style>",
+                    serde_json::Value::String(module_id(&path)),
+                    escape_style_text(&css),
+                ),
                 Err(message) => {
                     errors.push(BuildError { path, message });
                     caps[0].to_string()
@@ -243,10 +298,23 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
         }
 
         if ext == "json" {
-            modules.push(Module {
-                id: module_id(&path),
-                code: format!("export default {source};\n"),
-            });
+            // Validate here so a bad edit surfaces in the error strip with its
+            // path, and ship the text through JSON.parse: interpolating raw
+            // JSON as an expression would let `__proto__` keys set the
+            // prototype instead of a property.
+            match serde_json::from_str::<serde_json::Value>(source) {
+                Ok(_) => modules.push(Module {
+                    id: module_id(&path),
+                    code: format!(
+                        "export default JSON.parse({});\n",
+                        serde_json::Value::String(source.to_string())
+                    ),
+                }),
+                Err(err) => errors.push(BuildError {
+                    path: path.clone(),
+                    message: format!("invalid json: {err}"),
+                }),
+            }
             continue;
         }
 
@@ -269,6 +337,9 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
         let mut missing: Vec<String> = Vec::new();
         let mut deps: Vec<String> = Vec::new();
         let mut rewrite = |spec: &str| -> Option<String> {
+            if has_scheme(spec) {
+                return None;
+            }
             if is_bare(spec) {
                 bare.insert(spec.to_string());
                 return None;
@@ -421,6 +492,62 @@ mod tests {
         assert!(result.html.contains("<link rel=\"icon\""), "{}", result.html);
         assert!(result.html.contains("<script src=\"/legacy.js\"></script>"), "{}", result.html);
         assert!(result.html.contains("import \"@app/src/main.tsx\";"));
+    }
+
+    #[test]
+    fn css_at_import_is_a_loud_error() {
+        let mut files = demo();
+        files.insert("/src/style.css".to_string(), "@import \"./global.css\";\nbody { margin: 0 }".to_string());
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|e| e.message.contains("@import")), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn url_imports_stay_untouched_and_out_of_bare() {
+        let mut files = demo();
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import x from \"https://esm.sh/lodash-es\";\nconsole.log(x);\n".to_string(),
+        );
+        let result = build(&files);
+        let main = result.modules.iter().find(|m| m.id == "@app/src/main.tsx").unwrap();
+        assert!(main.code.contains("\"https://esm.sh/lodash-es\""), "{}", main.code);
+        assert!(!result.bare.iter().any(|b| b.contains("https://")), "{:?}", result.bare);
+    }
+
+    #[test]
+    fn json_ships_through_json_parse_and_bad_json_errors() {
+        let mut files = demo();
+        files.insert("/src/main.tsx".to_string(), "import d from \"./data.json\";\nconsole.log(d);\n".to_string());
+        files.insert("/src/data.json".to_string(), "{\"__proto__\": {\"a\": 1}}".to_string());
+        let result = build(&files);
+        let json = result.modules.iter().find(|m| m.id == "@app/src/data.json").unwrap();
+        assert!(json.code.starts_with("export default JSON.parse("), "{}", json.code);
+
+        files.insert("/src/data.json".to_string(), "{oops}".to_string());
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|e| e.path == "/src/data.json" && e.message.contains("invalid json")));
+    }
+
+    #[test]
+    fn inlined_css_cannot_close_the_style_tag() {
+        let mut files = demo();
+        files.insert("/src/global.css".to_string(), ".x::after { content: \"</StYlE>\" }".to_string());
+        let result = build(&files);
+        assert!(result.ok, "{:?}", result.errors);
+        assert!(!result.html.to_lowercase().contains("content: \"</style"), "{}", result.html);
+        assert!(result.html.contains("<\\/StYlE>"), "{}", result.html);
+    }
+
+    #[test]
+    fn no_module_entry_is_an_error() {
+        let mut files = demo();
+        files.insert("/index.html".to_string(), "<html><body><p>static</p></body></html>".to_string());
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|e| e.message.contains("no <script")), "{:?}", result.errors);
     }
 
     #[test]

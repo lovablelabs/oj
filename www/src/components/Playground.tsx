@@ -32,14 +32,21 @@ export function Playground() {
     let debounce: ReturnType<typeof setTimeout> | undefined;
 
     const rebuild = (session: Session) => {
-      const t0 = performance.now();
-      const result: BuildResult = JSON.parse(session.project.build());
-      setBuildMs(performance.now() - t0);
-      setErrors(result.errors);
-      // A failed build (mid-keystroke syntax error, missing import) keeps the
-      // last good preview on screen; the error strip carries the diagnostics.
-      if (result.ok && result.html && iframeRef.current) {
-        iframeRef.current.srcdoc = buildSrcdoc(result);
+      // Compile errors come back as data; the catch is for a wasm panic, which
+      // would otherwise throw inside the debounce timer and silently stop all
+      // future rebuilds.
+      try {
+        const t0 = performance.now();
+        const result: BuildResult = JSON.parse(session.project.build());
+        setBuildMs(performance.now() - t0);
+        setErrors(result.errors);
+        // A failed build (mid-keystroke syntax error, missing import) keeps the
+        // last good preview on screen; the error strip carries the diagnostics.
+        if (result.ok && result.html && iframeRef.current) {
+          iframeRef.current.srcdoc = buildSrcdoc(result);
+        }
+      } catch (err) {
+        setErrors([{ path: "oj_wasm", message: `build crashed: ${err instanceof Error ? err.message : String(err)}` }]);
       }
     };
 
