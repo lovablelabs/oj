@@ -3,10 +3,9 @@ import { useEffect, useRef, useState } from "react";
 const GITHUB = "https://github.com/lovablelabs/oj";
 
 const SECTIONS = [
+  { id: "playground", label: "Playground" },
   { id: "how", label: "How it works" },
-  { id: "benchmark", label: "Benchmark" },
-  { id: "features", label: "Features" },
-  { id: "start", label: "Get started" },
+  { id: "start", label: "Get oj" },
 ] as const;
 
 export function Nav() {

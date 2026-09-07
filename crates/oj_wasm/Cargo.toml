@@ -1,0 +1,25 @@
+[package]
+name = "oj_wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "oj in the browser: the shared compile pipeline behind a wasm-bindgen API over an in-memory fs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oj_compiler.workspace = true
+oj_css.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+regex = "1.11"
+wasm-bindgen = "0.2"
+
+# The shared crates' trees reach getrandom through phf/ahash; on wasm32 those
+# backends must be told to use the browser's crypto.getRandomValues. getrandom
+# 0.3 additionally needs `--cfg getrandom_backend="wasm_js"`, set for the
+# wasm32 target in .cargo/config.toml.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

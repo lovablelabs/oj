@@ -5,11 +5,18 @@
   "scripts": {
     "dev": "oj dev .",
     "build": "oj build .",
-    "deploy": "oj build . && wrangler deploy"
+    "build:wasm": "wasm-pack build ../crates/oj_wasm --release --target web --no-typescript --no-pack --out-dir ../../www/public/oj-wasm",
+    "deploy": "npm run build:wasm && oj build . && wrangler deploy"
   },
   "dependencies": {
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-html": "^6.4.9",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.4",
     "@tanstack/react-router": "^1.170.0",
     "@tanstack/react-start": "^1.168.0",
+    "codemirror": "^6.0.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

@@ -1,0 +1,4 @@
+# wasm32 builds (crates/oj_wasm): getrandom 0.3+ picks its backend by cfg, and
+# in the browser that is the JS crypto API. Native builds are unaffected.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
