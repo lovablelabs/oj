@@ -1,6 +1,10 @@
-# oj
-
-[OJ's logo](/assets/OJ-spill.png)
+<!-- LOGO -->
+<h1>
+<p align="center">
+  <img src="/assets/OJ-spill.png" alt="OJ logo" width="128">
+  <br>OJ
+</h1>
+</p>
 
 0. If you like the idea and project please consider sponsor, working on it in my free time.
 1. This is a research project, use on your own risk.
