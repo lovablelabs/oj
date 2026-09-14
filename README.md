@@ -147,3 +147,10 @@ input, boundary shapes, contention, injected faults, and properties that hold
 for every input ~ and `docs/development/testing.md` describes the layers, the
 fuzz targets, and the behaviours that are deliberate boundaries rather than
 gaps.
+
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+OJ was created by [Raphael Amorim](https://rapha.land/introducing-oj/) and has since migrated to [Lovable](https://lovable.dev), which now maintains the project.
