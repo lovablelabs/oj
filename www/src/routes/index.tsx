@@ -3,7 +3,7 @@ import { createRoute } from "@tanstack/react-router";
 import { rootRoute } from "./__root";
 import { BenchRace } from "../components/BenchRace";
 
-const GITHUB = "https://github.com/raphamorim/oj";
+const GITHUB = "https://github.com/lovablelabs/oj";
 
 const STEPS = [
   { title: "Install", body: "One binary from crates.io, with Node on your PATH for the app's own toolchain.", cmd: "cargo install oj" },
@@ -50,6 +50,8 @@ function Home() {
         <span className="sep">·</span>
         Built by{" "}
         <a href="https://github.com/raphamorim" target="_blank" rel="noreferrer">Raphael Amorim</a>
+        {" "}and{" "}
+        <a href="https://lovable.dev" target="_blank" rel="noreferrer">Lovable</a>
       </p>
 
       <section id="how">

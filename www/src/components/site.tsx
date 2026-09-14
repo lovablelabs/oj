@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-const GITHUB = "https://github.com/raphamorim/oj";
+const GITHUB = "https://github.com/lovablelabs/oj";
 
 const SECTIONS = [
   { id: "how", label: "How it works" },
@@ -61,9 +61,13 @@ export function Footer() {
     <footer className="foot">
       <div className="wrap foot__row">
         <span className="foot__note">
-          oj is an open-source project by{" "}
+          oj is an open-source project created by{" "}
           <a href="https://github.com/raphamorim" target="_blank" rel="noreferrer">
             Raphael Amorim
+          </a>{" "}
+          and maintained by{" "}
+          <a href="https://lovable.dev" target="_blank" rel="noreferrer">
+            Lovable
           </a>
           . This site is built with oj and deployed on Cloudflare.
         </span>
