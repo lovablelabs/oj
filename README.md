@@ -1,7 +1,7 @@
 <!-- LOGO -->
 <h1>
 <p align="center">
-  <img src="/assets/OJ-spill.png" alt="OJ logo" width="128">
+  <img src="/assets/OJ-spill.png" alt="OJ logo" width="256">
   <br>OJ
 </h1>
 </p>
