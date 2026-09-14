@@ -3,19 +3,12 @@
 <p align="center">
   <img src="/assets/OJ-spill.png" alt="OJ logo" width="256">
   <br>OJ
-</h1>
 </p>
-
-0. If you like the idea and project please consider sponsor, working on it in my free time.
-1. This is a research project, use on your own risk.
-2. It was created out of frustration with agents running vite build when I was working on rioterm-js repository. Each build process was carrying 2gb.
-3. Working on it mostly to fix my own problems.
+</h1>
 
 OJ is a Rust-native build tool for React apps.
 
 It optimizes for memory and cold start, where running many builds (CI, agents, multi-tenant) under Vite gets expensive. OJ is meant to run real production React apps without changes to their source.
-
-This project is alpha, so expect bugs. For real.
 
 ## Server rendering
 
@@ -95,7 +88,7 @@ Production builds (`oj build` vs `vite build`) land at parity: same engine (Roll
 - [vite/packages/vite/src/node/server](https://github.com/vitejs/vite/tree/main/packages/vite/src/node/server): HMR propagation, `import.meta.hot` protocol
 - [rolldown/rolldown](https://github.com/rolldown/rolldown): plugin hook filters, the prod linker oj embeds
 
-## Self note
+## Misc
 
 ```sh
 cargo run -p oj -- dev                            # dev server for ./playground on :5199
@@ -149,8 +142,8 @@ cargo test --workspace                            # unit + integration suites
 node e2e/run.mjs                                  # the end-to-end suite
 ```
 
-The suite is organized by failure mode rather than by module -- adversarial
+The suite is organized by failure mode rather than by module ~ adversarial
 input, boundary shapes, contention, injected faults, and properties that hold
-for every input -- and `docs/development/testing.md` describes the layers, the
+for every input ~ and `docs/development/testing.md` describes the layers, the
 fuzz targets, and the behaviours that are deliberate boundaries rather than
 gaps.
