@@ -1,5 +1,7 @@
 # oj
 
+[OJ's logo](/assets/OJ-spill.png)
+
 0. If you like the idea and project please consider sponsor, working on it in my free time.
 1. This is a research project, use on your own risk.
 2. It was created out of frustration with agents running vite build when I was working on rioterm-js repository. Each build process was carrying 2gb.
