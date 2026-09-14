@@ -3,6 +3,7 @@ name = "oj_compiler"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Fused per-file pipeline"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "oj_server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Dev server: on-demand compile over HTTP, WebSocket HMR channel, file watcher"
 
 [dependencies]

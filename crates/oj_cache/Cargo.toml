@@ -3,6 +3,7 @@ name = "oj_cache"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Content-addressed persistent cache for compiled module outputs"
 
 [dependencies]

@@ -5,6 +5,7 @@ name = "oj_config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "oj.config.{ts,js,mjs,json} loading: TS strip via oxc, evaluation via embedded QuickJS"
 
 [dependencies]

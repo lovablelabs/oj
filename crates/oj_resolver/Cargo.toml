@@ -3,6 +3,7 @@ name = "oj_resolver"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Module resolution: thin policy layer over oxc_resolver (Node algorithm, exports maps, tsconfig paths)"
 
 [dependencies]

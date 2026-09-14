@@ -3,6 +3,7 @@ name = "oj_css"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "CSS pipeline: Lightning CSS transforms, CSS Modules scoping"
 
 [dependencies]
