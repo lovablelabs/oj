@@ -32,6 +32,8 @@ oj_css.workspace = true
 axum.workspace = true
 notify.workspace = true
 tokio-stream = "0.1.19"
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["full", "test-util"] }
+tokio-tungstenite = "0.29"

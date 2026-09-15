@@ -6,11 +6,15 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use axum::{
-    extract::{ws::Message, FromRequestParts, Request, State, WebSocketUpgrade},
+    extract::{
+        ws::{Message, WebSocket},
+        FromRequestParts, Request, State, WebSocketUpgrade,
+    },
     http::{header, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use futures_util::SinkExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::broadcast;
@@ -1349,14 +1353,8 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         let (mut parts, _) = req.into_parts();
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
             Ok(ws) => {
-                let mut rx = state.reload_tx.subscribe();
-                ws.on_upgrade(move |mut socket| async move {
-                    while rx.recv().await.is_ok() {
-                        if socket.send(Message::Text("reload".into())).await.is_err() {
-                            break;
-                        }
-                    }
-                })
+                let rx = state.reload_tx.subscribe();
+                ws.on_upgrade(move |socket| start_hmr_socket(socket, rx))
             }
             Err(e) => e.into_response(),
         };
@@ -1389,6 +1387,26 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         }
         Route::Api => forward_with_body(&state, req).await,
         Route::Pass => next.run(req).await,
+    }
+}
+
+async fn start_hmr_socket(mut socket: WebSocket, mut rx: broadcast::Receiver<()>) {
+    loop {
+        tokio::select! {
+            reload = rx.recv() => {
+                if reload.is_err() || socket.send(Message::Text("reload".into())).await.is_err() {
+                    break;
+                }
+            }
+            incoming = socket.recv() => match incoming {
+                None | Some(Err(_)) => break,
+                Some(Ok(Message::Close(_))) => {
+                    let _ = socket.close().await;
+                    break;
+                }
+                Some(Ok(_)) => {}
+            },
+        }
     }
 }
 
@@ -1789,6 +1807,162 @@ fn collect_headers(headers: &header::HeaderMap) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::Message as ClientMessage};
+
+    struct HmrTestServer {
+        url: String,
+        reload_tx: broadcast::Sender<()>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for HmrTestServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl HmrTestServer {
+        async fn start() -> Self {
+            Self::start_with_gate(None).await
+        }
+
+        async fn start_with_gate(gate: Option<Arc<tokio::sync::Notify>>) -> Self {
+            let (reload_tx, _) = broadcast::channel(16);
+            let app = axum::Router::new()
+                .route(
+                    "/@oj-start/hmr",
+                    axum::routing::get(
+                        |ws: WebSocketUpgrade,
+                         State((tx, gate)): State<(
+                            broadcast::Sender<()>,
+                            Option<Arc<tokio::sync::Notify>>,
+                        )>| async move {
+                            let rx = tx.subscribe();
+                            ws.on_upgrade(move |socket| async move {
+                                if let Some(gate) = gate {
+                                    gate.notified().await;
+                                }
+                                start_hmr_socket(socket, rx).await;
+                            })
+                        },
+                    ),
+                )
+                .with_state((reload_tx.clone(), gate));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/@oj-start/hmr", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            Self {
+                url,
+                reload_tx,
+                task,
+            }
+        }
+
+        async fn wait_for_no_subscribers(&self) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while self.reload_tx.receiver_count() != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("disconnected HMR client retained its reload subscription");
+        }
+    }
+
+    #[tokio::test]
+    async fn start_hmr_releases_closed_clients_without_a_reload() {
+        let server = HmrTestServer::start().await;
+        for _ in 0..5 {
+            let (mut client, _) = connect_async(&server.url).await.unwrap();
+            assert_eq!(server.reload_tx.receiver_count(), 1);
+            client.close(None).await.unwrap();
+            server.wait_for_no_subscribers().await;
+            let response = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(matches!(response, ClientMessage::Close(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn start_hmr_completes_close_handshakes_while_reloads_arrive() {
+        use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let server = HmrTestServer::start_with_gate(Some(gate.clone())).await;
+        let close = CloseFrame {
+            code: CloseCode::Normal,
+            reason: "leaving the preview".into(),
+        };
+        for attempt in 0..64 {
+            let (mut client, _) = connect_async(&server.url).await.unwrap();
+            client.close(Some(close.clone())).await.unwrap();
+            assert_eq!(server.reload_tx.send(()).unwrap(), 1);
+            // Let the I/O driver observe the close frame before releasing the handler.
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            gate.notify_one();
+            let reply = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    match client.next().await {
+                        Some(Ok(ClientMessage::Close(frame))) => break frame,
+                        Some(Ok(ClientMessage::Text(text))) => assert_eq!(text, "reload"),
+                        other => panic!("close handshake failed on attempt {attempt}: {other:?}"),
+                    }
+                }
+            })
+            .await
+            .expect("close handshake did not finish while a reload was pending");
+            assert_eq!(reply, Some(close.clone()));
+            server.wait_for_no_subscribers().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn start_hmr_releases_dropped_clients_without_a_reload() {
+        let server = HmrTestServer::start().await;
+        for _ in 0..5 {
+            let (client, _) = connect_async(&server.url).await.unwrap();
+            assert_eq!(server.reload_tx.receiver_count(), 1);
+            drop(client);
+            server.wait_for_no_subscribers().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn start_hmr_keeps_live_clients_subscribed_after_incoming_messages() {
+        let server = HmrTestServer::start().await;
+        let (mut client, _) = connect_async(&server.url).await.unwrap();
+        client
+            .send(ClientMessage::Text("ignored".into()))
+            .await
+            .unwrap();
+        client
+            .send(ClientMessage::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+        let pong = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(pong, ClientMessage::Pong(vec![1, 2, 3].into()));
+        for _ in 0..2 {
+            assert_eq!(server.reload_tx.send(()).unwrap(), 1);
+            let reload = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(reload, ClientMessage::Text("reload".into()));
+        }
+        client.close(None).await.unwrap();
+        server.wait_for_no_subscribers().await;
+    }
 
     fn tmp(label: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("oj-startdev-{}-{label}", std::process::id()));

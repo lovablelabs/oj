@@ -43,7 +43,18 @@ async function reloadListener() {
   const reloads = [];
   ws.addEventListener("message", (ev) => { if (String(ev.data) === "reload") reloads.push(Date.now()); });
   await new Promise((resolve, reject) => { ws.addEventListener("open", resolve); ws.addEventListener("error", reject); });
-  return { reloads, close: () => ws.close() };
+  return { reloads, close: async () => {
+    const closed = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Start HMR socket did not close without a reload")), 2000);
+      ws.addEventListener("close", (event) => {
+        clearTimeout(timer);
+        if (event.wasClean) resolve();
+        else reject(new Error("Start HMR socket closed without completing the close handshake"));
+      }, { once: true });
+    });
+    ws.close();
+    await closed;
+  } };
 }
 
 async function run(label, gated, check) {
@@ -56,11 +67,12 @@ async function run(label, gated, check) {
   srv.stderr.on("data", (d) => (log += d));
   try {
     await waitUp();
+    await (await reloadListener()).close();
     const listener = await reloadListener();
     // A real source change: the watcher rebuilds the client bundle.
     fs.writeFileSync(aboutFile, original + `\n// gate probe ${label} ${Date.now()}\n`);
     await check(listener, () => log);
-    listener.close();
+    await listener.close();
   } finally {
     fs.writeFileSync(aboutFile, original);
     fs.rmSync(gateConfig, { force: true });

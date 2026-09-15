@@ -1826,6 +1826,7 @@ dependencies = [
  "blake3",
  "clap",
  "flate2",
+ "futures-util",
  "notify",
  "oj_cache",
  "oj_compiler",
@@ -1841,6 +1842,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite",
 ]
 
 [[package]]
