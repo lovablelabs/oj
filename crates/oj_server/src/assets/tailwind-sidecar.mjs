@@ -119,9 +119,9 @@ if (process.argv[2] === "--once") {
     inflight += 1;
     try {
       const css = await compileCss(msg.base, msg.css, msg.from);
-      process.stdout.write(JSON.stringify({ id: msg.id, css }) + "\n");
+      await new Promise((resolve) => process.stdout.write(JSON.stringify({ id: msg.id, css }) + "\n", resolve));
     } catch (err) {
-      process.stdout.write(JSON.stringify({ id: msg.id, error: String(err) }) + "\n");
+      await new Promise((resolve) => process.stdout.write(JSON.stringify({ id: msg.id, error: String(err) }) + "\n", resolve));
     } finally {
       inflight -= 1;
       maybeExit();
