@@ -1,4 +1,8 @@
 # wasm32 builds (crates/oj_wasm): getrandom 0.3+ picks its backend by cfg, and
 # in the browser that is the JS crypto API. Native builds are unaffected.
+#
+# Cargo DISCARDS target rustflags from this file whenever a RUSTFLAGS env var
+# is set; if a wasm32 build fails on a missing getrandom backend, unset
+# RUSTFLAGS or append this cfg to it.
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

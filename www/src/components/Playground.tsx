@@ -46,6 +46,10 @@ export function Playground() {
       const back = frames[frontRef.current === 0 ? 1 : 0];
       if (!front || !back) return;
       back.onload = () => {
+        // A load event queued for a superseded srcdoc can dispatch into this
+        // (newer) handler; the new document is still loading then, and swapping
+        // early would flash a half-parsed page.
+        if (back.contentDocument?.readyState !== "complete") return;
         back.onload = null;
         back.dataset.front = "true";
         back.removeAttribute("aria-hidden");

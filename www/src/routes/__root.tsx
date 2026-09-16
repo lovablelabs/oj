@@ -12,7 +12,7 @@ export const rootRoute = createRootRoute({
       {
         name: "description",
         content:
-          "oj is a Rust-native build tool for React apps: a fast dev server, SSR and TanStack Start, Tailwind, and one-command Cloudflare deploys.",
+          "oj is a Rust-native build tool for React apps. This playground is oj itself compiled to WebAssembly, building a live-editable site in your browser tab.",
       },
       { name: "theme-color", content: "#191918" },
     ],

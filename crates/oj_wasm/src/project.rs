@@ -146,11 +146,11 @@ fn ext_of(path: &str) -> &str {
 // SCRIPT_RE also captures the body so an inline module script can be refused
 // loudly instead of shipping imports that cannot resolve from about:srcdoc.
 static SCRIPT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)(<script\b[^>]*>)(.*?)</script\s*>").unwrap());
+    LazyLock::new(|| Regex::new(r"(?is)<script\b[^>]*/\s*>|(<script\b[^>]*>)(.*?)</script\s*>").unwrap());
 static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<link\b[^>]*/?>").unwrap());
 static COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
 static STYLE_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</(style)").unwrap());
-static CSS_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@import\b").unwrap());
+static CSS_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)(?:^|;)\s*@import\b").unwrap());
 static SASS_LOAD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@(use|import|forward)\b").unwrap());
 static SASS_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/|//[^\n]*").unwrap());
 static COMPOSES_FROM_RE: LazyLock<Regex> =
@@ -165,6 +165,32 @@ fn is_external(spec: &str) -> bool {
 /// bare (unquoted) value at the end of the tag would swallow it.
 fn tag_inner(tag: &str) -> &str {
     tag.trim_end_matches('>').trim_end_matches('/')
+}
+
+/// A scan copy of `html` with every comment's bytes blanked to spaces (length
+/// preserved, so match ranges map straight onto the original). Comment spans
+/// are regex matches on the str, so the range edges sit on char boundaries and
+/// an all-ASCII fill keeps the copy valid utf-8.
+fn blank_comments(html: &str) -> String {
+    let mut bytes = html.as_bytes().to_vec();
+    for m in COMMENT_RE.find_iter(html) {
+        bytes[m.range()].fill(b' ');
+    }
+    String::from_utf8(bytes).expect("ascii fill preserves utf-8")
+}
+
+/// Apply non-overlapping `(range, replacement)` edits (sorted by start) to the
+/// original text.
+fn splice(original: &str, edits: Vec<(std::ops::Range<usize>, String)>) -> String {
+    let mut out = String::with_capacity(original.len());
+    let mut cursor = 0;
+    for (range, replacement) in edits {
+        out.push_str(&original[cursor..range.start]);
+        out.push_str(&replacement);
+        cursor = range.end;
+    }
+    out.push_str(&original[cursor..]);
+    out
 }
 
 /// Make css safe inside a `<style>` element: the only sequence that can end it
@@ -204,8 +230,9 @@ fn css_to_js(id: &str, css: &str, exports: Option<&[(String, String)]>) -> Strin
 fn compile_stylesheet(path: &str, source: &str) -> Result<(String, Option<Vec<(String, String)>>), String> {
     let id = module_id(path);
     // Cross-file `composes: x from "./other.css"` resolves through std::fs in
-    // oj_css and would silently drop the composed classes on wasm32.
-    if path.contains(".module.") && COMPOSES_FROM_RE.is_match(source) {
+    // oj_css and would silently drop the composed classes on wasm32. Scoping
+    // is judged the way oj_css judges it (`.module.` in the FILENAME).
+    if oj_css::is_css_module(path) && COMPOSES_FROM_RE.is_match(source) {
         return Err(
             "css modules `composes: ... from` another file is not supported in the wasm playground yet".to_string(),
         );
@@ -228,8 +255,10 @@ fn compile_stylesheet(path: &str, source: &str) -> Result<(String, Option<Vec<(S
     let out = compile_css(&id, &plain, false)?;
     // Without the dev server's rebase pass an `@import` survives verbatim and
     // would resolve against the preview document, silently loading nothing;
-    // fail loudly instead until the graph walks css imports too. Line-anchored
-    // so a string value like `content: "@import"` cannot false-positive.
+    // fail loudly instead until the graph walks css imports too. Anchored to a
+    // line start or a rule boundary so a string value like
+    // `content: "@import"` cannot false-positive but `@charset ...;@import`
+    // on one line is still caught.
     if CSS_IMPORT_RE.is_match(&out.css) {
         return Err("css @import is not supported in the wasm playground yet; inline the file or import it from a JS module".to_string());
     }
@@ -245,23 +274,35 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
     let mut bare: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
 
-    // Comments go first (they are inert; a commented-out tag must not be
-    // compiled), then <script type="module" src="..."> becomes an inline
-    // import of the module specifier (a script src never goes through the
-    // import map; an inline `import` does), and local
-    // <link rel="stylesheet" href="..."> is inlined. External urls in either
-    // tag are the browser's business and pass through verbatim.
-    let html = COMMENT_RE.replace_all(html, "");
-    let out_html = SCRIPT_RE.replace_all(&html, |caps: &regex::Captures| {
-        let tag = caps.get(1).map_or("", |m| m.as_str());
-        let body = caps.get(2).map_or("", |m| m.as_str());
+    // The tags are matched against a scan copy whose comment interiors are
+    // blanked (byte length preserved), so a commented-out tag never matches
+    // while the delivered document keeps its comments verbatim. Matched spans
+    // are then spliced into the ORIGINAL html by byte range.
+    // <script type="module" src="..."> becomes an inline import of the module
+    // specifier (a script src never goes through the import map; an inline
+    // `import` does), and a local <link rel="stylesheet" href="..."> is
+    // inlined. External urls in either tag are the browser's business and pass
+    // through verbatim.
+    let scan = blank_comments(html);
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    let mut saw_module_script = false;
+    for caps in SCRIPT_RE.captures_iter(&scan) {
+        let whole = caps.get(0).expect("group 0 always exists");
+        // Group 1 is the open tag of a paired script; without it the whole
+        // match is a self-closing <script ... />, which the playground honors
+        // as the author's intent (a closed, empty tag).
+        let (tag, body) = match caps.get(1) {
+            Some(open) => (open.as_str(), caps.get(2).map_or("", |m| m.as_str())),
+            None => (whole.as_str(), ""),
+        };
         let tag = tag_inner(tag);
         let kind = html_attr(tag, "type");
         let src = html_attr(tag, "src");
         // The html spec matches the type value ASCII case-insensitively.
         if !kind.is_some_and(|k| k.eq_ignore_ascii_case("module")) {
-            return caps[0].to_string();
+            continue;
         }
+        saw_module_script = true;
         let Some(src) = src else {
             if !body.trim().is_empty() {
                 errors.push(BuildError {
@@ -269,64 +310,74 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
                     message: "inline module scripts are not supported in the wasm playground yet; move the code to a file and reference it with src".to_string(),
                 });
             }
-            return caps[0].to_string();
+            continue;
         };
         if is_external(src) {
-            return caps[0].to_string();
+            continue;
         }
         match resolve(files, "/", src) {
             Some(path) => {
                 queue.push_back(path.clone());
-                format!(
-                    "<script type=\"module\">import {};</script>",
-                    serde_json::Value::String(module_id(&path))
-                )
+                edits.push((
+                    whole.range(),
+                    format!(
+                        "<script type=\"module\">import {};</script>",
+                        serde_json::Value::String(module_id(&path))
+                    ),
+                ));
             }
             None => {
                 errors.push(BuildError {
                     path: "/index.html".to_string(),
                     message: format!("script src {src} does not match any file"),
                 });
-                caps[0].to_string()
             }
         }
-    });
-    if queue.is_empty() {
+    }
+    if !saw_module_script {
         errors.push(BuildError {
             path: "/index.html".to_string(),
             message: "no <script type=\"module\" src=...> entry found in /index.html".to_string(),
         });
     }
-    let out_html = LINK_RE
-        .replace_all(&out_html, |caps: &regex::Captures| {
-            let tag = &caps[0];
-            let tag = tag_inner(tag);
-            let (Some(rel), Some(href)) = (html_attr(tag, "rel"), html_attr(tag, "href")) else {
-                return caps[0].to_string();
-            };
-            if !rel.eq_ignore_ascii_case("stylesheet") || is_external(href) {
-                return caps[0].to_string();
-            }
-            let Some(path) = resolve(files, "/", href) else {
-                errors.push(BuildError {
-                    path: "/index.html".to_string(),
-                    message: format!("stylesheet href {href} does not match any file"),
-                });
-                return caps[0].to_string();
-            };
-            match compile_stylesheet(&path, &files[&path]) {
-                Ok((css, _)) => format!(
+    for m in LINK_RE.find_iter(&scan) {
+        let tag = tag_inner(m.as_str());
+        let (Some(rel), Some(href)) = (html_attr(tag, "rel"), html_attr(tag, "href")) else {
+            continue;
+        };
+        if !rel.eq_ignore_ascii_case("stylesheet") || is_external(href) {
+            continue;
+        }
+        let Some(path) = resolve(files, "/", href) else {
+            errors.push(BuildError {
+                path: "/index.html".to_string(),
+                message: format!("stylesheet href {href} does not match any file"),
+            });
+            continue;
+        };
+        // A linked css module would inline scoped selectors with the class map
+        // dropped on the floor: nothing in the page could reference them.
+        if oj_css::is_css_module(&path) {
+            errors.push(BuildError {
+                path,
+                message: "a css module cannot be linked from index.html; import it from a JS module to get the class map".to_string(),
+            });
+            continue;
+        }
+        match compile_stylesheet(&path, &files[&path]) {
+            Ok((css, _)) => edits.push((
+                m.range(),
+                format!(
                     "<style data-oj-id={}>{}</style>",
                     serde_json::Value::String(module_id(&path)),
                     escape_style_text(&css),
                 ),
-                Err(message) => {
-                    errors.push(BuildError { path, message });
-                    caps[0].to_string()
-                }
-            }
-        })
-        .into_owned();
+            )),
+            Err(message) => errors.push(BuildError { path, message }),
+        }
+    }
+    edits.sort_by_key(|(range, _)| range.start);
+    let out_html = splice(html, edits);
 
     let mut modules: Vec<Module> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -380,7 +431,9 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
         };
         // import.meta.glob expands over the real filesystem inside the
         // compiler, which is empty on wasm32: it would silently become `({})`.
-        if source.contains("import.meta.glob") {
+        // glob_patterns visits the AST, so a comment or string that merely
+        // mentions the name does not trip the guard.
+        if !oj_compiler::glob::glob_patterns(source, Path::new(&path)).is_empty() {
             errors.push(BuildError {
                 path: path.clone(),
                 message: "import.meta.glob is not supported in the wasm playground yet".to_string(),
@@ -407,6 +460,15 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
             }
             // Pseudo-bare specifiers that can never be a package: the `@/`
             // alias convention and the playground's own module prefix.
+            // Node subpath imports (package.json `imports`) need a package
+            // manifest the playground does not have; classified bare they
+            // would mint an esm.sh url whose `#...` is a fragment.
+            if spec.starts_with('#') {
+                problems.push(format!(
+                    "import \"{spec}\": subpath imports (#...) are not supported in the playground; use a relative path"
+                ));
+                return None;
+            }
             if spec.starts_with("@/") {
                 problems.push(format!(
                     "import \"{spec}\": alias imports are not configured in the playground; use a relative path"
@@ -436,7 +498,6 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
         };
         match compile_module(Path::new(&path), source, &opts, Some(&mut rewrite)) {
             Ok(out) => {
-                drop(rewrite);
                 queue.extend(deps);
                 for message in problems {
                     errors.push(BuildError { path: path.clone(), message });
@@ -447,7 +508,6 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
                 });
             }
             Err(err) => {
-                drop(rewrite);
                 errors.push(BuildError { path: path.clone(), message: err.to_string() });
             }
         }
@@ -835,6 +895,83 @@ mod tests {
         files.insert(
             "/src/app.scss".to_string(),
             "/*\n@use \"./vars\";\n*/\n// @import \"./other\";\nbody { color: teal }".to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn external_only_module_entry_is_not_an_error() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><body><script type=\"module\" src=\"https://esm.sh/my-app\"></script></body></html>".to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert!(result.html.contains("https://esm.sh/my-app"));
+        assert!(result.modules.is_empty());
+    }
+
+    #[test]
+    fn self_closing_module_script_is_an_entry_and_swallows_nothing() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><body><script type=\"module\" src=\"/src/main.tsx\" />\n<div id=\"root\"></div>\n\
+             <script src=\"/legacy.js\"></script></body></html>"
+                .to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(result.html.contains("<div id=\"root\">"), "{}", result.html);
+        assert!(result.html.contains("<script src=\"/legacy.js\"></script>"), "{}", result.html);
+    }
+
+    #[test]
+    fn comments_survive_into_the_delivered_html() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><body><!-- keep me --><script type=\"module\" src=\"/src/main.tsx\"></script></body></html>"
+                .to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert!(result.html.contains("<!-- keep me -->"), "{}", result.html);
+    }
+
+    #[test]
+    fn subpath_imports_error_loudly() {
+        let mut files = demo();
+        files.insert("/src/main.tsx".to_string(), "import { fmt } from \"#utils\";\nconsole.log(fmt);\n".to_string());
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|e| e.message.contains("subpath imports")), "{:?}", result.errors);
+        assert!(result.bare.is_empty(), "{:?}", result.bare);
+    }
+
+    #[test]
+    fn linked_css_module_is_a_loud_error() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><head><link rel=\"stylesheet\" href=\"/src/App.module.css\"></head>\
+             <body><script type=\"module\" src=\"/src/main.tsx\"></script></body></html>"
+                .to_string(),
+        );
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|e| e.message.contains("css module cannot be linked")), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn mentioning_import_meta_glob_in_a_comment_is_fine() {
+        let mut files = demo();
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "// unlike import.meta.glob in Vite, this is fine\nconsole.log(\"import.meta.glob\");\n".to_string(),
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);

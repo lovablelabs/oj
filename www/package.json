@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build:wasm && oj dev .",
+    "dev": "npm run build:wasm:dev && oj dev .",
     "build": "npm run build:wasm && oj build .",
     "build:wasm": "command -v wasm-pack >/dev/null 2>&1 || { echo 'oj www needs wasm-pack (cargo install wasm-pack) and the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown)'; exit 1; }; wasm-pack build ../crates/oj_wasm --release --target web --no-typescript --no-pack --out-dir ../../www/public/oj-wasm && rm -f public/oj-wasm/.gitignore",
+    "build:wasm:dev": "if command -v wasm-pack >/dev/null 2>&1; then wasm-pack build ../crates/oj_wasm --dev --target web --no-typescript --no-pack --out-dir ../../www/public/oj-wasm && rm -f public/oj-wasm/.gitignore; elif [ -f public/oj-wasm/oj_wasm.js ]; then echo 'wasm-pack missing; serving the existing public/oj-wasm bundle'; else echo 'oj www needs wasm-pack (cargo install wasm-pack) and the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown)'; exit 1; fi",
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {

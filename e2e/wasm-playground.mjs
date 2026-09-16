@@ -101,8 +101,8 @@ try {
   if (!cls || !cls.includes("squeeze")) bad.push(`button class: ${cls}`);
   await front().locator("button").click();
   await front().locator("button").click();
-  const tally = await front().locator("p").last().textContent();
-  if (!tally.includes("2 glasses")) bad.push(`tally after 2 clicks: ${tally}`);
+  const tally = await front().locator("p").last().textContent().catch(() => null);
+  if (!tally?.includes("2 glasses")) bad.push(`tally after 2 clicks: ${tally}`);
 
   // linked stylesheet inlined into the document
   const bg = await front().locator("body").evaluate((el) => getComputedStyle(el).backgroundColor);
