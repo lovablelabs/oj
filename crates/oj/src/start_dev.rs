@@ -90,17 +90,17 @@ fn change_type(p: &Path, created: &std::collections::HashSet<PathBuf>) -> &'stat
     }
 }
 
-// Static hint that the app uses @cloudflare/vite-plugin, readable before the
-// plugin host boots (the definitive flag is the host's serve info, live on
-// BuiltApp::plugin_serve). A plain text search of the config file: false for
-// every non-Cloudflare app, so their boot path is untouched. Used only to gate
-// the prewarm decision below.
-fn config_mentions_cloudflare_plugin(root: &Path, config: &Option<PathBuf>) -> bool {
+// Check the config text for plugins that may serve pages in their own runtime.
+// This only decides whether to delay prewarming. BuiltApp::plugin_serve
+// confirms who serves pages once the plugin host starts.
+const RUNTIME_PLUGIN_SPECIFIERS: &[&str] = &["@cloudflare/vite-plugin", "nitro/vite"];
+
+fn config_mentions_runtime_plugin(root: &Path, config: &Option<PathBuf>) -> bool {
     let file = config
         .clone()
         .or_else(|| oj_server::plugins::vite_config_file(root));
     file.and_then(|f| std::fs::read_to_string(f).ok())
-        .is_some_and(|s| s.contains("@cloudflare/vite-plugin"))
+        .is_some_and(|s| RUNTIME_PLUGIN_SPECIFIERS.iter().any(|p| s.contains(p)))
 }
 
 // A --config path is resolved against the app root, the way `build` resolves
@@ -129,7 +129,7 @@ pub async fn start_dev(
     // Same order `build` uses: pin the override before anything reads a config,
     // so the Rust side and the plugin host agree on which file is the config.
     let config = config_path(&root, config);
-    let cf_hint = config_mentions_cloudflare_plugin(&root, &config);
+    let runtime_hint = config_mentions_runtime_plugin(&root, &config);
     if let Some(cfg) = &config {
         oj_server::plugins::set_vite_config_override(cfg.clone());
     }
@@ -175,21 +175,16 @@ pub async fn start_dev(
     ));
     oj_server::boot_phase("runner spawned");
     let (reload_tx, _) = broadcast::channel::<()>(16);
-    // Whether the plugin's worker environments serve the documents is known
-    // only once the plugin host announces its serve info (the `{ ojServeInfo }`
-    // push, mirrored on the host's watch channel); the cf_hint keeps the
-    // non-Cloudflare prewarm overlapping the build exactly as before, while a
-    // Cloudflare config holds the prewarm until the serve info is KNOWN —
-    // bounded, so a host that never comes up still gets a warm runner — and
-    // skips it iff the worker environments render (warming the runner is
-    // wasted CPU then).
-    let (cf_tx, cf_rx) = tokio::sync::oneshot::channel::<Option<PrewarmHold>>();
+    // Normally, prewarm the runner during the build. For runtime plugins, wait
+    // for the host's serve info before deciding: skip prewarming if workers
+    // serve pages. The wait is bounded so a stuck host still gets a warm runner.
+    let (prewarm_tx, prewarm_rx) = tokio::sync::oneshot::channel::<Option<PrewarmHold>>();
     {
         let runner = Arc::clone(&runner);
         let reload_tx = reload_tx.clone();
         tokio::spawn(async move {
-            if cf_hint {
-                if let Ok(Some(mut hold)) = cf_rx.await {
+            if runtime_hint {
+                if let Ok(Some(mut hold)) = prewarm_rx.await {
                     // Held until the serve info is KNOWN or there is wedge
                     // EVIDENCE (host death, a burned init window, the host's
                     // own init deadline) — see hold_prewarm_for_serve_info.
@@ -216,7 +211,7 @@ pub async fn start_dev(
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
     let pinned = bundle_res??;
     let built = built_res??;
-    let _ = cf_tx.send(built.plugin_host.as_ref().map(|h| PrewarmHold {
+    let _ = prewarm_tx.send(built.plugin_host.as_ref().map(|h| PrewarmHold {
         updates: h.serve_info_updates(),
         host_gone: h.host_gone_updates(),
         init_failed: h.init_failure_updates(),
@@ -945,6 +940,7 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
         .map_err(|e| anyhow::anyhow!(e))?;
     let build_cfg = config.build.clone().unwrap_or_default();
     let prerender = build_cfg.prerender.clone().unwrap_or_default().join(",");
+    let out_explicit = out.is_some();
     let out = out
         .or_else(|| build_cfg.out_dir.as_ref().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("dist"));
@@ -980,6 +976,8 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
         &oj_env::load(&env_dir, mode),
         "production",
     );
+    // Don't report output left by an earlier build.
+    let _ = std::fs::remove_file(cache.join("build-output.json"));
     let status = std::process::Command::new("node")
         .arg(cache.join("build.mjs"))
         .env("OJ_APP_ROOT", &root)
@@ -989,6 +987,7 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
         .envs(start_script_env(&root, "build", mode)?)
         .env("OJ_PRERENDER", &prerender)
         .env("OJ_OUT_DIR", &out_dir)
+        .env("OJ_OUT_DIR_EXPLICIT", if out_explicit { "1" } else { "" })
         .env("OJ_BASE", &base)
         .env("OJ_SOURCEMAP", sourcemap)
         .env("OJ_MINIFY", if minify { "true" } else { "false" })
@@ -999,16 +998,31 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
     if !status.success() {
         anyhow::bail!("production build failed");
     }
+    // Use the output path and run command from build.mjs. Nitro ignores --out;
+    // Cloudflare has no Node server to run.
+    let (built_dir, run) = read_build_output(&cache).unwrap_or_else(|| {
+        let server = out_dir.join("server.mjs");
+        let run = server.exists().then(|| format!("node {}", server.display()));
+        (out_dir.clone(), run)
+    });
     println!(
         "  {} build (tanstack start) -> {}",
         oj_server::oj_brand(),
-        out_dir.display()
+        built_dir.display()
     );
-    // A Cloudflare build (the app uses @cloudflare/vite-plugin) has no Node server.
-    if out_dir.join("server.mjs").exists() {
-        println!("  run: node {}", out_dir.join("server.mjs").display());
+    if let Some(run) = run {
+        println!("  run: {run}");
     }
     Ok(())
+}
+
+/// Read `{ outDir, run }` saved by build.mjs in the Start cache.
+fn read_build_output(cache: &Path) -> Option<(PathBuf, Option<String>)> {
+    let text = std::fs::read_to_string(cache.join("build-output.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let out = PathBuf::from(v.get("outDir")?.as_str()?);
+    let run = v.get("run").and_then(|s| s.as_str()).map(str::to_string);
+    Some((out, run))
 }
 
 fn codegen_store(
@@ -1667,7 +1681,7 @@ fn inject_reload_client(resp: Response) -> Response {
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
 }
 
-/// The signals the Cloudflare prewarm hold selects on, captured from the boot
+/// The signals the runtime-plugin prewarm hold selects on, captured from the boot
 /// plugin host once the server build joins.
 type ServeInfoUpdates = tokio::sync::watch::Receiver<Option<oj_server::plugins::ServeInfo>>;
 struct PrewarmHold {
@@ -1685,7 +1699,7 @@ struct PrewarmHold {
     confirm: std::time::Duration,
 }
 
-/// Holds the Cloudflare prewarm until the plugin host's serve info is KNOWN,
+/// Holds the runtime-plugin prewarm until the plugin host's serve info is KNOWN,
 /// releasing early only on wedge EVIDENCE: (a) the info arriving decides
 /// (worker environments render → skip the prewarm; none → prewarm), (b) the
 /// host dying (`host_gone`) releases immediately, while the init-failure
@@ -2119,21 +2133,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&plain);
     }
 
-    // The static Cloudflare hint gates skipping the boot prewarm: true only
-    // when the config file names @cloudflare/vite-plugin, so every other app
-    // keeps the current boot path.
+    // Only configs naming a runtime plugin should delay prewarming.
     #[test]
-    fn cloudflare_hint_reads_the_config_file() {
+    fn runtime_plugin_hint_reads_the_config_file() {
         let root = tmp("cf-hint");
-        assert!(!config_mentions_cloudflare_plugin(&root, &None));
+        assert!(!config_mentions_runtime_plugin(&root, &None));
         std::fs::write(
             root.join("vite.config.ts"),
             "import { cloudflare } from \"@cloudflare/vite-plugin\";\nexport default {};\n",
         )
         .unwrap();
-        assert!(config_mentions_cloudflare_plugin(&root, &None));
+        assert!(config_mentions_runtime_plugin(&root, &None));
+        std::fs::write(
+            root.join("vite.config.ts"),
+            "import { nitro } from \"nitro/vite\";\nexport default {};\n",
+        )
+        .unwrap();
+        assert!(config_mentions_runtime_plugin(&root, &None));
         std::fs::write(root.join("other.config.ts"), "export default {};\n").unwrap();
-        assert!(!config_mentions_cloudflare_plugin(
+        assert!(!config_mentions_runtime_plugin(
             &root,
             &Some(root.join("other.config.ts"))
         ));

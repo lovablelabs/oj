@@ -53,6 +53,9 @@ Shared build helpers:
 - `vite-plugin-bridge.mjs` is the plugin container. See below.
 - `glob-transform.mjs` expands `import.meta.glob` into a literal map.
 - `cf-server.mjs` is the dev/prod shim for `@cloudflare/vite-plugin/server`.
+- `cf-build.mjs` builds the Worker environment for `@cloudflare/vite-plugin`.
+- `nitro-build.mjs` detects `nitro/vite` and gives its buildApp hooks a
+  Vite-like builder, so Nitro packages oj's client and SSR output.
 
 Dev:
 

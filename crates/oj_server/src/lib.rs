@@ -132,6 +132,7 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/cf-server-worker.mjs"),
     ),
     ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
+    ("nitro-build.mjs", include_str!("assets/start/nitro-build.mjs")),
     ("css-host.mjs", include_str!("assets/start/css-host.mjs")),
     ("loader.mjs", include_str!("assets/start/loader.mjs")),
     (

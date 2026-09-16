@@ -149,6 +149,12 @@ jobs:
       - name: start dev for @cloudflare/vite-plugin serves from the worker; an edit yields a fresh document
         if: matrix.mode == 'unbundled'
         run: node e2e/start-cloudflare-dev.mjs
+      - name: start prod build for nitro/vite is nitro's .output (ssr as a nitro service) and renders on node-server
+        if: matrix.mode == 'unbundled'
+        run: node e2e/start-nitro.mjs
+      - name: start dev for nitro/vite serves from nitro's worker; a nitro route answers; an edit yields a fresh document
+        if: matrix.mode == 'unbundled'
+        run: node e2e/start-nitro-dev.mjs
       - name: experimental.bundledDev is coerced off; the standard dev client entry serves and the page hydrates
         if: matrix.mode == 'unbundled'
         run: node e2e/bundleddev-coerce.mjs

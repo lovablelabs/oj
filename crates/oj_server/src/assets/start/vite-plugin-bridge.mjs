@@ -366,7 +366,7 @@ export function createPluginContainer(vite, allPlugins, {
       config: environmentConfig,
       moduleGraph,
     },
-    meta: { rollupVersion: "4.0.0", watchMode: command !== "build", framework: "oj" },
+    meta: pluginMeta(vite, command),
     warn() {}, info() {}, debug() {},
     error(m) { throw new Error(typeof m === "string" ? m : m?.message ?? String(m)); },
     emitFile() { return "oj-emit-ref"; },
@@ -619,6 +619,17 @@ export function createPluginContainer(vite, allPlugins, {
   };
 }
 
+// Match Vite's plugin metadata using the app's Vite and bundled rolldown versions.
+function pluginMeta(vite, command) {
+  return {
+    viteVersion: typeof vite?.version === "string" ? vite.version : "8.0.0",
+    rollupVersion: "4.0.0",
+    ...(typeof vite?.rolldownVersion === "string" ? { rolldownVersion: vite.rolldownVersion } : {}),
+    watchMode: command !== "build",
+    framework: "oj",
+  };
+}
+
 function mergeConfigValues(current, update) {
   if (Array.isArray(current) && Array.isArray(update)) return [...current, ...update];
   if (current && update && typeof current === "object" && typeof update === "object") {
@@ -645,10 +656,24 @@ export async function loadPluginContainer(app, opts = {}) {
   } catch {
     return null;
   }
-  // Vite runs every plugin's `config` hook (in order, async, gated by `apply`)
-  // and merges the returned partials before resolving; the Start loader has its
-  // own plugin instances, so it must do the same for them.
+  // Like Vite, run matching config hooks in order and merge their results.
+  // Give hooks Vite's basic context as `this`; Nitro checks this.meta.rolldownVersion.
+  const configHookContext = {
+    meta: pluginMeta(vite, command),
+    debug() {}, info() {},
+    warn(m) { process.stderr.write(`oj: ${typeof m === "string" ? m : m?.message ?? String(m)}\n`); },
+    error(m) { throw m instanceof Error ? m : new Error(typeof m === "string" ? m : m?.message ?? String(m)); },
+  };
   let config = loaded?.config ?? {};
+  // seedConfig supplies defaults from skipped framework hooks, such as Start's
+  // SSR input. User values win, and later hooks see the merged config.
+  // A function receives the config before hooks run and returns defaults or nothing.
+  const seed = typeof opts.seedConfig === "function" ? opts.seedConfig(config) : opts.seedConfig;
+  if (seed) {
+    config = typeof vite.mergeConfig === "function"
+      ? vite.mergeConfig(seed, config)
+      : mergeConfigValues(seed, config);
+  }
   const all = (config.plugins ?? []).flat(Infinity).filter(Boolean);
   // Only user plugins: the framework plugins oj reimplements (TanStack, Vite's
   // own, React) never ran hooks under oj, and their config hooks have side
@@ -658,7 +683,7 @@ export async function loadPluginContainer(app, opts = {}) {
     const handler = hookHandler(plugin.config);
     if (!handler || !applyMatches(plugin, command, mode)) continue;
     try {
-      const partial = await handler.call(plugin, config, { command, mode });
+      const partial = await handler.call(configHookContext, config, { command, mode });
       if (partial) config = typeof vite.mergeConfig === "function"
         ? vite.mergeConfig(config, partial)
         : mergeConfigValues(config, partial);
@@ -678,7 +703,7 @@ export async function loadPluginContainer(app, opts = {}) {
       const handler = hookHandler(plugin.configEnvironment);
       if (!handler || !applyMatches(plugin, command, mode)) continue;
       try {
-        const partial = await handler.call(plugin, name, environmentOptions, { command, mode, isSsrTargetWebworker: false, isPreview: false });
+        const partial = await handler.call(configHookContext, name, environmentOptions, { command, mode, isSsrTargetWebworker: false, isPreview: false });
         if (partial) { environmentOptions = merge(environmentOptions, partial); changed = true; }
       } catch (e) {
         process.stderr.write(`oj: plugin "${plugin.name || "?"}" configEnvironment failed (skipped): ${e?.message ?? e}\n`);
@@ -687,10 +712,6 @@ export async function loadPluginContainer(app, opts = {}) {
     if (changed) config = { ...config, environments: { ...config.environments, [name]: environmentOptions } };
   }
   if (loaded) loaded.config = config;
-  const container = createPluginContainer(vite, all, {
-    ...opts,
-    config: { ...config, root: config.root ?? app },
-  });
   const publicDir = config.publicDir === false
     ? false
     : typeof config.publicDir === "string" ? config.publicDir : null;
@@ -698,13 +719,32 @@ export async function loadPluginContainer(app, opts = {}) {
   // The config's `define` for this environment (top-level, then the
   // environment's own), serialized the way Vite's define plugin does
   // (handleDefineValue: strings verbatim, anything else JSON).
-  const environment = opts.environment ?? "client";
-  const defines = () => Object.fromEntries(
+  const defines = (environment) => () => Object.fromEntries(
     Object.entries({ ...config.define, ...config.environments?.[environment]?.define })
       .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)])
       .filter(([, value]) => typeof value === "string"),
   );
-  return { ...container, publicDir, configDependencies, defines, config };
+  // Run matching buildApp hooks in pre/normal/post order, as Vite does.
+  // ranks selects phases so oj can build its environments between them.
+  const buildApp = async (builder, ranks = ["pre", "normal", "post"]) => {
+    const rank = (hook) => (hook?.order === "pre" || hook?.order === "post" ? hook.order : "normal");
+    for (const want of ranks) {
+      for (const plugin of ordered(all)) {
+        if (ojReimplemented(plugin.name) || rank(plugin.buildApp) !== want) continue;
+        const handler = hookHandler(plugin.buildApp);
+        if (!handler || !applyMatches(plugin, command, mode)) continue;
+        await handler.call(configHookContext, builder);
+      }
+    }
+  };
+  // Share one resolved config and its plugins across environment containers,
+  // like Vite's builder.sharedConfigBuild. Config hooks run once, so all
+  // environments use the same Nitro instance.
+  const forEnvironment = (environment) => ({
+    ...createPluginContainer(vite, all, { ...opts, environment, config: { ...config, root: config.root ?? app } }),
+    publicDir, configDependencies, defines: defines(environment), config, buildApp, forEnvironment,
+  });
+  return forEnvironment(opts.environment ?? "client");
 }
 
 export const __test = { matchOne, idAllowed, codeAllowed, byHook, applyMatches, ordered, hookHandler, hookFilter, ojReimplemented, envAllows };

@@ -2152,6 +2152,16 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
   };
 }
 
+// Match connect routes, ignoring case: "/api" matches "/api", "/api/x"
+// and "/api.json", but not "/apiary". Ignore query strings and fragments.
+function routeMatches(route, url) {
+  const q = url.search(/[?#]/);
+  const pathname = q === -1 ? url : url.slice(0, q);
+  if (pathname.slice(0, route.length).toLowerCase() !== route.toLowerCase()) return false;
+  const c = pathname[route.length];
+  return c === undefined || c === "/" || c === ".";
+}
+
 async function setupConfigureServer() {
   const stack = [];
   function runStack(req, res, done) {
@@ -2159,9 +2169,8 @@ async function setupConfigureServer() {
     const next = (err) => {
       while (i < stack.length) {
         const entry = stack[i++];
-        const path = entry.route === "/" ? null : entry.route;
         const fn = entry.handle;
-        if (path && !req.url.startsWith(path)) continue;
+        if (entry.route && !routeMatches(entry.route, req.url)) continue;
         if ((fn.length >= 4) !== (err != null)) continue;
         try {
           return err != null ? fn(err, req, res, next) : fn(req, res, next);
@@ -2216,11 +2225,12 @@ async function setupConfigureServer() {
   function middlewares(req, res, done) {
     return runStack(req, res, done);
   }
-  // connect stack entries are { route, handle } (plugins walk .stack reading
-  // handle.name); mirror that shape.
+  // Keep connect's { route, handle } shape so plugins can read handle.name.
+  // Trim trailing slashes: use(fn) must store "", not "/", or Nitro would
+  // treat it as a route prefix and skip every request.
   middlewares.use = (a, b) => {
-    if (typeof a === "function") stack.push({ route: "/", handle: a });
-    else stack.push({ route: a, handle: b });
+    const [route, handle] = typeof a === "function" ? ["/", a] : [a, b];
+    stack.push({ route: route.endsWith("/") ? route.slice(0, -1) : route, handle });
   };
   middlewares.stack = stack;
   const noop = () => {};
@@ -2356,6 +2366,25 @@ async function setupConfigureServer() {
       if (!ojStartMode) throw e;
       process.stderr.write(`${OJ} plugin host: post configureServer skipped: ${(e && e.message) || e}\n`);
     }
+  }
+  // Follow Vite's startup order: client buildStart, then environment listen().
+  // buildStart sets up shared state, including the CSS modules cache used by
+  // server transforms. listen() enables runner messages and warmup.
+  // Skip client listen(): oj serves the client, so Vite need not scan its deps.
+  if (runnerEnvironmentsBuilt) {
+    try {
+      await server.environments.client?.pluginContainer?.buildStart?.();
+    } catch (e) {
+      process.stderr.write(`${OJ} plugin host: client buildStart failed: ${(e && e.message) || e}\n`);
+    }
+    await Promise.all(Object.entries(server.environments).map(async ([name, e]) => {
+      if (name === "client" || typeof e?.listen !== "function") return;
+      try {
+        await e.listen(server);
+      } catch (err) {
+        process.stderr.write(`${OJ} plugin host: env.listen(${name}) failed: ${(err && err.message) || err}\n`);
+      }
+    }));
   }
   // oj listens as soon as the host is ready (before any hook request arrives);
   // `httpServer.once("listening")` handlers registered in configureServer fire

@@ -10,6 +10,7 @@ import {
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob } from "./glob-transform.mjs";
 import { cloudflareEnvironment, cloudflareWorkerPlugin, workerOutDir, CLOUDFLARE_WORKER_ENTRY } from "./cf-build.mjs";
+import { declaresNitro, usesNitro, ssrServiceSeed, nitroBuilder } from "./nitro-build.mjs";
 
 const APP = process.env.OJ_APP_ROOT ?? process.cwd();
 // Set by `oj build` per Vite's NODE_ENV rule (shell wins, else .env NODE_ENV=development, else production).
@@ -44,7 +45,6 @@ const SOURCEMAP = (() => {
   return v === "true" ? true : v === "inline" || v === "hidden" ? v : false;
 })();
 const MINIFY = process.env.OJ_MINIFY !== "false";
-const CLIENT = join(DIST, "client");
 const WORKSPACE = workspaceRoot(APP);
 const sfid = (rel, name) => Buffer.from(`${rel}#${name}`).toString("base64url");
 
@@ -188,7 +188,51 @@ const serverFnPlugin = {
   },
 };
 
-rmSync(DIST, { recursive: true, force: true });
+// Use the app's Start server entry, or oj's default. oj reads the plugin's
+// virtual:tanstack-start-server-entry alias into OJ_START_SERVER_ENTRY.
+// Imports of @tanstack/react-start/server-entry still use oj's handler,
+// so a custom entry can wrap it as it would under Vite.
+const OJ_SERVER_ENTRY = join(HERE, "server-entry.tsx");
+const SERVER_ENTRY = process.env.OJ_START_SERVER_ENTRY || OJ_SERVER_ENTRY;
+
+// Nitro builds SSR as a service and puts the client in its public directory.
+// Supply the SSR input normally set by Start's skipped config hook.
+// Load the config once so both environments share one Nitro instance;
+// Nitro's buildApp hooks manage the output directory.
+const clientContainer = await loadPluginContainer(APP, {
+  command: "build", mode: MODE, environment: "client",
+  seedConfig: (config) => (declaresNitro(config) ? ssrServiceSeed(SERVER_ENTRY) : null),
+});
+const nitro = usesNitro(clientContainer?.config);
+if (!nitro && declaresNitro(clientContainer?.config)) {
+  throw new Error("oj: nitro/vite is configured, but its config hooks failed (see the errors above)");
+}
+let serverContainer = nitro
+  ? clientContainer.forEnvironment("ssr")
+  : await loadPluginContainer(APP, { command: "build", mode: MODE, environment: "ssr" });
+const nitroPublicDir = nitro ? serverContainer.config.environments?.client?.build?.outDir : null;
+if (nitro && !nitroPublicDir) {
+  throw new Error("oj: nitro/vite did not set the client output directory (see the errors above)");
+}
+const CLIENT = nitroPublicDir ? resolve(APP, nitroPublicDir) : join(DIST, "client");
+// Share one builder: pre hooks add methods that post hooks call.
+const builder = nitro
+  ? nitroBuilder({ config: serverContainer.config, build, envDefine: viteEnvDefine({ ssr: true, mode: MODE, base: BASE }) })
+  : null;
+if (nitro && process.env.OJ_OUT_DIR_EXPLICIT) {
+  process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} --out ignored: nitro writes to its own output directory (nitro output.dir)\n`);
+}
+// Nitro records its output directory here after building.
+const nitroLastBuild = nitro
+  ? join(resolve(APP, serverContainer.config.root ?? "."), "node_modules/.nitro/last-build.json")
+  : null;
+if (nitro) {
+  rmSync(nitroLastBuild, { force: true });
+  // Run nitro:prepare to clear Nitro's output directories.
+  await serverContainer.buildApp(builder, ["pre"]);
+} else {
+  rmSync(DIST, { recursive: true, force: true });
+}
 mkdirSync(CLIENT, { recursive: true });
 
 const compileCss = await (async () => {
@@ -211,8 +255,6 @@ const compileCss = await (async () => {
   return null;
 })();
 const emit = contentHashEmitter(CLIENT, compileCss, BASE);
-const clientContainer = await loadPluginContainer(APP, { command: "build", mode: MODE, environment: "client" });
-let serverContainer = await loadPluginContainer(APP, { command: "build", mode: MODE, environment: "ssr" });
 // With @cloudflare/vite-plugin the server build is the Worker environment the
 // plugin declared (its name comes from the wrangler config, or the plugin's
 // `viteEnvironment.name`); the plugin's hooks must see that environment.
@@ -303,13 +345,6 @@ const serverDefine = {
   "process.env.NODE_ENV": JSON.stringify(NODE_ENV), "process.env.TSS_SERVER_FN_BASE": '"/_serverFn/"',
   ...viteEnvDefine({ ssr: true, mode: MODE, base: BASE }),
 };
-// The bundle's entry is the app's own Start server entry when configured
-// (`tanstackStart({ server: { entry } })`, published by the plugin as the
-// `virtual:tanstack-start-server-entry` alias and exported by oj as
-// OJ_START_SERVER_ENTRY), else oj's; either way `@tanstack/react-start/server-entry`
-// inside it is oj's handler, so a wrapping entry composes as it does under Vite.
-const OJ_SERVER_ENTRY = join(HERE, "server-entry.tsx");
-const SERVER_ENTRY = process.env.OJ_START_SERVER_ENTRY || OJ_SERVER_ENTRY;
 const serverAlias = {
   ...clientAlias,
   "#tanstack-start-server-fn-resolver": join(HERE, "server-fn-resolver.mjs"),
@@ -383,6 +418,53 @@ if (cfEnv) {
     }
   }
   await serverContainer.writeBundle(bundle);
+} else if (nitro) {
+  // Build SSR in Nitro's service directory, leaving nitro/* imports for Nitro
+  // to bundle. Run generateBundle so Nitro records the service's entry chunk.
+  const serviceDir = resolve(APP, serverContainer.config.environments.ssr.build.outDir);
+  rmSync(serviceDir, { recursive: true, force: true });
+  const ssrExternal = ssrExternalRule(APP);
+  const service = await build({
+    input: { index: SERVER_ENTRY },
+    platform: "node",
+    external: (id, importer, isResolved) => /^nitro(\/|$)/.test(id) || ssrExternal(id, importer, isResolved),
+    transform: {
+      jsx: jsxTransformOptions(NODE_ENV !== "production"),
+      define: serverDefine,
+    },
+    resolve: {
+      alias: {
+        ...serverAlias,
+        "@cloudflare/vite-plugin/server": join(HERE, "cf-server.mjs"),
+      },
+    },
+    plugins: serverPlugins(),
+    output: {
+      dir: serviceDir,
+      format: "esm",
+      minify: MINIFY,
+      sourcemap: SOURCEMAP,
+      entryFileNames: "[name].mjs",
+      chunkFileNames: "chunks/[name]-[hash].mjs",
+      banner: "import { createRequire as ___cr } from 'node:module'; const require = ___cr(import.meta.url);",
+    },
+  });
+  const bundle = Object.fromEntries(service.output.map((output) => [output.fileName, output]));
+  const originalCode = new Map(service.output.filter((o) => o.type === "chunk").map((o) => [o.fileName, o.code]));
+  await serverContainer.generateBundle(({ type, fileName, source }) => {
+    if (type !== "asset" || !fileName || source == null) return;
+    const outFile = join(serviceDir, fileName);
+    mkdirSync(dirname(outFile), { recursive: true });
+    writeFileSync(outFile, source);
+  }, bundle);
+  for (const output of Object.values(bundle)) {
+    if (output.type === "chunk" && output.code !== originalCode.get(output.fileName)) {
+      writeFileSync(join(serviceDir, output.fileName), output.code);
+    }
+  }
+  await serverContainer.writeBundle(bundle);
+  // Run Nitro's remaining hooks to copy assets, prerender and build the server.
+  await serverContainer.buildApp(builder, ["normal", "post"]);
 } else {
   const server = await build({
     input: { "server-bundle": SERVER_ENTRY },
@@ -428,13 +510,16 @@ if (cfEnv) {
   );
 }
 
-if (clientContainer?.publicDir !== false) {
+// Nitro copies public/ itself.
+if (!nitro && clientContainer?.publicDir !== false) {
   const publicDir = resolve(APP, clientContainer?.publicDir ?? "public");
   if (existsSync(publicDir)) cpSync(publicDir, CLIENT, { recursive: true });
 }
 
 const prerender = (process.env.OJ_PRERENDER || "").split(",").map((s) => s.trim()).filter(Boolean);
-if (prerender.length && cfEnv) {
+if (prerender.length && nitro) {
+  process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} prerender skipped: nitro prerenders from its own config (nitro.prerender)\n`);
+} else if (prerender.length && cfEnv) {
   // The Worker bundle imports the runtime's own modules; it does not run under Node.
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} prerender skipped: the Cloudflare Worker bundle only runs in workerd\n`);
 } else if (prerender.length) {
@@ -453,7 +538,37 @@ if (prerender.length && cfEnv) {
 await clientContainer?.closeBundle();
 await serverContainer?.closeBundle();
 
-process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} built dist (client ${clientUrl})\n`);
+// Report the output path for `oj build`. Nitro uses its own directory, not --out.
+// Use Nitro's preview command, if any, run from that directory.
+const outputDir = nitro ? nitroOutputDir() : DIST;
+const run = nitro
+  ? (() => {
+    try {
+      const preview = JSON.parse(readFileSync(join(outputDir, "nitro.json"), "utf8")).commands?.preview;
+      return preview ? `${preview} (from ${outputDir})` : null;
+    } catch { return null; }
+  })()
+  : cfEnv ? null : `node ${join(DIST, "server.mjs")}`;
+writeFileSync(join(HERE, "build-output.json"), JSON.stringify({ outDir: outputDir, run }));
+
+// Find Nitro's output directory: from its last-build record, else the nearest
+// directory above the public assets that holds nitro.json.
+function nitroOutputDir() {
+  try {
+    const { outputDir } = JSON.parse(readFileSync(nitroLastBuild, "utf8"));
+    if (outputDir) return resolve(nitroLastBuild, outputDir);
+  } catch {}
+  for (let dir = CLIENT; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "nitro.json"))) return dir;
+    if (dir === APP || dir === dirname(dir)) return dirname(CLIENT);
+  }
+}
+
+if (nitro) {
+  process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} built nitro output -> ${relative(APP, outputDir)} (client ${clientUrl})\n`);
+} else {
+  process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} built dist (client ${clientUrl})\n`);
+}
 if (workerDir) {
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} cloudflare worker "${cfEnv.name}" -> ${relative(APP, workerDir)}/index.js (deploy: wrangler deploy)\n`);
 }
