@@ -1,0 +1,33 @@
+[package]
+name = "oj_js"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+deno_core = { version = "0.412", features = ["v8"] }
+deno_runtime = "0.267"
+# "deno_ast" is required for the CJS-to-ESM translation used when an ES
+# module imports a CommonJS package from node_modules.
+deno_resolver = { version = "0.90", features = ["sync", "deno_ast"] }
+node_resolver = { version = "0.97", features = ["sync"] }
+deno_snapshots = "0.74"
+deno_napi = "0.190"
+deno_config = "0.109"
+deno_error = "0.7"
+deno_media_type = "0.4"
+deno_path_util = "0.6"
+sys_traits = "0.1"
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+# Resolver v2 unifies build-dependency features separately from normal
+# dependencies. Keeping deno_core with "v8" here pins the host-side build of
+# deno_core (pulled in by build scripts in the dep train, e.g. deno_napi's)
+# to the same features as the target-side build.
+deno_core = { version = "0.412", features = ["v8"] }
+
+[dev-dependencies]
+tempfile.workspace = true
