@@ -1,6 +1,4 @@
-import { useEffect, useId, useState } from "react";
-
-const GITHUB = "https://github.com/lovablelabs/oj";
+import { useId } from "react";
 
 // The Lovable heart mark, ported from the pulse design system's
 // LovableLogoColor: four radial-gradient layers clipped to the heart path,
@@ -113,58 +111,11 @@ export function LovableHeart({ className }: { className?: string }) {
   );
 }
 
-export function Nav() {
-  const [scrolled, setScrolled] = useState(false);
-
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 8);
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-
+export function Brand() {
   return (
-    <header className="nav" data-scrolled={scrolled}>
-      <div className="wrap nav__inner">
-        <a href="#top" className="mark" aria-label="oj home">
-          <LovableHeart className="mark__heart" />
-          <span className="mark__word">oj</span>
-          <span className="badge">wasm</span>
-        </a>
-        <nav className="nav__links">
-          <a className="nav__link" href={GITHUB} target="_blank" rel="noreferrer">
-            GitHub
-          </a>
-        </nav>
-      </div>
-    </header>
-  );
-}
-
-export function Footer() {
-  return (
-    <footer className="foot">
-      <div className="wrap foot__row">
-        <span className="foot__note">
-          oj is an open-source project created by{" "}
-          <a href="https://github.com/raphamorim" target="_blank" rel="noreferrer">
-            Raphael Amorim
-          </a>{" "}
-          and maintained by{" "}
-          <a href="https://lovable.dev" target="_blank" rel="noreferrer">
-            Lovable
-          </a>
-          . This site is built with oj and deployed on Cloudflare.
-        </span>
-        <div className="foot__links">
-          <a className="foot__link" href={GITHUB} target="_blank" rel="noreferrer">
-            GitHub
-          </a>
-          <a className="foot__link" href={`${GITHUB}/issues`} target="_blank" rel="noreferrer">
-            Issues
-          </a>
-        </div>
-      </div>
-    </footer>
+    <div className="wrap brand">
+      <LovableHeart className="mark__heart" />
+      <span className="mark__word">oj</span>
+    </div>
   );
 }

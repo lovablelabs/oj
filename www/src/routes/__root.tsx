@@ -1,7 +1,7 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 
 import "../../styles/app.css";
-import { Nav, Footer } from "../components/site";
+import { Brand } from "../components/site";
 
 export const rootRoute = createRootRoute({
   head: () => ({
@@ -18,11 +18,13 @@ export const rootRoute = createRootRoute({
     ],
     links: [
       { rel: "icon", type: "image/png", href: "/favicon-32x32.png" },
-      { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+      // font-display: block, so preloading keeps the invisible-text window short.
       {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400;1,600&display=swap",
+        rel: "preload",
+        as: "font",
+        type: "font/woff2",
+        href: "/fonts/CameraPlainVariable-c48bd243.woff2",
+        crossOrigin: "anonymous",
       },
     ],
   }),
@@ -36,11 +38,10 @@ function RootComponent() {
         <HeadContent />
       </head>
       <body>
-        <Nav />
+        <Brand />
         <main className="main">
           <Outlet />
         </main>
-        <Footer />
         <Scripts />
       </body>
     </html>

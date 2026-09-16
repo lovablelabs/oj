@@ -1,4 +1,22 @@
 @import "tailwindcss";
+
+/* Lovable's brand face (pulse fonts.css); absolute urls so Tailwind's
+   @import inlining can't break the paths. */
+@font-face {
+  font-family: "Camera Plain Variable";
+  src: url("/fonts/CameraPlainVariable-c48bd243.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Camera Plain Variable";
+  src: url("/fonts/CameraPlainVariableRegularItalic-8524cd9a.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+
 :root {
   /* Lovable's dark workspace (pulse dark-theme tokens): the page is the
      editor chrome, the playground floats on it as a light card. */
@@ -14,8 +32,7 @@
   --color-code: #f4f4f4;
   --color-code-block: #f8f8f8;
 
-  --font-serif: "Palatino", "Georgia", "Times New Roman", serif;
-  --font-display: "EB Garamond", "Palatino", "Georgia", serif;
+  --font-sans: "Camera Plain Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "SFMono-Regular", "Menlo", "Consolas", "Liberation Mono", monospace;
 
   --wrap: 860px;
@@ -29,13 +46,12 @@
   body {
     background: var(--color-bg);
     color: var(--color-ink);
-    font-family: var(--font-serif);
-    font-size: 18px;
-    font-weight: 300;
+    font-family: var(--font-sans);
+    font-size: 16px;
+    font-weight: 400;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.004);
   }
   ::selection {
     background: var(--color-accent);
@@ -78,33 +94,14 @@
 }
 
 .main {
-  padding: 20px 0 100px;
+  padding: 0 0 48px;
 }
 
-.nav {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: color-mix(in srgb, var(--color-bg) 90%, transparent);
-  backdrop-filter: saturate(140%) blur(8px);
-  border-bottom: 1px solid transparent;
-  transition: border-color 0.25s ease;
-}
-.nav[data-scrolled="true"] {
-  border-bottom-color: var(--color-line);
-}
-.nav__inner {
+.brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 22px 0;
-}
-.mark {
-  display: inline-flex;
-  align-items: center;
   gap: 12px;
-  color: var(--color-strong);
-  border-bottom: 0;
+  padding: 24px 0 4px;
 }
 .mark__heart {
   height: 24px;
@@ -113,43 +110,11 @@
   flex-shrink: 0;
 }
 .mark__word {
-  font-family: var(--font-display);
-  font-style: italic;
-  font-size: 26px;
-  color: var(--color-accent);
-}
-.nav__links {
-  display: flex;
-  gap: 26px;
-  align-items: baseline;
-}
-.nav__link {
-  font-size: 15px;
-  color: var(--color-muted);
-  border-bottom: 0;
-  transition: color 0.2s ease;
-}
-.nav__link:hover,
-.nav__link[data-active="true"] {
-  color: var(--color-accent);
-}
-@media (max-width: 640px) {
-  .nav__links {
-    display: none;
-  }
-}
-.badge {
-  font-family: var(--font-mono);
-  font-size: clamp(0.7rem, 1.3vw, 0.82rem);
-  font-weight: 600;
-  font-style: normal;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--color-accent);
-  border: 1.5px solid var(--color-accent);
-  border-radius: 999px;
-  padding: 0.22rem 0.62rem;
-  line-height: 1;
+  font-family: var(--font-sans);
+  font-weight: 560;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  color: var(--color-strong);
 }
 a {
   cursor: pointer;
@@ -162,36 +127,6 @@ a:hover {
   color: var(--color-accent);
 }
 
-.foot {
-  margin-top: 90px;
-  border-top: 1px solid var(--color-line);
-  padding: 30px 0 60px;
-}
-.foot__row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  justify-content: space-between;
-  align-items: baseline;
-}
-.foot__note {
-  font-size: 15px;
-  color: var(--color-muted);
-  max-width: 52ch;
-}
-.foot__links {
-  display: flex;
-  gap: 20px;
-}
-.foot__link {
-  font-size: 15px;
-  color: var(--color-muted);
-  border-bottom: 0;
-}
-.foot__link:hover {
-  color: var(--color-accent);
-}
-
 /* ---- wasm playground ---- */
 
 .play-bleed {
@@ -200,21 +135,13 @@ a:hover {
 }
 
 .play {
-  /* The card is a light surface on the dark workspace; inside it the shared
-     tokens flip back to their light values so the panel rules read the same. */
-  --color-ink: rgba(0, 0, 0, 0.85);
-  --color-strong: rgba(0, 0, 0, 0.9);
-  --color-muted: rgba(0, 0, 0, 0.55);
-  --color-faint: rgba(0, 0, 0, 0.35);
-  --color-line: #e5e5e5;
-  /* Re-declared here: `color` inherits as a computed value, so the body's
-     light-on-dark text would otherwise leak into the card. */
-  color: var(--color-ink);
+  /* The editor half matches one-dark's palette; the preview half stays a
+     light surface, like the app preview in the Lovable workspace. */
   display: grid;
   grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
   border-radius: 14px;
   overflow: hidden;
-  background: #fff;
+  background: #282c34;
   min-height: min(78vh, 900px);
   box-shadow: 0 0 0 1px oklch(100% 0 0 / 8%), 0 12px 48px oklch(0% 0 0 / 40%);
 }
@@ -225,23 +152,19 @@ a:hover {
   min-width: 0;
 }
 
-.play__editor {
-  border-right: 1px solid var(--color-line);
-}
-
 .play__tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
   padding: 6px 8px 0;
-  border-bottom: 1px solid var(--color-line);
-  background: var(--color-code-block);
+  border-bottom: 1px solid oklch(100% 0 0 / 8%);
+  background: #21252b;
 }
 
 .play__tab {
   font-family: var(--font-mono);
   font-size: 12.5px;
-  color: var(--color-muted);
+  color: #8b919e;
   background: transparent;
   border: 1px solid transparent;
   border-bottom: none;
@@ -251,9 +174,9 @@ a:hover {
 }
 
 .play__tab[data-active="true"] {
-  color: var(--color-strong);
-  background: #fff;
-  border-color: var(--color-line);
+  color: #d7dae0;
+  background: #282c34;
+  border-color: oklch(100% 0 0 / 10%);
   margin-bottom: -1px;
 }
 
@@ -283,26 +206,26 @@ a:hover {
   padding: 18px;
   font-family: var(--font-mono);
   font-size: 13px;
-  color: var(--color-muted);
+  color: #8b919e;
 }
 
 .play__status--error {
-  color: #b42318;
+  color: #ff9d94;
   white-space: pre-wrap;
 }
 
 .play__errors {
   max-height: 140px;
   overflow: auto;
-  border-top: 1px solid #f3c2bd;
-  background: #fef3f2;
+  border-top: 1px solid oklch(58.53% 0.2203 26.56 / 0.4);
+  background: #2b1514;
   padding: 8px 12px;
 }
 
 .play__error {
   font-family: var(--font-mono);
   font-size: 12px;
-  color: #b42318;
+  color: #ff9d94;
   white-space: pre-wrap;
   padding: 2px 0;
 }
@@ -311,20 +234,24 @@ a:hover {
   font-weight: 600;
 }
 
+.play__preview {
+  background: #fff;
+}
+
 .play__previewbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 9px 12px;
-  border-bottom: 1px solid var(--color-line);
-  background: var(--color-code-block);
+  border-bottom: 1px solid #e5e5e5;
+  background: #f8f8f8;
   font-family: var(--font-mono);
   font-size: 12.5px;
-  color: var(--color-muted);
+  color: rgba(0, 0, 0, 0.55);
 }
 
 .play__ms {
-  color: var(--color-faint);
+  color: rgba(0, 0, 0, 0.35);
 }
 
 .play__framewrap {
@@ -351,10 +278,6 @@ a:hover {
   .play {
     grid-template-columns: 1fr;
     min-height: 0;
-  }
-  .play__editor {
-    border-right: none;
-    border-bottom: 1px solid var(--color-line);
   }
   .play__cm {
     max-height: 380px;

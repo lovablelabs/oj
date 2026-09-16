@@ -85,7 +85,7 @@ export function Playground() {
         // goes through Vite's own dynamicImport trick. Built here, not at
         // module scope: Workers disallow Function construction at runtime.
         const dynamicImport = new Function("u", "return import(u)") as (u: string) => Promise<any>;
-        const [wasm, view, state, setup, langJs, langCss, langHtml] = await Promise.all([
+        const [wasm, view, state, setup, langJs, langCss, langHtml, dark] = await Promise.all([
           dynamicImport("/oj-wasm/oj_wasm.js"),
           import("@codemirror/view"),
           import("@codemirror/state"),
@@ -93,6 +93,7 @@ export function Playground() {
           import("@codemirror/lang-javascript"),
           import("@codemirror/lang-css"),
           import("@codemirror/lang-html"),
+          import("@codemirror/theme-one-dark"),
         ]);
         await wasm.default({ module_or_path: "/oj-wasm/oj_wasm_bg.wasm" });
         if (disposed || !editorHostRef.current) return;
@@ -116,6 +117,7 @@ export function Playground() {
               doc,
               extensions: [
                 setup.basicSetup,
+                dark.oneDark,
                 language(path),
                 view.EditorView.updateListener.of((update: any) => {
                   if (!update.docChanged) return;
