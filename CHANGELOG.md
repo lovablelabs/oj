@@ -5,6 +5,11 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `this.resolve(source, importer, { skipSelf: true })` now threads Vite's cumulative `skipCalls` through the whole nested resolve chain instead of skipping only the direct caller. With a caller-only skip, two plugins that each `this.resolve` the same id with `skipSelf` from their `resolveId` hooks re-entered each other forever (the exclusion reset at every hop), recursing until the plugin host ran out of heap — observed with TanStack Start's import-protection plugin plus any app plugin resolving `?url` assets. The host now matches Vite exactly: a plugin is skipped for the same id + importer it already issued, and outright once it re-issues an identical call (the recursion hard-stop), while still answering for other ids deeper in the chain it started. The Start container's plugin bridge (`vite-plugin-bridge.mjs`) had the same caller-only skip and is fixed the same way.
+
 ## [0.1.24] - 2026-09-07
 
 ### Fixed

@@ -404,10 +404,23 @@ export function createPluginContainer(vite, allPlugins, {
   // polyfill, the worker entry) needs that tail. The dev loader resolves files
   // itself, so it keeps the plugins-only answer.
   const fileResolver = command === "build" ? resolvedConfig.createResolver() : null;
-  function pluginContext(plugin, base = ctx) {
+  function pluginContext(plugin, base = ctx, ambientSkipCalls = null) {
     return Object.assign(Object.create(base), {
       async resolve(source, importer, options = {}) {
-        const resolved = await resolveIdResult(source, importer, options.skipSelf === false ? undefined : plugin);
+        // Vite's cumulative `skipCalls` (see plugin-host.mjs ctx.resolve): a
+        // skip covering only the direct caller lets two plugins that both
+        // this.resolve the same id with skipSelf re-enter each other forever.
+        let skipCalls = ambientSkipCalls;
+        if (options.skipSelf !== false) {
+          const prior = ambientSkipCalls ? ambientSkipCalls.findIndex((c) => c.id === source && c.importer === importer && c.plugin === plugin) : -1;
+          if (prior !== -1) {
+            skipCalls = ambientSkipCalls.slice();
+            skipCalls[prior] = { ...skipCalls[prior], called: true };
+          } else {
+            skipCalls = ambientSkipCalls ? [...ambientSkipCalls, { id: source, importer, plugin }] : [{ id: source, importer, plugin }];
+          }
+        }
+        const resolved = await resolveIdResult(source, importer, skipCalls);
         if (resolved) return resolved;
         if (!fileResolver || source.startsWith("\0") || /^[a-z]+:/i.test(source) && !isAbsolute(source)) return null;
         try {
@@ -421,22 +434,24 @@ export function createPluginContainer(vite, allPlugins, {
   }
 
   // The full resolveId answer ({ id, external }); resolveId keeps the id-only form.
-  async function resolveIdResult(id, importer, skippedPlugin) {
+  async function resolveIdResult(id, importer, skipCalls) {
     await initializePlugins();
     for (const p of byHook(plugins, "resolveId")) {
-      if (p === skippedPlugin) continue;
+      // Vite merges skipCalls into the skip set: skipped on the same
+      // id + importer, or outright once re-entered (`called`).
+      if (skipCalls && skipCalls.some((c) => c.plugin === p && (c.called || (c.id === id && c.importer === importer)))) continue;
       if (!envAllows(p, environment)) continue;
       const h = hookHandler(p.resolveId);
       if (!h || !idAllowed(hookFilter(p.resolveId), id)) continue;
       let r;
-      try { r = await h.call(pluginContext(p), id, importer, { isEntry: false, ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
+      try { r = await h.call(pluginContext(p, ctx, skipCalls), id, importer, { isEntry: false, ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
       if (r != null) return typeof r === "string" ? { id: r } : { id: r.id, external: r.external };
     }
     return null;
   }
 
-  async function resolveId(id, importer, skippedPlugin) {
-    const r = await resolveIdResult(id, importer, skippedPlugin);
+  async function resolveId(id, importer, skipCalls) {
+    const r = await resolveIdResult(id, importer, skipCalls);
     return r ? r.id : null;
   }
 
