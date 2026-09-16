@@ -5,6 +5,12 @@ mod build;
 mod ssr_dev;
 mod start_dev;
 
+// Linking-only for now: build.rs exports the Node-API symbols these crates
+// define, so they must be part of the binary (rustc drops unused crates from
+// the link line otherwise). The JS engine that calls into them lands next.
+use deno_core as _;
+use deno_napi as _;
+
 use std::path::PathBuf;
 
 use anyhow::Context;

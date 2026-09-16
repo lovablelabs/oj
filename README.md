@@ -45,6 +45,12 @@ oj dev                                           # dev server for the current ap
 oj build                                         # production build into ./dist
 ```
 
+### Supported targets
+
+oj embeds V8, so it builds on the targets rusty_v8 ships prebuilt static
+libs for: Linux glibc x64/arm64, Linux musl x64/arm64, macOS x64/arm64, and
+Windows MSVC x64/arm64.
+
 ## Benchmarks
 
 Generated fanout-10 React component trees, measured save-to-paint with Playwright against Vite 8.2.1 (Rolldown-based) on an M-series Mac, in both its default dev mode (vite) and its experimental bundled dev mode (vite-fbm). p50/p95 over 5 cold+warm restart cycles and 10 HMR edits.

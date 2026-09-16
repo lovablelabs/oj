@@ -5,6 +5,11 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- New `oj_js` crate: an in-process JS engine (Deno isolates with Node compat over the app's node_modules, snapshot boot, memory/deadline limits) that will replace the Node sidecar processes; no consumers wired up yet, and the `oj` binary now exports the Node-API symbols native addons need.
+
 ## [0.1.26] - 2026-09-16
 
 ### Fixed
