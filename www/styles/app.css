@@ -1,22 +1,5 @@
 @import "tailwindcss";
 
-/* Lovable's brand face (pulse fonts.css); absolute urls so Tailwind's
-   @import inlining can't break the paths. */
-@font-face {
-  font-family: "Camera Plain Variable";
-  src: url("/fonts/CameraPlainVariable-c48bd243.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: block;
-}
-@font-face {
-  font-family: "Camera Plain Variable";
-  src: url("/fonts/CameraPlainVariableRegularItalic-8524cd9a.woff2") format("woff2");
-  font-weight: 400;
-  font-style: italic;
-  font-display: block;
-}
-
 :root {
   /* Lovable's dark workspace (pulse dark-theme tokens): the page is the
      editor chrome, the playground floats on it as a light card. */
@@ -32,7 +15,9 @@
   --color-code: #f4f4f4;
   --color-code-block: #f8f8f8;
 
-  --font-sans: "Camera Plain Variable", ui-sans-serif, system-ui, sans-serif;
+  /* Inter (Google Fonts, OFL) stands in for the brand face, which is
+     commercially licensed and cannot ship in a public repo. */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "SFMono-Regular", "Menlo", "Consolas", "Liberation Mono", monospace;
 
   --wrap: 860px;

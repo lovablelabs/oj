@@ -18,13 +18,11 @@ export const rootRoute = createRootRoute({
     ],
     links: [
       { rel: "icon", type: "image/png", href: "/favicon-32x32.png" },
-      // font-display: block, so preloading keeps the invisible-text window short.
+      { rel: "preconnect", href: "https://fonts.googleapis.com" },
+      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
-        rel: "preload",
-        as: "font",
-        type: "font/woff2",
-        href: "/fonts/CameraPlainVariable-c48bd243.woff2",
-        crossOrigin: "anonymous",
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap",
       },
     ],
   }),
