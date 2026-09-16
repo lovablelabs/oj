@@ -32,9 +32,9 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 rustls-platform-verifier = "0.7"
 futures-util = "0.3"
-rolldown = "1.2.5"
-rolldown_common = "1.2.5"
-rolldown_plugin = "1.2.5"
+rolldown = "=1.2.5"
+rolldown_common = "=1.2.5"
+rolldown_plugin = "=1.2.5"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -40,7 +40,7 @@ Dev serves file-based routes with streaming SSR and client hydration, keeps Fast
 Install the CLI from crates.io, then run `oj` in any app:
 
 ```sh
-cargo install oj                                # install the `oj` CLI
+cargo install oj --locked                       # install the `oj` CLI
 oj dev                                           # dev server for the current app on :5199
 oj build                                         # production build into ./dist
 ```
