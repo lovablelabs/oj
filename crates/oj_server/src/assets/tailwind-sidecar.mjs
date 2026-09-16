@@ -109,7 +109,15 @@ if (process.argv[2] === "--once") {
   const rl = readline.createInterface({ input: process.stdin });
   let inflight = 0;
   let stdinClosed = false;
-  const maybeExit = () => { if (stdinClosed && inflight === 0) process.exit(0); };
+
+  const maybeExit = () => {
+    if (!stdinClosed || inflight !== 0) return;
+
+    process.stdout.end((err) => {
+      process.exit(err ? 1 : 0)
+    })
+  };
+
   try {
     if (fstatSync(0, { bigint: true }).isFIFO()) rl.once("close", () => { stdinClosed = true; maybeExit(); });
   } catch {}
