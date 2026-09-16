@@ -3,8 +3,11 @@
 // Test that `oj build` with nitro/vite produces Nitro's .output layout, not
 // oj's dist server: client assets in public/, a Node server in server/index.mjs
 // and build info in nitro.json. SSR runs as a service in Nitro's server.
-// Copy the Start fixture, add Nitro nightly and a server route, then build
-// and run it. Check all fixture features, the route and browser hydration.
+// Copy the Start fixture, add Nitro nightly and server routes, then build
+// and run it. Check all fixture features, the routes and browser hydration.
+// The Nitro server routes use the fixture's plugin virtual module,
+// import.meta.glob and a ?raw import: Vite runs the app's plugins and its
+// transforms for the nitro environment too, so oj's Nitro build must.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -56,6 +59,24 @@ function makeApp() {
   fs.writeFileSync(
     path.join(app, "server", "routes", "api", "nitro-ping.ts"),
     'import { defineHandler } from "nitro";\n\nexport default defineHandler(() => "nitro-ping-ok");\n',
+  );
+  fs.writeFileSync(
+    path.join(app, "server", "routes", "api", "nitro-virtual.ts"),
+    'import { defineHandler } from "nitro";\nimport { buildTag } from "virtual:build-info";\n\nexport default defineHandler(() => `virtual:${buildTag}`);\n',
+  );
+  fs.writeFileSync(
+    path.join(app, "server", "routes", "api", "nitro-glob.ts"),
+    [
+      'import { defineHandler } from "nitro";',
+      'const mods = import.meta.glob("../../../src/content/*.json", { eager: true }) as Record<string, { default: { title: string } }>;',
+      "",
+      'export default defineHandler(() => "glob:" + Object.values(mods).map((m) => m.default.title).sort().join(", "));',
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    path.join(app, "server", "routes", "api", "nitro-raw.ts"),
+    'import { defineHandler } from "nitro";\nimport notes from "../../../src/content/notes.txt?raw";\n\nexport default defineHandler(() => "raw:" + notes);\n',
   );
 }
 
@@ -142,6 +163,17 @@ async function runServer() {
 
     const ping = await get("/api/nitro-ping");
     if (ping.status !== 200 || ping.body !== "nitro-ping-ok") throw new Error(`/api/nitro-ping (a nitro server route): ${ping.status} ${ping.body.slice(0, 200)}`);
+    // Nitro server routes built with the app's plugins and Vite's transforms.
+    for (const [route, marker, what] of [
+      ["/api/nitro-virtual", "virtual:fixture-virtual-ok", "plugin virtual module"],
+      ["/api/nitro-glob", "glob:Alpha Widget, Beta Widget", "import.meta.glob"],
+      ["/api/nitro-raw", "raw:raw-notes-marker", "?raw import"],
+    ]) {
+      const res = await get(route);
+      if (res.status !== 200 || !res.body.startsWith(marker)) {
+        throw new Error(`${route} (a nitro server route using ${what}): ${res.status} ${res.body.slice(0, 300)}\n${log.slice(-2000)}`);
+      }
+    }
 
     // Check that Nitro serves hashed client assets with immutable caching.
     const script = h.match(/<script[^>]*src="([^"]+\.js)"/)?.[1] ?? h.match(/href="(\/assets\/[^"]+\.js)"/)?.[1];
@@ -194,7 +226,7 @@ async function runServer() {
       console.log("start-nitro: playwright not installed locally; skipped the browser hydration pass (CI runs it)");
     }
 
-    console.log(`start-nitro: node-server render ok (${want.length} features + /about + nitro route + server-fn call + assets + publicDir)`);
+    console.log(`start-nitro: node-server render ok (${want.length} features + /about + nitro routes (plain, virtual, glob, raw) + server-fn call + assets + publicDir)`);
   } finally {
     stop();
   }

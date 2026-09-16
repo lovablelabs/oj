@@ -215,9 +215,14 @@ if (nitro && !nitroPublicDir) {
   throw new Error("oj: nitro/vite did not set the client output directory (see the errors above)");
 }
 const CLIENT = nitroPublicDir ? resolve(APP, nitroPublicDir) : join(DIST, "client");
-// Share one builder: pre hooks add methods that post hooks call.
+// Share one builder: pre hooks add methods that post hooks call. Its Nitro
+// environment build gets oj's plugins (nitroPlugins, defined once the client
+// build has the asset emitter) ahead of Nitro's.
 const builder = nitro
-  ? nitroBuilder({ config: serverContainer.config, build, envDefine: viteEnvDefine({ ssr: true, mode: MODE, base: BASE }) })
+  ? nitroBuilder({
+    config: serverContainer.config, build, envDefine: viteEnvDefine({ ssr: true, mode: MODE, base: BASE }),
+    plugins: () => nitroPlugins(),
+  })
   : null;
 if (nitro && process.env.OJ_OUT_DIR_EXPLICIT) {
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} --out ignored: nitro writes to its own output directory (nitro output.dir)\n`);
@@ -359,6 +364,41 @@ const serverPlugins = () => [
   serverFnPlugin,
   assetsPlugin({ mode: "prod", server: true, emit }),
 ];
+// Vite's import.meta.glob transform, which runs in every environment. (The
+// ssr build gets it from serverFnPlugin.)
+const globPlugin = {
+  name: "oj-import-glob",
+  transform(code, id) {
+    if (!userTs(id)) return null;
+    const out = transformGlob(code, id);
+    return out === code ? null : out;
+  },
+};
+// The plugins Vite would run for the nitro environment: the app's plugins
+// (resolveId/load/transform and the bundle hooks, on the nitro environment's
+// config), Vite's glob and asset transforms. Start's server-function compiler
+// applies only to the client and ssr environments, so it is not here.
+// The bridge runs an app plugin's pre/normal/post hooks in order, but all of
+// them ahead of Nitro's plugins; Vite runs post plugins after them.
+let nitroContainer = null;
+async function nitroPlugins() {
+  const container = nitroContainer = clientContainer.forEnvironment("nitro");
+  await container.configResolved();
+  const emitAsset = (ctx, file) => {
+    if (file?.type === "asset" && file.fileName && file.source != null) ctx.emitFile(file);
+  };
+  return [
+    makeVitePlugins({ container, appRoot: APP, mode: "prod", emit }),
+    {
+      name: "oj-nitro-bundle-hooks",
+      renderChunk: (code, chunk) => container.renderChunk(code, chunk),
+      async generateBundle(_options, bundle) { await container.generateBundle((file) => emitAsset(this, file), bundle); },
+      writeBundle: (_options, bundle) => container.writeBundle(bundle),
+    },
+    globPlugin,
+    assetsPlugin({ mode: "prod", server: true, emit }),
+  ];
+}
 
 let workerDir = null;
 if (cfEnv) {
@@ -537,6 +577,7 @@ if (prerender.length && nitro) {
 
 await clientContainer?.closeBundle();
 await serverContainer?.closeBundle();
+await nitroContainer?.closeBundle();
 
 // Report the output path for `oj build`. Nitro uses its own directory, not --out.
 // Use Nitro's preview command, if any, run from that directory.

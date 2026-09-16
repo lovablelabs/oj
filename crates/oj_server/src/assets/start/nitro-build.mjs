@@ -41,8 +41,9 @@ function aliasObject(alias) {
 
 // Give Nitro's buildApp hook a Vite-like builder. Mark oj's environments as
 // built so Nitro skips them; Nitro skips other environments as having no
-// input. build(env) bundles only the Nitro environment.
-export function nitroBuilder({ config, build, envDefine }) {
+// input. build(env) bundles only the Nitro environment, with oj's plugins
+// (from `plugins`, called at build time) ahead of Nitro's.
+export function nitroBuilder({ config, build, envDefine, plugins }) {
   const environments = {};
   for (const [name, options] of Object.entries(config.environments ?? {})) {
     const bundler = options?.build?.rolldownOptions ?? options?.build?.rollupOptions;
@@ -66,7 +67,8 @@ export function nitroBuilder({ config, build, envDefine }) {
     environments,
     async build(env) {
       if (env.name !== "nitro") throw new Error(`oj: nitro asked to build the "${env.name}" environment, which oj builds itself`);
-      const output = await build(nitroRolldownOptions(env.config, config, envDefine));
+      const ojPlugins = typeof plugins === "function" ? await plugins(env) : plugins;
+      const output = await build(nitroRolldownOptions(env.config, config, envDefine, ojPlugins));
       env.isBuilt = true;
       return output;
     },
@@ -74,11 +76,13 @@ export function nitroBuilder({ config, build, envDefine }) {
 }
 
 // Add Vite's defaults to Nitro's rolldown options: Node platform, aliases,
-// resolve conditions, defines (with import.meta.env), minification and source maps.
-export function nitroRolldownOptions(envConfig, config, envDefine = {}) {
+// resolve conditions, defines (with import.meta.env), minification and source
+// maps. `plugins` (oj's plugin bridge and transforms) go ahead of Nitro's, as
+// Vite runs its own and the app's plugins before `rolldownOptions.plugins`.
+export function nitroRolldownOptions(envConfig, config, envDefine = {}, plugins = []) {
   const build = envConfig.build ?? {};
   const declared = build.rolldownOptions ?? build.rollupOptions ?? {};
-  const { onwarn, output = {}, resolve = {}, transform = {}, ...rest } = declared;
+  const { onwarn, output = {}, resolve = {}, transform = {}, plugins: nitroPlugins = [], ...rest } = declared;
   const define = Object.fromEntries(
     Object.entries({ ...envDefine, ...config.define, ...envConfig.define })
       .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)])
@@ -89,6 +93,7 @@ export function nitroRolldownOptions(envConfig, config, envDefine = {}) {
   return {
     platform: "node",
     ...rest,
+    plugins: [...[plugins].flat(Infinity), ...[nitroPlugins].flat(Infinity)].filter(Boolean),
     resolve: {
       // Use Vite's default extensions to resolve Nitro's extensionless preset entry.
       extensions: envConfig.resolve?.extensions?.length ? envConfig.resolve.extensions : VITE_EXTENSIONS,

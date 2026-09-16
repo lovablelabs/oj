@@ -252,6 +252,9 @@ export function createPluginContainer(vite, allPlugins, {
   // and oj serves an export-less stub — surfacing downstream as an undefined
   // import. Mirror Vite's shape so those plugins take their intended branch.
   const consumer = environment === "client" ? "client" : "server";
+  // The `ssr` flag of hook options: Vite sets it for any server consumer
+  // (the ssr, nitro and Cloudflare Worker environments alike).
+  const ssr = consumer === "server";
   const watchFiles = new Set();
   const moduleInfo = new Map();
   const resolvedConfig = {
@@ -444,7 +447,7 @@ export function createPluginContainer(vite, allPlugins, {
       const h = hookHandler(p.resolveId);
       if (!h || !idAllowed(hookFilter(p.resolveId), id)) continue;
       let r;
-      try { r = await h.call(pluginContext(p, ctx, skipCalls), id, importer, { isEntry: false, ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
+      try { r = await h.call(pluginContext(p, ctx, skipCalls), id, importer, { isEntry: false, ssr }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
       if (r != null) return typeof r === "string" ? { id: r } : { id: r.id, external: r.external };
     }
     return null;
@@ -462,7 +465,7 @@ export function createPluginContainer(vite, allPlugins, {
       const h = hookHandler(p.load);
       if (!h || !idAllowed(hookFilter(p.load), id)) continue;
       let r;
-      try { r = await h.call(pluginContext(p), id, { ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, id); }
+      try { r = await h.call(pluginContext(p), id, { ssr }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, id); }
       if (r != null) {
         const code = typeof r === "string" ? r : r.code;
         moduleInfo.set(id, { id, code, importedIds: [], meta: {} });
@@ -493,7 +496,7 @@ export function createPluginContainer(vite, allPlugins, {
       const filter = hookFilter(p.transform);
       if (!h || !idAllowed(filter, id) || !codeAllowed(filter, current)) continue;
       let r;
-      try { r = await h.call(pluginContext(p), current, id, { ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, id); }
+      try { r = await h.call(pluginContext(p), current, id, { ssr }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, id); }
       const next = r == null ? null : typeof r === "string" ? r : r.code;
       if (next != null) { current = next; changed = true; }
     }
@@ -506,7 +509,6 @@ export function createPluginContainer(vite, allPlugins, {
     await initializePlugins();
     moduleInfo.set(id, { id, code, importedIds: [], meta: {} });
     trackEnvironmentModule(id, code);
-    const ssr = environment === "ssr";
     let current = code, changed = false;
     for (const p of byHook(plugins, "transform")) {
       if (ojReimplemented(p.name) || !envAllows(p, environment)) continue;
@@ -616,6 +618,8 @@ export function createPluginContainer(vite, allPlugins, {
 
   return {
     resolveId, resolveIdResult, load, transform, transformUserCode, buildStart, renderChunk, generateBundle, pluginCount: plugins.length, watchFiles, writeBundle, closeBundle, buildEnd, renderStart,
+    // Run the plugins' configResolved now; the hooks above run it on first use.
+    configResolved: initializePlugins,
   };
 }
 

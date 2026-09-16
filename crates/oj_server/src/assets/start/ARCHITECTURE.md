@@ -55,7 +55,10 @@ Shared build helpers:
 - `cf-server.mjs` is the dev/prod shim for `@cloudflare/vite-plugin/server`.
 - `cf-build.mjs` builds the Worker environment for `@cloudflare/vite-plugin`.
 - `nitro-build.mjs` detects `nitro/vite` and gives its buildApp hooks a
-  Vite-like builder, so Nitro packages oj's client and SSR output.
+  Vite-like builder, so Nitro packages oj's client and SSR output. The
+  builder bundles Nitro's own environment with the app's plugins (a bridge
+  container for the `nitro` environment) and oj's glob and asset transforms
+  ahead of Nitro's plugins, as Vite does.
 
 Dev:
 
