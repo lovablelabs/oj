@@ -1393,11 +1393,18 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
 async fn start_hmr_socket(mut socket: WebSocket, mut rx: broadcast::Receiver<()>) {
     loop {
         tokio::select! {
-            reload = rx.recv() => {
-                if reload.is_err() || socket.send(Message::Text("reload".into())).await.is_err() {
-                    break;
+            reload = rx.recv() => match reload {
+                Err(broadcast::error::RecvError::Closed) => break,
+                // A lagged receiver only missed reload pings; one reload
+                // catches the client up (Vite's per-socket queue never drops
+                // a reload, so neither may oj). The general HMR handler in
+                // oj_server carries distinct frames and skips instead.
+                Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if socket.send(Message::Text("reload".into())).await.is_err() {
+                        break;
+                    }
                 }
-            }
+            },
             incoming = socket.recv() => match incoming {
                 None | Some(Err(_)) => break,
                 Some(Ok(Message::Close(_))) => {
@@ -1931,6 +1938,38 @@ mod tests {
             drop(client);
             server.wait_for_no_subscribers().await;
         }
+    }
+
+    #[tokio::test]
+    async fn start_hmr_reloads_lagged_clients_instead_of_dropping_them() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let server = HmrTestServer::start_with_gate(Some(gate.clone())).await;
+        let (mut client, _) = connect_async(&server.url).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while server.reload_tx.receiver_count() != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("client subscription never registered");
+        // The handler is gated, so overflowing the 16-slot broadcast makes its
+        // first recv return Lagged. A missed ping is still a pending reload.
+        for _ in 0..32 {
+            assert_eq!(server.reload_tx.send(()).unwrap(), 1);
+        }
+        gate.notify_one();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+            .await
+            .expect("lagged client received nothing")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first,
+            ClientMessage::Text("reload".into()),
+            "a lagged client must be reloaded, not dropped"
+        );
+        client.close(None).await.unwrap();
+        server.wait_for_no_subscribers().await;
     }
 
     #[tokio::test]
