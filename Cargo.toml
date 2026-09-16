@@ -13,20 +13,20 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.24"
+version = "0.1.25"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/lovablelabs/oj"
 
 [workspace.dependencies]
-oj_compiler = { version = "0.1.24", path = "crates/oj_compiler" }
-oj_resolver = { version = "0.1.24", path = "crates/oj_resolver" }
-oj_graph = { version = "0.1.24", path = "crates/oj_graph" }
-oj_cache = { version = "0.1.24", path = "crates/oj_cache" }
-oj_css = { version = "0.1.24", path = "crates/oj_css" }
-oj_env = { version = "0.1.24", path = "crates/oj_env" }
-oj_config = { version = "0.1.24", path = "crates/oj_config" }
-oj_server = { version = "0.1.24", path = "crates/oj_server" }
+oj_compiler = { version = "0.1.25", path = "crates/oj_compiler" }
+oj_resolver = { version = "0.1.25", path = "crates/oj_resolver" }
+oj_graph = { version = "0.1.25", path = "crates/oj_graph" }
+oj_cache = { version = "0.1.25", path = "crates/oj_cache" }
+oj_css = { version = "0.1.25", path = "crates/oj_css" }
+oj_env = { version = "0.1.25", path = "crates/oj_env" }
+oj_config = { version = "0.1.25", path = "crates/oj_config" }
+oj_server = { version = "0.1.25", path = "crates/oj_server" }
 
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"

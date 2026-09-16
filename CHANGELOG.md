@@ -5,7 +5,7 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.25] - 2026-09-16
 
 ### Fixed
 - The plugin host now reaps itself when its parent oj process dies while the host is still booting. The stdin-EOF exit net armed only after every top-level await, so a host stuck in a boot await its dead parent could never settle (an RPC reply, a wedged plugin import) wrote nothing (no `EPIPE` crash) and read nothing (no EOF) and survived as an orphan forever — a kill-heavy session accumulated dozens of idle Node processes. A parent watchdog (esbuild's `--ppid` model) now arms before anything can await: the host polls `process.ppid` once a second and hard-exits when it is reparented.
