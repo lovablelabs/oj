@@ -14,7 +14,7 @@ export const rootRoute = createRootRoute({
         content:
           "oj is a Rust-native build tool for React apps: a fast dev server, SSR and TanStack Start, Tailwind, and one-command Cloudflare deploys.",
       },
-      { name: "theme-color", content: "#ffffff" },
+      { name: "theme-color", content: "#191918" },
     ],
     links: [
       { rel: "icon", type: "image/png", href: "/favicon-32x32.png" },

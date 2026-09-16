@@ -1,14 +1,16 @@
 @import "tailwindcss";
 :root {
-  --color-bg: #ffffff;
-  --color-ink: rgba(0, 0, 0, 0.85);
-  --color-strong: rgba(0, 0, 0, 0.9);
-  --color-muted: rgba(0, 0, 0, 0.55);
-  --color-faint: rgba(0, 0, 0, 0.35);
-  --color-line: #e5e5e5;
-  /* Lovable brand red (pulse tokens red-500 / red-600). */
-  --color-accent: oklch(58.53% 0.2203 26.56);
-  --color-link: oklch(49.84% 0.197 26.56);
+  /* Lovable's dark workspace (pulse dark-theme tokens): the page is the
+     editor chrome, the playground floats on it as a light card. */
+  --color-bg: oklch(20.42% 0.002 107); /* bg-depth */
+  --color-ink: oklch(90.95% 0.002 107); /* fg-secondary */
+  --color-strong: oklch(100% 0 0); /* fg-primary */
+  --color-muted: oklch(72.34% 0.002 107); /* fg-tertiary */
+  --color-faint: oklch(56.74% 0.002 107); /* fg-quaternary */
+  --color-line: oklch(33% 0.004 107 / 0.4); /* border-base */
+  /* Brand red at the dark theme's foreground strength (fg-destructive). */
+  --color-accent: oklch(76.15% 0.1564 26.56);
+  --color-link: oklch(76.15% 0.1564 26.56);
   --color-code: #f4f4f4;
   --color-code-block: #f8f8f8;
 
@@ -151,7 +153,7 @@
 }
 a {
   cursor: pointer;
-  color: #000;
+  color: var(--color-ink);
   border-bottom: 2px solid var(--color-link);
   text-decoration: none;
   transition: color 0.2s ease, background 0.2s ease;
@@ -198,13 +200,23 @@ a:hover {
 }
 
 .play {
+  /* The card is a light surface on the dark workspace; inside it the shared
+     tokens flip back to their light values so the panel rules read the same. */
+  --color-ink: rgba(0, 0, 0, 0.85);
+  --color-strong: rgba(0, 0, 0, 0.9);
+  --color-muted: rgba(0, 0, 0, 0.55);
+  --color-faint: rgba(0, 0, 0, 0.35);
+  --color-line: #e5e5e5;
+  /* Re-declared here: `color` inherits as a computed value, so the body's
+     light-on-dark text would otherwise leak into the card. */
+  color: var(--color-ink);
   display: grid;
   grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  border: 1px solid var(--color-line);
-  border-radius: 6px;
+  border-radius: 14px;
   overflow: hidden;
   background: #fff;
   min-height: min(78vh, 900px);
+  box-shadow: 0 0 0 1px oklch(100% 0 0 / 8%), 0 12px 48px oklch(0% 0 0 / 40%);
 }
 
 .play__pane {
