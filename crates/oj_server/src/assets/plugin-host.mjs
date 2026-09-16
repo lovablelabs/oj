@@ -2699,7 +2699,9 @@ function hookTransformMatches(hook, id, code) {
 // each handed `{ attributes, custom, isEntry, ssr, scan }`, the first non-null
 // result winning with its object kept whole (id plus external / meta /
 // moduleSideEffects / syntheticNamedExports, as Vite's partial does).
-// `opts.skip`: the plugin whose own this.resolve is running (Vite's skipCalls).
+// `opts.skipCalls`: the chain's cumulative skip list (see ctx.resolve);
+// `opts.skip`: a single plugin to skip outright (legacy single-caller form,
+// kept for external callers of environment.resolveId).
 async function resolveIdFull(source, importer, opts) {
   const options = {
     attributes: (opts && opts.attributes) || {},

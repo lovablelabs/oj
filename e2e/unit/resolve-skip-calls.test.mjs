@@ -164,7 +164,9 @@ test("mutually rewriting plugins terminate via the re-issued-call hard-stop", as
     const frame = await drive(host, fx, { id: 1, hook: "resolveId", args: ["ping", path.join(fx.root, "main.js")] });
     assert.equal(frame.error, undefined, `resolveId must not fail: ${frame.error}; stderr:\n${host.stderr()}`);
     const c = await counts(host, fx);
-    assert.ok(c.ping <= 2 && c.pong <= 2, `bounded like Vite (two visits max), got ${JSON.stringify(c)}`);
+    // Exact Vite parity: rolldown-vite 8.2.1 runs each hook twice for this
+    // shape (verified empirically against a real createServer).
+    assert.deepEqual(c, { ping: 2, pong: 2 }, "two visits per hook, exactly like Vite");
   } finally {
     host.close();
     fx.cleanup();
