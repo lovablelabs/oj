@@ -503,6 +503,10 @@ if (cfEnv) {
     }
   }
   await serverContainer.writeBundle(bundle);
+  // Vite closes each environment's bundle before any post buildApp hook, so
+  // files plugins write in closeBundle reach Nitro's public-assets manifest.
+  await clientContainer.closeBundle();
+  await serverContainer.closeBundle();
   // Run Nitro's remaining hooks to copy assets, prerender and build the server.
   await serverContainer.buildApp(builder, ["normal", "post"]);
 } else {
@@ -575,8 +579,11 @@ if (prerender.length && nitro) {
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} prerendered ${prerender.length} route(s)\n`);
 }
 
-await clientContainer?.closeBundle();
-await serverContainer?.closeBundle();
+// Nitro's environments closed before its server build.
+if (!nitro) {
+  await clientContainer?.closeBundle();
+  await serverContainer?.closeBundle();
+}
 await nitroContainer?.closeBundle();
 
 // Report the output path for `oj build`. Nitro uses its own directory, not --out.
