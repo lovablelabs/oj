@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "npm run build:wasm && oj dev .",
     "build": "npm run build:wasm && oj build .",
-    "build:wasm": "wasm-pack build ../crates/oj_wasm --release --target web --no-typescript --no-pack --out-dir ../../www/public/oj-wasm && rm -f public/oj-wasm/.gitignore",
+    "build:wasm": "command -v wasm-pack >/dev/null 2>&1 || { echo 'oj www needs wasm-pack (cargo install wasm-pack) and the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown)'; exit 1; }; wasm-pack build ../crates/oj_wasm --release --target web --no-typescript --no-pack --out-dir ../../www/public/oj-wasm && rm -f public/oj-wasm/.gitignore",
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {

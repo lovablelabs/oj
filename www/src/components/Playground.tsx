@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { DEMO_FILES, INITIAL_FILE } from "../lib/demo-files";
-import { buildSrcdoc, type BuildError, type BuildResult } from "../lib/preview";
+import { buildSrcdoc, revokeRetired, type BuildError, type BuildResult } from "../lib/preview";
 
 // Everything heavy (the wasm module, CodeMirror) loads client-side in the
 // boot effect: the route is server-rendered and this component must render as
@@ -41,8 +41,6 @@ export function Playground() {
     // as a property so a rebuild that lands while the back frame is still
     // loading simply supersedes the pending swap.
     const present = (doc: string) => {
-      if (doc === lastDocRef.current) return;
-      lastDocRef.current = doc;
       const frames = [frameARef.current, frameBRef.current];
       const front = frames[frontRef.current];
       const back = frames[frontRef.current === 0 ? 1 : 0];
@@ -54,6 +52,9 @@ export function Playground() {
         front.dataset.front = "false";
         front.setAttribute("aria-hidden", "true");
         frontRef.current = frontRef.current === 0 ? 1 : 0;
+        // The displaced document is off screen now; its blob urls (and any
+        // batches superseded before ever showing) can finally go.
+        revokeRetired();
       };
       back.srcdoc = doc;
     };
@@ -64,12 +65,17 @@ export function Playground() {
       // future rebuilds.
       try {
         const t0 = performance.now();
-        const result: BuildResult = JSON.parse(session.project.build());
+        const json = session.project.build();
+        const result: BuildResult = JSON.parse(json);
         setBuildMs(performance.now() - t0);
         setErrors(result.errors);
         // A failed build (mid-keystroke syntax error, missing import) keeps the
         // last good preview on screen; the error strip carries the diagnostics.
-        if (result.ok && result.html) {
+        // The dedupe compares the raw build output, BEFORE blob urls are
+        // minted: an edit that compiles to identical output (comment tweaks)
+        // must not reload the preview or churn blobs.
+        if (result.ok && result.html && json !== lastDocRef.current) {
+          lastDocRef.current = json;
           present(buildSrcdoc(result));
         }
       } catch (err) {
@@ -85,8 +91,14 @@ export function Playground() {
         // goes through Vite's own dynamicImport trick. Built here, not at
         // module scope: Workers disallow Function construction at runtime.
         const dynamicImport = new Function("u", "return import(u)") as (u: string) => Promise<any>;
+        // The wasm binary is by far the largest download; kick its fetch and
+        // instantiation off inside the same Promise.all instead of serializing
+        // it behind the CodeMirror chunks.
         const [wasm, view, state, setup, langJs, langCss, langHtml, dark] = await Promise.all([
-          dynamicImport("/oj-wasm/oj_wasm.js"),
+          dynamicImport("/oj-wasm/oj_wasm.js").then(async (m: any) => {
+            await m.default({ module_or_path: "/oj-wasm/oj_wasm_bg.wasm" });
+            return m;
+          }),
           import("@codemirror/view"),
           import("@codemirror/state"),
           import("codemirror"),
@@ -95,7 +107,6 @@ export function Playground() {
           import("@codemirror/lang-html"),
           import("@codemirror/theme-one-dark"),
         ]);
-        await wasm.default({ module_or_path: "/oj-wasm/oj_wasm_bg.wasm" });
         if (disposed || !editorHostRef.current) return;
 
         const project = new wasm.OjProject();

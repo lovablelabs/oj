@@ -58,8 +58,17 @@ jobs:
         if: matrix.mode == 'unbundled'
         run: npm ci --prefix e2e/fixtures/start-app
       - run: npx --prefix e2e playwright install --with-deps chromium
+      - name: install wasm-pack + www deps (wasm playground e2e)
+        if: matrix.mode == 'unbundled'
+        run: |
+          rustup target add wasm32-unknown-unknown
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          npm ci --prefix www
       - name: run e2e suite
         run: node e2e/run.mjs ${{ matrix.mode == 'bundle' && '--bundle' || '' }}
+      - name: wasm playground (editor, preview, error strip)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/wasm-playground.mjs
       - name: warm-cache plugin side effects
         if: matrix.mode == 'unbundled'
         run: node e2e/warm-cache.mjs

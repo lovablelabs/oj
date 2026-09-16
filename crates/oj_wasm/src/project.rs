@@ -21,7 +21,9 @@ use serde::Serialize;
 pub const MODULE_PREFIX: &str = "@app";
 
 const JS_EXTS: &[&str] = &["tsx", "ts", "jsx", "js", "mjs"];
-const PROBE_EXTS: &[&str] = &[".tsx", ".ts", ".jsx", ".js", ".mjs"];
+// Vite's resolve.extensions order (js before ts), so `./foo` picks the same
+// file the native resolver would when both foo.js and foo.ts exist.
+const PROBE_EXTS: &[&str] = &[".mjs", ".js", ".ts", ".jsx", ".tsx"];
 
 #[derive(Debug, Serialize)]
 pub struct BuildResult {
@@ -127,16 +129,21 @@ fn ext_of(path: &str) -> &str {
     Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("")
 }
 
-static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<script\b[^>]*>\s*</script>").unwrap());
-static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<link\b[^>]*/?>").unwrap());
+static SCRIPT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<script\b[^>]*>\s*</script\s*>").unwrap());
+static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<link\b[^>]*/?>").unwrap());
 static TYPE_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("type"));
 static SRC_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("src"));
 static REL_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("rel"));
 static HREF_RE: LazyLock<Regex> = LazyLock::new(|| attr_re("href"));
 static STYLE_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</(style)").unwrap());
+static CSS_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@import\b").unwrap());
+static SASS_LOAD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@(use|import|forward)\b").unwrap());
 
 fn attr_re(name: &str) -> Regex {
-    Regex::new(&format!(r#"\b{name}\s*=\s*(?:["']([^"']*)["']|([^\s>"']+))"#)).unwrap()
+    // Whitespace before the name, not `\b`: a word boundary would also match
+    // the tail of `data-src=` / `data-type=` and steal the value.
+    Regex::new(&format!(r#"(?i)\s{name}\s*=\s*(?:["']([^"']*)["']|([^\s>"']+))"#)).unwrap()
 }
 
 /// The value of one html attribute in `tag`: quoted (either style) or bare.
@@ -189,13 +196,26 @@ fn css_to_js(id: &str, css: &str, exports: Option<&[(String, String)]>) -> Strin
 
 fn compile_stylesheet(path: &str, source: &str) -> Result<(String, Option<Vec<(String, String)>>), String> {
     let id = module_id(path);
-    let plain = if is_sass(path) { compile_sass(source, None)? } else { source.to_string() };
+    let plain = if is_sass(path) {
+        // grass resolves @use/@import through std::fs, which cannot see the
+        // in-memory tree (and does nothing on wasm32); fail with a clear
+        // message instead of a confusing native file-not-found.
+        if SASS_LOAD_RE.is_match(source) {
+            return Err(
+                "sass @use/@import is not supported in the wasm playground yet; keep the stylesheet self-contained".to_string(),
+            );
+        }
+        compile_sass(source, None)?
+    } else {
+        source.to_string()
+    };
     // Module scoping keys off the url (`.module.` in the filename).
     let out = compile_css(&id, &plain, false)?;
     // Without the dev server's rebase pass an `@import` survives verbatim and
     // would resolve against the preview document, silently loading nothing;
-    // fail loudly instead until the graph walks css imports too.
-    if out.css.contains("@import") {
+    // fail loudly instead until the graph walks css imports too. Line-anchored
+    // so a string value like `content: "@import"` cannot false-positive.
+    if CSS_IMPORT_RE.is_match(&out.css) {
         return Err("css @import is not supported in the wasm playground yet; inline the file or import it from a JS module".to_string());
     }
     Ok((out.css, out.exports))
@@ -334,7 +354,7 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
             jsx: Default::default(),
         };
         let dir = dir_of(&path).to_string();
-        let mut missing: Vec<String> = Vec::new();
+        let mut problems: Vec<String> = Vec::new();
         let mut deps: Vec<String> = Vec::new();
         let mut rewrite = |spec: &str| -> Option<String> {
             if has_scheme(spec) {
@@ -344,13 +364,22 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
                 bare.insert(spec.to_string());
                 return None;
             }
+            // ?raw / ?url / ?inline / ?worker: the native server serves these
+            // conventions; silently stripping the query here would hand back a
+            // regular module with the wrong value, so refuse loudly instead.
+            if let Some((_, query)) = spec.split_once('?') {
+                problems.push(format!(
+                    "import \"{spec}\": ?{query} imports are not supported in the wasm playground yet"
+                ));
+                return None;
+            }
             match resolve(files, &dir, spec) {
                 Some(target) => {
                     deps.push(target.clone());
                     Some(module_id(&target))
                 }
                 None => {
-                    missing.push(spec.to_string());
+                    problems.push(format!("import \"{spec}\" does not match any file"));
                     None
                 }
             }
@@ -359,11 +388,8 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
             Ok(out) => {
                 drop(rewrite);
                 queue.extend(deps);
-                for spec in missing {
-                    errors.push(BuildError {
-                        path: path.clone(),
-                        message: format!("import \"{spec}\" does not match any file"),
-                    });
+                for message in problems {
+                    errors.push(BuildError { path: path.clone(), message });
                 }
                 modules.push(Module {
                     id: module_id(&path),
@@ -548,6 +574,85 @@ mod tests {
         let result = build(&files);
         assert!(!result.ok);
         assert!(result.errors.iter().any(|e| e.message.contains("no <script")), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn data_attributes_do_not_shadow_real_ones() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><body><script data-type=\"module\" src=\"/legacy.js\"></script>\
+             <script type=\"module\" data-src=\"/nope.js\" src=\"/src/main.tsx\"></script></body></html>"
+                .to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert!(result.html.contains("data-type=\"module\" src=\"/legacy.js\""), "{}", result.html);
+        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+    }
+
+    #[test]
+    fn uppercase_tags_and_spaced_close_match() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><head><LINK REL=\"stylesheet\" HREF=\"/src/global.css\"></head>\
+             <body><SCRIPT TYPE=\"module\" SRC=\"/src/main.tsx\"></SCRIPT ></body></html>"
+                .to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(result.html.contains("--x: 1"), "{}", result.html);
+    }
+
+    #[test]
+    fn at_import_in_a_string_is_not_an_error() {
+        let mut files = demo();
+        files.insert(
+            "/src/style.css".to_string(),
+            ".hint::after { content: \"use @import here\" }".to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn sass_use_is_a_loud_error() {
+        let mut files = demo();
+        files.insert("/src/main.tsx".to_string(), "import \"./app.scss\";\nconsole.log(1);\n".to_string());
+        files.insert("/src/app.scss".to_string(), "@use \"./vars\";\nbody { color: $ink }".to_string());
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(result.errors.iter().any(|e| e.message.contains("sass @use/@import")), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn query_imports_are_a_loud_error() {
+        let mut files = demo();
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import text from \"./style.css?raw\";\nconsole.log(text);\n".to_string(),
+        );
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("?raw imports are not supported")),
+            "{:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn probe_order_matches_vite_js_before_ts() {
+        let mut files = demo();
+        files.insert("/src/main.tsx".to_string(), "import \"./dual\";\n".to_string());
+        files.insert("/src/dual.js".to_string(), "console.log(\"js\");\n".to_string());
+        files.insert("/src/dual.ts".to_string(), "console.log(\"ts\");\n".to_string());
+        let result = build(&files);
+        let ids: Vec<&str> = result.modules.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"@app/src/dual.js"), "{ids:?}");
+        assert!(!ids.contains(&"@app/src/dual.ts"), "{ids:?}");
     }
 
     #[test]
