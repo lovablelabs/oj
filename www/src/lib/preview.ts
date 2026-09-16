@@ -47,6 +47,13 @@ export function revokeRetired(): void {
   retired = [];
 }
 
+/** Everything, retired and live: for component teardown. */
+export function revokeAll(): void {
+  revokeRetired();
+  for (const url of liveUrls) URL.revokeObjectURL(url);
+  liveUrls = [];
+}
+
 export function buildSrcdoc(result: BuildResult): string {
   retired.push(...liveUrls);
   liveUrls = [];
@@ -57,7 +64,11 @@ export function buildSrcdoc(result: BuildResult): string {
     imports[m.id] = url;
     liveUrls.push(url);
   }
-  for (const bare of result.bare) imports[bare] = cdnUrl(bare);
+  // Module ids win: a literal `import "@app/..."` in user code must never
+  // overwrite a real module's blob url with a garbage cdn url.
+  for (const bare of result.bare) {
+    if (!(bare in imports)) imports[bare] = cdnUrl(bare);
+  }
 
   const mapTag = `<script type="importmap">${JSON.stringify({ imports })}</script>`;
   const html = result.html;

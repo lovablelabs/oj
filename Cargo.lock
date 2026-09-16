@@ -2002,6 +2002,7 @@ dependencies = [
  "getrandom 0.3.4",
  "oj_compiler",
  "oj_css",
+ "oj_resolver",
  "regex",
  "serde",
  "serde_json",

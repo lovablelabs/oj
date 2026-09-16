@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { DEMO_FILES, INITIAL_FILE } from "../lib/demo-files";
-import { buildSrcdoc, revokeRetired, type BuildError, type BuildResult } from "../lib/preview";
+import { buildSrcdoc, revokeAll, revokeRetired, type BuildError, type BuildResult } from "../lib/preview";
 
 // Everything heavy (the wasm module, CodeMirror) loads client-side in the
 // boot effect: the route is server-rendered and this component must render as
@@ -165,9 +165,11 @@ export function Playground() {
       clearTimeout(debounce);
       sessionRef.current?.view?.destroy();
       // wasm-bindgen objects hold linear memory until freed; React StrictMode
-      // remounts would otherwise leak a project per mount.
+      // remounts would otherwise leak a project per mount. Same for the blob
+      // urls the preview minted.
       (sessionRef.current?.project as any)?.free?.();
       sessionRef.current = null;
+      revokeAll();
     };
   }, []);
 

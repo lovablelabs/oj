@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 oj_compiler.workspace = true
 oj_css.workspace = true
+oj_resolver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex = "1.11"

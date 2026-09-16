@@ -34,14 +34,22 @@ if (!fs.existsSync(path.join(www, "node_modules"))) {
   console.log("SKIP wasm-playground: www dependencies not installed (npm ci --prefix www)");
   process.exit(0);
 }
-if (!fs.existsSync(path.join(www, "public", "oj-wasm", "oj_wasm.js"))) {
-  try {
-    execSync("wasm-pack --version", { stdio: "ignore" });
-  } catch {
-    console.log("SKIP wasm-playground: no wasm bundle and no wasm-pack on PATH");
-    process.exit(0);
-  }
+// Rebuild the wasm whenever wasm-pack is available so the browser exercises
+// the CURRENT crates/oj_wasm sources; a stale prebuilt bundle only stands in
+// when wasm-pack is missing entirely.
+let hasWasmPack = true;
+try {
+  execSync("wasm-pack --version", { stdio: "ignore" });
+} catch {
+  hasWasmPack = false;
+}
+if (hasWasmPack) {
   execSync("npm run build:wasm", { cwd: www, stdio: "inherit" });
+} else if (!fs.existsSync(path.join(www, "public", "oj-wasm", "oj_wasm.js"))) {
+  console.log("SKIP wasm-playground: no wasm bundle and no wasm-pack on PATH");
+  process.exit(0);
+} else {
+  console.log("wasm-playground: wasm-pack missing, testing the prebuilt bundle in www/public/oj-wasm");
 }
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
