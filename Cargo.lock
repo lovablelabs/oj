@@ -1818,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "oj"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "anyhow",
  "arcstr",
@@ -1835,17 +1835,38 @@ dependencies = [
  "oj_resolver",
  "oj_server",
  "rolldown",
+ "rolldown-ariadne",
  "rolldown_common",
+ "rolldown_dev_common",
+ "rolldown_devtools",
+ "rolldown_devtools_action",
+ "rolldown_ecmascript",
+ "rolldown_ecmascript_utils",
+ "rolldown_error",
+ "rolldown_fs",
  "rolldown_plugin",
+ "rolldown_plugin_asset_module",
+ "rolldown_plugin_chunk_import_map",
+ "rolldown_plugin_copy_module",
+ "rolldown_plugin_data_url",
+ "rolldown_plugin_hmr",
+ "rolldown_plugin_lazy_compilation",
+ "rolldown_plugin_oxc_runtime",
+ "rolldown_plugin_utils",
+ "rolldown_resolver",
+ "rolldown_sourcemap",
+ "rolldown_std_utils",
+ "rolldown_tracing",
  "rolldown_utils",
  "serde_json",
+ "string_wizard",
  "tokio",
  "tokio-stream",
 ]
 
 [[package]]
 name = "oj_cache"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "blake3",
  "proptest",
@@ -1856,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "oj_compiler"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "glob",
  "memchr",
@@ -1881,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "oj_config"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "oxc_allocator",
  "oxc_codegen",
@@ -1900,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "oj_css"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "grass",
  "lightningcss",
@@ -1913,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "oj_env"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "proptest",
  "serde_json",
@@ -1922,14 +1943,14 @@ dependencies = [
 
 [[package]]
 name = "oj_graph"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "oj_resolver"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "oxc_resolver",
  "tempfile",
@@ -1938,7 +1959,7 @@ dependencies = [
 
 [[package]]
 name = "oj_server"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "anyhow",
  "axum",
