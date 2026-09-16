@@ -14,6 +14,18 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { stripVTControlCharacters } from "node:util";
 import { EventEmitter } from "node:events";
 
+// Parent watchdog (esbuild's --ppid model), armed before anything can await:
+// the stdin-EOF net at the bottom of this file only arms after every top-level
+// await, and a boot stuck awaiting an RPC its dead parent will never answer
+// writes nothing (so no EPIPE crash) and reads nothing (so no EOF) — that host
+// survived as an orphan forever. When the spawning oj process dies, the host is
+// reparented (ppid flips to the reaper); poll for that and hard-exit. unref'd
+// so the timer itself never keeps the event loop alive.
+const spawnPpid = process.ppid;
+setInterval(() => {
+  if (process.ppid !== spawnPpid) process.kill(process.pid, "SIGKILL");
+}, 1000).unref();
+
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
 // null and undefined override values are skipped (a `key: null` override must
@@ -935,14 +947,30 @@ const ctx = {
   async resolve(source, importer, options) {
     if (source === "/@react-refresh") return { id: "/@oj/refresh-runtime.js" };
     // Vite (pluginContainer ctx.resolve): the container's resolveId chain runs
-    // first, skipping the calling plugin for this id unless `skipSelf: false`,
-    // and only then Vite's own resolver. A sibling plugin's virtual id resolves
-    // here instead of falling through to oj's disk resolver and coming back null.
-    // `attributes` / `custom` / `isEntry` travel to the chain like Vite's do, and
-    // the resolved object (external, meta, moduleSideEffects) comes back whole.
-    const skip = options && options.skipSelf === false ? null : (this && this._plugin) || null;
+    // first, and only then Vite's own resolver. A sibling plugin's virtual id
+    // resolves here instead of falling through to oj's disk resolver and coming
+    // back null. `attributes` / `custom` / `isEntry` travel to the chain like
+    // Vite's do, and the resolved object (external, meta, moduleSideEffects)
+    // comes back whole.
+    // `skipSelf` mirrors Vite's cumulative `skipCalls`: each nested resolve
+    // appends { id, importer, plugin } to the chain (or marks an identical
+    // re-issued call `called`), so two plugins that both this.resolve the same
+    // id with skipSelf cannot re-enter each other forever. A skip covering only
+    // the direct caller resets the exclusion at every hop.
+    const self = (this && this._plugin) || null;
+    const ambient = (this && this._resolveSkipCalls) || null;
+    let skipCalls = ambient;
+    if (!options || options.skipSelf !== false) {
+      const prior = ambient ? ambient.findIndex((c) => c.id === source && c.importer === importer && c.plugin === self) : -1;
+      if (prior !== -1) {
+        skipCalls = ambient.slice();
+        skipCalls[prior] = { ...skipCalls[prior], called: true };
+      } else if (self) {
+        skipCalls = ambient ? [...ambient, { id: source, importer, plugin: self }] : [{ id: source, importer, plugin: self }];
+      }
+    }
     const viaPlugin = await resolveIdFull(source, importer, {
-      skip,
+      skipCalls,
       attributes: options && options.attributes,
       custom: options && options.custom,
       isEntry: !!(options && options.isEntry),
@@ -1039,6 +1067,14 @@ function ctxFor(p) {
     pluginCtxs.set(p, c);
   }
   return c;
+}
+
+// Vite's ResolveIdContext carries the chain's skipCalls, so a nested
+// ctx.resolve accumulates onto the whole chain instead of starting over.
+function resolveHookCtx(p, skipCalls) {
+  const base = ctxFor(p);
+  if (!skipCalls) return base;
+  return Object.create(base, { _resolveSkipCalls: { value: skipCalls } });
 }
 
 
@@ -2663,7 +2699,9 @@ function hookTransformMatches(hook, id, code) {
 // each handed `{ attributes, custom, isEntry, ssr, scan }`, the first non-null
 // result winning with its object kept whole (id plus external / meta /
 // moduleSideEffects / syntheticNamedExports, as Vite's partial does).
-// `opts.skip`: the plugin whose own this.resolve is running (Vite's skipCalls).
+// `opts.skipCalls`: the chain's cumulative skip list (see ctx.resolve);
+// `opts.skip`: a single plugin to skip outright (legacy single-caller form,
+// kept for external callers of environment.resolveId).
 async function resolveIdFull(source, importer, opts) {
   const options = {
     attributes: (opts && opts.attributes) || {},
@@ -2673,12 +2711,17 @@ async function resolveIdFull(source, importer, opts) {
     scan: false,
   };
   const skip = opts && opts.skip;
+  const skipCalls = (opts && opts.skipCalls) || null;
   for (const { p, fn: handler } of pluginsWithHook("resolveId")) {
     if (skip && p === skip) continue;
+    // Vite merges skipCalls into the skip set: a plugin is skipped when its
+    // recorded call re-issues the same id + importer, or when it already
+    // re-entered once (`called`) -- the recursion hard-stop.
+    if (skipCalls && skipCalls.some((c) => c.plugin === p && (c.called || (c.id === source && c.importer === importer)))) continue;
     if (!hookIdMatches(p.resolveId, source)) continue;
     let r;
     try {
-      r = await handler.call(ctxFor(p), source, importer || undefined, options);
+      r = await handler.call(resolveHookCtx(p, skipCalls), source, importer || undefined, options);
     } catch (e) {
       throw decoratePluginError(e, p, importer || source);
     }
