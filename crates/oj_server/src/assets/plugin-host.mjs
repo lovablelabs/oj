@@ -14,6 +14,18 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { stripVTControlCharacters } from "node:util";
 import { EventEmitter } from "node:events";
 
+// Parent watchdog (esbuild's --ppid model), armed before anything can await:
+// the stdin-EOF net at the bottom of this file only arms after every top-level
+// await, and a boot stuck awaiting an RPC its dead parent will never answer
+// writes nothing (so no EPIPE crash) and reads nothing (so no EOF) — that host
+// survived as an orphan forever. When the spawning oj process dies, the host is
+// reparented (ppid flips to the reaper); poll for that and hard-exit. unref'd
+// so the timer itself never keeps the event loop alive.
+const spawnPpid = process.ppid;
+setInterval(() => {
+  if (process.ppid !== spawnPpid) process.kill(process.pid, "SIGKILL");
+}, 1000).unref();
+
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
 // null and undefined override values are skipped (a `key: null` override must
