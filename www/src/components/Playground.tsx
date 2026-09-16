@@ -18,7 +18,10 @@ type Session = {
 
 export function Playground() {
   const editorHostRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const frameARef = useRef<HTMLIFrameElement>(null);
+  const frameBRef = useRef<HTMLIFrameElement>(null);
+  const frontRef = useRef<0 | 1>(0);
+  const lastDocRef = useRef("");
   const sessionRef = useRef<Session | null>(null);
 
   const [phase, setPhase] = useState<"boot" | "ready" | "failed">("boot");
@@ -31,6 +34,30 @@ export function Playground() {
     let disposed = false;
     let debounce: ReturnType<typeof setTimeout> | undefined;
 
+    // Double-buffered preview: a fresh srcdoc tears the document down before
+    // the new one has parsed, so typing showed a blank flash per rebuild. The
+    // new build loads into the hidden iframe and the panes swap on its `load`
+    // event; the old page stays visible the whole time. `onload` is assigned
+    // as a property so a rebuild that lands while the back frame is still
+    // loading simply supersedes the pending swap.
+    const present = (doc: string) => {
+      if (doc === lastDocRef.current) return;
+      lastDocRef.current = doc;
+      const frames = [frameARef.current, frameBRef.current];
+      const front = frames[frontRef.current];
+      const back = frames[frontRef.current === 0 ? 1 : 0];
+      if (!front || !back) return;
+      back.onload = () => {
+        back.onload = null;
+        back.dataset.front = "true";
+        back.removeAttribute("aria-hidden");
+        front.dataset.front = "false";
+        front.setAttribute("aria-hidden", "true");
+        frontRef.current = frontRef.current === 0 ? 1 : 0;
+      };
+      back.srcdoc = doc;
+    };
+
     const rebuild = (session: Session) => {
       // Compile errors come back as data; the catch is for a wasm panic, which
       // would otherwise throw inside the debounce timer and silently stop all
@@ -42,8 +69,8 @@ export function Playground() {
         setErrors(result.errors);
         // A failed build (mid-keystroke syntax error, missing import) keeps the
         // last good preview on screen; the error strip carries the diagnostics.
-        if (result.ok && result.html && iframeRef.current) {
-          iframeRef.current.srcdoc = buildSrcdoc(result);
+        if (result.ok && result.html) {
+          present(buildSrcdoc(result));
         }
       } catch (err) {
         setErrors([{ path: "oj_wasm", message: `build crashed: ${err instanceof Error ? err.message : String(err)}` }]);
@@ -179,7 +206,10 @@ export function Playground() {
           <span>preview</span>
           {buildMs !== null && <span className="play__ms">rebuilt in {buildMs.toFixed(1)}ms</span>}
         </div>
-        <iframe ref={iframeRef} className="play__frame" title="oj wasm preview" />
+        <div className="play__framewrap">
+          <iframe ref={frameARef} className="play__frame" data-front="true" title="oj wasm preview" />
+          <iframe ref={frameBRef} className="play__frame" data-front="false" aria-hidden="true" title="oj wasm preview" />
+        </div>
       </div>
     </div>
   );

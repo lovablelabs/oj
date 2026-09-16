@@ -455,11 +455,24 @@ a:hover {
   color: var(--color-faint);
 }
 
-.play__frame {
+.play__framewrap {
+  position: relative;
   flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+
+.play__frame {
+  position: absolute;
+  inset: 0;
   width: 100%;
+  height: 100%;
   border: 0;
   background: #fff;
+}
+
+.play__frame[data-front="false"] {
+  visibility: hidden;
 }
 
 @media (max-width: 900px) {
@@ -474,7 +487,7 @@ a:hover {
   .play__cm {
     max-height: 380px;
   }
-  .play__frame {
+  .play__framewrap {
     min-height: 420px;
   }
 }
