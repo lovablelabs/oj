@@ -35,6 +35,14 @@ fn engine(root: &Path) -> JsEngine {
     JsEngine::spawn(EngineConfig::new(root)).unwrap()
 }
 
+/// Deadline-shape tests hang forever when the deadline path breaks; bound
+/// them so a regression fails fast instead of wedging CI.
+async fn within<T>(fut: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), fut)
+        .await
+        .expect("the call deadline never fired: the engine is wedged")
+}
+
 const fn assert_send_sync<T: Send + Sync>() {}
 const _: () = assert_send_sync::<JsEngine>();
 
@@ -212,13 +220,12 @@ async fn memory_cap_terminates_cleanly() {
 async fn deadline_terminates_infinite_loop() {
     let root = app_root();
     let engine = engine(root.path());
-    let err = engine
-        .eval_with_deadline(
-            EvalInput::Source("for (;;) {}".into()),
-            Some(Duration::from_millis(500)),
-        )
-        .await
-        .unwrap_err();
+    let err = within(engine.eval_with_deadline(
+        EvalInput::Source("for (;;) {}".into()),
+        Some(Duration::from_millis(500)),
+    ))
+    .await
+    .unwrap_err();
     assert!(
         matches!(err, EngineError::Deadline),
         "expected Deadline, got {err:?}"
@@ -246,7 +253,7 @@ async fn deadline_times_out_a_parked_never_settling_call() {
     let mut config = EngineConfig::new(root.path());
     config.default_deadline = Some(Duration::from_millis(500));
     let engine = JsEngine::spawn(config).unwrap();
-    let err = engine.call("hang.mjs", "hang", vec![]).await.unwrap_err();
+    let err = within(engine.call("hang.mjs", "hang", vec![])).await.unwrap_err();
     assert!(
         matches!(err, EngineError::Deadline),
         "expected Deadline, got {err:?}"
@@ -270,7 +277,7 @@ async fn deadline_terminates_an_infinite_loop_call() {
     let mut config = EngineConfig::new(root.path());
     config.default_deadline = Some(Duration::from_millis(500));
     let engine = JsEngine::spawn(config).unwrap();
-    let err = engine.call("spin.mjs", "spin", vec![]).await.unwrap_err();
+    let err = within(engine.call("spin.mjs", "spin", vec![])).await.unwrap_err();
     assert!(
         matches!(err, EngineError::Deadline),
         "expected Deadline, got {err:?}"

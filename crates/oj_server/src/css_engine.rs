@@ -339,7 +339,15 @@ mod tests {
         let engine = CssEngine::preprocess(root.path(), Duration::from_secs(1))
             .await
             .unwrap();
-        let err = engine.compile(".hang {}", "/src/a.less").await.unwrap_err();
+        // Outer guard: this test's failure mode is an infinite hang (the
+        // deadline never classifying), which must fail fast, not wedge CI.
+        let err = tokio::time::timeout(
+            Duration::from_secs(10),
+            engine.compile(".hang {}", "/src/a.less"),
+        )
+        .await
+        .expect("the compile deadline never fired: the engine is wedged")
+        .unwrap_err();
         assert_eq!(err, "css preprocessor compile timed out after 1s");
         // The isolate is un-poisoned: the next request compiles.
         let out = engine.compile(".fine {}", "/src/a.less").await.unwrap();

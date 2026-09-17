@@ -243,13 +243,14 @@ impl JsEngine {
 
     /// [`JsEngine::call`] with an explicit deadline (`None` disables it).
     ///
-    /// A call's deadline never terminates OTHER calls' JS: through the call's
-    /// exclusive setup phase (module evaluation + the synchronous part of the
-    /// invocation — no other JS can be on the stack) a watchdog terminates a
-    /// wedged run; once the call parks on its returned promise the watchdog is
-    /// disarmed and the scheduler instead abandons the still-pending promise
-    /// at the deadline, replying [`EngineError::Deadline`] while the isolate
-    /// — and every concurrent call — carries on untouched.
+    /// Through the call's exclusive setup phase (module evaluation + the
+    /// synchronous part of the invocation — no other JS can be on the stack)
+    /// a watchdog terminates a wedged run. Once the call parks on its
+    /// returned promise the scheduler abandons the still-pending promise at
+    /// the deadline, replying [`EngineError::Deadline`] while the isolate —
+    /// and every concurrent call — carries on untouched; the watchdog stays
+    /// armed underneath solely for a continuation that wedges the event loop
+    /// in a busy loop, where only a termination gets the isolate back.
     pub async fn call_with_deadline(
         &self,
         module: impl Into<String>,
@@ -468,27 +469,32 @@ fn engine_thread(
                     deadline,
                     reply,
                 }) => {
-                    // The watchdog covers only the EXCLUSIVE setup phase
-                    // (module evaluation + the synchronous part of the call):
-                    // no other call's JS can be on the stack there, so a
-                    // termination can never hit an innocent job. Once the
-                    // call parks it is disarmed, and the deadline moves to
-                    // the scheduler's expiry tick (see call_with_deadline).
+                    // The watchdog stays armed for the call's whole life. In
+                    // the EXCLUSIVE setup phase (module evaluation + the
+                    // synchronous part of the call) no other JS can be on the
+                    // stack, so a termination can never hit an innocent job.
+                    // While the call is parked the scheduler's expiry tick
+                    // normally handles the deadline first and disarms the
+                    // watchdog untouched; the watchdog only matters when a
+                    // parked call's continuation wedges the event loop in a
+                    // busy loop — then the expiry tick can never run and the
+                    // termination is the only way the isolate comes back.
                     let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
                     let guard = deadline.map(|d| DeadlineGuard::arm(isolate_handle.clone(), d));
                     match setup_call(&mut worker, &config, &module, &export, args).await {
                         Ok(fut) => {
-                            let fired = guard.map(|g| g.disarm()).unwrap_or(false);
-                            if fired {
+                            if guard.as_ref().is_some_and(DeadlineGuard::fired) {
                                 // Setup outlived the deadline but completed
                                 // anyway (the termination raced completion):
                                 // the call is expired, not broken.
-                                worker.js_runtime.v8_isolate().cancel_terminate_execution();
+                                let _ =
+                                    classify(&mut worker, Ok(serde_json::Value::Null), guard, &oom);
                                 let _ = reply.send(Err(EngineError::Deadline));
                             } else {
                                 pending.push(PendingCall {
                                     fut: Box::pin(fut),
                                     deadline: deadline_at,
+                                    guard,
                                     reply,
                                 });
                             }
@@ -502,18 +508,25 @@ fn engine_thread(
                 Tick::Settled(i, result) => {
                     let call = pending.swap_remove(i);
                     let result = settled_to_json(&mut worker, result);
-                    let result = classify(&mut worker, result, None, &oom);
+                    let result = classify(&mut worker, result, call.guard, &oom);
                     let _ = call.reply.send(result);
                 }
                 Tick::Expired => {
                     // Every parked call at or past its deadline fails now; the
                     // dropped future abandons the promise, the isolate and the
-                    // other calls carry on.
+                    // other calls carry on. Disarming through `classify`
+                    // cancels a termination the watchdog got in first.
                     let now = tokio::time::Instant::now();
                     let mut i = 0;
                     while i < pending.len() {
                         if pending[i].deadline.is_some_and(|d| d <= now) {
                             let call = pending.swap_remove(i);
+                            let _ = classify(
+                                &mut worker,
+                                Ok(serde_json::Value::Null),
+                                call.guard,
+                                &oom,
+                            );
                             let _ = call.reply.send(Err(EngineError::Deadline));
                         } else {
                             i += 1;
@@ -536,7 +549,10 @@ fn engine_thread(
                             std::task::Poll::Ready(r) => settled_to_json(&mut worker, r),
                             std::task::Poll::Pending => Err(EngineError::Js(error.clone())),
                         };
-                        let result = classify(&mut worker, result, None, &oom);
+                        // A call whose watchdog terminated the wedged loop is
+                        // the one that expired; classify maps it to Deadline
+                        // and un-poisons the isolate for the survivors.
+                        let result = classify(&mut worker, result, call.guard, &oom);
                         let _ = call.reply.send(result);
                     }
                 }
@@ -551,10 +567,13 @@ type SettledResult = Result<v8::Global<v8::Value>, Box<deno_core::error::JsError
 /// A call whose module ran and whose function was invoked, waiting for the
 /// returned promise to settle while the scheduler drives the event loop.
 /// `deadline` is when the scheduler abandons the still-pending promise and
-/// fails the call with [`EngineError::Deadline`].
+/// fails the call with [`EngineError::Deadline`]; `guard` is the same
+/// deadline's watchdog, kept armed so a continuation that wedges the event
+/// loop in a busy loop is terminated (the responsive path disarms it first).
 struct PendingCall {
     fut: std::pin::Pin<Box<dyn std::future::Future<Output = SettledResult>>>,
     deadline: Option<tokio::time::Instant>,
+    guard: Option<DeadlineGuard>,
     reply: Reply,
 }
 
@@ -635,6 +654,13 @@ impl DeadlineGuard {
         // is settled once we read it.
         *self.disarmed.lock().unwrap() = true;
         let _ = self.cancel_tx.send(());
+        self.fired.load(Ordering::SeqCst)
+    }
+
+    /// Whether the watchdog fired, without disarming it.
+    fn fired(&self) -> bool {
+        // The lock waits out a watchdog mid-fire, so the read is settled.
+        let _armed = self.disarmed.lock().unwrap();
         self.fired.load(Ordering::SeqCst)
     }
 }
