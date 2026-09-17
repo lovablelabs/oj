@@ -10,16 +10,20 @@
 //! await the reply. One isolate per thread only -- V8 aborts the process when
 //! two runtimes are dropped on the same thread.
 
+mod bridge;
 mod host;
 mod loader;
 mod worker;
 
+pub use bridge::EngineHooks;
+pub use bridge::RpcHandler;
 pub use host::HostFuture;
 pub use host::HostModule;
 pub use host::HostModuleType;
 pub use host::HostResolved;
 pub use host::ModuleHost;
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -108,16 +112,20 @@ enum Job {
 }
 
 /// Handle to an engine thread. Dropping it shuts the thread down gracefully
-/// (the job channel closes, the loop ends, the thread is joined).
+/// (the job channel closes, the loop ends, the thread is joined) — unless the
+/// engine was [`JsEngine::abandon`]ed first, which detaches instead of joining.
 pub struct JsEngine {
-    tx: Option<mpsc::UnboundedSender<Job>>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    tx: Mutex<Option<mpsc::UnboundedSender<Job>>>,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The isolate's thread-safe handle, for interrupting a running job from
+    /// outside the engine thread (see [`JsEngine::abandon`]).
+    isolate: v8::IsolateHandle,
     default_deadline: Option<Duration>,
 }
 
 impl JsEngine {
     pub fn spawn(config: EngineConfig) -> Result<JsEngine, EngineError> {
-        Self::spawn_inner(config, None)
+        Self::spawn_inner(config, None, None)
     }
 
     /// Spawns an engine whose module loading is governed by `host` (see
@@ -130,12 +138,23 @@ impl JsEngine {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
             EngineError::Boot("spawn_with_host must be called from inside a tokio runtime".into())
         })?;
-        Self::spawn_inner(config, Some(host::HostBridge::new(runtime, module_host)))
+        Self::spawn_inner(config, Some(host::HostBridge::new(runtime, module_host)), None)
+    }
+
+    /// Spawns an engine with JS→Rust bridges installed as globals before any
+    /// module runs (see [`EngineHooks`]): the in-process plugin host's push
+    /// channel (`__oj_post`) and synchronous ctx-RPC (`__oj_rpc`).
+    pub fn spawn_with_hooks(
+        config: EngineConfig,
+        hooks: EngineHooks,
+    ) -> Result<JsEngine, EngineError> {
+        Self::spawn_inner(config, None, Some(hooks))
     }
 
     fn spawn_inner(
         config: EngineConfig,
         module_host: Option<host::HostBridge>,
+        hooks: Option<EngineHooks>,
     ) -> Result<JsEngine, EngineError> {
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
@@ -146,12 +165,13 @@ impl JsEngine {
             // V8 + deeply recursive module instantiation want more than the
             // 2MB default, especially in debug builds.
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || engine_thread(config, module_host, rx, ready_tx))
+            .spawn(move || engine_thread(config, module_host, hooks, rx, ready_tx))
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(JsEngine {
-                tx: Some(tx),
-                thread: Some(thread),
+            Ok(Ok(isolate)) => Ok(JsEngine {
+                tx: Mutex::new(Some(tx)),
+                thread: Mutex::new(Some(thread)),
+                isolate,
                 default_deadline,
             }),
             Ok(Err(e)) => {
@@ -165,6 +185,27 @@ impl JsEngine {
                 ))
             }
         }
+    }
+
+    /// Gives up on the engine without waiting for it: terminates whatever JS
+    /// is running (a wedged synchronous hook unwinds and the thread then exits
+    /// by itself on the closed channel), closes the job channel, and detaches
+    /// the thread so no caller ever joins it. A job wedged in NATIVE code
+    /// (a napi call, a blocking child wait; not `Atomics.wait`, which V8's
+    /// terminate interrupts) cannot be interrupted: that thread — and its
+    /// isolate — leak until the block ends, which is the accepted cost of
+    /// abandoning in-process what a process kill used to reclaim.
+    pub fn abandon(&self) {
+        self.isolate.terminate_execution();
+        self.tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        // Dropping the JoinHandle detaches the thread; Drop will find None.
+        self.thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 
     /// Executes an ES module to completion with the engine's default deadline.
@@ -196,9 +237,28 @@ impl JsEngine {
         export: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value, EngineError> {
+        self.call_with_deadline(module, export, args, self.default_deadline)
+            .await
+    }
+
+    /// [`JsEngine::call`] with an explicit deadline (`None` disables it).
+    ///
+    /// A call's deadline never terminates OTHER calls' JS: through the call's
+    /// exclusive setup phase (module evaluation + the synchronous part of the
+    /// invocation — no other JS can be on the stack) a watchdog terminates a
+    /// wedged run; once the call parks on its returned promise the watchdog is
+    /// disarmed and the scheduler instead abandons the still-pending promise
+    /// at the deadline, replying [`EngineError::Deadline`] while the isolate
+    /// — and every concurrent call — carries on untouched.
+    pub async fn call_with_deadline(
+        &self,
+        module: impl Into<String>,
+        export: &str,
+        args: Vec<serde_json::Value>,
+        deadline: Option<Duration>,
+    ) -> Result<serde_json::Value, EngineError> {
         let module = module.into();
         let export = export.to_string();
-        let deadline = self.default_deadline;
         self.request(|reply| Job::Call {
             module,
             export,
@@ -214,11 +274,16 @@ impl JsEngine {
         make_job: impl FnOnce(Reply) -> Job,
     ) -> Result<serde_json::Value, EngineError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .as_ref()
-            .ok_or(EngineError::Closed)?
-            .send(make_job(reply_tx))
-            .map_err(|_| EngineError::Closed)?;
+        {
+            let tx = self
+                .tx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            tx.as_ref()
+                .ok_or(EngineError::Closed)?
+                .send(make_job(reply_tx))
+                .map_err(|_| EngineError::Closed)?;
+        }
         reply_rx.await.map_err(|_| EngineError::Closed)?
     }
 }
@@ -226,8 +291,16 @@ impl JsEngine {
 impl Drop for JsEngine {
     fn drop(&mut self) {
         // Close the channel first so the engine thread's recv loop ends.
-        self.tx.take();
-        if let Some(thread) = self.thread.take() {
+        self.tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(thread) = thread {
             let _ = thread.join();
         }
     }
@@ -243,8 +316,9 @@ fn init_v8_platform_once() {
 fn engine_thread(
     config: EngineConfig,
     module_host: Option<host::HostBridge>,
+    hooks: Option<EngineHooks>,
     mut rx: mpsc::UnboundedReceiver<Job>,
-    ready: std::sync::mpsc::Sender<Result<(), EngineError>>,
+    ready: std::sync::mpsc::Sender<Result<v8::IsolateHandle, EngineError>>,
 ) {
     // Current-thread runtime: the JsRuntime is !Send and every part of the
     // worker must stay on this thread.
@@ -276,6 +350,9 @@ fn engine_thread(
                 return;
             }
         };
+        if let Some(hooks) = hooks {
+            bridge::install(&mut worker, hooks);
+        }
 
         let oom = Arc::new(AtomicBool::new(false));
         if config.memory_limit_bytes.is_some() {
@@ -293,7 +370,7 @@ fn engine_thread(
         }
         let isolate_handle = worker.js_runtime.v8_isolate().thread_safe_handle();
 
-        if ready.send(Ok(())).is_err() {
+        if ready.send(Ok(isolate_handle.clone())).is_err() {
             return;
         }
 
@@ -310,28 +387,30 @@ fn engine_thread(
                 usize,
                 Result<v8::Global<v8::Value>, Box<deno_core::error::JsError>>,
             ),
+            /// A parked call's deadline passed with its promise still pending:
+            /// abandon the promise and fail that one call (see
+            /// [`JsEngine::call_with_deadline`]).
+            Expired,
             /// The event loop failed (an uncaught error) with calls still
             /// pending: nothing can settle them anymore.
             Broken(deno_core::error::CoreError),
-            /// A pending call outlived its deadline. Reached when the hang is
-            /// a never-settling promise: the event loop drains, the scheduler
-            /// parks, and `terminate_execution` has nothing to terminate — so
-            /// the park itself is bounded by the earliest pending deadline.
-            Expired(usize),
             Closed,
         }
         let mut pending: Vec<PendingCall> = Vec::new();
-        // The event loop drained while calls were still pending: their
-        // promises can only settle through future jobs (or never — a hung
-        // request, as under Node). Skip event-loop polling until new work
-        // arrives, so the scheduler parks instead of spinning.
+        // The event loop drained completely (no ops, no live timers): only a
+        // new job can create work, so skip event-loop polling until one
+        // arrives and the scheduler parks instead of spinning. While the loop
+        // HAS work it is polled even with no call pending — a module may have
+        // left long-lived background work behind (the plugin host's
+        // configureServer middleware server, a Miniflare instance), and that
+        // work must keep serving between hook calls.
         let mut event_loop_idle = false;
         let mut eval_counter: u64 = 0;
         loop {
-            // A no-deadline call may park indefinitely (SSR semantics); one
-            // with a deadline bounds the park so it can still be classified.
-            let earliest = pending.iter().filter_map(|p| p.expires_at).min();
-            let mut timer = earliest.map(|at| Box::pin(tokio::time::sleep_until(at)));
+            // The earliest parked-call deadline, re-derived per iteration: the
+            // pending set only changes between iterations.
+            let next_deadline = pending.iter().filter_map(|p| p.deadline).min();
+            let mut expiry = next_deadline.map(|d| Box::pin(tokio::time::sleep_until(d)));
             let tick = std::future::poll_fn(|cx| {
                 match rx.poll_recv(cx) {
                     std::task::Poll::Ready(Some(job)) => {
@@ -345,7 +424,12 @@ fn engine_thread(
                         return std::task::Poll::Ready(Tick::Settled(i, r));
                     }
                 }
-                if !pending.is_empty() && !event_loop_idle {
+                if let Some(expiry) = expiry.as_mut() {
+                    if expiry.as_mut().poll(cx).is_ready() {
+                        return std::task::Poll::Ready(Tick::Expired);
+                    }
+                }
+                if !event_loop_idle {
                     match worker
                         .js_runtime
                         .poll_event_loop(cx, PollEventLoopOptions::default())
@@ -355,17 +439,6 @@ fn engine_thread(
                             return std::task::Poll::Ready(Tick::Broken(e))
                         }
                         std::task::Poll::Pending => {}
-                    }
-                }
-                if let Some(timer) = timer.as_mut() {
-                    if std::future::Future::poll(timer.as_mut(), cx).is_ready() {
-                        let now = tokio::time::Instant::now();
-                        if let Some(i) = pending
-                            .iter()
-                            .position(|p| p.expires_at.is_some_and(|at| at <= now))
-                        {
-                            return std::task::Poll::Ready(Tick::Expired(i));
-                        }
                     }
                 }
                 std::task::Poll::Pending
@@ -395,15 +468,31 @@ fn engine_thread(
                     deadline,
                     reply,
                 }) => {
+                    // The watchdog covers only the EXCLUSIVE setup phase
+                    // (module evaluation + the synchronous part of the call):
+                    // no other call's JS can be on the stack there, so a
+                    // termination can never hit an innocent job. Once the
+                    // call parks it is disarmed, and the deadline moves to
+                    // the scheduler's expiry tick (see call_with_deadline).
+                    let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
                     let guard = deadline.map(|d| DeadlineGuard::arm(isolate_handle.clone(), d));
-                    let expires_at = deadline.map(|d| tokio::time::Instant::now() + d);
                     match setup_call(&mut worker, &config, &module, &export, args).await {
-                        Ok(fut) => pending.push(PendingCall {
-                            fut: Box::pin(fut),
-                            guard,
-                            expires_at,
-                            reply,
-                        }),
+                        Ok(fut) => {
+                            let fired = guard.map(|g| g.disarm()).unwrap_or(false);
+                            if fired {
+                                // Setup outlived the deadline but completed
+                                // anyway (the termination raced completion):
+                                // the call is expired, not broken.
+                                worker.js_runtime.v8_isolate().cancel_terminate_execution();
+                                let _ = reply.send(Err(EngineError::Deadline));
+                            } else {
+                                pending.push(PendingCall {
+                                    fut: Box::pin(fut),
+                                    deadline: deadline_at,
+                                    reply,
+                                });
+                            }
+                        }
                         Err(e) => {
                             let result = classify(&mut worker, Err(e), guard, &oom);
                             let _ = reply.send(result);
@@ -413,21 +502,33 @@ fn engine_thread(
                 Tick::Settled(i, result) => {
                     let call = pending.swap_remove(i);
                     let result = settled_to_json(&mut worker, result);
-                    let result = classify(&mut worker, result, call.guard, &oom);
+                    let result = classify(&mut worker, result, None, &oom);
                     let _ = call.reply.send(result);
                 }
-                Tick::Expired(i) => {
-                    // Drop the settle future: nothing will resolve it. The
-                    // module instance leaks with the isolate, which survives.
-                    let call = pending.swap_remove(i);
-                    let _ = classify(&mut worker, Ok(serde_json::Value::Null), call.guard, &oom);
-                    let _ = call.reply.send(Err(EngineError::Deadline));
+                Tick::Expired => {
+                    // Every parked call at or past its deadline fails now; the
+                    // dropped future abandons the promise, the isolate and the
+                    // other calls carry on.
+                    let now = tokio::time::Instant::now();
+                    let mut i = 0;
+                    while i < pending.len() {
+                        if pending[i].deadline.is_some_and(|d| d <= now) {
+                            let call = pending.swap_remove(i);
+                            let _ = call.reply.send(Err(EngineError::Deadline));
+                        } else {
+                            i += 1;
+                        }
+                    }
                 }
                 Tick::Broken(e) => {
                     // An uncaught error broke the event loop (the process
                     // would die under Node): deliver promises that settled on
-                    // the final turn, fail the rest with the error.
+                    // the final turn, fail the rest with the error. With
+                    // nothing pending the error would otherwise vanish: say it.
                     let error = e.to_string();
+                    if pending.is_empty() {
+                        eprintln!("oj_js: uncaught error on the engine event loop: {error}");
+                    }
                     let noop = std::task::Waker::noop();
                     let mut cx = std::task::Context::from_waker(noop);
                     for mut call in std::mem::take(&mut pending) {
@@ -435,7 +536,7 @@ fn engine_thread(
                             std::task::Poll::Ready(r) => settled_to_json(&mut worker, r),
                             std::task::Poll::Pending => Err(EngineError::Js(error.clone())),
                         };
-                        let result = classify(&mut worker, result, call.guard, &oom);
+                        let result = classify(&mut worker, result, None, &oom);
                         let _ = call.reply.send(result);
                     }
                 }
@@ -449,13 +550,11 @@ type SettledResult = Result<v8::Global<v8::Value>, Box<deno_core::error::JsError
 
 /// A call whose module ran and whose function was invoked, waiting for the
 /// returned promise to settle while the scheduler drives the event loop.
+/// `deadline` is when the scheduler abandons the still-pending promise and
+/// fails the call with [`EngineError::Deadline`].
 struct PendingCall {
     fut: std::pin::Pin<Box<dyn std::future::Future<Output = SettledResult>>>,
-    guard: Option<DeadlineGuard>,
-    /// When the scheduler itself times the call out (`Tick::Expired`), for the
-    /// hang shape the watchdog's `terminate_execution` cannot reach: a parked,
-    /// never-settling promise on an idle isolate.
-    expires_at: Option<tokio::time::Instant>,
+    deadline: Option<tokio::time::Instant>,
     reply: Reply,
 }
 
