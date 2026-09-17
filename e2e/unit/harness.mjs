@@ -64,17 +64,33 @@ export function tmpProject({ prefix = "oj-fx-", pkgJson = { name: "fx" }, linkEs
   };
 }
 
-// Shape A: run a one-shot sidecar as `node <sidecar> <jsonConfig>` and return
-// its parsed stdout JSON. Throws on a non-zero exit; the thrown error carries
-// `.stdout`/`.stderr`/`.status` for error-path assertions.
-export function runSidecar(sidecarRel, config, { cwd, timeout = 30_000 } = {}) {
-  const out = execFileSync("node", [asset(sidecarRel), JSON.stringify(config)], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+// Shape A: run a one-shot module's exported entry (`optimize(config)` for
+// optimize-deps.mjs) the way oj's in-process JS engine calls it — in a fresh
+// node child per run for isolation — and return the parsed result. Throws on
+// a non-zero exit; the thrown error carries `.stdout`/`.stderr`/`.status` for
+// error-path assertions.
+const ONE_SHOT_WRAPPER = `
+import { writeSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [script, exportName, cfg] = process.argv.slice(1);
+const mod = await import(pathToFileURL(script).href);
+const out = await mod[exportName](JSON.parse(cfg));
+writeSync(1, JSON.stringify(out));
+process.exit(0);
+`;
+
+export function runSidecar(sidecarRel, config, { cwd, timeout = 30_000, exportName = "optimize" } = {}) {
+  const out = execFileSync(
+    "node",
+    ["--input-type=module", "-e", ONE_SHOT_WRAPPER, asset(sidecarRel), exportName, JSON.stringify(config)],
+    {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout,
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
   return JSON.parse(out);
 }
 

@@ -260,32 +260,12 @@ pub struct ViteValues {
     pub html: Option<serde_json::Value>,
 }
 
-/// Why a run of the extractor produced nothing usable, or None when it did.
-///
-/// Kept separate from the reporting so the classification can be tested: the
-/// interesting cases are a subprocess that wrote nothing at all and one that
-/// wrote something that is not JSON, and reproducing either through a real
-/// `node` is harder than it is worth.
-fn extraction_failure(status: std::process::ExitStatus, stdout: &[u8], parse: Option<&str>) -> Option<String> {
-    match parse {
-        None => None,
-        Some(_) if stdout.is_empty() => Some(format!(
-            "wrote nothing at all and exited with {status}"
-        )),
-        Some(e) => Some(format!(
-            "wrote {} bytes that are not JSON ({e}) and exited with {status}",
-            stdout.len()
-        )),
-    }
-}
-
-/// How long the config-extraction subprocess may run before it is killed. The
-/// extractor runs real plugin code (config hooks) and exits itself right after
-/// emitting the result, so 60 s is generous headroom for a cold first run;
-/// `OJ_EXTRACT_TIMEOUT=<seconds>` raises it for configs that legitimately take
-/// longer. Unbounded was worse: a config hook that opened a socket or timer
-/// used to be able to wedge boot forever (Vite has no bound here, but Vite is
-/// also not waiting on a subprocess).
+/// How long the config extraction may run before it is terminated. The
+/// extractor runs real plugin code (config hooks), so 60 s is generous
+/// headroom for a cold first run; `OJ_EXTRACT_TIMEOUT=<seconds>` raises it for
+/// configs that legitimately take longer. Unbounded was worse: a config hook
+/// that opened a socket or timer used to be able to wedge boot forever (Vite
+/// has no bound here, but Vite is also not waiting on a separate evaluation).
 fn extraction_timeout() -> std::time::Duration {
     extraction_timeout_from(std::env::var("OJ_EXTRACT_TIMEOUT").ok().as_deref())
 }
@@ -298,121 +278,42 @@ fn extraction_timeout_from(raw: Option<&str>) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// `Command::output()` with a deadline: `Ok(None)` means the child ran past
-/// `timeout` and was killed (and reaped). Both pipes are drained on threads
-/// into shared buffers for the whole wait, so a chatty child can never
-/// deadlock on a full pipe — and once the child itself has exited (or been
-/// killed), the drain threads are given only a short grace to reach EOF before
-/// being DETACHED with whatever the buffers hold: a grandchild spawned with
-/// inherited stdio keeps the pipe write-ends open indefinitely, and joining
-/// unboundedly on its EOF was exactly the boot wedge `OJ_EXTRACT_TIMEOUT`
-/// exists to prevent.
-fn bounded_output(
-    cmd: &mut std::process::Command,
+/// Runs one export of an oj-owned module on a short-lived in-process JS engine
+/// and returns its JSON result. One isolate per run preserves the freshness
+/// the one-shot subprocesses had (module caches, env dance and run-once plugin
+/// guards die with the engine, a hook-started watcher or interval cannot
+/// outlive it), and boot's parallel extractions each own their engine thread.
+/// The call blocks the current thread, as the bounded subprocess wait did;
+/// from inside a tokio runtime it blocks on a scoped helper thread instead so
+/// no runtime worker is parked inside another `block_on`.
+pub(crate) fn run_engine_job(
+    root: &Path,
+    module: &Path,
+    export: &str,
+    payload: serde_json::Value,
     timeout: std::time::Duration,
-) -> std::io::Result<Option<std::process::Output>> {
-    use std::io::Read;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let out_pipe = child.stdout.take().expect("piped stdout");
-    let err_pipe = child.stderr.take().expect("piped stderr");
-    fn drain(
-        mut pipe: impl Read + Send + 'static,
-        buf: Arc<Mutex<Vec<u8>>>,
-        discard: Arc<AtomicBool>,
-    ) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match pipe.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    // Once detached (the caller snapshotted and moved on),
-                    // keep reading to EOF — a still-writing grandchild must
-                    // not block on a full pipe — but discard: nobody will
-                    // ever read the buffer again, and a chatty grandchild
-                    // could otherwise grow it for as long as it lives.
-                    Ok(_) if discard.load(Ordering::Relaxed) => {}
-                    Ok(n) => append_capped(
-                        &mut buf
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                        &chunk[..n],
-                        DRAIN_BUF_CAP,
-                    ),
-                }
-            }
+) -> Result<serde_json::Value, oj_js::EngineError> {
+    let run = move || {
+        let mut config = oj_js::EngineConfig::new(root);
+        config.default_deadline = Some(timeout);
+        let engine = oj_js::JsEngine::spawn(config)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
+        rt.block_on(engine.call(module.to_string_lossy().into_owned(), export, vec![payload]))
+        // Dropping the engine here joins its thread: pending JS work (timers,
+        // watchers a config hook started) is discarded with the isolate, the
+        // in-process equivalent of the old `process.exit(0)`.
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|s| {
+            s.spawn(run)
+                .join()
+                .expect("engine job thread must not panic")
         })
-    }
-    let out_buf = Arc::new(Mutex::new(Vec::new()));
-    let err_buf = Arc::new(Mutex::new(Vec::new()));
-    // One flag for both drains: detachment is a property of the call ending,
-    // not of one pipe.
-    let discard = Arc::new(AtomicBool::new(false));
-    let out_thread = drain(out_pipe, Arc::clone(&out_buf), Arc::clone(&discard));
-    let err_thread = drain(err_pipe, Arc::clone(&err_buf), Arc::clone(&discard));
-    // Join with a grace bound, then detach: after the child is gone, EOF on the
-    // pipes belongs to whoever else inherited them (a plugin's grandchild), and
-    // the caller must never wait on that. One SHARED deadline covers both joins
-    // (sequential per-join graces cost double on the wedged path); a thread
-    // still running past it is flipped to discard mode and left to exit when
-    // the last writer closes. The snapshot below is what the caller gets.
-    let grace_join = |threads: [std::thread::JoinHandle<()>; 2]| {
-        let grace_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        for t in threads {
-            while !t.is_finished() && std::time::Instant::now() < grace_deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            if t.is_finished() {
-                let _ = t.join();
-            } else {
-                discard.store(true, Ordering::Relaxed);
-            }
-        }
-    };
-    let snapshot = |buf: &Arc<Mutex<Vec<u8>>>| -> Vec<u8> {
-        buf.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    };
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            grace_join([out_thread, err_thread]);
-            return Ok(None);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    };
-    grace_join([out_thread, err_thread]);
-    Ok(Some(std::process::Output {
-        status,
-        stdout: snapshot(&out_buf),
-        stderr: snapshot(&err_buf),
-    }))
-}
-
-/// The most an extraction pipe capture may hold. The drain threads can outlive
-/// the caller detached (a grandchild holding the pipe open), and even attached
-/// output is only diagnostics past a point: cap the buffer instead of letting
-/// a chatty child grow it without bound.
-const DRAIN_BUF_CAP: usize = 4 * 1024 * 1024;
-
-/// Append `chunk` to `buf`, never growing it past `cap`: bytes past the cap
-/// are dropped (the capture keeps its head, where the JSON result and the
-/// first errors live).
-fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) {
-    let room = cap.saturating_sub(buf.len());
-    if room > 0 {
-        buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+    } else {
+        run()
     }
 }
 
@@ -445,15 +346,7 @@ fn extract_vite_values_with(
     };
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root)?;
-    let store = oj_cache::config_extract::ConfigExtractStore::new(
-        root,
-        &format!(
-            "{}:{}:{}",
-            env!("CARGO_PKG_VERSION"),
-            blake3::hash(VITE_EXTRACT_JS.as_bytes()).to_hex(),
-            extraction_env_hash(std::env::vars())
-        ),
-    );
+    let store = extraction_store(root);
     if let Some(hit) = store.lookup(&vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
             print_extraction_stderr(&hit.stderr);
@@ -465,10 +358,8 @@ fn extract_vite_values_with(
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
     // Several extractions run concurrently at boot (route tree, server-fn
-    // resolver, config values), so everything here is per call or atomic: the
-    // script lands via rename (a plain write truncates it under a concurrent
-    // reader's import), and the result file is unique per call (a shared name
-    // is read-and-deleted by whichever caller gets there first).
+    // resolver, config values), so the script lands via rename: a plain write
+    // truncates it under a concurrent engine's import.
     static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let script = cache.join("oj-vite-extract.mjs");
@@ -477,50 +368,48 @@ fn extract_vite_values_with(
         std::fs::write(&tmp, VITE_EXTRACT_JS).ok()?;
         std::fs::rename(&tmp, &script).ok()?;
     }
-    // The JSON comes back through a file, not stdout: evaluating the config
-    // runs plugin code (route generators, banners) that may print to stdout.
-    let result_path = cache.join(format!("oj-vite-extract-{}-{seq}.tmp.json", std::process::id()));
-    let mut cmd = std::process::Command::new("node");
-    cmd.arg(&script)
-        .arg(&vite)
-        .arg(root)
-        .arg(command)
-        .arg(mode)
-        .arg(if mode_explicit { "explicit" } else { "default" })
-        .arg(&result_path)
-        .env("OJ_CACHE_ROOT", oj_cache::cache_root(root))
-        .env("NODE_COMPILE_CACHE", crate::node_compile_cache(root))
-        .current_dir(root);
-    // Bounded: the extractor exits itself after emitting, but the config's
-    // plugin code runs before that and must never wedge boot forever.
+    // Bounded: the config's plugin code runs inside the engine and must never
+    // wedge boot forever.
     let timeout = extraction_timeout();
-    let out = match bounded_output(&mut cmd, timeout) {
-        Ok(Some(out)) => out,
-        Ok(None) => {
+    let payload = serde_json::json!({
+        "vite": vite.to_string_lossy(),
+        "root": root.to_string_lossy(),
+        "command": command,
+        "mode": mode,
+        "modeKind": if mode_explicit { "explicit" } else { "default" },
+        "cacheDir": cache.to_string_lossy(),
+    });
+    // The result is the call's RETURN VALUE: config code that prints (route
+    // generators, banners) cannot corrupt the result channel, which the old
+    // subprocess had to dodge with a temp result file next to argv.
+    let json = match run_engine_job(root, &script, "extract", payload, timeout) {
+        Ok(json) => json,
+        Err(oj_js::EngineError::Deadline) => {
             eprintln!(
                 "oj: extracting {}: the config evaluation did not finish within {}s and was killed (raise OJ_EXTRACT_TIMEOUT for slower configs)",
                 vite.display(),
                 timeout.as_secs()
             );
-            let _ = std::fs::remove_file(&result_path);
             return None;
         }
-        Err(_) => return None,
+        Err(e) => {
+            eprintln!("oj: extracting {}: {e}", vite.display());
+            return None;
+        }
     };
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // Everything the evaluation wrote to stderr (Vite's notices, oj's "not
+    // applied" warnings, plugin prints), captured inside the engine.
+    let stderr = json
+        .get("__stderr")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
     print_extraction_stderr(&stderr);
-    let raw = std::fs::read(&result_path).unwrap_or_default();
-    let _ = std::fs::remove_file(&result_path);
-    let parsed = serde_json::from_slice::<serde_json::Value>(&raw);
-    let parse_err = parsed.as_ref().err().map(|e| e.to_string());
-    if let Some(why) = extraction_failure(out.status, &raw, parse_err.as_deref()) {
-        eprintln!("oj: extracting {} {why}", vite.display());
-    }
-    let json: serde_json::Value = parsed.ok()?;
     // The extractor reports a config that failed to evaluate as `__ok: false`
-    // (having printed the cause to stderr above). That is not a config with no
-    // values, so never parse it into an empty ViteValues: return None and let the
-    // caller decide whether a present-but-broken vite.config is an error.
+    // (having put the cause in the stderr transcript above). That is not a
+    // config with no values, so never parse it into an empty ViteValues: return
+    // None and let the caller decide whether a present-but-broken vite.config
+    // is an error.
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
@@ -546,16 +435,15 @@ fn extract_vite_values_with(
             vite.display()
         );
     } else {
-        store.store(
-            &vite,
-            command,
-            mode_key,
-            &deps,
-            &String::from_utf8_lossy(&raw),
-            &stderr,
-        );
+        // The stderr transcript is stored in its own field (replayed by the
+        // lookup above), not inside the cached output.
+        let mut stored = json.clone();
+        if let Some(obj) = stored.as_object_mut() {
+            obj.remove("__stderr");
+        }
+        store.store(&vite, command, mode_key, &deps, &stored.to_string(), &stderr);
     }
-    crate::boot_phase("vite-extract cache miss (subprocess ran)");
+    crate::boot_phase("vite-extract cache miss (engine ran)");
     Some(parse_vite_values(&json))
 }
 
@@ -590,6 +478,23 @@ fn unseen_extraction_lines(stderr: &str) -> String {
         }
     }
     out
+}
+
+/// The extraction cache, keyed on everything that can change the verdict: oj's
+/// version, the extraction engine ("deno" marks the in-process engine — a
+/// cache written by a node-subprocess-era oj, or any future engine change,
+/// must never serve, whatever the script hash happens to be), the extraction
+/// script itself and the observable environment.
+fn extraction_store(root: &Path) -> oj_cache::config_extract::ConfigExtractStore {
+    oj_cache::config_extract::ConfigExtractStore::new(
+        root,
+        &format!(
+            "{}:deno:{}:{}",
+            env!("CARGO_PKG_VERSION"),
+            blake3::hash(VITE_EXTRACT_JS.as_bytes()).to_hex(),
+            extraction_env_hash(std::env::vars())
+        ),
+    )
 }
 
 /// The part of the process environment a vite.config can observe while it
@@ -2373,42 +2278,6 @@ mod ssr_bridge_tests {
 }
 
 #[cfg(test)]
-mod extraction_failure_tests {
-    use super::extraction_failure;
-
-    // A status is only constructible by running something, and `true`/`false`
-    // are the two the classification cares about.
-    fn status(ok: bool) -> std::process::ExitStatus {
-        std::process::Command::new(if ok { "true" } else { "false" })
-            .status()
-            .expect("a shell builtin binary")
-    }
-
-    #[test]
-    fn valid_json_is_not_a_failure() {
-        assert_eq!(extraction_failure(status(true), b"{}", None), None);
-    }
-
-    // The one that hid a real bug: the extractor skipped its own body and
-    // exited 0, which is indistinguishable from a config with nothing in it
-    // unless somebody says so.
-    #[test]
-    fn a_silent_successful_run_is_a_failure() {
-        let why = extraction_failure(status(true), b"", Some("EOF while parsing a value"))
-            .expect("nothing on stdout is not a config");
-        assert!(why.contains("wrote nothing at all"), "{why}");
-    }
-
-    #[test]
-    fn unparseable_output_reports_its_size_and_the_parse_error() {
-        let why = extraction_failure(status(false), b"not json", Some("expected value"))
-            .expect("output that is not JSON is not a config");
-        assert!(why.contains("8 bytes"), "{why}");
-        assert!(why.contains("expected value"), "{why}");
-    }
-}
-
-#[cfg(test)]
 mod vite_values_tests {
     use super::*;
 
@@ -2451,79 +2320,6 @@ mod vite_values_tests {
         assert_eq!(extraction_timeout_from(Some("120")).as_secs(), 120);
         assert_eq!(extraction_timeout_from(Some("junk")).as_secs(), 60);
         assert_eq!(extraction_timeout_from(Some("0")).as_secs(), 60);
-    }
-
-    // The extraction subprocess wait is bounded: a config hook that keeps the
-    // event loop alive past the deadline gets the child killed instead of
-    // wedging boot forever; a child that finishes yields its full output.
-    #[test]
-    fn bounded_output_kills_past_the_deadline_and_collects_output_before_it() {
-        let mut quick = std::process::Command::new("node");
-        quick.arg("-e").arg("process.stdout.write('done')");
-        let out = match bounded_output(&mut quick, std::time::Duration::from_secs(30)) {
-            Ok(out) => out,
-            // No node on this machine: nothing to test (extraction itself
-            // cannot run either).
-            Err(_) => return,
-        };
-        let out = out.expect("a finishing child is not a timeout");
-        assert!(out.status.success());
-        assert_eq!(out.stdout, b"done");
-
-        let mut hung = std::process::Command::new("node");
-        hung.arg("-e").arg("setInterval(() => {}, 1000)");
-        let started = std::time::Instant::now();
-        let out = bounded_output(&mut hung, std::time::Duration::from_millis(300)).unwrap();
-        assert!(out.is_none(), "a child past the deadline is killed and reported as a timeout");
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(20),
-            "the wait must end at the deadline, not at the child's leisure"
-        );
-    }
-
-    // An inherited-stdio grandchild keeps the pipe write-ends open past the
-    // child's own exit (and past a kill): the drain threads then never see
-    // EOF, and joining them unboundedly wedged boot forever — the exact hole
-    // the extraction timeout exists to close. The wait must end within the
-    // timeout plus the short grace, with whatever output was captured.
-    #[test]
-    fn bounded_output_detaches_from_pipes_a_grandchild_holds_open() {
-        // The child prints, spawns a long-lived grandchild with stdio:
-        // "inherit", and exits immediately: its status is available at once,
-        // but pipe EOF is 600 s away.
-        let mut cmd = std::process::Command::new("node");
-        cmd.arg("-e").arg(
-            "process.stdout.write('partial');\
-             require('child_process').spawn('sleep', ['600'], { stdio: 'inherit', detached: true }).unref();",
-        );
-        let started = std::time::Instant::now();
-        let out = match bounded_output(&mut cmd, std::time::Duration::from_secs(10)) {
-            Ok(out) => out,
-            Err(_) => return, // no node on this machine
-        };
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(8),
-            "the exited child's output must be returned within the grace, not at the grandchild's EOF ({}s)",
-            started.elapsed().as_secs()
-        );
-        let out = out.expect("the child exited before the deadline: not a timeout");
-        assert!(out.status.success());
-        assert_eq!(out.stdout, b"partial", "output written before the exit is captured");
-
-        // The kill path: a HANGING child whose grandchild also holds the
-        // pipes must still come back as a timeout within timeout + grace.
-        let mut hung = std::process::Command::new("node");
-        hung.arg("-e").arg(
-            "require('child_process').spawn('sleep', ['600'], { stdio: 'inherit', detached: true }).unref();\
-             setInterval(() => {}, 1000);",
-        );
-        let started = std::time::Instant::now();
-        let out = bounded_output(&mut hung, std::time::Duration::from_millis(300)).unwrap();
-        assert!(out.is_none(), "a killed child is a timeout even with its pipes held open");
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(8),
-            "the kill path must not block on the grandchild's EOF either"
-        );
     }
 
     // The per-spawn init-wait policy: a boot host waits out the long init
@@ -2654,21 +2450,6 @@ mod vite_values_tests {
         let ssr = config.ssr.as_ref().unwrap();
         assert_eq!(ssr["resolve"]["conditions"], serde_json::json!(["workerd"]));
         assert!(oj_config::ssr_runner_backed(&config));
-    }
-
-    // The pipe capture is bounded: bytes past the cap are dropped, keeping the
-    // head (where the JSON result and the first errors live).
-    #[test]
-    fn append_capped_never_grows_past_the_cap() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, &[1u8; 6], 10);
-        assert_eq!(buf.len(), 6);
-        append_capped(&mut buf, &[2u8; 6], 10);
-        assert_eq!(buf.len(), 10, "the append is truncated at the cap");
-        assert_eq!(&buf[..6], &[1u8; 6], "the head is kept");
-        assert_eq!(&buf[6..], &[2u8; 4]);
-        append_capped(&mut buf, &[3u8; 100], 10);
-        assert_eq!(buf.len(), 10, "appends past the cap are dropped entirely");
     }
 
     // Per-call init windows with NO time-based fail-fast: an earlier call's
@@ -3495,5 +3276,297 @@ mod vite_values_tests {
         let again = unseen_extraction_lines("oj: vite.config: worker config is not applied\nsome plugin notice\nnew line\n");
         assert_eq!(again, "new line\n", "only lines not printed before in this process come back");
         assert_eq!(unseen_extraction_lines(""), "");
+    }
+}
+
+// The extraction contract through the REAL in-process engine: these boot a V8
+// isolate per case, so they are serialized on one lock (and any test that
+// touches the extraction env knobs must hold it while they are set).
+#[cfg(test)]
+mod engine_extraction_tests {
+    use super::*;
+
+    static ENGINE_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        ENGINE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn app(config: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"fx","version":"1.0.0","type":"module"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("vite.config.mjs"), config).unwrap();
+        dir
+    }
+
+    #[test]
+    fn extraction_returns_values_and_caches_them() {
+        let _g = lock();
+        let dir = app(r#"export default { base: "/app/", server: { port: 5199 } };"#);
+        let root = dir.path();
+        let v = extract_vite_values_with(root, "serve", "development", true)
+            .expect("a valid config extracts");
+        assert_eq!(v.base.as_deref(), Some("/app/"));
+        assert_eq!(v.port, Some(5199));
+
+        // The run was cached under the engine-marked version tag, stderr field
+        // and all, and the cached output parses back to the same values.
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.mjs"), "serve", "development")
+            .expect("the extraction is cached");
+        let json: serde_json::Value = serde_json::from_str(&hit.output).unwrap();
+        assert_eq!(json["base"], "/app/");
+        assert!(
+            json.get("__stderr").is_none(),
+            "the transcript is stored in its own field, not inside the output"
+        );
+        // The env files Vite would load for this mode are stamped, absent or
+        // not, so creating one later is a cache miss.
+        assert!(
+            hit.deps.iter().any(|d| d.ends_with(".env.development")),
+            "mode env files are stamped: {:?}",
+            hit.deps
+        );
+    }
+
+    #[test]
+    fn a_broken_config_is_none_not_an_empty_config() {
+        let _g = lock();
+        let dir = app("throw new Error('config exploded');\nexport default {};");
+        let root = dir.path();
+        assert!(
+            extract_vite_values_with(root, "serve", "development", true).is_none(),
+            "a config that fails to evaluate must never parse as empty values"
+        );
+        assert!(
+            extraction_store(root)
+                .lookup(&root.join("vite.config.mjs"), "serve", "development")
+                .is_none(),
+            "a failed extraction is never cached"
+        );
+        // ...and the adopt seam surfaces it as the load error Vite gives.
+        let mut config = oj_config::OjConfig::default();
+        let err = adopt_vite_config_values(&mut config, root, "serve", "development")
+            .expect_err("a present-but-broken vite.config is an error");
+        assert!(err.contains("failed to load config"), "{err}");
+    }
+
+    #[test]
+    fn config_imports_are_recorded_as_deps() {
+        let _g = lock();
+        let dir = app(
+            r#"import { base } from "./base.config.mjs";
+export default { base };"#,
+        );
+        let root = dir.path();
+        std::fs::write(root.join("base.config.mjs"), "export const base = \"/dep/\";\n").unwrap();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/dep/"));
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.mjs"), "serve", "development")
+            .expect("cached");
+        assert!(
+            hit.deps.iter().any(|d| d.ends_with("base.config.mjs")),
+            "the config's own imports invalidate the cache: {:?}",
+            hit.deps
+        );
+    }
+
+    #[test]
+    fn truncated_observed_reads_serve_but_never_cache() {
+        let _g = lock();
+        // Cap the read recorder at one path; the config reads two .json files
+        // (through the fs default object, the surface the recorder wraps), so
+        // the dep stamp is incomplete and the result must not be cached.
+        std::env::set_var("OJ_OBSERVED_READS_MAX", "1");
+        let dir = app(
+            r#"import fs from "node:fs";
+const a = JSON.parse(fs.readFileSync(new URL("./a.json", import.meta.url), "utf8"));
+const b = JSON.parse(fs.readFileSync(new URL("./b.json", import.meta.url), "utf8"));
+export default { base: a.base + b.base };"#,
+        );
+        let root = dir.path();
+        std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
+        std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
+        let result = extract_vite_values_with(root, "serve", "development", true);
+        std::env::remove_var("OJ_OBSERVED_READS_MAX");
+        let v = result.expect("the result is still served");
+        assert_eq!(v.base.as_deref(), Some("/a/b"));
+        assert!(
+            extraction_store(root)
+                .lookup(&root.join("vite.config.mjs"), "serve", "development")
+                .is_none(),
+            "an extraction with a truncated dep stamp must not be cached"
+        );
+    }
+
+    #[test]
+    fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
+        let _g = lock();
+        std::env::set_var("OJ_EXTRACT_TIMEOUT", "2");
+        let dir = app("await new Promise(() => {});\nexport default {};");
+        let root = dir.path();
+        let started = std::time::Instant::now();
+        let result = extract_vite_values_with(root, "serve", "development", true);
+        std::env::remove_var("OJ_EXTRACT_TIMEOUT");
+        assert!(result.is_none(), "a wedged config evaluation is a failure");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the deadline must end the wait, not the config's leisure"
+        );
+    }
+
+    #[test]
+    fn a_hook_started_interval_does_not_outlive_the_extraction() {
+        let _g = lock();
+        // The in-process equivalent of the old one-shot subprocess's
+        // process.exit(0): a config that leaves timers behind (the TanStack
+        // route generator shape) must not stall the caller, and the engine
+        // dies with them at drop.
+        let dir = app("setInterval(() => {}, 1000);\nexport default { base: \"/live/\" };");
+        let root = dir.path();
+        let started = std::time::Instant::now();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/live/"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "a live timer must not hold the extraction open"
+        );
+    }
+
+    #[test]
+    fn stderr_prints_from_config_code_travel_in_the_transcript() {
+        let _g = lock();
+        let dir = app(
+            r#"console.error("plugin says hi");
+process.stderr.write("direct stderr write\n");
+console.log("stdout is swallowed");
+export default { base: "/loud/" };"#,
+        );
+        let root = dir.path();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/loud/"));
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.mjs"), "serve", "development")
+            .expect("cached");
+        assert!(hit.stderr.contains("plugin says hi"), "{}", hit.stderr);
+        assert!(hit.stderr.contains("direct stderr write"), "{}", hit.stderr);
+        assert!(
+            !hit.stderr.contains("stdout is swallowed"),
+            "stdout prints are dropped, as the old subprocess capture dropped them: {}",
+            hit.stderr
+        );
+    }
+
+    #[test]
+    fn config_env_writes_do_not_leak_into_the_oj_process() {
+        let _g = lock();
+        // The old subprocess kept env mutations to itself; the in-process
+        // engine must shadow process.env the same way (Vite's own NODE_ENV
+        // dance runs on every extraction).
+        let dir = app(
+            r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
+export default { base: "/env/" };"#,
+        );
+        let root = dir.path();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/env/"));
+        assert!(
+            std::env::var("OJ_EXTRACT_LEAK_PROBE").is_err(),
+            "a config's env write must die with its extraction"
+        );
+    }
+
+    // The TS-config fallback (no vite installed): the extractor bundles the
+    // config with the app's esbuild — a child process spawned from inside the
+    // engine — writes the bundle next to its own script and imports it.
+    // Skips quietly where the start-app fixture has no node_modules.
+    #[test]
+    fn a_ts_config_without_vite_loads_through_the_esbuild_fallback() {
+        let _g = lock();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let esbuild = repo.join("e2e/fixtures/start-app/node_modules/esbuild");
+        if !esbuild.exists() {
+            eprintln!("skipping: fixture esbuild not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"fx","version":"1.0.0","type":"module","dependencies":{"esbuild":"*"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&esbuild, root.join("node_modules/esbuild")).unwrap();
+        let scoped = repo.join("e2e/fixtures/start-app/node_modules/@esbuild");
+        if scoped.exists() {
+            std::os::unix::fs::symlink(&scoped, root.join("node_modules/@esbuild")).unwrap();
+        }
+        std::fs::write(root.join("shared.ts"), "export const port: number = 5321;\n").unwrap();
+        std::fs::write(
+            root.join("vite.config.ts"),
+            "import { port } from \"./shared\";\nexport default { base: \"/ts/\" as const, server: { port } };\n",
+        )
+        .unwrap();
+        let v = extract_vite_values_with(root, "serve", "development", true)
+            .expect("the TS config loads through the esbuild fallback");
+        assert_eq!(v.base.as_deref(), Some("/ts/"));
+        assert_eq!(v.port, Some(5321));
+        // The bundle's metafile names the config's imports as deps.
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.ts"), "serve", "development")
+            .expect("cached");
+        assert!(
+            hit.deps.iter().any(|d| d.ends_with("shared.ts")),
+            "esbuild metafile inputs are stamped: {:?}",
+            hit.deps
+        );
+    }
+
+    // The phase's crux, checked at the exact seam production uses: a module
+    // running on the engine spawns a real child process (as esbuild's JS API
+    // spawns its Go service) and reads it back.
+    #[test]
+    fn engine_jobs_can_spawn_child_processes() {
+        let _g = lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"fx","version":"1.0.0","type":"module"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("spawn-job.mjs"),
+            r#"import { execFileSync, spawn } from "node:child_process";
+export async function run() {
+  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8" }).trim();
+  const child = spawn("/bin/echo", ["piped-child"]);
+  let piped = "";
+  child.stdout.on("data", (d) => { piped += d.toString(); });
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  return { sync, piped: piped.trim(), code };
+}
+"#,
+        )
+        .unwrap();
+        if !std::path::Path::new("/bin/echo").exists() {
+            return; // not a unix-y machine: the seam under test cannot run
+        }
+        let out = run_engine_job(
+            dir.path(),
+            &dir.path().join("spawn-job.mjs"),
+            "run",
+            serde_json::json!({}),
+            std::time::Duration::from_secs(30),
+        )
+        .expect("child_process must work under the embedded engine");
+        assert_eq!(out["sync"], "sync-child");
+        assert_eq!(out["piped"], "piped-child");
+        assert_eq!(out["code"], 0);
     }
 }

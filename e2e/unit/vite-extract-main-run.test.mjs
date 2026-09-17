@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-// The extractor only does anything when it is the entry module, and it decides
-// that by comparing import.meta.url against argv[1]. Node canonicalizes the
-// entry, so import.meta.url is symlink-free while argv[1] is whatever the
-// caller typed. Any symlink in that path -- /var on macOS, a build system
-// pointing the cache somewhere linked -- makes the two disagree.
-//
-// Getting it wrong is silent by construction: the body is skipped, nothing is
-// written to stdout, and the process exits 0, which the caller cannot tell
-// apart from a config that genuinely had nothing in it.
+// End to end through the extractor's exported `extract()` — the function oj
+// calls on its in-process JS engine. Each case runs in a fresh node child
+// (the engine boots a fresh isolate per extraction; a child is the node-test
+// equivalent, and it isolates the config's module cache, env and any timers
+// a hook leaves behind). The wrapper prints the returned result on stdout and
+// the `__stderr` transcript on stderr, so assertions read like the old
+// subprocess protocol.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -19,32 +17,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { asset, repo } from "./harness.mjs";
 
-// argv[2] names a config that does not exist, so the run fails immediately --
-// what is under test is whether it runs at all, not what it extracts.
-function runVia(dir) {
-  return execFileSync(
+// extract() wraps process.stdout/stderr.write and console (its output
+// capture), so the wrapper saves raw write fds first. writeSync keeps the
+// result whole across the explicit exit — which itself asserts that a config
+// hook's leftover interval cannot hold the extraction open.
+const EXTRACT_WRAPPER = `
+import { writeSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [script, vite, root, command = "serve", mode = "development", modeKind = "explicit"] = process.argv.slice(1);
+const { extract } = await import(pathToFileURL(script).href);
+const out = await extract({ vite, root, command, mode, modeKind });
+const { __stderr = "", ...rest } = out;
+if (__stderr) writeSync(2, __stderr);
+writeSync(1, JSON.stringify(rest));
+process.exit(0);
+`;
+
+// spawnSync shape ({ stdout, stderr }) for tests that assert on the transcript.
+function spawnExtractor(base, config, args = [], opts = {}) {
+  return spawnSync(
     process.execPath,
-    [join(dir, "vite-extract.mjs"), join(dir, "no-such.config.mjs"), dir],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ["--input-type=module", "-e", EXTRACT_WRAPPER, join(base, "vite-extract.mjs"), join(base, config), base, ...args],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, ...opts },
   );
 }
-
-test("the extractor runs when its path reaches it through a symlink", () => {
-  const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-"));
-  try {
-    const real = join(base, "real");
-    mkdirSync(real);
-    copyFileSync(asset("vite-extract.mjs"), join(real, "vite-extract.mjs"));
-    symlinkSync(real, join(base, "link"), "dir");
-
-    // Through the real path it writes "{}" on a failed load; through the
-    // symlink it has to do the same rather than exit silently.
-    assert.equal(runVia(real), "{}");
-    assert.equal(runVia(join(base, "link")), "{}");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
 
 // End to end through the extractor entry: a config whose plugin declares a
 // dev-runtime environment from its `config` hook (Vite's declaration
@@ -70,11 +66,7 @@ test("the extractor emits ssr.runnerBacked and rawResolve", () => {
         ssr: { target: "node" },
       };\n`,
     );
-    const run = (config) => JSON.parse(execFileSync(
-      process.execPath,
-      [join(base, "vite-extract.mjs"), join(base, config), base],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    ));
+    const run = (config) => JSON.parse(spawnExtractor(base, config).stdout);
     const out = run("vite.config.mjs");
     assert.equal(out.__ok, true);
     assert.equal(out.ssr.runnerBacked, true);
@@ -105,15 +97,16 @@ function extractorDir(prefix) {
 function runExtractor(base, config, args = [], opts = {}) {
   return execFileSync(
     process.execPath,
-    [join(base, "vite-extract.mjs"), join(base, config), base, ...args],
+    ["--input-type=module", "-e", EXTRACT_WRAPPER, join(base, "vite-extract.mjs"), join(base, config), base, ...args],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, ...opts },
   );
 }
 
 // A config/configEnvironment hook is real plugin code: one that starts an
-// interval (a watcher, a server) must not keep the one-shot extractor alive —
-// the result is emitted, then the process exits itself.
-test("the extractor exits after emitting even when a hook keeps the event loop alive", () => {
+// interval (a watcher, a server) must not keep the extraction from resolving
+// — extract() returns the result while the timer is still live (oj then drops
+// the engine, killing it, as the old one-shot subprocess's exit did).
+test("extract() resolves even when a hook keeps the event loop alive", () => {
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-exit-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
@@ -313,11 +306,7 @@ test("a failed raw load warns and withholds the resolved ssr.resolve sugar", () 
       }\n`,
     );
     fs.writeFileSync(join(base, "vite.config.mjs"), "export default {};\n");
-    const child = spawnSync(
-      process.execPath,
-      [join(base, "vite-extract.mjs"), join(base, "vite.config.mjs"), base],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 },
-    );
+    const child = spawnExtractor(base, "vite.config.mjs");
     assert.match(
       child.stderr,
       /could not load the raw config .*raw load exploded.*ssr\.resolve conditions are unavailable/s,
@@ -426,11 +415,7 @@ test("real vite: a throwing configResolved keeps the partial verdict and never r
         ],
       };\n`,
     );
-    const child = spawnSync(
-      process.execPath,
-      [join(base, "vite-extract.mjs"), join(base, "vite.config.mjs"), base],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 },
-    );
+    const child = spawnExtractor(base, "vite.config.mjs");
     assert.match(
       child.stderr,
       /resolveConfig failed after plugin config hooks ran.*configResolved exploded/s,
@@ -498,12 +483,7 @@ test("real vite: a mid-run hook throw keeps a raw runner declaration visible in 
     // A throwing config hook: it aborts resolveConfig before the sentinel's
     // post sniff ever ran (started=true via the pre plugin, declared=false).
     writeFileSync(join(base, "vite.config.mjs"), rawDeclaring('config: () => { throw new Error("config exploded"); }'));
-    const run = () =>
-      spawnSync(
-        process.execPath,
-        [join(base, "vite-extract.mjs"), join(base, "vite.config.mjs"), base],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 },
-      );
+    const run = () => spawnExtractor(base, "vite.config.mjs");
     let child = run();
     assert.match(child.stderr, /resolveConfig failed after plugin config hooks ran.*config exploded/s);
     let out = JSON.parse(child.stdout);
