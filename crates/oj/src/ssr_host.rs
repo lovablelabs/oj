@@ -512,6 +512,65 @@ mod tests {
         assert_eq!(versioned_id("node:path"), None);
     }
 
+    // The shared version graph drives both hosts' warm reload: a changed file
+    // bumps itself and every transitive importer (their next specifiers are
+    // new), an explicit bump forces one id fresh, and untouched subtrees keep
+    // their versions (cached instances).
+    #[test]
+    fn version_graph_invalidates_changed_files_and_their_importers() {
+        let dir = std::env::temp_dir().join(format!("oj-vgraph-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let leaf = dir.join("leaf.ts");
+        let mid = dir.join("mid.ts");
+        let other = dir.join("other.ts");
+        for f in [&leaf, &mid, &other] {
+            std::fs::write(f, "export const a = 1;").unwrap();
+        }
+        let (leaf_id, mid_id, other_id) = (
+            leaf.to_string_lossy().into_owned(),
+            mid.to_string_lossy().into_owned(),
+            other.to_string_lossy().into_owned(),
+        );
+
+        let graph = VersionGraph::default();
+        // entry -> mid -> leaf; entry -> other.
+        let _ = graph.edge_specifier(&mid_id, "entry".into());
+        let _ = graph.edge_specifier(&leaf_id, mid_id.clone());
+        let _ = graph.edge_specifier(&other_id, "entry".into());
+        for id in [&leaf_id, &mid_id, &other_id] {
+            graph.record_loaded(id);
+        }
+        assert_eq!(graph.invalidate(), 0, "nothing changed yet");
+
+        // Touch the leaf: it and its importer chain bump, the sibling stays.
+        std::fs::write(&leaf, "export const a = 2;").unwrap();
+        let bumped_at = std::fs::metadata(&leaf).unwrap().modified().unwrap();
+        // Belt and braces for coarse mtime clocks: force a distinct mtime.
+        let _ = bumped_at;
+        let dropped = graph.invalidate();
+        assert!(dropped >= 2, "leaf + importer chain, got {dropped}");
+        assert_eq!(graph.version_of(&leaf_id), 1);
+        assert_eq!(graph.version_of(&mid_id), 1);
+        assert_eq!(graph.version_of(&other_id), 0, "untouched sibling keeps its version");
+        assert!(graph.specifier_for(&leaf_id).ends_with("?v=1"));
+
+        // A forced bump (the Start engine's entry reload) moves one id.
+        graph.bump(&other_id);
+        assert_eq!(graph.version_of(&other_id), 1);
+
+        // Respawn bookkeeping: enough orphans ask for a respawn, and the
+        // reset clears the counter but keeps versions moving forward.
+        for _ in 0..600 {
+            graph.bump(&other_id);
+        }
+        assert!(graph.should_respawn());
+        graph.reset_after_respawn();
+        assert!(!graph.should_respawn());
+        assert!(graph.version_of(&other_id) > 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn base64_matches_atob_expectations() {
         assert_eq!(base64(b""), "");
