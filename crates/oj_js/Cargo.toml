@@ -1,8 +1,10 @@
 [package]
 name = "oj_js"
-version = "0.0.0"
-edition = "2021"
-publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Embedded JavaScript engine: Deno runtime with Node compatibility over the app's node_modules"
 
 [dependencies]
 deno_core = { version = "0.412", features = ["v8"] }

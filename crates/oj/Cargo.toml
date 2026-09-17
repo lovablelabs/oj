@@ -17,7 +17,7 @@ oj_env.workspace = true
 oj_config.workspace = true
 oj_resolver.workspace = true
 oj_server.workspace = true
-oj_js = { path = "../oj_js" }
+oj_js.workspace = true
 url = "2"
 regex = "1.11"
 anyhow.workspace = true

@@ -28,7 +28,7 @@ oj_css = { version = "0.1.26", path = "crates/oj_css" }
 oj_env = { version = "0.1.26", path = "crates/oj_env" }
 oj_config = { version = "0.1.26", path = "crates/oj_config" }
 oj_server = { version = "0.1.26", path = "crates/oj_server" }
-oj_js = { path = "crates/oj_js" }
+oj_js = { version = "0.1.26", path = "crates/oj_js" }
 
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"
