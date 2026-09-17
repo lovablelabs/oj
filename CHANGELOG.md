@@ -8,7 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- New `oj_js` crate: an in-process JS engine (Deno isolates with Node compat over the app's node_modules, snapshot boot, memory/deadline limits) that will replace the Node sidecar processes; no consumers wired up yet, and the `oj` binary now exports the Node-API symbols native addons need.
+- New `oj_js` crate: an in-process JS engine (Deno isolates with Node compatibility over the app's own node_modules, snapshot boot, per-job memory and deadline limits, and a `ModuleHost` seam that lets oj own module resolution/loading for an engine). The `oj` binary exports the Node-API symbol set, so native `.node` addons (`@tailwindcss/oxide`, `lightningcss`, rolldown's binding) load in-process; esbuild's child-binary protocol also works inside the engine.
+- The dep optimizer now has a timeout (`OJ_OPTIMIZE_TIMEOUT`, default 120s); it previously waited forever on a wedged run.
+
+### Changed
+- The JS sidecar processes are gone: SSR dev, CSS (Tailwind v3/v4, Less, Stylus), Svelte, `vite.config` extraction, the dep optimizer, and the whole TanStack Start path (runner, loader, route-tree/server-fn codegen, client bundle, prod build, prerender) now run on in-process engines instead of spawned `node`. `node` on PATH is only needed for the plugin host, and only when a project has plugins oj does not serve natively. Laziness is unchanged: a project that never trips a workload starts no engine.
+- Start's synchronous SSR loader bridge (named pipes + SharedArrayBuffer + Atomics) is deleted on both ends; plugin access for SSR modules flows through ordinary async calls. This also makes that path work on Windows (the bridge was unix-only).
+- oj builds on the targets rusty_v8 ships prebuilt static libraries for (see README "Supported targets").
+- SSR dev documents are delivered buffered rather than progressively streamed for now, and `import.meta.url` in SSR modules carries a `?v=N` invalidation query.
+- Config/plugin code that mutates `process.env` during extraction stays isolated per run, and extraction results no longer travel over stdout or temp files, so a config that prints can no longer corrupt them.
+- Sidecar request deadlines are armed when a job starts executing rather than when it is queued; build-time CSS/Svelte compiles are now bounded (they previously waited forever).
+- Config-extraction dependency tracking stamps Vite's `.env` file family deterministically (under Deno, named `node:fs` import bindings are not observable by the read recorder; `require` and default-import consumers are still recorded).
+
+### Fixed
+- `import.meta.glob` patterns with `..` segments no longer treat the parent-directory step as a dotfile (previously such globs silently expanded empty, on the client path too).
+- Duplicate `define` keys no longer silently disable every replacement in a compile; per-environment defines are deduped last-wins and SSR compiles get the ssr-environment values.
+- A route-tree regeneration race where the framework plugin's own rewrite of `routeTree.gen.ts` could swallow an invalidation.
+- Build scripts can no longer leak `NODE_ENV` into the server process.
+- Tailwind package resolution in strict pnpm layouts now works in dev and build (previously Start-only), and a TypeScript PostCSS config named by discovery now actually loads.
 
 ## [0.1.26] - 2026-09-16
 
