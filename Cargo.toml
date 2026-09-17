@@ -62,10 +62,14 @@ clap = { version = "4.6.6", features = ["derive"] }
 proptest = "1.9.0"
 tempfile = "3.24.0"
 
+# `panic = "abort"` is deliberately NOT set: the engine's `__oj_rpc` bridge
+# catches handler panics at the V8 callback boundary (oj_js/src/bridge.rs)
+# so a panicking plugin RPC fails one hook instead of the process, and dev
+# sessions are long-lived servers — an abort would take the whole dev server
+# down with whatever panicked. Unwind tables cost ~9 MB of binary size.
 [profile.release]
 opt-level = "z"
 lto = "fat"
-panic = "abort"
 codegen-units = 1
 
 # Size-optimize the long tail, but keep the dev-loop hot paths at full speed.
