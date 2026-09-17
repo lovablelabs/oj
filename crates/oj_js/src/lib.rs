@@ -370,6 +370,9 @@ fn engine_thread(
                 });
         }
         let isolate_handle = worker.js_runtime.v8_isolate().thread_safe_handle();
+        // The engine's one watchdog thread; every deadline-carrying job arms
+        // it instead of spawning a thread of its own.
+        let watchdog = Watchdog::spawn(isolate_handle.clone());
 
         if ready.send(Ok(isolate_handle.clone())).is_err() {
             return;
@@ -456,7 +459,7 @@ fn engine_thread(
                     reply,
                 }) => {
                     eval_counter += 1;
-                    let guard = deadline.map(|d| DeadlineGuard::arm(isolate_handle.clone(), d));
+                    let guard = deadline.map(|d| DeadlineGuard::arm(&watchdog, d));
                     let result =
                         run_eval(&mut worker, &config, &root_url, eval_counter, input).await;
                     let result = classify(&mut worker, result, guard, &oom);
@@ -480,7 +483,7 @@ fn engine_thread(
                     // busy loop — then the expiry tick can never run and the
                     // termination is the only way the isolate comes back.
                     let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
-                    let guard = deadline.map(|d| DeadlineGuard::arm(isolate_handle.clone(), d));
+                    let guard = deadline.map(|d| DeadlineGuard::arm(&watchdog, d));
                     match setup_call(&mut worker, &config, &module, &export, args).await {
                         Ok(fut) => {
                             if guard.as_ref().is_some_and(DeadlineGuard::fired) {
@@ -612,55 +615,184 @@ fn classify(
     }
 }
 
-/// Terminates JS execution from a helper thread once the deadline passes.
-/// Arming and disarming synchronize on a mutex so a firing watchdog can never
-/// poison the job that comes after the one it was armed for.
-struct DeadlineGuard {
-    disarmed: Arc<Mutex<bool>>,
+/// One long-lived watchdog thread per engine, terminating JS execution when
+/// an armed deadline passes. Every deadline-carrying job used to spawn (and
+/// join) its own OS thread — one per plugin hook call and CSS compile; the
+/// engine now owns a single thread that all [`DeadlineGuard`]s arm and disarm
+/// through shared state. Firing happens WITH the state lock held, and disarm
+/// takes the same lock, so the old mutex-synchronized protocol is preserved:
+/// a firing watchdog can never poison the job that comes after the one it was
+/// armed for, and a disarm's `fired` answer is settled.
+///
+/// A dedicated thread rather than a tokio task on purpose: the ScriptEngine
+/// and CSS spawn paths do not reliably carry a runtime handle, and the
+/// watchdog must keep ticking while the engine thread itself is wedged in
+/// synchronous JS.
+struct Watchdog {
+    shared: Arc<WatchdogShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+struct WatchdogShared {
+    state: Mutex<WatchdogState>,
+    cv: std::sync::Condvar,
+}
+
+struct WatchdogState {
+    next_id: u64,
+    /// Armed deadlines by guard id; several calls park concurrently, each
+    /// with its own deadline.
+    armed: std::collections::HashMap<u64, ArmedDeadline>,
+    shutdown: bool,
+}
+
+struct ArmedDeadline {
+    at: std::time::Instant,
     fired: Arc<AtomicBool>,
-    cancel_tx: std::sync::mpsc::Sender<()>,
+}
+
+impl Watchdog {
+    fn spawn(handle: v8::IsolateHandle) -> Watchdog {
+        let shared = Arc::new(WatchdogShared {
+            state: Mutex::new(WatchdogState {
+                next_id: 0,
+                armed: std::collections::HashMap::new(),
+                shutdown: false,
+            }),
+            cv: std::sync::Condvar::new(),
+        });
+        let thread = {
+            let shared = Arc::clone(&shared);
+            std::thread::Builder::new()
+                .name("oj-js-watchdog".into())
+                .spawn(move || watchdog_thread(&shared, &handle))
+                .expect("spawn watchdog thread")
+        };
+        Watchdog {
+            shared,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.shutdown = true;
+        }
+        self.shared.cv.notify_all();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn watchdog_thread(shared: &WatchdogShared, handle: &v8::IsolateHandle) {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        if state.shutdown {
+            return;
+        }
+        let now = std::time::Instant::now();
+        // Fire every armed deadline that has passed — under the lock, so a
+        // concurrent disarm reads a settled verdict — and drop it from the
+        // set (its termination is done; the guard still owns the flag).
+        let mut due = false;
+        state.armed.retain(|_, armed| {
+            if armed.at <= now {
+                armed.fired.store(true, Ordering::SeqCst);
+                due = true;
+                false
+            } else {
+                true
+            }
+        });
+        if due {
+            handle.terminate_execution();
+        }
+        state = match state.armed.values().map(|a| a.at).min() {
+            Some(next) => {
+                let (state, _) = shared
+                    .cv
+                    .wait_timeout(state, next.saturating_duration_since(now))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state
+            }
+            None => shared
+                .cv
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        };
+    }
+}
+
+/// One job's handle on the engine's [`Watchdog`]: armed at submit, disarmed
+/// through `classify` when the job settles.
+struct DeadlineGuard {
+    id: u64,
+    fired: Arc<AtomicBool>,
+    shared: Arc<WatchdogShared>,
 }
 
 impl DeadlineGuard {
-    fn arm(handle: v8::IsolateHandle, deadline: Duration) -> Self {
-        let disarmed = Arc::new(Mutex::new(false));
+    fn arm(watchdog: &Watchdog, deadline: Duration) -> Self {
         let fired = Arc::new(AtomicBool::new(false));
-        let (cancel_tx, cancel_rx) = std::sync::mpsc::channel::<()>();
-        {
-            let disarmed = disarmed.clone();
-            let fired = fired.clone();
-            std::thread::spawn(move || {
-                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
-                    cancel_rx.recv_timeout(deadline)
-                {
-                    let disarmed = disarmed.lock().unwrap();
-                    if !*disarmed {
-                        fired.store(true, Ordering::SeqCst);
-                        handle.terminate_execution();
-                    }
-                }
-            });
-        }
+        let id = {
+            let mut state = watchdog
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let id = state.next_id;
+            state.next_id += 1;
+            state.armed.insert(
+                id,
+                ArmedDeadline {
+                    at: std::time::Instant::now() + deadline,
+                    fired: fired.clone(),
+                },
+            );
+            id
+        };
+        // A new earliest deadline: wake the thread to re-derive its wait.
+        watchdog.shared.cv.notify_all();
         DeadlineGuard {
-            disarmed,
+            id,
             fired,
-            cancel_tx,
+            shared: Arc::clone(&watchdog.shared),
         }
     }
 
-    /// Disarms the watchdog and reports whether it fired.
+    /// Disarms the watchdog for this job and reports whether it fired.
     fn disarm(self) -> bool {
-        // Taking the lock waits out a watchdog that is mid-fire, so `fired`
-        // is settled once we read it.
-        *self.disarmed.lock().unwrap() = true;
-        let _ = self.cancel_tx.send(());
+        // Taking the state lock waits out a watchdog that is mid-fire (it
+        // fires holding the lock), so `fired` is settled once we read it.
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.armed.remove(&self.id);
+        drop(state);
         self.fired.load(Ordering::SeqCst)
     }
 
     /// Whether the watchdog fired, without disarming it.
     fn fired(&self) -> bool {
         // The lock waits out a watchdog mid-fire, so the read is settled.
-        let _armed = self.disarmed.lock().unwrap();
+        let _state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.fired.load(Ordering::SeqCst)
     }
 }
