@@ -114,7 +114,7 @@ fn glob_match(pattern: &str, value: &str) -> bool {
         "^{}$",
         pattern
             .split('*')
-            .map(|p| regex::escape(p))
+            .map(regex::escape)
             .collect::<Vec<_>>()
             .join(".*")
     );

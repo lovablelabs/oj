@@ -44,6 +44,12 @@ struct StartState {
     loopback_port: u16,
     /// The engine the one-shot scripts (regen, rebundle) run on.
     scripts: Arc<ScriptEngine>,
+    /// Content hashes of the regen outputs as last pushed to the worker
+    /// environments. Tracked in state (not per-run before/after snapshots):
+    /// the framework's own router-generator plugin in the plugin host also
+    /// rewrites the route tree on watchChange, and racing it per run would
+    /// randomly hide a change it wrote first.
+    regen_hashes: std::sync::Mutex<std::collections::HashMap<PathBuf, Option<u64>>>,
     bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
     verify: oj_cache::integrity::VerifyMode,
     live_reload: PathBuf,
@@ -286,6 +292,15 @@ pub async fn start_dev(
         css_host,
         mode: mode.clone(),
         runner_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        regen_hashes: std::sync::Mutex::new(
+            regen_output_files(&root, &cache)
+                .into_iter()
+                .map(|p| {
+                    let h = file_content_hash(&p);
+                    (p, h)
+                })
+                .collect(),
+        ),
     });
 
     // The activation handler: when the plugin middleware comes up after boot,
@@ -513,16 +528,25 @@ fn file_content_hash(p: &Path) -> Option<u64> {
     Some(h.finish())
 }
 
-/// The regen outputs whose content a run rewrote, as invalidate changes.
+/// The regen outputs whose content moved past `seen` (the hashes last pushed
+/// to the worker environments), as invalidate changes; `seen` is updated to
+/// the current content.
 fn changed_regen_outputs(
     files: &[PathBuf],
-    before: &[Option<u64>],
+    seen: &mut std::collections::HashMap<PathBuf, Option<u64>>,
 ) -> Vec<(String, &'static str)> {
     files
         .iter()
-        .zip(before)
-        .filter(|(f, before)| file_content_hash(f) != **before)
-        .map(|(f, _)| (f.to_string_lossy().into_owned(), "update"))
+        .filter(|f| {
+            let current = file_content_hash(f);
+            match seen.insert((*f).clone(), current) {
+                Some(last) => current != last,
+                // Never seen (a tsr.config change moved the tree): only a file
+                // that exists is a change worth pushing.
+                None => current.is_some(),
+            }
+        })
+        .map(|f| (f.to_string_lossy().into_owned(), "update"))
         .collect()
 }
 
@@ -684,12 +708,7 @@ async fn rebundle_worker(
             continue;
         };
         let paths: Vec<PathBuf> = run.paths.into_iter().collect();
-        // Snapshot the regen outputs before the run: the ones the run rewrites
-        // get their own worker invalidate below (the watcher never forwards
-        // them, see regen_output_files).
         let regen_files = regen_output_files(&root, &cache);
-        let regen_before: Vec<Option<u64>> =
-            regen_files.iter().map(|p| file_content_hash(p)).collect();
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
             let scripts = Arc::clone(&state.scripts);
@@ -737,12 +756,18 @@ async fn rebundle_worker(
             }
         }
         // Regenerated outputs are edits the watcher never forwards: push the
-        // ones this run rewrote to the worker environments explicitly (the
-        // routeTree.gen filter only guards the rebuild loop, not worker
-        // invalidation), and re-arm the lazy runner — a fallback request that
+        // ones whose content moved past what the worker environments last saw
+        // (whether this run's regen or the framework plugin's own generator
+        // rewrote them), and re-arm the lazy runner — a fallback request that
         // consumed the dirty flag mid-regen reloaded onto the old generated
         // files. Both before this run's browser reload.
-        let regen_changed = changed_regen_outputs(&regen_files, &regen_before);
+        let regen_changed = {
+            let mut seen = state
+                .regen_hashes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            changed_regen_outputs(&regen_files, &mut seen)
+        };
         if !regen_changed.is_empty() {
             if state.lazy_runner() {
                 state
@@ -938,6 +963,10 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
+    // Resolved BEFORE any script runs: engine scripts merge their env into
+    // this process's env (process.env is shared in-process), so a later shell
+    // read would see the route-tree run's development NODE_ENV.
+    let shell_node_env = std::env::var("NODE_ENV").ok().filter(|v| !v.is_empty());
     let scripts = Arc::new(ScriptEngine::new(&root)?);
     {
         let (r, c, s) = (root.clone(), cache.clone(), Arc::clone(&scripts));
@@ -985,7 +1014,7 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
         None => root.to_path_buf(),
     };
     let node_env = oj_env::resolve_node_env(
-        std::env::var("NODE_ENV").ok().filter(|v| !v.is_empty()).as_deref(),
+        shell_node_env.as_deref(),
         &oj_env::load(&env_dir, mode),
         "production",
     );
@@ -2258,10 +2287,11 @@ mod tests {
         );
     }
 
-    // The rebundle worker snapshots the regen outputs around a run and pushes
-    // only the ones the run actually rewrote to the worker environments:
-    // rewritten content and a newly created file count, an untouched file (or
-    // one missing before and after) does not.
+    // The rebundle worker tracks the regen outputs' content against what the
+    // worker environments last saw and pushes only real moves: rewritten
+    // content and a newly created file count, an untouched file (or one
+    // missing throughout) does not — regardless of WHO rewrote the file (this
+    // run's regen or the framework plugin's own generator racing it).
     #[test]
     fn changed_regen_outputs_detects_rewrites_and_creations() {
         let dir = tmp("regen-outputs");
@@ -2270,23 +2300,33 @@ mod tests {
         let missing = dir.join("never-written.mjs");
         std::fs::write(&tree, "tree v1").unwrap();
         let files = [tree.clone(), resolver.clone(), missing.clone()];
-        let before: Vec<Option<u64>> = files.iter().map(|p| file_content_hash(p)).collect();
+        let mut seen: std::collections::HashMap<PathBuf, Option<u64>> = files
+            .iter()
+            .map(|p| (p.clone(), file_content_hash(p)))
+            .collect();
 
         // Nothing rewritten: no changes, even for the still-missing files.
-        assert!(changed_regen_outputs(&files, &before).is_empty());
+        assert!(changed_regen_outputs(&files, &mut seen).is_empty());
 
         // A rewrite and a creation both count; the untouched missing file not.
         std::fs::write(&tree, "tree v2").unwrap();
         std::fs::write(&resolver, "resolver v1").unwrap();
-        let changed = changed_regen_outputs(&files, &before);
+        let changed = changed_regen_outputs(&files, &mut seen);
         let paths: Vec<&str> = changed.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(paths, vec![tree.to_str().unwrap(), resolver.to_str().unwrap()]);
         assert!(changed.iter().all(|(_, t)| *t == "update"));
 
         // Same content written again: hashes match, no change detected.
-        let before: Vec<Option<u64>> = files.iter().map(|p| file_content_hash(p)).collect();
         std::fs::write(&tree, "tree v2").unwrap();
-        assert!(changed_regen_outputs(&files, &before).is_empty());
+        assert!(changed_regen_outputs(&files, &mut seen).is_empty());
+
+        // A change the worker HAS seen (recorded above) never re-pushes, and a
+        // change landing between runs (someone else's write) is caught on the
+        // next pass.
+        std::fs::write(&tree, "tree v3").unwrap();
+        let changed = changed_regen_outputs(&files, &mut seen);
+        assert_eq!(changed.len(), 1);
+        assert!(changed[0].0.ends_with("routeTree.gen.ts"));
     }
 
     // Vite's loadEnv rule for the Start scripts: `.env.<mode>` vars with any

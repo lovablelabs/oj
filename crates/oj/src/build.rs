@@ -3927,6 +3927,30 @@ const serialize = (d) => JSON.stringify(d ?? null).replace(/</g, "\\u003c");
 const paths = __PATHS__;
 const root = dirname(fileURLToPath(import.meta.url));
 
+// Called by the engine (`JsEngine::call` settles on the returned promise; an
+// eval would instead wait out an event loop the server bundle keeps alive).
+export async function run() {
+  for (const url of paths) {
+    const data = typeof entry.load === "function" ? await entry.load(url) : null;
+    const routeHead = typeof entry.head === "function" ? String(await entry.head(url, data)) : "";
+    const body = await renderFull(url, data);
+    const html =
+      '<!doctype html><html><head><meta charset="utf-8">' +
+      routeHead +
+      `<script>window.__OJ_DATA__=${serialize(data)}</script>` +
+      (CLIENT_CSS ? `<link rel="stylesheet" href="${CLIENT_CSS}">` : "") +
+      `<script type="module" src="${CLIENT_JS}"></script></head><body><div id="app">` +
+      body +
+      "</div></body></html>";
+    const file = url === "/" ? "index.html" : join(url.replace(/^\/+/, ""), "index.html");
+    const dest = join(root, file);
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, html);
+    console.error(`oj prerender: ${url} -> ${file}`);
+  }
+  return true;
+}
+
 async function renderFull(url, data) {
   if (typeof entry.renderStream === "function") {
     const stream = await entry.renderStream(url, data);
@@ -3941,25 +3965,6 @@ async function renderFull(url, data) {
     return out;
   }
   return await entry.render(url, data);
-}
-
-for (const url of paths) {
-  const data = typeof entry.load === "function" ? await entry.load(url) : null;
-  const routeHead = typeof entry.head === "function" ? String(await entry.head(url, data)) : "";
-  const body = await renderFull(url, data);
-  const html =
-    '<!doctype html><html><head><meta charset="utf-8">' +
-    routeHead +
-    `<script>window.__OJ_DATA__=${serialize(data)}</script>` +
-    (CLIENT_CSS ? `<link rel="stylesheet" href="${CLIENT_CSS}">` : "") +
-    `<script type="module" src="${CLIENT_JS}"></script></head><body><div id="app">` +
-    body +
-    "</div></body></html>";
-  const file = url === "/" ? "index.html" : join(url.replace(/^\/+/, ""), "index.html");
-  const dest = join(root, file);
-  await mkdir(dirname(dest), { recursive: true });
-  await writeFile(dest, html);
-  console.error(`oj prerender: ${url} -> ${file}`);
 }
 "#;
 
@@ -4176,7 +4181,11 @@ pub(crate) async fn build_ssr_app(
         let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root))
             .map_err(|e| anyhow::anyhow!("prerender engine: {e}"))?;
         let result = engine
-            .eval(oj_js::EvalInput::Path(script_path.clone()))
+            .call(
+                script_path.to_string_lossy().into_owned(),
+                "run",
+                Vec::new(),
+            )
             .await;
         let _ = fs::remove_file(&script_path);
         if let Err(e) = result {

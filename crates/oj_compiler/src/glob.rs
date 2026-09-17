@@ -686,6 +686,22 @@ mod tests {
         d
     }
 
+    // A `../sibling/*` glob from a nested importer must match: the `..` path
+    // step is not a dotfile (the hidden-by-default rule once swallowed it and
+    // every parent-relative glob expanded to an empty map).
+    #[test]
+    fn parent_relative_globs_match() {
+        let d = tmp("parent-rel");
+        std::fs::create_dir_all(d.join("routes")).unwrap();
+        let out = super::expand_source(
+            "const m = import.meta.glob(\"../img/*.png\", { eager: true });",
+            &d.join("routes/index.tsx"),
+        );
+        assert!(out.contains("../img/a.png"), "{out}");
+        assert!(out.contains("../img/b.png"), "{out}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn glob_patterns_are_resolved_against_the_importer_dir() {
         let src = "const a = import.meta.glob('./pages/*.tsx');\n\
