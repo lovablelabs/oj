@@ -3,6 +3,7 @@
 
 mod build;
 mod ssr_dev;
+mod ssr_host;
 mod start_dev;
 
 // Linking-only for now: build.rs exports the Node-API symbols these crates

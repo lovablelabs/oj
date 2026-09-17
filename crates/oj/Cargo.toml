@@ -17,6 +17,8 @@ oj_env.workspace = true
 oj_config.workspace = true
 oj_resolver.workspace = true
 oj_server.workspace = true
+oj_js = { path = "../oj_js" }
+url = "2"
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

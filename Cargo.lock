@@ -6025,6 +6025,7 @@ dependencies = [
  "oj_config",
  "oj_css",
  "oj_env",
+ "oj_js",
  "oj_resolver",
  "oj_server",
  "rolldown",
@@ -6056,6 +6057,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
+ "url",
 ]
 
 [[package]]
