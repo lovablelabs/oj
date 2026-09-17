@@ -30,6 +30,7 @@ use deno_runtime::worker::WorkerServiceOptions;
 use deno_runtime::BootstrapOptions;
 use deno_runtime::WorkerExecutionMode;
 
+use crate::host::HostBridge;
 use crate::loader::EngineModuleLoader;
 use crate::loader::EngineRequireLoader;
 use crate::loader::Sys;
@@ -43,6 +44,7 @@ fn boot(e: impl std::fmt::Display) -> EngineError {
 pub(crate) fn build_worker(
     config: &EngineConfig,
     main_module: &Url,
+    host: Option<HostBridge>,
 ) -> Result<MainWorker, EngineError> {
     let sys = Sys::default();
 
@@ -71,9 +73,12 @@ pub(crate) fn build_worker(
     let cjs_tracker = resolver_factory.cjs_tracker().map_err(boot)?.clone();
     let pkg_json_resolver = resolver_factory.pkg_json_resolver().clone();
 
+    let root = deno_path_util::url_from_directory_path(&config.root).map_err(boot)?;
     let module_loader = Rc::new(EngineModuleLoader {
         node_resolver: node_resolver.clone(),
         npm_module_loader,
+        root,
+        host,
     });
     let require_loader = Rc::new(EngineRequireLoader {
         cjs_tracker,

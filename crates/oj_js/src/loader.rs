@@ -34,6 +34,10 @@ use node_resolver::DenoIsBuiltInNodeModuleChecker;
 use node_resolver::NodeResolutionKind;
 use node_resolver::ResolutionMode;
 
+use crate::host::HostBridge;
+use crate::host::HostModuleType;
+use crate::host::HostResolved;
+
 /// The engine runs against the real filesystem only.
 pub(crate) type Sys = sys_traits::impls::RealSys;
 
@@ -47,6 +51,40 @@ pub(crate) type EngineNodeResolver = node_resolver::NodeResolverRc<
 pub(crate) struct EngineModuleLoader {
     pub node_resolver: EngineNodeResolver,
     pub npm_module_loader: DenoNpmModuleLoaderRc<Sys>,
+    /// The engine root as a URL: the referrer for Node resolution when the
+    /// real referrer is not a file (a host's virtual module importing a bare
+    /// npm specifier resolves from the app root, like the app itself would).
+    pub root: Url,
+    /// When set, the host is consulted before byonm: it sees every import
+    /// except absolute `file:`/`node:`/`data:`/`blob:` URLs on resolve, and
+    /// every module fetch except `node:` builtins on load.
+    pub host: Option<HostBridge>,
+}
+
+impl EngineModuleLoader {
+    fn node_resolve(&self, specifier: &str, referrer: &str) -> Result<ModuleSpecifier, JsErrorBox> {
+        let referrer_url = Url::parse(referrer)
+            .map_err(|e| JsErrorBox::type_error(format!("invalid referrer \"{referrer}\": {e}")))?;
+        let referrer_url = if referrer_url.scheme() == "file" {
+            referrer_url
+        } else {
+            // A synthetic file identity directly in the root: byonm walks up
+            // from the referrer file's directory, so the app root's own
+            // node_modules is the first stop.
+            self.root
+                .join("__oj_virtual__.mjs")
+                .unwrap_or_else(|_| self.root.clone())
+        };
+        self.node_resolver
+            .resolve(
+                specifier,
+                &referrer_url,
+                ResolutionMode::Import,
+                NodeResolutionKind::Execution,
+            )
+            .and_then(|resolution| resolution.into_url())
+            .map_err(JsErrorBox::from_err)
+    }
 }
 
 impl ModuleLoader for EngineModuleLoader {
@@ -64,17 +102,37 @@ impl ModuleLoader for EngineModuleLoader {
                 return Ok(url);
             }
         }
-        let referrer_url = Url::parse(referrer)
-            .map_err(|e| JsErrorBox::type_error(format!("invalid referrer \"{referrer}\": {e}")))?;
-        self.node_resolver
-            .resolve(
-                specifier,
-                &referrer_url,
-                ResolutionMode::Import,
-                NodeResolutionKind::Execution,
-            )
-            .and_then(|resolution| resolution.into_url())
-            .map_err(JsErrorBox::from_err)
+        if let Some(host) = &self.host {
+            // Synchronous seam over an async host: the future runs on the main
+            // runtime while this isolate thread parks on the reply.
+            match host
+                .resolve_blocking(referrer, specifier)
+                .map_err(JsErrorBox::generic)?
+            {
+                Some(HostResolved::Url(url)) => {
+                    return Url::parse(&url).map_err(|e| {
+                        JsErrorBox::type_error(format!(
+                            "module host returned an invalid URL \"{url}\": {e}"
+                        ))
+                    });
+                }
+                Some(HostResolved::External(spec)) => {
+                    return self.node_resolve(&spec, referrer);
+                }
+                None => {
+                    // Not the host's module, but already an absolute URL (a
+                    // host-scheme specifier the host chose not to re-resolve,
+                    // e.g. the root of a dynamic import): pass it through to
+                    // load, which consults the host again.
+                    if let Ok(url) = Url::parse(specifier) {
+                        if url.scheme().len() > 1 {
+                            return Ok(url);
+                        }
+                    }
+                }
+            }
+        }
+        self.node_resolve(specifier, referrer)
     }
 
     fn load(
@@ -84,17 +142,38 @@ impl ModuleLoader for EngineModuleLoader {
         options: deno_core::ModuleLoadOptions,
     ) -> ModuleLoadResponse {
         let specifier = module_specifier.clone();
-        if specifier.scheme() != "file" {
-            return ModuleLoadResponse::Sync(Err(JsErrorBox::type_error(format!(
-                "oj_js cannot load modules with scheme \"{}\"",
-                specifier.scheme()
-            ))));
-        }
+        let host = self.host.clone();
         let loader = self.npm_module_loader.clone();
         let referrer = maybe_referrer.map(|r| r.specifier.clone());
         let requested = options.requested_module_type;
         ModuleLoadResponse::Async(
             async move {
+                if let Some(host) = &host {
+                    if specifier.scheme() != "node" {
+                        if let Some(module) = host
+                            .load(specifier.as_str())
+                            .await
+                            .map_err(JsErrorBox::generic)?
+                        {
+                            let module_type = match module.module_type {
+                                HostModuleType::JavaScript => ModuleType::JavaScript,
+                                HostModuleType::Json => ModuleType::Json,
+                            };
+                            return Ok(ModuleSource::new(
+                                module_type,
+                                ModuleSourceCode::String(module.code.into()),
+                                &specifier,
+                                None,
+                            ));
+                        }
+                    }
+                }
+                if specifier.scheme() != "file" {
+                    return Err(JsErrorBox::type_error(format!(
+                        "oj_js cannot load modules with scheme \"{}\"",
+                        specifier.scheme()
+                    )));
+                }
                 let requested_dr = as_deno_resolver_requested_module_type(&requested);
                 let loaded = loader
                     .load(
@@ -115,6 +194,15 @@ impl ModuleLoader for EngineModuleLoader {
             }
             .boxed_local(),
         )
+    }
+
+    /// For source maps whose `sources` are relative names: the mapped frame
+    /// only replaces the compiled specifier when the original file exists
+    /// (deno_core's guard against maps that name undistributed sources).
+    fn source_map_source_exists(&self, source_url: &str) -> Option<bool> {
+        let url = Url::parse(source_url).ok()?;
+        let path = deno_path_util::url_to_file_path(&url).ok()?;
+        Some(path.is_file())
     }
 }
 

@@ -301,3 +301,229 @@ async fn napi_addon_loads() {
         .unwrap();
     assert_eq!(value, serde_json::json!(".a{color:red}"));
 }
+
+/// The ModuleHost seam: a host serving synthetic versioned modules, exercised
+/// the way oj's SSR runner uses it (version-stamped specifiers, invalidation
+/// by bumping versions up the importer chain, externals falling through to
+/// byonm resolution).
+mod host_seam {
+    use super::*;
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use oj_js::HostFuture;
+    use oj_js::HostModule;
+    use oj_js::HostModuleType;
+    use oj_js::HostResolved;
+    use oj_js::ModuleHost;
+
+    /// Serves modules from an in-memory map under `test://m/<id>?v=<version>`.
+    /// Relative imports resolve to the current version of the named module;
+    /// specifiers in `externals` defer to the engine's own node resolution.
+    #[derive(Default)]
+    struct TestHost {
+        modules: Mutex<HashMap<String, String>>,
+        versions: Mutex<HashMap<String, u64>>,
+        externals: Mutex<HashSet<String>>,
+    }
+
+    impl TestHost {
+        fn set(&self, id: &str, code: &str) {
+            self.modules
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), code.to_string());
+        }
+
+        fn bump(&self, id: &str) {
+            *self
+                .versions
+                .lock()
+                .unwrap()
+                .entry(id.to_string())
+                .or_insert(0) += 1;
+        }
+
+        fn spec(&self, id: &str) -> String {
+            let v = self.versions.lock().unwrap().get(id).copied().unwrap_or(0);
+            format!("test://m/{id}?v={v}")
+        }
+
+        fn id_of(specifier: &str) -> Option<String> {
+            let rest = specifier.strip_prefix("test://m/")?;
+            Some(rest.split('?').next().unwrap_or(rest).to_string())
+        }
+    }
+
+    impl ModuleHost for TestHost {
+        fn resolve<'a>(
+            &'a self,
+            _importer: &'a str,
+            specifier: &'a str,
+        ) -> HostFuture<'a, Result<Option<HostResolved>, String>> {
+            Box::pin(async move {
+                if self.externals.lock().unwrap().contains(specifier) {
+                    return Ok(Some(HostResolved::External(specifier.to_string())));
+                }
+                let id = specifier.trim_start_matches("./");
+                if self.modules.lock().unwrap().contains_key(id) {
+                    return Ok(Some(HostResolved::Url(self.spec(id))));
+                }
+                Ok(None)
+            })
+        }
+
+        fn load<'a>(
+            &'a self,
+            specifier: &'a str,
+        ) -> HostFuture<'a, Result<Option<HostModule>, String>> {
+            Box::pin(async move {
+                let Some(id) = TestHost::id_of(specifier) else {
+                    return Ok(None);
+                };
+                match self.modules.lock().unwrap().get(&id) {
+                    Some(code) => Ok(Some(HostModule {
+                        code: code.clone(),
+                        module_type: HostModuleType::JavaScript,
+                    })),
+                    None => Err(format!("host has no module \"{id}\"")),
+                }
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synthetic_modules_resolve_and_load_through_the_host() {
+        let root = app_root();
+        let host = Arc::new(TestHost::default());
+        host.set("dep", r#"export const word = "world";"#);
+        host.set(
+            "entry",
+            r#"import { word } from "./dep";
+               export function greet(name) { return `${name} ${word}`; }"#,
+        );
+        let engine =
+            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap();
+        let value = engine
+            .call(
+                host.spec("entry"),
+                "greet",
+                vec![serde_json::json!("hello")],
+            )
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::json!("hello world"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn version_bumps_reevaluate_changed_modules_and_keep_state() {
+        let root = app_root();
+        let host = Arc::new(TestHost::default());
+        // Both modules count their evaluations in globals, so instance reuse
+        // is observable: an unchanged specifier must reuse the instance (the
+        // count stays), a bumped one must evaluate fresh.
+        host.set(
+            "dep",
+            "export const stamp = (globalThis.__depRuns = (globalThis.__depRuns ?? 0) + 1);",
+        );
+        host.set(
+            "entry",
+            r#"import { stamp } from "./dep";
+               const run = (globalThis.__entryRuns = (globalThis.__entryRuns ?? 0) + 1);
+               export function stat() { return { stamp, run }; }"#,
+        );
+        let engine =
+            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap();
+
+        let first = engine
+            .call(host.spec("entry"), "stat", vec![])
+            .await
+            .unwrap();
+        assert_eq!(first, serde_json::json!({ "stamp": 1, "run": 1 }));
+
+        // Same specifier: fully cached, nothing re-evaluates.
+        let again = engine
+            .call(host.spec("entry"), "stat", vec![])
+            .await
+            .unwrap();
+        assert_eq!(again, serde_json::json!({ "stamp": 1, "run": 1 }));
+
+        // The entry changed: its version (and only its version) bumps. The
+        // fresh entry instance re-links against the untouched dep instance.
+        host.bump("entry");
+        let entry_only = engine
+            .call(host.spec("entry"), "stat", vec![])
+            .await
+            .unwrap();
+        assert_eq!(entry_only, serde_json::json!({ "stamp": 1, "run": 2 }));
+
+        // The dep changed: the bump propagates up the importer chain (dep and
+        // entry both), so both evaluate fresh.
+        host.bump("dep");
+        host.bump("entry");
+        let both = engine
+            .call(host.spec("entry"), "stat", vec![])
+            .await
+            .unwrap();
+        assert_eq!(both, serde_json::json!({ "stamp": 2, "run": 3 }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_specifiers_fall_through_to_byonm() {
+        let root = app_root();
+        let host = Arc::new(TestHost::default());
+        host.externals.lock().unwrap().insert("oj-fixture".into());
+        host.set(
+            "entry",
+            r#"import fixture from "oj-fixture";
+               export function greet(name) { return fixture.greet(name); }"#,
+        );
+        let engine =
+            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap();
+        let value = engine
+            .call(host.spec("entry"), "greet", vec![serde_json::json!("oj")])
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::json!("hello oj"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_calls_share_the_isolate_without_serializing() {
+        let root = app_root();
+        let host = Arc::new(TestHost::default());
+        // Two in-flight calls hand each other the baton: neither can finish
+        // if the engine serializes jobs.
+        host.set(
+            "entry",
+            r#"const state = (globalThis.__baton ??= { resolve: null, waiter: null });
+               export function waitForBaton() {
+                 return new Promise((resolve) => { state.resolve = resolve; });
+               }
+               export function handBaton(value) {
+                 if (!state.resolve) return "no waiter";
+                 state.resolve(value);
+                 return "handed";
+               }"#,
+        );
+        let engine = Arc::new(
+            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap(),
+        );
+        let spec = host.spec("entry");
+        let waiter = {
+            let engine = engine.clone();
+            let spec = spec.clone();
+            tokio::spawn(async move { engine.call(spec, "waitForBaton", vec![]).await })
+        };
+        // Let the waiter's call reach its pending promise before handing off.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let handed = engine
+            .call(spec, "handBaton", vec![serde_json::json!("relay")])
+            .await
+            .unwrap();
+        assert_eq!(handed, serde_json::json!("handed"));
+        let waited = waiter.await.unwrap().unwrap();
+        assert_eq!(waited, serde_json::json!("relay"));
+    }
+}

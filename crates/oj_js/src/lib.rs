@@ -10,8 +10,15 @@
 //! await the reply. One isolate per thread only -- V8 aborts the process when
 //! two runtimes are dropped on the same thread.
 
+mod host;
 mod loader;
 mod worker;
+
+pub use host::HostFuture;
+pub use host::HostModule;
+pub use host::HostModuleType;
+pub use host::HostResolved;
+pub use host::ModuleHost;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -88,9 +95,11 @@ enum Job {
         reply: Reply,
     },
     /// Execute a module, then call one of its exports with JSON arguments.
-    /// A returned promise is resolved before replying.
+    /// A returned promise is resolved before replying. Call jobs run
+    /// concurrently: while one call's promise is pending (a fetch, a timer),
+    /// the engine accepts and progresses other jobs on the same isolate.
     Call {
-        module: PathBuf,
+        module: String,
         export: String,
         args: Vec<serde_json::Value>,
         deadline: Option<Duration>,
@@ -108,6 +117,26 @@ pub struct JsEngine {
 
 impl JsEngine {
     pub fn spawn(config: EngineConfig) -> Result<JsEngine, EngineError> {
+        Self::spawn_inner(config, None)
+    }
+
+    /// Spawns an engine whose module loading is governed by `host` (see
+    /// [`ModuleHost`]). Must be called from inside a tokio runtime: host
+    /// futures run on that runtime, never on the isolate thread.
+    pub fn spawn_with_host(
+        config: EngineConfig,
+        module_host: Arc<dyn ModuleHost>,
+    ) -> Result<JsEngine, EngineError> {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+            EngineError::Boot("spawn_with_host must be called from inside a tokio runtime".into())
+        })?;
+        Self::spawn_inner(config, Some(host::HostBridge::new(runtime, module_host)))
+    }
+
+    fn spawn_inner(
+        config: EngineConfig,
+        module_host: Option<host::HostBridge>,
+    ) -> Result<JsEngine, EngineError> {
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
         let (tx, rx) = mpsc::unbounded_channel();
@@ -117,7 +146,7 @@ impl JsEngine {
             // V8 + deeply recursive module instantiation want more than the
             // 2MB default, especially in debug builds.
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || engine_thread(config, rx, ready_tx))
+            .spawn(move || engine_thread(config, module_host, rx, ready_tx))
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(JsEngine {
@@ -158,11 +187,12 @@ impl JsEngine {
         .await
     }
 
-    /// Executes `module`, then calls its `export` with `args` (JSON in, JSON
-    /// out). A returned promise is resolved before replying.
+    /// Executes `module` (a path, or an absolute module URL), then calls its
+    /// `export` with `args` (JSON in, JSON out). A returned promise is
+    /// resolved before replying; calls run concurrently on the isolate.
     pub async fn call(
         &self,
-        module: impl Into<PathBuf>,
+        module: impl Into<String>,
         export: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value, EngineError> {
@@ -212,6 +242,7 @@ fn init_v8_platform_once() {
 
 fn engine_thread(
     config: EngineConfig,
+    module_host: Option<host::HostBridge>,
     mut rx: mpsc::UnboundedReceiver<Job>,
     ready: std::sync::mpsc::Sender<Result<(), EngineError>>,
 ) {
@@ -238,7 +269,7 @@ fn engine_thread(
         };
         // Never loaded; MainWorker only needs a main-module identity.
         let main_module = root_url.join("__oj_engine_main__.mjs").unwrap();
-        let mut worker = match worker::build_worker(&config, &main_module) {
+        let mut worker = match worker::build_worker(&config, &main_module, module_host) {
             Ok(worker) => worker,
             Err(e) => {
                 let _ = ready.send(Err(e));
@@ -266,14 +297,70 @@ fn engine_thread(
             return;
         }
 
+        // The scheduler: call jobs run concurrently on the one isolate. A call
+        // is set up exclusively (module load + evaluate + invoke, which itself
+        // progresses the event loop), then parked as a pending promise; the
+        // loop below interleaves accepting new jobs, polling every pending
+        // promise, and driving the event loop, so a call that awaits a fetch
+        // back into the caller (an SSR loader hitting its own dev server)
+        // never deadlocks behind itself.
+        enum Tick {
+            Job(Job),
+            Settled(
+                usize,
+                Result<v8::Global<v8::Value>, Box<deno_core::error::JsError>>,
+            ),
+            /// The event loop failed (an uncaught error) with calls still
+            /// pending: nothing can settle them anymore.
+            Broken(deno_core::error::CoreError),
+            Closed,
+        }
+        let mut pending: Vec<PendingCall> = Vec::new();
+        // The event loop drained while calls were still pending: their
+        // promises can only settle through future jobs (or never — a hung
+        // request, as under Node). Skip event-loop polling until new work
+        // arrives, so the scheduler parks instead of spinning.
+        let mut event_loop_idle = false;
         let mut eval_counter: u64 = 0;
-        while let Some(job) = rx.recv().await {
-            match job {
-                Job::Eval {
+        loop {
+            let tick = std::future::poll_fn(|cx| {
+                match rx.poll_recv(cx) {
+                    std::task::Poll::Ready(Some(job)) => {
+                        return std::task::Poll::Ready(Tick::Job(job))
+                    }
+                    std::task::Poll::Ready(None) => return std::task::Poll::Ready(Tick::Closed),
+                    std::task::Poll::Pending => {}
+                }
+                for (i, p) in pending.iter_mut().enumerate() {
+                    if let std::task::Poll::Ready(r) = p.fut.as_mut().poll(cx) {
+                        return std::task::Poll::Ready(Tick::Settled(i, r));
+                    }
+                }
+                if !pending.is_empty() && !event_loop_idle {
+                    match worker
+                        .js_runtime
+                        .poll_event_loop(cx, PollEventLoopOptions::default())
+                    {
+                        std::task::Poll::Ready(Ok(())) => event_loop_idle = true,
+                        std::task::Poll::Ready(Err(e)) => {
+                            return std::task::Poll::Ready(Tick::Broken(e))
+                        }
+                        std::task::Poll::Pending => {}
+                    }
+                }
+                std::task::Poll::Pending
+            })
+            .await;
+            if matches!(tick, Tick::Job(_)) {
+                event_loop_idle = false;
+            }
+            match tick {
+                Tick::Closed => break,
+                Tick::Job(Job::Eval {
                     input,
                     deadline,
                     reply,
-                } => {
+                }) => {
                     eval_counter += 1;
                     let guard = deadline.map(|d| DeadlineGuard::arm(isolate_handle.clone(), d));
                     let result =
@@ -281,21 +368,76 @@ fn engine_thread(
                     let result = classify(&mut worker, result, guard, &oom);
                     let _ = reply.send(result);
                 }
-                Job::Call {
+                Tick::Job(Job::Call {
                     module,
                     export,
                     args,
                     deadline,
                     reply,
-                } => {
+                }) => {
                     let guard = deadline.map(|d| DeadlineGuard::arm(isolate_handle.clone(), d));
-                    let result = run_call(&mut worker, &config, &module, &export, args).await;
-                    let result = classify(&mut worker, result, guard, &oom);
-                    let _ = reply.send(result);
+                    match setup_call(&mut worker, &config, &module, &export, args).await {
+                        Ok(fut) => pending.push(PendingCall {
+                            fut: Box::pin(fut),
+                            guard,
+                            reply,
+                        }),
+                        Err(e) => {
+                            let result = classify(&mut worker, Err(e), guard, &oom);
+                            let _ = reply.send(result);
+                        }
+                    }
+                }
+                Tick::Settled(i, result) => {
+                    let call = pending.swap_remove(i);
+                    let result = settled_to_json(&mut worker, result);
+                    let result = classify(&mut worker, result, call.guard, &oom);
+                    let _ = call.reply.send(result);
+                }
+                Tick::Broken(e) => {
+                    // An uncaught error broke the event loop (the process
+                    // would die under Node): deliver promises that settled on
+                    // the final turn, fail the rest with the error.
+                    let error = e.to_string();
+                    let noop = std::task::Waker::noop();
+                    let mut cx = std::task::Context::from_waker(noop);
+                    for mut call in std::mem::take(&mut pending) {
+                        let result = match call.fut.as_mut().poll(&mut cx) {
+                            std::task::Poll::Ready(r) => settled_to_json(&mut worker, r),
+                            std::task::Poll::Pending => Err(EngineError::Js(error.clone())),
+                        };
+                        let result = classify(&mut worker, result, call.guard, &oom);
+                        let _ = call.reply.send(result);
+                    }
                 }
             }
         }
     });
+}
+
+/// The result of a call's promise, as `call_with_args` settles it.
+type SettledResult = Result<v8::Global<v8::Value>, Box<deno_core::error::JsError>>;
+
+/// A call whose module ran and whose function was invoked, waiting for the
+/// returned promise to settle while the scheduler drives the event loop.
+struct PendingCall {
+    fut: std::pin::Pin<Box<dyn std::future::Future<Output = SettledResult>>>,
+    guard: Option<DeadlineGuard>,
+    reply: Reply,
+}
+
+fn settled_to_json(
+    worker: &mut MainWorker,
+    result: SettledResult,
+) -> Result<serde_json::Value, EngineError> {
+    match result {
+        Ok(global) => {
+            deno_core::scope!(scope, &mut worker.js_runtime);
+            let local = v8::Local::new(scope, global);
+            Ok(v8_to_json(scope, local))
+        }
+        Err(e) => Err(EngineError::Js(e.to_string())),
+    }
 }
 
 /// Maps a job result onto limit errors: an isolate termination caused by the
@@ -402,6 +544,19 @@ fn resolve_module_path(config: &EngineConfig, path: &std::path::Path) -> Result<
     deno_path_util::url_from_file_path(&abs).map_err(js_err)
 }
 
+/// A call's module: an absolute URL is used as-is (version-stamped host
+/// specifiers, virtual-module schemes), anything else is a filesystem path.
+/// Single letters before `:` are not schemes here, so Windows drive paths
+/// stay paths.
+fn resolve_module_spec(config: &EngineConfig, spec: &str) -> Result<Url, EngineError> {
+    if let Ok(url) = Url::parse(spec) {
+        if url.scheme().len() > 1 {
+            return Ok(url);
+        }
+    }
+    resolve_module_path(config, std::path::Path::new(spec))
+}
+
 async fn run_eval(
     worker: &mut MainWorker,
     config: &EngineConfig,
@@ -440,14 +595,21 @@ async fn run_eval(
         .unwrap_or(serde_json::Value::Null))
 }
 
-async fn run_call(
+/// Loads and evaluates the module, invokes the export, and returns the future
+/// of its settled result. The future is independent of the worker borrow, so
+/// the scheduler polls it alongside the event loop and other pending calls.
+async fn setup_call(
     worker: &mut MainWorker,
     config: &EngineConfig,
-    module: &std::path::Path,
+    module: &str,
     export: &str,
     args: Vec<serde_json::Value>,
-) -> Result<serde_json::Value, EngineError> {
-    let url = resolve_module_path(config, module)?;
+) -> Result<
+    impl std::future::Future<Output = Result<v8::Global<v8::Value>, Box<deno_core::error::JsError>>>
+        + use<>,
+    EngineError,
+> {
+    let url = resolve_module_spec(config, module)?;
     let id = worker.preload_side_module(&url).await.map_err(js_err)?;
     worker.evaluate_module(id).await.map_err(js_err)?;
 
@@ -472,14 +634,5 @@ async fn run_call(
         (function, arg_globals)
     };
 
-    let call = worker.js_runtime.call_with_args(&function, &arg_globals);
-    let result = worker
-        .js_runtime
-        .with_event_loop_promise(call, PollEventLoopOptions::default())
-        .await
-        .map_err(js_err)?;
-
-    deno_core::scope!(scope, &mut worker.js_runtime);
-    let local = v8::Local::new(scope, result);
-    Ok(v8_to_json(scope, local))
+    Ok(worker.js_runtime.call_with_args(&function, &arg_globals))
 }
