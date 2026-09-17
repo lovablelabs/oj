@@ -150,7 +150,10 @@ static SCRIPT_RE: LazyLock<Regex> =
 static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<link\b[^>]*/?>").unwrap());
 static COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
 static STYLE_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</(style)").unwrap());
-static CSS_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)(?:^|;)\s*@import\b").unwrap());
+// Line-anchored on the COMPILED output: lightningcss re-serializes each rule
+// onto its own line, so a real @import always starts a line there, while a
+// `; @import` inside a string value never does.
+static CSS_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@import\b").unwrap());
 static SASS_LOAD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@(use|import|forward)\b").unwrap());
 static SASS_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/|//[^\n]*").unwrap());
 static COMPOSES_FROM_RE: LazyLock<Regex> =
@@ -255,10 +258,7 @@ fn compile_stylesheet(path: &str, source: &str) -> Result<(String, Option<Vec<(S
     let out = compile_css(&id, &plain, false)?;
     // Without the dev server's rebase pass an `@import` survives verbatim and
     // would resolve against the preview document, silently loading nothing;
-    // fail loudly instead until the graph walks css imports too. Anchored to a
-    // line start or a rule boundary so a string value like
-    // `content: "@import"` cannot false-positive but `@charset ...;@import`
-    // on one line is still caught.
+    // fail loudly instead until the graph walks css imports too.
     if CSS_IMPORT_RE.is_match(&out.css) {
         return Err("css @import is not supported in the wasm playground yet; inline the file or import it from a JS module".to_string());
     }
@@ -286,8 +286,10 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
     let scan = blank_comments(html);
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut saw_module_script = false;
+    let mut script_spans: Vec<std::ops::Range<usize>> = Vec::new();
     for caps in SCRIPT_RE.captures_iter(&scan) {
         let whole = caps.get(0).expect("group 0 always exists");
+        script_spans.push(whole.range());
         // Group 1 is the open tag of a paired script; without it the whole
         // match is a self-closing <script ... />, which the playground honors
         // as the author's intent (a closed, empty tag).
@@ -340,6 +342,16 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
             message: "no <script type=\"module\" src=...> entry found in /index.html".to_string(),
         });
     }
+    // Blank the script spans before the link pass: a <link> inside a script
+    // body (a string literal, say) must not produce an edit overlapping the
+    // script's own rewrite span.
+    let scan = {
+        let mut bytes = scan.into_bytes();
+        for span in &script_spans {
+            bytes[span.clone()].fill(b' ');
+        }
+        String::from_utf8(bytes).expect("ascii fill preserves utf-8")
+    };
     for m in LINK_RE.find_iter(&scan) {
         let tag = tag_inner(m.as_str());
         let (Some(rel), Some(href)) = (html_attr(tag, "rel"), html_attr(tag, "href")) else {
@@ -496,12 +508,16 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
                 }
             }
         };
-        match compile_module(Path::new(&path), source, &opts, Some(&mut rewrite)) {
+        let compiled = compile_module(Path::new(&path), source, &opts, Some(&mut rewrite));
+        // Resolver diagnostics surface either way: hiding a known bad import
+        // behind a syntax error would hand the user a second error round after
+        // they fix the first.
+        for message in problems {
+            errors.push(BuildError { path: path.clone(), message });
+        }
+        match compiled {
             Ok(out) => {
                 queue.extend(deps);
-                for message in problems {
-                    errors.push(BuildError { path: path.clone(), message });
-                }
                 modules.push(Module {
                     id: module_id(&path),
                     code: out.code_with_inline_map(),
@@ -726,6 +742,30 @@ mod tests {
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
+
+        // A semicolon before the string's `@import` must not trip the guard.
+        files.insert(
+            "/src/style.css".to_string(),
+            ".a::after { content: \"note; @import is unsupported\" }".to_string(),
+        );
+        let result = build(&files);
+        assert!(result.ok, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn a_parse_error_is_reported_for_the_broken_file() {
+        // A parse error precedes the rewriter, so it is the only diagnostic
+        // for that file; resolver problems from OTHER files still surface.
+        let mut files = demo();
+        files.insert("/src/App.tsx".to_string(), "const broken = (;\n".to_string());
+        let result = build(&files);
+        assert!(!result.ok);
+        assert!(
+            result.errors.iter().any(|e| e.path == "/src/App.tsx" && e.message.contains("parse error")),
+            "{:?}",
+            result.errors
+        );
+        assert!(result.modules.iter().any(|m| m.id == "@app/src/main.tsx"));
     }
 
     #[test]
@@ -975,6 +1015,22 @@ mod tests {
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn link_text_inside_a_script_body_is_not_inlined() {
+        let mut files = demo();
+        files.insert(
+            "/index.html".to_string(),
+            "<html><body><script type=\"module\" src=\"/src/main.tsx\">\
+             var s = '<link rel=\"stylesheet\" href=\"/src/global.css\">';\
+             </script></body></html>"
+                .to_string(),
+        );
+        // Never panics on overlapping edits; the script span wins whole.
+        let result = build(&files);
+        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(!result.html.contains("<style"), "{}", result.html);
     }
 
     #[test]

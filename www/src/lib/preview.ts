@@ -70,16 +70,23 @@ export function buildSrcdoc(result: BuildResult): string {
     if (!(bare in imports)) imports[bare] = cdnUrl(bare);
   }
 
-  const mapTag = `<script type="importmap">${JSON.stringify({ imports })}</script>`;
+  // `<` escaped so a specifier containing `</script>` cannot close the
+  // importmap tag early (valid JSON either way).
+  const mapJson = JSON.stringify({ imports }).replace(/</g, "\\u003c");
+  const mapTag = `<script type="importmap">${mapJson}</script>`;
   const html = result.html;
+  // Insertion points are found on a comment-blanked scan copy (same length, so
+  // indexes map onto the original): a `<head>` or `<script>` inside a comment
+  // must not receive the map, or the browser never registers it.
+  const scan = html.replace(/<!--[\s\S]*?-->/g, (c) => " ".repeat(c.length));
   // `[\s>]` so <header> can't match; without a <head>, the map must still land
   // before the first script tag (a late import map is rejected by the browser).
-  const head = /<head[\s>]/i.exec(html);
+  const head = /<head[\s>]/i.exec(scan);
   if (head) {
-    const at = html.indexOf(">", head.index) + 1;
+    const at = scan.indexOf(">", head.index) + 1;
     return html.slice(0, at) + mapTag + html.slice(at);
   }
-  const firstScript = /<script\b/i.exec(html);
+  const firstScript = /<script\b/i.exec(scan);
   if (firstScript) {
     return html.slice(0, firstScript.index) + mapTag + html.slice(firstScript.index);
   }

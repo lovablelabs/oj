@@ -60,9 +60,13 @@ jobs:
       - run: npx --prefix e2e playwright install --with-deps chromium
       - name: install wasm-pack + www deps (wasm playground e2e)
         if: matrix.mode == 'unbundled'
+        # A version-pinned release tarball, not `curl | sh` of whatever the
+        # installer page serves today.
         run: |
           rustup target add wasm32-unknown-unknown
-          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz --strip-components=1 -C "$HOME/.cargo/bin" --wildcards '*/wasm-pack'
+          wasm-pack --version
           npm ci --prefix www
       - name: run e2e suite
         run: node e2e/run.mjs ${{ matrix.mode == 'bundle' && '--bundle' || '' }}

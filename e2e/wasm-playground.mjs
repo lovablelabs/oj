@@ -13,6 +13,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -21,7 +22,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const www = path.join(repo, "www");
 const oj = path.join(repo, "target", "debug", "oj");
-const PORT = 5198;
+// A free port from the OS, so nothing unrelated gets killed and parallel runs
+// don't collide.
+const PORT = await new Promise((resolve) => {
+  const probe = net.createServer();
+  probe.listen(0, () => {
+    const { port } = probe.address();
+    probe.close(() => resolve(port));
+  });
+});
 
 let chromium;
 try {
@@ -44,7 +53,8 @@ try {
   hasWasmPack = false;
 }
 if (hasWasmPack) {
-  execSync("npm run build:wasm", { cwd: www, stdio: "inherit" });
+  // The --dev profile: functionally identical, a fraction of the build time.
+  execSync("npm run build:wasm:dev", { cwd: www, stdio: "inherit" });
 } else if (!fs.existsSync(path.join(www, "public", "oj-wasm", "oj_wasm.js"))) {
   console.log("SKIP wasm-playground: no wasm bundle and no wasm-pack on PATH");
   process.exit(0);
@@ -56,9 +66,6 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-try {
-  execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill`, { shell: "/bin/bash", stdio: "ignore" });
-} catch {}
 const server = spawn(oj, ["dev", www, "--port", String(PORT)], { stdio: "ignore" });
 let up = false;
 for (let i = 0; i < 120 && !up; i++) {
