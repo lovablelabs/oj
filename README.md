@@ -45,6 +45,12 @@ oj dev                                           # dev server for the current ap
 oj build                                         # production build into ./dist
 ```
 
+Or with Nix:
+
+```sh
+nix run github:lovablelabs/oj -- dev
+```
+
 ## Benchmarks
 
 Generated fanout-10 React component trees, measured save-to-paint with Playwright against Vite 8.2.1 (Rolldown-based) on an M-series Mac, in both its default dev mode (vite) and its experimental bundled dev mode (vite-fbm). p50/p95 over 5 cold+warm restart cycles and 10 HMR edits.
