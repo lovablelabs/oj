@@ -313,6 +313,11 @@ fn engine_thread(
             /// The event loop failed (an uncaught error) with calls still
             /// pending: nothing can settle them anymore.
             Broken(deno_core::error::CoreError),
+            /// A pending call outlived its deadline. Reached when the hang is
+            /// a never-settling promise: the event loop drains, the scheduler
+            /// parks, and `terminate_execution` has nothing to terminate — so
+            /// the park itself is bounded by the earliest pending deadline.
+            Expired(usize),
             Closed,
         }
         let mut pending: Vec<PendingCall> = Vec::new();
@@ -323,6 +328,10 @@ fn engine_thread(
         let mut event_loop_idle = false;
         let mut eval_counter: u64 = 0;
         loop {
+            // A no-deadline call may park indefinitely (SSR semantics); one
+            // with a deadline bounds the park so it can still be classified.
+            let earliest = pending.iter().filter_map(|p| p.expires_at).min();
+            let mut timer = earliest.map(|at| Box::pin(tokio::time::sleep_until(at)));
             let tick = std::future::poll_fn(|cx| {
                 match rx.poll_recv(cx) {
                     std::task::Poll::Ready(Some(job)) => {
@@ -346,6 +355,17 @@ fn engine_thread(
                             return std::task::Poll::Ready(Tick::Broken(e))
                         }
                         std::task::Poll::Pending => {}
+                    }
+                }
+                if let Some(timer) = timer.as_mut() {
+                    if std::future::Future::poll(timer.as_mut(), cx).is_ready() {
+                        let now = tokio::time::Instant::now();
+                        if let Some(i) = pending
+                            .iter()
+                            .position(|p| p.expires_at.is_some_and(|at| at <= now))
+                        {
+                            return std::task::Poll::Ready(Tick::Expired(i));
+                        }
                     }
                 }
                 std::task::Poll::Pending
@@ -376,10 +396,12 @@ fn engine_thread(
                     reply,
                 }) => {
                     let guard = deadline.map(|d| DeadlineGuard::arm(isolate_handle.clone(), d));
+                    let expires_at = deadline.map(|d| tokio::time::Instant::now() + d);
                     match setup_call(&mut worker, &config, &module, &export, args).await {
                         Ok(fut) => pending.push(PendingCall {
                             fut: Box::pin(fut),
                             guard,
+                            expires_at,
                             reply,
                         }),
                         Err(e) => {
@@ -393,6 +415,13 @@ fn engine_thread(
                     let result = settled_to_json(&mut worker, result);
                     let result = classify(&mut worker, result, call.guard, &oom);
                     let _ = call.reply.send(result);
+                }
+                Tick::Expired(i) => {
+                    // Drop the settle future: nothing will resolve it. The
+                    // module instance leaks with the isolate, which survives.
+                    let call = pending.swap_remove(i);
+                    let _ = classify(&mut worker, Ok(serde_json::Value::Null), call.guard, &oom);
+                    let _ = call.reply.send(Err(EngineError::Deadline));
                 }
                 Tick::Broken(e) => {
                     // An uncaught error broke the event loop (the process
@@ -423,6 +452,10 @@ type SettledResult = Result<v8::Global<v8::Value>, Box<deno_core::error::JsError
 struct PendingCall {
     fut: std::pin::Pin<Box<dyn std::future::Future<Output = SettledResult>>>,
     guard: Option<DeadlineGuard>,
+    /// When the scheduler itself times the call out (`Tick::Expired`), for the
+    /// hang shape the watchdog's `terminate_execution` cannot reach: a parked,
+    /// never-settling promise on an idle isolate.
+    expires_at: Option<tokio::time::Instant>,
     reply: Reply,
 }
 

@@ -231,6 +231,74 @@ async fn deadline_terminates_infinite_loop() {
     assert_eq!(value, serde_json::json!(7));
 }
 
+#[tokio::test]
+async fn deadline_times_out_a_parked_never_settling_call() {
+    // The hang `terminate_execution` cannot reach: the promise never settles,
+    // the event loop drains, and the scheduler parks. The park must be
+    // bounded by the pending call's deadline.
+    let root = app_root();
+    std::fs::write(
+        root.path().join("hang.mjs"),
+        "export function hang() { return new Promise(() => {}); }\n\
+         export function ok() { return 'alive'; }\n",
+    )
+    .unwrap();
+    let mut config = EngineConfig::new(root.path());
+    config.default_deadline = Some(Duration::from_millis(500));
+    let engine = JsEngine::spawn(config).unwrap();
+    let err = engine.call("hang.mjs", "hang", vec![]).await.unwrap_err();
+    assert!(
+        matches!(err, EngineError::Deadline),
+        "expected Deadline, got {err:?}"
+    );
+    // The engine stays usable after the timed-out call.
+    let value = engine.call("hang.mjs", "ok", vec![]).await.unwrap();
+    assert_eq!(value, serde_json::json!("alive"));
+}
+
+#[tokio::test]
+async fn deadline_terminates_an_infinite_loop_call() {
+    // The busy-loop shape must keep working through the watchdog's
+    // terminate_execution path.
+    let root = app_root();
+    std::fs::write(
+        root.path().join("spin.mjs"),
+        "export function spin() { for (;;) {} }\n\
+         export function ok() { return 'alive'; }\n",
+    )
+    .unwrap();
+    let mut config = EngineConfig::new(root.path());
+    config.default_deadline = Some(Duration::from_millis(500));
+    let engine = JsEngine::spawn(config).unwrap();
+    let err = engine.call("spin.mjs", "spin", vec![]).await.unwrap_err();
+    assert!(
+        matches!(err, EngineError::Deadline),
+        "expected Deadline, got {err:?}"
+    );
+    let value = engine.call("spin.mjs", "ok", vec![]).await.unwrap();
+    assert_eq!(value, serde_json::json!("alive"));
+}
+
+#[tokio::test]
+async fn no_deadline_call_parks_indefinitely_without_timing_out() {
+    // SSR semantics: without a deadline a pending call parks for as long as
+    // it takes, and the parked scheduler still serves other calls.
+    let root = app_root();
+    std::fs::write(
+        root.path().join("park.mjs"),
+        "export function park() { return new Promise(() => {}); }\n\
+         export function ok() { return 'alive'; }\n",
+    )
+    .unwrap();
+    let engine = engine(root.path());
+    let parked = engine.call("park.mjs", "park", vec![]);
+    tokio::pin!(parked);
+    let raced = tokio::time::timeout(Duration::from_millis(700), parked.as_mut()).await;
+    assert!(raced.is_err(), "a no-deadline call must stay parked");
+    let value = engine.call("park.mjs", "ok", vec![]).await.unwrap();
+    assert_eq!(value, serde_json::json!("alive"));
+}
+
 #[test]
 fn two_engines_run_concurrently() {
     // init_platform must hold across engines spawned from different threads.
