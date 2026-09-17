@@ -31,6 +31,14 @@
           cargoBuildFlags = [ "-p" "oj" ];
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.openssl ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          # The build directory name varies between nix implementations (and is
+          # randomized on some), and rustc embeds dependency source paths from
+          # the vendored tree in panic locations — remap them so the output is
+          # independent of where it was built (bit-reproducibility, #188).
+          preBuild = ''
+            export RUSTFLAGS="''${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix $NIX_BUILD_TOP=/build"
+            export NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE:-} -ffile-prefix-map=$NIX_BUILD_TOP=/build"
+          '';
           # The test suite drives real Node sidecars and network fixtures; it
           # runs in CI, not inside the sandboxed nix build.
           doCheck = false;
