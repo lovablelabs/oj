@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use oj_resolver::OjResolver;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::oneshot;
 
 pub const PLUGIN_HOST_JS: &str = include_str!("assets/plugin-host.mjs");
 pub const VITE_EXTRACT_JS: &str = include_str!("assets/vite-extract.mjs");
@@ -927,28 +922,34 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
 }
 
 pub struct PluginHost {
-    stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Option<String>, String>>>>,
-    counter: AtomicU64,
+    /// The embedded engine hosting plugin-host.mjs. In an Option so
+    /// `declare_gone`/`shutdown` can take + abandon it explicitly (background
+    /// tasks hold Arc clones of the host, so dropping the caller's Arc alone
+    /// must never decide the engine's fate). Abandoning drops the job channel
+    /// and detaches the isolate thread; a thread wedged in NATIVE code (a napi
+    /// call) leaks with its isolate — the accepted cost of the
+    /// in-process host, where a kill used to reclaim it (JS-only wedges are
+    /// interrupted by `terminate_execution` and unwind cleanly).
+    engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
+    /// The plugin-host.mjs path on disk — the module every hook call targets.
+    host_module: String,
     ws_out: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
-    /// `{ ojServer: { action, ... } }` lines from the host: a plugin invalidating
+    /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart().
     server_events: Mutex<Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>>,
-    // In an Option so it can be taken + killed explicitly (the reader task holds
-    // an Arc clone, so dropping the caller's Arc alone never triggers kill_on_drop).
-    child: Mutex<Option<tokio::process::Child>>,
     /// The host's `{ ojServeInfo: ... }` control push: None until the host's
     /// top-level init completes. Subscribers see the info whenever the host
     /// eventually comes up, however slow the boot, and can activate the
     /// middleware path late instead of silently degrading to the SSR runner.
     serve_info_push: tokio::sync::watch::Sender<Option<ServeInfo>>,
     /// Whether the host finished its top-level init: flipped by the serve-info
-    /// push or by the first RPC reply (the host's RPC listener only registers
-    /// after every top-level await, so any reply proves init completed). RPC
-    /// sends are gated on this — see `call`.
+    /// push, the `{ ojInit }` push, or the first hook reply (the host's hook
+    /// entry point only runs after every top-level await, so any reply proves
+    /// init completed). Hook calls are gated on this — see `call`.
     initialized: tokio::sync::watch::Sender<bool>,
-    /// The host's stdout closed (the process exited): fail calls fast instead
-    /// of waiting out the init deadline or the per-call timeout. A watch so a
+    /// The host is gone (its engine thread exited, its init failed hard, or
+    /// the transport belt declared it wedged): fail calls fast instead of
+    /// waiting out the init deadline or the per-call timeout. A watch so a
     /// waiter (`host_gone_wait`) can select on the death instead of polling.
     host_gone: tokio::sync::watch::Sender<bool>,
     /// When the host was spawned; the init deadline is measured from here, so
@@ -1009,15 +1010,18 @@ pub struct PluginHost {
     init_progress: Mutex<std::time::Instant>,
 }
 
-async fn handle_ctx_rpc(
-    rpc: u64,
+/// The host's reverse ctx-RPC (`this.resolve` fallbacks, `this.load` module
+/// info), answered SYNCHRONOUSLY on the engine's isolate thread through the
+/// `__oj_rpc` bridge — both handlers are plain resolver/fs/compile work, so
+/// the old request/reply plumbing (ids, a pending map, bounded stdin writes)
+/// has no in-process counterpart at all.
+fn ctx_rpc(
     method: &str,
     args: &[serde_json::Value],
     resolver: &OjResolver,
     root: &Path,
-    host: &PluginHost,
-) {
-    let reply = match method {
+) -> Result<serde_json::Value, String> {
+    match method {
         "resolve" => {
             let source = args.first().and_then(|v| v.as_str()).unwrap_or("");
             let importer = args.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -1029,10 +1033,10 @@ async fn handle_ctx_rpc(
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| root.to_path_buf())
             };
-            match resolver.resolve(&dir, source) {
-                Ok(p) => serde_json::json!({ "rpcReply": rpc, "result": p.display().to_string() }),
-                Err(_) => serde_json::json!({ "rpcReply": rpc, "result": null }),
-            }
+            Ok(match resolver.resolve(&dir, source) {
+                Ok(p) => serde_json::Value::String(p.display().to_string()),
+                Err(_) => serde_json::Value::Null,
+            })
         }
         "moduleInfo" => {
             let id = args.first().and_then(|v| v.as_str()).unwrap_or("");
@@ -1060,28 +1064,13 @@ async fn handle_ctx_rpc(
                                 .unwrap_or_else(|_| spec.clone())
                         })
                         .collect();
-                    serde_json::json!({
-                        "rpcReply": rpc,
-                        "result": { "id": id, "code": code, "importedIds": imported_ids },
-                    })
+                    Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
                 }
-                Err(_) => serde_json::json!({ "rpcReply": rpc, "result": null }),
+                Err(_) => Ok(serde_json::Value::Null),
             }
         }
-        other => {
-            serde_json::json!({ "rpcReply": rpc, "error": format!("unknown ctx method: {other}") })
-        }
-    };
-    // Bounded like every other protocol write (see `write_bounded_at`): this
-    // runs ON the reader task, and an unbounded write_all into a pipe the
-    // host stopped draining would wedge reply processing forever while
-    // holding the stdin mutex.
-    let _ = host
-        .write_bounded(
-            &format!("a ctx-RPC ({method}) reply"),
-            format!("{reply}\n").as_bytes(),
-        )
-        .await;
+        other => Err(format!("unknown ctx method: {other}")),
+    }
 }
 
 /// How long one plugin hook may run before oj gives up on it. Vite has no
@@ -1121,6 +1110,23 @@ fn plugin_init_timeout_from(raw: Option<&str>) -> std::time::Duration {
 impl std::fmt::Debug for PluginHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PluginHost")
+    }
+}
+
+/// The old spawn's `kill_on_drop`, in-process: a host dropped without an
+/// explicit shutdown abandons its engine instead of letting the last
+/// `Arc<JsEngine>` drop JOIN a thread that may be parked in a never-settling
+/// init forever.
+impl Drop for PluginHost {
+    fn drop(&mut self) {
+        if let Some(engine) = self
+            .engine
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            engine.abandon();
+        }
     }
 }
 
@@ -1235,30 +1241,37 @@ impl PluginHost {
         if let Some(parent) = script.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&script, PLUGIN_HOST_JS)?;
+        // Written atomically (tmp + rename): several hosts spawn concurrently
+        // in one process (boot + lazy SSR + per-environment build hosts), and
+        // a plain truncating write could hand a sibling engine's import a
+        // half-written module.
+        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
+            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
+            std::fs::write(&tmp, PLUGIN_HOST_JS)?;
+            std::fs::rename(&tmp, &script)?;
+        }
 
-        // The host shares its stdout with plugin code (no console redirection),
-        // so every oj protocol line is framed with a per-session random token
-        // only this spawn and the host know: the reader below ignores unframed
-        // lines, so a plugin's print — or attacker-controlled content a plugin
-        // echoes — can never be parsed as a reply or a control push.
-        let control_token = format!("oj{}:", crate::new_ws_token());
-        let mut child = tokio::process::Command::new("node")
-            .arg(&script)
-            .arg(plugins_file)
-            .arg(config_json)
-            .env("OJ_CACHE_ROOT", oj_cache::cache_root(root))
-        .env("NODE_COMPILE_CACHE", crate::node_compile_cache(root))
-            .env("OJ_CONTROL_TOKEN", &control_token)
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("cannot spawn node for plugin host: {e}"))?;
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
+        // The engine's push channel replaces the sidecar's control-plane
+        // stdout: pushes arrive as values on `post_rx`, so nothing a plugin
+        // prints can splice into the protocol and the whole control-token /
+        // ACK / re-push machinery has no in-process counterpart.
+        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
+        let resolver = std::sync::Arc::new(OjResolver::new(root));
+        let root_buf: PathBuf = root.to_path_buf();
+        let rpc_handler: oj_js::RpcHandler = {
+            let resolver = std::sync::Arc::clone(&resolver);
+            let root = root_buf.clone();
+            std::sync::Arc::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
+        };
+        let engine = oj_js::JsEngine::spawn_with_hooks(
+            oj_js::EngineConfig::new(root),
+            oj_js::EngineHooks {
+                post: post_tx,
+                rpc: Some(rpc_handler),
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("cannot start the embedded plugin host: {e}"))?;
+        let engine = std::sync::Arc::new(engine);
 
         let (mut init_wait, init_knob) = init_wait_policy(lazy);
         if let Some(w) = timeouts.init_wait {
@@ -1267,12 +1280,10 @@ impl PluginHost {
         let rpc_wait = timeouts.rpc.unwrap_or_else(plugin_rpc_timeout);
         let stall_wait = timeouts.stall.unwrap_or(rpc_wait);
         let host = std::sync::Arc::new(PluginHost {
-            stdin: tokio::sync::Mutex::new(stdin),
-            pending: Mutex::new(HashMap::new()),
-            counter: AtomicU64::new(1),
+            engine: Mutex::new(Some(std::sync::Arc::clone(&engine))),
+            host_module: script.to_string_lossy().into_owned(),
             ws_out: Mutex::new(None),
             server_events: Mutex::new(None),
-            child: Mutex::new(Some(child)),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
@@ -1287,39 +1298,56 @@ impl PluginHost {
             init_progress: Mutex::new(std::time::Instant::now()),
         });
 
-        let resolver = std::sync::Arc::new(OjResolver::new(root));
-        let root_buf: PathBuf = root.to_path_buf();
+        // The BOOT task: seed the host's identity (what used to be argv and
+        // spawn env) as a global, then trigger the module's top-level init by
+        // calling a trivial export. The init call takes no deadline — the
+        // Rust-side watches (init gate, stall monitor) own boot patience —
+        // and a top-level throw (the old "host process died on boot") fails
+        // it, printing the cause and declaring the host gone.
+        let boot_ref = std::sync::Arc::clone(&host);
+        let boot_engine = std::sync::Arc::clone(&engine);
+        let boot_seed = serde_json::json!({
+            "pluginsPath": plugins_file,
+            "initialJson": config_json,
+            "cacheRoot": oj_cache::cache_root(root),
+        });
+        let host_module = host.host_module.clone();
+        tokio::spawn(async move {
+            let prelude = format!("globalThis.__ojPluginHost = {boot_seed};");
+            if let Err(e) = boot_engine
+                .eval_with_deadline(oj_js::EvalInput::Source(prelude), None)
+                .await
+            {
+                boot_ref.declare_gone(&format!("plugin host boot prelude failed: {e}"));
+                return;
+            }
+            match boot_engine
+                .call_with_deadline(host_module, "ojHostReady", Vec::new(), None)
+                .await
+            {
+                // The `{ ojInit }` push already flipped `initialized`; the
+                // reply is only the error path's carrier.
+                Ok(_) => {}
+                Err(oj_js::EngineError::Closed) => {}
+                Err(e) => {
+                    boot_ref.declare_gone(&format!("plugin host failed to initialize: {e}"));
+                }
+            }
+        });
+
+        // The PUSH DISPATCHER: the engine-channel successor of the stdout
+        // reader task. Same control pushes, minus the parsing: values arrive
+        // whole, hook replies come back on their own call futures, and the
+        // reverse ctx-RPC is answered synchronously inside the engine.
         let reader_ref = std::sync::Arc::clone(&host);
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                // Only token-framed lines are protocol (see spawn); anything
-                // else on this stream is a plugin's own print.
-                let Some(line) = line.strip_prefix(control_token.as_str()) else {
-                    continue;
-                };
-                let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                if let Some(rpc) = msg["rpc"].as_u64() {
-                    let method = msg["method"].as_str().unwrap_or("").to_string();
-                    let args = msg["args"].as_array().cloned().unwrap_or_default();
-                    handle_ctx_rpc(rpc, &method, &args, &resolver, &root_buf, &reader_ref).await;
-                    continue;
-                }
+            while let Some(msg) = post_rx.recv().await {
                 if let Some(info) = msg.get("ojServeInfo") {
                     reader_ref
                         .serve_info_push
                         .send_replace(Some(ServeInfo::from_json(info)));
                     let _ = reader_ref.initialized.send_replace(true);
                     let _ = reader_ref.init_failed.send_replace(false);
-                    // ACK so the host stops re-pushing (it re-sends until
-                    // acknowledged, healing a copy a plugin's unterminated
-                    // partial write may have spliced). Bounded like every
-                    // protocol write: this is the reader task.
-                    let _ = reader_ref
-                        .write_bounded("the ojServeInfo ACK", b"{\"ojServeInfoAck\":true}\n")
-                        .await;
                     continue;
                 }
                 if msg.get("ojInit").is_some() {
@@ -1375,39 +1403,13 @@ impl PluginHost {
                     }
                     continue;
                 }
-                let Some(id) = msg["id"].as_u64() else {
-                    continue;
-                };
-                // Any reply proves the host's top-level init completed: the RPC
-                // listener only registers after every top-level await.
-                let _ = reader_ref.initialized.send_replace(true);
-                let _ = reader_ref.init_failed.send_replace(false);
-                let result = if let Some(err) = msg.get("error").and_then(|e| e.as_str()) {
-                    Err(err.to_string())
-                } else {
-                    Ok(msg
-                        .get("result")
-                        .and_then(|r| r.as_str())
-                        .map(str::to_string))
-                };
-                if let Some(tx) = reader_ref.pending.lock().unwrap().remove(&id) {
-                    let _ = tx.send(result);
-                }
             }
-            // stdout closed: the host exited. Fail everything pending now, and
-            // every future call fast, instead of letting an init-gated call
-            // wait out the whole init deadline on a dead process.
+            // The push channel closed: the engine thread exited (a clean
+            // shutdown, or the unwind after an abandon's terminate). Fail
+            // every future call fast instead of letting an init-gated call
+            // wait out the whole init deadline on a dead engine; in-flight
+            // calls select on this same watch.
             let _ = reader_ref.host_gone.send_replace(true);
-            let drained: Vec<_> = reader_ref
-                .pending
-                .lock()
-                .unwrap()
-                .drain()
-                .map(|(_, tx)| tx)
-                .collect();
-            for tx in drained {
-                let _ = tx.send(Err("plugin host exited".into()));
-            }
         });
 
         // The init STALL MONITOR: wedge evidence independent of any caller's
@@ -1471,8 +1473,8 @@ impl PluginHost {
         if *self.host_gone.borrow() {
             return Err("plugin host exited".into());
         }
-        // The host answers RPCs only after its top-level init completes (the
-        // listener registers after every top-level await), so a call during a
+        // The host answers hooks only after its top-level init completes (the
+        // entry point runs past every top-level await), so a call during a
         // slow boot must wait for init — bounded by this spawn's init-wait
         // policy (the long spawn-anchored deadline on a boot host, the short
         // per-call window on a lazy one) — instead of racing its own per-call
@@ -1481,13 +1483,12 @@ impl PluginHost {
         // serve-info push, the ojInit signal, or the first reply, all
         // preceding any wait here.
         //
-        // The gate runs BEFORE anything touches stdin. A wedged host is not
-        // reading its stdin (the host installs readline only after init), so
-        // once the pipe fills, a write_all would block forever HOLDING the
-        // stdin mutex — deadlocking every later call behind it with no
-        // timeout in reach. A pre-init call therefore writes nothing: it
-        // waits on the init watch and either proceeds (init flipped: the host
-        // is reading) or fails at its window without a byte sent.
+        // The gate runs BEFORE anything reaches the engine. A wedged host is
+        // mid-init on the isolate thread, so a job submitted now would only
+        // queue behind the wedge and rot; worse, its failure would be blamed
+        // on the hook. A pre-init call therefore submits nothing: it waits on
+        // the init watch and either proceeds (init flipped: the module is
+        // evaluated and serving) or fails at its window with no job sent.
         //
         // Per-call windows, deliberately with NO time-based fail-fast latch:
         // a previous call's expired window is evidence only of a slow boot,
@@ -1496,7 +1497,7 @@ impl PluginHost {
         // lands, where a latch would fail it milliseconds short. Time alone
         // never fails a call early: only host death (host_gone) fails fast.
         // A truly wedged host costs each caller one window (degrading like a
-        // slow hook) with zero pipe writes; `init_failed` still records the
+        // slow hook) with zero jobs submitted; `init_failed` still records the
         // expired-window evidence — cleared whenever init progresses — for
         // waiters that select on wedge evidence (the Start prewarm hold).
         let mut init_rx = self.initialized.subscribe();
@@ -1559,113 +1560,104 @@ impl PluginHost {
                 }
             }
         }
-        // Initialized: the host is reading stdin. Register the reply slot
-        // before writing (a fast reply must find it), then write — bounded,
-        // so a pipe that somehow fills post-init degrades instead of holding
-        // the stdin mutex forever. Write and reply share ONE per-call
-        // deadline: a slow write must not add a second full window on top of
-        // the hook's budget. A write that times out MID-FRAME leaves a
-        // dangling partial frame in the pipe, which would splice into the
-        // NEXT call's frame — but `write_bounded_at` declares the host gone
-        // (kill + host_gone) on that path, so no next call ever writes to
-        // this stream; a timeout still WAITING on the stdin mutex wrote
-        // nothing and fails only this call.
+        // Initialized: the module is evaluated and its hook entry point is
+        // callable. The engine call carries the per-call deadline itself
+        // (`OJ_PLUGIN_TIMEOUT`), and a deadline failure costs ONE call with
+        // the host answering everyone else — exactly as the old host's reply
+        // timeout did — whether the hook's promise never settles (abandoned
+        // by the scheduler's expiry tick), it parked over budget behind
+        // slower work, or it wedged in synchronous JS (interrupted by the
+        // call's watchdog; the process host lost the WHOLE host to that
+        // shape). The BELT past it is a second full window with NO reply of
+        // any kind: everything above answers at the deadline while the
+        // scheduler is alive, so total silence means the isolate thread is
+        // blocked in NATIVE code (a napi call — the old "host stopped
+        // draining its stdin" evidence) — declare the host gone.
         let deadline = tokio::time::Instant::now() + self.rpc_wait;
-        let req_id = self.counter.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(req_id, tx);
-        let request = serde_json::json!({ "id": req_id, "hook": hook, "args": args });
-        if let Err(e) = self
-            .write_bounded_at(hook, format!("{request}\n").as_bytes(), deadline)
-            .await
-        {
-            self.pending.lock().unwrap().remove(&req_id);
-            return Err(e);
-        }
-        // The ordinary per-call timeout applies unchanged (shared deadline).
-        match tokio::time::timeout_at(deadline, rx).await {
-            Ok(Ok(result)) => result,
-            _ => Err(format!(
+        let engine = self
+            .engine
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "plugin host exited".to_string())?;
+        let call = engine.call_with_deadline(
+            self.host_module.clone(),
+            "ojRun",
+            vec![
+                serde_json::Value::String(hook.to_string()),
+                serde_json::Value::Array(
+                    args.iter()
+                        .map(|a| serde_json::Value::String((*a).to_string()))
+                        .collect(),
+                ),
+            ],
+            Some(self.rpc_wait),
+        );
+        tokio::pin!(call);
+        let mut host_gone_rx = self.host_gone.subscribe();
+        let result = tokio::select! {
+            biased;
+            r = &mut call => r,
+            _ = async {
+                while !*host_gone_rx.borrow_and_update() {
+                    if host_gone_rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            } => return Err("plugin host exited".into()),
+            _ = tokio::time::sleep_until(deadline + self.rpc_wait) => {
+                let msg = format!(
+                    "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
+                    2 * self.rpc_wait.as_secs()
+                );
+                self.declare_gone(&msg);
+                return Err(msg);
+            }
+        };
+        match result {
+            Ok(value) => {
+                // Any reply proves the host's top-level init completed: the
+                // hook entry point only exists past every top-level await.
+                let _ = self.initialized.send_replace(true);
+                let _ = self.init_failed.send_replace(false);
+                Ok(match value {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => Some(s),
+                    other => Some(other.to_string()),
+                })
+            }
+            Err(oj_js::EngineError::Deadline) => Err(format!(
                 "plugin host timed out after {}s running {hook} (raise OJ_PLUGIN_TIMEOUT for slow plugins)",
                 self.rpc_wait.as_secs()
             )),
-        }
-    }
-
-    /// One protocol write to the host's stdin, bounded by `deadline`. A host
-    /// that stops draining its pipe for a full RPC-scale window is not
-    /// healthy — the readline interface is installed for the host's whole
-    /// life — so a write that timed out MID-FRAME declares the host GONE
-    /// (`declare_gone`: kill, host_gone, pending drained) instead of leaving
-    /// a half-written frame for the next call to splice into and a wedged
-    /// process everyone keeps talking to. A timeout that elapsed while still
-    /// WAITING ON THE STDIN MUTEX is different evidence: zero bytes of this
-    /// frame reached the pipe (nothing dangles), and the mutex holder is a
-    /// concurrent bounded write against a possibly healthy-but-busy pipe —
-    /// only THIS call fails then; a truly wedged holder is declared gone by
-    /// its own deadline.
-    async fn write_bounded_at(
-        &self,
-        what: &str,
-        line: &[u8],
-        deadline: tokio::time::Instant,
-    ) -> Result<(), String> {
-        let started = std::sync::atomic::AtomicBool::new(false);
-        let write = async {
-            let mut stdin = self.stdin.lock().await;
-            started.store(true, Ordering::SeqCst);
-            stdin.write_all(line).await
-        };
-        match tokio::time::timeout_at(deadline, write).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => {
-                // The pipe is closed: the process is dead or dying (the
-                // reader's EOF usually reports it first; this is the belt).
-                self.declare_gone(&format!("stdin write failed writing {what}: {e}"));
-                Err("plugin host died".into())
+            Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
+            Err(oj_js::EngineError::MemoryLimit) => {
+                Err("plugin host exceeded its memory limit".into())
             }
-            Err(_) if !started.load(Ordering::SeqCst) => Err(format!(
-                "plugin host stdin busy for {}s writing {what} (a concurrent write held the pipe; only this call failed)",
-                self.rpc_wait.as_secs()
-            )),
-            Err(_) => {
-                let msg = format!(
-                    "plugin host stdin blocked for {}s writing {what} (the host stopped reading)",
-                    self.rpc_wait.as_secs()
-                );
-                self.declare_gone(&msg);
-                Err(msg)
+            Err(oj_js::EngineError::Boot(e)) => Err(e),
+            Err(oj_js::EngineError::Js(e)) => {
+                // A throwing hook still proves the host is up and serving.
+                let _ = self.initialized.send_replace(true);
+                let _ = self.init_failed.send_replace(false);
+                Err(e)
             }
         }
     }
 
-    /// [`write_bounded_at`] with a fresh full per-call window (the reader
-    /// task's ctx-RPC replies and control ACKs).
-    async fn write_bounded(&self, what: &str, line: &[u8]) -> Result<(), String> {
-        self.write_bounded_at(what, line, tokio::time::Instant::now() + self.rpc_wait)
-            .await
-    }
-
-    /// Treat the host as dead NOW (a wedged stdin, a broken pipe): kill the
-    /// process, flip `host_gone` so every future call fails fast, and fail
-    /// everything pending — the same terminal state the reader's EOF path
-    /// reaches, just initiated from the writing side.
+    /// Treat the host as dead NOW (a wedged isolate, a failed boot): abandon
+    /// the engine — terminate_execution interrupts a running JS job so a
+    /// wedged synchronous hook unwinds and the thread exits on its closed
+    /// channel; a job blocked in NATIVE code cannot be interrupted and leaks
+    /// the detached thread with its isolate (the documented cost of the
+    /// in-process host) — and flip `host_gone` so every in-flight and future
+    /// call fails fast, the same terminal state the push dispatcher's
+    /// channel-closed path reaches.
     fn declare_gone(&self, why: &str) {
         eprintln!("oj: {why}; treating the plugin host as gone");
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.start_kill();
+        if let Some(engine) = self.engine.lock().unwrap().take() {
+            engine.abandon();
         }
         let _ = self.host_gone.send_replace(true);
-        let drained: Vec<_> = self
-            .pending
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, tx)| tx)
-            .collect();
-        for tx in drained {
-            let _ = tx.send(Err("plugin host exited".into()));
-        }
     }
 
     /// Whether the host finished its top-level init (the serve-info push, or
@@ -1689,8 +1681,8 @@ impl PluginHost {
         self.spawned + self.init_wait
     }
 
-    /// Live updates of the host-gone flag (the process exited: its stdout
-    /// closed). For waiters selecting on wedge evidence without holding the
+    /// Live updates of the host-gone flag (the engine exited or was
+    /// abandoned). For waiters selecting on wedge evidence without holding the
     /// `Arc<PluginHost>` (the Start prewarm hold).
     pub fn host_gone_updates(&self) -> tokio::sync::watch::Receiver<bool> {
         self.host_gone.subscribe()
@@ -1715,7 +1707,7 @@ impl PluginHost {
         self.resync_done.subscribe()
     }
 
-    /// Resolves when the host process has exited (its stdout closed). Lets a
+    /// Resolves when the host is gone (its engine exited or was abandoned). Lets a
     /// task holding an `Arc<PluginHost>` — which keeps every channel sender
     /// alive, so `changed().is_err()` can never observe the death — wait on
     /// the host dying instead of pinning it forever.
@@ -1960,7 +1952,8 @@ impl PluginHost {
             .unwrap_or(1)
     }
 
-    /// Env mutations made by plugin `config()` hooks in the host process (e.g.
+    /// Env mutations made by plugin `config()` hooks in the host's shadowed
+    /// environment (e.g.
     /// a plugin flipping a VITE_* flag). Empty on RPC failure.
     /// `define` entries the plugins' `config()` hooks contributed, as
     /// `(key, js expression)` pairs (a string value is the expression itself,
@@ -2075,10 +2068,14 @@ impl PluginHost {
         }
     }
 
-    /// Kill the Node process now (used when the host has no active plugins).
+    /// Retire the host's engine now (used when the host has no active
+    /// plugins). Abandon, not drop: dropping a JsEngine joins its thread, and
+    /// nobody retiring an idle host should block on V8 teardown — the thread
+    /// exits by itself on the closed channel, and the push dispatcher's
+    /// channel-closed path then latches `host_gone`.
     pub fn shutdown(&self) {
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.start_kill();
+        if let Some(engine) = self.engine.lock().unwrap().take() {
+            engine.abandon();
         }
     }
 
@@ -2353,7 +2350,7 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return, // no node on this machine
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
         let mut evidence = host.init_failure_updates();
         assert!(!*evidence.borrow_and_update(), "no evidence before a window expires");
@@ -2402,21 +2399,20 @@ mod vite_values_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // The write-before-gate deadlock, pinned: a wedged host never installs its
-    // stdin reader, so once the pipe fills a pre-gate write_all would block
-    // forever HOLDING the stdin mutex — no timeout in reach, every later call
-    // queued behind it. Pre-init calls must write NOTHING: even with an
-    // argument far larger than any pipe capacity, concurrent calls each fail
-    // at their own window ("still initializing"), proving no call sat in a
-    // blocked write or waited on a held mutex.
+    // The submit-before-gate hazard, pinned: a wedged init holds the isolate
+    // thread, so a job submitted pre-init would only queue behind the wedge
+    // and rot — every later call serialized behind it. Pre-init calls must
+    // submit NOTHING: even with huge arguments, concurrent calls each fail at
+    // their own window ("still initializing"), proving no call sat queued on
+    // the wedged engine.
     #[tokio::test]
-    async fn wedged_host_pre_init_calls_fail_at_their_window_without_touching_stdin() {
+    async fn wedged_host_pre_init_calls_fail_at_their_window_without_submitting_jobs() {
         let root = std::env::temp_dir().join(format!("oj-wedged-stdin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        // Init never completes: the host never reads stdin. (The interval
-        // keeps the event loop alive — a bare unsettled top-level await would
-        // exit the process instead of wedging it.)
+        // Init never completes: the host module's top level never settles.
+        // (The interval keeps the event loop alive — the same shape that
+        // wedged the old node child.)
         let plugins = root.join("oj.plugins.mjs");
         std::fs::write(
             &plugins,
@@ -2437,10 +2433,10 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return, // no node on this machine
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
-        // Far past any OS pipe buffer: the old write-first path would block
-        // here forever instead of ever reaching an init gate.
+        // Far past any OS pipe buffer, the old transport's wedge trigger: the
+        // write-first path would have blocked here instead of gating on init.
         let big = "x".repeat(2 * 1024 * 1024);
         let t0 = std::time::Instant::now();
         let (a, b) = tokio::join!(host.resolve_id(&big, ""), host.resolve_id(&big, ""));
@@ -2455,7 +2451,7 @@ mod vite_values_tests {
         );
         assert!(
             elapsed < std::time::Duration::from_secs(5),
-            "concurrent windows, not serialized blocked writes: {elapsed:?}"
+            "concurrent windows, not calls serialized behind a wedged engine: {elapsed:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2500,7 +2496,7 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return, // no node on this machine
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
         let mut evidence = host.init_failure_updates();
         let flipped = tokio::time::timeout(
@@ -2536,7 +2532,7 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return,
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
         let mut evidence = host.init_failure_updates();
         assert!(tokio::time::timeout(
@@ -2566,20 +2562,17 @@ mod vite_values_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // The transport belt on post-init writes: a host that stops draining its
-    // stdin (a plugin hook blocking the event loop while the pipe is full) is
-    // declared GONE at the write timeout — killed, pending failed — so the
-    // dangling half-written frame can never splice into a next call, and
-    // later calls fail fast instead of each burning a window on a wedged
-    // process.
+    // A hook that wedges the isolate in SYNCHRONOUS JS (an infinite loop —
+    // the shape that used to block the node host's event loop until its
+    // stdin filled and the whole host was declared gone) is now interrupted
+    // by the per-call watchdog at the deadline: it fails ONE call and the
+    // host survives — strictly better than the process host, where this
+    // wedge cost the whole host.
     #[tokio::test]
-    async fn blocked_stdin_write_declares_the_host_gone_and_later_calls_fail_fast() {
-        let root = std::env::temp_dir().join(format!("oj-wedged-write-{}", std::process::id()));
+    async fn synchronously_wedged_hook_is_terminated_at_its_deadline_and_the_host_survives() {
+        let root = std::env::temp_dir().join(format!("oj-wedged-sync-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        // Healthy init; the load hook blocks the event loop forever on demand
-        // (Atomics.wait is allowed on Node's main thread), after which the
-        // host reads nothing more from stdin.
         let plugins = root.join("oj.plugins.mjs");
         std::fs::write(
             &plugins,
@@ -2587,8 +2580,7 @@ mod vite_values_tests {
   name: "blocker",
   load(id) {
     if (id.includes("__block__")) {
-      const b = new Int32Array(new SharedArrayBuffer(4));
-      Atomics.wait(b, 0, 0);
+      for (;;) {}
     }
     return null;
   },
@@ -2601,81 +2593,7 @@ mod vite_values_tests {
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = match PluginHost::spawn_with_timeouts(
-            &root,
-            &plugins,
-            &config,
-            true,
-            SpawnTimeouts {
-                init_wait: Some(std::time::Duration::from_secs(30)),
-                rpc: Some(std::time::Duration::from_secs(2)),
-                ..Default::default()
-            },
-        )
-        .await
-        {
-            Ok(h) => h,
-            Err(_) => return, // no node on this machine
-        };
-        // Prove init landed (post-init transport is what is under test).
-        host.load("warmup").await.expect("healthy host answers");
-
-        // Wedge the host's event loop, give the call time to reach the hook,
-        // then fill the pipe: the write must time out, not block forever.
-        let wedger = std::sync::Arc::clone(&host);
-        let wedge_call = tokio::spawn(async move { wedger.load("__block__").await });
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let big = "x".repeat(8 * 1024 * 1024);
-        let t0 = std::time::Instant::now();
-        let err = host
-            .load(&big)
-            .await
-            .expect_err("a write into a full pipe must fail at the belt");
-        assert!(
-            err.contains("stopped reading") || err.contains("exited") || err.contains("died"),
-            "the belt names the wedge: {err}"
-        );
-        assert!(
-            t0.elapsed() < std::time::Duration::from_secs(10),
-            "bounded, not a blocked write: {:?}",
-            t0.elapsed()
-        );
-        // The host is gone now: the wedged call was failed (never left
-        // pending forever) and a fresh call fails fast without a window.
-        let wedged = tokio::time::timeout(std::time::Duration::from_secs(5), wedge_call)
-            .await
-            .expect("the in-flight call is failed when the host is declared gone")
-            .unwrap();
-        assert!(wedged.is_err());
-        let t1 = std::time::Instant::now();
-        let err = host.load("after").await.expect_err("host is gone");
-        assert!(err.contains("exited"), "{err}");
-        assert!(
-            t1.elapsed() < std::time::Duration::from_millis(500),
-            "fail-fast on a declared-gone host: {:?}",
-            t1.elapsed()
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    // The other half of the write belt: a timeout that elapsed while still
-    // WAITING ON THE STDIN MUTEX wrote zero bytes of its frame — the holder
-    // is a concurrent write against a possibly healthy pipe — so it fails
-    // ONLY that call. The host survives and later calls succeed; only a
-    // mid-frame timeout (the test above) declares the host gone.
-    #[tokio::test]
-    async fn write_timeout_waiting_on_the_stdin_mutex_fails_only_that_call() {
-        let root = std::env::temp_dir().join(format!("oj-busy-stdin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let plugins = root.join("oj.plugins.mjs");
-        std::fs::write(&plugins, "export default [];\n").unwrap();
-        let config = serde_json::json!({
-            "config": { "root": root.display().to_string() },
-            "env": { "command": "serve", "mode": "development" },
-        })
-        .to_string();
-        let host = match PluginHost::spawn_with_timeouts(
+        let host = PluginHost::spawn_with_timeouts(
             &root,
             &plugins,
             &config,
@@ -2687,29 +2605,305 @@ mod vite_values_tests {
             },
         )
         .await
-        {
-            Ok(h) => h,
-            Err(_) => return, // no node on this machine
-        };
-        // Healthy and initialized (the serve-info ACK is already written).
+        .expect("the embedded engine spawns");
+        // Prove init landed (post-init transport is what is under test).
         host.load("warmup").await.expect("healthy host answers");
 
-        // A concurrent writer holds the pipe (the healthy-but-slow-drain
-        // shape, made deterministic): the racing call must time out WAITING,
-        // having written nothing — and fail alone.
-        let guard = host.stdin.lock().await;
+        let t0 = std::time::Instant::now();
+        let err = host
+            .load("__block__")
+            .await
+            .expect_err("a synchronous wedge fails at its own deadline");
+        assert!(
+            err.contains("timed out") && err.contains("OJ_PLUGIN_TIMEOUT"),
+            "one call fails on its timeout, the host is kept: {err}"
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(10),
+            "bounded: {:?}",
+            t0.elapsed()
+        );
+        // The wedge was terminated, not the host: later calls succeed.
+        host.load("after")
+            .await
+            .expect("the host survives a terminated synchronous wedge");
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The transport belt: a hook that blocks the isolate thread in NATIVE
+    // code (a blocking child wait here — the same category as a wedged napi
+    // call; note `Atomics.wait` does NOT qualify, V8's terminate interrupts
+    // it) cannot be interrupted by the watchdog and stops the engine's
+    // scheduler entirely, so no reply of any kind — not even the deadline
+    // expiry — can land. The belt (a second full window past the per-call
+    // deadline) declares the host GONE, and later calls fail fast instead of
+    // each burning a window on a wedged engine. The blocked thread itself
+    // leaks (detached) until the block ends: the documented cost of the
+    // in-process host.
+    #[tokio::test]
+    async fn natively_blocked_hook_declares_the_host_gone_and_later_calls_fail_fast() {
+        let root = std::env::temp_dir().join(format!("oj-wedged-native-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"import { execSync } from "node:child_process";
+export default [{
+  name: "native-blocker",
+  load(id) {
+    if (id.includes("__block__")) {
+      execSync("sleep 60");
+    }
+    return null;
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_with_timeouts(
+            &root,
+            &plugins,
+            &config,
+            true,
+            SpawnTimeouts {
+                init_wait: Some(std::time::Duration::from_secs(30)),
+                rpc: Some(std::time::Duration::from_secs(1)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the embedded engine spawns");
+        host.load("warmup").await.expect("healthy host answers");
+
+        let t0 = std::time::Instant::now();
+        let err = host
+            .load("__block__")
+            .await
+            .expect_err("a native block must fail at the belt");
+        assert!(
+            err.contains("unresponsive") || err.contains("exited"),
+            "the belt names the wedge: {err}"
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(10),
+            "bounded, not a blocked transport: {:?}",
+            t0.elapsed()
+        );
+        // The host is gone now: a fresh call fails fast without a window.
+        let t1 = std::time::Instant::now();
+        let err = host.load("after").await.expect_err("host is gone");
+        assert!(err.contains("exited"), "{err}");
+        assert!(
+            t1.elapsed() < std::time::Duration::from_millis(500),
+            "fail-fast on a declared-gone host: {:?}",
+            t1.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The other half of the belt distinction: a hook that merely never
+    // SETTLES (a hung promise — the isolate itself stays healthy) fails only
+    // that one call, at the per-call deadline, and the host keeps serving
+    // everyone else — the old "reply timed out, host kept" semantics. Only
+    // total scheduler silence (the test above) declares the host gone.
+    #[tokio::test]
+    async fn hung_hook_promise_fails_only_that_call() {
+        let root = std::env::temp_dir().join(format!("oj-hung-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"export default [{
+  name: "hanger",
+  load(id) {
+    if (id.includes("__hang__")) return new Promise(() => {});
+    return null;
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_with_timeouts(
+            &root,
+            &plugins,
+            &config,
+            true,
+            SpawnTimeouts {
+                init_wait: Some(std::time::Duration::from_secs(30)),
+                rpc: Some(std::time::Duration::from_secs(1)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the embedded engine spawns");
+        host.load("warmup").await.expect("healthy host answers");
+
+        // A concurrent healthy call proves the hang costs nobody else their
+        // window while the hung one waits out its own deadline.
         let racer = std::sync::Arc::clone(&host);
-        let err = tokio::spawn(async move { racer.load("raced").await })
+        let healthy = tokio::spawn(async move { racer.load("alongside").await });
+        let t0 = std::time::Instant::now();
+        let err = host
+            .load("__hang__")
+            .await
+            .expect_err("a never-settling hook fails at its own deadline");
+        assert!(
+            err.contains("timed out") && err.contains("OJ_PLUGIN_TIMEOUT"),
+            "names the per-call timeout, not a wedge: {err}"
+        );
+        assert!(
+            t0.elapsed() >= std::time::Duration::from_millis(900)
+                && t0.elapsed() < std::time::Duration::from_secs(2),
+            "fails at the deadline, before the belt: {:?}",
+            t0.elapsed()
+        );
+        healthy
             .await
             .unwrap()
-            .expect_err("the call bounded by a held pipe fails");
-        assert!(err.contains("stdin busy"), "names the busy pipe, not a wedge: {err}");
-        drop(guard);
+            .expect("a concurrent call is untouched by the hang");
 
         // The host was NOT declared gone: later calls succeed.
         host.load("after")
             .await
-            .expect("the host survives a zero-byte write timeout");
+            .expect("the host survives an abandoned hook promise");
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Process isolation: the in-process host shares oj's process, so a
+    // plugin's env writes land in a private shadow (visible to the plugins
+    // and to getEnvDelta) and NEVER in oj's real environment. The host's cwd
+    // IS the app root (a real chdir at boot, like the old spawn's
+    // current_dir — relative fs paths in hooks depend on it), and a plugin's
+    // own process.chdir is contained to the shadow afterwards.
+    #[tokio::test]
+    async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
+        let root = std::env::temp_dir().join(format!("oj-env-shadow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            "process.env.OJ_HOST_CWD_BEFORE = process.cwd();\n\
+             process.chdir(\"/\");\n\
+             process.env.OJ_HOST_CWD_AFTER = process.cwd();\n\
+             export default [];\n",
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+            .await
+            .expect("the embedded engine spawns");
+        let delta = host.env_delta().await;
+        let before = delta
+            .get("OJ_HOST_CWD_BEFORE")
+            .expect("the write is visible in the host's own delta");
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        assert!(
+            *before == canonical_root.display().to_string()
+                || *before == root.display().to_string(),
+            "the host's cwd is the app root: {before}"
+        );
+        assert_eq!(
+            delta.get("OJ_HOST_CWD_AFTER").map(String::as_str),
+            Some("/"),
+            "a plugin's chdir moves the host's SHADOW cwd"
+        );
+        assert!(
+            std::env::var("OJ_HOST_CWD_BEFORE").is_err() && std::env::var("OJ_HOST_CWD_AFTER").is_err(),
+            "a plugin's env write must never reach oj's real environment"
+        );
+        assert_ne!(
+            std::env::current_dir().unwrap(),
+            std::path::PathBuf::from("/"),
+            "a plugin's chdir must not move oj's real cwd"
+        );
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The push channel end to end: a configureServer middleware makes the
+    // host bring up its loopback middleware server and push { ojServeInfo }
+    // with the port; a server.ws.send lands on the ws broadcast; a
+    // server.restart() lands on the server-events channel. All of it arrives
+    // as engine-channel values with no framing in between.
+    #[tokio::test]
+    async fn push_channel_delivers_serve_info_ws_and_server_events() {
+        let root = std::env::temp_dir().join(format!("oj-push-dispatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"export default [{
+  name: "pusher",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => next());
+    server.ws.send("oj:probe", { n: 7 });
+    server.restart();
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+            .await
+            .expect("the embedded engine spawns");
+        let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel(16);
+        host.set_ws_sender(ws_tx);
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
+        host.set_server_events_sender(ev_tx);
+
+        let mut serve_info = host.serve_info_updates();
+        let pushed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            serve_info.wait_for(Option::is_some),
+        )
+        .await
+        .expect("the serve-info push arrives")
+        .expect("watch alive");
+        let info = pushed.expect("serve info present");
+        assert!(
+            info.middleware_port.is_some(),
+            "a registered middleware reports its loopback port"
+        );
+        drop(pushed);
+
+        // The senders were installed before init began, and configureServer
+        // (where the plugin pushed both) runs before the serve-info push that
+        // released the wait above — so both deliveries are already in.
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(10), ws_rx.recv())
+            .await
+            .expect("the ws push arrives")
+            .expect("broadcast alive");
+        assert!(payload.contains("oj:probe") && payload.contains("custom"), "{payload}");
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(10), ev_rx.recv())
+            .await
+            .expect("the server event arrives")
+            .expect("channel alive");
+        assert_eq!(ev.get("action").and_then(|a| a.as_str()), Some("restart"));
         host.shutdown();
         let _ = std::fs::remove_dir_all(&root);
     }
