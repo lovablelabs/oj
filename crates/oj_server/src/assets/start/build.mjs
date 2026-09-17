@@ -587,13 +587,15 @@ if (!nitro) {
 await nitroContainer?.closeBundle();
 
 // Report the output path for `oj build`. Nitro uses its own directory, not --out.
-// Use Nitro's preview command, if any, run from that directory.
+// Use Nitro's preview command, if any. Presets write it relative to the
+// output directory (`./server/index.mjs`, vercel's `../../static`), so
+// prefix a cd rather than rewriting paths.
 const outputDir = nitro ? nitroOutputDir() : DIST;
 const run = nitro
   ? (() => {
     try {
       const preview = JSON.parse(readFileSync(join(outputDir, "nitro.json"), "utf8")).commands?.preview;
-      return preview ? `${preview} (from ${outputDir})` : null;
+      return preview ? `cd ${outputDir} && ${preview}` : null;
     } catch { return null; }
   })()
   : cfEnv ? null : `node ${join(DIST, "server.mjs")}`;
