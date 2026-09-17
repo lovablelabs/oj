@@ -19,15 +19,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::broadcast;
 
+/// A line-protocol node service. Only the tailwind css host still runs as
+/// one; the Start runner itself is the in-process engine (`StartEngine`).
 struct Runner {
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
     _child: Child,
-    /// The SSR runner's loopback HTTP port (requests go over HTTP so bodies stay
-    /// binary, responses stream and requests run concurrently); None for the
-    /// line-protocol services (css host).
-    http_port: Option<u16>,
 }
+
+use crate::start_host::{ScriptEngine, StartEngine, StartRequest, StartResponse};
 
 struct StartState {
     proxy_prefixes: Vec<String>,
@@ -36,7 +36,14 @@ struct StartState {
     /// (many plugins, Miniflare) activates it after boot, so every read goes
     /// through it per request instead of a boot-time snapshot.
     plugin_serve: Arc<oj_server::PluginServe>,
-    runner: Arc<tokio::sync::Mutex<Runner>>,
+    /// The in-process Start runner (the embedded engine + module host).
+    engine: Arc<StartEngine>,
+    /// Loopback port for the plugin middleware's `x-oj-forward-to` pipe: a
+    /// tiny HTTP shim that calls the engine, standing in for the node
+    /// runner's loopback server.
+    loopback_port: u16,
+    /// The engine the one-shot scripts (regen, rebundle) run on.
+    scripts: Arc<ScriptEngine>,
     bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
     verify: oj_cache::integrity::VerifyMode,
     live_reload: PathBuf,
@@ -140,8 +147,8 @@ pub async fn start_dev(
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
-    oj_server::plugins::prepare_ssr_bridge(&root);
     oj_server::boot_phase("start_dev begin");
+    let scripts = Arc::new(ScriptEngine::new(&root)?);
 
     let built_task = tokio::spawn(
         oj_server::DevServer {
@@ -159,48 +166,79 @@ pub async fn start_dev(
     );
 
     let route_tree = {
-        let (root, cache, mode) = (root.clone(), cache.clone(), mode.clone());
-        tokio::task::spawn_blocking(move || generate_route_tree(&root, &cache, &mode))
-    };
-    let resolver = {
-        let (root, cache, mode) = (root.clone(), cache.clone(), mode.clone());
-        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, &mode))
+        let (root, cache, mode, scripts) = (root.clone(), cache.clone(), mode.clone(), Arc::clone(&scripts));
+        tokio::task::spawn_blocking(move || generate_route_tree(&root, &cache, &mode, &scripts))
     };
     route_tree.await??;
     oj_server::boot_phase("route tree ready");
-    let bundle = {
-        let (root, cache, mode) = (root.clone(), cache.clone(), mode.clone());
-        tokio::task::spawn_blocking(move || bundle_client_entry_cached(&root, &cache, &mode))
+    let resolver = {
+        let (root, cache, mode, scripts) = (root.clone(), cache.clone(), mode.clone(), Arc::clone(&scripts));
+        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, &mode, &scripts))
     };
     resolver.await??;
     oj_server::boot_phase("resolver ready");
-    let runner = Arc::new(tokio::sync::Mutex::new(
-        spawn_start_runner(&root, &cache, &mode).await?,
-    ));
-    oj_server::boot_phase("runner spawned");
+    let bundle = {
+        let (root, cache, mode, scripts) = (root.clone(), cache.clone(), mode.clone(), Arc::clone(&scripts));
+        tokio::task::spawn_blocking(move || bundle_client_entry_cached(&root, &cache, &mode, &scripts))
+    };
     let (reload_tx, _) = broadcast::channel::<()>(16);
+    let (bundle_res, built_res) = tokio::join!(bundle, built_task);
+    let pinned = bundle_res??;
+    let built = built_res??;
+    oj_server::boot_phase("bundle+build joined");
+    // The in-process Start runner: an embedded engine whose module host runs
+    // the dev server's SSR pipeline (StartHost); it needs the built app's
+    // SsrBridge, so it comes up once the server build joins.
+    let engine = {
+        let mut config = oj_config::load(&root).unwrap_or_default();
+        oj_server::plugins::adopt_vite_config_values(&mut config, &root, "serve", &mode)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let entry = configured_start_server_entry(&config, &root)
+            .unwrap_or_else(|| cache.join("server-entry.tsx"));
+        let mut init_env = vec![
+            ("OJ_APP_ROOT".to_string(), root.to_string_lossy().into_owned()),
+            (
+                "OJ_CACHE_ROOT".to_string(),
+                oj_cache::cache_root(&root).to_string_lossy().into_owned(),
+            ),
+            ("NODE_ENV".to_string(), dev_node_env(&root, &mode)),
+            ("OJ_MODE".to_string(), mode.clone()),
+        ];
+        init_env.extend(start_script_env(&root, "serve", &mode)?);
+        Arc::new(StartEngine::new(
+            root.clone(),
+            &cache,
+            built.ssr.clone(),
+            entry,
+            oj_config::ssr_externals(&config),
+            oj_config::public_dir(&config, &root),
+            init_env,
+        )?)
+    };
+    let loopback_port = spawn_engine_loopback(Arc::clone(&engine)).await?;
+    oj_server::boot_phase("engine ready");
     // Whether the plugin's worker environments serve the documents is known
     // only once the plugin host announces its serve info (the `{ ojServeInfo }`
-    // push, mirrored on the host's watch channel); the cf_hint keeps the
-    // non-Cloudflare prewarm overlapping the build exactly as before, while a
-    // Cloudflare config holds the prewarm until the serve info is KNOWN —
-    // bounded, so a host that never comes up still gets a warm runner — and
-    // skips it iff the worker environments render (warming the runner is
-    // wasted CPU then).
-    let (cf_tx, cf_rx) = tokio::sync::oneshot::channel::<Option<PrewarmHold>>();
+    // push, mirrored on the host's watch channel); a Cloudflare config holds
+    // the prewarm until the serve info is KNOWN — bounded, so a host that
+    // never comes up still gets a warm engine — and skips it iff the worker
+    // environments render (warming the engine is wasted CPU then).
+    let prewarm_hold = built.plugin_host.as_ref().map(|h| PrewarmHold {
+        updates: h.serve_info_updates(),
+        host_gone: h.host_gone_updates(),
+        init_failed: h.init_failure_updates(),
+        init_deadline: h.init_deadline_at(),
+        confirm: oj_server::plugins::plugin_rpc_timeout(),
+    });
     {
-        let runner = Arc::clone(&runner);
+        let engine = Arc::clone(&engine);
         let reload_tx = reload_tx.clone();
         tokio::spawn(async move {
             if cf_hint {
-                if let Ok(Some(mut hold)) = cf_rx.await {
+                if let Some(mut hold) = prewarm_hold {
                     // Held until the serve info is KNOWN or there is wedge
                     // EVIDENCE (host death, a burned init window, the host's
                     // own init deadline) — see hold_prewarm_for_serve_info.
-                    // On an evidence release the runner is prewarmed anyway;
-                    // a LATE serve-info activation still supersedes
-                    // (prewarming and then discovering worker environments
-                    // render is only the pre-PR waste).
                     if let Some(known) = hold_prewarm_for_serve_info(&mut hold).await {
                         if known.middleware_port.is_some() && known.runner_environments {
                             oj_server::boot_phase("prewarm skipped (worker environments)");
@@ -209,25 +247,22 @@ pub async fn start_dev(
                     }
                 }
             }
-            let _ = forward(&runner, "GET".into(), "/".into(), &header::HeaderMap::new(), None).await;
+            let _ = engine
+                .handle(engine_request(
+                    "GET".into(),
+                    "/".into(),
+                    &header::HeaderMap::new(),
+                    None,
+                    false,
+                ))
+                .await;
             oj_server::boot_phase("prewarm complete");
-            if revalidate_runner(&runner).await {
+            if engine.revalidate().await {
                 let _ = reload_tx.send(());
             }
             oj_server::boot_phase("revalidate complete");
         });
     }
-    let (bundle_res, built_res) = tokio::join!(bundle, built_task);
-    let pinned = bundle_res??;
-    let built = built_res??;
-    let _ = cf_tx.send(built.plugin_host.as_ref().map(|h| PrewarmHold {
-        updates: h.serve_info_updates(),
-        host_gone: h.host_gone_updates(),
-        init_failed: h.init_failure_updates(),
-        init_deadline: h.init_deadline_at(),
-        confirm: oj_server::plugins::plugin_rpc_timeout(),
-    }));
-    oj_server::boot_phase("bundle+build joined");
     let css_host = if app_uses_tailwind(&root) {
         oj_server::css_engine::CssEngine::tailwind(&root, oj_server::css_engine::START_DEADLINE)
             .await
@@ -238,7 +273,9 @@ pub async fn start_dev(
     let state = Arc::new(StartState {
         proxy_prefixes: built.proxy_prefixes.clone(),
         plugin_serve: Arc::clone(&built.plugin_serve),
-        runner,
+        engine,
+        loopback_port,
+        scripts,
         bundle: std::sync::RwLock::new(Arc::new(pinned)),
         verify: oj_cache::integrity::VerifyMode::from_env(),
         live_reload: cache.join("live-reload.js"),
@@ -305,14 +342,9 @@ pub async fn start_dev(
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
     oj_server::boot_phase("listening");
-    {
-        let root = root.clone();
-        tokio::spawn(async move {
-            let code = shutdown_signal().await;
-            oj_server::plugins::cleanup_ssr_bridge(&root);
-            std::process::exit(code);
-        });
-    }
+    tokio::spawn(async move {
+        std::process::exit(shutdown_signal().await);
+    });
     println!("  {} dev (tanstack start)", oj_server::oj_brand());
     let url = format!("http://localhost:{}/", port);
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
@@ -340,26 +372,6 @@ async fn shutdown_signal() -> i32 {
     }
 }
 
-async fn revalidate_runner(runner: &Arc<tokio::sync::Mutex<Runner>>) -> bool {
-    let mut guard = runner.lock().await;
-    if guard
-        .stdin
-        .write_all(b"{\"cmd\":\"revalidate\"}\n")
-        .await
-        .is_err()
-        || guard.stdin.flush().await.is_err()
-    {
-        return false;
-    }
-    let Ok(Some(line)) = guard.lines.next_line().await else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(&line)
-        .ok()
-        .and_then(|v| v.get("reloaded").and_then(|b| b.as_bool()))
-        .unwrap_or(false)
-}
-
 /// On the Cloudflare path the runner is only a fallback: edits mark it dirty
 /// instead of reloading it, and the reload happens here, before a request can
 /// reach it (the document fallback, and anything the plugin middleware may pipe
@@ -370,22 +382,8 @@ async fn ensure_runner_fresh(state: &StartState) {
             .runner_dirty
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     {
-        reload_runner(state).await;
+        state.engine.reload().await;
     }
-}
-
-async fn reload_runner(state: &StartState) {
-    let mut guard = state.runner.lock().await;
-    if guard
-        .stdin
-        .write_all(b"{\"cmd\":\"reload\"}\n")
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let _ = guard.stdin.flush().await;
-    let _ = guard.lines.next_line().await;
 }
 
 fn list_route_files(root: &Path) -> std::collections::BTreeSet<PathBuf> {
@@ -694,13 +692,14 @@ async fn rebundle_worker(
             regen_files.iter().map(|p| file_content_hash(p)).collect();
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
+            let scripts = Arc::clone(&state.scripts);
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
             tokio::task::spawn_blocking(move || {
                 let routes_now = list_route_files(&r);
                 let routes_changed = routes_now != routes_prev;
                 if routes_changed {
-                    let _ = generate_route_tree(&r, &c, &m);
+                    let _ = generate_route_tree(&r, &c, &m, &scripts);
                 }
                 let server_fn_changed = changed.iter().any(|p| {
                     let is_ts = p.extension().is_some_and(|e| e == "ts" || e == "tsx");
@@ -710,9 +709,9 @@ async fn rebundle_worker(
                                 .is_ok_and(|s| s.contains("createServerFn")))
                 });
                 if routes_changed || server_fn_changed {
-                    let _ = generate_server_fn_resolver(&r, &c, &m);
+                    let _ = generate_server_fn_resolver(&r, &c, &m, &scripts);
                 }
-                let pinned = if bundle_client_entry(&r, &c, &m).is_err() {
+                let pinned = if bundle_client_entry(&r, &c, &m, &scripts).is_err() {
                     None
                 } else {
                     match start_bundle_store(&r, &m).persist(&c) {
@@ -763,10 +762,10 @@ async fn rebundle_worker(
             }
         }
         // The non-lazy runner reloads strictly after the regen completed (its
-        // respawn must import the new generated files, as the inline loop
+        // re-import must see the new generated files, as the inline loop
         // guaranteed) and before the browser reload.
         if !state.lazy_runner() {
-            reload_runner(&state).await;
+            state.engine.reload().await;
         }
         let held = state.gate.as_ref().is_some_and(|g| g.hold_reload(&paths));
         if !held {
@@ -939,8 +938,15 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
-    generate_route_tree(&root, &cache, "development")?;
-    generate_server_fn_resolver(&root, &cache, "development")?;
+    let scripts = Arc::new(ScriptEngine::new(&root)?);
+    {
+        let (r, c, s) = (root.clone(), cache.clone(), Arc::clone(&scripts));
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            generate_route_tree(&r, &c, "development", &s)?;
+            generate_server_fn_resolver(&r, &c, "development", &s)
+        })
+        .await??;
+    }
     // The build options Vite resolves for a Start app too: `--out`/`build.outDir`,
     // `base`, `build.sourcemap`, `build.minify` (consumed by build.mjs).
     let mut config = oj_config::load_with(&root, "build", mode).unwrap_or_default();
@@ -983,25 +989,29 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
         &oj_env::load(&env_dir, mode),
         "production",
     );
-    let status = std::process::Command::new("node")
-        .arg(cache.join("build.mjs"))
-        .env("OJ_APP_ROOT", &root)
-        .env("OJ_CACHE_ROOT", oj_cache::cache_root(&root))
-        .env("NODE_ENV", &node_env)
-        .env("OJ_MODE", mode)
-        .envs(start_script_env(&root, "build", mode)?)
-        .env("OJ_PRERENDER", &prerender)
-        .env("OJ_OUT_DIR", &out_dir)
-        .env("OJ_BASE", &base)
-        .env("OJ_SOURCEMAP", sourcemap)
-        .env("OJ_MINIFY", if minify { "true" } else { "false" })
-        .env("NODE_COMPILE_CACHE", oj_server::node_compile_cache(&root))
-        .current_dir(&root)
-        .status()
-        .map_err(|e| anyhow::anyhow!("could not run production build (node): {e}"))?;
-    if !status.success() {
-        anyhow::bail!("production build failed");
-    }
+    let mut env = vec![
+        ("OJ_APP_ROOT".to_string(), root.to_string_lossy().into_owned()),
+        (
+            "OJ_CACHE_ROOT".to_string(),
+            oj_cache::cache_root(&root).to_string_lossy().into_owned(),
+        ),
+        ("NODE_ENV".to_string(), node_env.clone()),
+        ("OJ_MODE".to_string(), mode.to_string()),
+        ("OJ_PRERENDER".to_string(), prerender),
+        ("OJ_OUT_DIR".to_string(), out_dir.to_string_lossy().into_owned()),
+        ("OJ_BASE".to_string(), base),
+        ("OJ_SOURCEMAP".to_string(), sourcemap.to_string()),
+        (
+            "OJ_MINIFY".to_string(),
+            if minify { "true" } else { "false" }.to_string(),
+        ),
+    ];
+    env.extend(start_script_env(&root, "build", mode)?);
+    // The production build runs on the embedded engine (rolldown's napi
+    // binding and the app's plugins load byonm, as they did under node).
+    scripts
+        .run_async(&cache.join("build.mjs"), &env, "production build")
+        .await?;
     println!(
         "  {} build (tanstack start) -> {}",
         oj_server::oj_brand(),
@@ -1046,7 +1056,12 @@ fn codegen_store(
     )
 }
 
-fn generate_route_tree(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<()> {
+fn generate_route_tree(
+    root: &Path,
+    cache: &Path,
+    mode: &str,
+    scripts: &ScriptEngine,
+) -> anyhow::Result<()> {
     let store = codegen_store(root, cache, "route-tree", "generate.mjs", None);
     let dest = root.join("src").join("routeTree.gen.ts");
     let outputs = [("routeTree.gen.ts", dest.as_path())];
@@ -1063,13 +1078,22 @@ fn generate_route_tree(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<
         }
         Err(miss) => println!("  oj start: route tree cache miss ({miss})"),
     }
-    run_node(root, &cache.join("generate.mjs"), "route tree generation", mode)?;
+    scripts.run(
+        &cache.join("generate.mjs"),
+        &script_env(root, "serve", mode)?,
+        "route tree generation",
+    )?;
     let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
     store.persist(&inputs, &outputs);
     Ok(())
 }
 
-fn generate_server_fn_resolver(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<()> {
+fn generate_server_fn_resolver(
+    root: &Path,
+    cache: &Path,
+    mode: &str,
+    scripts: &ScriptEngine,
+) -> anyhow::Result<()> {
     let store = codegen_store(
         root,
         cache,
@@ -1094,7 +1118,11 @@ fn generate_server_fn_resolver(root: &Path, cache: &Path, mode: &str) -> anyhow:
         }
         Err(miss) => println!("  oj start: server-fn resolver cache miss ({miss})"),
     }
-    run_node(root, &cache.join("gen-resolver.mjs"), "server-fn resolver", mode)?;
+    scripts.run(
+        &cache.join("gen-resolver.mjs"),
+        &script_env(root, "serve", mode)?,
+        "server-fn resolver",
+    )?;
     store.persist(&inputs, &outputs);
     Ok(())
 }
@@ -1118,12 +1146,16 @@ fn list_src_ts_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn bundle_client_entry(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<()> {
-    run_node(
-        root,
+fn bundle_client_entry(
+    root: &Path,
+    cache: &Path,
+    mode: &str,
+    scripts: &ScriptEngine,
+) -> anyhow::Result<()> {
+    scripts.run(
         &cache.join("bundle-client.mjs"),
+        &script_env(root, "serve", mode)?,
         "client entry bundling",
-        mode,
     )
 }
 
@@ -1140,6 +1172,7 @@ fn bundle_client_entry_cached(
     root: &Path,
     cache: &Path,
     mode: &str,
+    scripts: &ScriptEngine,
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
     let store = start_bundle_store(root, mode);
     match store.restore(cache) {
@@ -1159,7 +1192,7 @@ fn bundle_client_entry_cached(
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
-    bundle_client_entry(root, cache, mode)?;
+    bundle_client_entry(root, cache, mode, scripts)?;
     if let Some((key, pinned)) = store.persist(cache) {
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
@@ -1191,39 +1224,20 @@ fn dev_node_env(root: &Path, mode: &str) -> String {
     )
 }
 
-fn run_node(root: &Path, script: &Path, what: &str, mode: &str) -> anyhow::Result<()> {
-    let status = std::process::Command::new("node")
-        .arg(script)
-        .env("OJ_APP_ROOT", root)
-        .env("OJ_CACHE_ROOT", oj_cache::cache_root(root))
-        .env("NODE_ENV", dev_node_env(root, mode))
-        .env("OJ_MODE", mode)
-        .envs(start_script_env(root, "serve", mode)?)
-        .env("NODE_COMPILE_CACHE", oj_server::node_compile_cache(root))
-        .current_dir(root)
-        .status()
-        .map_err(|e| anyhow::anyhow!("could not run {what} (node): {e}"))?;
-    if !status.success() {
-        anyhow::bail!("{what} failed");
-    }
-    Ok(())
-}
-
-async fn spawn_start_runner(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<Runner> {
-    let mut runner = spawn_node_service(root, &cache.join("runner.mjs"), mode).await?;
-    // The runner announces its loopback port as its first stdout line, before it
-    // evaluates the app entry (requests wait for that inside the runner).
-    let line = tokio::time::timeout(std::time::Duration::from_secs(120), runner.lines.next_line())
-        .await
-        .map_err(|_| anyhow::anyhow!("start runner did not announce its port"))?
-        .map_err(|e| anyhow::anyhow!("start runner stdout: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("start runner exited before announcing its port"))?;
-    let port = serde_json::from_str::<serde_json::Value>(&line)
-        .ok()
-        .and_then(|v| v.get("port").and_then(|p| p.as_u64()))
-        .ok_or_else(|| anyhow::anyhow!("start runner sent an unexpected first line: {line}"))?;
-    runner.http_port = Some(port as u16);
-    Ok(runner)
+/// The environment the one-shot scripts receive as their `run(env)` argument:
+/// the same values `node` used to get as spawn env.
+fn script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Vec<(String, String)>> {
+    let mut env = vec![
+        ("OJ_APP_ROOT".to_string(), root.to_string_lossy().into_owned()),
+        (
+            "OJ_CACHE_ROOT".to_string(),
+            oj_cache::cache_root(root).to_string_lossy().into_owned(),
+        ),
+        ("NODE_ENV".to_string(), dev_node_env(root, mode)),
+        ("OJ_MODE".to_string(), mode.to_string()),
+    ];
+    env.extend(start_script_env(root, command, mode)?);
+    Ok(env)
 }
 
 async fn spawn_node_service(root: &Path, script: &Path, mode: &str) -> anyhow::Result<Runner> {
@@ -1236,10 +1250,6 @@ async fn spawn_node_service(root: &Path, script: &Path, mode: &str) -> anyhow::R
         .env("NODE_ENV", dev_node_env(root, mode))
         .env("OJ_MODE", mode)
         .envs(start_script_env(root, "serve", mode)?)
-        .env(
-            "OJ_SSR_BRIDGE_DIR",
-            oj_server::plugins::ssr_bridge_dir(root),
-        )
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1257,7 +1267,6 @@ async fn spawn_node_service(root: &Path, script: &Path, mode: &str) -> anyhow::R
         stdin,
         lines: BufReader::new(stdout).lines(),
         _child: child,
-        http_port: None,
     })
 }
 
@@ -1434,7 +1443,7 @@ async fn forward_document(
         }
     }
     ensure_runner_fresh(state).await;
-    forward(&state.runner, "GET".into(), document_url(&raw), headers, None).await
+    forward(&state.engine, "GET".into(), document_url(&raw), headers, None).await
 }
 
 async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
@@ -1457,18 +1466,20 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
         .unwrap_or("/")
         .to_string();
     let mut headers = req.headers().clone();
-    // The body streams through as Vite pipes `req` into the app: no size cap,
-    // never held in memory. A configureServer middleware may claim the request
-    // first; since a streamed body cannot be replayed, the plugin host pipes
-    // an unclaimed request on to the runner itself (x-oj-forward-to) instead
-    // of falling through.
+    // A configureServer middleware may claim the request first; since a
+    // streamed body cannot be replayed, the plugin host pipes an unclaimed
+    // request on to the engine's loopback shim (x-oj-forward-to) instead of
+    // falling through. Without a middleware the body is read whole and handed
+    // to the engine (the call transport is buffered).
     let Some(port) = state.plugin_serve.mw_port() else {
-        return forward(&state.runner, method, url, &headers, Some(req.into_body())).await;
+        let body = axum::body::to_bytes(req.into_body(), usize::MAX)
+            .await
+            .map(|b| if b.is_empty() { None } else { Some(b.to_vec()) })
+            .unwrap_or(None);
+        return forward(&state.engine, method, url, &headers, body).await;
     };
-    if let Some(runner_port) = state.runner.lock().await.http_port {
-        if let Ok(v) = header::HeaderValue::from_str(&runner_port.to_string()) {
-            headers.insert("x-oj-forward-to", v);
-        }
+    if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {
+        headers.insert("x-oj-forward-to", v);
     }
     match oj_server::proxy_to_loopback_streaming(port, &method, &url, &headers, Some(req.into_body()))
         .await
@@ -1632,27 +1643,134 @@ fn hex_val(b: u8) -> Option<u8> {
 }
 
 
-async fn forward(
-    runner: &Arc<tokio::sync::Mutex<Runner>>,
+/// Builds the engine request for one incoming request. The browser's Host is
+/// taken from the `Host` header (first value, Node's rule); on the loopback
+/// shim (`from_loopback`) the plugin middleware forwards the original Host as
+/// `x-oj-host`, which wins there — and is dropped from a direct request so a
+/// client cannot spoof it, exactly as `loopback_request_headers` did.
+fn engine_request(
     method: String,
     url: String,
     req_headers: &header::HeaderMap,
-    body: Option<axum::body::Body>,
+    body: Option<Vec<u8>>,
+    from_loopback: bool,
+) -> StartRequest {
+    let first_value = |name: &str| {
+        req_headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let host = from_loopback
+        .then(|| first_value("x-oj-host"))
+        .flatten()
+        .or_else(|| first_value("host"))
+        .unwrap_or_else(|| "localhost".to_string());
+    let headers = req_headers
+        .iter()
+        .filter(|(name, _)| {
+            let n = name.as_str();
+            n != "host" && n != "x-oj-host"
+        })
+        .filter_map(|(name, value)| {
+            Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
+        })
+        .collect();
+    StartRequest {
+        method,
+        url,
+        host,
+        headers,
+        body,
+    }
+}
+
+fn engine_response(resp: StartResponse) -> Response {
+    let mut out = Response::new(axum::body::Body::from(resp.body));
+    *out.status_mut() = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let headers = out.headers_mut();
+    for (name, value) in resp.headers {
+        if let (Ok(n), Ok(v)) = (
+            header::HeaderName::from_bytes(name.as_bytes()),
+            header::HeaderValue::from_str(&value),
+        ) {
+            headers.append(n, v);
+        }
+    }
+    for cookie in resp.set_cookies {
+        if let Ok(v) = header::HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
+    out
+}
+
+async fn forward(
+    engine: &StartEngine,
+    method: String,
+    url: String,
+    req_headers: &header::HeaderMap,
+    body: Option<Vec<u8>>,
 ) -> Response {
-    let port = match runner.lock().await.http_port {
-        Some(p) => p,
-        None => {
-            return (
+    match engine
+        .handle(engine_request(method, url, req_headers, body, false))
+        .await
+    {
+        Ok(resp) => inject_reload_client(engine_response(resp)),
+        Err(e) => {
+            // The runner's 500 page shape (Vite's errorMiddleware): message +
+            // stack in an HTML page the overlay can read.
+            let esc = |s: &str| {
+                s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+            };
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "oj start: runner has no loopback port",
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                format!(
+                    "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"UTF-8\" /><title>Error</title></head>\n<body><h1>Internal Server Error</h1><pre>{}</pre></body></html>\n",
+                    esc(&e)
+                ),
             )
                 .into_response()
         }
-    };
-    match oj_server::proxy_to_loopback_streaming(port, &method, &url, req_headers, body).await {
-        Ok(resp) => inject_reload_client(resp),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}")).into_response(),
     }
+}
+
+/// The loopback shim standing in for the node runner's HTTP server: the
+/// plugin middleware pipes unclaimed requests here (`x-oj-forward-to`), and
+/// the shim calls the engine. Responses go back raw; the dev-server side
+/// injects the reload client where needed.
+async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let app = axum::Router::new().fallback(axum::routing::any(
+        |State(engine): State<Arc<StartEngine>>, req: Request| async move {
+            let method = req.method().to_string();
+            let url = path_and_query(&req);
+            let headers = req.headers().clone();
+            let body = axum::body::to_bytes(req.into_body(), usize::MAX)
+                .await
+                .map(|b| if b.is_empty() { None } else { Some(b.to_vec()) })
+                .unwrap_or(None);
+            match engine
+                .handle(engine_request(method, url, &headers, body, true))
+                .await
+            {
+                Ok(resp) => engine_response(resp),
+                Err(e) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}")).into_response()
+                }
+            }
+        },
+    ))
+    .with_state(engine);
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Ok(port)
 }
 
 /// Append the live-reload client to a streamed HTML document. The stream is

@@ -61,32 +61,30 @@ struct Rec {
     importers: HashSet<String>,
 }
 
-fn mtime_of(id: &str) -> Option<SystemTime> {
-    if !Path::new(id).is_absolute() {
+pub(crate) fn mtime_of(id: &str) -> Option<SystemTime> {
+    // A Start module id may carry an intent tag (`?ojasset=css`, `?react`);
+    // the mtime belongs to the file behind it.
+    let clean = id.split('?').next().unwrap_or(id);
+    if !Path::new(clean).is_absolute() {
         return None;
     }
-    std::fs::metadata(id).and_then(|m| m.modified()).ok()
+    std::fs::metadata(clean).and_then(|m| m.modified()).ok()
 }
 
-pub struct SsrHost {
-    bridge: SsrBridge,
+/// The shared version-graph: module versions, importer edges and mtimes behind
+/// one lock, used by both module hosts (SSR and Start).
+#[derive(Default)]
+pub(crate) struct VersionGraph {
     graph: Mutex<Graph>,
 }
 
-impl SsrHost {
-    fn new(bridge: SsrBridge) -> Arc<SsrHost> {
-        Arc::new(SsrHost {
-            bridge,
-            graph: Mutex::new(Graph::default()),
-        })
-    }
-
+impl VersionGraph {
     /// The version-stamped specifier the engine imports a module id under.
-    fn specifier_for(&self, id: &str) -> String {
+    pub(crate) fn specifier_for(&self, id: &str) -> String {
         specifier(id, self.version_of(id))
     }
 
-    fn version_of(&self, id: &str) -> u64 {
+    pub(crate) fn version_of(&self, id: &str) -> u64 {
         self.graph
             .lock()
             .unwrap()
@@ -96,10 +94,43 @@ impl SsrHost {
             .unwrap_or(0)
     }
 
+    /// Records an importer edge and returns the dependency's current stamped
+    /// specifier, under one lock acquisition.
+    pub(crate) fn edge_specifier(&self, id: &str, importer: String) -> String {
+        let mut graph = self.graph.lock().unwrap();
+        graph
+            .recs
+            .entry(id.to_string())
+            .or_default()
+            .importers
+            .insert(importer);
+        specifier(id, graph.versions.get(id).copied().unwrap_or(0))
+    }
+
+    /// Records the module's on-disk mtime at load time.
+    pub(crate) fn record_loaded(&self, id: &str) {
+        self.graph
+            .lock()
+            .unwrap()
+            .recs
+            .entry(id.to_string())
+            .or_default()
+            .mtime = mtime_of(id);
+    }
+
+    /// Force-bumps one module id (a reload of the entry): its next specifier is
+    /// new even when its file did not change.
+    pub(crate) fn bump(&self, id: &str) {
+        let mut graph = self.graph.lock().unwrap();
+        *graph.versions.entry(id.to_string()).or_insert(0) += 1;
+        graph.recs.remove(id);
+        graph.stale += 1;
+    }
+
     /// Drops every record whose file changed since it was loaded, and every
     /// transitive importer of one: their versions bump, so the next request
     /// re-imports fresh instances along the chain.
-    pub fn invalidate(&self) -> usize {
+    pub(crate) fn invalidate(&self) -> usize {
         let mut graph = self.graph.lock().unwrap();
         let mut stack: Vec<String> = graph
             .recs
@@ -127,21 +158,52 @@ impl SsrHost {
         dirty.len()
     }
 
-    fn should_respawn(&self) -> bool {
+    pub(crate) fn should_respawn(&self) -> bool {
         self.graph.lock().unwrap().stale >= STALE_MODULE_RESPAWN_THRESHOLD
     }
 
     /// A fresh isolate has an empty module map: no records are live and no
     /// instances leak. Versions persist (specifiers only need to keep moving
     /// forward).
-    fn reset_after_respawn(&self) {
+    pub(crate) fn reset_after_respawn(&self) {
         let mut graph = self.graph.lock().unwrap();
         graph.recs.clear();
         graph.stale = 0;
     }
 }
 
-fn specifier(id: &str, version: u64) -> String {
+pub struct SsrHost {
+    bridge: SsrBridge,
+    graph: VersionGraph,
+}
+
+impl SsrHost {
+    fn new(bridge: SsrBridge) -> Arc<SsrHost> {
+        Arc::new(SsrHost {
+            bridge,
+            graph: VersionGraph::default(),
+        })
+    }
+
+    /// The version-stamped specifier the engine imports a module id under.
+    fn specifier_for(&self, id: &str) -> String {
+        self.graph.specifier_for(id)
+    }
+
+    pub fn invalidate(&self) -> usize {
+        self.graph.invalidate()
+    }
+
+    fn should_respawn(&self) -> bool {
+        self.graph.should_respawn()
+    }
+
+    fn reset_after_respawn(&self) {
+        self.graph.reset_after_respawn()
+    }
+}
+
+pub(crate) fn specifier(id: &str, version: u64) -> String {
     if Path::new(id).is_absolute() {
         if let Ok(mut url) = url::Url::from_file_path(Path::new(id)) {
             url.set_query(Some(&format!("v={version}")));
@@ -153,7 +215,7 @@ fn specifier(id: &str, version: u64) -> String {
 
 /// The module id behind a specifier this host minted; `None` for anything
 /// else (the bootstrap file, node_modules files), which byonm loads.
-fn versioned_id(specifier: &str) -> Option<String> {
+pub(crate) fn versioned_id(specifier: &str) -> Option<String> {
     let url = url::Url::parse(specifier).ok()?;
     match url.scheme() {
         "file" => {
@@ -170,7 +232,7 @@ fn versioned_id(specifier: &str) -> Option<String> {
 
 /// The module id an importer specifier stands for (version stripped), for
 /// resolver context and importer-graph edges.
-fn importer_id(specifier: &str) -> String {
+pub(crate) fn importer_id(specifier: &str) -> String {
     if let Ok(url) = url::Url::parse(specifier) {
         match url.scheme() {
             "file" => {
@@ -200,16 +262,7 @@ impl ModuleHost for SsrHost {
             }
             match self.bridge.resolve(&importer_id, specifier).await? {
                 SsrResolution::Module(id) => {
-                    let spec = {
-                        let mut graph = self.graph.lock().unwrap();
-                        graph
-                            .recs
-                            .entry(id.clone())
-                            .or_default()
-                            .importers
-                            .insert(importer_id);
-                        specifier_locked(&graph, &id)
-                    };
+                    let spec = self.graph.edge_specifier(&id, importer_id);
                     Ok(Some(HostResolved::Url(spec)))
                 }
                 SsrResolution::External(spec) => Ok(Some(HostResolved::External(spec))),
@@ -230,23 +283,13 @@ impl ModuleHost for SsrHost {
                 .load_module(&id)
                 .await
                 .map_err(|e| e.to_string())?;
-            self.graph
-                .lock()
-                .unwrap()
-                .recs
-                .entry(id.clone())
-                .or_default()
-                .mtime = mtime_of(&id);
+            self.graph.record_loaded(&id);
             Ok(Some(HostModule {
                 code,
                 module_type: HostModuleType::JavaScript,
             }))
         })
     }
-}
-
-fn specifier_locked(graph: &Graph, id: &str) -> String {
-    specifier(id, graph.versions.get(id).copied().unwrap_or(0))
 }
 
 /// A rendered document from the entry: the loader data (serialized, `<`
@@ -386,7 +429,7 @@ fn json_string(value: serde_json::Value) -> String {
     }
 }
 
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -399,7 +442,7 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -418,7 +461,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// Standard base64 with padding (what `atob` decodes).
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

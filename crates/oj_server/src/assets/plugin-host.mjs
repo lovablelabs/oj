@@ -789,6 +789,17 @@ try {
       throw e;
     }
   });
+  // In start mode the ssr-environment host backs oj's in-process Start module
+  // host: framework plugins oj reimplements natively (vite:*, tanstack's
+  // compiler plugins) must not transform SSR modules — the Start pipeline does
+  // their work (server-fn rewrite, route tree, refresh) — while user plugins
+  // (mdx, svgr, virtual modules) run. The same rule as vite-plugin-bridge's
+  // ojReimplemented, which the retired FIFO container applied.
+  if (ojStartMode && (initial.environment && initial.environment.name) === "ssr") {
+    const reimplemented = (name = "") =>
+      name.startsWith("vite:") || /^tanstack[-:]/.test(name) || name.startsWith("@tanstack/");
+    plugins = plugins.filter((p) => !reimplemented(p && p.name));
+  }
   plugins.sort((a, b) => enforceRank(a) - enforceRank(b));
 } catch (e) {
   process.stderr.write(`${OJ} plugin host: failed to load ${pluginsPath}: ${(e && e.stack) || e}\n`);
@@ -3028,10 +3039,18 @@ async function run(hook, args) {
   if (hook === "writeBundle") return writeBundle(args[0], args[1] === "true");
   if (hook === "getPluginCount") return String(plugins.length);
   if (hook === "getPluginConfig") {
-    // JSON-safe subset of what config() hooks returned (functions/RegExps drop).
+    // JSON-safe subset of what config() hooks returned (functions/RegExps
+    // drop), plus THIS environment's `environments.<name>.define` from the
+    // resolved config: only the resolved config knows the per-environment
+    // define of a vite-format app (the extraction does not emit
+    // environments), and Vite layers it over the shared define.
     let define = null;
     try {
-      define = pluginConfigDelta.define ? JSON.parse(JSON.stringify(pluginConfigDelta.define)) : null;
+      const merged = {
+        ...(pluginConfigDelta.define ?? {}),
+        ...(resolvedConfig?.environments?.[envName]?.define ?? {}),
+      };
+      define = Object.keys(merged).length ? JSON.parse(JSON.stringify(merged)) : null;
     } catch {}
     return JSON.stringify({ define });
   }

@@ -226,6 +226,20 @@ pub fn is_tanstack_start_app(root: &Path) -> bool {
             .unwrap_or(false)
 }
 
+/// Deduplicate a define list keeping the LAST occurrence of each key (later
+/// layers override earlier ones, as in Vite's define merge).
+fn dedup_defines_last_wins(defines: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(defines.len());
+    for (k, v) in defines {
+        if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k) {
+            slot.1 = v;
+        } else {
+            out.push((k, v));
+        }
+    }
+    out
+}
+
 pub struct DevServer {
     pub root: PathBuf,
     pub port: Option<u16>,
@@ -730,7 +744,6 @@ impl DevServer {
             );
             defines.extend(oj_config::config_defines(&config));
             defines.extend(oj_config::environment_defines(&config, "client"));
-            defines.extend(oj_config::environment_defines(&config, "ssr"));
             let node_env_json =
                 serde_json::to_string(&node_env).unwrap_or_else(|_| "\"development\"".into());
             for key in [
@@ -742,7 +755,10 @@ impl DevServer {
                     defines.push((key.to_string(), node_env_json.clone()));
                 }
             }
-            defines
+            // Later entries win, and the oxc replacer refuses duplicate keys
+            // outright (which would silently disable every define), so the
+            // list is deduped keeping the last occurrence.
+            dedup_defines_last_wins(defines)
         };
         let digest_defines = |defines: &[(String, String)]| {
             let mut hasher = blake3::Hasher::new();
@@ -758,6 +774,13 @@ impl DevServer {
         let mut html_env = oj_env::html_env_map(&defines);
         let mut env_defines_digest = digest_defines(&defines);
         oj_compiler::set_import_meta_env(defines);
+        // `environments.ssr.define` layers over the shared define for SSR
+        // compiles only (Vite's per-environment define): kept out of the
+        // client list so a key defined differently per side (a
+        // "client"/"server" marker) does not leak across.
+        oj_compiler::set_import_meta_env_ssr(dedup_defines_last_wins(
+            oj_config::environment_defines(&config, "ssr"),
+        ));
 
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
@@ -1632,6 +1655,79 @@ impl SsrBridge {
     pub async fn load_module(&self, id: &str) -> Result<String, SsrModuleError> {
         ssr_module_inner(&self.state, id, false).await
     }
+
+    /// Resolution for the in-process Start module host: unlike [`resolve`],
+    /// a hit inside node_modules keeps its RESOLVED path, so the host can
+    /// hand the engine the exact file the Vite-style resolver picked
+    /// (mainFields, extension probing, exports conditions) instead of
+    /// re-resolving the bare specifier with plain Node semantics.
+    pub async fn resolve_start(
+        &self,
+        importer: &str,
+        spec: &str,
+    ) -> Result<StartResolution, String> {
+        let state = &self.state;
+        let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
+        match state.ssr_resolver.resolve(importer_dir, spec) {
+            Ok(p) => {
+                if p.to_string_lossy().contains("/node_modules/") {
+                    Ok(StartResolution::Dependency(p))
+                } else {
+                    Ok(StartResolution::Module(p.to_string_lossy().into_owned()))
+                }
+            }
+            Err(e) => {
+                if let Some(host) = ssr_plugin_host(state).await {
+                    if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
+                        return Ok(StartResolution::Module(id));
+                    }
+                }
+                if !spec.starts_with('.') && !spec.starts_with('/') {
+                    return Ok(StartResolution::Bare(spec.to_string()));
+                }
+                Err(format!("cannot resolve {spec}: {}", e.reason))
+            }
+        }
+    }
+
+    /// The plugin-transform + compile tail on a source the caller pre-read
+    /// (or pre-rewrote); `from_plugin` marks virtual content. `run_plugins:
+    /// false` skips the plugin transform chain (the caller already ran it,
+    /// e.g. an mdx compile) and only applies the dev-ssr compile.
+    pub async fn transform_module(
+        &self,
+        id: &str,
+        source: String,
+        from_plugin: bool,
+        run_plugins: bool,
+    ) -> Result<String, SsrModuleError> {
+        if run_plugins {
+            ssr_transform_source(&self.state, id, source, from_plugin, false).await
+        } else {
+            ssr_compile_source(&self.state, id, source, from_plugin, false)
+        }
+    }
+
+    /// The lazily spawned ssr-environment plugin host, when the app has one.
+    pub async fn plugin_host(&self) -> Option<std::sync::Arc<PluginHost>> {
+        ssr_plugin_host(&self.state).await
+    }
+
+    /// Whether the SSR pipeline may serve this module path (root, allow-list,
+    /// node_modules), the same rule `load_module` enforces.
+    pub fn module_allowed(&self, path: &Path) -> bool {
+        ssr_module_allowed(&self.state, path)
+    }
+}
+
+/// How the Start module host's resolution landed: a module the pipeline serves
+/// (an app fs path or a plugin virtual id), a resolved dependency file inside
+/// node_modules, or a bare specifier left to Node semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartResolution {
+    Module(String),
+    Dependency(PathBuf),
+    Bare(String),
 }
 
 async fn ssr_resolve_inner(
@@ -1747,6 +1843,19 @@ async fn ssr_module_inner(
         return oj_compiler::json::to_esm(&source, id)
             .map_err(|e| SsrModuleError::Failed(format!("{e}")));
     }
+    ssr_transform_source(state, id, source, from_plugin, runner).await
+}
+
+/// The plugin-transform + dev-ssr-compile tail of the SSR module pipeline, on
+/// a source the caller already has (the fs read, a plugin `load()` override,
+/// or a pre-rewritten Start module).
+async fn ssr_transform_source(
+    state: &Arc<ServerState>,
+    id: &str,
+    source: String,
+    from_plugin: bool,
+    runner: bool,
+) -> Result<String, SsrModuleError> {
     let source = match ssr_plugin_host(state).await {
         Some(host) => {
             let resolved =
@@ -1762,10 +1871,22 @@ async fn ssr_module_inner(
         }
         None => source,
     };
+    ssr_compile_source(state, id, source, from_plugin, runner)
+}
+
+/// The dev-ssr compile alone (no plugin transforms): TS/JSX strip, define,
+/// import.meta.env/glob, refresh off, SSR true.
+fn ssr_compile_source(
+    state: &Arc<ServerState>,
+    id: &str,
+    source: String,
+    from_plugin: bool,
+    runner: bool,
+) -> Result<String, SsrModuleError> {
     let compile_path: PathBuf = if from_plugin {
         PathBuf::from("virtual.tsx")
     } else {
-        path
+        PathBuf::from(id)
     };
     // Dev SSR modules compile as dev + ssr (Vite's importAnalysis injects
     // `SSR: true` and the dev env), so `import.meta.env.SSR` is true and
@@ -1822,6 +1943,14 @@ async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<Plug
                         std::sync::Arc::clone(&host),
                         Arc::clone(&state.ssr_watch),
                     );
+                    // The ssr environment's per-environment define
+                    // (`environments.ssr.define` from the resolved config,
+                    // plus config()-hook deltas) layers over the shared
+                    // define for SSR compiles.
+                    let ssr_defines = host.config_defines().await;
+                    if !ssr_defines.is_empty() {
+                        oj_compiler::merge_import_meta_env_ssr(ssr_defines);
+                    }
                     Some(host)
                 }
                 Err(e) => {
@@ -5207,7 +5336,9 @@ fn is_dep_module(url: &str, file: &Path) -> bool {
                 && file.components().any(|c| c.as_os_str() == "node_modules")))
 }
 
-fn is_style_ext(ext: &str) -> bool {
+/// Stylesheet extensions (public: the in-process Start module host classifies
+/// resolved paths with the same rule the dev server uses).
+pub fn is_style_ext(ext: &str) -> bool {
     matches!(ext, "css" | "scss" | "sass" | "less" | "styl" | "stylus")
 }
 
@@ -5286,7 +5417,7 @@ fn wants_raw_resource(headers: &HeaderMap) -> bool {
 // default asset handling, case-insensitive). svg is excluded here: it is routed
 // through the compile path so vite-plugin-svgr can componentize it, falling back
 // to a URL module there.
-fn is_importable_asset_ext(ext: &str) -> bool {
+pub fn is_importable_asset_ext(ext: &str) -> bool {
     oj_compiler::assets::is_asset_ext(ext) && !ext.eq_ignore_ascii_case("svg")
 }
 

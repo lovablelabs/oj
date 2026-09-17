@@ -625,8 +625,13 @@ fn hidden_by_default(rel: &str, pattern: &str) -> bool {
         .filter(|seg| seg.starts_with('.') && *seg != "." && *seg != "..")
         .collect();
     rel.split('/').any(|seg| {
+        // `.`/`..` are path steps, not dotfiles: a `../sibling/*` glob from a
+        // nested importer must match (Vite's tinyglobby does).
         seg == "node_modules"
-            || (seg.starts_with('.') && !pattern_dots.iter().any(|p| glob::Pattern::new(p).is_ok_and(|g| g.matches(seg))))
+            || (seg.starts_with('.')
+                && seg != "."
+                && seg != ".."
+                && !pattern_dots.iter().any(|p| glob::Pattern::new(p).is_ok_and(|g| g.matches(seg))))
     })
 }
 

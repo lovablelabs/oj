@@ -6028,6 +6028,7 @@ dependencies = [
  "oj_js",
  "oj_resolver",
  "oj_server",
+ "regex",
  "rolldown",
  "rolldown-ariadne",
  "rolldown_common",

@@ -71,9 +71,30 @@ pub(crate) fn detect_refresh_registrations(program: &Program) -> bool {
 // RwLock, not OnceLock: the server re-sets these once the plugin host reports
 // config()-hook env mutations, which land after the initial dotenv-based set.
 static ENV_DEFINES: std::sync::RwLock<Option<Vec<(String, String)>>> = std::sync::RwLock::new(None);
+// `environments.ssr.define`: layered over the shared list for SSR compiles
+// only, so a key defined differently per side keeps both values.
+static ENV_DEFINES_SSR: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
 
 pub fn set_import_meta_env(defines: Vec<(String, String)>) {
     *ENV_DEFINES.write().expect("ENV_DEFINES poisoned") = Some(defines);
+}
+
+pub fn set_import_meta_env_ssr(overrides: Vec<(String, String)>) {
+    *ENV_DEFINES_SSR.write().expect("ENV_DEFINES_SSR poisoned") = overrides;
+}
+
+/// Folds more ssr-environment defines over the current set (later wins): the
+/// resolved-config defines arrive when the lazy ssr plugin host spawns, after
+/// the boot-time set from the oj config.
+pub fn merge_import_meta_env_ssr(overrides: Vec<(String, String)>) {
+    let mut current = ENV_DEFINES_SSR.write().expect("ENV_DEFINES_SSR poisoned");
+    for (k, v) in overrides {
+        if let Some(slot) = current.iter_mut().find(|(ek, _)| *ek == k) {
+            slot.1 = v;
+        } else {
+            current.push((k, v));
+        }
+    }
 }
 
 pub(crate) fn import_meta_env_defines(dev: bool, ssr: bool) -> Vec<(String, String)> {
@@ -87,6 +108,13 @@ pub(crate) fn import_meta_env_defines(dev: bool, ssr: bool) -> Vec<(String, Stri
                 *v = "true".into();
             } else if k == "import.meta.env" {
                 *v = v.replace("\"SSR\":false", "\"SSR\":true");
+            }
+        }
+        for (k, v) in ENV_DEFINES_SSR.read().expect("ENV_DEFINES_SSR poisoned").iter() {
+            if let Some(slot) = out.iter_mut().find(|(ek, _)| ek == k) {
+                slot.1 = v.clone();
+            } else {
+                out.push((k.clone(), v.clone()));
             }
         }
         return out;

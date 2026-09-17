@@ -19,6 +19,7 @@ oj_resolver.workspace = true
 oj_server.workspace = true
 oj_js = { path = "../oj_js" }
 url = "2"
+regex = "1.11"
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

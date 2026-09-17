@@ -5,6 +5,7 @@ mod build;
 mod ssr_dev;
 mod ssr_host;
 mod start_dev;
+mod start_host;
 
 // Linking-only for now: build.rs exports the Node-API symbols these crates
 // define, so they must be part of the binary (rustc drops unused crates from
@@ -63,6 +64,17 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         prod: bool,
+    },
+    /// Internal: run an ES module on the embedded JS engine and print its
+    /// default export as JSON. Used by oj's own tests (the napi symbols the
+    /// engine needs are only exported from this binary, so a cargo test
+    /// binary cannot host the probe).
+    #[command(name = "js-eval", hide = true)]
+    JsEval {
+        file: PathBuf,
+        /// The engine root (bare imports resolve from its node_modules).
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     Build {
         root: Option<PathBuf>,
@@ -186,6 +198,20 @@ async fn run() -> anyhow::Result<()> {
                 .run()
                 .await
             }
+        }
+        Command::JsEval { file, root } => {
+            let root = root
+                .unwrap_or_else(|| PathBuf::from("."))
+                .canonicalize()
+                .context("engine root not found")?;
+            let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(&root))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let value = engine
+                .eval(oj_js::EvalInput::Path(file))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("{value}");
+            Ok(())
         }
         Command::Compile { file, prod } => {
             let source = std::fs::read_to_string(&file)

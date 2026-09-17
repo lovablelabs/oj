@@ -11,6 +11,21 @@ import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob } from "./glob-transform.mjs";
 import { cloudflareEnvironment, cloudflareWorkerPlugin, workerOutDir, CLOUDFLARE_WORKER_ENTRY } from "./cf-build.mjs";
 
+// Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
+// spawn env arrive as `env`; `node <script>` still works for tests.
+export async function run(env = null) {
+  if (env) for (const [k, v] of Object.entries(env)) process.env[k] = v;
+  // The node spawn ran with cwd = the app root; cwd-relative plugin filters
+  // (svgr's createFilter globs) depend on it.
+  if (env && env.OJ_APP_ROOT) {
+    try { process.chdir(env.OJ_APP_ROOT); } catch {}
+  }
+  return main();
+}
+
+async function main() {
+
+
 const APP = process.env.OJ_APP_ROOT ?? process.cwd();
 // Set by `oj build` per Vite's NODE_ENV rule (shell wins, else .env NODE_ENV=development, else production).
 const NODE_ENV = process.env.NODE_ENV || "production";
@@ -457,3 +472,6 @@ process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} built dist (client ${clientUrl})
 if (workerDir) {
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} cloudflare worker "${cfEnv.name}" -> ${relative(APP, workerDir)}/index.js (deploy: wrangler deploy)\n`);
 }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
