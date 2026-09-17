@@ -45,6 +45,12 @@ oj dev                                           # dev server for the current ap
 oj build                                         # production build into ./dist
 ```
 
+Or with Nix:
+
+```sh
+nix run github:lovablelabs/oj -- dev
+```
+
 ### Supported targets
 
 oj embeds V8, so it builds on the targets rusty_v8 ships prebuilt static

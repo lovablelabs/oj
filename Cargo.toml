@@ -11,6 +11,7 @@ members = [
     "crates/oj_server",
     "crates/oj",
     "crates/oj_js",
+    "crates/oj_wasm",
 ]
 
 [workspace.package]

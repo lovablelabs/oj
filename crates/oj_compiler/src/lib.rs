@@ -5,6 +5,7 @@ pub mod assets;
 pub mod bundle;
 pub mod cjs;
 pub mod glob;
+pub mod html;
 pub mod interop;
 pub mod ssr;
 pub mod json;
