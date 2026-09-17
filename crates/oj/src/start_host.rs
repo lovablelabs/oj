@@ -322,6 +322,48 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
     (spec.to_string(), None, false)
 }
 
+/// The Start framework-seam aliases (the retired node loader's ALIASES map):
+/// resolved targets under the app or the start cache dir. start-server-core
+/// imports these by bare specifier and expects the bundler to answer; one the
+/// host does not map fails every document request.
+fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
+    vec![
+        ("#tanstack-router-entry".into(), root.join("src/router")),
+        ("#tanstack-start-entry".into(), cache.join("start-entry.ts")),
+        (
+            "#tanstack-start-plugin-adapters".into(),
+            cache.join("plugin-adapters.ts"),
+        ),
+        (
+            "#tanstack-start-server-fn-resolver".into(),
+            cache.join("server-fn-resolver.mjs"),
+        ),
+        (
+            "tanstack-start-manifest:v".into(),
+            cache.join("manifest-dev.ts"),
+        ),
+        (
+            "tanstack-start-injected-head-scripts:v".into(),
+            cache.join("injected-head-scripts.ts"),
+        ),
+        (
+            "@cloudflare/vite-plugin/server".into(),
+            cache.join("cf-server.mjs"),
+        ),
+        // Vite externalizes `cloudflare:*` into workerd; here there is no
+        // workerd, so the one module server fns actually use resolves to a
+        // dev stub whose `env` comes from the wrangler vars. Other
+        // cloudflare:* ids fall to the empty-module net in resolve.
+        ("cloudflare:workers".into(), cache.join("cf-workers.mjs")),
+        // Start's default server entry is oj's runner entry: an app
+        // `server.entry` that wraps it composes the same way as in Vite.
+        (
+            "@tanstack/react-start/server-entry".into(),
+            cache.join("server-entry.tsx"),
+        ),
+    ]
+}
+
 pub struct StartHost {
     bridge: SsrBridge,
     root: PathBuf,
@@ -346,38 +388,7 @@ impl StartHost {
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
     ) -> Arc<StartHost> {
-        let aliases = vec![
-            ("#tanstack-router-entry".into(), root.join("src/router")),
-            ("#tanstack-start-entry".into(), cache.join("start-entry.ts")),
-            (
-                "#tanstack-start-plugin-adapters".into(),
-                cache.join("plugin-adapters.ts"),
-            ),
-            (
-                "#tanstack-start-server-fn-resolver".into(),
-                cache.join("server-fn-resolver.mjs"),
-            ),
-            ("tanstack-start-manifest:v".into(), cache.join("manifest-dev.ts")),
-            (
-                "tanstack-start-injected-head-scripts:v".into(),
-                cache.join("injected-head-scripts.ts"),
-            ),
-            (
-                "@cloudflare/vite-plugin/server".into(),
-                cache.join("cf-server.mjs"),
-            ),
-            // Vite externalizes `cloudflare:*` into workerd; here there is no
-            // workerd, so the one module server fns actually use resolves to a
-            // dev stub whose `env` comes from the wrangler vars. Other
-            // cloudflare:* ids fall to the empty-module net below.
-            ("cloudflare:workers".into(), cache.join("cf-workers.mjs")),
-            // Start's default server entry is oj's runner entry: an app
-            // `server.entry` that wraps it composes the same way as in Vite.
-            (
-                "@tanstack/react-start/server-entry".into(),
-                cache.join("server-entry.tsx"),
-            ),
-        ];
+        let aliases = framework_aliases(&root, cache);
         Arc::new(StartHost {
             bridge,
             root,
@@ -1207,6 +1218,33 @@ mod tests {
         assert!(is_cjs_file("/whatever/x.cjs"));
         assert!(!is_cjs_file("/whatever/x.mjs"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The framework seam, from the consumer's side: start-server-core imports
+    // these by bare specifier and expects the bundler to answer; one the host
+    // does not map fails every document request. (The old node loader had the
+    // same table; write_start_assets covers the targets existing.)
+    #[test]
+    fn the_start_host_maps_every_framework_virtual_module() {
+        let root = Path::new("/app");
+        let cache = Path::new("/app/.oj-cache/v1/start");
+        let aliases = framework_aliases(root, cache);
+        for spec in [
+            "tanstack-start-manifest:v",
+            "tanstack-start-injected-head-scripts:v",
+            "#tanstack-router-entry",
+            "#tanstack-start-entry",
+            "#tanstack-start-plugin-adapters",
+            "#tanstack-start-server-fn-resolver",
+            "@cloudflare/vite-plugin/server",
+            "cloudflare:workers",
+            "@tanstack/react-start/server-entry",
+        ] {
+            assert!(
+                aliases.iter().any(|(find, _)| find == spec),
+                "the start host has no alias for {spec}"
+            );
+        }
     }
 
     #[test]

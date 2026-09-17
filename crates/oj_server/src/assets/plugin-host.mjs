@@ -3,7 +3,7 @@
 
 import http from "node:http";
 import https from "node:https";
-import { createReadStream, existsSync, fstatSync, openSync, readFileSync, statSync, unlinkSync, write as fsWrite, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, stat as fsStat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
@@ -205,77 +205,6 @@ const initStage = (stage) => {
   if (!ojInitDone) ctl({ ojInitProgress: stage });
 };
 initStage("start");
-
-let ssrBridgeDir = null;
-let ssrContainer = null;
-let ssrEnvDelta = {};
-let ssrResolveReady;
-const ssrReady = new Promise((r) => { ssrResolveReady = r; });
-if (ojStartMode && initial.ssrBridge && initial.ssrBridge.dir) {
-  const dir = initial.ssrBridge.dir;
-  try {
-    const repFd = openSync(join(dir, "rep.fifo"), "r+");
-    const reqFd = openSync(join(dir, "req.fifo"), "r+");
-    ssrBridgeDir = dir;
-    const writeAll = (buf) => new Promise((resolve) => {
-      let off = 0;
-      const step = () => fsWrite(repFd, buf, off, buf.length - off, null, (e, n) => {
-        if (e) {
-          process.stderr.write(`${OJ} ssr bridge write failed: ${e}\n`);
-          return resolve();
-        }
-        off += n;
-        off < buf.length ? step() : resolve();
-      });
-      step();
-    });
-    let writeChain = Promise.resolve();
-    const reply = (obj) => {
-      const json = Buffer.from(JSON.stringify(obj));
-      const frame = Buffer.allocUnsafe(4 + json.length);
-      frame.writeUInt32LE(json.length, 0);
-      json.copy(frame, 4);
-      writeChain = writeChain.then(() => writeAll(frame));
-    };
-    const SSR_METHODS = new Set(["resolveId", "load", "transform", "transformUserCode"]);
-    const dispatch = async ({ id, method, args }) => {
-      await ssrReady;
-      try {
-        if (method === "__env") return reply({ id, value: ssrEnvDelta });
-        if (method === "__define") {
-          return reply({ id, value: {
-            ...resolvedConfig.define,
-            ...resolvedConfig.environments?.ssr?.define,
-          } });
-        }
-        if (method === "__heap") {
-          return reply({ id, value: (await import("node:v8")).default.getHeapStatistics() });
-        }
-        if (!ssrContainer || !SSR_METHODS.has(method)) return reply({ id, value: null });
-        reply({ id, value: (await ssrContainer[method](...(args ?? []))) ?? null });
-      } catch (e) {
-        reply({ id, error: String((e && e.stack) || e) });
-      }
-    };
-    let acc = Buffer.alloc(0);
-    createReadStream(null, { fd: reqFd, autoClose: false })
-      .on("data", (chunk) => {
-        acc = acc.length ? Buffer.concat([acc, chunk]) : chunk;
-        while (acc.length >= 4) {
-          const len = acc.readUInt32LE(0);
-          if (acc.length < 4 + len) break;
-          let msg = null;
-          try { msg = JSON.parse(acc.subarray(4, 4 + len).toString("utf8")); } catch {}
-          acc = acc.subarray(4 + len);
-          if (msg && msg.id != null) dispatch(msg);
-        }
-      })
-      .on("error", (e) => process.stderr.write(`${OJ} ssr bridge read failed: ${e}\n`));
-  } catch (e) {
-    process.stderr.write(`${OJ} ssr bridge unavailable: ${(e && e.message) || e}\n`);
-    try { writeFileSync(join(dir, "disabled"), "1"); } catch {}
-  }
-}
 
 // Vite's ResolvedConfig exposes createResolver(): a standalone module resolver
 // built from the config's resolve options. Plugins that must resolve modules
@@ -2468,32 +2397,6 @@ if (env.command !== "build") {
   }, 1000);
 }
 
-if (ssrBridgeDir) {
-  (async () => {
-    try {
-      const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "start", "vite-plugin-bridge.mjs");
-      const bridge = await import(pathToFileURL(bridgePath).href);
-      const c = bridge.createPluginContainer({ parseAst: viteParseAst }, allPlugins, {
-        command: env.command,
-        mode: env.mode,
-        environment: "ssr",
-      });
-      await c.buildStart();
-      ssrContainer = c;
-      process.stderr.write(`${OJ} plugin host: ssr container ready (${c.pluginCount} plugin(s), shared config eval)\n`);
-    } catch (e) {
-      process.stderr.write(`${OJ} plugin host: ssr container failed: ${(e && (e.stack || e.message)) || e}\n`);
-    }
-    for (const [k, v] of Object.entries(process.env)) {
-      if (ssrEnvBase[k] !== v) ssrEnvDelta[k] = v;
-    }
-    try { writeFileSync(join(ssrBridgeDir, "ready"), "1"); } catch {}
-    if (process.env.OJ_BOOT_PHASES) {
-      process.stderr.write(`[oj-phase] ${Date.now()} container: bootstrap done\n`);
-    }
-    ssrResolveReady();
-  })();
-}
 
 async function transform(code, id, resolvedJson) {
   const bucket = new Set();

@@ -116,10 +116,6 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/vite-plugin-bridge.mjs"),
     ),
     (
-        "container-bridge.mjs",
-        include_str!("assets/start/container-bridge.mjs"),
-    ),
-    (
         "glob-transform.mjs",
         include_str!("assets/start/glob-transform.mjs"),
     ),
@@ -133,12 +129,6 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/cf-server-worker.mjs"),
     ),
     ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
-    ("loader.mjs", include_str!("assets/start/loader.mjs")),
-    (
-        "loader-util.mjs",
-        include_str!("assets/start/loader-util.mjs"),
-    ),
-    ("runner.mjs", include_str!("assets/start/runner.mjs")),
     ("generate.mjs", include_str!("assets/start/generate.mjs")),
     (
         "gen-resolver.mjs",
@@ -819,14 +809,6 @@ impl DevServer {
             None => (None, "oj", String::new()),
         };
 
-        let ssr_bridge_dir = if is_start && plugins_path.is_some() {
-            plugins::ensure_ssr_bridge(&root)
-        } else {
-            None
-        };
-        if is_start && ssr_bridge_dir.is_none() {
-            plugins::disable_ssr_bridge(&root);
-        }
         let mut plugin_cfg = serde_json::json!({
             "config": {
                 "root": root.display().to_string(),
@@ -862,12 +844,8 @@ impl DevServer {
             plugin_cfg["runnerBacked"] =
                 serde_json::json!(oj_config::ssr_runner_backed(&config));
         }
-        if let Some(dir) = &ssr_bridge_dir {
-            plugin_cfg["ssrBridge"] = serde_json::json!({ "dir": dir.display().to_string() });
-        }
         let plugin_config = plugin_cfg.to_string();
         plugin_cfg["environment"]["name"] = serde_json::json!("ssr");
-        plugin_cfg.as_object_mut().unwrap().remove("ssrBridge");
         let ssr_plugin_config = plugin_cfg.to_string();
         boot_phase("plugin host spawning");
         let plugin_host = match plugins_path {
@@ -887,9 +865,6 @@ impl DevServer {
                     let plugin_count = host.plugin_count().await;
                     if plugin_count == 0 && !keep_for_proxy {
                         host.shutdown();
-                        if ssr_bridge_dir.is_some() {
-                            plugins::disable_ssr_bridge(&root);
-                        }
                         println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
                         None
                     } else if plugin_count == 0 {
@@ -913,9 +888,6 @@ impl DevServer {
                 }
                 Err(e) => {
                     eprintln!("oj: plugin host failed to start: {e}");
-                    if ssr_bridge_dir.is_some() {
-                        plugins::disable_ssr_bridge(&root);
-                    }
                     None
                 }
             },
@@ -9922,35 +9894,18 @@ mod adapter_tests {
         d
     }
 
-    // The framework seam, from the consumer's side. start-server-core imports
-    // these by bare specifier and expects the bundler to answer; one the loader
-    // does not map reaches Node's ESM loader as an unknown URL scheme, and every
-    // document request then fails with ERR_UNSUPPORTED_ESM_URL_SCHEME. The two
-    // scheme-shaped ones are imported unconditionally under TSS_DEV_SERVER,
-    // which runner.mjs sets, so this is the ordinary dev path.
     #[test]
-    fn the_loader_maps_every_framework_virtual_module() {
-        let loader = include_str!("assets/start/loader.mjs");
-        for spec in [
-            "tanstack-start-manifest:v",
-            "tanstack-start-injected-head-scripts:v",
-            "#tanstack-router-entry",
-            "#tanstack-start-entry",
-            "#tanstack-start-plugin-adapters",
-            "#tanstack-start-server-fn-resolver",
-        ] {
-            assert!(
-                loader.contains(&format!("\"{spec}\":")),
-                "the SSR loader has no alias for {spec}",
-            );
-        }
-    }
-
-    #[test]
-    fn write_start_assets_writes_every_module_the_loader_aliases() {
+    fn write_start_assets_writes_every_module_the_start_host_aliases() {
         let dir = tmp("assets");
         write_start_assets(&dir).unwrap();
-        for name in ["injected-head-scripts.ts", "manifest-dev.ts", "loader.mjs"] {
+        for name in [
+            "injected-head-scripts.ts",
+            "manifest-dev.ts",
+            "server-entry.tsx",
+            "start-entry.ts",
+            "cf-server.mjs",
+            "cf-workers.mjs",
+        ] {
             assert!(dir.join(name).is_file(), "{name} was not written");
         }
     }

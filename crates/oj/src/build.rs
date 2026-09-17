@@ -3918,12 +3918,14 @@ async fn build_server_fns(root: &Path, out_dir: &Path, mode: &str) -> anyhow::Re
 const PRERENDER_JS: &str = r#"import * as entry from "./entry-server.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CLIENT_JS = "__CLIENT_JS__";
 const CLIENT_CSS = "__CLIENT_CSS__";
 const serialize = (d) => JSON.stringify(d ?? null).replace(/</g, "\\u003c");
-const paths = JSON.parse(process.argv[2] || "[]");
-const root = process.cwd();
+// Injected by the build (the script runs on the embedded engine, not argv).
+const paths = __PATHS__;
+const root = dirname(fileURLToPath(import.meta.url));
 
 async function renderFull(url, data) {
   if (typeof entry.renderStream === "function") {
@@ -4165,22 +4167,20 @@ pub(crate) async fn build_ssr_app(
     if let Some(paths) = prerender.filter(|p| !p.is_empty()) {
         let script = PRERENDER_JS
             .replace("__CLIENT_JS__", &js)
-            .replace("__CLIENT_CSS__", css.as_deref().unwrap_or(""));
+            .replace("__CLIENT_CSS__", css.as_deref().unwrap_or(""))
+            .replace("__PATHS__", &serde_json::to_string(&paths)?);
         let script_path = out_dir.join("_oj_prerender.mjs");
         fs::write(&script_path, script)?;
-        let out = std::process::Command::new("node")
-            .arg(&script_path)
-            .arg(serde_json::to_string(&paths)?)
-            .env("NODE_COMPILE_CACHE", oj_server::node_compile_cache(root))
-            .current_dir(out_dir)
-            .output()
-            .context("node not found for prerender")?;
+        // Runs on the embedded engine: the built server bundle imports its
+        // externals from node_modules via byonm, as it did under node.
+        let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root))
+            .map_err(|e| anyhow::anyhow!("prerender engine: {e}"))?;
+        let result = engine
+            .eval(oj_js::EvalInput::Path(script_path.clone()))
+            .await;
         let _ = fs::remove_file(&script_path);
-        if !out.status.success() {
-            bail!("prerender failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        for line in String::from_utf8_lossy(&out.stderr).lines() {
-            println!("  {line}");
+        if let Err(e) = result {
+            bail!("prerender failed: {e}");
         }
     }
     println!("  run: node {}", out_dir.join("server.mjs").display());

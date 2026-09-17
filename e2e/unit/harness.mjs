@@ -6,7 +6,7 @@
 //   - runSidecar:  one-shot `node <sidecar> <jsonArg>` -> parsed stdout JSON
 //                  (optimize-deps.mjs)
 //   - rpcSidecar:  long-lived newline-delimited JSON RPC over stdin/stdout
-//                  (plugin-host.mjs, runner.mjs)
+//                  (plugin-host.mjs)
 
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";

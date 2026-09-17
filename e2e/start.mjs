@@ -169,7 +169,7 @@ async function devPhase() {
     await waitUp(port);
     await assertApp(port, "start-dev");
     await assertDevRouting(port);
-    assertInlineSourceMaps();
+    await assertInlineSourceMaps(port);
     await assertDevHydration(port);
   } finally {
     srv.kill("SIGKILL");
@@ -177,28 +177,19 @@ async function devPhase() {
   await assertBuildStartResilient();
 }
 
-// The SSR loader inlines a source map into every transformed module (Node runs
-// with --enable-source-maps, so stacks point at the .tsx source). The loader's
-// on-disk cache holds the served code, so the marker must be there.
-function assertInlineSourceMaps() {
-  const cache = path.join(app, ".oj-cache");
-  const stack = [cache];
-  let found = false;
-  while (stack.length && !found) {
-    const dir = stack.pop();
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-    for (const e of entries) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) stack.push(p);
-      else if (e.isFile() && !p.includes("v8")) {
-        try {
-          if (fs.readFileSync(p, "latin1").includes("sourceMappingURL=data:application/json;base64,")) { found = true; break; }
-        } catch {}
-      }
-    }
+// The SSR pipeline inlines a source map into every transformed module (the
+// engine applies it to stack traces, so they point at the .tsx source). The
+// in-process module host serves exactly what /@ssr-module serves, so the
+// marker must be in that output.
+async function assertInlineSourceMaps(port) {
+  // A module without import.meta.glob: glob expansion synthesizes nodes with
+  // no faithful source origin, so those modules deliberately skip the map.
+  const id = path.join(app, "src", "lib", "format.ts");
+  const res = await fetch(`http://localhost:${port}/@ssr-module?id=${encodeURIComponent(id)}`);
+  const code = await res.text();
+  if (res.status !== 200 || !/sourceMappingURL=data:application\/json[^,]*;base64,/.test(code)) {
+    throw new Error("start-dev: the SSR pipeline did not inline a source map into the transformed module");
   }
-  if (!found) throw new Error("start-dev: SSR loader did not inline source maps into transformed modules");
   console.log("start-dev: inline SSR source maps ok");
 }
 
