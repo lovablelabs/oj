@@ -11,8 +11,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { stripVTControlCharacters } from "node:util";
+import { format as formatUtil, stripVTControlCharacters } from "node:util";
 import { EventEmitter } from "node:events";
+
+// IN-PROCESS mode: oj's embedded engine seeds `globalThis.__ojPluginHost`
+// (what used to be argv + spawn env) before importing this module, and the
+// bridge globals `__oj_post` / `__oj_rpc` replace the stdio protocol. Under
+// plain `node` (the direct-drive unit tests) none of these exist and the
+// original stdio layer below stays live.
+const ojEngineBoot = globalThis.__ojPluginHost ?? null;
+const ojEnginePost = ojEngineBoot ? globalThis.__oj_post : null;
+const ojEngineRpc = ojEngineBoot ? globalThis.__oj_rpc : null;
 
 // Parent watchdog (esbuild's --ppid model), armed before anything can await:
 // the stdin-EOF net at the bottom of this file only arms after every top-level
@@ -20,11 +29,14 @@ import { EventEmitter } from "node:events";
 // writes nothing (so no EPIPE crash) and reads nothing (so no EOF) — that host
 // survived as an orphan forever. When the spawning oj process dies, the host is
 // reparented (ppid flips to the reaper); poll for that and hard-exit. unref'd
-// so the timer itself never keeps the event loop alive.
-const spawnPpid = process.ppid;
-setInterval(() => {
-  if (process.ppid !== spawnPpid) process.kill(process.pid, "SIGKILL");
-}, 1000).unref();
+// so the timer itself never keeps the event loop alive. In-process there is no
+// parent to watch and process.kill would kill OJ ITSELF: never arm it.
+if (!ojEngineBoot) {
+  const spawnPpid = process.ppid;
+  setInterval(() => {
+    if (process.ppid !== spawnPpid) process.kill(process.pid, "SIGKILL");
+  }, 1000).unref();
+}
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -71,8 +83,71 @@ function mergeConfigLite(defaults, overrides, rootPath = "") {
   return merged;
 }
 
-const pluginsPath = process.argv[2];
-const initial = JSON.parse(process.argv[3] ?? "{}");
+const pluginsPath = ojEngineBoot ? ojEngineBoot.pluginsPath : process.argv[2];
+const initial = JSON.parse((ojEngineBoot ? ojEngineBoot.initialJson : process.argv[3]) ?? "{}");
+
+// PROCESS ISOLATION for the in-process host, before any plugin or config code
+// (and before the NODE_ENV pre-set below) can observe it. The node child kept
+// its env writes, cwd and exit to itself; sharing oj's process, they must be
+// shadowed instead:
+// - `process.env` becomes a plain private copy (Deno.env writes are
+//   process-real; a long-lived host mutating oj's env — Vite's own NODE_ENV
+//   dance runs right below — is unacceptable, and getEnvDelta stays a diff of
+//   this private copy). Same mechanism as the in-process config extractor.
+// - `process.cwd()` pins to the app root, where the old child ran (plugins
+//   build cwd-relative filters from it). `process.chdir` moves only the
+//   shadow: a real chdir would move EVERY engine in the process.
+// - `process.exit` throws instead of exiting: in-process, a plugin calling it
+//   would take oj down; throwing fails that one hook, as close as the old
+//   "the host process died" gets without killing the server.
+// - stdout is oj's own protocol-free terminal now: the old spawn PIPED the
+//   host's stdout and dropped unframed lines, so plugin stdout prints were
+//   swallowed; route them (console.log included — Deno's console does not go
+//   through process.stdout) to stderr, which was always the visible stream.
+if (ojEngineBoot) {
+  try {
+    Object.defineProperty(process, "env", {
+      value: { ...process.env },
+      configurable: true,
+      writable: true,
+    });
+  } catch {}
+  if (ojEngineBoot.cacheRoot) process.env.OJ_CACHE_ROOT = String(ojEngineBoot.cacheRoot);
+  const appRoot = initial.config?.root ?? process.cwd();
+  // The old spawn ran with cwd = the app root, and plugins depend on it for
+  // RELATIVE fs paths (a lifecycle hook writing ".oj-cache/…") as much as for
+  // process.cwd() readers. Really chdir — the Start-phase scripts set the
+  // same cwd, and oj itself resolves every root to an absolute path at CLI
+  // startup, before any engine exists — then contain any LATER chdir to a
+  // shadow so a plugin can never move the whole oj process again (its cwd()
+  // readers follow the shadow; its relative fs stays anchored at the root —
+  // the one divergence from a real child, documented cost of sharing the
+  // process).
+  try {
+    process.chdir(String(appRoot));
+  } catch {}
+  let shadowCwd = process.cwd();
+  try {
+    process.cwd = () => shadowCwd;
+    process.chdir = (dir) => {
+      shadowCwd = pathResolve(shadowCwd, String(dir));
+    };
+  } catch {}
+  try {
+    process.exit = (code) => {
+      throw new Error(`oj plugin host: process.exit(${code ?? 0}) ignored (in-process host)`);
+    };
+  } catch {}
+  try {
+    const toStderr = (...args) => {
+      try {
+        process.stderr.write(args.map((a) => (typeof a === "string" ? a : formatUtil(a))).join(" ") + "\n");
+      } catch {}
+    };
+    for (const name of ["log", "info", "debug", "trace"]) console[name] = toStderr;
+    process.stdout.write = (chunk, ...rest) => process.stderr.write(chunk, ...rest);
+  } catch {}
+}
 
 process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
 // Vite's ConfigEnv (config.ts): `{ mode, command, isSsrBuild, isPreview }`.
@@ -175,19 +250,20 @@ function coerceBundledDevOff(cfg) {
   return flipped;
 }
 
-// The one writer for every oj protocol line (RPC replies, ctx-RPC requests,
-// and the ojServeInfo/ojServer/ojWs pushes). Plugin code shares this stdout,
-// so the frame defends the control plane on both sides: the leading newline
-// terminates any unterminated partial line a plugin left on the stream (a
-// spliced frame would otherwise be silently dropped), and the per-session
-// token (OJ_CONTROL_TOKEN, minted by the Rust spawn) marks the line as oj's —
-// the Rust reader ignores unframed lines, so a plugin's print, or
-// attacker-controlled content a plugin echoes, can never forge a reply or a
-// push. Forging with the token requires reading this process's env: the same
-// trust domain as running plugin code at all. Without the env (tests driving
-// the host directly) the frame degrades to the bare line protocol.
+// The one writer for every oj control push (ojServeInfo/ojServer/ojWs and the
+// init signals). In-process it is the engine's push channel (`__oj_post`): a
+// value delivery a plugin's print can never splice into, so no framing exists
+// on that path at all. Under plain `node` (the direct-drive unit tests) the
+// old stdout line protocol stays: the leading newline terminates any
+// unterminated partial line a plugin left on the stream, and the per-session
+// token (OJ_CONTROL_TOKEN) marks the line as oj's so the test driver ignores
+// unframed lines, exactly as the retired Rust reader did.
 const CONTROL_TOKEN = process.env.OJ_CONTROL_TOKEN || "";
 function ctl(obj) {
+  if (ojEnginePost) {
+    ojEnginePost(JSON.stringify(obj));
+    return;
+  }
   process.stdout.write("\n" + CONTROL_TOKEN + JSON.stringify(obj) + "\n");
 }
 
@@ -737,7 +813,19 @@ initStage("plugins-loaded");
 
 let rpcCounter = 1;
 const rpcPending = new Map();
+// The reverse ctx-RPC (oj resolves an id, serves module info). In-process it
+// is a SYNCHRONOUS bridge call answered on this same thread — the async shape
+// is kept because callers await it. Under plain `node` the old id/reply
+// protocol over stdio stays for the direct-drive unit tests.
 function ctxRpc(method, args) {
+  if (ojEngineRpc) {
+    try {
+      const raw = ojEngineRpc(method, JSON.stringify(args ?? []));
+      return Promise.resolve(raw == null ? null : JSON.parse(raw));
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
   const rpc = rpcCounter++;
   return new Promise((resolve, reject) => {
     rpcPending.set(rpc, { resolve, reject });
@@ -2370,10 +2458,11 @@ async function setupConfigureServer() {
   middlewarePort = srv.address().port;
   process.stderr.write(`${OJ} plugin host: configureServer middleware on :${middlewarePort}\n`);
 }
-// Re-pushed until Rust ACKs ({ ojServeInfoAck } on stdin): the serve info is a
-// one-shot, state-bearing push, and a copy spliced by a plugin's partial stdout
-// write must not be lost forever. Bounded so a driver that never ACKs (tests
-// poking the host directly) is not spammed indefinitely.
+// Under plain node the push is re-sent until the driver ACKs ({ ojServeInfoAck }
+// on stdin): the serve info is a one-shot, state-bearing push, and a copy
+// spliced by a plugin's partial stdout write must not be lost forever. Bounded
+// so a driver that never ACKs is not spammed indefinitely. In-process the push
+// channel is a value delivery that cannot be spliced: one push, no ACK.
 let serveInfoRepush = null;
 function stopServeInfoRepush() {
   if (serveInfoRepush) clearInterval(serveInfoRepush);
@@ -2381,20 +2470,23 @@ function stopServeInfoRepush() {
 }
 if (env.command !== "build") {
   await setupConfigureServer();
-  // Push the serve info the moment it exists (like the {ojWs} pushes): the RPC
-  // listener below only registers after every top-level await, so on a slow
-  // boot (many plugins, Miniflare) Rust's boot-time RPCs cannot be answered and
-  // the worker path would silently never activate. The push reaches Rust
-  // whenever the host comes up, however late, and Rust flips to the middleware
-  // then (it also flips Rust's "initialized" gate for RPC timeouts).
+  // Push the serve info the moment it exists (like the {ojWs} pushes): the
+  // hook entry point only becomes callable after every top-level await, so on
+  // a slow boot (many plugins, Miniflare) Rust's boot-time RPCs cannot be
+  // answered and the worker path would silently never activate. The push
+  // reaches Rust whenever the host comes up, however late, and Rust flips to
+  // the middleware then (it also flips Rust's "initialized" gate for RPC
+  // timeouts).
   const pushServeInfo = () =>
     ctl({ ojServeInfo: { middlewarePort, runnerEnvironments: runnerEnvironmentsBuilt } });
   pushServeInfo();
-  let repushes = 0;
-  serveInfoRepush = setInterval(() => {
-    if (++repushes > 120) return stopServeInfoRepush();
-    pushServeInfo();
-  }, 1000);
+  if (!ojEnginePost) {
+    let repushes = 0;
+    serveInfoRepush = setInterval(() => {
+      if (++repushes > 120) return stopServeInfoRepush();
+      pushServeInfo();
+    }, 1000);
+  }
 }
 
 
@@ -3059,50 +3151,71 @@ async function run(hook, args) {
   return null;
 }
 
-const hardExit = () => process.kill(process.pid, "SIGKILL");
-try {
-  if (fstatSync(0, { bigint: true }).isFIFO()) {
-    process.stdin.once("end", hardExit);
-    process.stdin.once("close", hardExit);
-  }
-} catch {}
-
-const rl = readline.createInterface({ input: process.stdin });
-rl.on("line", async (line) => {
-  let msg;
+// The hook entry points for the in-process engine: oj calls
+// `ojRun(hook, args)` per hook (the reply is the call's own return value — no
+// ids, no reply frames), and `ojHostReady()` is the boot trigger whose call
+// evaluates this module's top level; its resolution (or rejection: a top-level
+// throw that used to kill the node child) is the boot task's error carrier.
+export async function ojRun(hook, args) {
   try {
-    msg = JSON.parse(line);
-  } catch {
-    return;
-  }
-  if (msg.ojServeInfoAck) {
-    stopServeInfoRepush();
-    return;
-  }
-  if (msg.rpcReply != null) {
-    const p = rpcPending.get(msg.rpcReply);
-    if (p) {
-      rpcPending.delete(msg.rpcReply);
-      if (msg.error != null) p.reject(new Error(msg.error));
-      else p.resolve(msg.result ?? null);
-    }
-    return;
-  }
-  const { id, hook, args } = msg;
-  try {
-    const result = await run(hook, args ?? []);
-    ctl({ id, result: result ?? null });
+    return await run(hook, args ?? []);
   } catch (e) {
-    ctl({ id, error: String((e && e.stack) || e) });
+    // The same string the stdio protocol carried in its error frames.
+    throw new Error(String((e && e.stack) || e));
   }
-});
+}
+export function ojHostReady() {
+  return true;
+}
 
-// The unconditional init-complete signal, in BOTH modes: the RPC listener above
-// is registered, so from here every hang is a hook's, not initialization's.
-// Serve mode also pushes { ojServeInfo } (state-bearing, ACKed and re-pushed);
-// build mode has no push at all, so without this a hanging first hook would
-// wait out Rust's whole init deadline blamed on initialization instead of
-// failing on the per-call timeout. Rust treats ojInit, ojServeInfo, or the
-// first reply — whichever lands first — as initialized.
+// Under plain `node` (the direct-drive unit tests) the stdio protocol stays:
+// newline JSON over stdin, replies and control pushes on stdout.
+if (!ojEngineBoot) {
+  const hardExit = () => process.kill(process.pid, "SIGKILL");
+  try {
+    if (fstatSync(0, { bigint: true }).isFIFO()) {
+      process.stdin.once("end", hardExit);
+      process.stdin.once("close", hardExit);
+    }
+  } catch {}
+
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", async (line) => {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (msg.ojServeInfoAck) {
+      stopServeInfoRepush();
+      return;
+    }
+    if (msg.rpcReply != null) {
+      const p = rpcPending.get(msg.rpcReply);
+      if (p) {
+        rpcPending.delete(msg.rpcReply);
+        if (msg.error != null) p.reject(new Error(msg.error));
+        else p.resolve(msg.result ?? null);
+      }
+      return;
+    }
+    const { id, hook, args } = msg;
+    try {
+      const result = await run(hook, args ?? []);
+      ctl({ id, result: result ?? null });
+    } catch (e) {
+      ctl({ id, error: String((e && e.stack) || e) });
+    }
+  });
+}
+
+// The unconditional init-complete signal, in BOTH modes: the hook entry point
+// is callable, so from here every hang is a hook's, not initialization's.
+// Serve mode also pushes { ojServeInfo } (state-bearing); build mode has no
+// push at all, so without this a hanging first hook would wait out Rust's
+// whole init deadline blamed on initialization instead of failing on the
+// per-call timeout. Rust treats ojInit, ojServeInfo, or the first reply —
+// whichever lands first — as initialized.
 ojInitDone = true;
 ctl({ ojInit: true });
