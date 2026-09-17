@@ -2,12 +2,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { viteEnvDefine, envPrefixes, environmentDefines, makeResolver, importPkg, ssrExternalRule } from "../../crates/oj_server/src/assets/start/resolve-pkg.mjs";
 
 test("viteEnvDefine builds import.meta.env with the standard flags", () => {
@@ -206,7 +204,7 @@ test("importPkg reaches a transitive dep through a preferred anchor", async () =
   }
 });
 
-test("CSS host resolves Tailwind v4 dependencies beneath the Vite plugin", () => {
+test("tailwind engine module resolves Tailwind v4 dependencies beneath the Vite plugin", async () => {
   const root = mkdtempSync(join(tmpdir(), "oj-tailwind-strict-layout-"));
   try {
     writeFileSync(join(root, "package.json"), JSON.stringify({
@@ -237,20 +235,11 @@ test("CSS host resolves Tailwind v4 dependencies beneath the Vite plugin", () =>
 
     const stylesheet = join(root, "styles.css");
     writeFileSync(stylesheet, '@import "tailwindcss";');
-    const cssHost = fileURLToPath(new URL("../../crates/oj_server/src/assets/start/css-host.mjs", import.meta.url));
-    const result = spawnSync(process.execPath, [cssHost], {
-      cwd: root,
-      env: { ...process.env, OJ_APP_ROOT: root },
-      input: `${JSON.stringify({ id: 1, path: stylesheet })}\n`,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout.trim()), {
-      id: 1,
-      css: '@import "tailwindcss";synthetic-tailwind-token',
-    });
+    const { compile } = await import(
+      new URL("../../crates/oj_server/src/assets/css-tailwind.mjs", import.meta.url).href
+    );
+    const css = await compile({ base: root, css: '@import "tailwindcss";', from: stylesheet });
+    assert.equal(css, '@import "tailwindcss";synthetic-tailwind-token');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

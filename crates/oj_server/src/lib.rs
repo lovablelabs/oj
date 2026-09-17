@@ -18,16 +18,18 @@ use axum::{
 };
 use oj_cache::{CachedModule, PersistentCache};
 
+pub mod css_engine;
 pub mod optimize;
 pub mod pkg_bundle;
 pub mod pkg_rolldown;
 pub mod plugins;
 pub mod sidecar;
 pub mod svgr;
+use css_engine::CssEngine;
 use oj_graph::{HmrDecision, ModuleGraph};
 use oj_resolver::OjResolver;
 use plugins::PluginHost;
-use sidecar::{is_tailwind_css, Sidecar};
+use sidecar::is_tailwind_css;
 use tokio::sync::broadcast;
 
 #[inline]
@@ -131,7 +133,6 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/cf-server-worker.mjs"),
     ),
     ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
-    ("css-host.mjs", include_str!("assets/start/css-host.mjs")),
     ("loader.mjs", include_str!("assets/start/loader.mjs")),
     (
         "loader-util.mjs",
@@ -270,9 +271,9 @@ struct ServerState {
     patch_seq: std::sync::atomic::AtomicU64,
     chunk_cache: Mutex<Option<(String, Arc<String>)>>,
     cache_writes: tokio::sync::mpsc::Sender<(String, Arc<CachedModule>)>,
-    tailwind: tokio::sync::OnceCell<std::sync::Arc<Sidecar>>,
-    preprocess: tokio::sync::OnceCell<std::sync::Arc<Sidecar>>,
-    svelte: tokio::sync::OnceCell<std::sync::Arc<Sidecar>>,
+    tailwind: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
+    preprocess: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
+    svelte: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     tailwind_urls: Mutex<std::collections::HashSet<String>>,
     has_postcss: bool,
     scss_additional_data: Option<String>,
@@ -1734,7 +1735,7 @@ async fn ssr_module_inner(
     let ext = path.extension().and_then(|e| e.to_str());
     if !from_plugin && ext.is_some_and(is_style_ext) {
         let source = if is_preprocessor(id) {
-            run_preprocess_sidecar(state, id, &source, serde_json::Value::Null)
+            run_preprocess_engine(state, id, &source, serde_json::Value::Null)
                 .await
                 .map_err(SsrModuleError::Failed)?
         } else {
@@ -4358,7 +4359,7 @@ async fn ensure_module(
             Some(d) if !d.is_empty() => format!("{d}\n{source}"),
             _ => source,
         };
-        run_preprocess_sidecar(state, url, &with_data, opts)
+        run_preprocess_engine(state, url, &with_data, opts)
             .await
             .map_err(|e| format!("css preprocess error for {url}: {e}"))?
     } else {
@@ -4400,10 +4401,10 @@ async fn ensure_module(
     let source = if state.has_postcss && css_like {
         // postcss-import is the first plugin of Vite's PostCSS chain, so the
         // rules of an @imported stylesheet go through the user's plugins too:
-        // inline before the sidecar, not after it.
+        // inline before the PostCSS pass, not after it.
         let source = oj_css::inline_imports_with(&source, file, &state.css_resolve.as_ref())?;
         imports_inlined = true;
-        match run_css_sidecar(state, url, &source).await {
+        match run_css_engine(state, url, &source).await {
             Ok(out) => out,
             Err(e) => {
                 eprintln!("oj: postcss failed for {url}: {e}");
@@ -4445,7 +4446,7 @@ async fn ensure_module(
         return Ok((String::new(), module));
     }
     let source = if is_svelte {
-        run_svelte_sidecar(state, url, &source)
+        run_svelte_engine(state, url, &source)
             .await
             .map_err(|e| format!("svelte compile error for {url}: {e}"))?
     } else {
@@ -5126,7 +5127,7 @@ pub fn has_postcss_config(root: &Path) -> bool {
 /// does (what Vite uses): `postcss.config.{js,mjs,cjs,ts,mts,cts}`, `.postcssrc`,
 /// `.postcssrc.{json,js,mjs,cjs,ts,mts,cts}` or a `package.json` with a
 /// `postcss` key, searched from `root` up to the workspace root (nearest wins).
-/// The sidecar receives the path as `OJ_POSTCSS_CONFIG`.
+/// The tailwind engine module receives the path per request.
 pub fn find_postcss_config(root: &Path) -> Option<PathBuf> {
     const NAMES: &[&str] = &[
         "postcss.config.js",
@@ -5170,17 +5171,17 @@ pub fn find_postcss_config(root: &Path) -> Option<PathBuf> {
     None
 }
 
-async fn run_css_sidecar(
+async fn run_css_engine(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let sidecar = state
+    let engine = state
         .tailwind
-        .get_or_try_init(|| Sidecar::spawn(&state.root))
+        .get_or_try_init(|| CssEngine::tailwind(&state.root, css_engine::DEV_DEADLINE))
         .await
         .map_err(|e| e.to_string())?;
-    sidecar.compile(source, url).await
+    engine.compile(source, url).await
 }
 
 fn is_preprocessor(url: &str) -> bool {
@@ -5404,31 +5405,31 @@ fn is_style_url(url: &str) -> bool {
         .is_some_and(is_style_ext)
 }
 
-async fn run_preprocess_sidecar(
+async fn run_preprocess_engine(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
     options: serde_json::Value,
 ) -> Result<String, String> {
-    let sidecar = state
+    let engine = state
         .preprocess
-        .get_or_try_init(|| Sidecar::spawn_preprocess(&state.root))
+        .get_or_try_init(|| CssEngine::preprocess(&state.root, css_engine::DEV_DEADLINE))
         .await
         .map_err(|e| e.to_string())?;
-    sidecar.compile_with(source, url, options).await
+    engine.compile_with(source, url, options).await
 }
 
-async fn run_svelte_sidecar(
+async fn run_svelte_engine(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let sidecar = state
+    let engine = state
         .svelte
-        .get_or_try_init(|| Sidecar::spawn_svelte(&state.root))
+        .get_or_try_init(|| CssEngine::svelte(&state.root, css_engine::DEV_DEADLINE))
         .await
         .map_err(|e| e.to_string())?;
-    sidecar.compile(source, url).await
+    engine.compile(source, url).await
 }
 
 async fn compile_tailwind(
@@ -5436,7 +5437,7 @@ async fn compile_tailwind(
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let css = run_css_sidecar(state, url, source).await?;
+    let css = run_css_engine(state, url, source).await?;
     state.tailwind_urls.lock().unwrap().insert(url.to_string());
     Ok(css)
 }

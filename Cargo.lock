@@ -6192,6 +6192,7 @@ dependencies = [
  "oj_css",
  "oj_env",
  "oj_graph",
+ "oj_js",
  "oj_resolver",
  "regex",
  "reqwest",

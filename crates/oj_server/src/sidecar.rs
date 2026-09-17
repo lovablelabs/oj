@@ -1,20 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::oneshot;
-
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-
-pub const SIDECAR_JS: &str = include_str!("assets/tailwind-sidecar.mjs");
-pub const PREPROCESS_JS: &str = include_str!("assets/css-preprocess.mjs");
-pub const SVELTE_COMPILE_JS: &str = include_str!("assets/svelte-compile.mjs");
+//! Classification of stylesheets and components that need a JS-toolchain
+//! compile (Tailwind/PostCSS, Less, Stylus, Svelte). These predicates gate the
+//! lazy spawn of the in-process engines in [`crate::css_engine`]: a plain app
+//! never boots one.
 
 #[inline]
 pub fn is_svelte(url: &str) -> bool {
@@ -74,187 +64,9 @@ fn at_directive_position(source: &str, index: usize) -> bool {
         .is_none_or(|c| matches!(c, '\n' | '\r' | '}' | '{' | ';'))
 }
 
-fn absolute_from(base: &str, from: &str) -> String {
-    let clean = from.split(['?', '#']).next().unwrap_or(from);
-    if let Some(fs) = clean.strip_prefix("/@fs") {
-        return fs.to_string();
-    }
-    if let Some(rel) = clean.strip_prefix('/') {
-        return Path::new(base).join(rel).display().to_string();
-    }
-    Path::new(base).join(clean).display().to_string()
-}
-
-pub struct Sidecar {
-    stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
-    counter: AtomicU64,
-    base: String,
-    kind: &'static str,
-    package: &'static str,
-    _child: tokio::process::Child,
-}
-
-impl Sidecar {
-    pub async fn spawn(root: &Path) -> anyhow::Result<std::sync::Arc<Sidecar>> {
-        Self::spawn_named(root, "tailwind-sidecar.mjs", SIDECAR_JS, "tailwind", "tailwindcss").await
-    }
-
-    pub async fn spawn_preprocess(root: &Path) -> anyhow::Result<std::sync::Arc<Sidecar>> {
-        Self::spawn_named(
-            root,
-            "css-preprocess.mjs",
-            PREPROCESS_JS,
-            "css preprocessor",
-            "less or stylus",
-        )
-        .await
-    }
-
-    pub async fn spawn_svelte(root: &Path) -> anyhow::Result<std::sync::Arc<Sidecar>> {
-        Self::spawn_named(
-            root,
-            "svelte-compile.mjs",
-            SVELTE_COMPILE_JS,
-            "svelte compiler",
-            "svelte",
-        )
-        .await
-    }
-
-    async fn spawn_named(
-        root: &Path,
-        name: &str,
-        js: &str,
-        kind: &'static str,
-        package: &'static str,
-    ) -> anyhow::Result<std::sync::Arc<Sidecar>> {
-        let script = oj_cache::cache_root(&root).join(name);
-        if let Some(parent) = script.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&script, js)?;
-
-        let postcss_config = crate::find_postcss_config(root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let mut child = tokio::process::Command::new("node")
-            .arg(&script)
-            .env("OJ_CACHE_ROOT", oj_cache::cache_root(root))
-            .env("OJ_POSTCSS_CONFIG", postcss_config)
-            .env("NODE_COMPILE_CACHE", crate::node_compile_cache(root))
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("cannot spawn node for the {kind} sidecar: {e}"))?;
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
-
-        let sidecar = std::sync::Arc::new(Sidecar {
-            stdin: tokio::sync::Mutex::new(stdin),
-            pending: Mutex::new(HashMap::new()),
-            counter: AtomicU64::new(1),
-            base: root.display().to_string(),
-            kind,
-            package,
-            _child: child,
-        });
-
-        let reader_ref = std::sync::Arc::clone(&sidecar);
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                let Some(id) = msg["id"].as_u64() else {
-                    continue;
-                };
-                let result = match msg["css"].as_str() {
-                    Some(css) => Ok(css.to_string()),
-                    None => Err(msg["error"].as_str().unwrap_or("sidecar error").to_string()),
-                };
-                if let Some(tx) = reader_ref.pending.lock().unwrap().remove(&id) {
-                    let _ = tx.send(result);
-                }
-            }
-        });
-        Ok(sidecar)
-    }
-
-    pub async fn compile(&self, css: &str, from: &str) -> Result<String, String> {
-        self.compile_with(css, from, serde_json::Value::Null).await
-    }
-
-    /// `options` is the user's `css.preprocessorOptions.<lang>` object (Less/Stylus
-    /// options), handed to the preprocessor as-is.
-    pub async fn compile_with(
-        &self,
-        css: &str,
-        from: &str,
-        options: serde_json::Value,
-    ) -> Result<String, String> {
-        let id = self.counter.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
-        let from = absolute_from(&self.base, from);
-        let request = serde_json::json!({ "id": id, "base": self.base, "css": css, "from": from, "options": options });
-        {
-            let mut stdin = self.stdin.lock().await;
-            if stdin
-                .write_all(format!("{request}\n").as_bytes())
-                .await
-                .is_err()
-            {
-                self.pending.lock().unwrap().remove(&id);
-                return Err(format!(
-                    "{} sidecar died (is {} installed?)",
-                    self.kind, self.package
-                ));
-            }
-        }
-        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
-            Ok(Ok(result)) => result,
-            other => {
-                self.pending.lock().unwrap().remove(&id);
-                Err(match other {
-                    Ok(Err(_)) => format!("{} sidecar closed the connection", self.kind),
-                    _ => format!(
-                        "{} sidecar timed out after {}s",
-                        self.kind,
-                        REQUEST_TIMEOUT.as_secs()
-                    ),
-                })
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn absolute_from_roots_urls_at_base() {
-        assert_eq!(
-            absolute_from("/app/web", "/src/styles/globals.css"),
-            "/app/web/src/styles/globals.css"
-        );
-        assert_eq!(
-            absolute_from("/app/web", "/src/styles/globals.css?direct"),
-            "/app/web/src/styles/globals.css"
-        );
-        assert_eq!(
-            absolute_from("/app/web", "/@fs/pkg/dist/theme.css"),
-            "/pkg/dist/theme.css"
-        );
-        assert_eq!(
-            absolute_from("/app/web", "relative/x.css"),
-            "/app/web/relative/x.css"
-        );
-    }
 
     #[test]
     fn tailwind_imports_are_detected_in_every_written_form() {
@@ -293,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_stylesheet_never_reaches_the_tailwind_sidecar() {
+    fn a_plain_stylesheet_never_reaches_the_tailwind_engine() {
         // A false positive here fails the build with "is tailwindcss installed?"
         // on a stylesheet that has nothing to do with Tailwind.
         for source in [

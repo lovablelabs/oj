@@ -1,16 +1,31 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+// Less / Stylus compiler for oj's in-process JS engine. The engine loads this
+// module once and calls `compile` per request; there is no process protocol
+// here.
+
 import { createRequire } from "node:module";
-import { existsSync, fstatSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import readline from "node:readline";
 
-const load = (base, spec) => {
-  const req = createRequire(path.join(base, "package.json"));
-  return import(pathToFileURL(req.resolve(spec)).href).then((m) => m.default ?? m);
+// A resolution failure for the preprocessor package itself carries this marker
+// so the host can print the "is <package> installed?" hint.
+function missingPackage(name, err) {
+  return new Error(`OJ_MISSING_PACKAGE ${name}: ${(err && err.message) || err}`);
+}
+
+const load = async (base, spec) => {
+  const req = createRequire(pathToFileURL(path.join(base, "package.json")).href);
+  let resolved;
+  try {
+    resolved = req.resolve(spec);
+  } catch (e) {
+    throw missingPackage(spec, e);
+  }
+  return import(pathToFileURL(resolved).href).then((m) => m.default ?? m);
 };
 
 const isFile = (p) => {
@@ -115,41 +130,11 @@ async function stylus(base, css, from, opts = {}) {
   });
 }
 
-const rl = readline.createInterface({ input: process.stdin });
-let inflight = 0;
-let stdinClosed = false;
-
-const maybeExit = () => {
-  if (!stdinClosed || inflight !== 0) return;
-
-  process.stdout.end((err) => {
-    process.exit(err ? 1 : 0)
-  })
-};
-
-try {
-  if (fstatSync(0, { bigint: true }).isFIFO()) rl.once("close", () => { stdinClosed = true; maybeExit(); });
-} catch {}
-rl.on("line", async (line) => {
-  let msg;
-  try {
-    msg = JSON.parse(line);
-  } catch {
-    return;
-  }
-  const { id, base, css, from } = msg;
-  const opts = msg.options && typeof msg.options === "object" ? msg.options : {};
+export async function compile(request) {
+  const { base, css, from } = request;
+  const opts = request.options && typeof request.options === "object" ? request.options : {};
   const ext = String(from || "").split("?")[0].split(".").pop().toLowerCase();
-  inflight += 1;
-  try {
-    let out = css;
-    if (ext === "less") out = await less(base, css, from, opts);
-    else if (ext === "styl" || ext === "stylus") out = await stylus(base, css, from, opts);
-    process.stdout.write(JSON.stringify({ id, css: out }) + "\n");
-  } catch (e) {
-    process.stdout.write(JSON.stringify({ id, error: String((e && e.message) || e) }) + "\n");
-  } finally {
-    inflight -= 1;
-    maybeExit();
-  }
-});
+  if (ext === "less") return less(base, css, from, opts);
+  if (ext === "styl" || ext === "stylus") return stylus(base, css, from, opts);
+  return css;
+}

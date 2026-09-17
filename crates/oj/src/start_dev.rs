@@ -46,7 +46,7 @@ struct StartState {
     // update narration frames from (the start path's own /@oj-start/hmr socket
     // only drives the app iframe's live reload).
     ws_tx: broadcast::Sender<String>,
-    css_host: Option<Arc<tokio::sync::Mutex<Runner>>>,
+    css_host: Option<Arc<oj_server::css_engine::CssEngine>>,
     /// The dev mode (`oj dev --mode`), handed to every node script respawn.
     mode: String,
     /// The HMR gate, when the editor drives it: rebuilds still happen at once, the
@@ -229,10 +229,9 @@ pub async fn start_dev(
     }));
     oj_server::boot_phase("bundle+build joined");
     let css_host = if app_uses_tailwind(&root) {
-        spawn_node_service(&root, &cache.join("css-host.mjs"), &mode)
+        oj_server::css_engine::CssEngine::tailwind(&root, oj_server::css_engine::START_DEADLINE)
             .await
             .ok()
-            .map(|r| Arc::new(tokio::sync::Mutex::new(r)))
     } else {
         None
     };
@@ -1279,21 +1278,14 @@ fn needs_css_compile(src: &str) -> bool {
         || src.contains("@apply")
 }
 
-async fn compile_css(host: &Arc<tokio::sync::Mutex<Runner>>, path: &Path) -> Option<String> {
-    let mut guard = host.lock().await;
-    let req = serde_json::json!({ "path": path.to_string_lossy() });
-    guard
-        .stdin
-        .write_all(format!("{req}\n").as_bytes())
+async fn compile_css(
+    host: &Arc<oj_server::css_engine::CssEngine>,
+    source: &str,
+    path: &Path,
+) -> Option<String> {
+    host.compile_path(source, path, serde_json::Value::Null, true)
         .await
-        .ok()?;
-    guard.stdin.flush().await.ok()?;
-    let line = tokio::time::timeout(std::time::Duration::from_secs(30), guard.lines.next_line())
-        .await
-        .ok()?
-        .ok()??;
-    let v: serde_json::Value = serde_json::from_str(&line).ok()?;
-    v.get("css").and_then(|c| c.as_str()).map(|s| s.to_owned())
+        .ok()
 }
 
 #[derive(Debug, PartialEq)]
@@ -1578,7 +1570,7 @@ async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
         if let Some(host) = &state.css_host {
             if let Ok(src) = tokio::fs::read_to_string(&canon).await {
                 if needs_css_compile(&src) {
-                    if let Some(css) = compile_css(host, &canon).await {
+                    if let Some(css) = compile_css(host, &src, &canon).await {
                         return (
                             [
                                 (header::CONTENT_TYPE, "text/css; charset=utf-8"),
