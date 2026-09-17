@@ -160,6 +160,14 @@ pub async fn start_dev(
         .build_app(),
     );
 
+    // The two codegen steps run SERIALIZED on purpose, not as a lost
+    // concurrency opportunity: the route-tree generator writes
+    // src/routeTree.gen.ts and rewrites route files in place (the generator
+    // keeps `createFileRoute` ids in sync), while gen-resolver.mjs reads
+    // every .ts/.tsx under src — the generated tree included — and the
+    // resolver's codegen cache hashes those same files as its key. Running
+    // them concurrently would let the resolver scan half-written files and
+    // persist a cache key over content that was still moving.
     let route_tree = {
         let (root, cache, mode, scripts) = (root.clone(), cache.clone(), mode.clone(), Arc::clone(&scripts));
         tokio::task::spawn_blocking(move || generate_route_tree(&root, &cache, &mode, &scripts))
@@ -952,9 +960,10 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
-    // Resolved BEFORE any script runs: engine scripts merge their env into
-    // this process's env (process.env is shared in-process), so a later shell
-    // read would see the route-tree run's development NODE_ENV.
+    // Resolved BEFORE any script runs, as a belt: the ScriptEngine shadows
+    // process.env on its isolate (a script's env writes stay private), but
+    // snapshotting the shell's NODE_ENV here keeps the build's env rule
+    // independent of anything any engine might still write process-wide.
     let shell_node_env = std::env::var("NODE_ENV").ok().filter(|v| !v.is_empty());
     let scripts = Arc::new(ScriptEngine::new(&root)?);
     {
@@ -1434,6 +1443,56 @@ async fn forward_document(
     forward(&state.engine, "GET".into(), document_url(&raw), headers, None).await
 }
 
+/// The cap on a buffered request body (`OJ_START_MAX_BODY`, bytes). Bodies
+/// reaching the engine are buffered whole because the call transport is
+/// JSON-over-V8 (base64 in a string; op-streaming is the known follow-up), so
+/// an unbounded body would balloon ~2.3x through base64 + JSON before the
+/// handler sees it. The default is deliberately generous — the cap prevents
+/// accidental OOM, it does not ration uploads.
+fn start_max_body_bytes() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("OJ_START_MAX_BODY")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(128 * 1024 * 1024)
+    })
+}
+
+/// Reads a request body whole, bounded by `cap` ([`start_max_body_bytes`] at
+/// the call sites). A body past the cap is a 413 naming the knob; a read
+/// failure (a client aborting mid-upload) is a 400 — never an empty body
+/// reaching the handler as if the client had sent one.
+async fn read_body_capped(body: axum::body::Body, cap: usize) -> Result<Option<Vec<u8>>, Response> {
+    use tokio_stream::StreamExt;
+    let mut stream = body.into_data_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(frame) = stream.next().await {
+        match frame {
+            Ok(bytes) => {
+                if buf.len().saturating_add(bytes.len()) > cap {
+                    return Err((
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!(
+                            "oj start: request body exceeds the {cap}-byte buffer cap; raise OJ_START_MAX_BODY to accept larger bodies"
+                        ),
+                    )
+                        .into_response());
+                }
+                buf.extend_from_slice(&bytes);
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("oj start: request body read failed: {e}"),
+                )
+                    .into_response())
+            }
+        }
+    }
+    Ok(if buf.is_empty() { None } else { Some(buf) })
+}
+
 async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     // The middleware may pipe an unclaimed request on to the runner
     // (x-oj-forward-to), so start refreshing it — without blocking this
@@ -1460,10 +1519,10 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     // falling through. Without a middleware the body is read whole and handed
     // to the engine (the call transport is buffered).
     let Some(port) = state.plugin_serve.mw_port() else {
-        let body = axum::body::to_bytes(req.into_body(), usize::MAX)
-            .await
-            .map(|b| if b.is_empty() { None } else { Some(b.to_vec()) })
-            .unwrap_or(None);
+        let body = match read_body_capped(req.into_body(), start_max_body_bytes()).await {
+            Ok(body) => body,
+            Err(resp) => return resp,
+        };
         return forward(&state.engine, method, url, &headers, body).await;
     };
     if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {
@@ -1739,10 +1798,10 @@ async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> 
             let method = req.method().to_string();
             let url = path_and_query(&req);
             let headers = req.headers().clone();
-            let body = axum::body::to_bytes(req.into_body(), usize::MAX)
-                .await
-                .map(|b| if b.is_empty() { None } else { Some(b.to_vec()) })
-                .unwrap_or(None);
+            let body = match read_body_capped(req.into_body(), start_max_body_bytes()).await {
+                Ok(body) => body,
+                Err(resp) => return resp,
+            };
             match engine
                 .handle(engine_request(method, url, &headers, body, true))
                 .await
@@ -2551,6 +2610,44 @@ mod tests {
             assert_eq!(app_uses_tailwind(&app), *expected, "case {i}: {pkg}");
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Buffered request bodies are bounded, and a read failure surfaces as a
+    // request failure: an aborted upload can never reach an action handler as
+    // an EMPTY body, and a body past the cap is refused naming the knob.
+    #[tokio::test]
+    async fn body_reads_cap_at_the_knob_and_fail_on_stream_errors() {
+        // Under the cap: buffered whole; empty stays None (the engine's shape).
+        let body = axum::body::Body::from(vec![7u8; 1024]);
+        assert_eq!(read_body_capped(body, 4096).await.unwrap().unwrap().len(), 1024);
+        assert!(read_body_capped(axum::body::Body::empty(), 4096)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Past the cap: 413, and the message names OJ_START_MAX_BODY.
+        let resp = read_body_capped(axum::body::Body::from(vec![7u8; 5000]), 4096)
+            .await
+            .expect_err("an oversized body is refused");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("OJ_START_MAX_BODY"),
+            "the 413 names the knob"
+        );
+
+        // A mid-stream error (client abort) is a 400, never an empty body.
+        let broken = axum::body::Body::from_stream(tokio_stream::iter(vec![
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"partial")),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "client went away",
+            )),
+        ]));
+        let resp = read_body_capped(broken, 4096)
+            .await
+            .expect_err("a read failure is a response, not an empty body");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
