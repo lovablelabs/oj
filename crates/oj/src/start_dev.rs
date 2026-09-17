@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Raphael Amorim
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 
 use axum::{
@@ -15,17 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::SinkExt;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::broadcast;
-
-/// A line-protocol node service. Only the tailwind css host still runs as
-/// one; the Start runner itself is the in-process engine (`StartEngine`).
-struct Runner {
-    stdin: ChildStdin,
-    lines: Lines<BufReader<ChildStdout>>,
-    _child: Child,
-}
 
 use crate::start_host::{ScriptEngine, StartEngine, StartRequest, StartResponse};
 
@@ -1267,36 +1256,6 @@ fn script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Vec<(Str
     ];
     env.extend(start_script_env(root, command, mode)?);
     Ok(env)
-}
-
-async fn spawn_node_service(root: &Path, script: &Path, mode: &str) -> anyhow::Result<Runner> {
-    let mut cmd = tokio::process::Command::new("node");
-    // The SSR loader inlines source maps into every transformed module; this
-    // flag makes Node apply them to stack traces (original .tsx positions).
-    cmd.arg("--enable-source-maps").arg(script)
-        .env("OJ_APP_ROOT", root)
-        .env("OJ_CACHE_ROOT", oj_cache::cache_root(root))
-        .env("NODE_ENV", dev_node_env(root, mode))
-        .env("OJ_MODE", mode)
-        .envs(start_script_env(root, "serve", mode)?)
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
-    if let Some(v8) = oj_server::node_compile_cache_opt_in(root) {
-        cmd.env("NODE_COMPILE_CACHE", v8);
-    }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("could not spawn node service {}: {e}", script.display()))?;
-    let stdin = child.stdin.take().expect("piped stdin");
-    let stdout = child.stdout.take().expect("piped stdout");
-    Ok(Runner {
-        stdin,
-        lines: BufReader::new(stdout).lines(),
-        _child: child,
-    })
 }
 
 fn app_uses_tailwind(root: &Path) -> bool {

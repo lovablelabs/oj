@@ -24,6 +24,19 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const must = (cond, msg) => { if (!cond) throw new Error(msg); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Retried, as in start.mjs: SIGKILLed servers orphan node children for a beat,
+// and their NODE_COMPILE_CACHE flush into .oj-cache/v8 races the removal
+// (ENOTEMPTY).
+const rm = (p) => {
+  for (let i = 0; ; i++) {
+    try {
+      return fs.rmSync(p, { recursive: true, force: true });
+    } catch (e) {
+      if (i >= 20) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+};
 const waitUp = async () => {
   for (let i = 0; i < 240; i++) {
     try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return; } catch {}
@@ -58,7 +71,7 @@ async function reloadListener() {
 }
 
 async function run(label, gated, check) {
-  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+  rm(path.join(app, ".oj-cache"));
   fs.rmSync(gateConfig, { force: true });
   if (gated) fs.writeFileSync(gateConfig, JSON.stringify({ server: { hmrGate: true } }));
   const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
