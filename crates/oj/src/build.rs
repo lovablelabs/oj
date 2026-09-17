@@ -3611,64 +3611,7 @@ fn html_asset_url(
     emit_html_asset(&abs, fragment, out_dir, page_base, opts, no_inline, emitted, seen)
 }
 
-fn html_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let bytes = tag.as_bytes();
-    let mut cursor = bytes.iter().position(u8::is_ascii_whitespace)?;
-
-    while cursor < bytes.len() {
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let start = cursor;
-        while cursor < bytes.len()
-            && !bytes[cursor].is_ascii_whitespace()
-            && bytes[cursor] != b'='
-            && bytes[cursor] != b'/'
-        {
-            cursor += 1;
-        }
-        if cursor == start {
-            cursor += 1;
-            continue;
-        }
-        let attribute = &tag[start..cursor];
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= bytes.len() || bytes[cursor] != b'=' {
-            continue;
-        }
-        cursor += 1;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= bytes.len() {
-            return None;
-        }
-        let (value_start, value_end) = if matches!(bytes[cursor], b'\'' | b'"') {
-            let quote = bytes[cursor];
-            let start = cursor + 1;
-            cursor = start;
-            while cursor < bytes.len() && bytes[cursor] != quote {
-                cursor += 1;
-            }
-            let end = cursor;
-            cursor += usize::from(cursor < bytes.len());
-            (start, end)
-        } else {
-            let start = cursor;
-            while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-            (start, cursor)
-        };
-        if attribute.eq_ignore_ascii_case(name) {
-            return Some(&tag[value_start..value_end]);
-        }
-    }
-
-    None
-}
+use oj_compiler::html::html_attr;
 
 fn scan_attrs(html: &str, tag_prefix: &str, attr_name: &str) -> Vec<String> {
     let mut values = Vec::new();

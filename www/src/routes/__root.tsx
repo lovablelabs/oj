@@ -1,7 +1,7 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 
 import "../../styles/app.css";
-import { Nav, Footer, Trail } from "../components/site";
+import { Brand } from "../components/site";
 
 export const rootRoute = createRootRoute({
   head: () => ({
@@ -12,9 +12,9 @@ export const rootRoute = createRootRoute({
       {
         name: "description",
         content:
-          "oj is a Rust-native build tool for React apps: a fast dev server, SSR and TanStack Start, Tailwind, and one-command Cloudflare deploys.",
+          "oj is a Rust-native build tool for React apps. This playground is oj itself compiled to WebAssembly, building a live-editable site in your browser tab.",
       },
-      { name: "theme-color", content: "#ffffff" },
+      { name: "theme-color", content: "#191918" },
     ],
     links: [
       { rel: "icon", type: "image/png", href: "/favicon-32x32.png" },
@@ -22,7 +22,7 @@ export const rootRoute = createRootRoute({
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
         rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400;1,600&display=swap",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap",
       },
     ],
   }),
@@ -36,12 +36,10 @@ function RootComponent() {
         <HeadContent />
       </head>
       <body>
-        <Trail />
-        <Nav />
+        <Brand />
         <main className="main">
           <Outlet />
         </main>
-        <Footer />
         <Scripts />
       </body>
     </html>

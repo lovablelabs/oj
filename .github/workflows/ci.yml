@@ -27,6 +27,10 @@ jobs:
         run: node --test e2e/unit/*.test.mjs
       - name: fuzz targets still build
         run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
+      - name: oj_wasm still builds for wasm32
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p oj_wasm --target wasm32-unknown-unknown
 
   e2e:
     name: e2e (${{ matrix.mode }})
@@ -54,8 +58,21 @@ jobs:
         if: matrix.mode == 'unbundled'
         run: npm ci --prefix e2e/fixtures/start-app
       - run: npx --prefix e2e playwright install --with-deps chromium
+      - name: install wasm-pack + www deps (wasm playground e2e)
+        if: matrix.mode == 'unbundled'
+        # A version-pinned release tarball, not `curl | sh` of whatever the
+        # installer page serves today.
+        run: |
+          rustup target add wasm32-unknown-unknown
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz --strip-components=1 -C "$HOME/.cargo/bin" --wildcards '*/wasm-pack'
+          wasm-pack --version
+          npm ci --prefix www
       - name: run e2e suite
         run: node e2e/run.mjs ${{ matrix.mode == 'bundle' && '--bundle' || '' }}
+      - name: wasm playground (editor, preview, error strip)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/wasm-playground.mjs
       - name: warm-cache plugin side effects
         if: matrix.mode == 'unbundled'
         run: node e2e/warm-cache.mjs

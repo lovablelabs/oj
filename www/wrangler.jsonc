@@ -1,14 +1,13 @@
 {
+  // Build before deploying (`npm run deploy`): `oj build .` resolves this config
+  // through @cloudflare/vite-plugin into dist/ssr/wrangler.json (main, assets,
+  // no_bundle) and writes the .wrangler/deploy/config.json redirect that
+  // `wrangler deploy` follows. A bare `wrangler deploy` without a build would
+  // read this file directly and fail on the unresolved `main`.
   "name": "oj-docs",
-  "main": "dist/worker.mjs",
+  "main": "@tanstack/react-start/server-entry",
   "compatibility_date": "2024-11-01",
   "compatibility_flags": ["nodejs_compat"],
-  "assets": {
-    "directory": "dist/client",
-    "binding": "ASSETS",
-    "not_found_handling": "none",
-    "run_worker_first": false
-  },
   "vars": {
     "SITE_NAME": "oj"
   }
