@@ -730,7 +730,10 @@ export async function loadPluginContainer(app, opts = {}) {
   );
   // Run matching buildApp hooks in pre/normal/post order, as Vite does.
   // ranks selects phases so oj can build its environments between them.
+  // Vite completes configResolved before any buildApp hook; the pre rank runs
+  // ahead of every other hook here, so run it first (a no-op once run).
   const buildApp = async (builder, ranks = ["pre", "normal", "post"]) => {
+    await root.configResolved();
     const rank = (hook) => (hook?.order === "pre" || hook?.order === "post" ? hook.order : "normal");
     for (const want of ranks) {
       for (const plugin of ordered(all)) {
@@ -748,7 +751,8 @@ export async function loadPluginContainer(app, opts = {}) {
     ...createPluginContainer(vite, all, { ...opts, environment, config: { ...config, root: config.root ?? app } }),
     publicDir, configDependencies, defines: defines(environment), config, buildApp, forEnvironment,
   });
-  return forEnvironment(opts.environment ?? "client");
+  const root = forEnvironment(opts.environment ?? "client");
+  return root;
 }
 
 export const __test = { matchOne, idAllowed, codeAllowed, byHook, applyMatches, ordered, hookHandler, hookFilter, ojReimplemented, envAllows };
