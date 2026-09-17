@@ -153,6 +153,15 @@ fn base64url(bytes: &[u8]) -> String {
 /// `NAME_createServerFn_handler = createServerRpc(meta, ...)` export and the
 /// handler's first argument, without adding lines (stack traces keep their
 /// positions).
+///
+/// The `.handler(` must belong to the SAME expression as the
+/// `createServerFn` call: the chain is followed with a bracket-depth scan
+/// (strings, template literals, comments and regex literals skipped) instead
+/// of a lazy `.*?`, which used to span across statements and anchor a
+/// split-statement factory (`const factory = createServerFn(...); export
+/// const doIt = factory.handler(...)`) to the WRONG variable. That split
+/// shape is left untouched: TanStack's own compiler resolves it by following
+/// variable bindings in the AST, which a textual rewrite cannot do safely.
 pub(crate) fn rewrite_server_fns(code: &str, rel: &str) -> String {
     if !code.contains("createServerFn") {
         return code.to_string();
@@ -160,27 +169,260 @@ pub(crate) fn rewrite_server_fns(code: &str, rel: &str) -> String {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(
-            r"(^|[\n;])([ \t]*)((?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*createServerFn\b(?s:.)*?\.handler\s*\()",
+            r"(?:^|[\n;])[ \t]*((?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*createServerFn)\b",
         )
         .expect("server-fn rewrite regex")
     });
-    let mut changed = false;
-    let out = re.replace_all(code, |caps: &regex::Captures| {
-        changed = true;
-        let (pre, indent, decl, name) = (&caps[1], &caps[2], &caps[3], &caps[4]);
+    // (byte offset, text to insert there), collected per anchored chain.
+    let mut edits: Vec<(usize, String)> = Vec::new();
+    for caps in re.captures_iter(code) {
+        let decl = caps.get(1).expect("decl group");
+        let name = &caps[2];
+        let Some(handler_args_at) = scan_chain_to_handler(code, decl.end()) else {
+            continue; // no same-expression .handler( — leave the statement alone
+        };
         let id = base64url(format!("{rel}#{name}").as_bytes());
-        let meta = format!(
-            "{{ id: {id:?}, name: {name:?}, filename: {rel:?} }}",
-        );
-        let rpc = format!(
-            "export const {name}_createServerFn_handler = createServerRpc({meta}, (opts) => {name}.__executeServer(opts)); "
-        );
-        format!("{pre}{indent}{rpc}{decl}{name}_createServerFn_handler, ")
-    });
-    if !changed {
+        let meta = format!("{{ id: {id:?}, name: {name:?}, filename: {rel:?} }}");
+        edits.push((
+            decl.start(),
+            format!(
+                "export const {name}_createServerFn_handler = createServerRpc({meta}, (opts) => {name}.__executeServer(opts)); "
+            ),
+        ));
+        edits.push((handler_args_at, format!("{name}_createServerFn_handler, ")));
+    }
+    if edits.is_empty() {
         return code.to_string();
     }
-    format!("import {{ createServerRpc }} from \"@tanstack/react-start/server-rpc\"; {out}")
+    edits.sort_by_key(|(at, _)| *at);
+    let mut out =
+        String::from("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; ");
+    let mut last = 0;
+    for (at, text) in edits {
+        out.push_str(&code[last..at]);
+        out.push_str(&text);
+        last = at;
+    }
+    out.push_str(&code[last..]);
+    out
+}
+
+/// Follows a `createServerFn` method chain from `from` (the byte right after
+/// the identifier) to the `.handler(` of the same expression, returning the
+/// offset just past its opening paren. The chain grammar is strict — a call's
+/// balanced arguments, then `.name` and the next call — so the scan ends
+/// (returning `None`) at anything else: a `;`, a new statement on the next
+/// line, an unexpected token. Bracket depth is tracked with strings, template
+/// literals, comments and regex literals skipped, so a `)` inside a validator
+/// string can not end the argument list early.
+fn scan_chain_to_handler(code: &str, from: usize) -> Option<usize> {
+    let bytes = code.as_bytes();
+    let mut i = from;
+    loop {
+        // The chain's next call: balanced `( ... )`.
+        i = skip_ws_and_comments(bytes, i)?;
+        if bytes[i] != b'(' {
+            return None;
+        }
+        i = skip_balanced_parens(bytes, i)?;
+        // After the call only `.name` continues the chain.
+        i = skip_ws_and_comments(bytes, i)?;
+        if bytes[i] != b'.' {
+            return None;
+        }
+        i = skip_ws_and_comments(bytes, i + 1)?;
+        let name_start = i;
+        while i < bytes.len()
+            && (bytes[i] == b'$' || bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric())
+        {
+            i += 1;
+        }
+        if i == name_start {
+            return None;
+        }
+        let method = &code[name_start..i];
+        i = skip_ws_and_comments(bytes, i)?;
+        if bytes[i] != b'(' {
+            return None;
+        }
+        if method == "handler" {
+            return Some(i + 1);
+        }
+        // A non-handler link (.validator, .middleware, …): consume its call
+        // on the next loop turn.
+    }
+}
+
+fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> Option<usize> {
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            if i + 1 >= bytes.len() {
+                return None;
+            }
+            i += 2;
+            continue;
+        }
+        return if i < bytes.len() { Some(i) } else { None };
+    }
+}
+
+/// From an opening `(` at `open`, returns the index just past its matching
+/// `)`. Tracks every bracket kind, skips strings, template literals (with
+/// nested `${}` code), comments and regex literals (the `/`-after-operator
+/// heuristic), and gives up (`None`) on EOF or mismatched brackets.
+fn skip_balanced_parens(bytes: &[u8], open: usize) -> Option<usize> {
+    debug_assert_eq!(bytes[open], b'(');
+    // Bracket stack; b'T' marks a template-literal `${` substitution, b'`'
+    // template text itself.
+    let mut stack: Vec<u8> = vec![b'('];
+    // The previous significant code byte, for the regex-vs-division call.
+    let mut prev: Option<u8> = Some(b'(');
+    let mut i = open + 1;
+    while i < bytes.len() {
+        if stack.last() == Some(&b'`') {
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'`' => {
+                    stack.pop();
+                    i += 1;
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                    stack.push(b'T');
+                    prev = Some(b'{');
+                    i += 2;
+                }
+                _ => i += 1,
+            }
+            continue;
+        }
+        let c = bytes[i];
+        match c {
+            b'\'' | b'"' => {
+                i = skip_string(bytes, i)?;
+                prev = Some(b'"');
+            }
+            b'`' => {
+                stack.push(b'`');
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if i + 1 >= bytes.len() {
+                    return None;
+                }
+                i += 2;
+            }
+            b'/' if regex_can_follow(prev) => {
+                i = skip_regex_literal(bytes, i)?;
+                prev = Some(b'/');
+            }
+            b'(' | b'[' | b'{' => {
+                stack.push(c);
+                prev = Some(c);
+                i += 1;
+            }
+            b')' | b']' => {
+                let want = if c == b')' { b'(' } else { b'[' };
+                if stack.pop() != Some(want) {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(i + 1);
+                }
+                prev = Some(c);
+                i += 1;
+            }
+            b'}' => {
+                match stack.pop() {
+                    Some(b'{') | Some(b'T') => {}
+                    _ => return None,
+                }
+                prev = Some(c);
+                i += 1;
+            }
+            _ => {
+                if !c.is_ascii_whitespace() {
+                    prev = Some(c);
+                }
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Whether a `/` after this significant byte starts a regex literal rather
+/// than a division: after an operator, an opener or a separator it can only
+/// be a regex (`.validator((s) => /x\(/.test(s))`), after a value it is a
+/// division. Keyword-preceded regexes (`return /x/`) read as
+/// identifier-preceded here and mis-classify as division — acceptable inside
+/// call arguments, where a bare `return` at bracket depth is already rare.
+fn regex_can_follow(prev: Option<u8>) -> bool {
+    match prev {
+        None => true,
+        Some(c) => matches!(
+            c,
+            b'(' | b'[' | b'{' | b',' | b';' | b':' | b'!' | b'&' | b'|' | b'?' | b'='
+                | b'+' | b'-' | b'*' | b'%' | b'<' | b'>' | b'~' | b'^'
+        ),
+    }
+}
+
+fn skip_string(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = bytes[start];
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            c if c == quote => return Some(i + 1),
+            b'\n' => return Some(i + 1), // unterminated: fail soft at the line end
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skip_regex_literal(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    let mut in_class = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'[' => {
+                in_class = true;
+                i += 1;
+            }
+            b']' if in_class => {
+                in_class = false;
+                i += 1;
+            }
+            b'/' if !in_class => return Some(i + 1),
+            b'\n' => return None, // not a regex after all
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 fn ext_of(path: &str) -> &str {
@@ -201,36 +443,88 @@ fn src_lang(path: &str) -> Option<&'static str> {
     }
 }
 
-/// The loader's `isCjsFile`: `.cjs` always, `.js` when the nearest
-/// package.json is not `"type": "module"` and the file shows no ESM syntax.
-fn is_cjs_file(path: &str) -> bool {
-    if path.ends_with(".cjs") {
-        return true;
+/// The loader's `isCjsFile` (`.cjs` always, `.js` when the nearest
+/// package.json is not `"type": "module"` and the file shows no ESM syntax),
+/// memoized like the node loader's `pkgTypeCache`: this runs per resolution
+/// on the shared runtime, and uncached it walked up to 40 directories and
+/// read the whole module on every hit.
+///
+/// The package type is cached per starting directory for the host's lifetime
+/// — a package.json `type` flip means a reinstall, which needs a dev-server
+/// restart anyway (the engine's own module map is just as stale then), so
+/// in-session invalidation buys nothing. The per-file ESM-syntax verdict is
+/// keyed on the file's mtime, so an edited linked `file:` dependency is
+/// re-read.
+#[derive(Default)]
+pub(crate) struct CjsCache {
+    /// dir → nearest package.json has `"type": "module"`.
+    pkg_is_module: Mutex<std::collections::HashMap<PathBuf, bool>>,
+    /// file → (mtime at sniff time, is-CJS verdict).
+    verdicts: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, bool)>>,
+}
+
+impl CjsCache {
+    fn nearest_pkg_is_module(&self, start: &Path) -> bool {
+        if let Some(hit) = self.pkg_is_module.lock().unwrap().get(start) {
+            return *hit;
+        }
+        let mut dir = Some(start);
+        let mut is_module = false;
+        for _ in 0..40 {
+            let Some(d) = dir else { break };
+            let pj = d.join("package.json");
+            if pj.is_file() {
+                is_module = std::fs::read_to_string(&pj)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|t| t == "module"))
+                    .unwrap_or(false);
+                break;
+            }
+            dir = d.parent();
+        }
+        self.pkg_is_module
+            .lock()
+            .unwrap()
+            .insert(start.to_path_buf(), is_module);
+        is_module
     }
-    if !path.ends_with(".js") {
-        return false;
-    }
-    let mut dir = Path::new(path).parent();
-    for _ in 0..40 {
-        let Some(d) = dir else { break };
-        let pj = d.join("package.json");
-        if pj.is_file() {
-            let is_module = std::fs::read_to_string(&pj)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|t| t == "module"))
-                .unwrap_or(false);
-            if is_module {
+
+    fn is_cjs_file(&self, path: &str) -> bool {
+        if path.ends_with(".cjs") {
+            return true;
+        }
+        if !path.ends_with(".js") {
+            return false;
+        }
+        let file = Path::new(path);
+        if let Some(dir) = file.parent() {
+            if self.nearest_pkg_is_module(dir) {
                 return false;
             }
-            break;
         }
-        dir = d.parent();
+        // The walk was inconclusive (commonjs or no package.json): the
+        // full-file ESM-syntax sniff decides, cached per path + mtime.
+        let mtime = std::fs::metadata(file).ok().and_then(|m| m.modified().ok());
+        if let Some(mtime) = mtime {
+            if let Some((seen, verdict)) = self.verdicts.lock().unwrap().get(file) {
+                if *seen == mtime {
+                    return *verdict;
+                }
+            }
+        }
+        let verdict = match std::fs::read_to_string(file) {
+            Ok(src) => !has_esm_syntax(&src),
+            Err(_) => false,
+        };
+        if let Some(mtime) = mtime {
+            self.verdicts
+                .lock()
+                .unwrap()
+                .insert(file.to_path_buf(), (mtime, verdict));
+        }
+        verdict
     }
-    let Ok(src) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    !has_esm_syntax(&src)
 }
 
 fn has_esm_syntax(src: &str) -> bool {
@@ -378,6 +672,8 @@ pub struct StartHost {
     /// compile-on-startup plugins have their state before any load().
     plugins_started: tokio::sync::OnceCell<()>,
     warned_schemes: Mutex<HashSet<String>>,
+    /// Memoized CJS detection (package type per dir, ESM sniff per file).
+    cjs: CjsCache,
 }
 
 impl StartHost {
@@ -398,6 +694,7 @@ impl StartHost {
             graph: VersionGraph::default(),
             plugins_started: tokio::sync::OnceCell::new(),
             warned_schemes: Mutex::new(HashSet::new()),
+            cjs: CjsCache::default(),
         })
     }
 
@@ -515,7 +812,7 @@ impl StartHost {
                     // module) is Node's to load: byonm gives it require
                     // semantics and lexed named exports, like the node
                     // loader's fall-through did.
-                    if tagged == id && is_cjs_file(&id) {
+                    if tagged == id && self.cjs.is_cjs_file(&id) {
                         if let Ok(u) = url::Url::from_file_path(&id) {
                             return Ok(Some(HostResolved::External(u.to_string())));
                         }
@@ -604,7 +901,7 @@ impl StartHost {
         if !self.no_external.matches_path(&path_str) {
             return Ok(None);
         }
-        if src_lang(&path_str).is_none() || is_cjs_file(&path_str) {
+        if src_lang(&path_str).is_none() || self.cjs.is_cjs_file(&path_str) {
             return Ok(None);
         }
         self.ensure_plugins_started().await;
@@ -995,7 +1292,24 @@ impl StartEngine {
 pub struct ScriptEngine {
     engine: JsEngine,
     handle: tokio::runtime::Handle,
+    /// The env shadow ran on the isolate (once, before the first script).
+    env_shadowed: tokio::sync::OnceCell<()>,
 }
+
+/// Shadows `process.env` with a private copy on the script isolate before any
+/// script runs — the same isolation block plugin-host.mjs and the config
+/// extractor install. The scripts' `run(env)` merges its values (route-tree
+/// codegen gets NODE_ENV=development even under `oj build`) into
+/// `process.env`, and Deno.env writes are PROCESS-REAL: unshadowed, that
+/// NODE_ENV leaked into oj's own environment and could steer the vite-config
+/// extraction that reads it afterwards (or races it, in dev).
+const SCRIPT_ENV_SHADOW_JS: &str = r#"
+Object.defineProperty(process, "env", {
+  value: { ...process.env },
+  configurable: true,
+  writable: true,
+});
+"#;
 
 impl ScriptEngine {
     /// Must be created from inside the tokio runtime (the handle drives
@@ -1005,6 +1319,7 @@ impl ScriptEngine {
             engine: JsEngine::spawn(EngineConfig::new(root)).map_err(|e| anyhow::anyhow!("{e}"))?,
             handle: tokio::runtime::Handle::try_current()
                 .map_err(|_| anyhow::anyhow!("ScriptEngine::new needs a tokio runtime"))?,
+            env_shadowed: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -1033,20 +1348,30 @@ impl ScriptEngine {
             .map_err(|e| anyhow::anyhow!("{what} failed: {e}"))
     }
 
-    fn call(
+    async fn call(
         &self,
         script: &Path,
         env: &[(String, String)],
-    ) -> impl std::future::Future<Output = Result<serde_json::Value, oj_js::EngineError>> + '_ {
+    ) -> Result<serde_json::Value, oj_js::EngineError> {
+        self.env_shadowed
+            .get_or_try_init(|| async {
+                self.engine
+                    .eval(oj_js::EvalInput::Source(SCRIPT_ENV_SHADOW_JS.to_string()))
+                    .await
+                    .map(|_| ())
+            })
+            .await?;
         let env_obj: serde_json::Map<String, serde_json::Value> = env
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
             .collect();
-        self.engine.call(
-            script.to_string_lossy().into_owned(),
-            "run",
-            vec![serde_json::Value::Object(env_obj)],
-        )
+        self.engine
+            .call(
+                script.to_string_lossy().into_owned(),
+                "run",
+                vec![serde_json::Value::Object(env_obj)],
+            )
+            .await
     }
 }
 
@@ -1113,6 +1438,87 @@ mod tests {
         // Untouched code passes through byte-identical.
         let plain = "export const x = 1;\n";
         assert_eq!(rewrite_server_fns(plain, "src/x.ts"), plain);
+    }
+
+    // The mis-rewrite the lazy regex allowed: a factory assigned in one
+    // statement and consumed by `.handler(...)` in another must not anchor
+    // the rewrite to the factory. TanStack's compiler resolves this shape by
+    // following variable bindings in the AST; the textual rewrite leaves it
+    // byte-identical instead of guessing.
+    #[test]
+    fn split_statement_factories_are_left_untouched() {
+        let split = "import { createServerFn } from \"@tanstack/react-start\";\nconst factory = createServerFn({ method: \"POST\" });\nexport const doIt = factory.handler(async () => 1);\n";
+        assert_eq!(rewrite_server_fns(split, "src/split.ts"), split);
+
+        // Same, single line with a `;` between the statements.
+        let inline = "const factory = createServerFn({ method: \"POST\" }); export const doIt = factory.handler(async () => 1);\n";
+        assert_eq!(rewrite_server_fns(inline, "src/split.ts"), inline);
+
+        // A factory NEXT TO a chained server fn: the factory stays untouched,
+        // the chained one still rewrites under its own name.
+        let mixed = "const factory = createServerFn({ method: \"POST\" });\nexport const real = createServerFn({ method: \"GET\" }).handler(async () => 2);\nexport const viaFactory = factory.handler(async () => 3);\n";
+        let out = rewrite_server_fns(mixed, "src/mixed.ts");
+        assert!(out.contains("export const real_createServerFn_handler = createServerRpc("));
+        assert!(out.contains(".handler(real_createServerFn_handler, async () => 2)"));
+        assert!(!out.contains("factory_createServerFn_handler"), "{out}");
+        assert!(
+            out.contains(".handler(async () => 3)"),
+            "the factory's handler call keeps its own arguments: {out}"
+        );
+    }
+
+    // Two adjacent server fns each anchor to their own declaration.
+    #[test]
+    fn adjacent_server_fns_rewrite_independently() {
+        let code = "export const a = createServerFn({ method: \"GET\" }).handler(async () => 1);\nexport const b = createServerFn({ method: \"POST\" }).handler(async () => 2);\n";
+        let out = rewrite_server_fns(code, "src/two.ts");
+        for name in ["a", "b"] {
+            let id = base64url(format!("src/two.ts#{name}").as_bytes());
+            assert!(
+                out.contains(&format!(
+                    "export const {name}_createServerFn_handler = createServerRpc({{ id: \"{id}\""
+                )),
+                "{out}"
+            );
+        }
+        assert!(out.contains(".handler(a_createServerFn_handler, async () => 1)"));
+        assert!(out.contains(".handler(b_createServerFn_handler, async () => 2)"));
+        assert_eq!(code.lines().count(), out.lines().count());
+    }
+
+    // A multi-line .validator()/.middleware() chain is one expression: the
+    // scan follows it across lines, comments and tricky argument content
+    // (strings and regex literals holding unbalanced brackets).
+    #[test]
+    fn multiline_chains_keep_rewriting() {
+        let code = r#"export const getUser = createServerFn({
+  method: "GET",
+})
+  .middleware([authMiddleware]) // trailing comment
+  .validator((s) => {
+    if (!/^[(]/.test(s.name) && s.label !== ")((") return s;
+    throw new Error(`bad ${s.name}; (unbalanced`);
+  })
+  .handler(async ({ data }) => data);
+"#;
+        let out = rewrite_server_fns(code, "src/user.ts");
+        assert!(
+            out.contains("export const getUser_createServerFn_handler = createServerRpc("),
+            "{out}"
+        );
+        assert!(
+            out.contains(".handler(getUser_createServerFn_handler, async ({ data }) => data)"),
+            "{out}"
+        );
+        assert_eq!(code.lines().count(), out.lines().count());
+    }
+
+    // ASI variant of the split factory: no semicolon, the next statement
+    // starts on its own line. The chain scan must not walk into it.
+    #[test]
+    fn asi_split_factories_are_left_untouched() {
+        let code = "const factory = createServerFn({ method: \"POST\" })\nexport const doIt = factory.handler(async () => 1)\n";
+        assert_eq!(rewrite_server_fns(code, "src/asi.ts"), code);
     }
 
     #[test]
@@ -1206,17 +1612,47 @@ mod tests {
         std::fs::create_dir_all(dir.join("esm")).unwrap();
         std::fs::write(dir.join("package.json"), "{}").unwrap();
         std::fs::write(dir.join("esm/package.json"), r#"{"type":"module"}"#).unwrap();
+        let cache = CjsCache::default();
         let cjs = dir.join("plain.js");
         std::fs::write(&cjs, "module.exports = { a: 1 };\n").unwrap();
         let esmish = dir.join("esmish.js");
         std::fs::write(&esmish, "export const a = 1;\n").unwrap();
         let typed = dir.join("esm/x.js");
         std::fs::write(&typed, "module.exports = 1;\n").unwrap();
-        assert!(is_cjs_file(&cjs.to_string_lossy()));
-        assert!(!is_cjs_file(&esmish.to_string_lossy()));
-        assert!(!is_cjs_file(&typed.to_string_lossy()), "type:module wins");
-        assert!(is_cjs_file("/whatever/x.cjs"));
-        assert!(!is_cjs_file("/whatever/x.mjs"));
+        assert!(cache.is_cjs_file(&cjs.to_string_lossy()));
+        assert!(!cache.is_cjs_file(&esmish.to_string_lossy()));
+        assert!(!cache.is_cjs_file(&typed.to_string_lossy()), "type:module wins");
+        assert!(cache.is_cjs_file("/whatever/x.cjs"));
+        assert!(!cache.is_cjs_file("/whatever/x.mjs"));
+        // Memoized: a second ask answers from the caches.
+        assert!(cache.is_cjs_file(&cjs.to_string_lossy()));
+        assert!(!cache.is_cjs_file(&typed.to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The ESM-syntax verdict is keyed on the file's mtime: an edited file
+    // (a linked `file:` dependency rewritten mid-session) is re-read, while
+    // an untouched file answers from the cache.
+    #[test]
+    fn cjs_verdict_cache_follows_the_file_mtime() {
+        let dir = std::env::temp_dir().join(format!("oj-cjsmtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        let cache = CjsCache::default();
+        let file = dir.join("mut.js");
+        std::fs::write(&file, "module.exports = 1;\n").unwrap();
+        assert!(cache.is_cjs_file(&file.to_string_lossy()));
+        // Rewrite as ESM and push the mtime forward explicitly (same-second
+        // writes can share an mtime on coarse filesystems).
+        std::fs::write(&file, "export const a = 1;\n").unwrap();
+        let f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            !cache.is_cjs_file(&file.to_string_lossy()),
+            "an mtime move re-reads the file"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1245,6 +1681,61 @@ mod tests {
                 "the start host has no alias for {spec}"
             );
         }
+    }
+
+    // The ScriptEngine's process.env shadow: a script's env writes — the
+    // run(env) merge and its own assignments (route-tree codegen's
+    // NODE_ENV=development) — stay on the isolate's private copy and never
+    // reach oj's real environment, exactly like the plugin host's and config
+    // extractor's isolation (plugins::config_env_writes_do_not_leak...).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn script_engine_env_writes_do_not_leak_into_the_oj_process() {
+        let dir = std::env::temp_dir().join(format!("oj-scriptenv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("probe.mjs");
+        std::fs::write(
+            &script,
+            r#"export async function run(env = null) {
+  if (env) for (const [k, v] of Object.entries(env)) process.env[k] = v;
+  // The shadow must still BEHAVE like the env: the merged value is visible.
+  if (process.env.OJ_SCRIPT_MERGE_PROBE !== "merged") {
+    throw new Error("merged env not visible on the shadow");
+  }
+  process.env.NODE_ENV = "development";
+  process.env.OJ_SCRIPT_WRITE_PROBE = "leaked";
+  if (process.env.OJ_SCRIPT_WRITE_PROBE !== "leaked") {
+    throw new Error("own write not visible on the shadow");
+  }
+  return null;
+}
+"#,
+        )
+        .unwrap();
+        let scripts = ScriptEngine::new(&dir).unwrap();
+        let node_env_before = std::env::var("NODE_ENV").ok();
+        scripts
+            .run_async(
+                &script,
+                &[("OJ_SCRIPT_MERGE_PROBE".to_string(), "merged".to_string())],
+                "env shadow probe",
+            )
+            .await
+            .expect("the probe script runs");
+        assert!(
+            std::env::var("OJ_SCRIPT_MERGE_PROBE").is_err(),
+            "the run(env) merge must stay on the isolate's shadow"
+        );
+        assert!(
+            std::env::var("OJ_SCRIPT_WRITE_PROBE").is_err(),
+            "a script's own env write must stay on the isolate's shadow"
+        );
+        assert_eq!(
+            std::env::var("NODE_ENV").ok(),
+            node_env_before,
+            "the script's NODE_ENV write must not alter oj's real env"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
