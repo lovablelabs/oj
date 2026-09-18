@@ -14,7 +14,7 @@ pub fn rewrite_cjs_interop(
     interop: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
     let source_type = SourceType::from_path(path).unwrap_or_default();
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if parsed.panicked {
         return None;

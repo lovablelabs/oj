@@ -243,11 +243,44 @@ pub fn compile(
     compile_module(path, source_text, opts, None)
 }
 
+/// A bump arena borrowed from a small global pool and returned on drop:
+/// reset() keeps the largest chunk mapped, so repeated compiles reuse warm
+/// memory instead of re-requesting it from the OS per file.
+pub(crate) struct PooledAllocator(Option<Allocator>);
+
+static ALLOCATOR_POOL: std::sync::Mutex<Vec<Allocator>> = std::sync::Mutex::new(Vec::new());
+const ALLOCATOR_POOL_CAP: usize = 8;
+
+pub(crate) fn pooled_allocator() -> PooledAllocator {
+    let alloc = ALLOCATOR_POOL.lock().map_or_else(|_| Allocator::default(), |mut p| p.pop().unwrap_or_default());
+    PooledAllocator(Some(alloc))
+}
+
+impl std::ops::Deref for PooledAllocator {
+    type Target = Allocator;
+    fn deref(&self) -> &Allocator {
+        self.0.as_ref().expect("allocator present until drop")
+    }
+}
+
+impl Drop for PooledAllocator {
+    fn drop(&mut self) {
+        if let Some(mut alloc) = self.0.take() {
+            alloc.reset();
+            if let Ok(mut pool) = ALLOCATOR_POOL.lock() {
+                if pool.len() < ALLOCATOR_POOL_CAP {
+                    pool.push(alloc);
+                }
+            }
+        }
+    }
+}
+
 pub fn exports(source_text: &str, path: &Path) -> Vec<String> {
     let Ok(source_type) = SourceType::from_path(path) else {
         return Vec::new();
     };
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let parsed = Parser::new(&allocator, source_text, source_type).parse();
     if parsed.panicked {
         return Vec::new();
@@ -287,7 +320,7 @@ pub fn imports(source_text: &str, path: &Path) -> Vec<String> {
     let Ok(source_type) = SourceType::from_path(path) else {
         return Vec::new();
     };
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let parsed = Parser::new(&allocator, source_text, source_type).parse();
     if parsed.panicked {
         return Vec::new();
@@ -328,7 +361,7 @@ pub fn compile_module_with_maps(
     let source_type = SourceType::from_path(path)
         .map_err(|_| CompileError::UnsupportedFileType(path.to_path_buf()))?;
 
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
 
     let parsed = Parser::new(&allocator, source_text, source_type).parse();
     if parsed.panicked || !parsed.diagnostics.is_empty() {

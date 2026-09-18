@@ -69,7 +69,7 @@ pub fn analyze_for_factory(
 }
 
 fn has_module_syntax(_path: &Path, source_text: &str) -> bool {
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let parsed = Parser::new(&allocator, source_text, SourceType::mjs()).parse();
     if parsed.panicked {
         return false;
@@ -91,7 +91,7 @@ fn lower_and_analyze(
     path: &Path,
     source_text: &str,
 ) -> Result<(String, CjsAnalyzer), CompileError> {
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let parsed = Parser::new(&allocator, source_text, SourceType::cjs()).parse();
     if parsed.panicked {
         let message = parsed

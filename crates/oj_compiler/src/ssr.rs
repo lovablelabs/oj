@@ -139,7 +139,7 @@ impl<'a, 'b> Visit<'a> for RefCollector<'a, 'b> {
 }
 
 pub fn ssr_transform(source: &str, path: &Path) -> String {
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if parsed.panicked {
