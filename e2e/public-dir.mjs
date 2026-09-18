@@ -60,7 +60,17 @@ async function withServer(app, port, fn) {
     if (!up) throw new Error(`server did not start on ${port}:\n${log}`);
     await fn(`http://localhost:${port}`);
   } finally {
+    // Graceful TERM, then WAIT for the exit: a dying server flushes its
+    // engines' pending code-cache entries on the way down, and the caller's
+    // teardown rm must not race those writes (the recurring ENOTEMPTY).
     srv.kill();
+    await new Promise((resolve) => {
+      const hammer = setTimeout(() => srv.kill("SIGKILL"), 5000);
+      srv.once("exit", () => {
+        clearTimeout(hammer);
+        resolve();
+      });
+    });
   }
 }
 
