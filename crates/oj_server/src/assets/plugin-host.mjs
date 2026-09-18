@@ -1828,7 +1828,7 @@ function stubHttpServer() {
   let listening = false;
   s.on("listening", () => { listening = true; });
   // `upgrade` listeners are held (in registration order, prepend honored) and
-  // replayed onto the real middleware server once it exists — Vite's shared
+  // replayed onto the real middleware server once it exists: Vite's shared
   // httpServer semantics for tunnel-style plugins.
   s._upgradeListeners = [];
   s._upgradeTarget = null;

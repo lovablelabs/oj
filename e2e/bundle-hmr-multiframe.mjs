@@ -4,7 +4,7 @@
 // `--bundle` HMR on a multi-frame page: the /__ws broadcast reaches every
 // frame, so a patch whose boundaries belong to frame A's graph must be
 // IGNORED by frame B (whose registry never registered them) instead of
-// crashing B with a "module not registered" overlay — and B must still apply
+// crashing B with a "module not registered" overlay, and B must still apply
 // its own later patch (a skipped foreign patch is not a seq gap).
 
 import { spawn, execSync } from "node:child_process";
@@ -24,7 +24,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 // One bundle, two realms: the parent loads lazy chunk A, the iframe (same
-// origin, same bundle) loads lazy chunk B — each frame's registry only holds
+// origin, same bundle) loads lazy chunk B, so each frame's registry only holds
 // the chunks it imported (the reported shape). React components, so the
 // refresh runtime treats each chunk as a valid boundary. The app lives under
 // playground/ so react resolves from its node_modules.
@@ -48,7 +48,7 @@ if (!b) {
 `,
 );
 // The component imports a child module; editing the CHILD makes the patch's
-// boundary (the component) differ from its changed module — the boundary is
+// boundary (the component) differ from its changed module; the boundary is
 // what a foreign realm never registered.
 const comp = (name) =>
   `import React from "react";

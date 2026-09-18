@@ -2676,9 +2676,10 @@ async fn proxy_middleware(
     }
 
     // `ws: false` (Vite's default): the upgrade belongs to the shared
-    // httpServer's `upgrade` listeners — plugins own it there (tunnel-style),
-    // so relay it to the plugin middleware server as a real upgrade.
-    if is_websocket_upgrade(req.headers()) {
+    // httpServer's `upgrade` listeners, so relay it to the plugin middleware
+    // server as a real upgrade. vite-hmr/vite-ping stay with oj's own
+    // endpoint (this middleware wraps outside vite_hmr_upgrade).
+    if is_websocket_upgrade(req.headers()) && vite_ws_subprotocol(req.headers()).is_none() {
         if let Some(port) = state.plugin_serve.mw_port() {
             return relay_upgrade_to_plugin_middleware(state, req, port).await;
         }

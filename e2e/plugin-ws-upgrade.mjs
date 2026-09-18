@@ -4,7 +4,7 @@
 // Vite parity: `configureServer` plugins own raw WebSocket upgrades on the
 // shared httpServer (tunnel-style plugins pipe them to an upstream). oj's
 // Rust listener must relay unclaimed browser upgrades to the plugin
-// middleware server as real `upgrade` events — for paths under a `ws: false`
+// middleware server as real `upgrade` events, for paths under a `ws: false`
 // proxy entry (the tunnel-over-proxy-prefix shape) and for plain paths alike.
 
 import { spawn, execSync } from "node:child_process";
