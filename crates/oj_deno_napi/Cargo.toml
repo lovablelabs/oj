@@ -1,0 +1,99 @@
+# Fork of deno_napi 0.190.0 (https://github.com/denoland/deno, ext/napi)
+# maintained for oj, carrying oj's performance patch: the finalizer registry
+# is a BTreeMap instead of a Vec (quadratic GC under heavy napi ref counts).
+# See README.md.
+
+[package]
+edition = "2024"
+name = "oj_deno_napi"
+version = "0.190.0"
+authors = ["the Deno authors"]
+build = "build.rs"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Fork of deno_napi 0.190.0 maintained for oj, carrying oj's finalizer-registry performance patch (Vec -> BTreeMap). Use upstream deno_napi unless you need this patch."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/lovablelabs/oj"
+
+[lib]
+path = "lib.rs"
+
+[dependencies.deno_core]
+version = "0.412.0"
+features = [
+    "reactor-tokio",
+    "v8_use_custom_libcxx",
+]
+default-features = false
+
+[dependencies.deno_error]
+version = "=0.7.1"
+
+[dependencies.deno_node]
+version = "0.197.0"
+
+[dependencies.deno_permissions]
+version = "0.118.0"
+
+[dependencies.denort_helper]
+version = "0.57.0"
+
+[dependencies.libc]
+version = "0.2.168"
+
+[dependencies.libloading]
+version = "0.7"
+
+[dependencies.libuv-sys-lite]
+version = "=1.48.4"
+features = ["dyn-symbols"]
+
+[dependencies.log]
+version = "0.4.28"
+features = ["kv"]
+
+[dependencies.napi_sym]
+version = "0.189.0"
+
+[dependencies.object]
+version = "0.36.3"
+features = [
+    "read_core",
+    "pe",
+]
+default-features = false
+
+[dependencies.thiserror]
+version = "2.0.12"
+
+[target."cfg(windows)".dependencies.windows-sys]
+version = "0.59.0"
+features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_WindowsProgramming",
+    "Wdk",
+    "Wdk_System",
+    "Wdk_System_SystemInformation",
+    "Win32_Security",
+    "Win32_System_Pipes",
+    "Wdk_Storage_FileSystem",
+    "Win32_System_Registry",
+    "Win32_System_Kernel",
+    "Win32_System_Threading",
+    "Win32_UI",
+    "Win32_UI_Shell",
+]
+
+# Local addition (not in upstream's manifest): standalone `cargo test` on this
+# fork needs deno_core's "v8" feature unified in, exactly as the oj workspace
+# supplies it through oj_js. Dev-only; the library build is untouched.
+[dev-dependencies.deno_core]
+version = "0.412.0"
+features = ["v8"]

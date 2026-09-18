@@ -818,13 +818,14 @@ async fn compile_stylesheet(
             source = format!("{data}\n{source}");
         }
         let opts = oj_config::css_preprocessor_json(&cfg, lang);
-        source = preprocess_via_sidecar(root, std::path::Path::new(path), &source, opts)?;
+        source = preprocess_via_engine(root, std::path::Path::new(path), &source, opts).await?;
     }
     // Plain `@import`s are inlined (postcss-import parity) so the concatenated
     // chunk stylesheet does not carry imports that 404 from `assets/`. It runs
     // before PostCSS, as postcss-import is the first plugin of Vite's chain, so
     // imported rules go through the user's plugins too. A Tailwind stylesheet
-    // resolves its own imports in the sidecar (as the Tailwind Vite plugin does).
+    // resolves its own imports in the tailwind engine (as the Tailwind Vite
+    // plugin does).
     let tailwind = oj_server::sidecar::is_tailwind_css(&source);
     if !tailwind {
         source = oj_css::inline_imports_with(&source, std::path::Path::new(path), &resolve.as_ref())
@@ -833,7 +834,7 @@ async fn compile_stylesheet(
     // PostCSS/Tailwind run on the preprocessor OUTPUT (Vite orders them the same
     // way), on the source as transformed so far rather than re-read from disk.
     if tailwind || has_postcss {
-        source = expand_css_via_sidecar(root, std::path::Path::new(path), &source)?;
+        source = expand_css_via_engine(root, std::path::Path::new(path), &source).await?;
     }
     let css_id = match std::path::Path::new(path).strip_prefix(root) {
         Ok(rel) => format!("/{}", rel.display()),
@@ -1227,7 +1228,7 @@ impl Plugin for OjCssPlugin {
                 }));
             }
             if oj_server::sidecar::is_svelte(&id) {
-                let js = svelte_via_sidecar(&root, std::path::Path::new(&id))?;
+                let js = svelte_via_engine(&root, std::path::Path::new(&id)).await?;
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(js),
                     module_type: Some(rolldown_common::ModuleType::Js),
@@ -1359,139 +1360,62 @@ impl Plugin for OjCssPlugin {
     }
 }
 
+// The build's CSS engines: one lazily spawned in-process JS engine per kind,
+// shared by every stylesheet of the build (including nested worker bundles).
+// An `oj build` process works on a single app root, so caching per kind is
+// caching per (root, kind).
+static BUILD_TAILWIND: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>> =
+    tokio::sync::OnceCell::const_new();
+static BUILD_PREPROCESS: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>> =
+    tokio::sync::OnceCell::const_new();
+static BUILD_SVELTE: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>> =
+    tokio::sync::OnceCell::const_new();
+
 /// Tailwind / PostCSS over `css` (the file's content as processed so far, not
-/// re-read from disk), via the sidecar's line protocol.
-fn expand_css_via_sidecar(root: &Path, css_file: &Path, css: &str) -> anyhow::Result<String> {
-    run_sidecar_once(
-        root,
-        "css-sidecar.mjs",
-        oj_server::sidecar::SIDECAR_JS,
-        css_file,
-        css,
-        serde_json::Value::Null,
-        "tailwind/postcss",
-    )
+/// re-read from disk).
+async fn expand_css_via_engine(root: &Path, css_file: &Path, css: &str) -> anyhow::Result<String> {
+    let engine = BUILD_TAILWIND
+        .get_or_try_init(|| {
+            oj_server::css_engine::CssEngine::tailwind(root, oj_server::css_engine::BUILD_DEADLINE)
+        })
+        .await?;
+    engine
+        .compile_path(css, css_file, serde_json::Value::Null, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("tailwind/postcss failed for {}: {e}", css_file.display()))
 }
 
-fn run_sidecar_once(
-    root: &Path,
-    script_name: &str,
-    script_src: &str,
-    css_file: &Path,
-    css: &str,
-    options: serde_json::Value,
-    what: &str,
-) -> anyhow::Result<String> {
-    use std::io::Write;
-    let script = oj_cache::cache_root(root).join(script_name);
-    if let Some(parent) = script.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&script, script_src)?;
-    let req = serde_json::json!({
-        "id": 1,
-        "base": root.to_string_lossy(),
-        "css": css,
-        "from": css_file.to_string_lossy(),
-        "options": options,
-    })
-    .to_string();
-    let postcss_config = oj_server::find_postcss_config(root)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut child = std::process::Command::new("node")
-        .arg(&script)
-        .env("NODE_COMPILE_CACHE", oj_server::node_compile_cache(root))
-        .env("OJ_POSTCSS_CONFIG", postcss_config)
-        .current_dir(root)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("node not found for {what} build"))?;
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(format!("{req}\n").as_bytes())?;
-    let out = child.wait_with_output()?;
-    let line = String::from_utf8_lossy(&out.stdout);
-    let line = line.trim().lines().next().unwrap_or("{}");
-    let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
-    match v.get("css").and_then(|c| c.as_str()) {
-        Some(css) => Ok(css.to_string()),
-        None => bail!(
-            "{what} failed for {}: {}",
-            css_file.display(),
-            v.get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("sidecar produced no output")
-        ),
-    }
-}
-
-fn svelte_via_sidecar(root: &Path, file: &Path) -> anyhow::Result<String> {
-    use std::io::Write;
-    let script = oj_cache::cache_root(&root).join("svelte-compile.mjs");
-    if let Some(parent) = script.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&script, oj_server::sidecar::SVELTE_COMPILE_JS)?;
+async fn svelte_via_engine(root: &Path, file: &Path) -> anyhow::Result<String> {
+    let engine = BUILD_SVELTE
+        .get_or_try_init(|| {
+            oj_server::css_engine::CssEngine::svelte(root, oj_server::css_engine::BUILD_DEADLINE)
+        })
+        .await?;
     let source = fs::read_to_string(file)?;
-    let req = serde_json::json!({
-        "id": 1,
-        "base": root.to_string_lossy(),
-        "css": source,
-        "from": file.to_string_lossy(),
-        "dev": false,
-    })
-    .to_string();
-    let mut child = std::process::Command::new("node")
-        .arg(&script)
-        .env("NODE_COMPILE_CACHE", oj_server::node_compile_cache(root))
-        .current_dir(root)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .context("node not found for svelte compile")?;
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(format!("{req}\n").as_bytes())?;
-    let out = child.wait_with_output()?;
-    let line = String::from_utf8_lossy(&out.stdout);
-    let line = line.trim().lines().next().unwrap_or("{}");
-    let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
-    match v.get("css").and_then(|c| c.as_str()) {
-        Some(js) => Ok(js.to_string()),
-        None => bail!(
-            "svelte compile failed for {}: {}",
-            file.display(),
-            v.get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("is `svelte` installed?")
-        ),
-    }
+    engine
+        .compile_path(&source, file, serde_json::Value::Null, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("svelte compile failed for {}: {e}", file.display()))
 }
 
-fn preprocess_via_sidecar(
+async fn preprocess_via_engine(
     root: &Path,
     css_file: &Path,
     css: &str,
     options: serde_json::Value,
 ) -> anyhow::Result<String> {
-    run_sidecar_once(
-        root,
-        "css-preprocess.mjs",
-        oj_server::sidecar::PREPROCESS_JS,
-        css_file,
-        css,
-        options,
-        "css preprocess",
-    )
-    .map_err(|e| anyhow::anyhow!("{e} (is `less`/`stylus` installed?)"))
+    let engine = BUILD_PREPROCESS
+        .get_or_try_init(|| {
+            oj_server::css_engine::CssEngine::preprocess(
+                root,
+                oj_server::css_engine::BUILD_DEADLINE,
+            )
+        })
+        .await?;
+    engine
+        .compile_path(css, css_file, options, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("css preprocess failed for {}: {e}", css_file.display()))
 }
 
 fn rolldown_resolve(
@@ -3937,12 +3861,38 @@ async fn build_server_fns(root: &Path, out_dir: &Path, mode: &str) -> anyhow::Re
 const PRERENDER_JS: &str = r#"import * as entry from "./entry-server.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CLIENT_JS = "__CLIENT_JS__";
 const CLIENT_CSS = "__CLIENT_CSS__";
 const serialize = (d) => JSON.stringify(d ?? null).replace(/</g, "\\u003c");
-const paths = JSON.parse(process.argv[2] || "[]");
-const root = process.cwd();
+// Injected by the build (the script runs on the embedded engine, not argv).
+const paths = __PATHS__;
+const root = dirname(fileURLToPath(import.meta.url));
+
+// Called by the engine (`JsEngine::call` settles on the returned promise; an
+// eval would instead wait out an event loop the server bundle keeps alive).
+export async function run() {
+  for (const url of paths) {
+    const data = typeof entry.load === "function" ? await entry.load(url) : null;
+    const routeHead = typeof entry.head === "function" ? String(await entry.head(url, data)) : "";
+    const body = await renderFull(url, data);
+    const html =
+      '<!doctype html><html><head><meta charset="utf-8">' +
+      routeHead +
+      `<script>window.__OJ_DATA__=${serialize(data)}</script>` +
+      (CLIENT_CSS ? `<link rel="stylesheet" href="${CLIENT_CSS}">` : "") +
+      `<script type="module" src="${CLIENT_JS}"></script></head><body><div id="app">` +
+      body +
+      "</div></body></html>";
+    const file = url === "/" ? "index.html" : join(url.replace(/^\/+/, ""), "index.html");
+    const dest = join(root, file);
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, html);
+    console.error(`oj prerender: ${url} -> ${file}`);
+  }
+  return true;
+}
 
 async function renderFull(url, data) {
   if (typeof entry.renderStream === "function") {
@@ -3958,25 +3908,6 @@ async function renderFull(url, data) {
     return out;
   }
   return await entry.render(url, data);
-}
-
-for (const url of paths) {
-  const data = typeof entry.load === "function" ? await entry.load(url) : null;
-  const routeHead = typeof entry.head === "function" ? String(await entry.head(url, data)) : "";
-  const body = await renderFull(url, data);
-  const html =
-    '<!doctype html><html><head><meta charset="utf-8">' +
-    routeHead +
-    `<script>window.__OJ_DATA__=${serialize(data)}</script>` +
-    (CLIENT_CSS ? `<link rel="stylesheet" href="${CLIENT_CSS}">` : "") +
-    `<script type="module" src="${CLIENT_JS}"></script></head><body><div id="app">` +
-    body +
-    "</div></body></html>";
-  const file = url === "/" ? "index.html" : join(url.replace(/^\/+/, ""), "index.html");
-  const dest = join(root, file);
-  await mkdir(dirname(dest), { recursive: true });
-  await writeFile(dest, html);
-  console.error(`oj prerender: ${url} -> ${file}`);
 }
 "#;
 
@@ -4184,22 +4115,26 @@ pub(crate) async fn build_ssr_app(
     if let Some(paths) = prerender.filter(|p| !p.is_empty()) {
         let script = PRERENDER_JS
             .replace("__CLIENT_JS__", &js)
-            .replace("__CLIENT_CSS__", css.as_deref().unwrap_or(""));
+            .replace("__CLIENT_CSS__", css.as_deref().unwrap_or(""))
+            .replace("__PATHS__", &serde_json::to_string(&paths)?);
         let script_path = out_dir.join("_oj_prerender.mjs");
         fs::write(&script_path, script)?;
-        let out = std::process::Command::new("node")
-            .arg(&script_path)
-            .arg(serde_json::to_string(&paths)?)
-            .env("NODE_COMPILE_CACHE", oj_server::node_compile_cache(root))
-            .current_dir(out_dir)
-            .output()
-            .context("node not found for prerender")?;
+        // Runs on the embedded engine: the built server bundle imports its
+        // externals from node_modules via byonm, as it did under node.
+        let mut engine_config = oj_js::EngineConfig::new(root);
+        engine_config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
+        let engine = oj_js::JsEngine::spawn(engine_config)
+            .map_err(|e| anyhow::anyhow!("prerender engine: {e}"))?;
+        let result = engine
+            .call(
+                script_path.to_string_lossy().into_owned(),
+                "run",
+                Vec::new(),
+            )
+            .await;
         let _ = fs::remove_file(&script_path);
-        if !out.status.success() {
-            bail!("prerender failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        for line in String::from_utf8_lossy(&out.stderr).lines() {
-            println!("  {line}");
+        if let Err(e) = result {
+            bail!("prerender failed: {e}");
         }
     }
     println!("  run: node {}", out_dir.join("server.mjs").display());

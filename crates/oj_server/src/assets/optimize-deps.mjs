@@ -7,14 +7,32 @@ import { mkdirSync, rmSync, readFileSync, writeFileSync, renameSync, existsSync,
 import path from "node:path";
 import builtinModules from "node:module";
 
-const { root, outDir, entries, include = [], exclude = [], dedupe = [], alias = [], needsInterop: needsInteropList = [], autoDiscover = false, esbuildOptions: rawEsbuildOptions = {}, resolve: resolveSettings = {} } = JSON.parse(process.argv[2]);
+// Pre-bundle inputs, assigned by `optimize()` below. The optimizer engine is
+// short-lived (one isolate per run), so per-run state lives safely at module
+// scope; a direct import for unit tests runs no side effects.
+let root;
+let outDir;
+let entries;
+let include;
+let exclude;
+let dedupe;
+let alias;
+let autoDiscover;
+let resolveSettings;
 // optimizeDeps.needsInterop: Vite's needsInterop() returns true for these before
 // looking at the bundle's export shape, so the metadata must say so too.
-const NEEDS_INTEROP = new Set(needsInteropList);
+let NEEDS_INTEROP;
+let resolveConditions;
+let esbuildOptions;
+let DEDUPE;
+let req;
+let excludeSet;
+let DEDUPE_PKGS;
+let aliasEntries;
+let esbuild;
+
 // esbuild activates import/require/default itself and rejects them in `conditions`.
 const ESBUILD_IMPLICIT_CONDITIONS = new Set(["import", "require", "default"]);
-const resolveConditions = (resolveSettings.conditions ?? ["browser", "module", "import", "development"])
-  .filter((c) => !ESBUILD_IMPLICIT_CONDITIONS.has(c));
 
 const ESBUILD_OPTION_KEYS = new Set([
   "define", "target", "supported", "loader", "jsx", "jsxDev", "jsxSideEffects",
@@ -23,18 +41,6 @@ const ESBUILD_OPTION_KEYS = new Set([
   "minifyIdentifiers", "minifySyntax", "treeShaking", "platform", "external", "banner",
   "footer", "inject", "alias", "drop", "pure", "charset", "legalComments", "tsconfig",
   "tsconfigRaw", "ignoreAnnotations",
-]);
-const esbuildOptions = Object.fromEntries(
-  Object.entries(rawEsbuildOptions ?? {}).filter(([k]) => ESBUILD_OPTION_KEYS.has(k)),
-);
-
-const DEDUPE = new Set([
-  "react",
-  "react-dom",
-  "react-dom/client",
-  "react/jsx-runtime",
-  "react/jsx-dev-runtime",
-  ...dedupe,
 ]);
 
 function detectEntries() {
@@ -51,8 +57,6 @@ function detectEntries() {
   }
   return found;
 }
-
-const req = createRequire(path.join(root, "package.json"));
 
 // Vite's expandGlobIds (optimizer/resolve.ts): an include entry with a glob in
 // its subpath (`some-pkg/*`, `@scope/pkg/dist/**/*.js`) expands to the package
@@ -133,31 +137,13 @@ function expandGlobIds(id) {
   }
   return [pkgName, ...globFiles(pattern, pkgDir).map((m) => path.posix.join(pkgName, m))];
 }
-const includeIds = [];
-for (const inc of include) {
-  for (const id of isDynamicPattern(inc) ? expandGlobIds(inc) : [inc]) {
-    if (!includeIds.includes(id)) includeIds.push(id);
-  }
-}
-
-// optimizeDeps.entries are glob patterns relative to root (Vite scans them with
-// tinyglobby); a literal path is used as given.
-const entryList =
-  entries && entries.length
-    ? entries.flatMap((e) =>
-        isDynamicPattern(e)
-          ? globFiles(e, root)
-              .filter((f) => !f.split("/").includes("node_modules"))
-              .map((f) => path.join(root, f))
-          : [path.isAbsolute(e) ? e : path.join(root, e)],
-      )
-    : detectEntries();
+let includeIds;
+let entryList;
 
 // resolve.dedupe: a bare import of a deduped package resolves from the project
 // root wherever the importer sits (Vite resolve.ts: dedupe -> basedir = root),
 // so the pre-bundle holds the one copy the dev server also serves, not a copy
 // nested under some dependency.
-const DEDUPE_PKGS = new Set(dedupe.map(npmPackageName).filter(Boolean));
 const dedupeFromRoot = {
   name: "oj-dedupe-from-root",
   setup(build) {
@@ -194,11 +180,8 @@ function resolveEsbuild() {
     throw new Error("esbuild not found (neither directly nor via vite); dep pre-bundling skipped");
   }
 }
-const esbuild = await import(pathToFileURL(resolveEsbuild()).href).then((m) => m.default ?? m);
-
 const NODE_BUILTINS = new Set([...builtinModules.builtinModules, ...builtinModules.builtinModules.map((m) => "node:" + m)]);
 const isBare = (id) => id && !id.startsWith(".") && !id.startsWith("/") && !id.startsWith("\0") && !NODE_BUILTINS.has(id);
-const excludeSet = new Set(exclude);
 
 // Strip // and /* */ comments from JSONC, but only outside string literals. A
 // regex stripper is wrong here: a path pattern like "./src/modules/*" contains
@@ -301,11 +284,6 @@ function loadTsconfigAliases(dir) {
   return [];
 }
 
-const aliasEntries = [
-  ...loadTsconfigAliases(root),
-  ...(alias || []).map(([find, replacement]) => ({ exact: find, prefix: find + "/", target: replacement })),
-];
-
 function aliasResolve(id) {
   for (const a of aliasEntries) {
     if (a.exact && id === a.exact) return a.target;
@@ -374,6 +352,7 @@ async function scan() {
       jsx: "automatic",
       ...esbuildOptions,
       entryPoints: entryList,
+      absWorkingDir: root,
       bundle: true,
       write: false,
       logLevel: "silent",
@@ -385,6 +364,54 @@ async function scan() {
   } catch {}
   return found;
 }
+
+/// Runs the dep pre-bundle and returns `{ metadata }`. Called by oj through a
+/// short-lived in-process JS engine; the config arrives as a JSON argument and
+/// the metadata leaves as the return value (no argv, no stdout), so neither an
+/// oversized include list nor a dep that prints on require can break the
+/// channel.
+export async function optimize(input) {
+  ({ root, outDir, entries, include = [], exclude = [], dedupe = [], alias = [], autoDiscover = false, resolve: resolveSettings = {} } = input);
+  NEEDS_INTEROP = new Set(input.needsInterop ?? []);
+  resolveConditions = (resolveSettings.conditions ?? ["browser", "module", "import", "development"])
+    .filter((c) => !ESBUILD_IMPLICIT_CONDITIONS.has(c));
+  esbuildOptions = Object.fromEntries(
+    Object.entries(input.esbuildOptions ?? {}).filter(([k]) => ESBUILD_OPTION_KEYS.has(k)),
+  );
+  DEDUPE = new Set([
+    "react",
+    "react-dom",
+    "react-dom/client",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+    ...dedupe,
+  ]);
+  req = createRequire(path.join(root, "package.json"));
+  excludeSet = new Set(exclude);
+  includeIds = [];
+  for (const inc of include) {
+    for (const id of isDynamicPattern(inc) ? expandGlobIds(inc) : [inc]) {
+      if (!includeIds.includes(id)) includeIds.push(id);
+    }
+  }
+  // optimizeDeps.entries are glob patterns relative to root (Vite scans them with
+  // tinyglobby); a literal path is used as given.
+  entryList =
+    entries && entries.length
+      ? entries.flatMap((e) =>
+          isDynamicPattern(e)
+            ? globFiles(e, root)
+                .filter((f) => !f.split("/").includes("node_modules"))
+                .map((f) => path.join(root, f))
+            : [path.isAbsolute(e) ? e : path.join(root, e)],
+        )
+      : detectEntries();
+  DEDUPE_PKGS = new Set(dedupe.map(npmPackageName).filter(Boolean));
+  aliasEntries = [
+    ...loadTsconfigAliases(root),
+    ...(alias || []).map(([find, replacement]) => ({ exact: find, prefix: find + "/", target: replacement })),
+  ];
+  esbuild = await import(pathToFileURL(resolveEsbuild()).href).then((m) => m.default ?? m);
 
 // Only pre-bundle the explicit optimizeDeps.include list by default (a small,
 // author-vetted, well-behaved set). Full-graph auto-discovery via the esbuild
@@ -545,4 +572,5 @@ if (Object.keys(entryPoints).length) {
   }
 }
 
-process.stdout.write(JSON.stringify({ metadata }));
+return { metadata };
+}

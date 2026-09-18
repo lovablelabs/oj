@@ -124,8 +124,8 @@ try {
   fs.writeFileSync(counter, baseline.replace("useState<number>(0)", "useState<number>(8)"));
   await waitFor((h) => /ssr[^0-9]*8[^0-9]/.test(stripTags(h) + " "));
   fs.writeFileSync(counter, baseline);
-  const runnerScript = path.join(repo, "playground", ".oj-cache", "v1", "ssr", "runner.mjs");
-  if (!fs.existsSync(runnerScript)) throw new Error("module runner script was not spawned");
+  const bootstrap = path.join(repo, "playground", ".oj-cache", "v1", "ssr", "bootstrap.mjs");
+  if (!fs.existsSync(bootstrap)) throw new Error("module runner bootstrap was not written");
   console.log("ssr-dev: module runner re-eval ok (ssr: 41, then 8)");
 
   let pushed = false;

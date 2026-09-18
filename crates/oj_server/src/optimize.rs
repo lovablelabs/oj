@@ -280,6 +280,23 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<DepMap> {
     Some(map)
 }
 
+/// How long the dep pre-bundle may run before it is terminated. The old
+/// subprocess wait was UNBOUNDED — a wedged esbuild service could stall dep
+/// optimization forever — so the in-process engine gets a deadline: 120 s
+/// covers a cold pre-bundle of a large include list with room to spare, and
+/// `OJ_OPTIMIZE_TIMEOUT=<seconds>` raises it.
+fn optimizer_timeout() -> std::time::Duration {
+    optimizer_timeout_from(std::env::var("OJ_OPTIMIZE_TIMEOUT").ok().as_deref())
+}
+
+fn optimizer_timeout_from(raw: Option<&str>) -> std::time::Duration {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(120);
+    std::time::Duration::from_secs(secs)
+}
+
 async fn run_optimizer(
     root: &Path,
     dir: &Path,
@@ -288,8 +305,14 @@ async fn run_optimizer(
 ) -> Option<DepMap> {
     let cache = oj_cache::cache_root(&root);
     std::fs::create_dir_all(&cache).ok()?;
+    // Atomic rename: an engine could import the script while a concurrent oj
+    // process rewrites it.
     let script = cache.join("optimize-deps.mjs");
-    std::fs::write(&script, OPTIMIZE_JS).ok()?;
+    if std::fs::read(&script).ok().as_deref() != Some(OPTIMIZE_JS.as_bytes()) {
+        let tmp = cache.join(format!("optimize-deps-{}.tmp.mjs", std::process::id()));
+        std::fs::write(&tmp, OPTIMIZE_JS).ok()?;
+        std::fs::rename(&tmp, &script).ok()?;
+    }
     // react/jsx-dev-runtime is always prebundled (oj injects the dev JSX runtime);
     // merge it with any user optimizeDeps.include.
     let mut include = vec!["react/jsx-dev-runtime".to_string()];
@@ -309,9 +332,14 @@ async fn run_optimizer(
     // optimizeDeps.include list and serves the rest through wrap_cjs.
     let auto_discover = std::env::var("OJ_OPTIMIZE_SCAN")
         .is_ok_and(|v| !v.is_empty() && v != "0");
+    // The config travels as a JSON argument into the engine call (the old
+    // subprocess packed it into one argv string, an OS argv-length hazard on
+    // big include/alias lists) and the metadata comes back as the call's
+    // return value (the old stdout channel broke when a dep printed on
+    // require).
     let cfg = serde_json::json!({
-        "root": root,
-        "outDir": dir,
+        "root": root.to_string_lossy(),
+        "outDir": dir.to_string_lossy(),
         "entries": input.entries,
         "include": include,
         "exclude": input.exclude,
@@ -326,31 +354,28 @@ async fn run_optimizer(
             "extensions": input.extensions,
             "preserveSymlinks": input.preserve_symlinks,
         },
+    });
+    let timeout = optimizer_timeout();
+    let job_root = root.to_path_buf();
+    let job_script = script.clone();
+    // spawn_blocking: the engine job blocks its thread for the whole
+    // pre-bundle (see run_engine_job), which must not park a runtime worker.
+    let result = tokio::task::spawn_blocking(move || {
+        crate::plugins::run_engine_job(&job_root, &job_script, "optimize", cfg, timeout)
     })
-    .to_string();
-    let out = tokio::process::Command::new("node")
-        .arg(&script)
-        .arg(&cfg)
-        .env("NODE_COMPILE_CACHE", crate::node_compile_cache(root))
-        .current_dir(root)
-        .output()
-        .await
-        .ok()?;
-    if !out.status.success() {
-        eprintln!(
-            "oj: optimizer exited {:?}\n{}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return None;
-    }
-    let v: serde_json::Value = match serde_json::from_slice(&out.stdout) {
+    .await
+    .ok()?;
+    let v = match result {
         Ok(v) => v,
-        Err(e) => {
+        Err(oj_js::EngineError::Deadline) => {
             eprintln!(
-                "oj: optimizer stdout not JSON: {e}\nstderr:\n{}",
-                String::from_utf8_lossy(&out.stderr)
+                "oj: the dep pre-bundle did not finish within {}s and was stopped (raise OJ_OPTIMIZE_TIMEOUT for slower machines); deps are served unbundled",
+                timeout.as_secs()
             );
+            return None;
+        }
+        Err(e) => {
+            eprintln!("oj: optimizer failed: {e}");
             return None;
         }
     };
@@ -613,11 +638,75 @@ mod tests {
         assert_ne!(other["react"].url, map["react"].url);
     }
 
+    #[test]
+    fn optimizer_timeout_defaults_and_reads_env_seconds() {
+        assert_eq!(optimizer_timeout_from(None).as_secs(), 120);
+        assert_eq!(optimizer_timeout_from(Some("300")).as_secs(), 300);
+        assert_eq!(optimizer_timeout_from(Some(" 30 ")).as_secs(), 30);
+        // Garbage and zero fall back to the default rather than disabling the bound.
+        assert_eq!(optimizer_timeout_from(Some("junk")).as_secs(), 120);
+        assert_eq!(optimizer_timeout_from(Some("0")).as_secs(), 120);
+    }
+
     #[tokio::test]
     async fn a_disabled_optimizer_is_ready_immediately_and_empty() {
         let deps = OptimizedDeps::disabled();
         assert!(deps.ready().await.is_empty());
         assert_eq!(deps.dir(), Path::new(""));
+    }
+
+    // The pre-bundle through the REAL in-process engine and the REAL esbuild
+    // (whose JS API spawns its Go service as a child process — the seam this
+    // migration had to prove). Uses the start-app fixture's esbuild install;
+    // skips quietly where the fixture has no node_modules, like the JS unit
+    // tests do.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn optimizer_prebundles_through_the_engine_with_real_esbuild() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let esbuild = repo.join("e2e/fixtures/start-app/node_modules/esbuild");
+        if !esbuild.exists() {
+            eprintln!("skipping: fixture esbuild not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"fx"}"#).unwrap();
+        std::os::unix::fs::symlink(&esbuild, root.join("node_modules/esbuild")).unwrap();
+        let scoped = repo.join("e2e/fixtures/start-app/node_modules/@esbuild");
+        if scoped.exists() {
+            std::os::unix::fs::symlink(&scoped, root.join("node_modules/@esbuild")).unwrap();
+        }
+        let dep = root.join("node_modules/plaincjs");
+        std::fs::create_dir_all(&dep).unwrap();
+        std::fs::write(
+            dep.join("package.json"),
+            r#"{"name":"plaincjs","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(dep.join("index.js"), "exports.a = 1;\nexports.b = 2;\n").unwrap();
+
+        let out_dir = root.join(".oj-cache/deps");
+        let input = OptimizeInput {
+            include: vec!["plaincjs".into()],
+            // As the real callers fill them (empty lists would tell esbuild to
+            // resolve with NO mainFields at all).
+            conditions: vec!["browser".into(), "module".into(), "development".into()],
+            main_fields: oj_resolver::default_main_fields(),
+            extensions: vec![".mjs".into(), ".js".into(), ".ts".into(), ".json".into()],
+            ..Default::default()
+        };
+        let map = run_optimizer(root, &out_dir, "0123456789abcdef", &input)
+            .await
+            .expect("the engine-run pre-bundle must produce metadata");
+        let meta = map.get("plaincjs").expect("the included dep is bundled");
+        assert!(meta.needs_interop, "a plain-CJS bundle needs interop");
+        assert_eq!(meta.url, format!("/@oj-deps/{}?v=01234567", meta.file));
+        let bundle = std::fs::read_to_string(out_dir.join(&meta.file)).unwrap();
+        assert!(bundle.contains("export"), "an ESM pre-bundle was written");
+        // The manifest makes the next boot a warm cache.
+        let warm = load_manifest(&out_dir, "0123456789abcdef").expect("manifest written");
+        assert!(warm.contains_key("plaincjs"));
     }
 
     #[test]

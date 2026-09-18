@@ -12,6 +12,7 @@ jobs:
   unit:
     name: unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
@@ -35,6 +36,7 @@ jobs:
   e2e:
     name: e2e (${{ matrix.mode }})
     runs-on: ubuntu-latest
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -235,6 +237,7 @@ jobs:
   build:
     name: prod build smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2

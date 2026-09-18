@@ -4,6 +4,21 @@ import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
+// spawn env arrive as `env`; `node <script>` still works for tests.
+export async function run(env = null) {
+  if (env) for (const [k, v] of Object.entries(env)) process.env[k] = v;
+  // The node spawn ran with cwd = the app root; cwd-relative plugin filters
+  // (svgr's createFilter globs) depend on it.
+  if (env && env.OJ_APP_ROOT) {
+    try { process.chdir(env.OJ_APP_ROOT); } catch {}
+  }
+  return main();
+}
+
+async function main() {
+
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP = process.env.OJ_APP_ROOT ?? process.cwd();
 const SRC = join(APP, "src");
@@ -58,3 +73,6 @@ writeFileSync(join(HERE, "server-fn-resolver.mjs"), out);
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
 process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} server-fn resolver (${entries.length} function(s))\n`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

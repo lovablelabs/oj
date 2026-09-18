@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const APP = process.env.OJ_APP_ROOT ?? process.cwd();
-const CLIENT_DIR = fileURLToPath(new URL("./client", import.meta.url));
+// Spelled without `new URL(..., import.meta.url)`: the compile pipeline
+// hoists that form into an asset import, and ./client only exists in a
+// production dist (this file is copied there), never beside the dev copy.
+const CLIENT_DIR = join(dirname(fileURLToPath(import.meta.url)), "client");
 
 function stripJsonc(s) {
   let out = "", i = 0, inStr = false, q = "";

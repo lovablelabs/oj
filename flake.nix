@@ -21,6 +21,30 @@
           ./crates
         ];
       };
+      # The v8 crate's build script downloads a prebuilt static lib, which the
+      # nix sandbox forbids; fetch it as a fixed-output derivation and hand it
+      # over via RUSTY_V8_ARCHIVE (the same approach nixpkgs uses for deno).
+      # On a rusty_v8 bump: update the version and re-prefetch the four hashes
+      # (nix store prefetch-file <url>).
+      rustyV8Version = "150.4.0";
+      rustyV8Hashes = {
+        aarch64-darwin = "sha256-Wu/9jVoMG3msHXCvg9WxkJllX9nGRaeU3EPxAfd5g4w=";
+        x86_64-darwin = "sha256-p1AnH+xrIRRX7Qpc99LqsZJLJlYhqC2oarlZ1v8II+Q=";
+        aarch64-linux = "sha256-U54oOBWjlqV5bzKFi0LlF7hY66rqqtBdAykO6MhkpSc=";
+        x86_64-linux = "sha256-9IdiyhDR8fxgWkQcWuQw7Izh6egPFNePvELLh4wwtHY=";
+      };
+      rustyV8Target = {
+        aarch64-darwin = "aarch64-apple-darwin";
+        x86_64-darwin = "x86_64-apple-darwin";
+        aarch64-linux = "aarch64-unknown-linux-gnu";
+        x86_64-linux = "x86_64-unknown-linux-gnu";
+      };
+      rustyV8Archive = pkgs: pkgs.fetchurl {
+        # The "_simdutf" archive variant matches the v8 crate's feature set here
+        # (deno_core enables v8/simdutf; build.rs appends "_simdutf" to the name).
+        url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_simdutf_release_${rustyV8Target.${pkgs.stdenv.hostPlatform.system}}.a.gz";
+        hash = rustyV8Hashes.${pkgs.stdenv.hostPlatform.system};
+      };
       mkOj = pkgs:
         pkgs.rustPlatform.buildRustPackage {
           pname = "oj";
@@ -29,8 +53,11 @@
           # single source of truth, so no fixed-output hash to maintain.
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "oj" ];
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          # bindgenHook provides libclang for libsqlite3-sys (a deno_runtime
+          # transitive dep) whose build script runs bindgen.
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook ];
+          buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          RUSTY_V8_ARCHIVE = rustyV8Archive pkgs;
           # The build directory name varies between nix implementations (and is
           # randomized on some), and rustc embeds dependency source paths from
           # the vendored tree in panic locations — remap them so the output is

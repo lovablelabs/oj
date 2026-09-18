@@ -4,7 +4,8 @@
 import { createRequire, isBuiltin, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
-import fs, { writeFileSync, readFileSync, realpathSync, existsSync, unlinkSync, writeSync } from "node:fs";
+import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { format } from "node:util";
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -51,19 +52,79 @@ function mergeConfigLite(defaults, overrides, rootPath = "") {
   return merged;
 }
 
-const configPath = process.argv[2];
-const appRoot = process.argv[3];
-const command = process.argv[4] || "serve";
-const mode = process.argv[5] || "development";
-// "default": the mode is the command's default, not a CLI `--mode`, so a `mode`
-// named by the config file may win (Vite: inlineConfig.mode || config.mode).
-const modeExplicit = process.argv[6] !== "default";
-// Where the extracted JSON goes. A file, not stdout: evaluating the config runs
-// plugin code (a route generator, a banner) that may print to stdout, which
-// used to corrupt the JSON the caller parses.
-const resultPath = process.argv[7] || null;
+// Extraction inputs, assigned by `extract()` below. The extraction engine is
+// short-lived (one isolate per extraction), so per-run state lives safely at
+// module scope; a direct import for unit tests runs no side effects.
+let configPath;
+let appRoot;
+let command;
+let mode;
+// false when the mode is only the command's default, not a CLI `--mode`, so a
+// `mode` named by the config file may win (Vite: inlineConfig.mode || config.mode).
+let modeExplicit;
+// oj's cache dir for this app, excluded from the read recorder below.
+let ojCacheDir = null;
 
-process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
+// Everything extraction (Vite's own notices, oj's "not applied" warnings, the
+// config's plugin prints) would have written to stderr. The result is a
+// RETURNED value now, so a config that prints garbage can no longer corrupt
+// the result channel; the transcript travels back as `__stderr` for the Rust
+// side to print and replay on cache hits. Outside `extract()` (a direct unit
+// test import) the sink is the real stderr.
+let emitStderr = (text) => process.stderr.write(text);
+
+function installOutputCapture(chunks) {
+  const capture = (text) => {
+    chunks.push(text);
+  };
+  emitStderr = capture;
+  const asText = (chunk) => (typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+  const wrapWrite = (stream, sink) => {
+    try {
+      stream.write = (chunk, ...rest) => {
+        sink(asText(chunk));
+        const cb = rest.find((a) => typeof a === "function");
+        if (cb) cb();
+        return true;
+      };
+    } catch {}
+  };
+  // stderr joins the transcript; stdout is swallowed, as the old subprocess's
+  // captured-then-dropped stdout was. Deno's console writes past process.std*
+  // straight to the fds, so the console methods are wrapped too.
+  wrapWrite(process.stderr, capture);
+  wrapWrite(process.stdout, () => {});
+  try {
+    const fmt = (args) => {
+      try {
+        return format(...args);
+      } catch {
+        return args.map(String).join(" ");
+      }
+    };
+    for (const name of ["error", "warn"]) console[name] = (...args) => capture(fmt(args) + "\n");
+    for (const name of ["log", "info", "debug", "trace"]) console[name] = () => {};
+  } catch {}
+}
+
+// Extraction used to run in its own node child whose env writes and cwd died
+// with it. In-process, shadow `process.env` with a plain copy (config code
+// sees, and mutates, a private environment seeded from the real one — Vite's
+// NODE_ENV dance and loadEnv writes never leak into oj or a parallel
+// extraction) and pin `process.cwd()` to the app root, where the old child
+// ran. fs calls on relative paths still resolve against oj's real cwd.
+function isolateProcessForExtraction() {
+  try {
+    Object.defineProperty(process, "env", {
+      value: { ...process.env },
+      configurable: true,
+      writable: true,
+    });
+  } catch {}
+  try {
+    process.cwd = () => appRoot;
+  } catch {}
+}
 
 // Vite's defaultNodeEnv follows the COMMAND, never the mode (node.js
 // resolveConfig: serve resolves with defaultNodeEnv "development", build with
@@ -76,12 +137,11 @@ process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
 // handling stays live — while a config module that ASSIGNED
 // process.env.NODE_ENV at module scope keeps its value through resolveConfig
 // (Vite snapshots isNodeEnvSet before the load); resolveConfig then re-sets
-// the identical default itself from the defaultNodeEnv oj passes. (Twin
-// copies: one in vite-extract.mjs, one in plugin-host.mjs — keep them
-// byte-identical.)
-const defaultNodeEnv = command === "build" ? "production" : "development";
-const nodeEnvWasSet = !!process.env.NODE_ENV;
-if (!nodeEnvWasSet) process.env.NODE_ENV = defaultNodeEnv;
+// the identical default itself from the defaultNodeEnv oj passes. (The twin
+// logic in plugin-host.mjs still runs at module scope in its own node
+// process; here it runs against the isolated process.env above.)
+let defaultNodeEnv;
+let nodeEnvWasSet;
 const unsetOjNodeEnvForResolve = () => {
   if (!nodeEnvWasSet && process.env.NODE_ENV === defaultNodeEnv) delete process.env.NODE_ENV;
 };
@@ -110,10 +170,12 @@ const unsetOjNodeEnvForResolve = () => {
 const observedConfigReads = new Set();
 let observedReadsTruncated = false;
 const OBSERVED_READS_MAX = Number(process.env.OJ_OBSERVED_READS_MAX) || 512;
+let recorderInstalled = false;
 function installConfigReadRecorder() {
+  if (recorderInstalled) return;
+  recorderInstalled = true;
   const CONFIG_FILE = /\.(?:json|jsonc|toml)$/i;
   const ENV_FILE = /(?:^|[\\/])\.env(?:\.[^\\/]*)?$/;
-  const ojCacheDir = process.env.OJ_CACHE_DIR || null;
   const record = (p) => {
     try {
       const s = typeof p === "string" ? p : p instanceof URL ? fileURLToPath(p) : null;
@@ -142,20 +204,32 @@ function installConfigReadRecorder() {
   };
   // The core fs singleton: patched before any plugin code loads, so CJS
   // require("fs") consumers (wrangler) and ESM default-import consumers see
-  // the wrappers; syncBuiltinESMExports refreshes the node:fs facade's named
-  // bindings too, covering `import { readFileSync } from "node:fs"`.
+  // the wrappers. Under the embedded engine syncBuiltinESMExports is a no-op
+  // (Deno's node:fs named bindings are the polyfill's own, not the default
+  // object's properties), so `import { readFileSync } from "node:fs"`
+  // consumers are NOT observed here — recordEnvFilesForMode below stamps the
+  // env files Vite loads that way deterministically instead.
   for (const name of ["readFileSync", "readFile", "existsSync", "statSync"]) wrap(fs, name);
   wrap(fs.promises, "readFile");
   wrap(fs.promises, "stat");
   syncBuiltinESMExports();
 }
 
-const appRequire = createRequire(pathToFileURL(appRoot + "/package.json").href);
+// The env files Vite's resolveConfig loads for the resolved mode and envDir
+// (getEnvFilesForMode -> loadEnv), stamped whether present or absent: their
+// values change the extracted verdict, and Vite reads them through named fs
+// imports the recorder cannot observe under the embedded engine. A fixed set
+// of four known paths, so they join the stamp directly, outside the
+// recorder's overflow accounting.
+function recordEnvFilesForMode(resolvedMode, envDir) {
+  const dir = resolve(appRoot, envDir || ".");
+  for (const name of [".env", ".env.local", `.env.${resolvedMode}`, `.env.${resolvedMode}.local`]) {
+    observedConfigReads.add(resolve(dir, name));
+  }
+}
+
+let appRequire;
 let directDeps = [];
-try {
-  const pkg = JSON.parse(readFileSync(appRoot + "/package.json", "utf8"));
-  directDeps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
-} catch {}
 function resolvePkg(spec) {
   try {
     return appRequire.resolve(spec);
@@ -641,7 +715,7 @@ function stringMap(obj) {
   return Object.keys(out).length ? out : null;
 }
 
-const warn = (msg) => process.stderr.write(`oj: vite.config: ${msg}\n`);
+const warn = (msg) => emitStderr(`oj: vite.config: ${msg}\n`);
 
 function extractProxy(proxy) {
   if (!proxy || typeof proxy !== "object") return null;
@@ -1141,34 +1215,38 @@ function warnUnsupported(c) {
   }
 }
 
-// Whether this module is the entry, compared on the real path rather than the
-// spelling. Node canonicalizes the entry module, so import.meta.url is always
-// symlink-free while argv[1] is whatever the caller typed -- on macOS a path
-// under /var reaches us as /private/var, and the two never match. Getting this
-// wrong is silent: the body below is skipped, nothing is written, and the
-// process exits 0 as though the config simply had nothing in it.
-const isMainRun = (() => {
-  const entry = process.argv[1];
-  if (!entry) return false;
-  const self = fileURLToPath(import.meta.url);
-  const real = (p) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return resolve(p);
-    }
-  };
-  return real(self) === real(entry);
-})();
 export { detectSsrRunnerBacked, extractAlias, extractOptimizeDeps, extractProxy, extractResolve, extractSsr, mergeConfigLite, warnUnsupported };
 
-const emitResult = (json) => {
-  if (resultPath) writeFileSync(resultPath, json);
-  // Synchronous even on a pipe: process.exit right after must not truncate it.
-  else writeSync(1, json);
-};
-
-if (isMainRun) {
+/// Evaluates the app's vite.config and returns the extracted values. Called by
+/// oj through a short-lived in-process JS engine (one isolate per extraction),
+/// so a config hook that starts a watcher or an interval dies with the engine,
+/// as it used to die with the one-shot subprocess. The RETURN value is the
+/// result channel: `__ok: false` marks a config that failed to evaluate (a
+/// broken config is not an empty config), `__deps`/`__depsTruncated` feed the
+/// extraction cache, and `__stderr` carries everything the run would have
+/// printed to stderr.
+export async function extract(input) {
+  configPath = String(input.vite);
+  appRoot = String(input.root);
+  command = input.command || "serve";
+  mode = input.mode || "development";
+  modeExplicit = input.modeKind !== "default";
+  ojCacheDir = typeof input.cacheDir === "string" && input.cacheDir ? input.cacheDir : null;
+  const chunks = [];
+  installOutputCapture(chunks);
+  isolateProcessForExtraction();
+  process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
+  defaultNodeEnv = command === "build" ? "production" : "development";
+  nodeEnvWasSet = !!process.env.NODE_ENV;
+  if (!nodeEnvWasSet) process.env.NODE_ENV = defaultNodeEnv;
+  appRequire = createRequire(pathToFileURL(appRoot + "/package.json").href);
+  directDeps = [];
+  try {
+    const pkg = JSON.parse(readFileSync(appRoot + "/package.json", "utf8"));
+    directDeps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
+  } catch {}
+  observedConfigReads.clear();
+  observedReadsTruncated = false;
 try {
   installConfigReadRecorder();
   const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
@@ -1218,9 +1296,13 @@ try {
       if (Object.keys(resolveOut).length === 0) resolveOut = null;
     }
   }
-  emitResult(
-    JSON.stringify({
+  recordEnvFilesForMode(
+    typeof c.mode === "string" ? c.mode : mode,
+    typeof c.envDir === "string" ? c.envDir : null,
+  );
+  return {
       __ok: true,
+      __stderr: chunks.join(""),
       // Config imports plus the config-shaped files (.json/.jsonc/.toml,
       // .env*) the evaluation read (or probed): both invalidate the
       // extraction cache when they change.
@@ -1269,15 +1351,11 @@ try {
       preview: extractPreview(c.preview),
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
-    }),
-  );
+  };
 } catch (e) {
-  process.stderr.write(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);
-  emitResult("{}");
+  emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);
+  // A config that failed to evaluate is not a config with no values: __ok
+  // stays false and the caller refuses to serve defaults under it.
+  return { __ok: false, __stderr: chunks.join("") };
 }
-// The result is emitted; nothing may keep this one-shot subprocess alive. A
-// config/configEnvironment hook is real plugin code and may have started a
-// watcher, an interval or a server (the TanStack router generator does), and
-// the Rust caller would wait on the process, not the file.
-process.exit(0);
 }

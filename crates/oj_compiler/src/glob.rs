@@ -625,8 +625,13 @@ fn hidden_by_default(rel: &str, pattern: &str) -> bool {
         .filter(|seg| seg.starts_with('.') && *seg != "." && *seg != "..")
         .collect();
     rel.split('/').any(|seg| {
+        // `.`/`..` are path steps, not dotfiles: a `../sibling/*` glob from a
+        // nested importer must match (Vite's tinyglobby does).
         seg == "node_modules"
-            || (seg.starts_with('.') && !pattern_dots.iter().any(|p| glob::Pattern::new(p).is_ok_and(|g| g.matches(seg))))
+            || (seg.starts_with('.')
+                && seg != "."
+                && seg != ".."
+                && !pattern_dots.iter().any(|p| glob::Pattern::new(p).is_ok_and(|g| g.matches(seg))))
     })
 }
 
@@ -679,6 +684,22 @@ mod tests {
         std::fs::write(d.join("img/b.png"), b"b").unwrap();
         std::fs::write(d.join("w.ts"), "self.onmessage = () => {};").unwrap();
         d
+    }
+
+    // A `../sibling/*` glob from a nested importer must match: the `..` path
+    // step is not a dotfile (the hidden-by-default rule once swallowed it and
+    // every parent-relative glob expanded to an empty map).
+    #[test]
+    fn parent_relative_globs_match() {
+        let d = tmp("parent-rel");
+        std::fs::create_dir_all(d.join("routes")).unwrap();
+        let out = super::expand_source(
+            "const m = import.meta.glob(\"../img/*.png\", { eager: true });",
+            &d.join("routes/index.tsx"),
+        );
+        assert!(out.contains("../img/a.png"), "{out}");
+        assert!(out.contains("../img/b.png"), "{out}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

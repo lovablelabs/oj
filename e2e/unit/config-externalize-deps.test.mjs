@@ -82,9 +82,21 @@ function runExtract(fx) {
   try {
     const script = path.join(runDir, "vite-extract.mjs");
     fs.copyFileSync(asset("vite-extract.mjs"), script);
+    // The exported extract(), as oj's in-process engine calls it; the wrapper
+    // prints the result on stdout and the __stderr transcript on stderr.
+    const wrapper = `
+import { writeSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [script, vite, root] = process.argv.slice(1);
+const { extract } = await import(pathToFileURL(script).href);
+const { __stderr = "", ...rest } = await extract({ vite, root, command: "serve", mode: "development", modeKind: "default" });
+if (__stderr) writeSync(2, __stderr);
+writeSync(1, JSON.stringify(rest));
+process.exit(0);
+`;
     const r = spawnSync(
       process.execPath,
-      [script, fx.configPath, fx.appRoot, "serve", "development", "default"],
+      ["--input-type=module", "-e", wrapper, script, fx.configPath, fx.appRoot],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 },
     );
     assert.equal(r.status, 0, `extractor exited ${r.status}; stderr:\n${r.stderr}`);

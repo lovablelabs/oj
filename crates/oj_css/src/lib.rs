@@ -1695,7 +1695,7 @@ mod tests {
 
     #[test]
     fn css_modules_scoped_name_matches_ssr_loader() {
-        // The SSR loader (oj_server assets/start/loader.mjs cssModuleExports)
+        // The retired node SSR loader (its JS cssModuleExports mirror)
         // recomputes these names in JS so server rendering agrees with the
         // class map the client is served; ssr-loader-css-modules.test.mjs pins
         // the same literals. If this assertion changes (lightningcss upgrade,

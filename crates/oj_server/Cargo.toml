@@ -14,6 +14,7 @@ oj_cache.workspace = true
 oj_css.workspace = true
 oj_env.workspace = true
 oj_config.workspace = true
+oj_js.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 tokio.workspace = true

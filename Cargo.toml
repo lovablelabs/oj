@@ -10,24 +10,39 @@ members = [
     "crates/oj_cache",
     "crates/oj_server",
     "crates/oj",
+    "crates/oj_js",
     "crates/oj_wasm",
+    "crates/oj_deno_napi",
+    "crates/oj_deno_runtime",
 ]
 
 [workspace.package]
-version = "0.1.26"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/lovablelabs/oj"
 
 [workspace.dependencies]
-oj_compiler = { version = "0.1.26", path = "crates/oj_compiler" }
-oj_resolver = { version = "0.1.26", path = "crates/oj_resolver" }
-oj_graph = { version = "0.1.26", path = "crates/oj_graph" }
-oj_cache = { version = "0.1.26", path = "crates/oj_cache" }
-oj_css = { version = "0.1.26", path = "crates/oj_css" }
-oj_env = { version = "0.1.26", path = "crates/oj_env" }
-oj_config = { version = "0.1.26", path = "crates/oj_config" }
-oj_server = { version = "0.1.26", path = "crates/oj_server" }
+oj_compiler = { version = "0.2.0", path = "crates/oj_compiler" }
+oj_resolver = { version = "0.2.0", path = "crates/oj_resolver" }
+oj_graph = { version = "0.2.0", path = "crates/oj_graph" }
+oj_cache = { version = "0.2.0", path = "crates/oj_cache" }
+oj_css = { version = "0.2.0", path = "crates/oj_css" }
+oj_env = { version = "0.2.0", path = "crates/oj_env" }
+oj_config = { version = "0.2.0", path = "crates/oj_config" }
+oj_server = { version = "0.2.0", path = "crates/oj_server" }
+oj_js = { version = "0.2.0", path = "crates/oj_js" }
+
+# oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
+# to crates.io under these names), carrying oj's napi finalizer-registry patch:
+# the upstream Vec makes reference deregistration a linear scan + shift, which
+# goes quadratic under GC when an addon (rolldown bundling a large app) holds
+# hundreds of thousands of live references — it dominated one-shot rebundle
+# children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
+# dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
+# published oj resolves them by version from crates.io.
+oj_deno_napi = { package = "oj_deno_napi", version = "0.190.0", path = "crates/oj_deno_napi" }
+oj_deno_runtime = { package = "oj_deno_runtime", version = "0.267.0", path = "crates/oj_deno_runtime" }
 
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"
@@ -60,6 +75,131 @@ clap = { version = "4.6.6", features = ["derive"] }
 proptest = "1.9.0"
 tempfile = "3.24.0"
 
+# `panic = "abort"` is deliberately NOT set: the engine's `__oj_rpc` bridge
+# catches handler panics at the V8 callback boundary (oj_js/src/bridge.rs)
+# so a panicking plugin RPC fails one hook instead of the process, and dev
+# sessions are long-lived servers — an abort would take the whole dev server
+# down with whatever panicked. Unwind tables cost ~9 MB of binary size.
 [profile.release]
-lto = "thin"
+opt-level = "z"
+lto = "fat"
 codegen-units = 1
+
+# Size-optimize the long tail, but keep the dev-loop hot paths at full speed.
+[profile.release.package]
+oj = { opt-level = 3 }
+oj_compiler = { opt-level = 3 }
+oj_css = { opt-level = 3 }
+oj_resolver = { opt-level = 3 }
+oj_graph = { opt-level = 3 }
+oj_server = { opt-level = 3 }
+oj_cache = { opt-level = 3 }
+oj_env = { opt-level = 3 }
+oj_config = { opt-level = 3 }
+oj_js = { opt-level = 3 }
+oxc = { opt-level = 3 }
+oxc_allocator = { opt-level = 3 }
+oxc_ast = { opt-level = 3 }
+oxc_ast_visit = { opt-level = 3 }
+oxc_codegen = { opt-level = 3 }
+oxc_compat = { opt-level = 3 }
+oxc_data_structures = { opt-level = 3 }
+oxc_diagnostics = { opt-level = 3 }
+oxc_ecmascript = { opt-level = 3 }
+oxc_estree = { opt-level = 3 }
+oxc_index = { opt-level = 3 }
+oxc_isolated_declarations = { opt-level = 3 }
+oxc_mangler = { opt-level = 3 }
+oxc_minifier = { opt-level = 3 }
+oxc_parser = { opt-level = 3 }
+oxc_regular_expression = { opt-level = 3 }
+oxc_resolver = { opt-level = 3 }
+oxc_semantic = { opt-level = 3 }
+oxc_sourcemap = { opt-level = 3 }
+oxc_span = { opt-level = 3 }
+oxc_str = { opt-level = 3 }
+oxc_syntax = { opt-level = 3 }
+oxc_transformer = { opt-level = 3 }
+oxc_transformer_plugins = { opt-level = 3 }
+oxc_traverse = { opt-level = 3 }
+rolldown = { opt-level = 3 }
+rolldown_common = { opt-level = 3 }
+rolldown_dev_common = { opt-level = 3 }
+rolldown_devtools = { opt-level = 3 }
+rolldown_devtools_action = { opt-level = 3 }
+rolldown_ecmascript = { opt-level = 3 }
+rolldown_ecmascript_utils = { opt-level = 3 }
+rolldown_error = { opt-level = 3 }
+rolldown_fs = { opt-level = 3 }
+rolldown_plugin = { opt-level = 3 }
+rolldown_plugin_asset_module = { opt-level = 3 }
+rolldown_plugin_chunk_import_map = { opt-level = 3 }
+rolldown_plugin_copy_module = { opt-level = 3 }
+rolldown_plugin_data_url = { opt-level = 3 }
+rolldown_plugin_hmr = { opt-level = 3 }
+rolldown_plugin_lazy_compilation = { opt-level = 3 }
+rolldown_plugin_oxc_runtime = { opt-level = 3 }
+rolldown_plugin_utils = { opt-level = 3 }
+rolldown_resolver = { opt-level = 3 }
+rolldown_sourcemap = { opt-level = 3 }
+rolldown_std_utils = { opt-level = 3 }
+rolldown_tracing = { opt-level = 3 }
+rolldown_utils = { opt-level = 3 }
+lightningcss = { opt-level = 3 }
+grass = { opt-level = 3 }
+grass_compiler = { opt-level = 3 }
+tokio = { opt-level = 3 }
+hyper = { opt-level = 3 }
+deno_core = { opt-level = 3 }
+v8 = { opt-level = 3 }
+# The engine's Node-compat hot paths, per deno's own release profile (which
+# opts deno_napi/deno_node/deno_runtime/deno_web/serde_v8 back to 3), plus
+# deno_fs/deno_io: the one-shot rebundle child funnels every napi call, sync
+# fs op and chunk write through these.
+oj_deno_napi = { opt-level = 3 }
+deno_node = { opt-level = 3 }
+oj_deno_runtime = { opt-level = 3 }
+# Vanilla deno_runtime stays in the graph as deno_snapshots' build-dependency.
+deno_runtime = { opt-level = 3 }
+deno_web = { opt-level = 3 }
+deno_fs = { opt-level = 3 }
+deno_io = { opt-level = 3 }
+deno_unsync = { opt-level = 3 }
+serde_v8 = { opt-level = 3 }
+serde = { opt-level = 3 }
+serde_core = { opt-level = 3 }
+serde_json = { opt-level = 3 }
+itoa = { opt-level = 3 }
+ryu = { opt-level = 3 }
+memchr = { opt-level = 3 }
+simdutf8 = { opt-level = 3 }
+blake3 = { opt-level = 3 }
+notify = { opt-level = 3 }
+notify-types = { opt-level = 3 }
+axum = { opt-level = 3 }
+axum-core = { opt-level = 3 }
+h2 = { opt-level = 3 }
+http = { opt-level = 3 }
+http-body = { opt-level = 3 }
+http-body-util = { opt-level = 3 }
+httparse = { opt-level = 3 }
+bytes = { opt-level = 3 }
+tokio-util = { opt-level = 3 }
+tokio-stream = { opt-level = 3 }
+tokio-tungstenite = { opt-level = 3 }
+tungstenite = { opt-level = 3 }
+tower = { opt-level = 3 }
+tower-http = { opt-level = 3 }
+tower-service = { opt-level = 3 }
+futures = { opt-level = 3 }
+futures-core = { opt-level = 3 }
+futures-util = { opt-level = 3 }
+hyper-util = { opt-level = 3 }
+string_wizard = { opt-level = 3 }
+smallvec = { opt-level = 3 }
+hashbrown = { opt-level = 3 }
+indexmap = { opt-level = 3 }
+rustc-hash = { opt-level = 3 }
+dashmap = { opt-level = 3 }
+parking_lot = { opt-level = 3 }
+mio = { opt-level = 3 }

@@ -31,8 +31,9 @@ plus one manifest specifier:
 - `#tanstack-start-server-fn-resolver` becomes the server-function dispatch map.
 - `tanstack-start-manifest:v` becomes the client asset manifest.
 
-In dev these are resolved at runtime by `loader.mjs`. In prod they are resolved
-at build time by rolldown's `resolve.alias` map. This seam is the reason the prod
+In dev these are resolved by the in-process Start module host
+(`crates/oj/src/start_host.rs`, the embedded JS engine's `ModuleHost`). In prod
+they are resolved at build time by rolldown's `resolve.alias` map. This seam is the reason the prod
 server is fully bundled: `createStartHandler` (inside `@tanstack/start-server-core`)
 runs `import("#tanstack-router-entry")`, and that import only resolves if the
 framework package is bundled so rolldown can apply the alias. See "Known limits".
@@ -56,21 +57,27 @@ Shared build helpers:
 
 Dev:
 
-- `loader.mjs` is a Node ESM loader hook (in-thread, synchronous — installed
-  via `module.registerHooks`). It resolves the framework aliases, the app's
-  `#`-imports and tsconfig `paths`, asset conventions, `virtual:` ids, `.mdx`
-  and `.svg`, and provides CJS-to-ESM interop; it compiles TS/JSX with
-  rolldown's `transformSync` on the fly. The async Vite plugin container runs
-  in a worker (`container-host.mjs`) behind an Atomics-based sync bridge
-  (`container-bridge.mjs`), so the hooks stay synchronous and container
-  bootstrap overlaps module loading.
-- `runner.mjs` is the persistent SSR process. It imports `loader.mjs` and
-  registers its hooks, imports the server entry, and answers render requests
-  over stdio. A reload message re-imports the entry in place (warm reload).
+- The SSR runner is IN-PROCESS: an embedded JS engine (`oj_js`, deno_core with
+  Node compat over the app's node_modules) whose module loading is
+  `crates/oj/src/start_host.rs`. The host resolves the framework aliases, the
+  app's `#`-imports and tsconfig `paths` (via the Vite-style Rust resolver),
+  asset conventions, `virtual:` ids, `.mdx` and `.svg`, and serves modules
+  through the dev server's SSR transform pipeline (plugin transforms + oxc
+  compile with `define` / `import.meta.env` / `import.meta.glob`); CommonJS
+  interop and node_modules loading are the engine's byonm semantics. The JS
+  half is `crates/oj/src/assets/start-bootstrap.mjs` (the `fetch(Request)`
+  protocol only). The user's Vite plugins run in the ssr-environment plugin
+  host, reached over its ordinary stdio RPC (the old FIFO bridge is gone).
 - `generate.mjs` runs `@tanstack/router-generator` to write `routeTree.gen.ts`.
 - `gen-resolver.mjs` scans `src` for `createServerFn` and emits the server-fn
   resolver (`getServerFnById`) with static imports.
 - `bundle-client.mjs` bundles the browser client entry with rolldown.
+- The three above export `run(env)` and execute on an embedded engine
+  (`ScriptEngine`), not on spawned `node`; rolldown's napi binding loads
+  against the oj binary's exported Node-API symbols. In dev each run gets a
+  one-shot `oj start-script` child process (env pairs on stdin), because
+  rolldown retains native memory per `build()` that only process exit
+  releases; `oj build` hosts the engine in its own (exiting) process.
 - `live-reload.js` is the dev client that snapshots and restores form state
   across a warm reload.
 
@@ -93,18 +100,20 @@ Framework entries (synthesized, what the TanStack Vite plugin would inject):
 ## Dev flow (`start_dev`)
 
 1. Write the assets into `.oj-cache/start/`.
-2. Generate the route tree and the server-fn resolver.
-3. Bundle the browser client entry.
+2. Generate the route tree and the server-fn resolver (one-shot children).
+3. Bundle the browser client entry (another one-shot child).
 4. Build on top of the normal oj dev server for module and asset serving.
-5. Spawn the warm SSR runner.
+5. Boot the in-process SSR engine (`StartEngine`) on the built app's
+   `SsrBridge`, plus a loopback shim for the plugin middleware's
+   `x-oj-forward-to` pipe.
 6. Watch `src/`. On a change: regenerate the route tree only when the route
    file set changes, regenerate the resolver only when a server-fn file
-   changes, then rebuild the client and warm-reload the runner concurrently,
+   changes, then rebuild the client and warm-reload the engine concurrently,
    and signal the page to reload.
 
-Document requests are forwarded to the runner's `fetch(Request)`. The runner
-builds the request URL from the Host header so the server-function CSRF
-same-origin check passes. Module and asset requests fall through to the dev
+Document requests are engine calls into the bootstrap's `handle`, which awaits
+the entry's `fetch(Request)`. The request URL is built from the Host header so
+the server-function CSRF same-origin check passes. Module and asset requests fall through to the dev
 pipeline. `/@oj-start/` owns the live-reload WebSocket, the client entry, and
 `/@oj-start/fs/<abspath>` (asset files served from the workspace root, so
 relative `url()` refs inside CSS resolve).
@@ -128,49 +137,21 @@ The middleware handles, in order:
    by the CSS host before serving; everything else is streamed as-is with a
    `Content-Type` from its extension.
 4. `/_serverFn/...`: a server-function RPC. The whole request (method, headers,
-   body, capped at 4MB) is forwarded to the runner, which dispatches it through
-   the framework's `handleServerAction`.
+   body) reaches the engine, which dispatches it through the framework's
+   `handleServerAction`; with a plugin middleware present it goes through the
+   middleware first (`x-oj-forward-to` names the engine's loopback shim).
 5. Otherwise `classify` decides: a GET for an extensionless path or `index.html`
-   (and not a proxied prefix) is a `Document`, forwarded to the runner as a GET
+   (and not a proxied prefix) is a `Document`, handed to the engine as a GET
    with `document_url` applied (`.../index.html` becomes `.../`); everything else
    is `Pass`, handed to the base dev server.
 
-`forward` is the one path to the runner. Because there is a single runner
-process with one stdin/stdout, calls are serialized behind an async mutex and
-run in a detached task, so a client that disconnects mid-request still drains
-the runner's reply line and the protocol stays in frame. On the way back it
-rebuilds the axum response: the status, the headers (minus the framing ones,
-`content-length` / `content-encoding` / `transfer-encoding`, since the body is
-re-sent verbatim), and the body, with the live-reload client injected before
-`</body>` for HTML documents.
-
-### The runner protocol (`runner.mjs`)
-
-`start_dev` and the runner talk over the runner's stdio in newline-delimited
-JSON. One JSON object per line goes in on stdin; one JSON object per line comes
-back on stdout, so `oj` can pair replies by reading a line per request.
-
-There are two request shapes:
-
-- A render request `{ id, method, url, headers, body }`. The runner builds a
-  `Request` (origin from `headers.host`, body only for non-GET/HEAD), awaits the
-  entry's `fetch`, and replies `{ id, status, headers, body }`. A handler that
-  throws is framed as `{ id, status: 500, body: <error text> }` rather than
-  crashing the process.
-- A reload command `{ cmd: "reload" }`. The runner bumps the version, re-imports
-  the entry (see below), and replies `{ reloaded: true }`, or
-  `{ reloaded: false, error }` if the re-import failed.
-
-stdout is the protocol channel, so app code writing to it (via `console.log` or
-`process.stdout.write`) would interleave with and corrupt the frames. The runner
-captures the real stdout writer for protocol frames on startup, then redirects
-`process.stdout.write` to stderr. App logs and the `oj start runner: ready`
-banner therefore surface on stderr, keeping stdout pure JSON.
-
-The entry and loader paths default to the assets beside `runner.mjs` but are
-overridable with `OJ_RUNNER_ENTRY` and `OJ_RUNNER_LOADER`, which the protocol
-test uses to drive the framing against stubs without the loader's rolldown
-bootstrap.
+`forward` is the one path to the engine: an `engine.handle(request)` call into
+the bootstrap module. Requests run concurrently on the one isolate (the
+engine's call scheduler interleaves pending promises with the event loop). The
+transport is buffered — headers, body bytes and set-cookie lists cross the
+JSON boundary whole; the bootstrap reads a streamed `Response` to completion,
+so deferred TanStack content is present — and the live-reload client is
+injected after the final chunk for HTML documents.
 
 ### The watcher
 
@@ -193,20 +174,21 @@ Each pass:
      compared against `prev_routes`; a content edit leaves the tree alone.
    - the server-fn resolver only when a `.ts`/`.tsx` file that contains
      `createServerFn` was added, removed, or edited (or when the routes changed).
-4. Rebuild and reload, concurrently: the client entry re-bundles on a blocking
-   task while `reload_runner` warm-reloads the SSR process (`{cmd:"reload"}` over
-   its stdin, awaiting the ack). Both are awaited together with `tokio::join`.
+4. Rebuild and reload: the client entry re-bundles on a blocking task; the
+   engine reload afterwards drops changed modules (and their transitive
+   importers) from the version graph and force-bumps the entry.
 5. Signal the page. A broadcast on `reload_tx` reaches every `/@oj-start/hmr`
    WebSocket, which tells the live-reload client to snapshot state and reload.
 
 ### Warm reload
 
-On a rebuild the runner bumps a version counter and re-imports the server entry
-with a `?ojv=<v>` query. The loader appends that query to app files and to
-`@tanstack/*` ESM modules so they re-evaluate (resetting framework module-scope
-caches such as the route tree), while React and other node_modules stay
-unversioned and warm. This keeps a single React instance and re-imports at
-about 40ms instead of respawning the process.
+Every host-served module id carries a version (`?v=<n>`), tracked with its
+mtime and importers in a graph (the same scheme as the plain SSR runner's
+host). A reload bumps the changed ids and everything that transitively imports
+them, plus the entry, so the next request re-links exactly the invalidated
+chain; React and other node_modules stay external, unversioned and warm.
+Orphaned instances leak in the isolate, so after enough of them the engine is
+respawned behind a write lock (a cheap snapshot boot).
 
 ## Prod flow (`start_build` and `build.mjs`)
 
@@ -335,8 +317,8 @@ everywhere so a browser call can find its handler.
 
 Three transform sites share that id:
 
-- Server (SSR). The dev loader (`rewriteServerFns`) and the prod build's server
-  pass rewrite `const NAME = createServerFn(...).handler(FN)` to pass
+- Server (SSR). The dev module host (`rewrite_server_fns` in
+  `start_host.rs`) and the prod build's server pass rewrite `const NAME = createServerFn(...).handler(FN)` to pass
   `createServerRpc(meta, (opts) => NAME.__executeServer(opts))` as the first
   `.handler` argument and to export `NAME_createServerFn_handler`. The handler
   runs in process during SSR, and the export is importable by the resolver.
@@ -353,8 +335,8 @@ Three transform sites share that id:
 
 An RPC hits `/_serverFn/<id>`; the framework's `handleServerAction` looks the id
 up through the resolver, runs the handler, and returns the result. In dev the
-request loop forwards `/_serverFn/` requests whole (method, headers, body) to the
-runner; in prod the server bundle handles them directly. Both build the request
+request loop hands `/_serverFn/` requests whole (method, headers, body) to the
+engine; in prod the server bundle handles them directly. Both build the request
 origin from the Host header so the framework's same-origin CSRF check passes.
 
 ## Testing
@@ -371,6 +353,9 @@ Rust unit tests live beside the code they exercise:
   overrides an explicit oj setting.
 - `oj/src/start_dev.rs`: `document_url`, `percent_decode`, `asset_mime`,
   `needs_css_compile`, `workspace_root`, `app_uses_tailwind`, and `classify`.
+- `oj/src/start_host.rs`: the server-fn rewrite, asset/style classification,
+  intent-query splitting, noExternal matching, CJS detection, the framework
+  alias table, and the base64url id encoding.
 
 JS unit tests are `node --test e2e/unit/*.test.mjs` (rolldown for the harness
 comes from the fixture; the suite skips cleanly when it is not installed):
@@ -382,17 +367,11 @@ comes from the fixture; the suite skips cleanly when it is not installed):
 - `plugin-gating` covers the plugin-container gating (`apply`, id filters,
   enforce order, hook shapes); `cf-vars` covers the Cloudflare shim's
   JSONC / toml / dotenv var parsers.
-- `loader-util` covers the SSR loader's pure helpers: extension probing, CJS
-  detection and the CJS-to-ESM facade, JSONC parsing, the server-fn rewrite,
-  single-`*` alias matching, and the package `imports` / tsconfig-chain parsers.
 - `asset-routing` is a build-level harness: it drives `assetsPlugin`,
   `makeVitePlugins`, and `nodeBuiltinShims` through a real rolldown bundle over
   temp files with a stub plugin container, asserting the `?url` / `?raw` /
   `?inline` / bare-asset / css routing, the `virtual:` / `.mdx` / `.svg` (bare
   and `?react`) container routing, and the node-builtin shims.
-- `runner-protocol` spawns the real `runner.mjs` (entry and loader pointed at
-  stubs) and drives the stdio protocol: render round-trips, the Host-derived
-  origin, warm reload, 500 error framing, and the stdout-diversion guard.
 
 The integration test is `node e2e/start.mjs`. It runs oj against a self-contained
 Start app (`e2e/fixtures/start-app`) in dev and prod and asserts a server-rendered

@@ -1,18 +1,31 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+// Svelte compiler for oj's in-process JS engine. The engine loads this module
+// once and calls `compile` per request; there is no process protocol here.
+
 import { createRequire } from "node:module";
-import { fstatSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import readline from "node:readline";
 
 const cache = new Map();
 
+// A resolution failure for the compiler package itself carries this marker so
+// the host can print the "is <package> installed?" hint.
+function missingPackage(name, err) {
+  return new Error(`OJ_MISSING_PACKAGE ${name}: ${(err && err.message) || err}`);
+}
+
 async function toolchain(base) {
   if (cache.has(base)) return cache.get(base);
-  const req = createRequire(path.join(base, "package.json"));
-  const mod = await import(pathToFileURL(req.resolve("svelte/compiler")).href);
+  const req = createRequire(pathToFileURL(path.join(base, "package.json")).href);
+  let compilerPath;
+  try {
+    compilerPath = req.resolve("svelte/compiler");
+  } catch (e) {
+    throw missingPackage("svelte", e);
+  }
+  const mod = await import(pathToFileURL(compilerPath).href);
   const svelte = mod.compile ? mod : (mod.default ?? mod);
   let preprocessors = null;
   try {
@@ -24,50 +37,21 @@ async function toolchain(base) {
   return entry;
 }
 
-const rl = readline.createInterface({ input: process.stdin });
-let inflight = 0;
-let stdinClosed = false;
-
-const maybeExit = () => {
-  if (!stdinClosed || inflight !== 0) return;
-
-  process.stdout.end((err) => {
-    process.exit(err ? 1 : 0)
-  })
-};
-
-try {
-  if (fstatSync(0, { bigint: true }).isFIFO()) rl.once("close", () => { stdinClosed = true; maybeExit(); });
-} catch {}
-rl.on("line", async (line) => {
-  let msg;
-  try {
-    msg = JSON.parse(line);
-  } catch {
-    return;
+export async function compile(request) {
+  const { base, css: source, from } = request;
+  const dev = request.dev !== false;
+  const { compile: compileSvelte, preprocess, preprocessors } = await toolchain(base);
+  let code = source;
+  if (preprocessors) {
+    const pp = await preprocess(source, preprocessors, { filename: from });
+    code = pp.code;
   }
-  const { id, base, css: source, from } = msg;
-  const dev = msg.dev !== false;
-  inflight += 1;
-  try {
-    const { compile, preprocess, preprocessors } = await toolchain(base);
-    let code = source;
-    if (preprocessors) {
-      const pp = await preprocess(source, preprocessors, { filename: from });
-      code = pp.code;
-    }
-    const out = compile(code, {
-      filename: from,
-      generate: "client",
-      css: "injected",
-      dev,
-      hmr: dev,
-    });
-    process.stdout.write(JSON.stringify({ id, css: out.js.code }) + "\n");
-  } catch (e) {
-    process.stdout.write(JSON.stringify({ id, error: String((e && e.message) || e) }) + "\n");
-  } finally {
-    inflight -= 1;
-    maybeExit();
-  }
-});
+  const out = compileSvelte(code, {
+    filename: from,
+    generate: "client",
+    css: "injected",
+    dev,
+    hmr: dev,
+  });
+  return out.js.code;
+}

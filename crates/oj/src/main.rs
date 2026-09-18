@@ -3,7 +3,15 @@
 
 mod build;
 mod ssr_dev;
+mod ssr_host;
 mod start_dev;
+mod start_host;
+
+// Linking-only for now: build.rs exports the Node-API symbols these crates
+// define, so they must be part of the binary (rustc drops unused crates from
+// the link line otherwise). The JS engine that calls into them lands next.
+use deno_core as _;
+use deno_napi as _;
 
 use std::path::PathBuf;
 
@@ -56,6 +64,32 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         prod: bool,
+    },
+    /// Internal: run an ES module on the embedded JS engine and print its
+    /// default export as JSON. Used by oj's own tests (the napi symbols the
+    /// engine needs are only exported from this binary, so a cargo test
+    /// binary cannot host the probe).
+    #[command(name = "js-eval", hide = true)]
+    JsEval {
+        file: PathBuf,
+        /// The engine root (bare imports resolve from its node_modules).
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Internal: run one Start one-shot script (route-tree regen, the client
+    /// rebundle) to completion on a fresh embedded engine, in a process of its
+    /// own, then exit. The env pairs the script's `run(env)` receives arrive
+    /// as JSON on stdin (they used to be spawn env; argv would print values
+    /// in `ps`). A process per run on purpose: rolldown's binding retains
+    /// native memory per `build()` that neither closing the bundler nor
+    /// tearing the isolate down releases — only process exit reclaims it,
+    /// exactly as the retired per-run `node` spawns did.
+    #[command(name = "start-script", hide = true)]
+    StartScript {
+        script: PathBuf,
+        /// The engine root (bare imports resolve from its node_modules).
+        #[arg(long)]
+        root: PathBuf,
     },
     Build {
         root: Option<PathBuf>,
@@ -179,6 +213,31 @@ async fn run() -> anyhow::Result<()> {
                 .run()
                 .await
             }
+        }
+        Command::JsEval { file, root } => {
+            let root = root
+                .unwrap_or_else(|| PathBuf::from("."))
+                .canonicalize()
+                .context("engine root not found")?;
+            let mut config = oj_js::EngineConfig::new(&root);
+            config.code_cache_dir = Some(oj_server::engine_code_cache_dir(&root));
+            let engine = oj_js::JsEngine::spawn(config).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let value = engine
+                .eval(oj_js::EvalInput::Path(file))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("{value}");
+            Ok(())
+        }
+        Command::StartScript { script, root } => {
+            let root = root.canonicalize().context("engine root not found")?;
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
+                .context("start-script env on stdin")?;
+            let env: Vec<(String, String)> =
+                serde_json::from_str(&buf).context("start-script env json")?;
+            let scripts = start_host::ScriptEngine::new(&root)?;
+            scripts.run_async(&script, &env, "start script").await
         }
         Command::Compile { file, prod } => {
             let source = std::fs::read_to_string(&file)

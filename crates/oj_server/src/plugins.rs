@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use oj_resolver::OjResolver;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::oneshot;
 
 pub const PLUGIN_HOST_JS: &str = include_str!("assets/plugin-host.mjs");
 pub const VITE_EXTRACT_JS: &str = include_str!("assets/vite-extract.mjs");
@@ -79,94 +74,6 @@ pub fn plugins_file(root: &Path) -> Option<std::path::PathBuf> {
 pub enum PluginSource {
     OjPlugins(std::path::PathBuf),
     ViteConfig(std::path::PathBuf),
-}
-
-pub fn ssr_bridge_dir(root: &Path) -> PathBuf {
-    if let Some(dir) = std::env::var_os("OJ_SSR_BRIDGE_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    let id = blake3::hash(root.to_string_lossy().as_bytes()).to_hex();
-    std::env::temp_dir().join(format!("oj-ssr-bridge-{}", &id.as_str()[..16]))
-}
-
-fn create_bridge_dir(dir: &Path) -> bool {
-    if std::fs::create_dir_all(dir).is_err() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-    }
-    true
-}
-
-pub fn remove_legacy_ssr_bridge(root: &Path) {
-    let legacy = root.join(".oj-cache").join("start").join("ssr-bridge");
-    if legacy != ssr_bridge_dir(root) {
-        let _ = std::fs::remove_dir_all(&legacy);
-    }
-}
-
-pub fn cleanup_ssr_bridge(root: &Path) {
-    let _ = std::fs::remove_dir_all(ssr_bridge_dir(root));
-}
-
-pub fn disable_ssr_bridge(root: &Path) {
-    let dir = ssr_bridge_dir(root);
-    if !create_bridge_dir(&dir) {
-        return;
-    }
-    let _ = std::fs::write(dir.join("disabled"), b"1");
-}
-
-#[cfg(unix)]
-fn mkfifo_at(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-        return false;
-    };
-    unsafe { libc::mkfifo(c.as_ptr(), 0o600) == 0 }
-}
-
-pub fn prepare_ssr_bridge(root: &Path) -> Option<PathBuf> {
-    remove_legacy_ssr_bridge(root);
-    let dir = ssr_bridge_dir(root);
-    if !create_bridge_dir(&dir) {
-        return None;
-    }
-    let _ = std::fs::remove_file(dir.join("disabled"));
-    let _ = std::fs::remove_file(dir.join("ready"));
-    #[cfg(unix)]
-    {
-        for name in ["req.fifo", "rep.fifo"] {
-            let p = dir.join(name);
-            let _ = std::fs::remove_file(&p);
-            if !mkfifo_at(&p) {
-                disable_ssr_bridge(root);
-                return None;
-            }
-        }
-        Some(dir)
-    }
-    #[cfg(not(unix))]
-    {
-        disable_ssr_bridge(root);
-        None
-    }
-}
-
-pub fn ensure_ssr_bridge(root: &Path) -> Option<PathBuf> {
-    let dir = ssr_bridge_dir(root);
-    if dir.join("req.fifo").exists()
-        && dir.join("rep.fifo").exists()
-        && !dir.join("disabled").exists()
-    {
-        return Some(dir);
-    }
-    prepare_ssr_bridge(root)
 }
 
 static VITE_CONFIG_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -260,32 +167,12 @@ pub struct ViteValues {
     pub html: Option<serde_json::Value>,
 }
 
-/// Why a run of the extractor produced nothing usable, or None when it did.
-///
-/// Kept separate from the reporting so the classification can be tested: the
-/// interesting cases are a subprocess that wrote nothing at all and one that
-/// wrote something that is not JSON, and reproducing either through a real
-/// `node` is harder than it is worth.
-fn extraction_failure(status: std::process::ExitStatus, stdout: &[u8], parse: Option<&str>) -> Option<String> {
-    match parse {
-        None => None,
-        Some(_) if stdout.is_empty() => Some(format!(
-            "wrote nothing at all and exited with {status}"
-        )),
-        Some(e) => Some(format!(
-            "wrote {} bytes that are not JSON ({e}) and exited with {status}",
-            stdout.len()
-        )),
-    }
-}
-
-/// How long the config-extraction subprocess may run before it is killed. The
-/// extractor runs real plugin code (config hooks) and exits itself right after
-/// emitting the result, so 60 s is generous headroom for a cold first run;
-/// `OJ_EXTRACT_TIMEOUT=<seconds>` raises it for configs that legitimately take
-/// longer. Unbounded was worse: a config hook that opened a socket or timer
-/// used to be able to wedge boot forever (Vite has no bound here, but Vite is
-/// also not waiting on a subprocess).
+/// How long the config extraction may run before it is terminated. The
+/// extractor runs real plugin code (config hooks), so 60 s is generous
+/// headroom for a cold first run; `OJ_EXTRACT_TIMEOUT=<seconds>` raises it for
+/// configs that legitimately take longer. Unbounded was worse: a config hook
+/// that opened a socket or timer used to be able to wedge boot forever (Vite
+/// has no bound here, but Vite is also not waiting on a separate evaluation).
 fn extraction_timeout() -> std::time::Duration {
     extraction_timeout_from(std::env::var("OJ_EXTRACT_TIMEOUT").ok().as_deref())
 }
@@ -298,121 +185,43 @@ fn extraction_timeout_from(raw: Option<&str>) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// `Command::output()` with a deadline: `Ok(None)` means the child ran past
-/// `timeout` and was killed (and reaped). Both pipes are drained on threads
-/// into shared buffers for the whole wait, so a chatty child can never
-/// deadlock on a full pipe — and once the child itself has exited (or been
-/// killed), the drain threads are given only a short grace to reach EOF before
-/// being DETACHED with whatever the buffers hold: a grandchild spawned with
-/// inherited stdio keeps the pipe write-ends open indefinitely, and joining
-/// unboundedly on its EOF was exactly the boot wedge `OJ_EXTRACT_TIMEOUT`
-/// exists to prevent.
-fn bounded_output(
-    cmd: &mut std::process::Command,
+/// Runs one export of an oj-owned module on a short-lived in-process JS engine
+/// and returns its JSON result. One isolate per run preserves the freshness
+/// the one-shot subprocesses had (module caches, env dance and run-once plugin
+/// guards die with the engine, a hook-started watcher or interval cannot
+/// outlive it), and boot's parallel extractions each own their engine thread.
+/// The call blocks the current thread, as the bounded subprocess wait did;
+/// from inside a tokio runtime it blocks on a scoped helper thread instead so
+/// no runtime worker is parked inside another `block_on`.
+pub(crate) fn run_engine_job(
+    root: &Path,
+    module: &Path,
+    export: &str,
+    payload: serde_json::Value,
     timeout: std::time::Duration,
-) -> std::io::Result<Option<std::process::Output>> {
-    use std::io::Read;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let out_pipe = child.stdout.take().expect("piped stdout");
-    let err_pipe = child.stderr.take().expect("piped stderr");
-    fn drain(
-        mut pipe: impl Read + Send + 'static,
-        buf: Arc<Mutex<Vec<u8>>>,
-        discard: Arc<AtomicBool>,
-    ) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match pipe.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    // Once detached (the caller snapshotted and moved on),
-                    // keep reading to EOF — a still-writing grandchild must
-                    // not block on a full pipe — but discard: nobody will
-                    // ever read the buffer again, and a chatty grandchild
-                    // could otherwise grow it for as long as it lives.
-                    Ok(_) if discard.load(Ordering::Relaxed) => {}
-                    Ok(n) => append_capped(
-                        &mut buf
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                        &chunk[..n],
-                        DRAIN_BUF_CAP,
-                    ),
-                }
-            }
+) -> Result<serde_json::Value, oj_js::EngineError> {
+    let run = move || {
+        let mut config = oj_js::EngineConfig::new(root);
+        config.default_deadline = Some(timeout);
+        config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
+        let engine = oj_js::JsEngine::spawn(config)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
+        rt.block_on(engine.call(module.to_string_lossy().into_owned(), export, vec![payload]))
+        // Dropping the engine here joins its thread: pending JS work (timers,
+        // watchers a config hook started) is discarded with the isolate, the
+        // in-process equivalent of the old `process.exit(0)`.
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|s| {
+            s.spawn(run)
+                .join()
+                .expect("engine job thread must not panic")
         })
-    }
-    let out_buf = Arc::new(Mutex::new(Vec::new()));
-    let err_buf = Arc::new(Mutex::new(Vec::new()));
-    // One flag for both drains: detachment is a property of the call ending,
-    // not of one pipe.
-    let discard = Arc::new(AtomicBool::new(false));
-    let out_thread = drain(out_pipe, Arc::clone(&out_buf), Arc::clone(&discard));
-    let err_thread = drain(err_pipe, Arc::clone(&err_buf), Arc::clone(&discard));
-    // Join with a grace bound, then detach: after the child is gone, EOF on the
-    // pipes belongs to whoever else inherited them (a plugin's grandchild), and
-    // the caller must never wait on that. One SHARED deadline covers both joins
-    // (sequential per-join graces cost double on the wedged path); a thread
-    // still running past it is flipped to discard mode and left to exit when
-    // the last writer closes. The snapshot below is what the caller gets.
-    let grace_join = |threads: [std::thread::JoinHandle<()>; 2]| {
-        let grace_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        for t in threads {
-            while !t.is_finished() && std::time::Instant::now() < grace_deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            if t.is_finished() {
-                let _ = t.join();
-            } else {
-                discard.store(true, Ordering::Relaxed);
-            }
-        }
-    };
-    let snapshot = |buf: &Arc<Mutex<Vec<u8>>>| -> Vec<u8> {
-        buf.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    };
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            grace_join([out_thread, err_thread]);
-            return Ok(None);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    };
-    grace_join([out_thread, err_thread]);
-    Ok(Some(std::process::Output {
-        status,
-        stdout: snapshot(&out_buf),
-        stderr: snapshot(&err_buf),
-    }))
-}
-
-/// The most an extraction pipe capture may hold. The drain threads can outlive
-/// the caller detached (a grandchild holding the pipe open), and even attached
-/// output is only diagnostics past a point: cap the buffer instead of letting
-/// a chatty child grow it without bound.
-const DRAIN_BUF_CAP: usize = 4 * 1024 * 1024;
-
-/// Append `chunk` to `buf`, never growing it past `cap`: bytes past the cap
-/// are dropped (the capture keeps its head, where the JSON result and the
-/// first errors live).
-fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) {
-    let room = cap.saturating_sub(buf.len());
-    if room > 0 {
-        buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+    } else {
+        run()
     }
 }
 
@@ -445,15 +254,7 @@ fn extract_vite_values_with(
     };
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root)?;
-    let store = oj_cache::config_extract::ConfigExtractStore::new(
-        root,
-        &format!(
-            "{}:{}:{}",
-            env!("CARGO_PKG_VERSION"),
-            blake3::hash(VITE_EXTRACT_JS.as_bytes()).to_hex(),
-            extraction_env_hash(std::env::vars())
-        ),
-    );
+    let store = extraction_store(root);
     if let Some(hit) = store.lookup(&vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
             print_extraction_stderr(&hit.stderr);
@@ -465,10 +266,8 @@ fn extract_vite_values_with(
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
     // Several extractions run concurrently at boot (route tree, server-fn
-    // resolver, config values), so everything here is per call or atomic: the
-    // script lands via rename (a plain write truncates it under a concurrent
-    // reader's import), and the result file is unique per call (a shared name
-    // is read-and-deleted by whichever caller gets there first).
+    // resolver, config values), so the script lands via rename: a plain write
+    // truncates it under a concurrent engine's import.
     static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let script = cache.join("oj-vite-extract.mjs");
@@ -477,50 +276,48 @@ fn extract_vite_values_with(
         std::fs::write(&tmp, VITE_EXTRACT_JS).ok()?;
         std::fs::rename(&tmp, &script).ok()?;
     }
-    // The JSON comes back through a file, not stdout: evaluating the config
-    // runs plugin code (route generators, banners) that may print to stdout.
-    let result_path = cache.join(format!("oj-vite-extract-{}-{seq}.tmp.json", std::process::id()));
-    let mut cmd = std::process::Command::new("node");
-    cmd.arg(&script)
-        .arg(&vite)
-        .arg(root)
-        .arg(command)
-        .arg(mode)
-        .arg(if mode_explicit { "explicit" } else { "default" })
-        .arg(&result_path)
-        .env("OJ_CACHE_ROOT", oj_cache::cache_root(root))
-        .env("NODE_COMPILE_CACHE", crate::node_compile_cache(root))
-        .current_dir(root);
-    // Bounded: the extractor exits itself after emitting, but the config's
-    // plugin code runs before that and must never wedge boot forever.
+    // Bounded: the config's plugin code runs inside the engine and must never
+    // wedge boot forever.
     let timeout = extraction_timeout();
-    let out = match bounded_output(&mut cmd, timeout) {
-        Ok(Some(out)) => out,
-        Ok(None) => {
+    let payload = serde_json::json!({
+        "vite": vite.to_string_lossy(),
+        "root": root.to_string_lossy(),
+        "command": command,
+        "mode": mode,
+        "modeKind": if mode_explicit { "explicit" } else { "default" },
+        "cacheDir": cache.to_string_lossy(),
+    });
+    // The result is the call's RETURN VALUE: config code that prints (route
+    // generators, banners) cannot corrupt the result channel, which the old
+    // subprocess had to dodge with a temp result file next to argv.
+    let json = match run_engine_job(root, &script, "extract", payload, timeout) {
+        Ok(json) => json,
+        Err(oj_js::EngineError::Deadline) => {
             eprintln!(
                 "oj: extracting {}: the config evaluation did not finish within {}s and was killed (raise OJ_EXTRACT_TIMEOUT for slower configs)",
                 vite.display(),
                 timeout.as_secs()
             );
-            let _ = std::fs::remove_file(&result_path);
             return None;
         }
-        Err(_) => return None,
+        Err(e) => {
+            eprintln!("oj: extracting {}: {e}", vite.display());
+            return None;
+        }
     };
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // Everything the evaluation wrote to stderr (Vite's notices, oj's "not
+    // applied" warnings, plugin prints), captured inside the engine.
+    let stderr = json
+        .get("__stderr")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
     print_extraction_stderr(&stderr);
-    let raw = std::fs::read(&result_path).unwrap_or_default();
-    let _ = std::fs::remove_file(&result_path);
-    let parsed = serde_json::from_slice::<serde_json::Value>(&raw);
-    let parse_err = parsed.as_ref().err().map(|e| e.to_string());
-    if let Some(why) = extraction_failure(out.status, &raw, parse_err.as_deref()) {
-        eprintln!("oj: extracting {} {why}", vite.display());
-    }
-    let json: serde_json::Value = parsed.ok()?;
     // The extractor reports a config that failed to evaluate as `__ok: false`
-    // (having printed the cause to stderr above). That is not a config with no
-    // values, so never parse it into an empty ViteValues: return None and let the
-    // caller decide whether a present-but-broken vite.config is an error.
+    // (having put the cause in the stderr transcript above). That is not a
+    // config with no values, so never parse it into an empty ViteValues: return
+    // None and let the caller decide whether a present-but-broken vite.config
+    // is an error.
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
@@ -546,17 +343,27 @@ fn extract_vite_values_with(
             vite.display()
         );
     } else {
-        store.store(
-            &vite,
-            command,
-            mode_key,
-            &deps,
-            &String::from_utf8_lossy(&raw),
-            &stderr,
-        );
+        // The stderr transcript is stored in its own field (replayed by the
+        // lookup above), not inside the cached output.
+        let mut stored = json.clone();
+        if let Some(obj) = stored.as_object_mut() {
+            obj.remove("__stderr");
+        }
+        store.store(&vite, command, mode_key, &deps, &stored.to_string(), &stderr);
     }
-    crate::boot_phase("vite-extract cache miss (subprocess ran)");
+    EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::boot_phase("vite-extract cache miss (engine ran)");
     Some(parse_vite_values(&json))
+}
+
+/// Whether any config extraction in this process ran the engine (a cache
+/// miss): the config's observable inputs changed, so caches derived from the
+/// evaluated config — the deps pre-seed stamp — must not serve either.
+static EXTRACTION_RAN_FRESH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn extraction_ran_fresh() -> bool {
+    EXTRACTION_RAN_FRESH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether the extractor's read recorder overflowed (`__depsTruncated`): the
@@ -590,6 +397,23 @@ fn unseen_extraction_lines(stderr: &str) -> String {
         }
     }
     out
+}
+
+/// The extraction cache, keyed on everything that can change the verdict: oj's
+/// version, the extraction engine ("deno" marks the in-process engine — a
+/// cache written by a node-subprocess-era oj, or any future engine change,
+/// must never serve, whatever the script hash happens to be), the extraction
+/// script itself and the observable environment.
+fn extraction_store(root: &Path) -> oj_cache::config_extract::ConfigExtractStore {
+    oj_cache::config_extract::ConfigExtractStore::new(
+        root,
+        &format!(
+            "{}:deno:{}:{}",
+            env!("CARGO_PKG_VERSION"),
+            blake3::hash(VITE_EXTRACT_JS.as_bytes()).to_hex(),
+            extraction_env_hash(std::env::vars())
+        ),
+    )
 }
 
 /// The part of the process environment a vite.config can observe while it
@@ -1110,28 +934,34 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
 }
 
 pub struct PluginHost {
-    stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Option<String>, String>>>>,
-    counter: AtomicU64,
+    /// The embedded engine hosting plugin-host.mjs. In an Option so
+    /// `declare_gone`/`shutdown` can take + abandon it explicitly (background
+    /// tasks hold Arc clones of the host, so dropping the caller's Arc alone
+    /// must never decide the engine's fate). Abandoning drops the job channel
+    /// and detaches the isolate thread; a thread wedged in NATIVE code (a napi
+    /// call) leaks with its isolate — the accepted cost of the
+    /// in-process host, where a kill used to reclaim it (JS-only wedges are
+    /// interrupted by `terminate_execution` and unwind cleanly).
+    engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
+    /// The plugin-host.mjs path on disk — the module every hook call targets.
+    host_module: String,
     ws_out: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
-    /// `{ ojServer: { action, ... } }` lines from the host: a plugin invalidating
+    /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart().
     server_events: Mutex<Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>>,
-    // In an Option so it can be taken + killed explicitly (the reader task holds
-    // an Arc clone, so dropping the caller's Arc alone never triggers kill_on_drop).
-    child: Mutex<Option<tokio::process::Child>>,
     /// The host's `{ ojServeInfo: ... }` control push: None until the host's
     /// top-level init completes. Subscribers see the info whenever the host
     /// eventually comes up, however slow the boot, and can activate the
     /// middleware path late instead of silently degrading to the SSR runner.
     serve_info_push: tokio::sync::watch::Sender<Option<ServeInfo>>,
     /// Whether the host finished its top-level init: flipped by the serve-info
-    /// push or by the first RPC reply (the host's RPC listener only registers
-    /// after every top-level await, so any reply proves init completed). RPC
-    /// sends are gated on this — see `call`.
+    /// push, the `{ ojInit }` push, or the first hook reply (the host's hook
+    /// entry point only runs after every top-level await, so any reply proves
+    /// init completed). Hook calls are gated on this — see `call`.
     initialized: tokio::sync::watch::Sender<bool>,
-    /// The host's stdout closed (the process exited): fail calls fast instead
-    /// of waiting out the init deadline or the per-call timeout. A watch so a
+    /// The host is gone (its engine thread exited, its init failed hard, or
+    /// the transport belt declared it wedged): fail calls fast instead of
+    /// waiting out the init deadline or the per-call timeout. A watch so a
     /// waiter (`host_gone_wait`) can select on the death instead of polling.
     host_gone: tokio::sync::watch::Sender<bool>,
     /// When the host was spawned; the init deadline is measured from here, so
@@ -1192,15 +1022,18 @@ pub struct PluginHost {
     init_progress: Mutex<std::time::Instant>,
 }
 
-async fn handle_ctx_rpc(
-    rpc: u64,
+/// The host's reverse ctx-RPC (`this.resolve` fallbacks, `this.load` module
+/// info), answered SYNCHRONOUSLY on the engine's isolate thread through the
+/// `__oj_rpc` bridge — both handlers are plain resolver/fs/compile work, so
+/// the old request/reply plumbing (ids, a pending map, bounded stdin writes)
+/// has no in-process counterpart at all.
+fn ctx_rpc(
     method: &str,
     args: &[serde_json::Value],
     resolver: &OjResolver,
     root: &Path,
-    host: &PluginHost,
-) {
-    let reply = match method {
+) -> Result<serde_json::Value, String> {
+    match method {
         "resolve" => {
             let source = args.first().and_then(|v| v.as_str()).unwrap_or("");
             let importer = args.get(1).and_then(|v| v.as_str()).unwrap_or("");
@@ -1212,10 +1045,10 @@ async fn handle_ctx_rpc(
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| root.to_path_buf())
             };
-            match resolver.resolve(&dir, source) {
-                Ok(p) => serde_json::json!({ "rpcReply": rpc, "result": p.display().to_string() }),
-                Err(_) => serde_json::json!({ "rpcReply": rpc, "result": null }),
-            }
+            Ok(match resolver.resolve(&dir, source) {
+                Ok(p) => serde_json::Value::String(p.display().to_string()),
+                Err(_) => serde_json::Value::Null,
+            })
         }
         "moduleInfo" => {
             let id = args.first().and_then(|v| v.as_str()).unwrap_or("");
@@ -1243,28 +1076,13 @@ async fn handle_ctx_rpc(
                                 .unwrap_or_else(|_| spec.clone())
                         })
                         .collect();
-                    serde_json::json!({
-                        "rpcReply": rpc,
-                        "result": { "id": id, "code": code, "importedIds": imported_ids },
-                    })
+                    Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
                 }
-                Err(_) => serde_json::json!({ "rpcReply": rpc, "result": null }),
+                Err(_) => Ok(serde_json::Value::Null),
             }
         }
-        other => {
-            serde_json::json!({ "rpcReply": rpc, "error": format!("unknown ctx method: {other}") })
-        }
-    };
-    // Bounded like every other protocol write (see `write_bounded_at`): this
-    // runs ON the reader task, and an unbounded write_all into a pipe the
-    // host stopped draining would wedge reply processing forever while
-    // holding the stdin mutex.
-    let _ = host
-        .write_bounded(
-            &format!("a ctx-RPC ({method}) reply"),
-            format!("{reply}\n").as_bytes(),
-        )
-        .await;
+        other => Err(format!("unknown ctx method: {other}")),
+    }
 }
 
 /// How long one plugin hook may run before oj gives up on it. Vite has no
@@ -1304,6 +1122,23 @@ fn plugin_init_timeout_from(raw: Option<&str>) -> std::time::Duration {
 impl std::fmt::Debug for PluginHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PluginHost")
+    }
+}
+
+/// The old spawn's `kill_on_drop`, in-process: a host dropped without an
+/// explicit shutdown abandons its engine instead of letting the last
+/// `Arc<JsEngine>` drop JOIN a thread that may be parked in a never-settling
+/// init forever.
+impl Drop for PluginHost {
+    fn drop(&mut self) {
+        if let Some(engine) = self
+            .engine
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            engine.abandon();
+        }
     }
 }
 
@@ -1418,30 +1253,39 @@ impl PluginHost {
         if let Some(parent) = script.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&script, PLUGIN_HOST_JS)?;
+        // Written atomically (tmp + rename): several hosts spawn concurrently
+        // in one process (boot + lazy SSR + per-environment build hosts), and
+        // a plain truncating write could hand a sibling engine's import a
+        // half-written module.
+        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
+            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
+            std::fs::write(&tmp, PLUGIN_HOST_JS)?;
+            std::fs::rename(&tmp, &script)?;
+        }
 
-        // The host shares its stdout with plugin code (no console redirection),
-        // so every oj protocol line is framed with a per-session random token
-        // only this spawn and the host know: the reader below ignores unframed
-        // lines, so a plugin's print — or attacker-controlled content a plugin
-        // echoes — can never be parsed as a reply or a control push.
-        let control_token = format!("oj{}:", crate::new_ws_token());
-        let mut child = tokio::process::Command::new("node")
-            .arg(&script)
-            .arg(plugins_file)
-            .arg(config_json)
-            .env("OJ_CACHE_ROOT", oj_cache::cache_root(root))
-        .env("NODE_COMPILE_CACHE", crate::node_compile_cache(root))
-            .env("OJ_CONTROL_TOKEN", &control_token)
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("cannot spawn node for plugin host: {e}"))?;
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
+        // The engine's push channel replaces the sidecar's control-plane
+        // stdout: pushes arrive as values on `post_rx`, so nothing a plugin
+        // prints can splice into the protocol and the whole control-token /
+        // ACK / re-push machinery has no in-process counterpart.
+        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
+        let resolver = std::sync::Arc::new(OjResolver::new(root));
+        let root_buf: PathBuf = root.to_path_buf();
+        let rpc_handler: oj_js::RpcHandler = {
+            let resolver = std::sync::Arc::clone(&resolver);
+            let root = root_buf.clone();
+            std::sync::Arc::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
+        };
+        let mut engine_config = oj_js::EngineConfig::new(root);
+        engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
+        let engine = oj_js::JsEngine::spawn_with_hooks(
+            engine_config,
+            oj_js::EngineHooks {
+                post: post_tx,
+                rpc: Some(rpc_handler),
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("cannot start the embedded plugin host: {e}"))?;
+        let engine = std::sync::Arc::new(engine);
 
         let (mut init_wait, init_knob) = init_wait_policy(lazy);
         if let Some(w) = timeouts.init_wait {
@@ -1450,12 +1294,10 @@ impl PluginHost {
         let rpc_wait = timeouts.rpc.unwrap_or_else(plugin_rpc_timeout);
         let stall_wait = timeouts.stall.unwrap_or(rpc_wait);
         let host = std::sync::Arc::new(PluginHost {
-            stdin: tokio::sync::Mutex::new(stdin),
-            pending: Mutex::new(HashMap::new()),
-            counter: AtomicU64::new(1),
+            engine: Mutex::new(Some(std::sync::Arc::clone(&engine))),
+            host_module: script.to_string_lossy().into_owned(),
             ws_out: Mutex::new(None),
             server_events: Mutex::new(None),
-            child: Mutex::new(Some(child)),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
@@ -1470,39 +1312,56 @@ impl PluginHost {
             init_progress: Mutex::new(std::time::Instant::now()),
         });
 
-        let resolver = std::sync::Arc::new(OjResolver::new(root));
-        let root_buf: PathBuf = root.to_path_buf();
+        // The BOOT task: seed the host's identity (what used to be argv and
+        // spawn env) as a global, then trigger the module's top-level init by
+        // calling a trivial export. The init call takes no deadline — the
+        // Rust-side watches (init gate, stall monitor) own boot patience —
+        // and a top-level throw (the old "host process died on boot") fails
+        // it, printing the cause and declaring the host gone.
+        let boot_ref = std::sync::Arc::clone(&host);
+        let boot_engine = std::sync::Arc::clone(&engine);
+        let boot_seed = serde_json::json!({
+            "pluginsPath": plugins_file,
+            "initialJson": config_json,
+            "cacheRoot": oj_cache::cache_root(root),
+        });
+        let host_module = host.host_module.clone();
+        tokio::spawn(async move {
+            let prelude = format!("globalThis.__ojPluginHost = {boot_seed};");
+            if let Err(e) = boot_engine
+                .eval_with_deadline(oj_js::EvalInput::Source(prelude), None)
+                .await
+            {
+                boot_ref.declare_gone(&format!("plugin host boot prelude failed: {e}"));
+                return;
+            }
+            match boot_engine
+                .call_with_deadline(host_module, "ojHostReady", Vec::new(), None)
+                .await
+            {
+                // The `{ ojInit }` push already flipped `initialized`; the
+                // reply is only the error path's carrier.
+                Ok(_) => {}
+                Err(oj_js::EngineError::Closed) => {}
+                Err(e) => {
+                    boot_ref.declare_gone(&format!("plugin host failed to initialize: {e}"));
+                }
+            }
+        });
+
+        // The PUSH DISPATCHER: the engine-channel successor of the stdout
+        // reader task. Same control pushes, minus the parsing: values arrive
+        // whole, hook replies come back on their own call futures, and the
+        // reverse ctx-RPC is answered synchronously inside the engine.
         let reader_ref = std::sync::Arc::clone(&host);
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                // Only token-framed lines are protocol (see spawn); anything
-                // else on this stream is a plugin's own print.
-                let Some(line) = line.strip_prefix(control_token.as_str()) else {
-                    continue;
-                };
-                let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                if let Some(rpc) = msg["rpc"].as_u64() {
-                    let method = msg["method"].as_str().unwrap_or("").to_string();
-                    let args = msg["args"].as_array().cloned().unwrap_or_default();
-                    handle_ctx_rpc(rpc, &method, &args, &resolver, &root_buf, &reader_ref).await;
-                    continue;
-                }
+            while let Some(msg) = post_rx.recv().await {
                 if let Some(info) = msg.get("ojServeInfo") {
                     reader_ref
                         .serve_info_push
                         .send_replace(Some(ServeInfo::from_json(info)));
                     let _ = reader_ref.initialized.send_replace(true);
                     let _ = reader_ref.init_failed.send_replace(false);
-                    // ACK so the host stops re-pushing (it re-sends until
-                    // acknowledged, healing a copy a plugin's unterminated
-                    // partial write may have spliced). Bounded like every
-                    // protocol write: this is the reader task.
-                    let _ = reader_ref
-                        .write_bounded("the ojServeInfo ACK", b"{\"ojServeInfoAck\":true}\n")
-                        .await;
                     continue;
                 }
                 if msg.get("ojInit").is_some() {
@@ -1558,39 +1417,13 @@ impl PluginHost {
                     }
                     continue;
                 }
-                let Some(id) = msg["id"].as_u64() else {
-                    continue;
-                };
-                // Any reply proves the host's top-level init completed: the RPC
-                // listener only registers after every top-level await.
-                let _ = reader_ref.initialized.send_replace(true);
-                let _ = reader_ref.init_failed.send_replace(false);
-                let result = if let Some(err) = msg.get("error").and_then(|e| e.as_str()) {
-                    Err(err.to_string())
-                } else {
-                    Ok(msg
-                        .get("result")
-                        .and_then(|r| r.as_str())
-                        .map(str::to_string))
-                };
-                if let Some(tx) = reader_ref.pending.lock().unwrap().remove(&id) {
-                    let _ = tx.send(result);
-                }
             }
-            // stdout closed: the host exited. Fail everything pending now, and
-            // every future call fast, instead of letting an init-gated call
-            // wait out the whole init deadline on a dead process.
+            // The push channel closed: the engine thread exited (a clean
+            // shutdown, or the unwind after an abandon's terminate). Fail
+            // every future call fast instead of letting an init-gated call
+            // wait out the whole init deadline on a dead engine; in-flight
+            // calls select on this same watch.
             let _ = reader_ref.host_gone.send_replace(true);
-            let drained: Vec<_> = reader_ref
-                .pending
-                .lock()
-                .unwrap()
-                .drain()
-                .map(|(_, tx)| tx)
-                .collect();
-            for tx in drained {
-                let _ = tx.send(Err("plugin host exited".into()));
-            }
         });
 
         // The init STALL MONITOR: wedge evidence independent of any caller's
@@ -1654,8 +1487,8 @@ impl PluginHost {
         if *self.host_gone.borrow() {
             return Err("plugin host exited".into());
         }
-        // The host answers RPCs only after its top-level init completes (the
-        // listener registers after every top-level await), so a call during a
+        // The host answers hooks only after its top-level init completes (the
+        // entry point runs past every top-level await), so a call during a
         // slow boot must wait for init — bounded by this spawn's init-wait
         // policy (the long spawn-anchored deadline on a boot host, the short
         // per-call window on a lazy one) — instead of racing its own per-call
@@ -1664,13 +1497,12 @@ impl PluginHost {
         // serve-info push, the ojInit signal, or the first reply, all
         // preceding any wait here.
         //
-        // The gate runs BEFORE anything touches stdin. A wedged host is not
-        // reading its stdin (the host installs readline only after init), so
-        // once the pipe fills, a write_all would block forever HOLDING the
-        // stdin mutex — deadlocking every later call behind it with no
-        // timeout in reach. A pre-init call therefore writes nothing: it
-        // waits on the init watch and either proceeds (init flipped: the host
-        // is reading) or fails at its window without a byte sent.
+        // The gate runs BEFORE anything reaches the engine. A wedged host is
+        // mid-init on the isolate thread, so a job submitted now would only
+        // queue behind the wedge and rot; worse, its failure would be blamed
+        // on the hook. A pre-init call therefore submits nothing: it waits on
+        // the init watch and either proceeds (init flipped: the module is
+        // evaluated and serving) or fails at its window with no job sent.
         //
         // Per-call windows, deliberately with NO time-based fail-fast latch:
         // a previous call's expired window is evidence only of a slow boot,
@@ -1679,7 +1511,7 @@ impl PluginHost {
         // lands, where a latch would fail it milliseconds short. Time alone
         // never fails a call early: only host death (host_gone) fails fast.
         // A truly wedged host costs each caller one window (degrading like a
-        // slow hook) with zero pipe writes; `init_failed` still records the
+        // slow hook) with zero jobs submitted; `init_failed` still records the
         // expired-window evidence — cleared whenever init progresses — for
         // waiters that select on wedge evidence (the Start prewarm hold).
         let mut init_rx = self.initialized.subscribe();
@@ -1742,113 +1574,104 @@ impl PluginHost {
                 }
             }
         }
-        // Initialized: the host is reading stdin. Register the reply slot
-        // before writing (a fast reply must find it), then write — bounded,
-        // so a pipe that somehow fills post-init degrades instead of holding
-        // the stdin mutex forever. Write and reply share ONE per-call
-        // deadline: a slow write must not add a second full window on top of
-        // the hook's budget. A write that times out MID-FRAME leaves a
-        // dangling partial frame in the pipe, which would splice into the
-        // NEXT call's frame — but `write_bounded_at` declares the host gone
-        // (kill + host_gone) on that path, so no next call ever writes to
-        // this stream; a timeout still WAITING on the stdin mutex wrote
-        // nothing and fails only this call.
+        // Initialized: the module is evaluated and its hook entry point is
+        // callable. The engine call carries the per-call deadline itself
+        // (`OJ_PLUGIN_TIMEOUT`), and a deadline failure costs ONE call with
+        // the host answering everyone else — exactly as the old host's reply
+        // timeout did — whether the hook's promise never settles (abandoned
+        // by the scheduler's expiry tick), it parked over budget behind
+        // slower work, or it wedged in synchronous JS (interrupted by the
+        // call's watchdog; the process host lost the WHOLE host to that
+        // shape). The BELT past it is a second full window with NO reply of
+        // any kind: everything above answers at the deadline while the
+        // scheduler is alive, so total silence means the isolate thread is
+        // blocked in NATIVE code (a napi call — the old "host stopped
+        // draining its stdin" evidence) — declare the host gone.
         let deadline = tokio::time::Instant::now() + self.rpc_wait;
-        let req_id = self.counter.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(req_id, tx);
-        let request = serde_json::json!({ "id": req_id, "hook": hook, "args": args });
-        if let Err(e) = self
-            .write_bounded_at(hook, format!("{request}\n").as_bytes(), deadline)
-            .await
-        {
-            self.pending.lock().unwrap().remove(&req_id);
-            return Err(e);
-        }
-        // The ordinary per-call timeout applies unchanged (shared deadline).
-        match tokio::time::timeout_at(deadline, rx).await {
-            Ok(Ok(result)) => result,
-            _ => Err(format!(
+        let engine = self
+            .engine
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "plugin host exited".to_string())?;
+        let call = engine.call_with_deadline(
+            self.host_module.clone(),
+            "ojRun",
+            vec![
+                serde_json::Value::String(hook.to_string()),
+                serde_json::Value::Array(
+                    args.iter()
+                        .map(|a| serde_json::Value::String((*a).to_string()))
+                        .collect(),
+                ),
+            ],
+            Some(self.rpc_wait),
+        );
+        tokio::pin!(call);
+        let mut host_gone_rx = self.host_gone.subscribe();
+        let result = tokio::select! {
+            biased;
+            r = &mut call => r,
+            _ = async {
+                while !*host_gone_rx.borrow_and_update() {
+                    if host_gone_rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            } => return Err("plugin host exited".into()),
+            _ = tokio::time::sleep_until(deadline + self.rpc_wait) => {
+                let msg = format!(
+                    "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
+                    2 * self.rpc_wait.as_secs()
+                );
+                self.declare_gone(&msg);
+                return Err(msg);
+            }
+        };
+        match result {
+            Ok(value) => {
+                // Any reply proves the host's top-level init completed: the
+                // hook entry point only exists past every top-level await.
+                let _ = self.initialized.send_replace(true);
+                let _ = self.init_failed.send_replace(false);
+                Ok(match value {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => Some(s),
+                    other => Some(other.to_string()),
+                })
+            }
+            Err(oj_js::EngineError::Deadline) => Err(format!(
                 "plugin host timed out after {}s running {hook} (raise OJ_PLUGIN_TIMEOUT for slow plugins)",
                 self.rpc_wait.as_secs()
             )),
-        }
-    }
-
-    /// One protocol write to the host's stdin, bounded by `deadline`. A host
-    /// that stops draining its pipe for a full RPC-scale window is not
-    /// healthy — the readline interface is installed for the host's whole
-    /// life — so a write that timed out MID-FRAME declares the host GONE
-    /// (`declare_gone`: kill, host_gone, pending drained) instead of leaving
-    /// a half-written frame for the next call to splice into and a wedged
-    /// process everyone keeps talking to. A timeout that elapsed while still
-    /// WAITING ON THE STDIN MUTEX is different evidence: zero bytes of this
-    /// frame reached the pipe (nothing dangles), and the mutex holder is a
-    /// concurrent bounded write against a possibly healthy-but-busy pipe —
-    /// only THIS call fails then; a truly wedged holder is declared gone by
-    /// its own deadline.
-    async fn write_bounded_at(
-        &self,
-        what: &str,
-        line: &[u8],
-        deadline: tokio::time::Instant,
-    ) -> Result<(), String> {
-        let started = std::sync::atomic::AtomicBool::new(false);
-        let write = async {
-            let mut stdin = self.stdin.lock().await;
-            started.store(true, Ordering::SeqCst);
-            stdin.write_all(line).await
-        };
-        match tokio::time::timeout_at(deadline, write).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => {
-                // The pipe is closed: the process is dead or dying (the
-                // reader's EOF usually reports it first; this is the belt).
-                self.declare_gone(&format!("stdin write failed writing {what}: {e}"));
-                Err("plugin host died".into())
+            Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
+            Err(oj_js::EngineError::MemoryLimit) => {
+                Err("plugin host exceeded its memory limit".into())
             }
-            Err(_) if !started.load(Ordering::SeqCst) => Err(format!(
-                "plugin host stdin busy for {}s writing {what} (a concurrent write held the pipe; only this call failed)",
-                self.rpc_wait.as_secs()
-            )),
-            Err(_) => {
-                let msg = format!(
-                    "plugin host stdin blocked for {}s writing {what} (the host stopped reading)",
-                    self.rpc_wait.as_secs()
-                );
-                self.declare_gone(&msg);
-                Err(msg)
+            Err(oj_js::EngineError::Boot(e)) => Err(e),
+            Err(oj_js::EngineError::Js(e)) => {
+                // A throwing hook still proves the host is up and serving.
+                let _ = self.initialized.send_replace(true);
+                let _ = self.init_failed.send_replace(false);
+                Err(e)
             }
         }
     }
 
-    /// [`write_bounded_at`] with a fresh full per-call window (the reader
-    /// task's ctx-RPC replies and control ACKs).
-    async fn write_bounded(&self, what: &str, line: &[u8]) -> Result<(), String> {
-        self.write_bounded_at(what, line, tokio::time::Instant::now() + self.rpc_wait)
-            .await
-    }
-
-    /// Treat the host as dead NOW (a wedged stdin, a broken pipe): kill the
-    /// process, flip `host_gone` so every future call fails fast, and fail
-    /// everything pending — the same terminal state the reader's EOF path
-    /// reaches, just initiated from the writing side.
+    /// Treat the host as dead NOW (a wedged isolate, a failed boot): abandon
+    /// the engine — terminate_execution interrupts a running JS job so a
+    /// wedged synchronous hook unwinds and the thread exits on its closed
+    /// channel; a job blocked in NATIVE code cannot be interrupted and leaks
+    /// the detached thread with its isolate (the documented cost of the
+    /// in-process host) — and flip `host_gone` so every in-flight and future
+    /// call fails fast, the same terminal state the push dispatcher's
+    /// channel-closed path reaches.
     fn declare_gone(&self, why: &str) {
         eprintln!("oj: {why}; treating the plugin host as gone");
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.start_kill();
+        if let Some(engine) = self.engine.lock().unwrap().take() {
+            engine.abandon();
         }
         let _ = self.host_gone.send_replace(true);
-        let drained: Vec<_> = self
-            .pending
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, tx)| tx)
-            .collect();
-        for tx in drained {
-            let _ = tx.send(Err("plugin host exited".into()));
-        }
     }
 
     /// Whether the host finished its top-level init (the serve-info push, or
@@ -1872,8 +1695,8 @@ impl PluginHost {
         self.spawned + self.init_wait
     }
 
-    /// Live updates of the host-gone flag (the process exited: its stdout
-    /// closed). For waiters selecting on wedge evidence without holding the
+    /// Live updates of the host-gone flag (the engine exited or was
+    /// abandoned). For waiters selecting on wedge evidence without holding the
     /// `Arc<PluginHost>` (the Start prewarm hold).
     pub fn host_gone_updates(&self) -> tokio::sync::watch::Receiver<bool> {
         self.host_gone.subscribe()
@@ -1898,7 +1721,7 @@ impl PluginHost {
         self.resync_done.subscribe()
     }
 
-    /// Resolves when the host process has exited (its stdout closed). Lets a
+    /// Resolves when the host is gone (its engine exited or was abandoned). Lets a
     /// task holding an `Arc<PluginHost>` — which keeps every channel sender
     /// alive, so `changed().is_err()` can never observe the death — wait on
     /// the host dying instead of pinning it forever.
@@ -2143,7 +1966,8 @@ impl PluginHost {
             .unwrap_or(1)
     }
 
-    /// Env mutations made by plugin `config()` hooks in the host process (e.g.
+    /// Env mutations made by plugin `config()` hooks in the host's shadowed
+    /// environment (e.g.
     /// a plugin flipping a VITE_* flag). Empty on RPC failure.
     /// `define` entries the plugins' `config()` hooks contributed, as
     /// `(key, js expression)` pairs (a string value is the expression itself,
@@ -2258,10 +2082,14 @@ impl PluginHost {
         }
     }
 
-    /// Kill the Node process now (used when the host has no active plugins).
+    /// Retire the host's engine now (used when the host has no active
+    /// plugins). Abandon, not drop: dropping a JsEngine joins its thread, and
+    /// nobody retiring an idle host should block on V8 teardown — the thread
+    /// exits by itself on the closed channel, and the push dispatcher's
+    /// channel-closed path then latches `host_gone`.
     pub fn shutdown(&self) {
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.start_kill();
+        if let Some(engine) = self.engine.lock().unwrap().take() {
+            engine.abandon();
         }
     }
 
@@ -2328,85 +2156,6 @@ impl PluginHost {
     }
 }
 
-#[cfg(test)]
-mod ssr_bridge_tests {
-    use super::*;
-
-    fn temp_root(label: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("oj-bridge-test-{}-{label}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn bridge_dir_defaults_outside_the_app_tree() {
-        let root = Path::new("/some/app");
-        let dir = ssr_bridge_dir(root);
-        assert!(!dir.starts_with(root));
-        assert!(dir.starts_with(std::env::temp_dir()));
-        assert_eq!(dir, ssr_bridge_dir(root));
-        assert_ne!(dir, ssr_bridge_dir(Path::new("/other/app")));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_heals_the_legacy_in_tree_bridge_and_creates_a_private_dir() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = temp_root("legacy");
-        let legacy = root.join(".oj-cache").join("start").join("ssr-bridge");
-        std::fs::create_dir_all(&legacy).unwrap();
-        assert!(mkfifo_at(&legacy.join("req.fifo")));
-
-        let dir = prepare_ssr_bridge(&root).expect("bridge dir");
-        assert!(!legacy.exists(), "legacy in-tree bridge dir must be removed");
-        assert!(!dir.starts_with(&root));
-        assert!(dir.join("req.fifo").exists() && dir.join("rep.fifo").exists());
-        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o700);
-
-        cleanup_ssr_bridge(&root);
-        assert!(!dir.exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}
-
-#[cfg(test)]
-mod extraction_failure_tests {
-    use super::extraction_failure;
-
-    // A status is only constructible by running something, and `true`/`false`
-    // are the two the classification cares about.
-    fn status(ok: bool) -> std::process::ExitStatus {
-        std::process::Command::new(if ok { "true" } else { "false" })
-            .status()
-            .expect("a shell builtin binary")
-    }
-
-    #[test]
-    fn valid_json_is_not_a_failure() {
-        assert_eq!(extraction_failure(status(true), b"{}", None), None);
-    }
-
-    // The one that hid a real bug: the extractor skipped its own body and
-    // exited 0, which is indistinguishable from a config with nothing in it
-    // unless somebody says so.
-    #[test]
-    fn a_silent_successful_run_is_a_failure() {
-        let why = extraction_failure(status(true), b"", Some("EOF while parsing a value"))
-            .expect("nothing on stdout is not a config");
-        assert!(why.contains("wrote nothing at all"), "{why}");
-    }
-
-    #[test]
-    fn unparseable_output_reports_its_size_and_the_parse_error() {
-        let why = extraction_failure(status(false), b"not json", Some("expected value"))
-            .expect("output that is not JSON is not a config");
-        assert!(why.contains("8 bytes"), "{why}");
-        assert!(why.contains("expected value"), "{why}");
-    }
-}
 
 #[cfg(test)]
 mod vite_values_tests {
@@ -2451,79 +2200,6 @@ mod vite_values_tests {
         assert_eq!(extraction_timeout_from(Some("120")).as_secs(), 120);
         assert_eq!(extraction_timeout_from(Some("junk")).as_secs(), 60);
         assert_eq!(extraction_timeout_from(Some("0")).as_secs(), 60);
-    }
-
-    // The extraction subprocess wait is bounded: a config hook that keeps the
-    // event loop alive past the deadline gets the child killed instead of
-    // wedging boot forever; a child that finishes yields its full output.
-    #[test]
-    fn bounded_output_kills_past_the_deadline_and_collects_output_before_it() {
-        let mut quick = std::process::Command::new("node");
-        quick.arg("-e").arg("process.stdout.write('done')");
-        let out = match bounded_output(&mut quick, std::time::Duration::from_secs(30)) {
-            Ok(out) => out,
-            // No node on this machine: nothing to test (extraction itself
-            // cannot run either).
-            Err(_) => return,
-        };
-        let out = out.expect("a finishing child is not a timeout");
-        assert!(out.status.success());
-        assert_eq!(out.stdout, b"done");
-
-        let mut hung = std::process::Command::new("node");
-        hung.arg("-e").arg("setInterval(() => {}, 1000)");
-        let started = std::time::Instant::now();
-        let out = bounded_output(&mut hung, std::time::Duration::from_millis(300)).unwrap();
-        assert!(out.is_none(), "a child past the deadline is killed and reported as a timeout");
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(20),
-            "the wait must end at the deadline, not at the child's leisure"
-        );
-    }
-
-    // An inherited-stdio grandchild keeps the pipe write-ends open past the
-    // child's own exit (and past a kill): the drain threads then never see
-    // EOF, and joining them unboundedly wedged boot forever — the exact hole
-    // the extraction timeout exists to close. The wait must end within the
-    // timeout plus the short grace, with whatever output was captured.
-    #[test]
-    fn bounded_output_detaches_from_pipes_a_grandchild_holds_open() {
-        // The child prints, spawns a long-lived grandchild with stdio:
-        // "inherit", and exits immediately: its status is available at once,
-        // but pipe EOF is 600 s away.
-        let mut cmd = std::process::Command::new("node");
-        cmd.arg("-e").arg(
-            "process.stdout.write('partial');\
-             require('child_process').spawn('sleep', ['600'], { stdio: 'inherit', detached: true }).unref();",
-        );
-        let started = std::time::Instant::now();
-        let out = match bounded_output(&mut cmd, std::time::Duration::from_secs(10)) {
-            Ok(out) => out,
-            Err(_) => return, // no node on this machine
-        };
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(8),
-            "the exited child's output must be returned within the grace, not at the grandchild's EOF ({}s)",
-            started.elapsed().as_secs()
-        );
-        let out = out.expect("the child exited before the deadline: not a timeout");
-        assert!(out.status.success());
-        assert_eq!(out.stdout, b"partial", "output written before the exit is captured");
-
-        // The kill path: a HANGING child whose grandchild also holds the
-        // pipes must still come back as a timeout within timeout + grace.
-        let mut hung = std::process::Command::new("node");
-        hung.arg("-e").arg(
-            "require('child_process').spawn('sleep', ['600'], { stdio: 'inherit', detached: true }).unref();\
-             setInterval(() => {}, 1000);",
-        );
-        let started = std::time::Instant::now();
-        let out = bounded_output(&mut hung, std::time::Duration::from_millis(300)).unwrap();
-        assert!(out.is_none(), "a killed child is a timeout even with its pipes held open");
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(8),
-            "the kill path must not block on the grandchild's EOF either"
-        );
     }
 
     // The per-spawn init-wait policy: a boot host waits out the long init
@@ -2656,21 +2332,6 @@ mod vite_values_tests {
         assert!(oj_config::ssr_runner_backed(&config));
     }
 
-    // The pipe capture is bounded: bytes past the cap are dropped, keeping the
-    // head (where the JSON result and the first errors live).
-    #[test]
-    fn append_capped_never_grows_past_the_cap() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, &[1u8; 6], 10);
-        assert_eq!(buf.len(), 6);
-        append_capped(&mut buf, &[2u8; 6], 10);
-        assert_eq!(buf.len(), 10, "the append is truncated at the cap");
-        assert_eq!(&buf[..6], &[1u8; 6], "the head is kept");
-        assert_eq!(&buf[6..], &[2u8; 4]);
-        append_capped(&mut buf, &[3u8; 100], 10);
-        assert_eq!(buf.len(), 10, "appends past the cap are dropped entirely");
-    }
-
     // Per-call init windows with NO time-based fail-fast: an earlier call's
     // expired window is slow-boot evidence, not a wedge, so a later pre-init
     // call still waits its OWN full window and is served the moment a healthy
@@ -2703,7 +2364,7 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return, // no node on this machine
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
         let mut evidence = host.init_failure_updates();
         assert!(!*evidence.borrow_and_update(), "no evidence before a window expires");
@@ -2752,21 +2413,20 @@ mod vite_values_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // The write-before-gate deadlock, pinned: a wedged host never installs its
-    // stdin reader, so once the pipe fills a pre-gate write_all would block
-    // forever HOLDING the stdin mutex — no timeout in reach, every later call
-    // queued behind it. Pre-init calls must write NOTHING: even with an
-    // argument far larger than any pipe capacity, concurrent calls each fail
-    // at their own window ("still initializing"), proving no call sat in a
-    // blocked write or waited on a held mutex.
+    // The submit-before-gate hazard, pinned: a wedged init holds the isolate
+    // thread, so a job submitted pre-init would only queue behind the wedge
+    // and rot — every later call serialized behind it. Pre-init calls must
+    // submit NOTHING: even with huge arguments, concurrent calls each fail at
+    // their own window ("still initializing"), proving no call sat queued on
+    // the wedged engine.
     #[tokio::test]
-    async fn wedged_host_pre_init_calls_fail_at_their_window_without_touching_stdin() {
+    async fn wedged_host_pre_init_calls_fail_at_their_window_without_submitting_jobs() {
         let root = std::env::temp_dir().join(format!("oj-wedged-stdin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        // Init never completes: the host never reads stdin. (The interval
-        // keeps the event loop alive — a bare unsettled top-level await would
-        // exit the process instead of wedging it.)
+        // Init never completes: the host module's top level never settles.
+        // (The interval keeps the event loop alive — the same shape that
+        // wedged the old node child.)
         let plugins = root.join("oj.plugins.mjs");
         std::fs::write(
             &plugins,
@@ -2787,10 +2447,10 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return, // no node on this machine
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
-        // Far past any OS pipe buffer: the old write-first path would block
-        // here forever instead of ever reaching an init gate.
+        // Far past any OS pipe buffer, the old transport's wedge trigger: the
+        // write-first path would have blocked here instead of gating on init.
         let big = "x".repeat(2 * 1024 * 1024);
         let t0 = std::time::Instant::now();
         let (a, b) = tokio::join!(host.resolve_id(&big, ""), host.resolve_id(&big, ""));
@@ -2805,7 +2465,7 @@ mod vite_values_tests {
         );
         assert!(
             elapsed < std::time::Duration::from_secs(5),
-            "concurrent windows, not serialized blocked writes: {elapsed:?}"
+            "concurrent windows, not calls serialized behind a wedged engine: {elapsed:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2850,7 +2510,7 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return, // no node on this machine
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
         let mut evidence = host.init_failure_updates();
         let flipped = tokio::time::timeout(
@@ -2886,7 +2546,7 @@ mod vite_values_tests {
         .await
         {
             Ok(h) => h,
-            Err(_) => return,
+            Err(e) => panic!("the embedded engine spawns: {e}"),
         };
         let mut evidence = host.init_failure_updates();
         assert!(tokio::time::timeout(
@@ -2916,20 +2576,17 @@ mod vite_values_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // The transport belt on post-init writes: a host that stops draining its
-    // stdin (a plugin hook blocking the event loop while the pipe is full) is
-    // declared GONE at the write timeout — killed, pending failed — so the
-    // dangling half-written frame can never splice into a next call, and
-    // later calls fail fast instead of each burning a window on a wedged
-    // process.
+    // A hook that wedges the isolate in SYNCHRONOUS JS (an infinite loop —
+    // the shape that used to block the node host's event loop until its
+    // stdin filled and the whole host was declared gone) is now interrupted
+    // by the per-call watchdog at the deadline: it fails ONE call and the
+    // host survives — strictly better than the process host, where this
+    // wedge cost the whole host.
     #[tokio::test]
-    async fn blocked_stdin_write_declares_the_host_gone_and_later_calls_fail_fast() {
-        let root = std::env::temp_dir().join(format!("oj-wedged-write-{}", std::process::id()));
+    async fn synchronously_wedged_hook_is_terminated_at_its_deadline_and_the_host_survives() {
+        let root = std::env::temp_dir().join(format!("oj-wedged-sync-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        // Healthy init; the load hook blocks the event loop forever on demand
-        // (Atomics.wait is allowed on Node's main thread), after which the
-        // host reads nothing more from stdin.
         let plugins = root.join("oj.plugins.mjs");
         std::fs::write(
             &plugins,
@@ -2937,8 +2594,7 @@ mod vite_values_tests {
   name: "blocker",
   load(id) {
     if (id.includes("__block__")) {
-      const b = new Int32Array(new SharedArrayBuffer(4));
-      Atomics.wait(b, 0, 0);
+      for (;;) {}
     }
     return null;
   },
@@ -2951,81 +2607,7 @@ mod vite_values_tests {
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = match PluginHost::spawn_with_timeouts(
-            &root,
-            &plugins,
-            &config,
-            true,
-            SpawnTimeouts {
-                init_wait: Some(std::time::Duration::from_secs(30)),
-                rpc: Some(std::time::Duration::from_secs(2)),
-                ..Default::default()
-            },
-        )
-        .await
-        {
-            Ok(h) => h,
-            Err(_) => return, // no node on this machine
-        };
-        // Prove init landed (post-init transport is what is under test).
-        host.load("warmup").await.expect("healthy host answers");
-
-        // Wedge the host's event loop, give the call time to reach the hook,
-        // then fill the pipe: the write must time out, not block forever.
-        let wedger = std::sync::Arc::clone(&host);
-        let wedge_call = tokio::spawn(async move { wedger.load("__block__").await });
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let big = "x".repeat(8 * 1024 * 1024);
-        let t0 = std::time::Instant::now();
-        let err = host
-            .load(&big)
-            .await
-            .expect_err("a write into a full pipe must fail at the belt");
-        assert!(
-            err.contains("stopped reading") || err.contains("exited") || err.contains("died"),
-            "the belt names the wedge: {err}"
-        );
-        assert!(
-            t0.elapsed() < std::time::Duration::from_secs(10),
-            "bounded, not a blocked write: {:?}",
-            t0.elapsed()
-        );
-        // The host is gone now: the wedged call was failed (never left
-        // pending forever) and a fresh call fails fast without a window.
-        let wedged = tokio::time::timeout(std::time::Duration::from_secs(5), wedge_call)
-            .await
-            .expect("the in-flight call is failed when the host is declared gone")
-            .unwrap();
-        assert!(wedged.is_err());
-        let t1 = std::time::Instant::now();
-        let err = host.load("after").await.expect_err("host is gone");
-        assert!(err.contains("exited"), "{err}");
-        assert!(
-            t1.elapsed() < std::time::Duration::from_millis(500),
-            "fail-fast on a declared-gone host: {:?}",
-            t1.elapsed()
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    // The other half of the write belt: a timeout that elapsed while still
-    // WAITING ON THE STDIN MUTEX wrote zero bytes of its frame — the holder
-    // is a concurrent write against a possibly healthy pipe — so it fails
-    // ONLY that call. The host survives and later calls succeed; only a
-    // mid-frame timeout (the test above) declares the host gone.
-    #[tokio::test]
-    async fn write_timeout_waiting_on_the_stdin_mutex_fails_only_that_call() {
-        let root = std::env::temp_dir().join(format!("oj-busy-stdin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let plugins = root.join("oj.plugins.mjs");
-        std::fs::write(&plugins, "export default [];\n").unwrap();
-        let config = serde_json::json!({
-            "config": { "root": root.display().to_string() },
-            "env": { "command": "serve", "mode": "development" },
-        })
-        .to_string();
-        let host = match PluginHost::spawn_with_timeouts(
+        let host = PluginHost::spawn_with_timeouts(
             &root,
             &plugins,
             &config,
@@ -3037,29 +2619,366 @@ mod vite_values_tests {
             },
         )
         .await
-        {
-            Ok(h) => h,
-            Err(_) => return, // no node on this machine
-        };
-        // Healthy and initialized (the serve-info ACK is already written).
+        .expect("the embedded engine spawns");
+        // Prove init landed (post-init transport is what is under test).
         host.load("warmup").await.expect("healthy host answers");
 
-        // A concurrent writer holds the pipe (the healthy-but-slow-drain
-        // shape, made deterministic): the racing call must time out WAITING,
-        // having written nothing — and fail alone.
-        let guard = host.stdin.lock().await;
+        let t0 = std::time::Instant::now();
+        let err = host
+            .load("__block__")
+            .await
+            .expect_err("a synchronous wedge fails at its own deadline");
+        assert!(
+            err.contains("timed out") && err.contains("OJ_PLUGIN_TIMEOUT"),
+            "one call fails on its timeout, the host is kept: {err}"
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(10),
+            "bounded: {:?}",
+            t0.elapsed()
+        );
+        // The wedge was terminated, not the host: later calls succeed.
+        host.load("after")
+            .await
+            .expect("the host survives a terminated synchronous wedge");
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The transport belt: a hook that blocks the isolate thread in NATIVE
+    // code (a blocking child wait here — the same category as a wedged napi
+    // call; note `Atomics.wait` does NOT qualify, V8's terminate interrupts
+    // it) cannot be interrupted by the watchdog and stops the engine's
+    // scheduler entirely, so no reply of any kind — not even the deadline
+    // expiry — can land. The belt (a second full window past the per-call
+    // deadline) declares the host GONE, and later calls fail fast instead of
+    // each burning a window on a wedged engine. The blocked thread itself
+    // leaks (detached) until the block ends: the documented cost of the
+    // in-process host.
+    #[tokio::test]
+    async fn natively_blocked_hook_declares_the_host_gone_and_later_calls_fail_fast() {
+        let root = std::env::temp_dir().join(format!("oj-wedged-native-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"import { execSync } from "node:child_process";
+export default [{
+  name: "native-blocker",
+  load(id) {
+    if (id.includes("__block__")) {
+      execSync("sleep 60");
+    }
+    return null;
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_with_timeouts(
+            &root,
+            &plugins,
+            &config,
+            true,
+            SpawnTimeouts {
+                init_wait: Some(std::time::Duration::from_secs(30)),
+                rpc: Some(std::time::Duration::from_secs(1)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the embedded engine spawns");
+        host.load("warmup").await.expect("healthy host answers");
+
+        let t0 = std::time::Instant::now();
+        let err = host
+            .load("__block__")
+            .await
+            .expect_err("a native block must fail at the belt");
+        assert!(
+            err.contains("unresponsive") || err.contains("exited"),
+            "the belt names the wedge: {err}"
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(10),
+            "bounded, not a blocked transport: {:?}",
+            t0.elapsed()
+        );
+        // The host is gone now: a fresh call fails fast without a window.
+        let t1 = std::time::Instant::now();
+        let err = host.load("after").await.expect_err("host is gone");
+        assert!(err.contains("exited"), "{err}");
+        assert!(
+            t1.elapsed() < std::time::Duration::from_millis(500),
+            "fail-fast on a declared-gone host: {:?}",
+            t1.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The other half of the belt distinction: a hook that merely never
+    // SETTLES (a hung promise — the isolate itself stays healthy) fails only
+    // that one call, at the per-call deadline, and the host keeps serving
+    // everyone else — the old "reply timed out, host kept" semantics. Only
+    // total scheduler silence (the test above) declares the host gone.
+    #[tokio::test]
+    async fn hung_hook_promise_fails_only_that_call() {
+        let root = std::env::temp_dir().join(format!("oj-hung-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"export default [{
+  name: "hanger",
+  load(id) {
+    if (id.includes("__hang__")) return new Promise(() => {});
+    return null;
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_with_timeouts(
+            &root,
+            &plugins,
+            &config,
+            true,
+            SpawnTimeouts {
+                init_wait: Some(std::time::Duration::from_secs(30)),
+                rpc: Some(std::time::Duration::from_secs(1)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the embedded engine spawns");
+        host.load("warmup").await.expect("healthy host answers");
+
+        // A concurrent healthy call proves the hang costs nobody else their
+        // window while the hung one waits out its own deadline.
         let racer = std::sync::Arc::clone(&host);
-        let err = tokio::spawn(async move { racer.load("raced").await })
+        let healthy = tokio::spawn(async move { racer.load("alongside").await });
+        let t0 = std::time::Instant::now();
+        let err = host
+            .load("__hang__")
+            .await
+            .expect_err("a never-settling hook fails at its own deadline");
+        assert!(
+            err.contains("timed out") && err.contains("OJ_PLUGIN_TIMEOUT"),
+            "names the per-call timeout, not a wedge: {err}"
+        );
+        assert!(
+            t0.elapsed() >= std::time::Duration::from_millis(900)
+                && t0.elapsed() < std::time::Duration::from_secs(2),
+            "fails at the deadline, before the belt: {:?}",
+            t0.elapsed()
+        );
+        healthy
             .await
             .unwrap()
-            .expect_err("the call bounded by a held pipe fails");
-        assert!(err.contains("stdin busy"), "names the busy pipe, not a wedge: {err}");
-        drop(guard);
+            .expect("a concurrent call is untouched by the hang");
 
         // The host was NOT declared gone: later calls succeed.
         host.load("after")
             .await
-            .expect("the host survives a zero-byte write timeout");
+            .expect("the host survives an abandoned hook promise");
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Process isolation: the in-process host shares oj's process, so a
+    // plugin's env writes land in a private shadow (visible to the plugins
+    // and to getEnvDelta) and NEVER in oj's real environment. The host's cwd
+    // IS the app root (a real chdir at boot, like the old spawn's
+    // current_dir — relative fs paths in hooks depend on it), and a plugin's
+    // own process.chdir is contained to the shadow afterwards.
+    #[tokio::test]
+    async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
+        let root = std::env::temp_dir().join(format!("oj-env-shadow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            "process.env.OJ_HOST_CWD_BEFORE = process.cwd();\n\
+             process.chdir(\"/\");\n\
+             process.env.OJ_HOST_CWD_AFTER = process.cwd();\n\
+             export default [];\n",
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+            .await
+            .expect("the embedded engine spawns");
+        let delta = host.env_delta().await;
+        let before = delta
+            .get("OJ_HOST_CWD_BEFORE")
+            .expect("the write is visible in the host's own delta");
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        assert!(
+            *before == canonical_root.display().to_string()
+                || *before == root.display().to_string(),
+            "the host's cwd is the app root: {before}"
+        );
+        assert_eq!(
+            delta.get("OJ_HOST_CWD_AFTER").map(String::as_str),
+            Some("/"),
+            "a plugin's chdir moves the host's SHADOW cwd"
+        );
+        assert!(
+            std::env::var("OJ_HOST_CWD_BEFORE").is_err() && std::env::var("OJ_HOST_CWD_AFTER").is_err(),
+            "a plugin's env write must never reach oj's real environment"
+        );
+        assert_ne!(
+            std::env::current_dir().unwrap(),
+            std::path::PathBuf::from("/"),
+            "a plugin's chdir must not move oj's real cwd"
+        );
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Vite's ordering guarantee: buildStart completes before any serving hook
+    // runs, so an object-form plugin that computes closure state in
+    // buildStart() and reads it in load() (the i18n-barrel shape) never sees
+    // a load first. The host is spawned lazily and NEVER told to buildStart —
+    // the gate at the hook entry must run it — and the first loads arrive
+    // concurrently, which is exactly the race the in-process host had: an
+    // engine call job reaching load() while buildStart had not settled read
+    // `plan` as undefined and 500ed the module.
+    #[tokio::test]
+    async fn build_start_settles_before_any_load_even_under_concurrent_first_calls() {
+        let root = std::env::temp_dir().join(format!("oj-buildstart-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"let plan;
+export default [{
+  name: "closure-state",
+  buildStart() {
+    // Slow on purpose: an ungated load lands well inside this window.
+    return new Promise((resolve) => setTimeout(() => {
+      plan = { groups: "compiled-groups" };
+      resolve();
+    }, 300));
+  },
+  load(id) {
+    if (id === "\0closure-barrel") return `export default ${JSON.stringify(plan.groups)};`;
+    return null;
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+            .await
+            .expect("the embedded engine spawns");
+        let (a, b, c, d) = tokio::join!(
+            host.load("\u{0}closure-barrel"),
+            host.load("\u{0}closure-barrel"),
+            host.load("\u{0}closure-barrel"),
+            host.load("\u{0}closure-barrel"),
+        );
+        for (i, r) in [a, b, c, d].into_iter().enumerate() {
+            let code = r
+                .unwrap_or_else(|e| panic!("first load #{i} must not race buildStart: {e}"))
+                .expect("the plugin claims the id");
+            assert!(
+                code.contains("compiled-groups"),
+                "load #{i} must serve the buildStart-computed state: {code}"
+            );
+        }
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The push channel end to end: a configureServer middleware makes the
+    // host bring up its loopback middleware server and push { ojServeInfo }
+    // with the port; a server.ws.send lands on the ws broadcast; a
+    // server.restart() lands on the server-events channel. All of it arrives
+    // as engine-channel values with no framing in between.
+    #[tokio::test]
+    async fn push_channel_delivers_serve_info_ws_and_server_events() {
+        let root = std::env::temp_dir().join(format!("oj-push-dispatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"export default [{
+  name: "pusher",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => next());
+    server.ws.send("oj:probe", { n: 7 });
+    server.restart();
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+            .await
+            .expect("the embedded engine spawns");
+        let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel(16);
+        host.set_ws_sender(ws_tx);
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
+        host.set_server_events_sender(ev_tx);
+
+        let mut serve_info = host.serve_info_updates();
+        let pushed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            serve_info.wait_for(Option::is_some),
+        )
+        .await
+        .expect("the serve-info push arrives")
+        .expect("watch alive");
+        let info = pushed.expect("serve info present");
+        assert!(
+            info.middleware_port.is_some(),
+            "a registered middleware reports its loopback port"
+        );
+        drop(pushed);
+
+        // The senders were installed before init began, and configureServer
+        // (where the plugin pushed both) runs before the serve-info push that
+        // released the wait above — so both deliveries are already in.
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(10), ws_rx.recv())
+            .await
+            .expect("the ws push arrives")
+            .expect("broadcast alive");
+        assert!(payload.contains("oj:probe") && payload.contains("custom"), "{payload}");
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(10), ev_rx.recv())
+            .await
+            .expect("the server event arrives")
+            .expect("channel alive");
+        assert_eq!(ev.get("action").and_then(|a| a.as_str()), Some("restart"));
         host.shutdown();
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3495,5 +3414,297 @@ mod vite_values_tests {
         let again = unseen_extraction_lines("oj: vite.config: worker config is not applied\nsome plugin notice\nnew line\n");
         assert_eq!(again, "new line\n", "only lines not printed before in this process come back");
         assert_eq!(unseen_extraction_lines(""), "");
+    }
+}
+
+// The extraction contract through the REAL in-process engine: these boot a V8
+// isolate per case, so they are serialized on one lock (and any test that
+// touches the extraction env knobs must hold it while they are set).
+#[cfg(test)]
+mod engine_extraction_tests {
+    use super::*;
+
+    static ENGINE_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        ENGINE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn app(config: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"fx","version":"1.0.0","type":"module"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("vite.config.mjs"), config).unwrap();
+        dir
+    }
+
+    #[test]
+    fn extraction_returns_values_and_caches_them() {
+        let _g = lock();
+        let dir = app(r#"export default { base: "/app/", server: { port: 5199 } };"#);
+        let root = dir.path();
+        let v = extract_vite_values_with(root, "serve", "development", true)
+            .expect("a valid config extracts");
+        assert_eq!(v.base.as_deref(), Some("/app/"));
+        assert_eq!(v.port, Some(5199));
+
+        // The run was cached under the engine-marked version tag, stderr field
+        // and all, and the cached output parses back to the same values.
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.mjs"), "serve", "development")
+            .expect("the extraction is cached");
+        let json: serde_json::Value = serde_json::from_str(&hit.output).unwrap();
+        assert_eq!(json["base"], "/app/");
+        assert!(
+            json.get("__stderr").is_none(),
+            "the transcript is stored in its own field, not inside the output"
+        );
+        // The env files Vite would load for this mode are stamped, absent or
+        // not, so creating one later is a cache miss.
+        assert!(
+            hit.deps.iter().any(|d| d.ends_with(".env.development")),
+            "mode env files are stamped: {:?}",
+            hit.deps
+        );
+    }
+
+    #[test]
+    fn a_broken_config_is_none_not_an_empty_config() {
+        let _g = lock();
+        let dir = app("throw new Error('config exploded');\nexport default {};");
+        let root = dir.path();
+        assert!(
+            extract_vite_values_with(root, "serve", "development", true).is_none(),
+            "a config that fails to evaluate must never parse as empty values"
+        );
+        assert!(
+            extraction_store(root)
+                .lookup(&root.join("vite.config.mjs"), "serve", "development")
+                .is_none(),
+            "a failed extraction is never cached"
+        );
+        // ...and the adopt seam surfaces it as the load error Vite gives.
+        let mut config = oj_config::OjConfig::default();
+        let err = adopt_vite_config_values(&mut config, root, "serve", "development")
+            .expect_err("a present-but-broken vite.config is an error");
+        assert!(err.contains("failed to load config"), "{err}");
+    }
+
+    #[test]
+    fn config_imports_are_recorded_as_deps() {
+        let _g = lock();
+        let dir = app(
+            r#"import { base } from "./base.config.mjs";
+export default { base };"#,
+        );
+        let root = dir.path();
+        std::fs::write(root.join("base.config.mjs"), "export const base = \"/dep/\";\n").unwrap();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/dep/"));
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.mjs"), "serve", "development")
+            .expect("cached");
+        assert!(
+            hit.deps.iter().any(|d| d.ends_with("base.config.mjs")),
+            "the config's own imports invalidate the cache: {:?}",
+            hit.deps
+        );
+    }
+
+    #[test]
+    fn truncated_observed_reads_serve_but_never_cache() {
+        let _g = lock();
+        // Cap the read recorder at one path; the config reads two .json files
+        // (through the fs default object, the surface the recorder wraps), so
+        // the dep stamp is incomplete and the result must not be cached.
+        std::env::set_var("OJ_OBSERVED_READS_MAX", "1");
+        let dir = app(
+            r#"import fs from "node:fs";
+const a = JSON.parse(fs.readFileSync(new URL("./a.json", import.meta.url), "utf8"));
+const b = JSON.parse(fs.readFileSync(new URL("./b.json", import.meta.url), "utf8"));
+export default { base: a.base + b.base };"#,
+        );
+        let root = dir.path();
+        std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
+        std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
+        let result = extract_vite_values_with(root, "serve", "development", true);
+        std::env::remove_var("OJ_OBSERVED_READS_MAX");
+        let v = result.expect("the result is still served");
+        assert_eq!(v.base.as_deref(), Some("/a/b"));
+        assert!(
+            extraction_store(root)
+                .lookup(&root.join("vite.config.mjs"), "serve", "development")
+                .is_none(),
+            "an extraction with a truncated dep stamp must not be cached"
+        );
+    }
+
+    #[test]
+    fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
+        let _g = lock();
+        std::env::set_var("OJ_EXTRACT_TIMEOUT", "2");
+        let dir = app("await new Promise(() => {});\nexport default {};");
+        let root = dir.path();
+        let started = std::time::Instant::now();
+        let result = extract_vite_values_with(root, "serve", "development", true);
+        std::env::remove_var("OJ_EXTRACT_TIMEOUT");
+        assert!(result.is_none(), "a wedged config evaluation is a failure");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the deadline must end the wait, not the config's leisure"
+        );
+    }
+
+    #[test]
+    fn a_hook_started_interval_does_not_outlive_the_extraction() {
+        let _g = lock();
+        // The in-process equivalent of the old one-shot subprocess's
+        // process.exit(0): a config that leaves timers behind (the TanStack
+        // route generator shape) must not stall the caller, and the engine
+        // dies with them at drop.
+        let dir = app("setInterval(() => {}, 1000);\nexport default { base: \"/live/\" };");
+        let root = dir.path();
+        let started = std::time::Instant::now();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/live/"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "a live timer must not hold the extraction open"
+        );
+    }
+
+    #[test]
+    fn stderr_prints_from_config_code_travel_in_the_transcript() {
+        let _g = lock();
+        let dir = app(
+            r#"console.error("plugin says hi");
+process.stderr.write("direct stderr write\n");
+console.log("stdout is swallowed");
+export default { base: "/loud/" };"#,
+        );
+        let root = dir.path();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/loud/"));
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.mjs"), "serve", "development")
+            .expect("cached");
+        assert!(hit.stderr.contains("plugin says hi"), "{}", hit.stderr);
+        assert!(hit.stderr.contains("direct stderr write"), "{}", hit.stderr);
+        assert!(
+            !hit.stderr.contains("stdout is swallowed"),
+            "stdout prints are dropped, as the old subprocess capture dropped them: {}",
+            hit.stderr
+        );
+    }
+
+    #[test]
+    fn config_env_writes_do_not_leak_into_the_oj_process() {
+        let _g = lock();
+        // The old subprocess kept env mutations to itself; the in-process
+        // engine must shadow process.env the same way (Vite's own NODE_ENV
+        // dance runs on every extraction).
+        let dir = app(
+            r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
+export default { base: "/env/" };"#,
+        );
+        let root = dir.path();
+        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        assert_eq!(v.base.as_deref(), Some("/env/"));
+        assert!(
+            std::env::var("OJ_EXTRACT_LEAK_PROBE").is_err(),
+            "a config's env write must die with its extraction"
+        );
+    }
+
+    // The TS-config fallback (no vite installed): the extractor bundles the
+    // config with the app's esbuild — a child process spawned from inside the
+    // engine — writes the bundle next to its own script and imports it.
+    // Skips quietly where the start-app fixture has no node_modules.
+    #[test]
+    fn a_ts_config_without_vite_loads_through_the_esbuild_fallback() {
+        let _g = lock();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let esbuild = repo.join("e2e/fixtures/start-app/node_modules/esbuild");
+        if !esbuild.exists() {
+            eprintln!("skipping: fixture esbuild not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"fx","version":"1.0.0","type":"module","dependencies":{"esbuild":"*"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&esbuild, root.join("node_modules/esbuild")).unwrap();
+        let scoped = repo.join("e2e/fixtures/start-app/node_modules/@esbuild");
+        if scoped.exists() {
+            std::os::unix::fs::symlink(&scoped, root.join("node_modules/@esbuild")).unwrap();
+        }
+        std::fs::write(root.join("shared.ts"), "export const port: number = 5321;\n").unwrap();
+        std::fs::write(
+            root.join("vite.config.ts"),
+            "import { port } from \"./shared\";\nexport default { base: \"/ts/\" as const, server: { port } };\n",
+        )
+        .unwrap();
+        let v = extract_vite_values_with(root, "serve", "development", true)
+            .expect("the TS config loads through the esbuild fallback");
+        assert_eq!(v.base.as_deref(), Some("/ts/"));
+        assert_eq!(v.port, Some(5321));
+        // The bundle's metafile names the config's imports as deps.
+        let hit = extraction_store(root)
+            .lookup(&root.join("vite.config.ts"), "serve", "development")
+            .expect("cached");
+        assert!(
+            hit.deps.iter().any(|d| d.ends_with("shared.ts")),
+            "esbuild metafile inputs are stamped: {:?}",
+            hit.deps
+        );
+    }
+
+    // The phase's crux, checked at the exact seam production uses: a module
+    // running on the engine spawns a real child process (as esbuild's JS API
+    // spawns its Go service) and reads it back.
+    #[test]
+    fn engine_jobs_can_spawn_child_processes() {
+        let _g = lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"fx","version":"1.0.0","type":"module"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("spawn-job.mjs"),
+            r#"import { execFileSync, spawn } from "node:child_process";
+export async function run() {
+  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8" }).trim();
+  const child = spawn("/bin/echo", ["piped-child"]);
+  let piped = "";
+  child.stdout.on("data", (d) => { piped += d.toString(); });
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  return { sync, piped: piped.trim(), code };
+}
+"#,
+        )
+        .unwrap();
+        if !std::path::Path::new("/bin/echo").exists() {
+            return; // not a unix-y machine: the seam under test cannot run
+        }
+        let out = run_engine_job(
+            dir.path(),
+            &dir.path().join("spawn-job.mjs"),
+            "run",
+            serde_json::json!({}),
+            std::time::Duration::from_secs(30),
+        )
+        .expect("child_process must work under the embedded engine");
+        assert_eq!(out["sync"], "sync-child");
+        assert_eq!(out["piped"], "piped-child");
+        assert_eq!(out["code"], 0);
     }
 }

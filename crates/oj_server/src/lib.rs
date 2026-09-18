@@ -18,16 +18,19 @@ use axum::{
 };
 use oj_cache::{CachedModule, PersistentCache};
 
+pub mod css_engine;
 pub mod optimize;
 pub mod pkg_bundle;
 pub mod pkg_rolldown;
 pub mod plugins;
+mod preseed;
 pub mod sidecar;
 pub mod svgr;
+use css_engine::CssEngine;
 use oj_graph::{HmrDecision, ModuleGraph};
 use oj_resolver::OjResolver;
 use plugins::PluginHost;
-use sidecar::{is_tailwind_css, Sidecar};
+use sidecar::is_tailwind_css;
 use tokio::sync::broadcast;
 
 #[inline]
@@ -91,7 +94,6 @@ const REFRESH_RUNTIME_JS: &str = include_str!("assets/refresh-runtime.js");
 const REFRESH_PREAMBLE_JS: &str = include_str!("assets/refresh-preamble.js");
 const BUNDLE_RUNTIME_JS: &str = include_str!("assets/bundle-runtime.js");
 const WORKER_RUNTIME_JS: &str = include_str!("assets/worker-runtime.js");
-pub const SSR_RUNNER_JS: &str = include_str!("assets/ssr-runner.mjs");
 // Probed in Vite's DEFAULT_EXTENSIONS order (js before ts, .mts included) so the
 // extensionless quick path agrees with the resolver; .cts/.svelte trail as
 // compilable-but-not-default-probed.
@@ -115,10 +117,6 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/vite-plugin-bridge.mjs"),
     ),
     (
-        "container-bridge.mjs",
-        include_str!("assets/start/container-bridge.mjs"),
-    ),
-    (
         "glob-transform.mjs",
         include_str!("assets/start/glob-transform.mjs"),
     ),
@@ -132,13 +130,6 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/cf-server-worker.mjs"),
     ),
     ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
-    ("css-host.mjs", include_str!("assets/start/css-host.mjs")),
-    ("loader.mjs", include_str!("assets/start/loader.mjs")),
-    (
-        "loader-util.mjs",
-        include_str!("assets/start/loader-util.mjs"),
-    ),
-    ("runner.mjs", include_str!("assets/start/runner.mjs")),
     ("generate.mjs", include_str!("assets/start/generate.mjs")),
     (
         "gen-resolver.mjs",
@@ -185,6 +176,21 @@ pub fn boot_phase(label: &str) {
     eprintln!("[oj-phase] {ms} {label}");
 }
 
+/// The persistent V8 code-cache directory for embedded engines
+/// (`oj_js::EngineConfig::code_cache_dir`): compiled bytecode for the app's
+/// toolchain, reused across engine spawns and one-shot children — the
+/// engine-side analog of NODE_COMPILE_CACHE. Keyed by the engine's ABI
+/// (`oj_js::engine_abi_key`, the V8 version), NOT the oj version: per-entry
+/// source hashes already invalidate changed scripts, so an oj release keeps
+/// the warm cache instead of cold-starting every engine, and only a V8
+/// upgrade (whose bytecode the new V8 would reject anyway) rotates the
+/// directory.
+pub fn engine_code_cache_dir(root: &Path) -> PathBuf {
+    oj_cache::cache_root(root)
+        .join("code-cache")
+        .join(oj_js::engine_abi_key())
+}
+
 pub fn node_compile_cache(root: &Path) -> std::ffi::OsString {
     std::env::var_os("NODE_COMPILE_CACHE")
         .unwrap_or_else(|| oj_cache::cache_root(root).join("v8").into_os_string())
@@ -224,6 +230,20 @@ pub fn is_tanstack_start_app(root: &Path) -> bool {
         && std::fs::read_to_string(root.join("package.json"))
             .map(|s| s.contains("@tanstack/react-start"))
             .unwrap_or(false)
+}
+
+/// Deduplicate a define list keeping the LAST occurrence of each key (later
+/// layers override earlier ones, as in Vite's define merge).
+fn dedup_defines_last_wins(defines: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(defines.len());
+    for (k, v) in defines {
+        if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k) {
+            slot.1 = v;
+        } else {
+            out.push((k, v));
+        }
+    }
+    out
 }
 
 pub struct DevServer {
@@ -271,9 +291,9 @@ struct ServerState {
     patch_seq: std::sync::atomic::AtomicU64,
     chunk_cache: Mutex<Option<(String, Arc<String>)>>,
     cache_writes: tokio::sync::mpsc::Sender<(String, Arc<CachedModule>)>,
-    tailwind: tokio::sync::OnceCell<std::sync::Arc<Sidecar>>,
-    preprocess: tokio::sync::OnceCell<std::sync::Arc<Sidecar>>,
-    svelte: tokio::sync::OnceCell<std::sync::Arc<Sidecar>>,
+    tailwind: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
+    preprocess: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
+    svelte: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     tailwind_urls: Mutex<std::collections::HashSet<String>>,
     has_postcss: bool,
     scss_additional_data: Option<String>,
@@ -609,6 +629,8 @@ pub struct BuiltApp {
     /// The HMR gate (the editor-driven hold), when enabled: the Start
     /// server holds its page reload behind it like the plain path holds updates.
     pub hmr_gate: Option<HmrGateHandle>,
+    /// The SSR resolve/load pipeline, for the in-process SSR module runner.
+    pub ssr: SsrBridge,
 }
 
 pub async fn bind_dev_listener(
@@ -728,7 +750,6 @@ impl DevServer {
             );
             defines.extend(oj_config::config_defines(&config));
             defines.extend(oj_config::environment_defines(&config, "client"));
-            defines.extend(oj_config::environment_defines(&config, "ssr"));
             let node_env_json =
                 serde_json::to_string(&node_env).unwrap_or_else(|_| "\"development\"".into());
             for key in [
@@ -740,7 +761,10 @@ impl DevServer {
                     defines.push((key.to_string(), node_env_json.clone()));
                 }
             }
-            defines
+            // Later entries win, and the oxc replacer refuses duplicate keys
+            // outright (which would silently disable every define), so the
+            // list is deduped keeping the last occurrence.
+            dedup_defines_last_wins(defines)
         };
         let digest_defines = |defines: &[(String, String)]| {
             let mut hasher = blake3::Hasher::new();
@@ -756,6 +780,13 @@ impl DevServer {
         let mut html_env = oj_env::html_env_map(&defines);
         let mut env_defines_digest = digest_defines(&defines);
         oj_compiler::set_import_meta_env(defines);
+        // `environments.ssr.define` layers over the shared define for SSR
+        // compiles only (Vite's per-environment define): kept out of the
+        // client list so a key defined differently per side (a
+        // "client"/"server" marker) does not leak across.
+        oj_compiler::set_import_meta_env_ssr(dedup_defines_last_wins(
+            oj_config::environment_defines(&config, "ssr"),
+        ));
 
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
@@ -794,14 +825,10 @@ impl DevServer {
             None => (None, "oj", String::new()),
         };
 
-        let ssr_bridge_dir = if is_start && plugins_path.is_some() {
-            plugins::ensure_ssr_bridge(&root)
-        } else {
-            None
-        };
-        if is_start && ssr_bridge_dir.is_none() {
-            plugins::disable_ssr_bridge(&root);
-        }
+        // The environment.mode the host hands buildEnvironments, which passes
+        // it to vite.resolveConfig verbatim: the deps pre-seed child must
+        // resolve with the SAME string or its cache hashes cannot match.
+        let host_env_mode = "dev";
         let mut plugin_cfg = serde_json::json!({
             "config": {
                 "root": root.display().to_string(),
@@ -821,7 +848,7 @@ impl DevServer {
                 "environments": config.environments.clone().unwrap_or_default(),
             },
             "env": { "command": "serve", "mode": dev_mode },
-            "environment": { "name": "client", "mode": "dev" },
+            "environment": { "name": "client", "mode": host_env_mode },
             "pluginsFormat": plugins_format,
             "ojStartMode": is_start,
         });
@@ -837,13 +864,21 @@ impl DevServer {
             plugin_cfg["runnerBacked"] =
                 serde_json::json!(oj_config::ssr_runner_backed(&config));
         }
-        if let Some(dir) = &ssr_bridge_dir {
-            plugin_cfg["ssrBridge"] = serde_json::json!({ "dir": dir.display().to_string() });
-        }
         let plugin_config = plugin_cfg.to_string();
         plugin_cfg["environment"]["name"] = serde_json::json!("ssr");
-        plugin_cfg.as_object_mut().unwrap().remove("ssrBridge");
         let ssr_plugin_config = plugin_cfg.to_string();
+        // Optimizer quarantine: a runner-backed config boots the app's real
+        // Vite DevEnvironments inside the in-process plugin host, and a cold
+        // deps cache then runs Vite's dep optimizer — a rolldown build whose
+        // native retention is process-scoped — inside oj. Pre-seed the caches
+        // in a one-shot child first, so the host finds them warm and never
+        // builds in-process (see preseed.rs for the gate and the known gaps).
+        if plugins_path.is_some()
+            && plugins_format == "vite"
+            && oj_config::ssr_runner_backed(&config)
+        {
+            preseed::preseed_server_deps(&root, host_env_mode).await;
+        }
         boot_phase("plugin host spawning");
         let plugin_host = match plugins_path {
             Some(file) => match PluginHost::spawn(&root, &file, &plugin_config).await {
@@ -862,9 +897,6 @@ impl DevServer {
                     let plugin_count = host.plugin_count().await;
                     if plugin_count == 0 && !keep_for_proxy {
                         host.shutdown();
-                        if ssr_bridge_dir.is_some() {
-                            plugins::disable_ssr_bridge(&root);
-                        }
                         println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
                         None
                     } else if plugin_count == 0 {
@@ -888,9 +920,6 @@ impl DevServer {
                 }
                 Err(e) => {
                     eprintln!("oj: plugin host failed to start: {e}");
-                    if ssr_bridge_dir.is_some() {
-                        plugins::disable_ssr_bridge(&root);
-                    }
                     None
                 }
             },
@@ -1358,6 +1387,9 @@ impl DevServer {
         }
         let proxy_prefixes: Vec<String> = state.proxy.iter().map(|(p, _)| p.clone()).collect();
         let hmr_gate = state.hmr_gate.as_ref().map(|_| HmrGateHandle { state: Arc::clone(&state) });
+        let ssr = SsrBridge {
+            state: Arc::clone(&state),
+        };
         let app = app.with_state(state);
 
         Ok(BuiltApp {
@@ -1373,6 +1405,7 @@ impl DevServer {
             plugin_host,
             open,
             hmr_gate,
+            ssr,
         })
     }
 }
@@ -1583,6 +1616,156 @@ fn with_inline_map(code: String, map_data_url: Option<String>) -> String {
     }
 }
 
+/// How the SSR pipeline resolved an import: a module it serves (through
+/// `/@ssr-module` or [`SsrBridge::load_module`]), or an external the runner
+/// imports from node_modules with its own Node resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SsrResolution {
+    Module(String),
+    External(String),
+}
+
+/// Why an SSR module could not be served.
+#[derive(Debug)]
+pub enum SsrModuleError {
+    Forbidden(String),
+    NotFound(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for SsrModuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SsrModuleError::Forbidden(m)
+            | SsrModuleError::NotFound(m)
+            | SsrModuleError::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
+/// In-process access to the SSR resolve/load pipeline behind `/@ssr-resolve`
+/// and `/@ssr-module`, for the embedded SSR module runner. Both entry points
+/// share one implementation, so the HTTP endpoints and the runner can never
+/// drift apart.
+#[derive(Clone)]
+pub struct SsrBridge {
+    state: Arc<ServerState>,
+}
+
+impl SsrBridge {
+    pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
+        ssr_resolve_inner(&self.state, importer, spec).await
+    }
+
+    /// The module's transformed code (plugins + dev-ssr compile), with its
+    /// source map inline.
+    pub async fn load_module(&self, id: &str) -> Result<String, SsrModuleError> {
+        ssr_module_inner(&self.state, id, false).await
+    }
+
+    /// Resolution for the in-process Start module host: unlike [`resolve`],
+    /// a hit inside node_modules keeps its RESOLVED path, so the host can
+    /// hand the engine the exact file the Vite-style resolver picked
+    /// (mainFields, extension probing, exports conditions) instead of
+    /// re-resolving the bare specifier with plain Node semantics.
+    pub async fn resolve_start(
+        &self,
+        importer: &str,
+        spec: &str,
+    ) -> Result<StartResolution, String> {
+        let state = &self.state;
+        let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
+        match state.ssr_resolver.resolve(importer_dir, spec) {
+            Ok(p) => {
+                if p.to_string_lossy().contains("/node_modules/") {
+                    Ok(StartResolution::Dependency(p))
+                } else {
+                    Ok(StartResolution::Module(p.to_string_lossy().into_owned()))
+                }
+            }
+            Err(e) => {
+                if let Some(host) = ssr_plugin_host(state).await {
+                    if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
+                        return Ok(StartResolution::Module(id));
+                    }
+                }
+                if !spec.starts_with('.') && !spec.starts_with('/') {
+                    return Ok(StartResolution::Bare(spec.to_string()));
+                }
+                Err(format!("cannot resolve {spec}: {}", e.reason))
+            }
+        }
+    }
+
+    /// The plugin-transform + compile tail on a source the caller pre-read
+    /// (or pre-rewrote); `from_plugin` marks virtual content. `run_plugins:
+    /// false` skips the plugin transform chain (the caller already ran it,
+    /// e.g. an mdx compile) and only applies the dev-ssr compile.
+    pub async fn transform_module(
+        &self,
+        id: &str,
+        source: String,
+        from_plugin: bool,
+        run_plugins: bool,
+    ) -> Result<String, SsrModuleError> {
+        if run_plugins {
+            ssr_transform_source(&self.state, id, source, from_plugin, false).await
+        } else {
+            ssr_compile_source(&self.state, id, source, from_plugin, false)
+        }
+    }
+
+    /// The lazily spawned ssr-environment plugin host, when the app has one.
+    pub async fn plugin_host(&self) -> Option<std::sync::Arc<PluginHost>> {
+        ssr_plugin_host(&self.state).await
+    }
+
+    /// Whether the SSR pipeline may serve this module path (root, allow-list,
+    /// node_modules), the same rule `load_module` enforces.
+    pub fn module_allowed(&self, path: &Path) -> bool {
+        ssr_module_allowed(&self.state, path)
+    }
+}
+
+/// How the Start module host's resolution landed: a module the pipeline serves
+/// (an app fs path or a plugin virtual id), a resolved dependency file inside
+/// node_modules, or a bare specifier left to Node semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartResolution {
+    Module(String),
+    Dependency(PathBuf),
+    Bare(String),
+}
+
+async fn ssr_resolve_inner(
+    state: &Arc<ServerState>,
+    importer: &str,
+    spec: &str,
+) -> Result<SsrResolution, String> {
+    let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
+    match state.ssr_resolver.resolve(importer_dir, spec) {
+        Ok(p) => {
+            let s = p.to_string_lossy();
+            if s.contains("/node_modules/") {
+                Ok(SsrResolution::External(spec.to_string()))
+            } else {
+                Ok(SsrResolution::Module(s.into_owned()))
+            }
+        }
+        Err(e) => {
+            if let Some(host) = ssr_plugin_host(state).await {
+                if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
+                    return Ok(SsrResolution::Module(id));
+                }
+            }
+            if !spec.starts_with('.') && !spec.starts_with('/') {
+                return Ok(SsrResolution::External(spec.to_string()));
+            }
+            Err(format!("cannot resolve {spec}: {}", e.reason))
+        }
+    }
+}
+
 async fn ssr_resolve(
     State(state): State<Arc<ServerState>>,
     Query(q): Query<HashMap<String, String>>,
@@ -1590,32 +1773,12 @@ async fn ssr_resolve(
     let (Some(importer), Some(spec)) = (q.get("importer"), q.get("spec")) else {
         return (StatusCode::BAD_REQUEST, "importer and spec required").into_response();
     };
-    let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
-    match state.ssr_resolver.resolve(importer_dir, spec) {
-        Ok(p) => {
-            let s = p.to_string_lossy();
-            let body = if s.contains("/node_modules/") {
-                serde_json::json!({ "external": true, "spec": spec })
-            } else {
-                serde_json::json!({ "id": s })
-            };
-            js_response_json(body)
+    match ssr_resolve_inner(&state, importer, spec).await {
+        Ok(SsrResolution::Module(id)) => js_response_json(serde_json::json!({ "id": id })),
+        Ok(SsrResolution::External(spec)) => {
+            js_response_json(serde_json::json!({ "external": true, "spec": spec }))
         }
-        Err(e) => {
-            if let Some(host) = ssr_plugin_host(&state).await {
-                if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
-                    return js_response_json(serde_json::json!({ "id": id }));
-                }
-            }
-            if !spec.starts_with('.') && !spec.starts_with('/') {
-                return js_response_json(serde_json::json!({ "external": true, "spec": spec }));
-            }
-            (
-                StatusCode::NOT_FOUND,
-                format!("cannot resolve {spec}: {}", e.reason),
-            )
-                .into_response()
-        }
+        Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
 }
 
@@ -1651,6 +1814,106 @@ fn ssr_module_allowed(state: &ServerState, path: &Path) -> bool {
     module_read_allowed(&state.root, &allow, path)
 }
 
+async fn ssr_module_inner(
+    state: &Arc<ServerState>,
+    id: &str,
+    runner: bool,
+) -> Result<String, SsrModuleError> {
+    let path = PathBuf::from(id);
+    if !ssr_module_allowed(state, &path) {
+        return Err(SsrModuleError::Forbidden(
+            "oj: module not allow-listed".into(),
+        ));
+    }
+    let (source, from_plugin) = match std::fs::read(&path).and_then(bytes_to_string) {
+        Ok(s) => (s, false),
+        Err(read_err) => match ssr_plugin_host(state).await {
+            Some(host) => match host.load(id).await {
+                Ok(Some(code)) => (code, true),
+                _ => return Err(SsrModuleError::NotFound(format!("{id}: {read_err}"))),
+            },
+            None => return Err(SsrModuleError::NotFound(format!("{id}: {read_err}"))),
+        },
+    };
+    let ext = path.extension().and_then(|e| e.to_str());
+    if !from_plugin && ext.is_some_and(is_style_ext) {
+        let source = if is_preprocessor(id) {
+            run_preprocess_engine(state, id, &source, serde_json::Value::Null)
+                .await
+                .map_err(SsrModuleError::Failed)?
+        } else {
+            source
+        };
+        return ssr_css_module(&state.root, &path, &source).map_err(SsrModuleError::Failed);
+    }
+    if !from_plugin && ext == Some("json") {
+        return oj_compiler::json::to_esm(&source, id)
+            .map_err(|e| SsrModuleError::Failed(format!("{e}")));
+    }
+    ssr_transform_source(state, id, source, from_plugin, runner).await
+}
+
+/// The plugin-transform + dev-ssr-compile tail of the SSR module pipeline, on
+/// a source the caller already has (the fs read, a plugin `load()` override,
+/// or a pre-rewritten Start module).
+async fn ssr_transform_source(
+    state: &Arc<ServerState>,
+    id: &str,
+    source: String,
+    from_plugin: bool,
+    runner: bool,
+) -> Result<String, SsrModuleError> {
+    let source = match ssr_plugin_host(state).await {
+        Some(host) => {
+            let resolved =
+                resolved_imports_json(&state.resolver, &state.fs_allow, &source, Path::new(id));
+            match host.transform(&source, id, &resolved).await {
+                Ok((code, _, _, _)) => code,
+                Err(e) => {
+                    return Err(SsrModuleError::Failed(format!(
+                        "oj: plugin transform error for {id}:\n{e}"
+                    )));
+                }
+            }
+        }
+        None => source,
+    };
+    ssr_compile_source(state, id, source, from_plugin, runner)
+}
+
+/// The dev-ssr compile alone (no plugin transforms): TS/JSX strip, define,
+/// import.meta.env/glob, refresh off, SSR true.
+fn ssr_compile_source(
+    state: &Arc<ServerState>,
+    id: &str,
+    source: String,
+    from_plugin: bool,
+    runner: bool,
+) -> Result<String, SsrModuleError> {
+    let compile_path: PathBuf = if from_plugin {
+        PathBuf::from("virtual.tsx")
+    } else {
+        PathBuf::from(id)
+    };
+    // Dev SSR modules compile as dev + ssr (Vite's importAnalysis injects
+    // `SSR: true` and the dev env), so `import.meta.env.SSR` is true and
+    // `DEV`/`MODE` match the client; Fast Refresh stays off on the server.
+    let mut opts = dev_compile_opts(state);
+    opts.refresh = false;
+    opts.ssr = true;
+    if runner {
+        return match oj_compiler::ssr::ssr_transform_module_with_map(&compile_path, &source, &opts)
+        {
+            Ok((code, map)) => Ok(with_inline_map(code, map)),
+            Err(e) => Err(SsrModuleError::Failed(format!("{e}"))),
+        };
+    }
+    match oj_compiler::compile(&compile_path, &source, &opts) {
+        Ok(out) => Ok(with_inline_map(out.code, out.map_data_url)),
+        Err(e) => Err(SsrModuleError::Failed(format!("{e}"))),
+    }
+}
+
 async fn ssr_module(
     State(state): State<Arc<ServerState>>,
     Query(q): Query<HashMap<String, String>>,
@@ -1658,78 +1921,12 @@ async fn ssr_module(
     let Some(id) = q.get("id") else {
         return (StatusCode::BAD_REQUEST, "id required").into_response();
     };
-    let path = PathBuf::from(id);
-    if !ssr_module_allowed(&state, &path) {
-        return (StatusCode::FORBIDDEN, "oj: module not allow-listed").into_response();
-    }
-    let (source, from_plugin) = match std::fs::read(&path).and_then(bytes_to_string) {
-        Ok(s) => (s, false),
-        Err(read_err) => match ssr_plugin_host(&state).await {
-            Some(host) => match host.load(id).await {
-                Ok(Some(code)) => (code, true),
-                _ => return (StatusCode::NOT_FOUND, format!("{id}: {read_err}")).into_response(),
-            },
-            None => return (StatusCode::NOT_FOUND, format!("{id}: {read_err}")).into_response(),
-        },
-    };
-    let ext = path.extension().and_then(|e| e.to_str());
-    if !from_plugin && ext.is_some_and(is_style_ext) {
-        let source = if is_preprocessor(id) {
-            match run_preprocess_sidecar(&state, id, &source, serde_json::Value::Null).await {
-                Ok(css) => css,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-            }
-        } else {
-            source
-        };
-        return match ssr_css_module(&state.root, &path, &source) {
-            Ok(code) => js(code),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        };
-    }
-    if !from_plugin && ext == Some("json") {
-        return match oj_compiler::json::to_esm(&source, id) {
-            Ok(code) => js(code),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
-        };
-    }
-    let source = match ssr_plugin_host(&state).await {
-        Some(host) => {
-            let resolved =
-                resolved_imports_json(&state.resolver, &state.fs_allow, &source, Path::new(id));
-            match host.transform(&source, id, &resolved).await {
-                Ok((code, _, _, _)) => code,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("oj: plugin transform error for {id}:\n{e}"),
-                    )
-                        .into_response();
-                }
-            }
-        }
-        None => source,
-    };
-    let compile_path: PathBuf = if from_plugin {
-        PathBuf::from("virtual.tsx")
-    } else {
-        path
-    };
-    // Dev SSR modules compile as dev + ssr (Vite's importAnalysis injects
-    // `SSR: true` and the dev env), so `import.meta.env.SSR` is true and
-    // `DEV`/`MODE` match the client; Fast Refresh stays off on the server.
-    let mut opts = dev_compile_opts(&state);
-    opts.refresh = false;
-    opts.ssr = true;
-    if q.get("runner").map(|v| v == "1").unwrap_or(false) {
-        return match oj_compiler::ssr::ssr_transform_module_with_map(&compile_path, &source, &opts) {
-            Ok((code, map)) => js(with_inline_map(code, map)),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
-        };
-    }
-    match oj_compiler::compile(&compile_path, &source, &opts) {
-        Ok(out) => js(with_inline_map(out.code, out.map_data_url)),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    let runner = q.get("runner").map(|v| v == "1").unwrap_or(false);
+    match ssr_module_inner(&state, id, runner).await {
+        Ok(code) => js(code),
+        Err(SsrModuleError::Forbidden(m)) => (StatusCode::FORBIDDEN, m).into_response(),
+        Err(SsrModuleError::NotFound(m)) => (StatusCode::NOT_FOUND, m).into_response(),
+        Err(SsrModuleError::Failed(m)) => (StatusCode::INTERNAL_SERVER_ERROR, m).into_response(),
     }
 }
 
@@ -1753,6 +1950,14 @@ async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<Plug
                         std::sync::Arc::clone(&host),
                         Arc::clone(&state.ssr_watch),
                     );
+                    // The ssr environment's per-environment define
+                    // (`environments.ssr.define` from the resolved config,
+                    // plus config()-hook deltas) layers over the shared
+                    // define for SSR compiles.
+                    let ssr_defines = host.config_defines().await;
+                    if !ssr_defines.is_empty() {
+                        oj_compiler::merge_import_meta_env_ssr(ssr_defines);
+                    }
                     Some(host)
                 }
                 Err(e) => {
@@ -4338,7 +4543,7 @@ async fn ensure_module(
             Some(d) if !d.is_empty() => format!("{d}\n{source}"),
             _ => source,
         };
-        run_preprocess_sidecar(state, url, &with_data, opts)
+        run_preprocess_engine(state, url, &with_data, opts)
             .await
             .map_err(|e| format!("css preprocess error for {url}: {e}"))?
     } else {
@@ -4380,10 +4585,10 @@ async fn ensure_module(
     let source = if state.has_postcss && css_like {
         // postcss-import is the first plugin of Vite's PostCSS chain, so the
         // rules of an @imported stylesheet go through the user's plugins too:
-        // inline before the sidecar, not after it.
+        // inline before the PostCSS pass, not after it.
         let source = oj_css::inline_imports_with(&source, file, &state.css_resolve.as_ref())?;
         imports_inlined = true;
-        match run_css_sidecar(state, url, &source).await {
+        match run_css_engine(state, url, &source).await {
             Ok(out) => out,
             Err(e) => {
                 eprintln!("oj: postcss failed for {url}: {e}");
@@ -4425,7 +4630,7 @@ async fn ensure_module(
         return Ok((String::new(), module));
     }
     let source = if is_svelte {
-        run_svelte_sidecar(state, url, &source)
+        run_svelte_engine(state, url, &source)
             .await
             .map_err(|e| format!("svelte compile error for {url}: {e}"))?
     } else {
@@ -5106,7 +5311,7 @@ pub fn has_postcss_config(root: &Path) -> bool {
 /// does (what Vite uses): `postcss.config.{js,mjs,cjs,ts,mts,cts}`, `.postcssrc`,
 /// `.postcssrc.{json,js,mjs,cjs,ts,mts,cts}` or a `package.json` with a
 /// `postcss` key, searched from `root` up to the workspace root (nearest wins).
-/// The sidecar receives the path as `OJ_POSTCSS_CONFIG`.
+/// The tailwind engine module receives the path per request.
 pub fn find_postcss_config(root: &Path) -> Option<PathBuf> {
     const NAMES: &[&str] = &[
         "postcss.config.js",
@@ -5150,17 +5355,17 @@ pub fn find_postcss_config(root: &Path) -> Option<PathBuf> {
     None
 }
 
-async fn run_css_sidecar(
+async fn run_css_engine(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let sidecar = state
+    let engine = state
         .tailwind
-        .get_or_try_init(|| Sidecar::spawn(&state.root))
+        .get_or_try_init(|| CssEngine::tailwind(&state.root, css_engine::DEV_DEADLINE))
         .await
         .map_err(|e| e.to_string())?;
-    sidecar.compile(source, url).await
+    engine.compile(source, url).await
 }
 
 fn is_preprocessor(url: &str) -> bool {
@@ -5186,7 +5391,9 @@ fn is_dep_module(url: &str, file: &Path) -> bool {
                 && file.components().any(|c| c.as_os_str() == "node_modules")))
 }
 
-fn is_style_ext(ext: &str) -> bool {
+/// Stylesheet extensions (public: the in-process Start module host classifies
+/// resolved paths with the same rule the dev server uses).
+pub fn is_style_ext(ext: &str) -> bool {
     matches!(ext, "css" | "scss" | "sass" | "less" | "styl" | "stylus")
 }
 
@@ -5265,7 +5472,7 @@ fn wants_raw_resource(headers: &HeaderMap) -> bool {
 // default asset handling, case-insensitive). svg is excluded here: it is routed
 // through the compile path so vite-plugin-svgr can componentize it, falling back
 // to a URL module there.
-fn is_importable_asset_ext(ext: &str) -> bool {
+pub fn is_importable_asset_ext(ext: &str) -> bool {
     oj_compiler::assets::is_asset_ext(ext) && !ext.eq_ignore_ascii_case("svg")
 }
 
@@ -5384,31 +5591,31 @@ fn is_style_url(url: &str) -> bool {
         .is_some_and(is_style_ext)
 }
 
-async fn run_preprocess_sidecar(
+async fn run_preprocess_engine(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
     options: serde_json::Value,
 ) -> Result<String, String> {
-    let sidecar = state
+    let engine = state
         .preprocess
-        .get_or_try_init(|| Sidecar::spawn_preprocess(&state.root))
+        .get_or_try_init(|| CssEngine::preprocess(&state.root, css_engine::DEV_DEADLINE))
         .await
         .map_err(|e| e.to_string())?;
-    sidecar.compile_with(source, url, options).await
+    engine.compile_with(source, url, options).await
 }
 
-async fn run_svelte_sidecar(
+async fn run_svelte_engine(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let sidecar = state
+    let engine = state
         .svelte
-        .get_or_try_init(|| Sidecar::spawn_svelte(&state.root))
+        .get_or_try_init(|| CssEngine::svelte(&state.root, css_engine::DEV_DEADLINE))
         .await
         .map_err(|e| e.to_string())?;
-    sidecar.compile(source, url).await
+    engine.compile(source, url).await
 }
 
 async fn compile_tailwind(
@@ -5416,7 +5623,7 @@ async fn compile_tailwind(
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let css = run_css_sidecar(state, url, source).await?;
+    let css = run_css_engine(state, url, source).await?;
     state.tailwind_urls.lock().unwrap().insert(url.to_string());
     Ok(css)
 }
@@ -9770,35 +9977,18 @@ mod adapter_tests {
         d
     }
 
-    // The framework seam, from the consumer's side. start-server-core imports
-    // these by bare specifier and expects the bundler to answer; one the loader
-    // does not map reaches Node's ESM loader as an unknown URL scheme, and every
-    // document request then fails with ERR_UNSUPPORTED_ESM_URL_SCHEME. The two
-    // scheme-shaped ones are imported unconditionally under TSS_DEV_SERVER,
-    // which runner.mjs sets, so this is the ordinary dev path.
     #[test]
-    fn the_loader_maps_every_framework_virtual_module() {
-        let loader = include_str!("assets/start/loader.mjs");
-        for spec in [
-            "tanstack-start-manifest:v",
-            "tanstack-start-injected-head-scripts:v",
-            "#tanstack-router-entry",
-            "#tanstack-start-entry",
-            "#tanstack-start-plugin-adapters",
-            "#tanstack-start-server-fn-resolver",
-        ] {
-            assert!(
-                loader.contains(&format!("\"{spec}\":")),
-                "the SSR loader has no alias for {spec}",
-            );
-        }
-    }
-
-    #[test]
-    fn write_start_assets_writes_every_module_the_loader_aliases() {
+    fn write_start_assets_writes_every_module_the_start_host_aliases() {
         let dir = tmp("assets");
         write_start_assets(&dir).unwrap();
-        for name in ["injected-head-scripts.ts", "manifest-dev.ts", "loader.mjs"] {
+        for name in [
+            "injected-head-scripts.ts",
+            "manifest-dev.ts",
+            "server-entry.tsx",
+            "start-entry.ts",
+            "cf-server.mjs",
+            "cf-workers.mjs",
+        ] {
             assert!(dir.join(name).is_file(), "{name} was not written");
         }
     }

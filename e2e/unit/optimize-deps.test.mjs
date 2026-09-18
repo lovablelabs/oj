@@ -12,6 +12,24 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..", "..");
 const sidecar = path.join(repo, "crates/oj_server/src/assets/optimize-deps.mjs");
+
+// Runs the module's exported optimize() the way oj's in-process engine calls
+// it, in a fresh node child per run (isolation for module caches and cwd).
+const OPTIMIZE_WRAPPER = `
+import { writeSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [script, cfg] = process.argv.slice(1);
+const { optimize } = await import(pathToFileURL(script).href);
+writeSync(1, JSON.stringify(await optimize(JSON.parse(cfg))));
+process.exit(0);
+`;
+const runOptimize = (cfg) =>
+  JSON.parse(
+    execFileSync("node", ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, typeof cfg === "string" ? cfg : JSON.stringify(cfg)], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    }),
+  );
 const esbuildSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/esbuild");
 
 // The pre-bundler shells out to esbuild via the start-app fixture's install;
@@ -69,8 +87,7 @@ it("optimize-deps: scans + pre-bundles CJS deps with correct interop", async () 
   const root = fixture();
   const outDir = path.join(root, ".oj-cache", "deps");
   const cfg = JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], autoDiscover: true });
-  const stdout = execFileSync("node", [sidecar, cfg], { encoding: "utf8" });
-  const { metadata } = JSON.parse(stdout);
+  const { metadata } = runOptimize(cfg);
 
   assert.deepEqual(Object.keys(metadata).sort(), ["babeldefault", "defprop", "plaincjs"]);
   for (const m of Object.values(metadata)) {
@@ -131,8 +148,7 @@ it("optimize-deps: resolves tsconfig `paths` with /* and externalizes a dep's CS
 
   const outDir = path.join(root, ".oj-cache", "deps");
   const cfg = JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], autoDiscover: true });
-  const stdout = execFileSync("node", [sidecar, cfg], { encoding: "utf8" });
-  const { metadata } = JSON.parse(stdout);
+  const { metadata } = runOptimize(cfg);
   const names = Object.keys(metadata).sort();
 
   assert.ok(
@@ -172,8 +188,7 @@ it("optimize-deps: never pre-bundles a queried specifier (?worker/?url)", async 
 
   const outDir = path.join(root, ".oj-cache", "deps");
   const cfg = JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], autoDiscover: true });
-  const stdout = execFileSync("node", [sidecar, cfg], { encoding: "utf8" });
-  const { metadata } = JSON.parse(stdout);
+  const { metadata } = runOptimize(cfg);
   const names = Object.keys(metadata);
 
   assert.ok(names.includes("plaincjs"), `plain dep still pre-bundled; got ${names.join(", ")}`);
@@ -204,15 +219,11 @@ it("optimize-deps: does NOT auto-discover by default; only the include list is p
   // Default (no autoDiscover): the esbuild scan does not run, so a dep reached
   // only from the entry graph is NOT pre-bundled — it is served individually via
   // wrap_cjs. This gate keeps a dep's CJS/UMD interop quirks from breaking an app.
-  const gated = JSON.parse(
-    execFileSync("node", [sidecar, JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")] })], { encoding: "utf8" }),
-  ).metadata;
+  const gated = runOptimize(JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")] })).metadata;
   assert.equal(Object.keys(gated).length, 0, `default must not auto-discover; got ${Object.keys(gated).join(", ")}`);
 
   // The explicit include list is always pre-bundled, even without autoDiscover.
-  const included = JSON.parse(
-    execFileSync("node", [sidecar, JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], include: ["plaincjs"] })], { encoding: "utf8" }),
-  ).metadata;
+  const included = runOptimize(JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], include: ["plaincjs"] })).metadata;
   assert.deepEqual(Object.keys(included), ["plaincjs"], "explicit include is pre-bundled");
 
   fs.rmSync(root, { recursive: true, force: true });
@@ -256,9 +267,7 @@ it("optimize-deps: expands include globs like Vite and honors needsInterop", asy
   const outDir = path.join(root, ".oj-cache", "deps");
 
   const run = (extra) =>
-    JSON.parse(
-      execFileSync("node", [sidecar, JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], ...extra })], { encoding: "utf8" }),
-    ).metadata;
+    runOptimize(JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], ...extra })).metadata;
 
   const globbed = run({ include: ["plainglob/*.js", "exportsglob/icons/*"] });
   assert.deepEqual(
@@ -297,9 +306,7 @@ it("optimize-deps: resolve.dedupe bundles the root copy; entries are globs", asy
   fs.writeFileSync(path.join(root, "src", "pages", "home.js"), `import { via } from "consumer";\nexport const out = via;\n`);
   const outDir = path.join(root, ".oj-cache", "deps");
   const run = (extra) =>
-    JSON.parse(
-      execFileSync("node", [sidecar, JSON.stringify({ root, outDir, ...extra })], { encoding: "utf8" }),
-    ).metadata;
+    runOptimize(JSON.stringify({ root, outDir, ...extra })).metadata;
 
   // Node resolution alone picks the nested copy; resolve.dedupe re-resolves the
   // bare import from the project root (Vite: dedupe -> basedir = root).
