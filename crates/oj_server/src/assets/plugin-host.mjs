@@ -2959,6 +2959,36 @@ async function runBuildStart() {
   return JSON.stringify({ emittedChunks: chunkBucket });
 }
 
+// Vite runs buildStart before ANY serving hook: its dev server awaits every
+// environment container's buildStart() while initializing, so a plugin that
+// computes state in buildStart() and serves it from load() (an i18n barrel
+// compiler) never sees the load first. The old architecture had that ordering
+// structurally — Rust awaited the boot host's buildStart before serving, and
+// the FIFO ssr container awaited its own buildStart before declaring itself
+// ready — but the in-process hosts answer hooks as concurrent engine jobs
+// with no such gate, so a lazily spawned host's first load/transform could
+// run before (or race) buildStart. `gateOnBuildStart` restores the guarantee
+// at the hook entry: serving hooks wait for the ONE buildStart to SETTLE
+// (rollup runs it once per build, hence the memo). Errors keep their old
+// homes — an explicit buildStart caller gets the rejection (Rust fails the
+// boot, or logs-and-skips on the Start path) while a gated hook proceeds past
+// a failed buildStart and serves on, as the old world did after logging.
+let buildStartRun = null;
+function ensureBuildStart() {
+  return (buildStartRun ??= runBuildStart());
+}
+let buildStartFailureLogged = false;
+async function gateOnBuildStart() {
+  try {
+    await ensureBuildStart();
+  } catch (e) {
+    if (!buildStartFailureLogged) {
+      buildStartFailureLogged = true;
+      process.stderr.write(`${OJ} plugin host: buildStart failed: ${(e && e.message) || e}\n`);
+    }
+  }
+}
+
 async function generateBundle(bundleJson, isWrite) {
   const bundle = JSON.parse(bundleJson || "{}");
   const outputOptions = environment.config?.build ?? {};
@@ -3002,12 +3032,12 @@ async function run(hook, args) {
     } catch {}
     return null;
   }
-  if (hook === "transform") return transform(args[0], args[1], args[2]);
-  if (hook === "resolveId") return resolveId(args[0], args[1]);
-  if (hook === "load") return load(args[0]);
+  if (hook === "transform") return gateOnBuildStart().then(() => transform(args[0], args[1], args[2]));
+  if (hook === "resolveId") return gateOnBuildStart().then(() => resolveId(args[0], args[1]));
+  if (hook === "load") return gateOnBuildStart().then(() => load(args[0]));
   if (hook === "handleHotUpdate") return handleHotUpdate(args[0], args[1], args[2], args[3]);
-  if (hook === "transformIndexHtml") return transformIndexHtml(args[0], args[1]);
-  if (hook === "buildStart") return runBuildStart();
+  if (hook === "transformIndexHtml") return gateOnBuildStart().then(() => transformIndexHtml(args[0], args[1]));
+  if (hook === "buildStart") return ensureBuildStart();
   if (hook === "buildEnd" || hook === "renderStart" || hook === "closeBundle") {
     return runLifecycle(hook, args);
   }

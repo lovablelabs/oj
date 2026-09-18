@@ -2839,6 +2839,67 @@ export default [{
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // Vite's ordering guarantee: buildStart completes before any serving hook
+    // runs, so an object-form plugin that computes closure state in
+    // buildStart() and reads it in load() (the i18n-barrel shape) never sees
+    // a load first. The host is spawned lazily and NEVER told to buildStart —
+    // the gate at the hook entry must run it — and the first loads arrive
+    // concurrently, which is exactly the race the in-process host had: an
+    // engine call job reaching load() while buildStart had not settled read
+    // `plan` as undefined and 500ed the module.
+    #[tokio::test]
+    async fn build_start_settles_before_any_load_even_under_concurrent_first_calls() {
+        let root = std::env::temp_dir().join(format!("oj-buildstart-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"let plan;
+export default [{
+  name: "closure-state",
+  buildStart() {
+    // Slow on purpose: an ungated load lands well inside this window.
+    return new Promise((resolve) => setTimeout(() => {
+      plan = { groups: "compiled-groups" };
+      resolve();
+    }, 300));
+  },
+  load(id) {
+    if (id === "\0closure-barrel") return `export default ${JSON.stringify(plan.groups)};`;
+    return null;
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+            .await
+            .expect("the embedded engine spawns");
+        let (a, b, c, d) = tokio::join!(
+            host.load("\u{0}closure-barrel"),
+            host.load("\u{0}closure-barrel"),
+            host.load("\u{0}closure-barrel"),
+            host.load("\u{0}closure-barrel"),
+        );
+        for (i, r) in [a, b, c, d].into_iter().enumerate() {
+            let code = r
+                .unwrap_or_else(|e| panic!("first load #{i} must not race buildStart: {e}"))
+                .expect("the plugin claims the id");
+            assert!(
+                code.contains("compiled-groups"),
+                "load #{i} must serve the buildStart-computed state: {code}"
+            );
+        }
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // The push channel end to end: a configureServer middleware makes the
     // host bring up its loopback middleware server and push { ojServeInfo }
     // with the port; a server.ws.send lands on the ws broadcast; a
