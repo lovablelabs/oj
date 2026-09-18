@@ -3,14 +3,20 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { tmpProject } from "./harness.mjs";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const oj = path.join(repo, "target", "debug", "oj");
+if (!fs.existsSync(oj)) {
+  // The unit-test CI job runs `cargo test --workspace` first, so this is an
+  // incremental link of the bin, not a cold build.
+  execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+}
 
 const alive = (pid) => {
   try {
