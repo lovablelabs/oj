@@ -970,6 +970,21 @@ pub fn addons_pending_unsafe_reregistration() -> Vec<PathBuf> {
     .collect()
 }
 
+/// Addon paths some live env currently holds registered. A keeper env
+/// pre-registers exactly these BEFORE a dying env's teardown can orphan them:
+/// registering while another env holds the addon live is the ordinary
+/// concurrent-workers case, so the keeper converts the unsupported
+/// zero-live transition into a supported one (an addon already at zero is
+/// left alone — loading it would be the crash the keeper exists to prevent).
+pub fn addons_with_live_registrations() -> Vec<PathBuf> {
+  NAPI_ADDON_REGISTRATIONS
+    .read()
+    .iter()
+    .filter(|(_, r)| r.live > 0)
+    .map(|(p, _)| p.clone())
+    .collect()
+}
+
 #[op2(reentrant, stack_trace)]
 fn op_napi_open<'scope>(
   scope: &mut v8::PinScope<'scope, '_>,

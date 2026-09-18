@@ -1269,6 +1269,76 @@ fn max_old_space_mb(node_options: &str) -> Option<usize> {
     found
 }
 
+/// The process-wide native-addon KEEPER: one hidden engine that pre-registers
+/// every currently-live addon before a dying host's teardown can orphan it,
+/// so a later respawn re-registers into the supported concurrent-envs case
+/// instead of the crashing zero-live one (Node's main thread never unloads
+/// addons and Bun keeps envs alive for the same reason). Held for the process
+/// lifetime; its scheduler keeps the event loop polled, so addon threadsafe
+/// functions that dispatch to their first env keep being serviced.
+static ADDON_KEEPER: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>> = Mutex::new(None);
+
+/// The keeper's whole budget. Deliberately UNDER `PLUGIN_HOST_RESPAWN_SPACING`:
+/// a death that arms the keeper also stamps the spacing clock, so by the time
+/// the first revive is allowed the keeper has either registered (the addons
+/// are live, the revive proceeds) or given up and abandoned the old engine
+/// (the addons are orphaned, the revive gate refuses) — never in between.
+const ADDON_KEEPER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Load `addons` into the keeper engine (spawning it on first use), each one
+/// best-effort: the keeper exists to hold registrations, and one addon that
+/// fails to require must not cost the others their keeper. The require cache
+/// makes repeat loads of the same addon free.
+async fn keep_addons_alive(root: &Path, addons: &[PathBuf]) -> Result<(), String> {
+    let engine = {
+        let mut keeper = ADDON_KEEPER.lock().unwrap();
+        match &*keeper {
+            Some(engine) => std::sync::Arc::clone(engine),
+            None => {
+                let engine = std::sync::Arc::new(
+                    oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root))
+                        .map_err(|e| format!("keeper engine failed to spawn: {e}"))?,
+                );
+                *keeper = Some(std::sync::Arc::clone(&engine));
+                engine
+            }
+        }
+    };
+    // Re-filter against the registry at load time: an UNRELATED engine dying
+    // between the caller's snapshot and this eval orphans its addons, and the
+    // keeper requiring one of those would itself be the dangerous
+    // re-registration. The dying host's own addons stay live through this
+    // (its taken engine's open channel keeps its env alive until the abandon
+    // that follows), so they always survive the filter.
+    let live: std::collections::HashSet<PathBuf> =
+        oj_js::addons_with_live_registrations().into_iter().collect();
+    let paths = serde_json::to_string(
+        &addons
+            .iter()
+            .filter(|p| live.contains(*p))
+            .map(|p| p.to_string_lossy())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| e.to_string())?;
+    // The anchor only seats resolution; it does not need to exist.
+    let anchor = serde_json::to_string(&root.join("package.json").to_string_lossy())
+        .map_err(|e| e.to_string())?;
+    let script = format!(
+        r#"import {{ createRequire }} from "node:module";
+const req = createRequire({anchor});
+globalThis.__ojAddonKeeper ??= [];
+for (const p of {paths}) {{
+    try {{ globalThis.__ojAddonKeeper.push(req(p)); }} catch {{}}
+}}
+"#
+    );
+    engine
+        .eval_with_deadline(oj_js::EvalInput::Source(script), Some(ADDON_KEEPER_DEADLINE))
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("keeper load failed: {e}"))
+}
+
 /// This process's resident set size in MB, best effort, for the host-death
 /// diagnostics: Linux reads the live value from /proc; the other unixes fall
 /// back to getrusage's PEAK (close enough for a grown process, which is what
@@ -1691,8 +1761,15 @@ impl PluginHost {
                 // state: a stale `ojInit` landing after a revive reset the
                 // watches would open the call gate before the NEW engine even
                 // evaluated its module (racing the boot prelude). Drain and
-                // drop everything from a superseded generation.
-                if reader_ref.revive.lock().unwrap().generation != generation {
+                // drop everything from a superseded generation — and from a
+                // declared-dead one: the keeper sequence keeps a dying engine
+                // alive briefly past its declaration, and a wedge that
+                // self-resolves in that window must not re-activate serve
+                // info for a middleware server the pending abandon is about
+                // to kill.
+                if *reader_ref.host_gone.borrow()
+                    || reader_ref.revive.lock().unwrap().generation != generation
+                {
                     continue;
                 }
                 if let Some(info) = msg.get("ojServeInfo") {
@@ -2137,7 +2214,43 @@ impl PluginHost {
             .unwrap_or_default();
         eprintln!("oj: {why}; treating the plugin host as gone{rss}");
         if let Some(engine) = self.engine.lock().unwrap().take() {
-            engine.abandon();
+            // The KEEPER sequence: while any native addon is live, register
+            // it into the keeper env BEFORE this engine is abandoned — the
+            // taken engine's open job channel keeps its env (and with it the
+            // addons' live counts) alive until the abandon, so the keeper
+            // always registers into the supported concurrent-envs case, and
+            // the eventual respawn re-registers the same way. Stamping the
+            // spacing clock defers the first revive past the keeper's
+            // deadline: by then the addons are either live (revive proceeds)
+            // or orphaned (the gate refuses). With no live addons the abandon
+            // is immediate, exactly the old behavior.
+            let addons = oj_js::addons_with_live_registrations();
+            if addons.is_empty() {
+                engine.abandon();
+            } else {
+                revive.last = Some(std::time::Instant::now());
+                let root = self.boot.root.clone();
+                // The abandon rides a Drop guard: a cancelled task (runtime
+                // shutdown mid-keeper) must still abandon, or the engine
+                // Arc's drop would JOIN a possibly-wedged isolate thread.
+                struct AbandonOnDrop(Option<std::sync::Arc<oj_js::JsEngine>>);
+                impl Drop for AbandonOnDrop {
+                    fn drop(&mut self) {
+                        if let Some(engine) = self.0.take() {
+                            engine.abandon();
+                        }
+                    }
+                }
+                let guard = AbandonOnDrop(Some(engine));
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    if let Err(e) = keep_addons_alive(&root, &addons).await {
+                        eprintln!(
+                            "oj: native-addon keeper unavailable ({e}); a plugin host respawn that would re-register an orphaned addon will be refused"
+                        );
+                    }
+                });
+            }
         }
         drop(revive);
         let _ = self.host_gone.send_replace(true);
@@ -2839,6 +2952,15 @@ mod vite_values_tests {
         (root, host)
     }
 
+    /// Rewind the respawn spacing after an induced death. A death with live
+    /// native addons anywhere in the process (another test's engine) stamps
+    /// the clock to defer the first revive past the keeper window; these
+    /// tests target revive semantics, not keeper timing, so they clear it.
+    fn clear_respawn_spacing(host: &PluginHost) {
+        host.revive.lock().unwrap().last =
+            Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
+    }
+
     // A wedge is no longer terminal: the next call revives the host with a
     // fresh engine generation through the same boot path, and serves.
     #[tokio::test]
@@ -2846,6 +2968,7 @@ mod vite_values_tests {
         let (root, host) = spawn_live_host("basic").await;
         let generation = host.revive.lock().unwrap().generation;
         host.declare_gone("test wedge", generation);
+        clear_respawn_spacing(&host);
         assert!(*host.host_gone.borrow(), "the death latched");
 
         host.resolve_id("x", "")
@@ -2866,6 +2989,7 @@ mod vite_values_tests {
         let (root, host) = spawn_live_host("stale").await;
         let generation = host.revive.lock().unwrap().generation;
         host.declare_gone("test wedge", generation);
+        clear_respawn_spacing(&host);
         host.resolve_id("x", "").await.expect("revived");
 
         host.declare_gone("stale report about the old engine", generation);
@@ -2886,6 +3010,29 @@ mod vite_values_tests {
         let err = host.resolve_id("x", "").await.expect_err("stays dead");
         assert!(err.contains("plugin host exited"), "{err}");
         assert_eq!(host.revive.lock().unwrap().attempts, 0, "no respawn burned");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The keeper is best effort per addon: an unloadable path is skipped (the
+    // keeper exists to hold the OTHERS), the eval still succeeds, and the
+    // process-wide keeper engine stays up for the next death.
+    #[tokio::test]
+    async fn addon_keeper_tolerates_unloadable_addons() {
+        let root = std::env::temp_dir().join(format!("oj-keeper-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        keep_addons_alive(
+            &root,
+            &[
+                PathBuf::from("/nonexistent/fake-binding.node"),
+                PathBuf::from("/also/missing.node"),
+            ],
+        )
+        .await
+        .expect("the keeper load is best effort");
+        assert!(
+            ADDON_KEEPER.lock().unwrap().is_some(),
+            "the keeper engine stays resident"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2968,6 +3115,7 @@ export default [{
         );
         assert!(*host.host_gone.borrow(), "a blown heap retires the engine");
 
+        clear_respawn_spacing(&host);
         host.load("after")
             .await
             .expect("the next call revives the host on a fresh heap");
@@ -2984,6 +3132,9 @@ export default [{
         for round in 0..PLUGIN_HOST_RESPAWN_LIMIT {
             let generation = host.revive.lock().unwrap().generation;
             host.declare_gone("recurring test wedge", generation);
+            if round == 0 {
+                clear_respawn_spacing(&host);
+            }
             // Immediately after a previous revive the spacing rejects the
             // attempt; backdate the clock instead of sleeping it out.
             if round > 0 {
@@ -3379,6 +3530,7 @@ export default [{
         );
         // The host is gone — but not terminally: the next call revives it on
         // a fresh engine generation (the wedge was per-id) and serves.
+        clear_respawn_spacing(&host);
         host.load("after")
             .await
             .expect("the next call revives the host and serves");
