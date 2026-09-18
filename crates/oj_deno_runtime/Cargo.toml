@@ -6,7 +6,7 @@
 [package]
 edition = "2024"
 name = "oj_deno_runtime"
-version = "0.267.0"
+version.workspace = true
 authors = ["the Deno authors"]
 build = false
 autolib = false
@@ -115,7 +115,7 @@ version = "0.167.0"
 # stripped on publish; a published copy resolves by version from crates.io.
 [dependencies.deno_napi]
 package = "oj_deno_napi"
-version = "0.190.0"
+version = "0.2.0"
 path = "../oj_deno_napi"
 
 [dependencies.deno_net]
