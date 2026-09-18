@@ -1319,8 +1319,10 @@ Object.defineProperty(process, "env", {
 
 impl ScriptEngine {
     pub fn new(root: &Path) -> anyhow::Result<ScriptEngine> {
+        let mut config = EngineConfig::new(root);
+        config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
         Ok(ScriptEngine {
-            engine: JsEngine::spawn(EngineConfig::new(root)).map_err(|e| anyhow::anyhow!("{e}"))?,
+            engine: JsEngine::spawn(config).map_err(|e| anyhow::anyhow!("{e}"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
         })
     }
@@ -1366,10 +1368,9 @@ impl ScriptEngine {
 }
 
 fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::EngineError> {
-    JsEngine::spawn_with_host(
-        EngineConfig::new(root),
-        Arc::clone(host) as Arc<dyn ModuleHost>,
-    )
+    let mut config = EngineConfig::new(root);
+    config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
+    JsEngine::spawn_with_host(config, Arc::clone(host) as Arc<dyn ModuleHost>)
 }
 
 fn base64_decode(s: &str) -> Vec<u8> {

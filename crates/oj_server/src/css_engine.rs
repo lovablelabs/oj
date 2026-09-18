@@ -102,6 +102,7 @@ impl CssEngine {
             root: root.to_path_buf(),
             memory_limit_bytes: None,
             default_deadline: Some(deadline),
+            code_cache_dir: Some(crate::engine_code_cache_dir(root)),
         };
         // JsEngine::spawn blocks until the isolate is up; keep it off the
         // async workers.

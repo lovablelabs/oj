@@ -203,6 +203,7 @@ pub(crate) fn run_engine_job(
     let run = move || {
         let mut config = oj_js::EngineConfig::new(root);
         config.default_deadline = Some(timeout);
+        config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
         let engine = oj_js::JsEngine::spawn(config)?;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1263,8 +1264,10 @@ impl PluginHost {
             let root = root_buf.clone();
             std::sync::Arc::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
         };
+        let mut engine_config = oj_js::EngineConfig::new(root);
+        engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
         let engine = oj_js::JsEngine::spawn_with_hooks(
-            oj_js::EngineConfig::new(root),
+            engine_config,
             oj_js::EngineHooks {
                 post: post_tx,
                 rpc: Some(rpc_handler),

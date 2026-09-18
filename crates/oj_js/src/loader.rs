@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::Arc;
 
 use deno_core::futures::FutureExt;
 use deno_core::url::Url;
@@ -27,6 +28,7 @@ use deno_resolver::loader::DenoNpmModuleLoaderRc;
 use deno_resolver::loader::LoadedModuleSource;
 use deno_resolver::npm::DenoInNpmPackageChecker;
 use deno_resolver::npm::NpmResolver;
+use deno_runtime::code_cache::CodeCacheType;
 use deno_runtime::deno_node::NodeRequireLoader;
 use deno_runtime::deno_permissions::PermissionsContainer;
 use node_resolver::errors::PackageJsonLoadError;
@@ -34,6 +36,7 @@ use node_resolver::DenoIsBuiltInNodeModuleChecker;
 use node_resolver::NodeResolutionKind;
 use node_resolver::ResolutionMode;
 
+use crate::code_cache::FsCodeCache;
 use crate::host::HostBridge;
 use crate::host::HostModuleType;
 use crate::host::HostResolved;
@@ -59,6 +62,10 @@ pub(crate) struct EngineModuleLoader {
     /// except absolute `file:`/`node:`/`data:`/`blob:` URLs on resolve, and
     /// every module fetch except `node:` builtins on load.
     pub host: Option<HostBridge>,
+    /// Persistent V8 code cache for on-disk modules (see
+    /// [`crate::EngineConfig::code_cache_dir`]). Host-served modules are
+    /// never cached: they are virtual and change within a session.
+    pub code_cache: Option<Arc<FsCodeCache>>,
 }
 
 impl EngineModuleLoader {
@@ -146,6 +153,7 @@ impl ModuleLoader for EngineModuleLoader {
         let loader = self.npm_module_loader.clone();
         let referrer = maybe_referrer.map(|r| r.specifier.clone());
         let requested = options.requested_module_type;
+        let code_cache = self.code_cache.clone();
         ModuleLoadResponse::Async(
             async move {
                 if let Some(host) = &host {
@@ -184,12 +192,28 @@ impl ModuleLoader for EngineModuleLoader {
                     )
                     .await
                     .map_err(JsErrorBox::from_err)?;
+                let module_type =
+                    module_type_from_media_and_requested_type(loaded.media_type, &requested);
+                // ESM code cache: keyed by the FOUND specifier — that is the
+                // one deno_core hands back to `code_cache_ready` once the
+                // compiled bytecode exists. The hash rides along, so get and
+                // put always agree on it.
+                let cache_info = match &code_cache {
+                    Some(cache) if module_type == ModuleType::JavaScript => {
+                        let hash = FsCodeCache::source_hash(loaded.source.as_bytes());
+                        let data = cache
+                            .get(&loaded.specifier, CodeCacheType::EsModule, hash)
+                            .map(Cow::Owned);
+                        Some(deno_core::SourceCodeCacheInfo { hash, data })
+                    }
+                    _ => None,
+                };
                 Ok(ModuleSource::new_with_redirect(
-                    module_type_from_media_and_requested_type(loaded.media_type, &requested),
+                    module_type,
                     loaded_module_source_to_module_source_code(loaded.source),
                     &specifier,
                     &loaded.specifier,
-                    None,
+                    cache_info,
                 ))
             }
             .boxed_local(),
@@ -203,6 +227,41 @@ impl ModuleLoader for EngineModuleLoader {
         let url = Url::parse(source_url).ok()?;
         let path = deno_path_util::url_to_file_path(&url).ok()?;
         Some(path.is_file())
+    }
+
+    /// Persists freshly compiled bytecode. Reached from both cached compile
+    /// paths that ride the loader — ES modules (`load` supplied the
+    /// `SourceCodeCacheInfo`) and residual ext scripts (`get_code_cache`
+    /// did) — and `hash` is the source hash the supplier computed, so the
+    /// entry validates against exactly the source it was compiled from.
+    fn code_cache_ready(
+        &self,
+        module_specifier: ModuleSpecifier,
+        hash: u64,
+        code_cache: &[u8],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+        if let Some(cache) = &self.code_cache {
+            cache.put(&module_specifier, CodeCacheType::EsModule, hash, code_cache);
+        }
+        Box::pin(async {})
+    }
+
+    /// Residual lazy ext scripts (`ext:` sources compiled during bootstrap,
+    /// outside `load`): hand back the stored bytecode, or just the source
+    /// hash so the fresh compile lands in `code_cache_ready`.
+    fn get_code_cache(
+        &self,
+        specifier: &ModuleSpecifier,
+        source: &str,
+    ) -> Option<deno_core::SourceCodeCacheInfo> {
+        let cache = self.code_cache.as_ref()?;
+        let hash = FsCodeCache::source_hash(source.as_bytes());
+        Some(deno_core::SourceCodeCacheInfo {
+            data: cache
+                .get(specifier, CodeCacheType::EsModule, hash)
+                .map(Cow::Owned),
+            hash,
+        })
     }
 }
 

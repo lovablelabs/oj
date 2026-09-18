@@ -30,6 +30,7 @@ use deno_runtime::worker::WorkerServiceOptions;
 use deno_runtime::BootstrapOptions;
 use deno_runtime::WorkerExecutionMode;
 
+use crate::code_cache::FsCodeCache;
 use crate::host::HostBridge;
 use crate::loader::EngineModuleLoader;
 use crate::loader::EngineRequireLoader;
@@ -48,6 +49,11 @@ pub(crate) fn build_worker(
 ) -> Result<MainWorker, EngineError> {
     let sys = Sys::default();
 
+    let code_cache = config
+        .code_cache_dir
+        .clone()
+        .map(|dir| Arc::new(FsCodeCache::new(dir)));
+
     let workspace_factory = Arc::new(WorkspaceFactory::new(
         sys.clone(),
         config.root.clone(),
@@ -64,6 +70,11 @@ pub(crate) fn build_worker(
             // Node semantics: extension-ambiguous files without a package.json
             // "type" are CommonJS.
             is_cjs_resolution_mode: IsCjsResolutionMode::ImplicitTypeCommonJs,
+            // Persist CJS export analysis next to the V8 code cache: the
+            // swc parse it costs is a per-spawn repeat otherwise.
+            node_analysis_cache: code_cache
+                .clone()
+                .map(|cache| cache as deno_resolver::cjs::analyzer::NodeAnalysisCacheRc),
             ..Default::default()
         },
     );
@@ -79,6 +90,7 @@ pub(crate) fn build_worker(
         npm_module_loader,
         root,
         host,
+        code_cache: code_cache.clone(),
     });
     let require_loader = Rc::new(EngineRequireLoader {
         cjs_tracker,
@@ -110,7 +122,11 @@ pub(crate) fn build_worker(
         fetch_dns_resolver: Default::default(),
         shared_array_buffer_store: None,
         compiled_wasm_module_store: None,
-        v8_code_cache: None,
+        // Covers the CJS path: deno_runtime wires this into the eval-context
+        // compile callbacks `require` goes through. The ESM and ext-script
+        // paths ride the module loader (see loader.rs).
+        v8_code_cache: code_cache
+            .map(|cache| cache as Arc<dyn deno_runtime::code_cache::CodeCache>),
         bundle_provider: None,
     };
 

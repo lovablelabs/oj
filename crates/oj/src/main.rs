@@ -219,8 +219,9 @@ async fn run() -> anyhow::Result<()> {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .canonicalize()
                 .context("engine root not found")?;
-            let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(&root))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let mut config = oj_js::EngineConfig::new(&root);
+            config.code_cache_dir = Some(oj_server::engine_code_cache_dir(&root));
+            let engine = oj_js::JsEngine::spawn(config).map_err(|e| anyhow::anyhow!("{e}"))?;
             let value = engine
                 .eval(oj_js::EvalInput::Path(file))
                 .await

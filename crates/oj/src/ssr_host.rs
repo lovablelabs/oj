@@ -414,10 +414,9 @@ impl SsrEngine {
 }
 
 fn spawn_engine(root: &Path, host: &Arc<SsrHost>) -> Result<JsEngine, oj_js::EngineError> {
-    JsEngine::spawn_with_host(
-        EngineConfig::new(root),
-        Arc::clone(host) as Arc<dyn ModuleHost>,
-    )
+    let mut config = EngineConfig::new(root);
+    config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
+    JsEngine::spawn_with_host(config, Arc::clone(host) as Arc<dyn ModuleHost>)
 }
 
 /// The bootstrap's data endpoints reply with an already-serialized JSON

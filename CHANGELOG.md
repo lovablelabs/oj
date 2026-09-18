@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config/plugin code that mutates `process.env` during extraction stays isolated per run, and extraction results no longer travel over stdout or temp files, so a config that prints can no longer corrupt them.
 - Sidecar request deadlines are armed when a job starts executing rather than when it is queued; build-time CSS/Svelte compiles are now bounded (they previously waited forever).
 - Config-extraction dependency tracking stamps Vite's `.env` file family deterministically (under Deno, named `node:fs` import bindings are not observable by the read recorder; `require` and default-import consumers are still recorded).
+- Engines keep a persistent V8 code cache plus a CJS export-analysis cache under `.oj-cache` (the embedded analog of `NODE_COMPILE_CACHE`), so every engine spawn — the one-shot Start rebundle children above all — stops re-parsing the app's unchanging toolchain. Entries self-invalidate on source change via an embedded source hash.
+- The engine's Node-compat hot paths (napi, `node:fs`, the runtime glue) are compiled at full optimization per Deno's own release recipe; deno_napi is vendored with its finalizer registry keyed by id — the upstream `Vec` scan went quadratic under GC once an addon (rolldown bundling a very large app) held hundreds of thousands of live references, tripling one-shot client-rebundle wall time.
 
 ### Fixed
 - `import.meta.glob` patterns with `..` segments no longer treat the parent-directory step as a dotfile (previously such globs silently expanded empty, on the client path too).

@@ -4121,7 +4121,9 @@ pub(crate) async fn build_ssr_app(
         fs::write(&script_path, script)?;
         // Runs on the embedded engine: the built server bundle imports its
         // externals from node_modules via byonm, as it did under node.
-        let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root))
+        let mut engine_config = oj_js::EngineConfig::new(root);
+        engine_config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
+        let engine = oj_js::JsEngine::spawn(engine_config)
             .map_err(|e| anyhow::anyhow!("prerender engine: {e}"))?;
         let result = engine
             .call(

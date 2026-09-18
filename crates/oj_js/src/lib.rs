@@ -11,6 +11,7 @@
 //! two runtimes are dropped on the same thread.
 
 mod bridge;
+mod code_cache;
 mod host;
 mod loader;
 mod worker;
@@ -52,6 +53,14 @@ pub struct EngineConfig {
     /// Default wall-clock deadline applied to every job that does not carry
     /// its own.
     pub default_deadline: Option<Duration>,
+    /// Persistent V8 code-cache directory. When set, compiled bytecode for
+    /// the modules an engine loads from disk (ESM, `require`d CJS, residual
+    /// ext scripts) is stored here and reused by later engines, cutting the
+    /// repeat parse/compile of a large unchanging toolchain. The caller keys
+    /// the directory by its own version; entries self-invalidate on source
+    /// change through an embedded source hash. Best-effort: a broken or
+    /// read-only cache only costs the speedup.
+    pub code_cache_dir: Option<PathBuf>,
 }
 
 impl EngineConfig {
@@ -60,6 +69,7 @@ impl EngineConfig {
             root: root.into(),
             memory_limit_bytes: None,
             default_deadline: None,
+            code_cache_dir: None,
         }
     }
 }

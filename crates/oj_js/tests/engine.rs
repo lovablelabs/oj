@@ -602,3 +602,54 @@ mod host_seam {
         assert_eq!(waited, serde_json::json!("relay"));
     }
 }
+
+#[tokio::test]
+async fn code_cache_persists_and_later_engines_still_run() {
+    let root = app_root();
+    let cache_dir = root.path().join("cc");
+    std::fs::write(
+        root.path().join("main.mjs"),
+        r#"
+        import fixture from "oj-fixture";
+        export function run() { return fixture.greet("cache"); }
+        "#,
+    )
+    .unwrap();
+
+    let mut config = EngineConfig::new(root.path());
+    config.code_cache_dir = Some(cache_dir.clone());
+
+    // First engine: cold cache — must run and leave compiled entries behind
+    // (the disk ESM module plus the CJS fixture's bytecode/analysis).
+    let engine = JsEngine::spawn(config.clone()).unwrap();
+    let value = engine.call("main.mjs", "run", vec![]).await.unwrap();
+    assert_eq!(value, serde_json::json!("hello cache"));
+    drop(engine);
+    let entries = std::fs::read_dir(&cache_dir)
+        .expect("cache dir was created")
+        .count();
+    assert!(entries > 0, "compiled entries were persisted");
+
+    // Second engine: warm cache — same behavior, entries consumed not grown
+    // for unchanged sources.
+    let engine = JsEngine::spawn(config).unwrap();
+    let value = engine.call("main.mjs", "run", vec![]).await.unwrap();
+    assert_eq!(value, serde_json::json!("hello cache"));
+    drop(engine);
+    assert_eq!(std::fs::read_dir(&cache_dir).unwrap().count(), entries);
+
+    // An edited source must not execute stale bytecode.
+    std::fs::write(
+        root.path().join("main.mjs"),
+        r#"
+        import fixture from "oj-fixture";
+        export function run() { return fixture.greet("fresh"); }
+        "#,
+    )
+    .unwrap();
+    let mut config = EngineConfig::new(root.path());
+    config.code_cache_dir = Some(cache_dir);
+    let engine = JsEngine::spawn(config).unwrap();
+    let value = engine.call("main.mjs", "run", vec![]).await.unwrap();
+    assert_eq!(value, serde_json::json!("hello fresh"));
+}
