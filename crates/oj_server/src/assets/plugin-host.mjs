@@ -1838,7 +1838,7 @@ function stubHttpServer() {
       if (event === "listening" && listening) { cb(); return s; }
       if (event === "upgrade") {
         if (s._upgradeTarget) return s._upgradeTarget[method === "once" ? "once" : "on"](event, cb), s;
-        s._upgradeListeners.push(cb);
+        s._upgradeListeners.push([method === "once" ? "once" : "on", cb]);
         return s;
       }
       return orig(event, cb);
@@ -1852,7 +1852,7 @@ function stubHttpServer() {
     s.prependListener = (event, cb) => {
       if (event === "upgrade") {
         if (s._upgradeTarget) return s._upgradeTarget.prependListener(event, cb), s;
-        s._upgradeListeners.unshift(cb);
+        s._upgradeListeners.unshift(["on", cb]);
         return s;
       }
       return origPrepend(event, cb);
@@ -1861,7 +1861,8 @@ function stubHttpServer() {
     const remove = (event, cb) => {
       if (event === "upgrade") {
         if (s._upgradeTarget) return s._upgradeTarget.removeListener(event, cb), s;
-        s._upgradeListeners = s._upgradeListeners.filter((fn) => fn !== cb);
+        const i = s._upgradeListeners.findIndex(([, fn]) => fn === cb);
+        if (i !== -1) s._upgradeListeners.splice(i, 1);
         return s;
       }
       return origRemove(event, cb);
@@ -2461,7 +2462,7 @@ async function setupConfigureServer() {
   });
   // The Rust listener relays unclaimed browser upgrades here as real upgrade
   // requests; listeners registered on the stub attach in registration order.
-  for (const fn of upgradeListeners) srv.on("upgrade", fn);
+  for (const [method, fn] of upgradeListeners) srv[method]("upgrade", fn);
   server.httpServer._upgradeTarget = srv;
   await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
   middlewarePort = srv.address().port;
