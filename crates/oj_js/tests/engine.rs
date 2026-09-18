@@ -631,7 +631,10 @@ async fn code_cache_persists_and_later_engines_still_run() {
     assert!(entries > 0, "compiled entries were persisted");
 
     // Second engine: warm cache — same behavior, entries consumed not grown
-    // for unchanged sources.
+    // for unchanged sources. Drop joins the worker thread, and shutdown
+    // flushes pending code-cache writes before the loop exits, so this count
+    // is exact: without that flush an engine dropped right after its last
+    // call loses entries the next engine then re-writes (a CI-load flake).
     let engine = JsEngine::spawn(config).unwrap();
     let value = engine.call("main.mjs", "run", vec![]).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));

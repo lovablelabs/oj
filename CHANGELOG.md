@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+
+- Engine shutdown flushes pending code-cache writes, so short-lived engines no longer lose freshly compiled bytecode entries.
 - `oj build`/`oj dev` on an app whose vite pins a napi-rs 3.9-era rolldown binding (vite 8.0.16 pins rolldown 1.0.3) died with a silent SIGSEGV: config extraction registered the binding into one engine, tore it down, and the build/plugin-host engine's re-registration ran against the addon's dangling process-global state. Node crashes the same way when a second worker_thread requires such an addon after the first worker exited, so one-shot engine jobs (config extraction, the dep optimizer's pre-bundle) now run in an `oj engine-job` child process — one registration per process, and an addon crash surfaces as a "failed to load config" error instead of killing the whole command. `oj_deno_napi` additionally warns on stderr when a native addon is re-initialized after every runtime that loaded it was destroyed.
 
 ## [0.2.0] - 2026-09-18
