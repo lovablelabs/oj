@@ -64,7 +64,7 @@ pub fn compile_factory(
     // parse as a module, or has no top-level import/export, is CommonJS and the
     // CJS path re-parses it in sloppy mode (which allows `with`, top-level `this`,
     // and other script-only forms an ESM parse rejects).
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source_text, source_type).parse();
     if parsed.panicked {
@@ -139,7 +139,7 @@ fn compile_esm_factory(
     resolve: &mut ImportRewriter,
     refresh: bool,
 ) -> Result<FactoryOutput, CompileError> {
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source_text, source_type).parse();
     if parsed.panicked || !parsed.diagnostics.is_empty() {

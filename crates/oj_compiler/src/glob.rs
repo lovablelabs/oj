@@ -16,7 +16,7 @@ pub fn expand_source(source: &str, path: &Path) -> String {
     if !source.contains("import.meta.glob") {
         return source.to_string();
     }
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if parsed.panicked {
@@ -37,7 +37,7 @@ pub fn glob_patterns(source: &str, path: &Path) -> Vec<String> {
     if !source.contains("import.meta.glob") {
         return Vec::new();
     }
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if parsed.panicked {
@@ -433,7 +433,7 @@ pub fn expand_new_url_asset_source(source: &str, path: &Path) -> String {
     if !source.contains("import.meta.url") {
         return source.to_string();
     }
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if parsed.panicked {
@@ -452,7 +452,7 @@ pub fn expand_dynamic_import_vars_source(source: &str, path: &Path) -> String {
     if !source.contains("import(") {
         return source.to_string();
     }
-    let allocator = Allocator::default();
+    let allocator = crate::pooled_allocator();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if parsed.panicked {
@@ -750,7 +750,7 @@ mod tests {
     use oxc_codegen::Codegen;
 
     fn expand_source(dir: &Path, src: &str) -> String {
-        let allocator = Allocator::default();
+        let allocator = crate::pooled_allocator();
         let parsed = Parser::new(&allocator, src, SourceType::mjs()).parse();
         let mut program = parsed.program;
         expand(&allocator, dir, &mut program);

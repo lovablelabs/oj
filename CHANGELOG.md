@@ -5,6 +5,11 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Compile arenas are pooled and reused across files instead of allocated fresh per compile, cutting cold-start time (about 9% unbundled, 15% bundled on the 1000-component bench) with flat memory.
+
 ## [0.2.0] - 2026-09-18
 
 ### Added
