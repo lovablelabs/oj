@@ -1315,22 +1315,19 @@ impl DevServer {
         if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
             app = app.route(&hmr_ws_path, get(ws_upgrade));
         }
+        // Layer order is reversed at request time (the last layer added runs
+        // first). Vite's middleware sequence is cors, then host validation,
+        // then proxy: proxied requests must not bypass either gate.
+        if !state.proxy.is_empty() {
+            app = app.layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                proxy_middleware,
+            ));
+        }
         app = app.layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
             vite_hmr_upgrade,
         ));
-        if let Some(cors) = CorsPolicy::from_config(server_cfg.cors.as_ref()) {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                Arc::new(cors),
-                cors_middleware,
-            ));
-        }
-        if !state.host_policy.allow_all {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                Arc::clone(&state),
-                host_check_middleware,
-            ));
-        }
         let extra_headers: Vec<(header::HeaderName, header::HeaderValue)> = config
             .server
             .as_ref()
@@ -1347,10 +1344,16 @@ impl DevServer {
                 apply_dev_headers,
             ));
         }
-        if !state.proxy.is_empty() {
+        if !state.host_policy.allow_all {
             app = app.layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
-                proxy_middleware,
+                host_check_middleware,
+            ));
+        }
+        if let Some(cors) = CorsPolicy::from_config(server_cfg.cors.as_ref()) {
+            app = app.layer(axum::middleware::from_fn_with_state(
+                Arc::new(cors),
+                cors_middleware,
             ));
         }
         let proxy_prefixes: Vec<String> = state.proxy.iter().map(|(p, _)| p.clone()).collect();

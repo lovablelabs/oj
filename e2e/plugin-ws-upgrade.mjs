@@ -197,7 +197,24 @@ try {
 
   assert.deepEqual(seenPaths, ["/tunnel/one", "/api/ws/two"], "tunneled paths arrive verbatim");
 
-  // 4. an upgrade no plugin claims fails cleanly instead of hanging forever.
+  // 4. host validation gates proxied paths (Vite: cors, host check, then
+  //    proxy): a disallowed Host must not reach the proxy target.
+  const hostile = await new Promise((resolve) => {
+    const r = http.request(
+      { host: "127.0.0.1", port, path: "/api/anything", headers: { Host: "evil.example.com" } },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      },
+    );
+    r.on("error", () => resolve({ status: 0, body: "" }));
+    r.end();
+  });
+  assert.notEqual(hostile.body, "proxied-http-ok", "disallowed Host must not be proxied");
+  assert.ok(hostile.status >= 400, `disallowed Host is rejected (got ${hostile.status})`);
+
+  // 5. an upgrade no plugin claims fails cleanly instead of hanging forever.
   const none = await wsConnect(port, "/unclaimed");
   assert.notEqual(none.status, 101, `unclaimed upgrade must not 101 (got ${none.status})`);
   none.sock.destroy();
