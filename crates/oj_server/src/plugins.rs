@@ -351,8 +351,19 @@ fn extract_vite_values_with(
         }
         store.store(&vite, command, mode_key, &deps, &stored.to_string(), &stderr);
     }
+    EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");
     Some(parse_vite_values(&json))
+}
+
+/// Whether any config extraction in this process ran the engine (a cache
+/// miss): the config's observable inputs changed, so caches derived from the
+/// evaluated config — the deps pre-seed stamp — must not serve either.
+static EXTRACTION_RAN_FRESH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn extraction_ran_fresh() -> bool {
+    EXTRACTION_RAN_FRESH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether the extractor's read recorder overflowed (`__depsTruncated`): the

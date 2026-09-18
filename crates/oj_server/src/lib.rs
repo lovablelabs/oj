@@ -23,6 +23,7 @@ pub mod optimize;
 pub mod pkg_bundle;
 pub mod pkg_rolldown;
 pub mod plugins;
+mod preseed;
 pub mod sidecar;
 pub mod svgr;
 use css_engine::CssEngine;
@@ -821,6 +822,10 @@ impl DevServer {
             None => (None, "oj", String::new()),
         };
 
+        // The environment.mode the host hands buildEnvironments, which passes
+        // it to vite.resolveConfig verbatim: the deps pre-seed child must
+        // resolve with the SAME string or its cache hashes cannot match.
+        let host_env_mode = "dev";
         let mut plugin_cfg = serde_json::json!({
             "config": {
                 "root": root.display().to_string(),
@@ -840,7 +845,7 @@ impl DevServer {
                 "environments": config.environments.clone().unwrap_or_default(),
             },
             "env": { "command": "serve", "mode": dev_mode },
-            "environment": { "name": "client", "mode": "dev" },
+            "environment": { "name": "client", "mode": host_env_mode },
             "pluginsFormat": plugins_format,
             "ojStartMode": is_start,
         });
@@ -859,6 +864,18 @@ impl DevServer {
         let plugin_config = plugin_cfg.to_string();
         plugin_cfg["environment"]["name"] = serde_json::json!("ssr");
         let ssr_plugin_config = plugin_cfg.to_string();
+        // Optimizer quarantine: a runner-backed config boots the app's real
+        // Vite DevEnvironments inside the in-process plugin host, and a cold
+        // deps cache then runs Vite's dep optimizer — a rolldown build whose
+        // native retention is process-scoped — inside oj. Pre-seed the caches
+        // in a one-shot child first, so the host finds them warm and never
+        // builds in-process (see preseed.rs for the gate and the known gaps).
+        if plugins_path.is_some()
+            && plugins_format == "vite"
+            && oj_config::ssr_runner_backed(&config)
+        {
+            preseed::preseed_server_deps(&root, host_env_mode).await;
+        }
         boot_phase("plugin host spawning");
         let plugin_host = match plugins_path {
             Some(file) => match PluginHost::spawn(&root, &file, &plugin_config).await {
