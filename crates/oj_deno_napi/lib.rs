@@ -488,6 +488,9 @@ pub struct NapiState {
   pub napi_wrap: Option<v8::Global<v8::Private>>,
   /// Per-isolate V8 Private key for type tags.
   pub type_tag: Option<v8::Global<v8::Private>>,
+  /// Native addons this env opened, for the process-wide live count that
+  /// backs the re-registration warning (see `NAPI_ADDON_REGISTRATIONS`).
+  pub opened_addons: Vec<PathBuf>,
 }
 
 // SAFETY: finalizer pointers in env_shared_ptrs are only accessed during Drop
@@ -563,6 +566,13 @@ impl Drop for NapiState {
             instance_data.finalize_hint,
           );
         }
+      }
+    }
+
+    let mut regs = NAPI_ADDON_REGISTRATIONS.write();
+    for path in &self.opened_addons {
+      if let Some(entry) = regs.get_mut(path) {
+        entry.live = entry.live.saturating_sub(1);
       }
     }
   }
@@ -907,6 +917,7 @@ deno_core::extension!(deno_napi,
       env_ptrs: vec![],
       napi_wrap: None,
       type_tag: None,
+      opened_addons: vec![],
     });
     if let Some(loader) = options.deno_rt_native_addon_loader {
       state.put(loader);
@@ -922,6 +933,25 @@ struct NapiModuleHandle(*const NapiModule);
 
 static NAPI_LOADED_MODULES: std::sync::LazyLock<
   RwLock<HashMap<PathBuf, NapiModuleHandle>>,
+> = std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+#[derive(Default)]
+struct AddonRegistrations {
+  /// Envs that registered the addon and are still alive.
+  live: usize,
+  total: u64,
+}
+
+/// Once every env that loaded a native addon has been torn down, registering
+/// it into a new env runs its init against whatever process-global state the
+/// addon kept from its dead envs. A context-aware addon (the Node-API
+/// contract) supports that; addons built with napi-rs before 3.10 corrupt
+/// themselves and crash — Node segfaults the same way when a second worker_thread
+/// requires one after the first worker exited. Registration is still
+/// attempted (refusing would break the healthy addons); this map backs the
+/// stderr warning that turns the crash from a silent death into a diagnosis.
+static NAPI_ADDON_REGISTRATIONS: std::sync::LazyLock<
+  RwLock<HashMap<PathBuf, AddonRegistrations>>,
 > = std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 #[op2(reentrant, stack_trace)]
@@ -1100,6 +1130,30 @@ fn op_napi_open<'scope>(
         });
       }
     };
+
+  {
+    let mut regs = NAPI_ADDON_REGISTRATIONS.write();
+    let entry = regs.entry(real_path.to_path_buf()).or_default();
+    if entry.total > 0 && entry.live == 0 {
+      #[allow(
+        clippy::print_stderr,
+        reason = "diagnostic ahead of a possible addon crash"
+      )]
+      {
+        eprintln!(
+          "oj: re-initializing native addon {} after every runtime that loaded it was destroyed; an addon that cannot handle re-registration (napi-rs before 3.10) can crash here",
+          real_path.display()
+        );
+      }
+    }
+    entry.total += 1;
+    entry.live += 1;
+  }
+  {
+    let mut state = op_state.borrow_mut();
+    let napi_state = state.borrow_mut::<NapiState>();
+    napi_state.opened_addons.push(real_path.to_path_buf());
+  }
 
   let maybe_module = MODULE_TO_REGISTER.with(|cell| {
     let mut slot = cell.borrow_mut();

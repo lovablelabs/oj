@@ -84,6 +84,9 @@ jobs:
       - name: ssr streaming prod build + hydration
         if: matrix.mode == 'unbundled'
         run: node e2e/ssr-prod.mjs
+      - name: native addon re-registration across one-shot engines (rolldown 1.1.0)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/native-addon-reregister.mjs
       - name: server fast-paths (cache bound, mtime, hmr gating)
         if: matrix.mode == 'unbundled'
         run: |
