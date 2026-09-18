@@ -19,8 +19,9 @@ Unless you specifically need this patch, depend on upstream `deno_napi`
 instead.
 
 Consumers rename it back via the dependency key, so `use deno_napi::...`
-paths keep working unchanged:
+paths keep working unchanged (the crate is versioned with the oj workspace;
+the upstream base stays deno_napi 0.190.0):
 
 ```toml
-deno_napi = { package = "oj_deno_napi", version = "0.190.0" }
+deno_napi = { package = "oj_deno_napi", version = "0.2.0" }
 ```

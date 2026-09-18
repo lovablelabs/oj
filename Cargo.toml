@@ -41,8 +41,8 @@ oj_js = { version = "0.2.0", path = "crates/oj_js" }
 # children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
 # dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
 # published oj resolves them by version from crates.io.
-oj_deno_napi = { package = "oj_deno_napi", version = "0.190.0", path = "crates/oj_deno_napi" }
-oj_deno_runtime = { package = "oj_deno_runtime", version = "0.267.0", path = "crates/oj_deno_runtime" }
+oj_deno_napi = { package = "oj_deno_napi", version = "0.2.0", path = "crates/oj_deno_napi" }
+oj_deno_runtime = { package = "oj_deno_runtime", version = "0.2.0", path = "crates/oj_deno_runtime" }
 
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"

@@ -14,10 +14,11 @@ Unless you specifically need that patch, depend on upstream `deno_runtime`
 instead.
 
 Consumers rename it back via the dependency key, so `use deno_runtime::...`
-paths keep working unchanged:
+paths keep working unchanged (the crate is versioned with the oj workspace;
+the upstream base stays deno_runtime 0.267.0):
 
 ```toml
-deno_runtime = { package = "oj_deno_runtime", version = "0.267.0" }
+deno_runtime = { package = "oj_deno_runtime", version = "0.2.0" }
 ```
 
 Upstream's README follows.
