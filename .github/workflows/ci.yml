@@ -93,6 +93,12 @@ jobs:
       - name: startup compile error overlay + recovery by reload
         if: matrix.mode == 'unbundled'
         run: node e2e/hmr-overlay-recovery.mjs
+      - name: plugin-owned websocket upgrades (tunnel plugins)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/plugin-ws-upgrade.mjs
+      - name: bundle hmr multi-frame boundary isolation
+        if: matrix.mode == 'unbundled'
+        run: node e2e/bundle-hmr-multiframe.mjs
       - name: json import edit reaches the boundary (stamped import)
         if: matrix.mode == 'unbundled'
         run: node e2e/hmr-json-update.mjs

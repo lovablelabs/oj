@@ -1393,6 +1393,11 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if req.uri().path().starts_with("/_serverFn/") {
         return forward_with_body(&state, req).await;
     }
+    // A WebSocket upgrade is never a document: the inner app owns them all
+    // (vite-hmr endpoint, `ws: true` proxies, plugin `upgrade` listeners).
+    if oj_server::is_websocket_upgrade(req.headers()) {
+        return next.run(req).await;
+    }
     match classify(&req, &state.proxy_prefixes) {
         Route::Document => {
             let raw = path_and_query(&req);

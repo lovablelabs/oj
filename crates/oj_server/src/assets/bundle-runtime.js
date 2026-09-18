@@ -157,15 +157,20 @@ async function applyPatch(msg) {
     }
     lastPatchSeq = msg.seq;
   }
+  // The /__ws broadcast reaches every frame; boundaries this frame's registry
+  // never registered belong to another frame's graph (seq stays tracked above
+  // so a later relevant patch is not mistaken for a gap).
+  const boundaries = (msg.boundaries || []).filter((b) => registry.has(b));
+  if (boundaries.length === 0 && (msg.boundaries || []).length > 0) return;
   const prevExports = new Map();
-  for (const boundary of msg.boundaries) {
+  for (const boundary of boundaries) {
     const record = instances.get(boundary);
     if (record) prevExports.set(boundary, record.exports);
   }
   try {
     await import(`/@oj/patch.js?m=${encodeURIComponent(msg.changed.join(","))}&t=${msg.timestamp}`);
     for (const url of msg.dirty) instances.delete(url);
-    for (const boundary of msg.boundaries) {
+    for (const boundary of boundaries) {
       const next = requireRaw(boundary, "esm");
       if (boundary.split("?")[0].endsWith(".css")) continue;
       const prev = prevExports.get(boundary);
