@@ -1218,9 +1218,12 @@ function warnUnsupported(c) {
 export { detectSsrRunnerBacked, extractAlias, extractOptimizeDeps, extractProxy, extractResolve, extractSsr, mergeConfigLite, warnUnsupported };
 
 /// Evaluates the app's vite.config and returns the extracted values. Called by
-/// oj through a short-lived in-process JS engine (one isolate per extraction),
-/// so a config hook that starts a watcher or an interval dies with the engine,
-/// as it used to die with the one-shot subprocess. The RETURN value is the
+/// oj through a short-lived JS engine in an `oj engine-job` child process (one
+/// isolate and one process per extraction), so a config hook that starts a
+/// watcher or an interval dies with the engine, and a native addon the config
+/// pulls in (rolldown, under any vite 8 config) registers into a process of
+/// its own — re-registering one after a previous engine died can crash the
+/// host (napi-rs before 3.10). The RETURN value is the
 /// result channel: `__ok: false` marks a config that failed to evaluate (a
 /// broken config is not an empty config), `__deps`/`__depsTruncated` feed the
 /// extraction cache, and `__stderr` carries everything the run would have
