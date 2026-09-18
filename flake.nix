@@ -53,8 +53,10 @@
           # single source of truth, so no fixed-output hash to maintain.
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "oj" ];
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          # bindgenHook provides libclang for libsqlite3-sys (a deno_runtime
+          # transitive dep) whose build script runs bindgen.
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook ];
+          buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           RUSTY_V8_ARCHIVE = rustyV8Archive pkgs;
           # The build directory name varies between nix implementations (and is
           # randomized on some), and rustc embeds dependency source paths from
