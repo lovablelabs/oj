@@ -1827,16 +1827,48 @@ function stubHttpServer() {
   const s = new EventEmitter();
   let listening = false;
   s.on("listening", () => { listening = true; });
+  // `upgrade` listeners are held (in registration order, prepend honored) and
+  // replayed onto the real middleware server once it exists — Vite's shared
+  // httpServer semantics for tunnel-style plugins.
+  s._upgradeListeners = [];
+  s._upgradeTarget = null;
   const wrap = (method) => {
     const orig = s[method].bind(s);
     s[method] = (event, cb) => {
       if (event === "listening" && listening) { cb(); return s; }
+      if (event === "upgrade") {
+        if (s._upgradeTarget) return s._upgradeTarget[method === "once" ? "once" : "on"](event, cb), s;
+        s._upgradeListeners.push(cb);
+        return s;
+      }
       return orig(event, cb);
     };
   };
   wrap("on");
   wrap("once");
   wrap("addListener");
+  {
+    const origPrepend = s.prependListener.bind(s);
+    s.prependListener = (event, cb) => {
+      if (event === "upgrade") {
+        if (s._upgradeTarget) return s._upgradeTarget.prependListener(event, cb), s;
+        s._upgradeListeners.unshift(cb);
+        return s;
+      }
+      return origPrepend(event, cb);
+    };
+    const origRemove = s.removeListener.bind(s);
+    const remove = (event, cb) => {
+      if (event === "upgrade") {
+        if (s._upgradeTarget) return s._upgradeTarget.removeListener(event, cb), s;
+        s._upgradeListeners = s._upgradeListeners.filter((fn) => fn !== cb);
+        return s;
+      }
+      return origRemove(event, cb);
+    };
+    s.removeListener = remove;
+    s.off = remove;
+  }
   s.address = () => (port ? { address: host, family: host.includes(":") ? "IPv6" : "IPv4", port } : null);
   s.listen = () => s;
   s.close = (cb) => { if (typeof cb === "function") cb(); return s; };
@@ -2361,7 +2393,8 @@ async function setupConfigureServer() {
   // `httpServer.once("listening")` handlers registered in configureServer fire
   // here like they would under Vite's listen().
   server.httpServer.emit("listening");
-  if (stack.length === 0) return;
+  const upgradeListeners = server.httpServer._upgradeListeners || [];
+  if (stack.length === 0 && upgradeListeners.length === 0) return;
 
   const srv = http.createServer((req, res) => {
     // The browser's Host travels as x-oj-host (hyper owns the loopback Host):
@@ -2426,6 +2459,10 @@ async function setupConfigureServer() {
     }
     middlewares(req, res);
   });
+  // The Rust listener relays unclaimed browser upgrades here as real upgrade
+  // requests; listeners registered on the stub attach in registration order.
+  for (const fn of upgradeListeners) srv.on("upgrade", fn);
+  server.httpServer._upgradeTarget = srv;
   await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
   middlewarePort = srv.address().port;
   process.stderr.write(`${OJ} plugin host: configureServer middleware on :${middlewarePort}\n`);

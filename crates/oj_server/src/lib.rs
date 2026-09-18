@@ -2672,7 +2672,16 @@ async fn proxy_middleware(
     // proxy need not handle upgrades — nothing regresses.
     if entry.ws() && is_websocket_upgrade(req.headers()) {
         let target = proxy_target(&entry, &path, req.uri().query());
-        return proxy_websocket(state, req, &entry, &target).await;
+        return proxy_websocket(state, req, Some(&entry), &target).await;
+    }
+
+    // `ws: false` (Vite's default): the upgrade belongs to the shared
+    // httpServer's `upgrade` listeners — plugins own it there (tunnel-style),
+    // so relay it to the plugin middleware server as a real upgrade.
+    if is_websocket_upgrade(req.headers()) {
+        if let Some(port) = state.plugin_serve.mw_port() {
+            return relay_upgrade_to_plugin_middleware(state, req, port).await;
+        }
     }
 
     // The single, Vite-shaped proxy lives in the plugin host's middleware stack.
@@ -2809,7 +2818,7 @@ fn select_proxy<'a>(
     })
 }
 
-fn is_websocket_upgrade(h: &HeaderMap) -> bool {
+pub fn is_websocket_upgrade(h: &HeaderMap) -> bool {
     h.get(header::UPGRADE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
@@ -2925,13 +2934,30 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCertificate {
     }
 }
 
+/// A browser upgrade no Rust endpoint claims: hand it to the plugin
+/// middleware server as a real upgrade, so configureServer `upgrade`
+/// listeners fire like on Vite's shared httpServer.
+async fn relay_upgrade_to_plugin_middleware(
+    state: Arc<ServerState>,
+    req: axum::extract::Request,
+    port: u16,
+) -> Response {
+    let raw = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+    let target = format!("http://127.0.0.1:{port}{raw}");
+    proxy_websocket(state, req, None, &target).await
+}
+
 /// `server.proxy` with `ws: true`: accept the browser's WebSocket, open one to
 /// the target with the same path, query, subprotocols and cookies, and relay
 /// messages both ways until either side closes (Vite: http-proxy `ws`).
 async fn proxy_websocket(
     state: Arc<ServerState>,
     req: axum::extract::Request,
-    entry: &oj_config::ProxyEntry,
+    entry: Option<&oj_config::ProxyEntry>,
     target: &str,
 ) -> Response {
     use futures_util::{SinkExt, StreamExt};
@@ -2961,7 +2987,7 @@ async fn proxy_websocket(
     };
     // http-proxy keeps the browser's Host unless `changeOrigin` asks for the
     // target's; `rewriteWsOrigin` (Vite) swaps the Origin for the target's origin.
-    let host: String = if entry.change_origin() {
+    let host: String = if entry.is_some_and(|e| e.change_origin()) {
         target_host.clone()
     } else {
         parts
@@ -2985,7 +3011,7 @@ async fn proxy_websocket(
         if !ws_forwardable_header(name) {
             continue;
         }
-        if *name == header::ORIGIN && entry.rewrite_ws_origin() {
+        if *name == header::ORIGIN && entry.is_some_and(|e| e.rewrite_ws_origin()) {
             builder = builder.header(name, ws_target_origin(&url));
             continue;
         }
@@ -3001,7 +3027,7 @@ async fn proxy_websocket(
     // config (system trust store, or any certificate when the entry says
     // `secure: false`), as http-proxy does for a `wss:` target.
     let connector = if url.starts_with("wss://") {
-        match state.proxy_tls_config(entry.secure()) {
+        match state.proxy_tls_config(entry.is_none_or(|e| e.secure())) {
             Ok(cfg) => Some(tokio_tungstenite::Connector::Rustls(cfg)),
             Err(e) => {
                 return (StatusCode::BAD_GATEWAY, format!("oj proxy: tls config: {e}")).into_response()
@@ -3010,19 +3036,33 @@ async fn proxy_websocket(
     } else {
         Some(tokio_tungstenite::Connector::Plain)
     };
-    let (upstream, upstream_resp) =
-        match tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector)
-            .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
+    let connect = tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector);
+    // An upgrade relayed to the plugin middleware that no `upgrade` listener
+    // claims would otherwise dangle; proxied targets keep their own timeouts.
+    let connected = if entry.is_none() {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), connect).await {
+            Ok(r) => r,
+            Err(_) => {
                 return (
                     StatusCode::BAD_GATEWAY,
-                    format!("oj proxy: websocket to {url} failed: {e}"),
+                    format!("oj: no plugin handled the websocket upgrade for {url}"),
                 )
                     .into_response()
             }
-        };
+        }
+    } else {
+        connect.await
+    };
+    let (upstream, upstream_resp) = match connected {
+        Ok(pair) => pair,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("oj proxy: websocket to {url} failed: {e}"),
+            )
+                .into_response()
+        }
+    };
     let selected = upstream_resp
         .headers()
         .get(header::SEC_WEBSOCKET_PROTOCOL)
@@ -3238,6 +3278,13 @@ async fn serve_fallback(
     State(state): State<Arc<ServerState>>,
     req: axum::extract::Request,
 ) -> Response {
+    // A WebSocket upgrade nothing above claimed (oj's own ws endpoints and
+    // `ws: true` proxies run earlier): plugin `upgrade` listeners get it.
+    if is_websocket_upgrade(req.headers()) && vite_ws_subprotocol(req.headers()).is_none() {
+        if let Some(port) = state.plugin_serve.mw_port() {
+            return relay_upgrade_to_plugin_middleware(state, req, port).await;
+        }
+    }
     if req.method() == Method::GET {
         let headers = req.headers().clone();
         let uri = req.uri().clone();

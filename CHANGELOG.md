@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Browser WebSocket upgrades no Rust endpoint claims are relayed to the plugin middleware server as real `upgrade` events, so `configureServer` plugins that own upgrades on `server.httpServer` (tunnel-style) work like under Vite — including under `ws: false` proxy prefixes and in Start mode.
+- `--bundle` HMR patches whose boundaries a frame never registered are skipped instead of crashing that frame with a "module not registered" overlay; a skipped foreign patch no longer counts as a sequence gap (#187).
+
 ## [0.1.26] - 2026-09-16
 
 ### Fixed
