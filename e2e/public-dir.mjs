@@ -60,7 +60,12 @@ async function withServer(app, port, fn) {
     if (!up) throw new Error(`server did not start on ${port}:\n${log}`);
     await fn(`http://localhost:${port}`);
   } finally {
-    srv.kill();
+    // SIGKILL like the run.mjs harness (no graceful shutdown = no engine
+    // code-cache flush writers), and WAIT for the exit so the caller's
+    // teardown rm never races the dying process (the recurring ENOTEMPTY);
+    // the rm retries absorb the orphan children's own ppid-reaper tail.
+    srv.kill("SIGKILL");
+    await new Promise((resolve) => srv.once("exit", resolve));
   }
 }
 
@@ -97,7 +102,7 @@ async function get(url, headers = {}) {
       check("?url on a public asset is still a module", mod.status === 200 && /export default "\/logo\.svg"/.test(mod.body), JSON.stringify(mod));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -110,7 +115,7 @@ async function get(url, headers = {}) {
       check("custom publicDir file served verbatim", sw.status === 200 && sw.body === SW, JSON.stringify(sw));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -125,7 +130,7 @@ async function get(url, headers = {}) {
       check("root modules still compile with publicDir false", main.status === 200 && /__LOGO/.test(main.body), JSON.stringify(main));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

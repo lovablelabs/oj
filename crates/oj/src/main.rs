@@ -184,6 +184,30 @@ enum Command {
     },
 }
 
+/// Self-reap when the parent dev server dies. The one-shot child subcommands
+/// (`start-script`, `engine-job`) only ever run as children of an `oj`
+/// process; a SIGKILLed or crashed parent runs no drop (`kill_on_drop` never
+/// fires), and an orphan would keep running its job — writing code caches and
+/// reports into the app's `.oj-cache` — until the job ends, minutes later.
+/// Same net as the plugin host's ppid watchdog: poll for a reparent (the ppid
+/// CHANGING, not `== 1` — in a container the live parent can BE pid 1) and
+/// exit. The job's output is worthless with the parent gone. A parent that
+/// dies in the instants BEFORE this snapshot leaves it pointing at the
+/// subreaper and the net never fires — that one job runs out as every job
+/// did before the reaper, a bounded miss.
+#[cfg(unix)]
+fn reap_on_parent_death() {
+    let parent = unsafe { libc::getppid() };
+    std::thread::spawn(move || loop {
+        if unsafe { libc::getppid() } != parent {
+            std::process::exit(0);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+}
+#[cfg(not(unix))]
+fn reap_on_parent_death() {}
+
 fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -256,6 +280,7 @@ async fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Command::StartScript { script, root } => {
+            reap_on_parent_death();
             let root = root.canonicalize().context("engine root not found")?;
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
@@ -272,6 +297,7 @@ async fn run() -> anyhow::Result<()> {
             timeout_secs,
             result,
         } => {
+            reap_on_parent_death();
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
                 .context("engine-job payload on stdin")?;

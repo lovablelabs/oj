@@ -50,9 +50,11 @@ const fd = fs.openSync(log, "w");
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: ["ignore", fd, fd] });
 try {
   assert.ok(await up(), "server started");
-  // The server's one-shot engines (config extraction) may still be flushing
-  // code-cache entries into .oj-cache; retries absorb an rm racing a write.
-  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  // No .oj-cache rm here, on purpose: the app dir is a fresh mkdtemp (nothing
+  // stale to clear), the watcher never watches .oj-cache, and a recursive rm
+  // against a LIVE server loses to its legitimate cache writers (engine code
+  // caches, engine-job children rewriting extraction scripts, the optimizer)
+  // no matter how many retries — the recurring ENOTEMPTY flake in this test.
 
   const frames = [];
   const ws = new WebSocket(`ws://localhost:${port}/__ws`);
