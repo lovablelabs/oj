@@ -28,12 +28,14 @@ test("an environment-declaring plugin gets server.environments (built from the a
   fx.pkg("vite", "index.mjs", {
     "index.mjs": `
       export function resolveConfig(inline) {
-        const mkEnv = (extra) => (name) => ({ name, init() {}, hot: { handleInvoke() {}, on() {} }, ...extra(name) });
+        // Track Vite's server startup calls.
+        const calls = (globalThis.__ojStubCalls = { clientBuildStart: 0, listened: [] });
+        const mkEnv = (extra) => (name) => ({ name, init() {}, listen() { calls.listened.push(name); }, hot: { handleInvoke() {}, on() {} }, ...extra(name) });
         return {
           root: inline.root,
           logger: { info() {}, warn() {}, warnOnce() {}, error() {} },
           environments: {
-            client: { dev: { createEnvironment: mkEnv((name) => ({ pluginContainer: { buildStart() {} } })) } },
+            client: { dev: { createEnvironment: mkEnv((name) => ({ pluginContainer: { buildStart() { calls.clientBuildStart++; } } })) } },
             worker: { dev: { createEnvironment: mkEnv((name) => ({ initRunner() {} })) } },
           },
         };
@@ -64,9 +66,21 @@ test("an environment-declaring plugin gets server.environments (built from the a
          server.middlewares.use((req, res, next) => { ran = true; next(); });
          server.middlewares({ url: "/x" }, { setHeader() {}, end() {} }, () => {});
          seen.middlewareRan = ran;
+         // Like connect, trim trailing slashes and store "" for use(fn).
+         // Nitro uses a nonempty route to detect mounted middleware.
+         let prefixed = 0;
+         server.middlewares.use("/mounted/", (req, res, next) => { prefixed++; next(); });
+         server.middlewares({ url: "/x" }, { setHeader() {}, end() {} }, () => {});
+         server.middlewares({ url: "/mounted/y" }, { setHeader() {}, end() {} }, () => {});
+         // Match queries, extensions and any case, but not a longer path segment.
+         server.middlewares({ url: "/mountedx" }, { setHeader() {}, end() {} }, () => {});
+         server.middlewares({ url: "/Mounted?q=1" }, { setHeader() {}, end() {} }, () => {});
+         server.middlewares({ url: "/mounted.json" }, { setHeader() {}, end() {} }, () => {});
+         seen.routes = server.middlewares.stack.map((e) => e.route);
+         seen.prefixedRuns = prefixed;
        },
        transform(code, id) {
-         if (id.endsWith("probe.js")) return "export default " + JSON.stringify(seen) + ";";
+         if (id.endsWith("probe.js")) return "export default " + JSON.stringify({ ...seen, calls: globalThis.__ojStubCalls }) + ";";
          return null;
        },
      }];\n`,
@@ -99,6 +113,13 @@ test("an environment-declaring plugin gets server.environments (built from the a
     assert.equal(seen.middlewaresCallable, true, "server.middlewares is callable");
     assert.equal(seen.middlewaresHasUse, true, "server.middlewares.use exists");
     assert.equal(seen.middlewareRan, true, "a registered middleware runs when the app is invoked");
+    assert.deepEqual(seen.routes.slice(0, 2), ["", "/mounted"], "routes are stored the way connect stores them");
+    assert.equal(seen.prefixedRuns, 3, "a mounted middleware runs under its prefix at a path boundary only (not /mountedx)");
+
+    // Run client buildStart, then listen() on server environments only.
+    // oj serves the client itself.
+    assert.equal(seen.calls.clientBuildStart, 1, "client buildStart ran once");
+    assert.deepEqual(seen.calls.listened, ["worker"], "server environments are listened, the client is not");
 
     // Surface the cloudflare plugin also reads.
     assert.equal(seen.hasClose, true, "server.close is provided");

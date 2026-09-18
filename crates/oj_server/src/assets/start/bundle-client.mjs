@@ -213,3 +213,6 @@ renameSync(join(HERE, "css-urls.json.tmp"), join(HERE, "css-urls.json"));
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
 process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundled (${result.output.length} files)\n`);
+// Force exit, as vite-extract does: plugin config hooks may leave workers
+// running (such as Nitro's dev runner), and oj waits for this process to exit.
+process.exit(0);

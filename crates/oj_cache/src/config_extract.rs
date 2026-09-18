@@ -140,6 +140,17 @@ fn file_digest(path: &Path) -> String {
     }
 }
 
+/// Config files nitro/vite loads through c12, not through config imports.
+fn nitro_config_files() -> impl Iterator<Item = String> {
+    const EXTENSIONS: [&str; 12] = [
+        "ts", "mts", "cts", "js", "mjs", "cjs", "json", "jsonc", "json5", "yaml", "yml", "toml",
+    ];
+    ["nitro.config", ".config/nitro.config", ".config/nitro"]
+        .into_iter()
+        .flat_map(|base| EXTENSIONS.iter().map(move |ext| format!("{base}.{ext}")))
+        .chain(std::iter::once(".nitrorc".to_string()))
+}
+
 fn env_epoch(root: &Path) -> String {
     let mut hasher = blake3::Hasher::new();
     for name in [
@@ -164,8 +175,12 @@ fn env_epoch(root: &Path) -> String {
         "wrangler.jsonc",
         "wrangler.json",
         "wrangler.toml",
-    ] {
-        if let Ok(bytes) = fs::read(root.join(name)) {
+    ]
+    .into_iter()
+    .map(String::from)
+    .chain(nitro_config_files())
+    {
+        if let Ok(bytes) = fs::read(root.join(&name)) {
             hasher.update(name.as_bytes());
             hasher.update(&[0]);
             hasher.update(&bytes);
@@ -283,6 +298,26 @@ mod tests {
         store.store(&config, "serve", "development", &[], "{}", "");
         // The .toml spelling counts too.
         fs::write(root.join("wrangler.toml"), "name = \"app\"").unwrap();
+        assert!(store.lookup(&config, "serve", "development").is_none());
+    }
+
+    // Changes to nitro.config.* must clear the cached config too.
+    #[test]
+    fn nitro_config_changes_invalidate() {
+        let root = temp_root("nitro");
+        let config = root.join("vite.config.ts");
+        fs::write(&config, "a").unwrap();
+        let store = ConfigExtractStore::new(&root, "s1");
+        store.store(&config, "serve", "development", &[], "{}", "");
+        assert!(store.lookup(&config, "serve", "development").is_some());
+        fs::write(root.join("nitro.config.ts"), "export default {}").unwrap();
+        assert!(store.lookup(&config, "serve", "development").is_none());
+        store.store(&config, "serve", "development", &[], "{}", "");
+        fs::write(root.join("nitro.config.ts"), "export default { preset: 'bun' }").unwrap();
+        assert!(store.lookup(&config, "serve", "development").is_none());
+        store.store(&config, "serve", "development", &[], "{}", "");
+        fs::create_dir_all(root.join(".config")).unwrap();
+        fs::write(root.join(".config/nitro.ts"), "export default {}").unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
     }
 
