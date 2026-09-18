@@ -35,6 +35,20 @@ pub(crate) struct FsCodeCache {
     dir: PathBuf,
 }
 
+/// The compatibility key callers should partition persistent engine caches by
+/// (`EngineConfig::code_cache_dir`): the V8 version, which is the bytecode
+/// ABI. Keying on the embedder's own release version cold-started every
+/// engine on every version bump; a release that upgrades no engine crate now
+/// keeps the whole warm cache. Correctness never rests on this key: each
+/// entry embeds its source hash (below), V8 itself rejects cached data from a
+/// different V8 build or flag set, and the CJS-analysis entries fail
+/// deserialization on a shape change -- all graceful misses. The key is
+/// housekeeping, keeping incompatible generations from mixing in one
+/// directory as dead weight.
+pub fn engine_abi_key() -> String {
+    format!("v8-{}", deno_core::v8::VERSION_STRING)
+}
+
 /// Stable across processes: `DefaultHasher::new()` is keyless SipHash, so two
 /// runs of the same binary agree (a toolchain upgrade that changes it merely
 /// misses; the embedded source hash keeps correctness either way).
@@ -162,5 +176,23 @@ mod tests {
         assert_eq!(cache.get(&url, CodeCacheType::EsModule, 8), None);
         // Kinds are separate entries.
         assert_eq!(cache.get(&url, CodeCacheType::Script, 7), None);
+    }
+
+    // The cache partition must follow the V8 version (the bytecode ABI), not
+    // the embedder's release version: an oj version bump used to rotate the
+    // directory and cold-start every engine (~+1s per one-shot child on an
+    // 18k-module app), while entries stay valid across such bumps -- the
+    // roundtrip test above is what invalidates on a source change.
+    #[test]
+    fn abi_key_is_the_v8_version_not_the_crate_version() {
+        let key = engine_abi_key();
+        assert_eq!(key, format!("v8-{}", deno_core::v8::VERSION_STRING));
+        // Guard against reintroducing release-version keying. (Skip the
+        // assert only in the pathological case where the V8 version string
+        // itself embeds the crate version.)
+        let crate_version = env!("CARGO_PKG_VERSION");
+        if !deno_core::v8::VERSION_STRING.contains(crate_version) {
+            assert!(!key.contains(crate_version));
+        }
     }
 }

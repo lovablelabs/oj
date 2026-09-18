@@ -179,13 +179,16 @@ pub fn boot_phase(label: &str) {
 /// The persistent V8 code-cache directory for embedded engines
 /// (`oj_js::EngineConfig::code_cache_dir`): compiled bytecode for the app's
 /// toolchain, reused across engine spawns and one-shot children — the
-/// engine-side analog of NODE_COMPILE_CACHE. Keyed by oj version: a release
-/// ships a new engine and asset scripts, and V8 rejects bytecode from a
-/// different build, so entries from another version are dead weight.
+/// engine-side analog of NODE_COMPILE_CACHE. Keyed by the engine's ABI
+/// (`oj_js::engine_abi_key`, the V8 version), NOT the oj version: per-entry
+/// source hashes already invalidate changed scripts, so an oj release keeps
+/// the warm cache instead of cold-starting every engine, and only a V8
+/// upgrade (whose bytecode the new V8 would reject anyway) rotates the
+/// directory.
 pub fn engine_code_cache_dir(root: &Path) -> PathBuf {
     oj_cache::cache_root(root)
         .join("code-cache")
-        .join(env!("CARGO_PKG_VERSION"))
+        .join(oj_js::engine_abi_key())
 }
 
 pub fn node_compile_cache(root: &Path) -> std::ffi::OsString {

@@ -18,6 +18,7 @@ mod worker;
 
 pub use bridge::EngineHooks;
 pub use bridge::RpcHandler;
+pub use code_cache::engine_abi_key;
 pub use host::HostFuture;
 pub use host::HostModule;
 pub use host::HostModuleType;
