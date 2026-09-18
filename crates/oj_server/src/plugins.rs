@@ -185,15 +185,46 @@ fn extraction_timeout_from(raw: Option<&str>) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// Runs one export of an oj-owned module on a short-lived in-process JS engine
-/// and returns its JSON result. One isolate per run preserves the freshness
+/// The oj executable one-shot engine jobs run in, set once by the binary's
+/// main. A native addon can take the whole process down when it is
+/// re-initialized after the engine that first loaded it was torn down —
+/// napi-rs before 3.10 corrupts its process-global state then (Node segfaults
+/// the same way when a second worker_thread requires such an addon after the
+/// first worker exited), and vite 8 apps load rolldown's binding once per
+/// engine. A child process per job gives each one-shot engine its own address
+/// space, as the pre-embedded node sidecars had.
+static ENGINE_JOB_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn engine_jobs_via_subprocess(exe: PathBuf) {
+    let _ = ENGINE_JOB_EXE.set(exe);
+}
+
+/// Runs one export of an oj-owned module on a short-lived JS engine and
+/// returns its JSON result: in a child `oj engine-job` process when the
+/// binary registered itself via [`engine_jobs_via_subprocess`] (see
+/// [`ENGINE_JOB_EXE`] for why), in-process otherwise (library consumers,
+/// tests).
+pub(crate) fn run_engine_job(
+    root: &Path,
+    module: &Path,
+    export: &str,
+    payload: serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, oj_js::EngineError> {
+    match ENGINE_JOB_EXE.get() {
+        Some(exe) => run_engine_job_subprocess(exe, root, module, export, &payload, timeout),
+        None => run_engine_job_in_process(root, module, export, payload, timeout),
+    }
+}
+
+/// The in-process engine job: one isolate per run preserves the freshness
 /// the one-shot subprocesses had (module caches, env dance and run-once plugin
 /// guards die with the engine, a hook-started watcher or interval cannot
 /// outlive it), and boot's parallel extractions each own their engine thread.
 /// The call blocks the current thread, as the bounded subprocess wait did;
 /// from inside a tokio runtime it blocks on a scoped helper thread instead so
 /// no runtime worker is parked inside another `block_on`.
-pub(crate) fn run_engine_job(
+pub fn run_engine_job_in_process(
     root: &Path,
     module: &Path,
     export: &str,
@@ -223,6 +254,122 @@ pub(crate) fn run_engine_job(
     } else {
         run()
     }
+}
+
+/// The `--result` file contents of an `oj engine-job` run: the job's outcome,
+/// encoded so the parent can rebuild the exact [`oj_js::EngineError`]. A file,
+/// not stdout, so job code that prints cannot corrupt the channel.
+pub fn engine_job_envelope(
+    outcome: &Result<serde_json::Value, oj_js::EngineError>,
+) -> serde_json::Value {
+    match outcome {
+        Ok(value) => serde_json::json!({ "ok": true, "value": value }),
+        Err(e) => {
+            let (kind, message) = match e {
+                oj_js::EngineError::Boot(m) => ("boot", m.clone()),
+                oj_js::EngineError::Js(m) => ("js", m.clone()),
+                oj_js::EngineError::MemoryLimit => ("memory", String::new()),
+                oj_js::EngineError::Deadline => ("deadline", String::new()),
+                oj_js::EngineError::Closed => ("closed", String::new()),
+            };
+            serde_json::json!({ "ok": false, "kind": kind, "message": message })
+        }
+    }
+}
+
+fn engine_job_outcome(envelope: serde_json::Value) -> Result<serde_json::Value, oj_js::EngineError> {
+    if envelope.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(envelope.get("value").cloned().unwrap_or(serde_json::Value::Null));
+    }
+    let message = envelope
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Err(match envelope.get("kind").and_then(|v| v.as_str()) {
+        Some("js") => oj_js::EngineError::Js(message),
+        Some("memory") => oj_js::EngineError::MemoryLimit,
+        Some("deadline") => oj_js::EngineError::Deadline,
+        Some("closed") => oj_js::EngineError::Closed,
+        _ => oj_js::EngineError::Boot(message),
+    })
+}
+
+fn run_engine_job_subprocess(
+    exe: &Path,
+    root: &Path,
+    module: &Path,
+    export: &str,
+    payload: &serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, oj_js::EngineError> {
+    static JOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = JOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let result_file =
+        std::env::temp_dir().join(format!("oj-engine-job-{}-{seq}.json", std::process::id()));
+    let boot = |m: String| oj_js::EngineError::Boot(m);
+    let mut child = std::process::Command::new(exe)
+        .arg("engine-job")
+        .arg(module)
+        .arg("--root")
+        .arg(root)
+        .arg("--export")
+        .arg(export)
+        .arg("--timeout-secs")
+        .arg(timeout.as_secs().max(1).to_string())
+        .arg("--result")
+        .arg(&result_file)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| boot(format!("could not run the engine job child: {e}")))?;
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let sent = serde_json::to_string(payload)
+            .map_err(|e| boot(format!("engine job payload: {e}")))
+            .and_then(|json| {
+                stdin
+                    .write_all(json.as_bytes())
+                    .map_err(|e| boot(format!("engine job payload: {e}")))
+            });
+        if let Err(e) = sent {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+        // Dropping closes the pipe; the child's read_to_string completes.
+    }
+    // The child's engine enforces `timeout` itself; the grace covers process
+    // start and result writing, then a wedged child is killed like the old
+    // bounded subprocess wait did.
+    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&result_file);
+                return Err(oj_js::EngineError::Deadline);
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(e) => {
+                let _ = std::fs::remove_file(&result_file);
+                return Err(boot(format!("could not wait for the engine job child: {e}")));
+            }
+        }
+    };
+    let envelope = std::fs::read_to_string(&result_file);
+    let _ = std::fs::remove_file(&result_file);
+    if !status.success() {
+        // A crash here is an addon or engine taking the child down; the child
+        // dying alone (instead of the caller) is this seam's whole point.
+        return Err(boot(format!("the engine job child died: {status}")));
+    }
+    let envelope = envelope.map_err(|e| boot(format!("engine job result: {e}")))?;
+    let envelope: serde_json::Value =
+        serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
+    engine_job_outcome(envelope)
 }
 
 /// Evaluate the app's `vite.config` for `command` ("serve" | "build") and `mode`.
@@ -4204,5 +4351,28 @@ export async function run() {
         assert_eq!(out["sync"], "sync-child");
         assert_eq!(out["piped"], "piped-child");
         assert_eq!(out["code"], 0);
+    }
+
+    // The engine-job child talks to its parent through this envelope; a
+    // variant that does not survive the round trip would turn a child's
+    // deadline or JS error into a generic boot failure.
+    #[test]
+    fn engine_job_envelope_round_trips_every_outcome() {
+        let outcomes: Vec<Result<serde_json::Value, oj_js::EngineError>> = vec![
+            Ok(serde_json::json!({ "a": [1, "two"] })),
+            Err(oj_js::EngineError::Boot("no engine".into())),
+            Err(oj_js::EngineError::Js("TypeError: boom".into())),
+            Err(oj_js::EngineError::MemoryLimit),
+            Err(oj_js::EngineError::Deadline),
+            Err(oj_js::EngineError::Closed),
+        ];
+        for outcome in outcomes {
+            let back = engine_job_outcome(engine_job_envelope(&outcome));
+            match (&outcome, &back) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b),
+                (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
+                _ => panic!("outcome {outcome:?} came back as {back:?}"),
+            }
+        }
     }
 }
