@@ -19,6 +19,14 @@ mod worker;
 pub use bridge::EngineHooks;
 pub use bridge::RpcHandler;
 pub use code_cache::engine_abi_key;
+/// Native addons that would re-initialize into dangling process-global state
+/// if a new engine loaded them now (every runtime that registered them is
+/// gone) — a pre-3.10 napi-rs addon can crash the process on that. Embedders
+/// gate in-process engine respawns on this being empty.
+pub use deno_napi::addons_pending_unsafe_reregistration;
+/// Native addons some live engine currently holds, for a keeper env that
+/// pre-registers them before a dying engine's teardown can orphan them.
+pub use deno_napi::addons_with_live_registrations;
 pub use host::HostFuture;
 pub use host::HostModule;
 pub use host::HostModuleType;

@@ -499,13 +499,40 @@ impl PluginServe {
 /// environment — covering all edits missed while the path was down. A host
 /// that never finishes initializing within the init deadline gets a loud
 /// warning instead of degrading silently.
+///
+/// The task outlives activations: a host revived after a wedge boots a fresh
+/// middleware server on a fresh port and pushes new serve info (the revive
+/// resets the watch to None first), and this same task re-points the
+/// forwarding and re-runs the catch-up resync for the edits the dead window
+/// swallowed. It exits only when the host is gone with no revives left.
 fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>) {
     tokio::spawn(async move {
         let mut updates = host.serve_info_updates();
+        let mut gone = host.host_gone_updates();
         let mut warned = false;
+        // What was last applied, so a spurious wake re-applies nothing while
+        // a revived generation's genuinely new info re-activates. (A revive
+        // that lands on the SAME port is applied too when the None reset was
+        // observed; an unobserved reset with an identical port only costs the
+        // catch-up resync — forwarding already points at the new server.)
+        let mut applied: Option<(Option<u16>, bool)> = None;
+        // Permanent death makes no watch change of its own (the final failed
+        // revive is silent), so a slow re-check bounds how long the task can
+        // pin the host after it.
+        let mut recheck = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(60),
+        );
         loop {
             let info = *updates.borrow_and_update();
-            if let Some(info) = info {
+            if info.is_none() {
+                // The revive reset: whatever the next generation pushes is a
+                // fresh activation, even on a port equal to the last one.
+                applied = None;
+            }
+            let key = info.map(|i| (i.middleware_port, i.runner_environments));
+            if let Some(info) = info.filter(|_| key != applied) {
+                applied = key;
                 plugin_serve.set(&info);
                 if let Some(p) = plugin_serve.mw_port() {
                     println!(
@@ -564,23 +591,33 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                         );
                     }
                 }
+            }
+            // A death only ends the task when no revive is left; a revivable
+            // host keeps it watching for the next generation's push. This
+            // task's own Arc<PluginHost> keeps the push channel's sender
+            // alive, so `updates.changed()` alone can never observe the host
+            // dying — the gone watch and the slow re-check bound the wait.
+            if *gone.borrow_and_update() && !host.can_revive() {
+                if applied.is_none() {
+                    eprintln!("oj: warning: the plugin host exited before initializing; plugin-served routes will not activate");
+                } else {
+                    eprintln!("oj: warning: the plugin host exited with no respawns left; plugin-served routes are down until the dev server restarts");
+                }
                 return;
             }
-            // This task's own Arc<PluginHost> keeps the push channel's sender
-            // alive, so `updates.changed()` can never observe the host dying:
-            // wait on the host-gone signal too, reporting the death and
-            // releasing the host instead of pinning it forever.
-            if warned {
+            if warned || applied.is_some() {
                 tokio::select! {
                     changed = updates.changed() => {
                         if changed.is_err() {
                             return;
                         }
                     }
-                    _ = host.host_gone_wait() => {
-                        eprintln!("oj: warning: the plugin host exited before initializing; plugin-served routes will not activate");
-                        return;
+                    changed = gone.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
                     }
+                    _ = recheck.tick() => {}
                 }
             } else {
                 tokio::select! {
@@ -589,10 +626,12 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                             return;
                         }
                     }
-                    _ = host.host_gone_wait() => {
-                        eprintln!("oj: warning: the plugin host exited before initializing; plugin-served routes will not activate");
-                        return;
+                    changed = gone.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
                     }
+                    _ = recheck.tick() => {}
                     _ = tokio::time::sleep_until(host.init_deadline_at()) => {
                         if !host.is_initialized() {
                             eprintln!(
@@ -2040,19 +2079,26 @@ async fn replay_ssr_watch_backlog(host: &PluginHost, queue: &SsrWatchQueue) {
 }
 
 /// Waits for the lazy SSR host's init and replays the watcher backlog then; a
-/// host that dies pre-init releases the wait (its backlog stays for a
-/// respawn, which never happens today — the OnceCell holds one spawn — so
-/// the queue simply dies with the session).
+/// host that dies pre-init keeps the wait alive while it may still be revived
+/// (a revive resets `initialized` and the fresh generation's init replays the
+/// backlog), and only a permanent death — no respawns left — releases it.
 fn spawn_ssr_watch_catch_up(host: std::sync::Arc<PluginHost>, queue: Arc<SsrWatchQueue>) {
     tokio::spawn(async move {
         let mut init = host.initialized_updates();
+        let mut gone = host.host_gone_updates();
         loop {
             if *init.borrow_and_update() {
                 break;
             }
+            if *gone.borrow_and_update() && !host.can_revive() {
+                return;
+            }
             tokio::select! {
                 changed = init.changed() => { if changed.is_err() { return; } }
-                _ = host.host_gone_wait() => return,
+                changed = gone.changed() => { if changed.is_err() { return; } }
+                // Permanent death makes no watch change of its own (the final
+                // failed revive is silent): re-check slowly.
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
             }
         }
         replay_ssr_watch_backlog(&host, &queue).await;
