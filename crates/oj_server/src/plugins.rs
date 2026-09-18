@@ -964,9 +964,10 @@ pub struct PluginHost {
     /// waiting out the init deadline or the per-call timeout. A watch so a
     /// waiter (`host_gone_wait`) can select on the death instead of polling.
     host_gone: tokio::sync::watch::Sender<bool>,
-    /// When the host was spawned; the init deadline is measured from here, so
-    /// boot RPCs share one deadline instead of stacking a fresh one each.
-    spawned: tokio::time::Instant,
+    /// When the host's CURRENT generation was spawned (reset by a revive);
+    /// the init deadline is measured from here, so boot RPCs share one
+    /// deadline instead of stacking a fresh one each.
+    spawned: Mutex<tokio::time::Instant>,
     /// Per-spawn init-wait policy: how long a call may wait for the host's
     /// top-level init. The boot/serve host takes the long init deadline (boot
     /// correctness depends on its snapshot RPCs), shared across calls and
@@ -1020,6 +1021,126 @@ pub struct PluginHost {
     /// Last "still initializing" progress line, so concurrent init-gated calls
     /// print one line per interval, not one each.
     init_progress: Mutex<std::time::Instant>,
+    /// Everything a respawn needs to boot a fresh engine generation: the
+    /// composed boot seed (pluginsPath/initialJson/cacheRoot), the app root
+    /// the engine and its resolver are built over, and the stall monitor's
+    /// window. Snapshotted at spawn; a respawn boots the same host the same
+    /// way, only on a fresh isolate.
+    boot: BootContext,
+    /// The revive budget and the engine GENERATION, one lock so a death
+    /// report and a concurrent revive serialize: a report carries the
+    /// generation of the engine it is about, and a report about a replaced
+    /// engine is stale — ignoring it is what keeps the belt of an old,
+    /// abandoned call from killing the freshly revived host.
+    revive: Mutex<ReviveState>,
+    /// Set by `shutdown()`: the host was retired on purpose and must never be
+    /// revived (the push dispatcher's channel-close latches `host_gone` on a
+    /// clean shutdown exactly like on a death).
+    shut_down: std::sync::atomic::AtomicBool,
+    /// A weak self-handle so `&self` methods (the call path's revive) can
+    /// hand the background tasks of a fresh generation their `Arc`s.
+    self_ref: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
+}
+
+/// See [`PluginHost::boot`].
+struct BootContext {
+    boot_seed: String,
+    root: PathBuf,
+    stall_wait: std::time::Duration,
+    /// The engine heap cap every generation is spawned with (see
+    /// `plugin_host_memory_mb`).
+    memory_limit_bytes: usize,
+}
+
+/// See [`PluginHost::revive`].
+struct ReviveState {
+    /// The live engine's generation; bumped by each revive.
+    generation: u64,
+    /// Respawns consumed. A LIFETIME budget, deliberately never reset by a
+    /// successful boot: a wedge that recurs every generation would otherwise
+    /// respawn forever, and each natively wedged generation leaks a detached
+    /// isolate thread — past the budget the host stays gone and the outer
+    /// supervisor (a dev-server restart) owns recovery, as it always did.
+    attempts: u32,
+    /// When the last revive ran, spacing attempts out so a burst of calls
+    /// against a recurring wedge cannot burn the whole budget at once.
+    last: Option<std::time::Instant>,
+}
+
+/// Respawns per host lifetime (see `ReviveState::attempts`).
+const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
+/// Minimum spacing between respawns (see `ReviveState::last`).
+const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The plugin-host engine's heap cap: Node parity. The process host was a
+/// `node` child, so a deployment's `NODE_OPTIONS --max-old-space-size` capped
+/// it (and Node's ~4GB default did otherwise), and V8 exhaustion crashed it
+/// into a supervisor restart. The embedded engine takes the same cap from the
+/// same places — `OJ_PLUGIN_MEMORY_MB` first, then the inherited
+/// `NODE_OPTIONS` flag, then 4096MB — but degrades gracefully: the near-limit
+/// callback fails the running call with MemoryLimit, the host is declared
+/// gone, and the next call revives it on a fresh heap. Uncapped (the previous
+/// behavior), a heap blow-up ends in a GC storm the transport belt can only
+/// read as a native wedge — or in V8's fatal OOM, which aborts the whole
+/// dev-server process.
+fn plugin_host_memory_mb() -> usize {
+    if let Some(mb) = std::env::var("OJ_PLUGIN_MEMORY_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|m| *m > 0)
+    {
+        return mb;
+    }
+    std::env::var("NODE_OPTIONS")
+        .ok()
+        .and_then(|opts| max_old_space_mb(&opts))
+        .unwrap_or(4096)
+}
+
+/// The last `--max-old-space-size` in a NODE_OPTIONS value (last wins, like
+/// Node; Node also accepts the underscore spelling), so the heap cap a
+/// deployment already sets for its Node processes carries over to the
+/// embedded engine unchanged.
+fn max_old_space_mb(node_options: &str) -> Option<usize> {
+    let mut found = None;
+    for token in node_options.split_whitespace() {
+        let norm = token.replace('_', "-");
+        if let Some(v) = norm.strip_prefix("--max-old-space-size=") {
+            if let Some(mb) = v.parse::<usize>().ok().filter(|m| *m > 0) {
+                found = Some(mb);
+            }
+        }
+    }
+    found
+}
+
+/// This process's resident set size in MB, best effort, for the host-death
+/// diagnostics: Linux reads the live value from /proc; the other unixes fall
+/// back to getrusage's PEAK (close enough for a grown process, which is what
+/// a wedge diagnostic is looking at).
+fn process_rss_mb() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+        let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        return Some(kb / 1024);
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let max_rss = unsafe { usage.assume_init() }.ru_maxrss.max(0) as u64;
+        // macOS reports bytes; the BSDs report kilobytes.
+        if cfg!(target_os = "macos") {
+            return Some(max_rss / (1024 * 1024));
+        }
+        return Some(max_rss / 1024);
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 /// The host's reverse ctx-RPC (`this.resolve` fallbacks, `this.load` module
@@ -1180,6 +1301,8 @@ struct SpawnTimeouts {
     stall: Option<std::time::Duration>,
     /// The per-call RPC timeout (`PluginHost::rpc_wait`).
     rpc: Option<std::time::Duration>,
+    /// The engine heap cap (defaults to `plugin_host_memory_mb`).
+    memory: Option<usize>,
 }
 
 impl PluginHost {
@@ -1250,42 +1373,6 @@ impl PluginHost {
         timeouts: SpawnTimeouts,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
-        if let Some(parent) = script.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        // Written atomically (tmp + rename): several hosts spawn concurrently
-        // in one process (boot + lazy SSR + per-environment build hosts), and
-        // a plain truncating write could hand a sibling engine's import a
-        // half-written module.
-        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
-            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
-            std::fs::write(&tmp, PLUGIN_HOST_JS)?;
-            std::fs::rename(&tmp, &script)?;
-        }
-
-        // The engine's push channel replaces the sidecar's control-plane
-        // stdout: pushes arrive as values on `post_rx`, so nothing a plugin
-        // prints can splice into the protocol and the whole control-token /
-        // ACK / re-push machinery has no in-process counterpart.
-        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
-        let resolver = std::sync::Arc::new(OjResolver::new(root));
-        let root_buf: PathBuf = root.to_path_buf();
-        let rpc_handler: oj_js::RpcHandler = {
-            let resolver = std::sync::Arc::clone(&resolver);
-            let root = root_buf.clone();
-            std::sync::Arc::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
-        };
-        let mut engine_config = oj_js::EngineConfig::new(root);
-        engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
-        let engine = oj_js::JsEngine::spawn_with_hooks(
-            engine_config,
-            oj_js::EngineHooks {
-                post: post_tx,
-                rpc: Some(rpc_handler),
-            },
-        )
-        .map_err(|e| anyhow::anyhow!("cannot start the embedded plugin host: {e}"))?;
-        let engine = std::sync::Arc::new(engine);
 
         let (mut init_wait, init_knob) = init_wait_policy(lazy);
         if let Some(w) = timeouts.init_wait {
@@ -1293,15 +1380,20 @@ impl PluginHost {
         }
         let rpc_wait = timeouts.rpc.unwrap_or_else(plugin_rpc_timeout);
         let stall_wait = timeouts.stall.unwrap_or(rpc_wait);
+        let boot_seed = serde_json::json!({
+            "pluginsPath": plugins_file,
+            "initialJson": config_json,
+            "cacheRoot": oj_cache::cache_root(root),
+        });
         let host = std::sync::Arc::new(PluginHost {
-            engine: Mutex::new(Some(std::sync::Arc::clone(&engine))),
+            engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
             ws_out: Mutex::new(None),
             server_events: Mutex::new(None),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
-            spawned: tokio::time::Instant::now(),
+            spawned: Mutex::new(tokio::time::Instant::now()),
             init_wait,
             lazy,
             init_failed: tokio::sync::watch::channel(false).0,
@@ -1310,7 +1402,90 @@ impl PluginHost {
             init_progress_seen: tokio::sync::watch::channel(0).0,
             rpc_wait,
             init_progress: Mutex::new(std::time::Instant::now()),
+            boot: BootContext {
+                boot_seed: boot_seed.to_string(),
+                root: root.to_path_buf(),
+                stall_wait,
+                memory_limit_bytes: timeouts
+                    .memory
+                    .unwrap_or_else(|| plugin_host_memory_mb() * 1024 * 1024),
+            },
+            revive: Mutex::new(ReviveState {
+                generation: 0,
+                attempts: 0,
+                last: None,
+            }),
+            shut_down: std::sync::atomic::AtomicBool::new(false),
+            self_ref: std::sync::OnceLock::new(),
         });
+        let _ = host.self_ref.set(std::sync::Arc::downgrade(&host));
+        Self::ignite(&host, 0).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(host)
+    }
+
+    /// Boot one engine GENERATION onto `host`: write the host module, spawn
+    /// the engine with its push/RPC hooks, install it, and start the three
+    /// per-generation tasks (boot, push dispatcher, init stall monitor). The
+    /// initial spawn and every revive run this same path; each task carries
+    /// its generation so a death it reports about a since-replaced engine is
+    /// ignored (see `declare_gone`). `generation` is the generation this boot
+    /// is FOR: if another revive superseded it before the engine could be
+    /// installed, the just-spawned engine is abandoned instead of installed —
+    /// two racing ignites must never leave a live loser behind (a zombie
+    /// isolate with its own middleware server).
+    fn ignite(host: &std::sync::Arc<PluginHost>, generation: u64) -> Result<(), String> {
+        let root = host.boot.root.clone();
+        let script = PathBuf::from(&host.host_module);
+        if let Some(parent) = script.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        // Written atomically (tmp + rename): several hosts spawn concurrently
+        // in one process (boot + lazy SSR + per-environment build hosts), and
+        // a plain truncating write could hand a sibling engine's import a
+        // half-written module.
+        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
+            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
+            std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &script).map_err(|e| e.to_string())?;
+        }
+
+        // The engine's push channel replaces the sidecar's control-plane
+        // stdout: pushes arrive as values on `post_rx`, so nothing a plugin
+        // prints can splice into the protocol and the whole control-token /
+        // ACK / re-push machinery has no in-process counterpart.
+        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
+        let resolver = std::sync::Arc::new(OjResolver::new(&root));
+        let rpc_handler: oj_js::RpcHandler = {
+            let resolver = std::sync::Arc::clone(&resolver);
+            let root = root.clone();
+            std::sync::Arc::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
+        };
+        let mut engine_config = oj_js::EngineConfig::new(&root);
+        engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
+        engine_config.memory_limit_bytes = Some(host.boot.memory_limit_bytes);
+        let engine = oj_js::JsEngine::spawn_with_hooks(
+            engine_config,
+            oj_js::EngineHooks {
+                post: post_tx,
+                rpc: Some(rpc_handler),
+            },
+        )
+        .map_err(|e| format!("cannot start the embedded plugin host: {e}"))?;
+        let engine = std::sync::Arc::new(engine);
+        {
+            let revive = host.revive.lock().unwrap();
+            // A shutdown racing this boot must not gain a live engine it can
+            // no longer take (its engine take may have run before this
+            // install), and a newer revive must not gain a live loser.
+            if revive.generation != generation
+                || host.shut_down.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                drop(revive);
+                engine.abandon();
+                return Err("superseded by a newer respawn or a shutdown".into());
+            }
+            *host.engine.lock().unwrap() = Some(std::sync::Arc::clone(&engine));
+        }
 
         // The BOOT task: seed the host's identity (what used to be argv and
         // spawn env) as a global, then trigger the module's top-level init by
@@ -1318,13 +1493,9 @@ impl PluginHost {
         // Rust-side watches (init gate, stall monitor) own boot patience —
         // and a top-level throw (the old "host process died on boot") fails
         // it, printing the cause and declaring the host gone.
-        let boot_ref = std::sync::Arc::clone(&host);
+        let boot_ref = std::sync::Arc::clone(host);
         let boot_engine = std::sync::Arc::clone(&engine);
-        let boot_seed = serde_json::json!({
-            "pluginsPath": plugins_file,
-            "initialJson": config_json,
-            "cacheRoot": oj_cache::cache_root(root),
-        });
+        let boot_seed = host.boot.boot_seed.clone();
         let host_module = host.host_module.clone();
         tokio::spawn(async move {
             let prelude = format!("globalThis.__ojPluginHost = {boot_seed};");
@@ -1332,7 +1503,8 @@ impl PluginHost {
                 .eval_with_deadline(oj_js::EvalInput::Source(prelude), None)
                 .await
             {
-                boot_ref.declare_gone(&format!("plugin host boot prelude failed: {e}"));
+                boot_ref
+                    .declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
                 return;
             }
             match boot_engine
@@ -1344,7 +1516,10 @@ impl PluginHost {
                 Ok(_) => {}
                 Err(oj_js::EngineError::Closed) => {}
                 Err(e) => {
-                    boot_ref.declare_gone(&format!("plugin host failed to initialize: {e}"));
+                    boot_ref.declare_gone(
+                        &format!("plugin host failed to initialize: {e}"),
+                        generation,
+                    );
                 }
             }
         });
@@ -1353,9 +1528,17 @@ impl PluginHost {
         // reader task. Same control pushes, minus the parsing: values arrive
         // whole, hook replies come back on their own call futures, and the
         // reverse ctx-RPC is answered synchronously inside the engine.
-        let reader_ref = std::sync::Arc::clone(&host);
+        let reader_ref = std::sync::Arc::clone(host);
         tokio::spawn(async move {
             while let Some(msg) = post_rx.recv().await {
+                // A push queued by a since-replaced engine is history, not
+                // state: a stale `ojInit` landing after a revive reset the
+                // watches would open the call gate before the NEW engine even
+                // evaluated its module (racing the boot prelude). Drain and
+                // drop everything from a superseded generation.
+                if reader_ref.revive.lock().unwrap().generation != generation {
+                    continue;
+                }
                 if let Some(info) = msg.get("ojServeInfo") {
                     reader_ref
                         .serve_info_push
@@ -1422,8 +1605,14 @@ impl PluginHost {
             // shutdown, or the unwind after an abandon's terminate). Fail
             // every future call fast instead of letting an init-gated call
             // wait out the whole init deadline on a dead engine; in-flight
-            // calls select on this same watch.
-            let _ = reader_ref.host_gone.send_replace(true);
+            // calls select on this same watch. Generation-guarded: an
+            // abandoned engine's thread can exit AFTER a revive replaced it,
+            // and its close must not kill the fresh generation.
+            let revive = reader_ref.revive.lock().unwrap();
+            if revive.generation == generation {
+                drop(revive);
+                let _ = reader_ref.host_gone.send_replace(true);
+            }
         });
 
         // The init STALL MONITOR: wedge evidence independent of any caller's
@@ -1438,7 +1627,8 @@ impl PluginHost {
         // milestones therefore holds waiters however long it takes, while a
         // host gone silent releases them at the ~RPC scale. Evidence only:
         // calls never consult it (see `call`).
-        let monitor_ref = std::sync::Arc::clone(&host);
+        let monitor_ref = std::sync::Arc::clone(host);
+        let stall_wait = host.boot.stall_wait;
         tokio::spawn(async move {
             let mut init_rx = monitor_ref.initialized.subscribe();
             let mut gone_rx = monitor_ref.host_gone.subscribe();
@@ -1480,11 +1670,78 @@ impl PluginHost {
                 }
             }
         });
-        Ok(host)
+        Ok(())
+    }
+
+    /// Whether a dead host may still come back: budget left, spacing not the
+    /// question here (a waiter asks "is recovery possible at all"), and never
+    /// after an on-purpose `shutdown`.
+    pub fn can_revive(&self) -> bool {
+        !self.shut_down.load(std::sync::atomic::Ordering::SeqCst)
+            && self.revive.lock().unwrap().attempts < PLUGIN_HOST_RESPAWN_LIMIT
+    }
+
+    /// Revive a dead host with a fresh engine generation, on demand from the
+    /// next call: reset the per-generation watches, bump the generation, and
+    /// re-run the same boot `ignite` ran at spawn. Bounded by a lifetime
+    /// budget and a minimum spacing (see `ReviveState`); a shutdown host is
+    /// never revived. Returns whether the host is now (or already was) live.
+    fn try_revive(&self) -> bool {
+        if self.shut_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        let Some(host) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
+            return false;
+        };
+        let mut revive = self.revive.lock().unwrap();
+        if !*self.host_gone.borrow() {
+            // A concurrent caller already revived it while we waited on the
+            // lock (or the death report was stale): nothing to do.
+            return true;
+        }
+        if revive.attempts >= PLUGIN_HOST_RESPAWN_LIMIT {
+            return false;
+        }
+        if let Some(last) = revive.last {
+            if last.elapsed() < PLUGIN_HOST_RESPAWN_SPACING {
+                // Too soon after the previous attempt: fail this call fast
+                // instead of stacking engines against a recurring wedge.
+                return false;
+            }
+        }
+        revive.attempts += 1;
+        revive.last = Some(std::time::Instant::now());
+        revive.generation += 1;
+        eprintln!(
+            "oj: respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
+            revive.attempts
+        );
+        // Reset the per-generation state BEFORE the new engine can push:
+        // init pending again, evidence cleared, the stale serve info dropped
+        // (the old middleware port died with its engine; subscribers activate
+        // again on the fresh generation's push).
+        let _ = self.initialized.send_replace(false);
+        let _ = self.init_failed.send_replace(false);
+        self.serve_info_push.send_replace(None);
+        *self.spawned.lock().unwrap() = tokio::time::Instant::now();
+        let generation = revive.generation;
+        drop(revive);
+        match Self::ignite(&host, generation) {
+            Ok(()) => {
+                // Live again: lift the death flag last, so a caller either
+                // sees a dead host or a fully re-armed one.
+                let _ = self.host_gone.send_replace(false);
+                true
+            }
+            Err(e) => {
+                eprintln!("oj: plugin host respawn failed: {e}");
+                false
+            }
+        }
     }
 
     async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
-        if *self.host_gone.borrow() {
+        if *self.host_gone.borrow() && !self.try_revive() {
             return Err("plugin host exited".into());
         }
         // The host answers hooks only after its top-level init completes (the
@@ -1518,7 +1775,7 @@ impl PluginHost {
         if !*init_rx.borrow_and_update() {
             let deadline = call_init_deadline(
                 self.lazy,
-                self.spawned,
+                *self.spawned.lock().unwrap(),
                 self.init_wait,
                 tokio::time::Instant::now(),
             );
@@ -1561,7 +1818,7 @@ impl PluginHost {
                     }
                     _ = progress.tick() => {
                         // One line per interval across concurrent waiters.
-                        let elapsed = self.spawned.elapsed().as_secs();
+                        let elapsed = self.spawned.lock().unwrap().elapsed().as_secs();
                         let mut last = self
                             .init_progress
                             .lock()
@@ -1588,6 +1845,10 @@ impl PluginHost {
         // blocked in NATIVE code (a napi call — the old "host stopped
         // draining its stdin" evidence) — declare the host gone.
         let deadline = tokio::time::Instant::now() + self.rpc_wait;
+        // The generation this call runs against, read before the engine so a
+        // racing revive makes the pair stale (belt ignored), never mismatched
+        // the other way (a stale generation blaming a fresh engine).
+        let generation = self.revive.lock().unwrap().generation;
         let engine = self
             .engine
             .lock()
@@ -1624,7 +1885,7 @@ impl PluginHost {
                     "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
                     2 * self.rpc_wait.as_secs()
                 );
-                self.declare_gone(&msg);
+                self.declare_gone(&msg, generation);
                 return Err(msg);
             }
         };
@@ -1632,8 +1893,13 @@ impl PluginHost {
             Ok(value) => {
                 // Any reply proves the host's top-level init completed: the
                 // hook entry point only exists past every top-level await.
-                let _ = self.initialized.send_replace(true);
-                let _ = self.init_failed.send_replace(false);
+                // Generation-guarded: a reply from a since-replaced engine
+                // proves the OLD generation's init, and must not open the
+                // gate for the new one still booting.
+                if self.revive.lock().unwrap().generation == generation {
+                    let _ = self.initialized.send_replace(true);
+                    let _ = self.init_failed.send_replace(false);
+                }
                 Ok(match value {
                     serde_json::Value::Null => None,
                     serde_json::Value::String(s) => Some(s),
@@ -1646,7 +1912,16 @@ impl PluginHost {
             )),
             Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
             Err(oj_js::EngineError::MemoryLimit) => {
-                Err("plugin host exceeded its memory limit".into())
+                // A near-limit heap is a property of the isolate, not of this
+                // call: keeping the engine would keep serving off a heap that
+                // can only thrash (and the unwind doubled its cap). Declare
+                // it gone; the next call revives a fresh one.
+                let msg = format!(
+                    "plugin host exceeded its memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB) running {hook}",
+                    self.boot.memory_limit_bytes / (1024 * 1024)
+                );
+                self.declare_gone(&msg, generation);
+                Err(msg)
             }
             Err(oj_js::EngineError::Boot(e)) => Err(e),
             Err(oj_js::EngineError::Js(e)) => {
@@ -1664,13 +1939,25 @@ impl PluginHost {
     /// channel; a job blocked in NATIVE code cannot be interrupted and leaks
     /// the detached thread with its isolate (the documented cost of the
     /// in-process host) — and flip `host_gone` so every in-flight and future
-    /// call fails fast, the same terminal state the push dispatcher's
-    /// channel-closed path reaches.
-    fn declare_gone(&self, why: &str) {
-        eprintln!("oj: {why}; treating the plugin host as gone");
+    /// call fails fast, the same state the push dispatcher's channel-closed
+    /// path reaches — no longer terminal: the next call may revive the host
+    /// with a fresh engine generation (see `try_revive`). `generation` is the
+    /// generation of the engine the report is ABOUT: a report outliving a
+    /// revive (an old call's belt, an abandoned engine's late exit) is stale
+    /// and must not kill the replacement.
+    fn declare_gone(&self, why: &str, generation: u64) {
+        let revive = self.revive.lock().unwrap();
+        if revive.generation != generation {
+            return;
+        }
+        let rss = process_rss_mb()
+            .map(|m| format!(" (process rss {m}MB)"))
+            .unwrap_or_default();
+        eprintln!("oj: {why}; treating the plugin host as gone{rss}");
         if let Some(engine) = self.engine.lock().unwrap().take() {
             engine.abandon();
         }
+        drop(revive);
         let _ = self.host_gone.send_replace(true);
     }
 
@@ -1692,7 +1979,7 @@ impl PluginHost {
     /// prewarm waiting for serve info) anchors to THIS deadline instead of
     /// starting a fresh full period of its own.
     pub fn init_deadline_at(&self) -> tokio::time::Instant {
-        self.spawned + self.init_wait
+        *self.spawned.lock().unwrap() + self.init_wait
     }
 
     /// Live updates of the host-gone flag (the engine exited or was
@@ -2088,6 +2375,13 @@ impl PluginHost {
     /// exits by itself on the closed channel, and the push dispatcher's
     /// channel-closed path then latches `host_gone`.
     pub fn shutdown(&self) {
+        // Retired on purpose: never revived. The revive lock orders this
+        // against an in-flight ignite — the flag lands either before its
+        // install guard runs (the fresh engine is abandoned there) or after
+        // the install (the take below reaches that engine) — so a shutdown
+        // racing a revive can never leave a live engine behind.
+        self.shut_down.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _revive = self.revive.lock().unwrap();
         if let Some(engine) = self.engine.lock().unwrap().take() {
             engine.abandon();
         }
@@ -2338,6 +2632,196 @@ mod vite_values_tests {
     // (merely slow) init lands. The expired window flips the init-failure
     // EVIDENCE watch for selecting waiters (the Start prewarm hold), and init
     // progressing clears it.
+    /// Spawn a healthy lazy host over a trivial plugins file and prove it
+    /// serves a call — the shared setup of the revive tests.
+    async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
+        let root = std::env::temp_dir().join(format!("oj-revive-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(&plugins, "export default [];\n").unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_lazy_with_wait(
+            &root,
+            &plugins,
+            &config,
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("the embedded engine spawns");
+        host.resolve_id("x", "").await.expect("a live host serves");
+        (root, host)
+    }
+
+    // A wedge is no longer terminal: the next call revives the host with a
+    // fresh engine generation through the same boot path, and serves.
+    #[tokio::test]
+    async fn a_gone_host_is_revived_by_the_next_call() {
+        let (root, host) = spawn_live_host("basic").await;
+        let generation = host.revive.lock().unwrap().generation;
+        host.declare_gone("test wedge", generation);
+        assert!(*host.host_gone.borrow(), "the death latched");
+
+        host.resolve_id("x", "")
+            .await
+            .expect("the next call revives the host and serves");
+        let revive = host.revive.lock().unwrap();
+        assert_eq!(revive.generation, generation + 1, "a fresh engine generation");
+        assert_eq!(revive.attempts, 1, "one respawn consumed");
+        drop(revive);
+        assert!(!*host.host_gone.borrow(), "the host is live again");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // A death report about a replaced engine (an old call's transport belt
+    // firing after a revive) is stale and must not kill the new generation.
+    #[tokio::test]
+    async fn a_stale_death_report_does_not_kill_a_revived_host() {
+        let (root, host) = spawn_live_host("stale").await;
+        let generation = host.revive.lock().unwrap().generation;
+        host.declare_gone("test wedge", generation);
+        host.resolve_id("x", "").await.expect("revived");
+
+        host.declare_gone("stale report about the old engine", generation);
+        assert!(
+            !*host.host_gone.borrow(),
+            "a stale-generation report is ignored"
+        );
+        host.resolve_id("x", "").await.expect("still serving");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // shutdown() retires the host on purpose: never revived.
+    #[tokio::test]
+    async fn a_shutdown_host_is_never_revived() {
+        let (root, host) = spawn_live_host("shutdown").await;
+        host.shutdown();
+        host.host_gone_wait().await;
+        let err = host.resolve_id("x", "").await.expect_err("stays dead");
+        assert!(err.contains("plugin host exited"), "{err}");
+        assert_eq!(host.revive.lock().unwrap().attempts, 0, "no respawn burned");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The engine's heap cap mirrors the cap the process host inherited as a
+    // node child: a deployment's NODE_OPTIONS --max-old-space-size (last
+    // occurrence wins, underscore spelling accepted, like Node), with
+    // OJ_PLUGIN_MEMORY_MB above it and 4096 beneath.
+    #[test]
+    fn node_options_heap_cap_parses_like_node() {
+        assert_eq!(max_old_space_mb("--max-old-space-size=8192"), Some(8192));
+        assert_eq!(
+            max_old_space_mb("--dns-result-order=ipv4first --max-old-space-size=3072 --expose-gc"),
+            Some(3072)
+        );
+        assert_eq!(max_old_space_mb("--max_old_space_size=2048"), Some(2048));
+        assert_eq!(
+            max_old_space_mb("--max-old-space-size=1024 --max-old-space-size=512"),
+            Some(512)
+        );
+        assert_eq!(max_old_space_mb("--max-old-space-size=zero"), None);
+        assert_eq!(max_old_space_mb("--max-semi-space-size=64"), None);
+        assert_eq!(max_old_space_mb(""), None);
+    }
+
+    // A heap blow-up is a property of the isolate, not of one call: the
+    // near-limit callback fails the running hook with MemoryLimit, the host
+    // is declared gone (instead of serving on from a heap that can only
+    // thrash, with a doubled cap), and the next call revives it on a fresh
+    // heap. This is the graceful version of the process host's Node OOM
+    // crash + supervisor restart.
+    #[tokio::test]
+    async fn a_memory_blowup_declares_the_host_gone_and_the_next_call_revives_it() {
+        let root = std::env::temp_dir().join(format!("oj-revive-oom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plugins = root.join("oj.plugins.mjs");
+        std::fs::write(
+            &plugins,
+            r#"const hog = [];
+export default [{
+  name: "heap-hog",
+  load(id) {
+    if (id.includes("__hog__")) {
+      for (;;) hog.push(new Array(1024 * 1024).fill(Math.random()));
+    }
+    return null;
+  },
+}];
+"#,
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "config": { "root": root.display().to_string() },
+            "env": { "command": "serve", "mode": "development" },
+        })
+        .to_string();
+        let host = PluginHost::spawn_with_timeouts(
+            &root,
+            &plugins,
+            &config,
+            true,
+            SpawnTimeouts {
+                init_wait: Some(std::time::Duration::from_secs(30)),
+                rpc: Some(std::time::Duration::from_secs(20)),
+                memory: Some(128 * 1024 * 1024),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the embedded engine spawns");
+        host.load("warmup").await.expect("healthy host answers");
+
+        let err = host
+            .load("__hog__")
+            .await
+            .expect_err("the heap cap fails the allocating hook");
+        assert!(
+            err.contains("memory limit") && err.contains("OJ_PLUGIN_MEMORY_MB"),
+            "the failure names the cap and its knob: {err}"
+        );
+        assert!(*host.host_gone.borrow(), "a blown heap retires the engine");
+
+        host.load("after")
+            .await
+            .expect("the next call revives the host on a fresh heap");
+        assert_eq!(host.revive.lock().unwrap().attempts, 1, "one respawn consumed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The budget is a LIFETIME cap: past it the host stays gone (the outer
+    // supervisor owns recovery), and attempts are spaced so a burst of calls
+    // against a recurring wedge cannot stack engines.
+    #[tokio::test]
+    async fn the_respawn_budget_is_finite_and_spaced() {
+        let (root, host) = spawn_live_host("budget").await;
+        for round in 0..PLUGIN_HOST_RESPAWN_LIMIT {
+            let generation = host.revive.lock().unwrap().generation;
+            host.declare_gone("recurring test wedge", generation);
+            // Immediately after a previous revive the spacing rejects the
+            // attempt; backdate the clock instead of sleeping it out.
+            if round > 0 {
+                let err = host.resolve_id("x", "").await.expect_err("spacing rejects");
+                assert!(err.contains("plugin host exited"), "{err}");
+                host.revive.lock().unwrap().last =
+                    Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
+            }
+            host.resolve_id("x", "").await.expect("revives within budget");
+        }
+        let generation = host.revive.lock().unwrap().generation;
+        host.declare_gone("one wedge too many", generation);
+        host.revive.lock().unwrap().last =
+            Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
+        let err = host.resolve_id("x", "").await.expect_err("budget spent");
+        assert!(err.contains("plugin host exited"), "{err}");
+        assert!(!host.can_revive(), "no revive left for waiters to hold on");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn pre_init_calls_keep_their_own_window_after_an_earlier_one_expired() {
         let root = std::env::temp_dir().join(format!("oj-lazy-window-{}", std::process::id()));
@@ -2651,12 +3135,13 @@ mod vite_values_tests {
     // it) cannot be interrupted by the watchdog and stops the engine's
     // scheduler entirely, so no reply of any kind — not even the deadline
     // expiry — can land. The belt (a second full window past the per-call
-    // deadline) declares the host GONE, and later calls fail fast instead of
-    // each burning a window on a wedged engine. The blocked thread itself
-    // leaks (detached) until the block ends: the documented cost of the
-    // in-process host.
+    // deadline) declares the host GONE — and the NEXT call revives it on a
+    // fresh engine generation, while calls landing inside the respawn
+    // spacing still fail fast instead of each burning a window on a wedged
+    // engine. The blocked thread itself leaks (detached) until the block
+    // ends: the documented cost of the in-process host.
     #[tokio::test]
-    async fn natively_blocked_hook_declares_the_host_gone_and_later_calls_fail_fast() {
+    async fn natively_blocked_hook_declares_the_host_gone_and_the_next_call_revives_it() {
         let root = std::env::temp_dir().join(format!("oj-wedged-native-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -2710,9 +3195,22 @@ export default [{
             "bounded, not a blocked transport: {:?}",
             t0.elapsed()
         );
-        // The host is gone now: a fresh call fails fast without a window.
+        // The host is gone — but not terminally: the next call revives it on
+        // a fresh engine generation (the wedge was per-id) and serves.
+        host.load("after")
+            .await
+            .expect("the next call revives the host and serves");
+        assert_eq!(host.revive.lock().unwrap().attempts, 1, "one respawn consumed");
+        // A second death inside the respawn spacing fails fast without a
+        // window: attempts are spaced so a burst of calls against a
+        // recurring wedge cannot stack engines.
+        let generation = host.revive.lock().unwrap().generation;
+        host.declare_gone("second test wedge", generation);
         let t1 = std::time::Instant::now();
-        let err = host.load("after").await.expect_err("host is gone");
+        let err = host
+            .load("again")
+            .await
+            .expect_err("inside the spacing the host stays gone");
         assert!(err.contains("exited"), "{err}");
         assert!(
             t1.elapsed() < std::time::Duration::from_millis(500),

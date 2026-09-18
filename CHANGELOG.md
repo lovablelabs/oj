@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- A wedged plugin host is no longer terminal: the next call respawns it on a fresh engine (bounded to 3 spaced attempts), the middleware path re-activates on the new port, and a catch-up resync covers edits made while it was down.
+- The plugin-host engine's heap is capped like the node process it replaced: `OJ_PLUGIN_MEMORY_MB`, else the inherited `NODE_OPTIONS --max-old-space-size`, else 4096MB. A heap blow-up now fails as a clean memory-limit error and respawns instead of a GC-storm wedge or a fatal V8 OOM, and host-death diagnostics include the process RSS.
+
 ## [0.2.0] - 2026-09-18
 
 ### Added
