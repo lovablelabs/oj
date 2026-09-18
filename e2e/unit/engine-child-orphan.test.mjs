@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Raphael Amorim
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { tmpProject } from "./harness.mjs";
+
+const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const oj = path.join(repo, "target", "debug", "oj");
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// A SIGKILLed dev server runs no drop, so `kill_on_drop` never reaches its
+// one-shot children (`oj start-script` / `oj engine-job`) — before the ppid
+// reaper an orphan kept running its job, writing code caches into the app's
+// .oj-cache for minutes past the parent's death (the recurring ENOTEMPTY in
+// e2e teardowns, and stale writers after a real crash). The forever-awaiting
+// script models a long job; the reaper must notice the reparent and exit.
+test("an orphaned start-script child reaps itself when its parent dies", async () => {
+  const fx = tmpProject({ prefix: "oj-child-orphan-" });
+  fx.write("package.json", JSON.stringify({ name: "orphan-fx", version: "1.0.0" }));
+  // The interval keeps the event loop alive so the await is a legitimately
+  // pending long job (an idle loop with a never-settling top-level await is
+  // failed by the engine as "never resolved" instead).
+  fx.write("forever.mjs", "setInterval(() => {}, 60_000);\nawait new Promise(() => {});\n");
+  // An intermediate parent stands in for the oj dev server: it spawns the
+  // child, feeds the stdin env payload, reports the pid, and idles until it
+  // is SIGKILLed.
+  const parentScript = `
+    const { spawn } = require("node:child_process");
+    const c = spawn(process.argv[1], ["start-script", process.argv[2], "--root", process.argv[3]], { stdio: ["pipe", "ignore", "ignore"] });
+    c.stdin.end(JSON.stringify([]));
+    console.log("CHILD=" + c.pid);
+    setInterval(() => {}, 60_000);
+  `;
+  const parent = spawn(
+    process.execPath,
+    ["-e", parentScript, oj, path.join(fx.root, "forever.mjs"), fx.root],
+    { cwd: fx.root, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  try {
+    const childPid = await new Promise((resolve, reject) => {
+      let buf = "";
+      parent.stdout.on("data", (d) => {
+        buf += d;
+        const m = buf.match(/CHILD=(\d+)/);
+        if (m) resolve(Number(m[1]));
+      });
+      parent.on("exit", () => reject(new Error("intermediate parent died early")));
+      setTimeout(() => reject(new Error("no child pid reported")), 15_000);
+    });
+    // The child is up and parked in its forever job.
+    await sleep(500);
+    assert.ok(alive(childPid), "the child runs while its parent lives");
+
+    parent.kill("SIGKILL");
+    // The reaper polls every 200ms; give it a couple of seconds.
+    let gone = false;
+    for (let i = 0; i < 25; i++) {
+      await sleep(200);
+      if (!alive(childPid)) {
+        gone = true;
+        break;
+      }
+    }
+    if (!gone) process.kill(childPid, "SIGKILL");
+    assert.ok(gone, "the orphaned child exits on the reparent instead of running out its job");
+  } finally {
+    parent.kill("SIGKILL");
+    fx.cleanup();
+  }
+});

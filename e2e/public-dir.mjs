@@ -97,7 +97,7 @@ async function get(url, headers = {}) {
       check("?url on a public asset is still a module", mod.status === 200 && /export default "\/logo\.svg"/.test(mod.body), JSON.stringify(mod));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -110,7 +110,7 @@ async function get(url, headers = {}) {
       check("custom publicDir file served verbatim", sw.status === 200 && sw.body === SW, JSON.stringify(sw));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -125,7 +125,7 @@ async function get(url, headers = {}) {
       check("root modules still compile with publicDir false", main.status === 200 && /__LOGO/.test(main.body), JSON.stringify(main));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

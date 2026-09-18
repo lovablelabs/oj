@@ -6020,6 +6020,7 @@ dependencies = [
  "deno_core",
  "flate2",
  "futures-util",
+ "libc",
  "notify",
  "oj_cache",
  "oj_compiler",

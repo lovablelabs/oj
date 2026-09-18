@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Orphaned one-shot engine children (`start-script`, `engine-job`) now exit when their parent dies, instead of running out their job and writing into a dead server's cache.
+
 ## [0.2.1] - 2026-09-18
 
 ### Fixed
