@@ -50,7 +50,9 @@ const fd = fs.openSync(log, "w");
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: ["ignore", fd, fd] });
 try {
   assert.ok(await up(), "server started");
-  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+  // The server's one-shot engines (config extraction) may still be flushing
+  // code-cache entries into .oj-cache; retries absorb an rm racing a write.
+  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
   const frames = [];
   const ws = new WebSocket(`ws://localhost:${port}/__ws`);

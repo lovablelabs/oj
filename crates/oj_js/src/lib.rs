@@ -463,7 +463,30 @@ fn engine_thread(
                 event_loop_idle = false;
             }
             match tick {
-                Tick::Closed => break,
+                Tick::Closed => {
+                    // The tick polls the job channel before the event loop, so
+                    // an engine dropped right after its last call closes here
+                    // with V8's freshly produced code-cache blobs still parked
+                    // as pending `code_cache_ready` callbacks. One noop-waker
+                    // poll invokes them (the loader writes synchronously, see
+                    // deno_core's ExtCodeCache note) and cannot hang on
+                    // long-lived background ops the way running the loop to
+                    // completion would. The poll still runs due timers and
+                    // promise continuations, JS the drop path never executed
+                    // before, so the watchdog bounds it: `JsEngine::drop`
+                    // joins this thread, and an unbounded continuation here
+                    // would wedge the dropping thread with it.
+                    if !event_loop_idle {
+                        let guard = DeadlineGuard::arm(&watchdog, Duration::from_millis(250));
+                        let noop = std::task::Waker::noop();
+                        let mut cx = std::task::Context::from_waker(noop);
+                        let _ = worker
+                            .js_runtime
+                            .poll_event_loop(&mut cx, PollEventLoopOptions::default());
+                        let _ = guard.disarm();
+                    }
+                    break;
+                }
                 Tick::Job(Job::Eval {
                     input,
                     deadline,
