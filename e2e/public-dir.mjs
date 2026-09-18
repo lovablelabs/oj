@@ -60,17 +60,12 @@ async function withServer(app, port, fn) {
     if (!up) throw new Error(`server did not start on ${port}:\n${log}`);
     await fn(`http://localhost:${port}`);
   } finally {
-    // Graceful TERM, then WAIT for the exit: a dying server flushes its
-    // engines' pending code-cache entries on the way down, and the caller's
-    // teardown rm must not race those writes (the recurring ENOTEMPTY).
-    srv.kill();
-    await new Promise((resolve) => {
-      const hammer = setTimeout(() => srv.kill("SIGKILL"), 5000);
-      srv.once("exit", () => {
-        clearTimeout(hammer);
-        resolve();
-      });
-    });
+    // SIGKILL like the run.mjs harness (no graceful shutdown = no engine
+    // code-cache flush writers), and WAIT for the exit so the caller's
+    // teardown rm never races the dying process (the recurring ENOTEMPTY);
+    // the rm retries absorb the orphan children's own ppid-reaper tail.
+    srv.kill("SIGKILL");
+    await new Promise((resolve) => srv.once("exit", resolve));
   }
 }
 
