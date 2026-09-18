@@ -1,0 +1,310 @@
+# Fork of deno_runtime 0.267.0 (https://github.com/denoland/deno, runtime/)
+# maintained for oj. Only change: it depends on oj_deno_napi (deno_napi
+# 0.190.0 plus oj's finalizer-registry performance patch) instead of upstream
+# deno_napi. All source files are verbatim upstream.
+
+[package]
+edition = "2024"
+name = "oj_deno_runtime"
+version = "0.267.0"
+authors = ["the Deno authors"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Fork of deno_runtime 0.267.0 maintained for oj, swapping deno_napi for oj_deno_napi (finalizer-registry performance patch). Use upstream deno_runtime unless you need this patch."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/lovablelabs/oj"
+
+[package.metadata.docs.rs]
+features = ["docsrs"]
+
+[features]
+docsrs = []
+exclude_runtime_main_js = []
+hmr = ["transpile"]
+snapshot = ["transpile"]
+transpile = ["deno_ast"]
+
+[lib]
+path = "lib.rs"
+# Upstream's unit tests depend on the deno monorepo's private `test_util`
+# crate (the published crate ships an empty [dev-dependencies]), and its doc
+# examples on the `deno_runtime` crate name; neither applies to this
+# rename-only fork, whose sources stay verbatim upstream.
+test = false
+doctest = false
+
+[dependencies.async-trait]
+version = "0.1.73"
+
+[dependencies.base64]
+version = "0.22.1"
+
+[dependencies.boxed_error]
+version = "0.2.3"
+
+[dependencies.color-print]
+version = "0.3.5"
+
+[dependencies.deno_ast]
+version = "=0.53.3"
+features = ["transpiling"]
+optional = true
+
+[dependencies.deno_bundle_runtime]
+version = "0.46.0"
+
+[dependencies.deno_cache]
+version = "0.192.0"
+
+[dependencies.deno_canvas]
+version = "0.121.0"
+
+[dependencies.deno_core]
+version = "0.412.0"
+features = [
+    "reactor-tokio",
+    "v8_use_custom_libcxx",
+]
+default-features = false
+
+[dependencies.deno_cron]
+version = "0.139.0"
+
+[dependencies.deno_crypto]
+version = "0.273.0"
+
+[dependencies.deno_error]
+version = "=0.7.1"
+
+[dependencies.deno_features]
+version = "0.56.0"
+
+[dependencies.deno_fetch]
+version = "0.283.0"
+
+[dependencies.deno_ffi]
+version = "0.246.0"
+
+[dependencies.deno_fs]
+version = "0.169.0"
+features = ["sync_fs"]
+
+[dependencies.deno_http]
+version = "0.257.0"
+
+[dependencies.deno_image]
+version = "0.35.0"
+
+[dependencies.deno_inspector_server]
+version = "0.33.0"
+
+[dependencies.deno_io]
+version = "0.169.0"
+
+[dependencies.deno_kv]
+version = "0.167.0"
+
+# The one fork change: deno_napi resolves to oj_deno_napi (upstream 0.190.0 +
+# finalizer-registry patch). The dependency KEY stays `deno_napi`, so every
+# `use deno_napi::...` in the unchanged sources keeps resolving. The path is
+# stripped on publish; a published copy resolves by version from crates.io.
+[dependencies.deno_napi]
+package = "oj_deno_napi"
+version = "0.190.0"
+path = "../oj_deno_napi"
+
+[dependencies.deno_net]
+version = "0.251.0"
+
+[dependencies.deno_node]
+version = "0.197.0"
+
+[dependencies.deno_node_crypto]
+version = "0.29.0"
+
+[dependencies.deno_node_sqlite]
+version = "0.29.0"
+
+[dependencies.deno_os]
+version = "0.76.0"
+
+[dependencies.deno_path_util]
+version = "=0.6.4"
+
+[dependencies.deno_permissions]
+version = "0.118.0"
+
+[dependencies.deno_process]
+version = "0.74.0"
+
+[dependencies.deno_resolver]
+version = "0.90.0"
+features = ["sync"]
+
+[dependencies.deno_signals]
+version = "0.50.0"
+
+[dependencies.deno_telemetry]
+version = "0.81.0"
+
+[dependencies.deno_terminal]
+version = "=0.2.3"
+
+[dependencies.deno_tls]
+version = "0.246.0"
+
+[dependencies.deno_web]
+version = "0.290.0"
+
+[dependencies.deno_webgpu]
+version = "0.226.0"
+
+[dependencies.deno_webidl]
+version = "0.259.0"
+
+[dependencies.deno_websocket]
+version = "0.264.0"
+
+[dependencies.deno_webstorage]
+version = "0.254.0"
+
+[dependencies.ed25519-dalek]
+version = "2.1.1"
+
+[dependencies.encoding_rs]
+version = "=0.8.35"
+
+[dependencies.faster-hex]
+version = "0.10.0"
+
+[dependencies.fastwebsockets]
+version = "^0.8.1"
+features = [
+    "upgrade",
+    "unstable-split",
+]
+
+[dependencies.http]
+version = "1.0"
+
+[dependencies.http-body-util]
+version = "0.1.2"
+
+[dependencies.hyper]
+version = "1.6.0"
+features = ["full"]
+
+[dependencies.libc]
+version = "0.2.168"
+
+[dependencies.log]
+version = "0.4.28"
+features = ["kv"]
+
+[dependencies.node_resolver]
+version = "0.97.0"
+features = ["sync"]
+
+[dependencies.notify]
+version = "8.2.0"
+
+[dependencies.once_cell]
+version = "1.17.1"
+
+[dependencies.qbsdiff]
+version = "1.4"
+
+[dependencies.raw-window-handle]
+version = "0.6.0"
+
+[dependencies.regex]
+version = "^1.7.0"
+
+[dependencies.rustyline]
+version = "=17.0.0"
+features = [
+    "custom-bindings",
+    "custom-bindings",
+]
+
+[dependencies.same-file]
+version = "1.0.6"
+
+[dependencies.serde]
+version = "1.0.149"
+features = ["derive"]
+
+[dependencies.serde_bytes]
+version = "0.11"
+
+[dependencies.sha2]
+version = "0.10.8"
+features = ["oid"]
+
+[dependencies.sys_traits]
+version = "0.1.28"
+
+[dependencies.thiserror]
+version = "2.0.12"
+
+[dependencies.tokio]
+version = "1.47.1"
+features = ["full"]
+
+[dependencies.tokio-metrics]
+version = "0.3.0"
+features = ["rt"]
+
+[dependencies.twox-hash]
+version = "2.1.0"
+features = [
+    "std",
+    "xxhash64",
+]
+default-features = false
+
+[dependencies.uuid]
+version = "1.3.0"
+features = ["v4"]
+
+[dev-dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies.unicode-normalization]
+version = "0.1"
+
+[target."cfg(unix)".dependencies.nix]
+version = "=0.30.1"
+
+[target."cfg(windows)".dependencies.windows-sys]
+version = "0.59.0"
+features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_WindowsProgramming",
+    "Wdk",
+    "Wdk_System",
+    "Wdk_System_SystemInformation",
+    "Win32_Security",
+    "Win32_System_Pipes",
+    "Wdk_Storage_FileSystem",
+    "Win32_System_Registry",
+    "Win32_System_Kernel",
+    "Win32_System_Threading",
+    "Win32_UI",
+    "Win32_UI_Shell",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_Input_KeyboardAndMouse",
+]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+priority = 0
+check-cfg = ["cfg(tokio_unstable)"]

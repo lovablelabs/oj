@@ -2356,6 +2356,8 @@ dependencies = [
 [[package]]
 name = "deno_napi"
 version = "0.190.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f47d69ae3acc5400c215a234d7eb611e5aaef5ec5de55b3c781ebdf7d5c108c"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -6016,7 +6018,6 @@ dependencies = [
  "blake3",
  "clap",
  "deno_core",
- "deno_napi",
  "flate2",
  "futures-util",
  "notify",
@@ -6024,6 +6025,7 @@ dependencies = [
  "oj_compiler",
  "oj_config",
  "oj_css",
+ "oj_deno_napi",
  "oj_env",
  "oj_js",
  "oj_resolver",
@@ -6130,6 +6132,100 @@ dependencies = [
 ]
 
 [[package]]
+name = "oj_deno_napi"
+version = "0.190.0"
+dependencies = [
+ "deno_core",
+ "deno_error",
+ "deno_node",
+ "deno_permissions",
+ "denort_helper",
+ "libc",
+ "libloading 0.7.4",
+ "libuv-sys-lite",
+ "log",
+ "napi_sym",
+ "object 0.36.3",
+ "thiserror 2.0.20",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "oj_deno_runtime"
+version = "0.267.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "boxed_error",
+ "color-print",
+ "deno_ast",
+ "deno_bundle_runtime",
+ "deno_cache",
+ "deno_canvas",
+ "deno_core",
+ "deno_cron",
+ "deno_crypto",
+ "deno_error",
+ "deno_features",
+ "deno_fetch",
+ "deno_ffi",
+ "deno_fs",
+ "deno_http",
+ "deno_image",
+ "deno_inspector_server",
+ "deno_io",
+ "deno_kv",
+ "deno_net",
+ "deno_node",
+ "deno_node_crypto",
+ "deno_node_sqlite",
+ "deno_os",
+ "deno_path_util",
+ "deno_permissions",
+ "deno_process",
+ "deno_resolver",
+ "deno_signals",
+ "deno_telemetry",
+ "deno_terminal",
+ "deno_tls",
+ "deno_web",
+ "deno_webgpu",
+ "deno_webidl",
+ "deno_websocket",
+ "deno_webstorage",
+ "ed25519-dalek",
+ "encoding_rs",
+ "faster-hex",
+ "fastwebsockets",
+ "http",
+ "http-body-util",
+ "hyper",
+ "libc",
+ "log",
+ "nix 0.30.1",
+ "node_resolver",
+ "notify",
+ "oj_deno_napi",
+ "once_cell",
+ "qbsdiff",
+ "raw-window-handle",
+ "regex",
+ "rustyline",
+ "same-file",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "sys_traits",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-metrics",
+ "twox-hash",
+ "unicode-normalization",
+ "uuid",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "oj_env"
 version = "0.2.0"
 dependencies = [
@@ -6153,12 +6249,12 @@ dependencies = [
  "deno_core",
  "deno_error",
  "deno_media_type",
- "deno_napi",
  "deno_path_util",
  "deno_resolver",
- "deno_runtime",
  "deno_snapshots",
  "node_resolver",
+ "oj_deno_napi",
+ "oj_deno_runtime",
  "serde_json",
  "sys_traits",
  "tempfile",

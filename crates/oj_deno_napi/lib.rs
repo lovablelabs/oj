@@ -1,12 +1,11 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
 
-// Vendored from the published deno_napi 0.190.0 (github.com/denoland/deno,
-// ext/napi) with one local change: `RefTracker::pending` is keyed by
-// finalizer id instead of being a Vec, so deregistering a reference from a
-// GC weak callback is O(log n) instead of a linear scan + shift (quadratic
-// across a GC cycle over a large addon working set). Wired in through
-// `[patch.crates-io]` in the workspace Cargo.toml; drop the vendor once the
-// fix lands upstream.
+// Forked from the published deno_napi 0.190.0 (github.com/denoland/deno,
+// ext/napi) and maintained for oj, with one change: `RefTracker::pending` is
+// keyed by finalizer id instead of being a Vec, so deregistering a reference
+// from a GC weak callback is O(log n) instead of a linear scan + shift
+// (quadratic across a GC cycle over a large addon working set). Published as
+// `oj_deno_napi`; consumers rename it back via the dependency key.
 
 #![allow(non_camel_case_types, reason = "matches Node-API naming conventions")]
 #![allow(

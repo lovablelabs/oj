@@ -60,8 +60,9 @@ futures-util = "0.3"
 # Linked (not yet called) so the napi symbols named by build.rs's
 # -exported_symbols_list exist in the binary; native addon loading for the
 # embedded JS engine builds on this. deno_core needs "v8" spelled out because
-# deno_napi asks for it with default-features = false.
-deno_napi = "0.190"
+# deno_napi asks for it with default-features = false. The key renames the
+# oj-maintained fork (napi finalizer-registry patch) back to `deno_napi`.
+deno_napi = { package = "oj_deno_napi", version = "0.190.0", path = "../oj_deno_napi" }
 deno_core = { version = "0.412", features = ["v8"] }
 
 [dev-dependencies]
@@ -70,7 +71,7 @@ tokio-tungstenite = "0.29"
 
 [build-dependencies]
 # Used by build.rs to export Node-API symbols from the oj binary (see there).
-deno_napi = "0.190"
+deno_napi = { package = "oj_deno_napi", version = "0.190.0", path = "../oj_deno_napi" }
 # deno_napi pulls deno_core host-side with default-features = false; resolver
 # v2 unifies build-dependency features separately, so re-enable "v8" here or
 # the host deno_core fails to compile ("either feature `v8` or `quickjs`...").

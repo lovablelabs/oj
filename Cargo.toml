@@ -1,7 +1,5 @@
 [workspace]
 resolver = "2"
-# Vendored, not a member: patched deno_napi (see [patch.crates-io] below).
-exclude = ["vendor/deno_napi"]
 members = [
     "crates/oj_compiler",
     "crates/oj_css",
@@ -14,6 +12,8 @@ members = [
     "crates/oj",
     "crates/oj_js",
     "crates/oj_wasm",
+    "crates/oj_deno_napi",
+    "crates/oj_deno_runtime",
 ]
 
 [workspace.package]
@@ -32,6 +32,17 @@ oj_env = { version = "0.2.0", path = "crates/oj_env" }
 oj_config = { version = "0.2.0", path = "crates/oj_config" }
 oj_server = { version = "0.2.0", path = "crates/oj_server" }
 oj_js = { version = "0.2.0", path = "crates/oj_js" }
+
+# oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
+# to crates.io under these names), carrying oj's napi finalizer-registry patch:
+# the upstream Vec makes reference deregistration a linear scan + shift, which
+# goes quadratic under GC when an addon (rolldown bundling a large app) holds
+# hundreds of thousands of live references — it dominated one-shot rebundle
+# children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
+# dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
+# published oj resolves them by version from crates.io.
+oj_deno_napi = { package = "oj_deno_napi", version = "0.190.0", path = "crates/oj_deno_napi" }
+oj_deno_runtime = { package = "oj_deno_runtime", version = "0.267.0", path = "crates/oj_deno_runtime" }
 
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"
@@ -63,16 +74,6 @@ clap = { version = "4.6.6", features = ["derive"] }
 # test-only
 proptest = "1.9.0"
 tempfile = "3.24.0"
-
-# deno_napi 0.190.0 with the napi finalizer tracker keyed by id: the published
-# Vec makes reference deregistration a linear scan + shift, which goes
-# quadratic under GC when an addon (rolldown bundling a large app) holds
-# hundreds of thousands of live references — it dominated one-shot rebundle
-# children. See vendor/deno_napi/lib.rs; drop once fixed upstream. NOTE: a
-# [patch] never travels with a published crate, so a build of oj installed
-# from crates.io compiles against the unpatched deno_napi.
-[patch.crates-io]
-deno_napi = { path = "vendor/deno_napi" }
 
 # `panic = "abort"` is deliberately NOT set: the engine's `__oj_rpc` bridge
 # catches handler panics at the V8 callback boundary (oj_js/src/bridge.rs)
@@ -155,8 +156,10 @@ v8 = { opt-level = 3 }
 # opts deno_napi/deno_node/deno_runtime/deno_web/serde_v8 back to 3), plus
 # deno_fs/deno_io: the one-shot rebundle child funnels every napi call, sync
 # fs op and chunk write through these.
-deno_napi = { opt-level = 3 }
+oj_deno_napi = { opt-level = 3 }
 deno_node = { opt-level = 3 }
+oj_deno_runtime = { opt-level = 3 }
+# Vanilla deno_runtime stays in the graph as deno_snapshots' build-dependency.
 deno_runtime = { opt-level = 3 }
 deno_web = { opt-level = 3 }
 deno_fs = { opt-level = 3 }
