@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Vendored, not a member: patched deno_napi (see [patch.crates-io] below).
+exclude = ["vendor/deno_napi"]
 members = [
     "crates/oj_compiler",
     "crates/oj_css",
@@ -61,6 +63,16 @@ clap = { version = "4.6.6", features = ["derive"] }
 # test-only
 proptest = "1.9.0"
 tempfile = "3.24.0"
+
+# deno_napi 0.190.0 with the napi finalizer tracker keyed by id: the published
+# Vec makes reference deregistration a linear scan + shift, which goes
+# quadratic under GC when an addon (rolldown bundling a large app) holds
+# hundreds of thousands of live references — it dominated one-shot rebundle
+# children. See vendor/deno_napi/lib.rs; drop once fixed upstream. NOTE: a
+# [patch] never travels with a published crate, so a build of oj installed
+# from crates.io compiles against the unpatched deno_napi.
+[patch.crates-io]
+deno_napi = { path = "vendor/deno_napi" }
 
 # `panic = "abort"` is deliberately NOT set: the engine's `__oj_rpc` bridge
 # catches handler panics at the V8 callback boundary (oj_js/src/bridge.rs)
@@ -139,6 +151,18 @@ tokio = { opt-level = 3 }
 hyper = { opt-level = 3 }
 deno_core = { opt-level = 3 }
 v8 = { opt-level = 3 }
+# The engine's Node-compat hot paths, per deno's own release profile (which
+# opts deno_napi/deno_node/deno_runtime/deno_web/serde_v8 back to 3), plus
+# deno_fs/deno_io: the one-shot rebundle child funnels every napi call, sync
+# fs op and chunk write through these.
+deno_napi = { opt-level = 3 }
+deno_node = { opt-level = 3 }
+deno_runtime = { opt-level = 3 }
+deno_web = { opt-level = 3 }
+deno_fs = { opt-level = 3 }
+deno_io = { opt-level = 3 }
+deno_unsync = { opt-level = 3 }
+serde_v8 = { opt-level = 3 }
 serde = { opt-level = 3 }
 serde_core = { opt-level = 3 }
 serde_json = { opt-level = 3 }

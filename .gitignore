@@ -22,3 +22,4 @@ node_modules
 # runtime caches a loader imported from the source tree could leave behind
 crates/oj_server/src/assets/*.jsonl
 result
+vendor/deno_napi/Cargo.lock

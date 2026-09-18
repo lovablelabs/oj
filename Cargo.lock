@@ -2356,8 +2356,6 @@ dependencies = [
 [[package]]
 name = "deno_napi"
 version = "0.190.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f47d69ae3acc5400c215a234d7eb611e5aaef5ec5de55b3c781ebdf7d5c108c"
 dependencies = [
  "deno_core",
  "deno_error",
