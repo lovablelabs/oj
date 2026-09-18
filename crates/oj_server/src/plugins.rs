@@ -1212,6 +1212,14 @@ struct ReviveState {
     /// When the last revive ran, spacing attempts out so a burst of calls
     /// against a recurring wedge cannot burn the whole budget at once.
     last: Option<std::time::Instant>,
+    /// Native addons already pending unsafe re-registration when THIS host
+    /// died (snapshotted by `declare_gone`, before the abandon). An addon
+    /// that shows up pending only AFTER the death was held by the dead
+    /// generation itself — the successor runs the same plugins and will
+    /// re-register it, so the revive gate refuses on exactly those (see
+    /// `try_revive`); addons some other engine's teardown orphaned are not
+    /// this host's to reload and never block it.
+    pending_before: std::collections::HashSet<PathBuf>,
 }
 
 /// Respawns per host lifetime (see `ReviveState::attempts`).
@@ -1561,6 +1569,7 @@ impl PluginHost {
                 generation: 0,
                 attempts: 0,
                 last: None,
+                pending_before: std::collections::HashSet::new(),
             }),
             shut_down: std::sync::atomic::AtomicBool::new(false),
             self_ref: std::sync::OnceLock::new(),
@@ -1856,6 +1865,26 @@ impl PluginHost {
                 return false;
             }
         }
+        // A respawn re-loads the app's plugins, and with them the native
+        // addons the DEAD generation held. Re-registering an addon whose
+        // every runtime is gone runs its init against dangling process-global
+        // state — a pre-3.10 napi-rs addon (vite 8.0.16's rolldown pin)
+        // crashes the whole dev server on it, which is strictly worse than
+        // the dead host this would heal. Refuse for exactly the addons this
+        // host's own teardown orphaned (pending now, not pending at its
+        // death); an addon another engine still holds live re-registers as
+        // the ordinary concurrent case and never blocks, and neither does an
+        // orphan this host never loaded. No attempt is consumed, and the
+        // spacing clock throttles the re-check and the message.
+        let orphaned = oj_js::addons_pending_unsafe_reregistration();
+        if let Some(addon) = orphaned.iter().find(|p| !revive.pending_before.contains(*p)) {
+            revive.last = Some(std::time::Instant::now());
+            eprintln!(
+                "oj: not respawning the plugin host: native addon {} was torn down with it and re-registering can crash (napi-rs before 3.10); restart the dev server to recover",
+                addon.display()
+            );
+            return false;
+        }
         revive.attempts += 1;
         revive.last = Some(std::time::Instant::now());
         revive.generation += 1;
@@ -2093,10 +2122,16 @@ impl PluginHost {
     /// revive (an old call's belt, an abandoned engine's late exit) is stale
     /// and must not kill the replacement.
     fn declare_gone(&self, why: &str, generation: u64) {
-        let revive = self.revive.lock().unwrap();
+        let mut revive = self.revive.lock().unwrap();
         if revive.generation != generation {
             return;
         }
+        // Snapshot the addons ALREADY orphaned before this death, so the
+        // revive gate can tell "held by the dead generation" (pending only
+        // after its teardown) from "someone else's" (see `pending_before`).
+        revive.pending_before = oj_js::addons_pending_unsafe_reregistration()
+            .into_iter()
+            .collect();
         let rss = process_rss_mb()
             .map(|m| format!(" (process rss {m}MB)"))
             .unwrap_or_default();

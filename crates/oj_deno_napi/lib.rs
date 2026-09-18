@@ -954,6 +954,22 @@ static NAPI_ADDON_REGISTRATIONS: std::sync::LazyLock<
   RwLock<HashMap<PathBuf, AddonRegistrations>>,
 > = std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Addons whose every registering env has been torn down (see
+/// [`NAPI_ADDON_REGISTRATIONS`]): loading one into a NEW env is the
+/// re-initialization the warning above describes, and a pre-3.10 napi-rs
+/// addon can crash the process on it. An embedder deciding whether an
+/// in-process engine respawn is safe consults this instead of finding out —
+/// while some other env still holds the addon live, re-registration is the
+/// ordinary concurrent-workers case and safe.
+pub fn addons_pending_unsafe_reregistration() -> Vec<PathBuf> {
+  NAPI_ADDON_REGISTRATIONS
+    .read()
+    .iter()
+    .filter(|(_, r)| r.total > 0 && r.live == 0)
+    .map(|(p, _)| p.clone())
+    .collect()
+}
+
 #[op2(reentrant, stack_trace)]
 fn op_napi_open<'scope>(
   scope: &mut v8::PinScope<'scope, '_>,
