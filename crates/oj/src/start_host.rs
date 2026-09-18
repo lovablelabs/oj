@@ -1284,14 +1284,20 @@ impl StartEngine {
 }
 
 /// The engine the Start one-shot scripts (route-tree generation, the
-/// server-fn resolver, the client bundle, the production build) run on,
-/// replacing per-run `node` spawns. No module host: the scripts import
-/// rolldown's napi binding and the app's plugins with plain byonm semantics,
-/// exactly as they did under node. Each script exports `run(env)`; the env
-/// values that used to be spawn env travel as the argument.
+/// server-fn resolver, the client bundle, the production build) run on. No
+/// module host: the scripts import rolldown's napi binding and the app's
+/// plugins with plain byonm semantics, exactly as they did under node. Each
+/// script exports `run(env)`; the env values that used to be spawn env travel
+/// as the argument.
+///
+/// Hosted only in processes that EXIT after their scripts (`oj build`, the
+/// `oj start-script` child the dev server spawns per rebundle): rolldown's
+/// binding retains native memory per `build()` invocation that neither
+/// closing the bundler nor tearing the isolate down releases, so a long-lived
+/// process must never run these scripts on its own engine (measured ~650MB
+/// retained per client rebundle on an ~18k-module app).
 pub struct ScriptEngine {
     engine: JsEngine,
-    handle: tokio::runtime::Handle,
     /// The env shadow ran on the isolate (once, before the first script).
     env_shadowed: tokio::sync::OnceCell<()>,
 }
@@ -1312,30 +1318,14 @@ Object.defineProperty(process, "env", {
 "#;
 
 impl ScriptEngine {
-    /// Must be created from inside the tokio runtime (the handle drives
-    /// blocking callers); the engine itself is plain byonm.
     pub fn new(root: &Path) -> anyhow::Result<ScriptEngine> {
         Ok(ScriptEngine {
             engine: JsEngine::spawn(EngineConfig::new(root)).map_err(|e| anyhow::anyhow!("{e}"))?,
-            handle: tokio::runtime::Handle::try_current()
-                .map_err(|_| anyhow::anyhow!("ScriptEngine::new needs a tokio runtime"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
         })
     }
 
-    /// Runs `export async function run(env)` of `script` to completion, from
-    /// a blocking thread (the boot spawn_blocking tasks, the rebundle
-    /// worker); async call sites use `run_async`.
-    pub fn run(&self, script: &Path, env: &[(String, String)], what: &str) -> anyhow::Result<()> {
-        // block_on panics on an async worker thread; blocking threads
-        // (spawn_blocking) are fine even though they carry runtime context.
-        self.handle
-            .block_on(self.call(script, env))
-            .map(|_| ())
-            .map_err(|e| anyhow::anyhow!("{what} failed: {e}"))
-    }
-
-    /// The async variant for async call sites (`oj build`).
+    /// Runs `export async function run(env)` of `script` to completion.
     pub async fn run_async(
         &self,
         script: &Path,

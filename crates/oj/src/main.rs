@@ -76,6 +76,21 @@ enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
+    /// Internal: run one Start one-shot script (route-tree regen, the client
+    /// rebundle) to completion on a fresh embedded engine, in a process of its
+    /// own, then exit. The env pairs the script's `run(env)` receives arrive
+    /// as JSON on stdin (they used to be spawn env; argv would print values
+    /// in `ps`). A process per run on purpose: rolldown's binding retains
+    /// native memory per `build()` that neither closing the bundler nor
+    /// tearing the isolate down releases — only process exit reclaims it,
+    /// exactly as the retired per-run `node` spawns did.
+    #[command(name = "start-script", hide = true)]
+    StartScript {
+        script: PathBuf,
+        /// The engine root (bare imports resolve from its node_modules).
+        #[arg(long)]
+        root: PathBuf,
+    },
     Build {
         root: Option<PathBuf>,
         /// Output directory (default: dist). `--out` is accepted as an alias.
@@ -212,6 +227,16 @@ async fn run() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("{value}");
             Ok(())
+        }
+        Command::StartScript { script, root } => {
+            let root = root.canonicalize().context("engine root not found")?;
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
+                .context("start-script env on stdin")?;
+            let env: Vec<(String, String)> =
+                serde_json::from_str(&buf).context("start-script env json")?;
+            let scripts = start_host::ScriptEngine::new(&root)?;
+            scripts.run_async(&script, &env, "start script").await
         }
         Command::Compile { file, prod } => {
             let source = std::fs::read_to_string(&file)

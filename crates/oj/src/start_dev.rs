@@ -31,8 +31,6 @@ struct StartState {
     /// tiny HTTP shim that calls the engine, standing in for the node
     /// runner's loopback server.
     loopback_port: u16,
-    /// The engine the one-shot scripts (regen, rebundle) run on.
-    scripts: Arc<ScriptEngine>,
     /// Content hashes of the regen outputs as last pushed to the worker
     /// environments. Tracked in state (not per-run before/after snapshots):
     /// the framework's own router-generator plugin in the plugin host also
@@ -143,7 +141,6 @@ pub async fn start_dev(
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
     oj_server::boot_phase("start_dev begin");
-    let scripts = Arc::new(ScriptEngine::new(&root)?);
 
     let built_task = tokio::spawn(
         oj_server::DevServer {
@@ -169,20 +166,20 @@ pub async fn start_dev(
     // them concurrently would let the resolver scan half-written files and
     // persist a cache key over content that was still moving.
     let route_tree = {
-        let (root, cache, mode, scripts) = (root.clone(), cache.clone(), mode.clone(), Arc::clone(&scripts));
-        tokio::task::spawn_blocking(move || generate_route_tree(&root, &cache, &mode, &scripts))
+        let (root, cache, mode) = (root.clone(), cache.clone(), mode.clone());
+        tokio::task::spawn_blocking(move || generate_route_tree(&root, &cache, &mode))
     };
     route_tree.await??;
     oj_server::boot_phase("route tree ready");
     let resolver = {
-        let (root, cache, mode, scripts) = (root.clone(), cache.clone(), mode.clone(), Arc::clone(&scripts));
-        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, &mode, &scripts))
+        let (root, cache, mode) = (root.clone(), cache.clone(), mode.clone());
+        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, &mode))
     };
     resolver.await??;
     oj_server::boot_phase("resolver ready");
     let bundle = {
-        let (root, cache, mode, scripts) = (root.clone(), cache.clone(), mode.clone(), Arc::clone(&scripts));
-        tokio::task::spawn_blocking(move || bundle_client_entry_cached(&root, &cache, &mode, &scripts))
+        let (root, cache, mode) = (root.clone(), cache.clone(), mode.clone());
+        tokio::task::spawn_blocking(move || bundle_client_entry_cached(&root, &cache, &mode))
     };
     let (reload_tx, _) = broadcast::channel::<()>(16);
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
@@ -278,7 +275,6 @@ pub async fn start_dev(
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
         loopback_port,
-        scripts,
         bundle: std::sync::RwLock::new(Arc::new(pinned)),
         verify: oj_cache::integrity::VerifyMode::from_env(),
         live_reload: cache.join("live-reload.js"),
@@ -708,14 +704,13 @@ async fn rebundle_worker(
         let regen_files = regen_output_files(&root, &cache);
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
-            let scripts = Arc::clone(&state.scripts);
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
             tokio::task::spawn_blocking(move || {
                 let routes_now = list_route_files(&r);
                 let routes_changed = routes_now != routes_prev;
                 if routes_changed {
-                    let _ = generate_route_tree(&r, &c, &m, &scripts);
+                    let _ = generate_route_tree(&r, &c, &m);
                 }
                 let server_fn_changed = changed.iter().any(|p| {
                     let is_ts = p.extension().is_some_and(|e| e == "ts" || e == "tsx");
@@ -725,9 +720,9 @@ async fn rebundle_worker(
                                 .is_ok_and(|s| s.contains("createServerFn")))
                 });
                 if routes_changed || server_fn_changed {
-                    let _ = generate_server_fn_resolver(&r, &c, &m, &scripts);
+                    let _ = generate_server_fn_resolver(&r, &c, &m);
                 }
-                let pinned = if bundle_client_entry(&r, &c, &m, &scripts).is_err() {
+                let pinned = if bundle_client_entry(&r, &c, &m).is_err() {
                     None
                 } else {
                     match start_bundle_store(&r, &m).persist(&c) {
@@ -967,10 +962,10 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
     let shell_node_env = std::env::var("NODE_ENV").ok().filter(|v| !v.is_empty());
     let scripts = Arc::new(ScriptEngine::new(&root)?);
     {
-        let (r, c, s) = (root.clone(), cache.clone(), Arc::clone(&scripts));
+        let (r, c) = (root.clone(), cache.clone());
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            generate_route_tree(&r, &c, "development", &s)?;
-            generate_server_fn_resolver(&r, &c, "development", &s)
+            generate_route_tree(&r, &c, "development")?;
+            generate_server_fn_resolver(&r, &c, "development")
         })
         .await??;
     }
@@ -1083,12 +1078,7 @@ fn codegen_store(
     )
 }
 
-fn generate_route_tree(
-    root: &Path,
-    cache: &Path,
-    mode: &str,
-    scripts: &ScriptEngine,
-) -> anyhow::Result<()> {
+fn generate_route_tree(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<()> {
     let store = codegen_store(root, cache, "route-tree", "generate.mjs", None);
     let dest = root.join("src").join("routeTree.gen.ts");
     let outputs = [("routeTree.gen.ts", dest.as_path())];
@@ -1105,7 +1095,8 @@ fn generate_route_tree(
         }
         Err(miss) => println!("  oj start: route tree cache miss ({miss})"),
     }
-    scripts.run(
+    run_script_process(
+        root,
         &cache.join("generate.mjs"),
         &script_env(root, "serve", mode)?,
         "route tree generation",
@@ -1115,12 +1106,7 @@ fn generate_route_tree(
     Ok(())
 }
 
-fn generate_server_fn_resolver(
-    root: &Path,
-    cache: &Path,
-    mode: &str,
-    scripts: &ScriptEngine,
-) -> anyhow::Result<()> {
+fn generate_server_fn_resolver(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<()> {
     let store = codegen_store(
         root,
         cache,
@@ -1145,7 +1131,8 @@ fn generate_server_fn_resolver(
         }
         Err(miss) => println!("  oj start: server-fn resolver cache miss ({miss})"),
     }
-    scripts.run(
+    run_script_process(
+        root,
         &cache.join("gen-resolver.mjs"),
         &script_env(root, "serve", mode)?,
         "server-fn resolver",
@@ -1173,13 +1160,51 @@ fn list_src_ts_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn bundle_client_entry(
+/// Runs a Start one-shot script in a fresh `oj start-script` child process
+/// (the embedded engine, one process per run), replacing the long-lived
+/// ScriptEngine the dev server briefly used. In-process was a leak: rolldown's
+/// binding retains native memory per `build()` invocation — on an ~18k-module
+/// app ~650MB PER CLIENT REBUNDLE — and neither `bundler.close()`, a forced
+/// full GC, nor tearing the whole isolate down releases it; only process exit
+/// does. That is also exact parity with the retired one-shot `node` spawns,
+/// whose per-run process death kept the dev server flat. The env pairs travel
+/// on stdin (they used to be spawn env; argv would print values in `ps`).
+fn run_script_process(
     root: &Path,
-    cache: &Path,
-    mode: &str,
-    scripts: &ScriptEngine,
+    script: &Path,
+    env: &[(String, String)],
+    what: &str,
 ) -> anyhow::Result<()> {
-    scripts.run(
+    let exe = std::env::current_exe().map_err(|e| anyhow::anyhow!("oj executable path: {e}"))?;
+    let mut child = std::process::Command::new(exe)
+        .arg("start-script")
+        .arg(script)
+        .arg("--root")
+        .arg(root)
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("could not run {what}: {e}"))?;
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(serde_json::to_string(env)?.as_bytes())
+            .map_err(|e| anyhow::anyhow!("could not send {what} env: {e}"))?;
+        // Dropping closes the pipe; the child's read_to_string completes.
+    }
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("could not wait for {what}: {e}"))?;
+    if !status.success() {
+        anyhow::bail!("{what} failed");
+    }
+    Ok(())
+}
+
+fn bundle_client_entry(root: &Path, cache: &Path, mode: &str) -> anyhow::Result<()> {
+    run_script_process(
+        root,
         &cache.join("bundle-client.mjs"),
         &script_env(root, "serve", mode)?,
         "client entry bundling",
@@ -1199,7 +1224,6 @@ fn bundle_client_entry_cached(
     root: &Path,
     cache: &Path,
     mode: &str,
-    scripts: &ScriptEngine,
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
     let store = start_bundle_store(root, mode);
     match store.restore(cache) {
@@ -1219,7 +1243,7 @@ fn bundle_client_entry_cached(
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
-    bundle_client_entry(root, cache, mode, scripts)?;
+    bundle_client_entry(root, cache, mode)?;
     if let Some((key, pinned)) = store.persist(cache) {
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
