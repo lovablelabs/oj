@@ -91,6 +91,26 @@ enum Command {
         #[arg(long)]
         root: PathBuf,
     },
+    /// Internal: run one export of an oj-owned module (config extraction) on a
+    /// fresh embedded engine, in a process of its own, then exit. The JSON
+    /// payload arrives on stdin; the outcome envelope lands in `--result` (a
+    /// file, so job code that prints cannot corrupt the channel). A process
+    /// per job on purpose: a native addon the job loads (rolldown, under any
+    /// vite 8 config) can crash the host when it is re-initialized after a
+    /// previous engine in the same process was torn down.
+    #[command(name = "engine-job", hide = true)]
+    EngineJob {
+        module: PathBuf,
+        /// The engine root (bare imports resolve from its node_modules).
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        export: String,
+        #[arg(long)]
+        timeout_secs: u64,
+        #[arg(long)]
+        result: PathBuf,
+    },
     Build {
         root: Option<PathBuf>,
         /// Output directory (default: dist). `--out` is accepted as an alias.
@@ -173,6 +193,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
+    // One-shot engine jobs (config extraction) run in `oj engine-job`
+    // children: a native addon a job loads can crash the process when it is
+    // re-initialized after an earlier engine died (napi-rs before 3.10).
+    if let Ok(exe) = std::env::current_exe() {
+        oj_server::plugins::engine_jobs_via_subprocess(exe);
+    }
     match Cli::parse().command {
         Command::Dev {
             root,
@@ -238,6 +264,32 @@ async fn run() -> anyhow::Result<()> {
                 serde_json::from_str(&buf).context("start-script env json")?;
             let scripts = start_host::ScriptEngine::new(&root)?;
             scripts.run_async(&script, &env, "start script").await
+        }
+        Command::EngineJob {
+            module,
+            root,
+            export,
+            timeout_secs,
+            result,
+        } => {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
+                .context("engine-job payload on stdin")?;
+            let payload: serde_json::Value =
+                serde_json::from_str(&buf).context("engine-job payload json")?;
+            // A job failure travels inside the envelope; a nonzero exit is
+            // reserved for the harness itself (or a native addon crash).
+            let outcome = oj_server::plugins::run_engine_job_in_process(
+                &root,
+                &module,
+                &export,
+                payload,
+                std::time::Duration::from_secs(timeout_secs),
+            );
+            let envelope = oj_server::plugins::engine_job_envelope(&outcome);
+            std::fs::write(&result, serde_json::to_string(&envelope)?)
+                .context("engine-job result write")?;
+            Ok(())
         }
         Command::Compile { file, prod } => {
             let source = std::fs::read_to_string(&file)
