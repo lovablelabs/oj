@@ -210,13 +210,12 @@ fn compile_esm_factory_from_parsed<'a>(
     }
 
     if crate::scan(&crate::F_IMPORT_META_ENV, source_text) {
-        use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
+        use oxc_transformer_plugins::ReplaceGlobalDefines;
         let scoping = SemanticBuilder::new()
             .build(&program)
             .semantic
             .into_scoping();
-        let defines = crate::import_meta_env_defines(true, false);
-        if let Ok(config) = ReplaceGlobalDefinesConfig::new(&defines) {
+        if let Some(config) = crate::import_meta_env_defines(true, false).config() {
             let _ = ReplaceGlobalDefines::new(allocator, config).build(scoping, &mut program);
         }
     }

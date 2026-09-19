@@ -12,7 +12,7 @@ pub mod json;
 pub mod pkgbundle;
 
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use memchr::memmem::Finder;
 use oxc_allocator::Allocator;
@@ -69,59 +69,149 @@ pub(crate) fn detect_refresh_registrations(program: &Program) -> bool {
     detector.found
 }
 
-// RwLock, not OnceLock: the server re-sets these once the plugin host reports
-// config()-hook env mutations, which land after the initial dotenv-based set.
-static ENV_DEFINES: std::sync::RwLock<Option<Vec<(String, String)>>> = std::sync::RwLock::new(None);
-// `environments.ssr.define`: layered over the shared list for SSR compiles
-// only, so a key defined differently per side keeps both values.
-static ENV_DEFINES_SSR: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
-
-pub fn set_import_meta_env(defines: Vec<(String, String)>) {
-    *ENV_DEFINES.write().expect("ENV_DEFINES poisoned") = Some(defines);
+/// Everything a compile derives from one resolved define list, built once per
+/// `set_*` call instead of once per compile: the non-`import.meta` keys that
+/// gate the replacer on plain source text, and the oxc config, which validates
+/// and parses every value in its own arena and is `Clone` over an `Arc`.
+pub(crate) struct EnvDefines {
+    /// Keys other than `import.meta*`; `import.meta.env` itself is gated by the
+    /// SIMD `F_IMPORT_META_ENV` scan, so these are the only scalar scans left.
+    plain_keys: Vec<String>,
+    /// `None` when oxc rejected the list, which today silently skips the
+    /// replacer for that compile; the cache preserves that exactly.
+    config: Option<ReplaceGlobalDefinesConfig>,
 }
 
-pub fn set_import_meta_env_ssr(overrides: Vec<(String, String)>) {
-    *ENV_DEFINES_SSR.write().expect("ENV_DEFINES_SSR poisoned") = overrides;
-}
+impl EnvDefines {
+    fn build(pairs: Vec<(String, String)>) -> Arc<Self> {
+        let plain_keys = pairs
+            .iter()
+            .filter(|(k, _)| !k.starts_with("import.meta"))
+            .map(|(k, _)| k.clone())
+            .collect();
+        let config = ReplaceGlobalDefinesConfig::new(&pairs).ok();
+        Arc::new(Self { plain_keys, config })
+    }
 
-/// Folds more ssr-environment defines over the current set (later wins): the
-/// resolved-config defines arrive when the lazy ssr plugin host spawns, after
-/// the boot-time set from the oj config.
-pub fn merge_import_meta_env_ssr(overrides: Vec<(String, String)>) {
-    let mut current = ENV_DEFINES_SSR.write().expect("ENV_DEFINES_SSR poisoned");
-    for (k, v) in overrides {
-        if let Some(slot) = current.iter_mut().find(|(ek, _)| *ek == k) {
-            slot.1 = v;
-        } else {
-            current.push((k, v));
-        }
+    /// True when `source_text` can mention any define: `import.meta.env` via
+    /// the SIMD finder, other keys via a scalar scan each.
+    pub(crate) fn needed_by(&self, source_text: &str) -> bool {
+        scan(&F_IMPORT_META_ENV, source_text)
+            || self
+                .plain_keys
+                .iter()
+                .any(|k| source_text.contains(k.as_str()))
+    }
+
+    /// The prebuilt replacer config (an `Arc` bump to clone), or `None` when
+    /// oxc rejected the define list.
+    pub(crate) fn config(&self) -> Option<ReplaceGlobalDefinesConfig> {
+        self.config.clone()
     }
 }
 
-pub(crate) fn import_meta_env_defines(dev: bool, ssr: bool) -> Vec<(String, String)> {
-    if let Some(defines) = ENV_DEFINES.read().expect("ENV_DEFINES poisoned").as_ref() {
-        if !ssr {
-            return defines.clone();
-        }
-        let mut out = defines.clone();
-        for (k, v) in out.iter_mut() {
+/// Server-provided defines: the raw inputs and both compile variants derived
+/// from them. Variants are rebuilt eagerly in the setters (a few times per
+/// process) so `import_meta_env_defines` is a read lock and an `Arc` clone.
+struct EnvState {
+    /// `set_import_meta_env`; `None` until the server sets it (the `oj build`
+    /// path and unit tests never do, and use the mode-derived fallback).
+    client_pairs: Option<Vec<(String, String)>>,
+    /// `environments.ssr.define`: layered over the shared list for SSR
+    /// compiles only, so a key defined differently per side keeps both values.
+    ssr_overrides: Vec<(String, String)>,
+    client: Option<Arc<EnvDefines>>,
+    ssr: Option<Arc<EnvDefines>>,
+}
+
+impl EnvState {
+    /// Rederives both variants from the raw inputs. Runs
+    /// `ReplaceGlobalDefinesConfig::new` (an oxc parse of every value) twice on
+    /// the caller's thread, roughly 100 us with 40 vars, so it belongs in the
+    /// setters, not on the compile path.
+    fn rebuild(&mut self) {
+        let Some(pairs) = &self.client_pairs else {
+            self.client = None;
+            self.ssr = None;
+            return;
+        };
+        let mut ssr = pairs.clone();
+        for (k, v) in ssr.iter_mut() {
             if k == "import.meta.env.SSR" {
                 *v = "true".into();
             } else if k == "import.meta.env" {
                 *v = v.replace("\"SSR\":false", "\"SSR\":true");
             }
         }
-        for (k, v) in ENV_DEFINES_SSR.read().expect("ENV_DEFINES_SSR poisoned").iter() {
-            if let Some(slot) = out.iter_mut().find(|(ek, _)| ek == k) {
+        for (k, v) in &self.ssr_overrides {
+            if let Some(slot) = ssr.iter_mut().find(|(ek, _)| ek == k) {
                 slot.1 = v.clone();
             } else {
-                out.push((k.clone(), v.clone()));
+                ssr.push((k.clone(), v.clone()));
             }
         }
-        return out;
+        self.client = Some(EnvDefines::build(pairs.clone()));
+        self.ssr = Some(EnvDefines::build(ssr));
     }
+}
+
+// RwLock, not OnceLock: the server re-sets these once the plugin host reports
+// config()-hook env mutations, which land after the initial dotenv-based set.
+static ENV_DEFINES: RwLock<EnvState> = RwLock::new(EnvState {
+    client_pairs: None,
+    ssr_overrides: Vec::new(),
+    client: None,
+    ssr: None,
+});
+
+// The three setters are boot-time calls: each rebuilds both compile variants
+// under the write lock, so the next compile sees the new list. Do not call
+// them per request.
+pub fn set_import_meta_env(defines: Vec<(String, String)>) {
+    let mut state = ENV_DEFINES.write().expect("ENV_DEFINES poisoned");
+    state.client_pairs = Some(defines);
+    state.rebuild();
+}
+
+pub fn set_import_meta_env_ssr(overrides: Vec<(String, String)>) {
+    let mut state = ENV_DEFINES.write().expect("ENV_DEFINES poisoned");
+    state.ssr_overrides = overrides;
+    state.rebuild();
+}
+
+/// Folds more ssr-environment defines over the current set (later wins): the
+/// resolved-config defines arrive when the lazy ssr plugin host spawns, after
+/// the boot-time set from the oj config.
+pub fn merge_import_meta_env_ssr(overrides: Vec<(String, String)>) {
+    let mut state = ENV_DEFINES.write().expect("ENV_DEFINES poisoned");
+    for (k, v) in overrides {
+        if let Some(slot) = state.ssr_overrides.iter_mut().find(|(ek, _)| *ek == k) {
+            slot.1 = v;
+        } else {
+            state.ssr_overrides.push((k, v));
+        }
+    }
+    state.rebuild();
+}
+
+/// Mode-derived defines used until the server calls `set_import_meta_env`
+/// (and always by `oj build` and the unit tests), one per (dev, ssr) variant.
+/// Indexed by `fallback_idx(dev, ssr)`.
+static FALLBACK_DEFINES: [LazyLock<Arc<EnvDefines>>; 4] = [
+    LazyLock::new(|| fallback_defines(false, false)),
+    LazyLock::new(|| fallback_defines(false, true)),
+    LazyLock::new(|| fallback_defines(true, false)),
+    LazyLock::new(|| fallback_defines(true, true)),
+];
+
+/// `dev << 1 | ssr`, the order of `FALLBACK_DEFINES`.
+fn fallback_idx(dev: bool, ssr: bool) -> usize {
+    ((dev as usize) << 1) | ssr as usize
+}
+
+fn fallback_defines(dev: bool, ssr: bool) -> Arc<EnvDefines> {
     let mode = if dev { "development" } else { "production" };
-    vec![
+    EnvDefines::build(vec![
         ("import.meta.env.BASE_URL".into(), "\"/\"".into()),
         ("import.meta.env.MODE".into(), format!("\"{mode}\"")),
         ("import.meta.env.DEV".into(), dev.to_string()),
@@ -134,7 +224,18 @@ pub(crate) fn import_meta_env_defines(dev: bool, ssr: bool) -> Vec<(String, Stri
                 prod = !dev
             ),
         ),
-    ]
+    ])
+}
+
+pub(crate) fn import_meta_env_defines(dev: bool, ssr: bool) -> Arc<EnvDefines> {
+    {
+        let state = ENV_DEFINES.read().expect("ENV_DEFINES poisoned");
+        let variant = if ssr { &state.ssr } else { &state.client };
+        if let Some(defines) = variant {
+            return Arc::clone(defines);
+        }
+    }
+    Arc::clone(&FALLBACK_DEFINES[fallback_idx(dev, ssr)])
 }
 
 /// JSX compile settings: Vite's `oxc.jsx` (what `@vitejs/plugin-react` sets from
@@ -386,13 +487,12 @@ pub fn compile_module_with_maps(
     }
 
     let defines = import_meta_env_defines(opts.dev, opts.ssr);
-    let needs_defines = F_IMPORT_META_ENV.find(source_text.as_bytes()).is_some()
-        || defines
-            .iter()
-            .any(|(k, _)| !k.starts_with("import.meta") && source_text.contains(k.as_str()));
-    if needs_defines {
-        if let Ok(config) = ReplaceGlobalDefinesConfig::new(&defines) {
-            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    if defines.needed_by(source_text) {
+        if let Some(config) = defines.config() {
+            let scoping = SemanticBuilder::new()
+                .build(&program)
+                .semantic
+                .into_scoping();
             let _ = ReplaceGlobalDefines::new(&allocator, config).build(scoping, &mut program);
         }
     }
@@ -880,6 +980,35 @@ export function Root() {
         )
         .unwrap_err();
         assert!(matches!(err, CompileError::Parse { .. }));
+    }
+
+    #[test]
+    fn fallback_variants_are_cached_per_dev_ssr() {
+        // The unit tests never call set_import_meta_env, so every lookup lands
+        // on the fallback table: the same (dev, ssr) hands back the same Arc,
+        // and each variant is its own entry.
+        assert!(Arc::ptr_eq(
+            &import_meta_env_defines(true, false),
+            &import_meta_env_defines(true, false)
+        ));
+        assert!(Arc::ptr_eq(
+            &import_meta_env_defines(false, true),
+            &import_meta_env_defines(false, true)
+        ));
+        for (a, b) in [
+            ((true, false), (true, true)),
+            ((true, false), (false, false)),
+            ((false, true), (true, true)),
+            ((false, false), (false, true)),
+        ] {
+            assert!(
+                !Arc::ptr_eq(
+                    &import_meta_env_defines(a.0, a.1),
+                    &import_meta_env_defines(b.0, b.1)
+                ),
+                "{a:?} and {b:?} must be distinct fallback variants"
+            );
+        }
     }
 
     #[test]
