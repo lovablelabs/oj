@@ -37,7 +37,7 @@ fn ssr_opts() -> CompileOptions {
 
 #[test]
 fn set_replaces_client_defines_and_a_re_set_wins() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     set_import_meta_env(client());
     set_import_meta_env_ssr(vec![]);
     let src = "export const x = import.meta.env.VITE_X; export const s = __SIDE__;";
@@ -61,7 +61,7 @@ fn set_replaces_client_defines_and_a_re_set_wins() {
 
 #[test]
 fn ssr_compiles_flip_ssr_flag_and_layer_ssr_overrides_only() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     set_import_meta_env(client());
     set_import_meta_env_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
     let src = "export const s = import.meta.env.SSR; export const all = import.meta.env; export const side = __SIDE__;";
@@ -83,7 +83,7 @@ fn ssr_compiles_flip_ssr_flag_and_layer_ssr_overrides_only() {
 
 #[test]
 fn merge_ssr_overrides_later_wins_and_invalidates_the_ssr_variant() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     set_import_meta_env(client());
     set_import_meta_env_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
     let src = "export const side = __SIDE__; export const only = __SSR_ONLY__;";
@@ -107,7 +107,7 @@ fn merge_ssr_overrides_later_wins_and_invalidates_the_ssr_variant() {
 
 #[test]
 fn plain_key_gate_still_replaces_process_env_node_env() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     set_import_meta_env(client());
     set_import_meta_env_ssr(vec![]);
     let src = "export const dev = process.env.NODE_ENV !== \"production\";";
@@ -117,8 +117,8 @@ fn plain_key_gate_still_replaces_process_env_node_env() {
 
 #[test]
 fn a_rejected_define_list_silently_skips_replacement() {
-    let _g = SERIAL.lock().unwrap();
-    // oxc rejects a value with a syntax error; today that skips the replacer
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // oxc rejects a value with a syntax error; that skips the replacer
     // for the compile rather than failing it, and the cache must keep that.
     set_import_meta_env(vec![("import.meta.env.BAD".into(), "{".into())]);
     set_import_meta_env_ssr(vec![]);
@@ -133,7 +133,7 @@ fn a_rejected_define_list_silently_skips_replacement() {
 
 #[test]
 fn ssr_overrides_set_before_the_client_list_still_layer() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     // The server may hand over `environments.ssr.define` before the dotenv
     // list lands; the ssr variant must be derived once both inputs are known.
     set_import_meta_env(vec![]);
@@ -156,7 +156,7 @@ fn ssr_overrides_set_before_the_client_list_still_layer() {
 
 #[test]
 fn an_invalid_ssr_override_only_disables_the_ssr_variant() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     // Each variant carries its own Option<config>: a value oxc rejects in the
     // ssr overrides skips replacement for ssr compiles only.
     set_import_meta_env(client());

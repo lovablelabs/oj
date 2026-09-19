@@ -1,4 +1,4 @@
-//! Per-shape compile throughput. Default: the small four-define env the server
+//! Per-shape compile throughput. Default: the small five-define env the server
 //! sets for a bare project. `--big-env` (or `BENCH_BIG_ENV=1`): a 40-`VITE_*`
 //! env with a ~2 KB `import.meta.env` blob, the shape of a real dotenv-heavy
 //! app, where the per-compile define handling used to dominate small modules.
