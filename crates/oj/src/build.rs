@@ -936,6 +936,42 @@ async fn bundle_worker_inline(
     Ok(code)
 }
 
+/// The `import.meta.glob` / variable dynamic import / `new URL(.., import.meta.url)`
+/// expansions oj applies in the transform hook. `None` when the module comes out
+/// byte-identical: the dynamic-import and new-URL expanders return a copy of their
+/// input when nothing matched (a plain `import("./x")`, a bare `import.meta.url`),
+/// and handing that copy to rolldown as `Some(code)` makes it push
+/// `SourcemapChainElement::Omitted`, which empties the module's mappings when
+/// `build.sourcemap` is on.
+fn expand_import_meta(id: &str, code: &str) -> Option<String> {
+    let has_glob = code.contains("import.meta.glob");
+    // Vite's dynamicImportVarsOptions.exclude defaults to node_modules.
+    let has_dynamic = code.contains("import(") && !id.contains("/node_modules/");
+    let has_new_url = code.contains("import.meta.url");
+    if !has_glob && !has_dynamic && !has_new_url {
+        return None;
+    }
+    let path = Path::new(id);
+    // At least one expander runs past the gate above, so plain Strings and one
+    // final changed-check state the invariant (a Cow's borrowed arm here would
+    // be unreachable and could mask a future edit that makes it reachable).
+    let mut expanded = code.to_string();
+    if has_glob {
+        expanded = oj_compiler::glob::expand_source(&expanded, path);
+    }
+    if has_dynamic {
+        expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
+    }
+    if has_new_url {
+        expanded = oj_compiler::glob::expand_new_url_asset_source(&expanded, path);
+    }
+    if expanded != code {
+        Some(expanded)
+    } else {
+        None
+    }
+}
+
 impl Plugin for OjCssPlugin {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("oj:build")
@@ -991,31 +1027,17 @@ impl Plugin for OjCssPlugin {
         _ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
-        let id = args.id.to_string();
-        let code = args.code.to_string();
+        // Borrow, do not copy: `Pluginable::call_transform` boxes this future for
+        // the lifetime of `args`, so the source is probed in place.
+        let id: &str = args.id;
+        let code: &str = args.code;
         async move {
-            let has_glob = code.contains("import.meta.glob");
-            let has_dynamic = code.contains("import(");
-            let has_new_url = code.contains("import.meta.url");
-            if !has_glob && !has_dynamic && !has_new_url {
-                return Ok(None);
-            }
-            let path = std::path::Path::new(&id);
-            let mut expanded = code;
-            if has_glob {
-                expanded = oj_compiler::glob::expand_source(&expanded, path);
-            }
-            // Vite's dynamicImportVarsOptions.exclude defaults to node_modules.
-            if has_dynamic && !id.contains("/node_modules/") {
-                expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
-            }
-            if has_new_url {
-                expanded = oj_compiler::glob::expand_new_url_asset_source(&expanded, path);
-            }
-            Ok(Some(rolldown_plugin::HookTransformOutput {
-                code: Some(expanded),
-                ..Default::default()
-            }))
+            Ok(
+                expand_import_meta(id, code).map(|code| rolldown_plugin::HookTransformOutput {
+                    code: Some(code),
+                    ..Default::default()
+                }),
+            )
         }
     }
 
@@ -1817,8 +1839,8 @@ impl Plugin for OjUserPlugin {
         }
         let host = Arc::clone(&self.host);
         let emit = Arc::clone(&self.emit);
-        let code = if pass { args.code.to_string() } else { String::new() };
-        let id = args.id.to_string();
+        let code: &str = args.code;
+        let id: &str = args.id;
         async move {
             if !pass {
                 return Ok(None);
@@ -1827,10 +1849,10 @@ impl Plugin for OjUserPlugin {
             // the plugin transform chain already ran on the raw markup. Re-running it
             // here would feed svgr its own component output (or an `export default`
             // asset stub) and corrupt it, so skip svg ids.
-            if id.split('?').next().unwrap_or(&id).ends_with(".svg") {
+            if id.split('?').next().unwrap_or(id).ends_with(".svg") {
                 return Ok(None);
             }
-            match host.transform(&code, &id, "{}").await {
+            match host.transform(code, id, "{}").await {
                 Ok((out, _, _, chunks)) => {
                     forward_emitted_chunks(&ctx.inner, &chunks, &emit);
                     if out != code {
@@ -5705,6 +5727,140 @@ mod tests {
                 "{config_name}: {config}\n{html}"
             );
         }
+    }
+
+    #[test]
+    fn expand_import_meta_reports_only_real_changes() {
+        // No marker at all.
+        assert_eq!(
+            expand_import_meta("/app/src/a.ts", "export const a = 1;\n"),
+            None
+        );
+        // A plain string-literal dynamic import is left alone by the expander,
+        // so the hook must not report it as changed (the sourcemap regression).
+        assert_eq!(
+            expand_import_meta(
+                "/app/src/r.tsx",
+                "const P = lazy(() => import(\"./pages/P\"));\n"
+            ),
+            None
+        );
+        // node_modules is excluded from dynamic-import-vars expansion.
+        assert_eq!(
+            expand_import_meta(
+                "/app/node_modules/x/index.js",
+                "export const c = (n) => import(`./c/${n}.js`);\n"
+            ),
+            None
+        );
+
+        // A variable dynamic import that matches files really changes.
+        let dir = scratch("expand-import-meta");
+        fs::create_dir_all(dir.join("locales")).unwrap();
+        fs::write(dir.join("locales/en.json"), "{}").unwrap();
+        let id = dir.join("main.js").to_string_lossy().into_owned();
+        let out = expand_import_meta(&id, "const load = (l) => import(`./locales/${l}.json`);\n")
+            .expect("matching variable dynamic import expands");
+        assert!(
+            out.contains(r#"case "./locales/en.json": return import("./locales/en.json")"#),
+            "{out}"
+        );
+        assert!(
+            out.contains("${l}"),
+            "original template kept as runtime arg: {out}"
+        );
+        assert!(out.contains("Unknown variable dynamic import"), "{out}");
+        fs::remove_dir_all(&dir).unwrap();
+
+        // `new URL(..., import.meta.url)` really changes.
+        let out = expand_import_meta(
+            "/app/src/main.js",
+            "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n",
+        )
+        .expect("new URL asset expands");
+        assert!(
+            out.contains("import __oj_worker_0 from \"./w.ts?worker&url\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("new Worker(__oj_worker_0, { type: \"module\" })"),
+            "{out}"
+        );
+        assert!(out.contains("new SharedWorker(__oj_worker_1)"), "{out}");
+        assert!(
+            !out.contains("w.ts?url"),
+            "the worker entry is not a plain asset: {out}"
+        );
+    }
+
+    // The transform hook must answer `None` for a module it did not change: a
+    // `Some(code)` with the default map makes rolldown push
+    // `SourcemapChainElement::Omitted`, which empties that module's mappings, so
+    // every route-split file with a plain `import("./x")` silently lost its
+    // sourcemap when `build.sourcemap` was on.
+    #[tokio::test]
+    async fn production_sourcemap_keeps_mappings_for_plain_dynamic_import_modules() {
+        let root = scratch("smap-dynimp");
+        fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        fs::write(
+            root.join("oj.config.json"),
+            r#"{"build":{"sourcemap":true,"minify":false}}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("index.html"),
+            r#"<html><head></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src/pages")).unwrap();
+        fs::write(
+            root.join("src/pages/about.js"),
+            "export const name = \"about\";\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main.js"),
+            "export function load() {\n  return import(\"./pages/about.js\");\n}\nwindow.__LOAD = load;\n",
+        )
+        .unwrap();
+
+        build(root.clone(), Some("production"), CliOptions::default())
+            .await
+            .expect("plain dynamic import fixture should build");
+
+        let map_path = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| {
+                let name = p.file_name().unwrap().to_string_lossy();
+                name.starts_with("main-") && name.ends_with(".map")
+            })
+            .expect("main-*.map emitted");
+        let map: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&map_path).unwrap()).unwrap();
+        let sources: Vec<&str> = map["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        // Load-bearing: a multi-module chunk would carry sibling mappings anyway,
+        // so check the dynamic-import module itself is still mapped.
+        assert!(
+            sources.iter().any(|s| s.ends_with("src/main.js")),
+            "src/main.js missing from {}: {sources:?}",
+            map_path.display()
+        );
+        assert!(
+            !map["mappings"].as_str().unwrap_or("").is_empty(),
+            "empty mappings in {}",
+            map_path.display()
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
