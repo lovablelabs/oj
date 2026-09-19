@@ -77,8 +77,8 @@ pub(crate) struct EnvDefines {
     /// Keys other than `import.meta*`; `import.meta.env` itself is gated by the
     /// SIMD `F_IMPORT_META_ENV` scan, so these are the only scalar scans left.
     plain_keys: Vec<String>,
-    /// `None` when oxc rejected the list, which today silently skips the
-    /// replacer for that compile; the cache preserves that exactly.
+    /// `None` when oxc rejected the list, which skips the replacer for that
+    /// compile (unchanged from the uncached behaviour).
     config: Option<ReplaceGlobalDefinesConfig>,
 }
 
