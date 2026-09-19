@@ -209,14 +209,20 @@ fn compile_esm_factory_from_parsed<'a>(
         );
     }
 
-    if crate::scan(&crate::F_IMPORT_META_ENV, source_text) {
-        use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
+    // needed_by also matches the plain-key defines (process.env.NODE_ENV and
+    // friends): an ESM dep in a partial bundle that mentions only those must
+    // still get the replacement, or the browser hits a bare `process`. One
+    // snapshot serves both the gate and the config, so a concurrent re-set of
+    // the defines can never let the gate pass on one list and the replacer
+    // apply another.
+    let defines = crate::import_meta_env_defines(true, false);
+    if defines.needed_by(source_text) {
+        use oxc_transformer_plugins::ReplaceGlobalDefines;
         let scoping = SemanticBuilder::new()
             .build(&program)
             .semantic
             .into_scoping();
-        let defines = crate::import_meta_env_defines(true, false);
-        if let Ok(config) = ReplaceGlobalDefinesConfig::new(&defines) {
+        if let Some(config) = defines.config() {
             let _ = ReplaceGlobalDefines::new(allocator, config).build(scoping, &mut program);
         }
     }
