@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -1000,6 +1001,18 @@ fn compile_css_depth(
         .map_err(|err| format!("css print error in {url}: {err}"))?;
 
     let mut css = result.code;
+    if let (Some(base), Some(deps)) = (base, result.dependencies) {
+        let mut pairs = Vec::with_capacity(deps.len());
+        for dep in deps {
+            let (placeholder, orig) = match dep {
+                Dependency::Url(u) => (u.placeholder, u.url),
+                Dependency::Import(i) => (i.placeholder, i.url),
+            };
+            let replacement = dev_url_of(&orig, &base, resolve);
+            pairs.push((placeholder, replacement));
+        }
+        css = substitute_placeholders(css, &pairs);
+    }
     if source_map {
         // Sources are stored root-relative (`src/app.css`); `sourceRoot: "/"`
         // makes devtools resolve them to the served url (`/src/app.css`).
@@ -1009,16 +1022,6 @@ fn compile_css_depth(
         css.push_str("\n/*# sourceMappingURL=data:application/json;base64,");
         css.push_str(&base64(json.as_bytes()));
         css.push_str(" */\n");
-    }
-    if let (Some(base), Some(deps)) = (base, result.dependencies) {
-        for dep in deps {
-            let (placeholder, orig) = match dep {
-                Dependency::Url(u) => (u.placeholder, u.url),
-                Dependency::Import(i) => (i.placeholder, i.url),
-            };
-            let replacement = dev_url_of(&orig, &base, resolve);
-            css = css.replace(&placeholder, &replacement);
-        }
     }
 
     let exports = match result.exports {
@@ -1337,8 +1340,10 @@ fn rebase_to_dir(
             ..PrinterOptions::default()
         })
         .map_err(|err| format!("css print error in {name}: {err}"))?;
-    let mut out = result.code;
-    for dep in result.dependencies.unwrap_or_default() {
+    let out = result.code;
+    let deps = result.dependencies.unwrap_or_default();
+    let mut pairs = Vec::with_capacity(deps.len());
+    for dep in deps {
         let (placeholder, orig) = match dep {
             Dependency::Url(u) => (u.placeholder, u.url),
             Dependency::Import(i) => (i.placeholder, i.url),
@@ -1354,9 +1359,9 @@ fn rebase_to_dir(
             };
             format!("{}{}", relative_path(to_dir, &from_dir.join(path)), suffix)
         };
-        out = out.replace(&placeholder, &replacement);
+        pairs.push((placeholder, replacement));
     }
-    Ok(out)
+    Ok(substitute_placeholders(out, &pairs))
 }
 
 /// `target` expressed relative to `from_dir`, with `/` separators and a leading
@@ -1427,6 +1432,56 @@ fn dev_url_of(spec: &str, base_dir: &str, resolve: &CssResolve<'_>) -> String {
         return format!("{}{suffix}", resolve.dev_url(&file));
     }
     rebase_relative(spec, base_dir).unwrap_or_else(|| spec.to_string())
+}
+
+/// Replace every dependency placeholder lightningcss printed into `code` with its
+/// rewritten url, in one left-to-right pass. In dependency mode the printer always
+/// emits a placeholder as a quoted string (`url("PH")`, `@import "PH"`, and bare
+/// `"PH" 1x` inside `image-set()`, values/image.rs), so the pass looks at the text
+/// between each `"` and the next one; the anchor must stay the bare quote for that
+/// reason. Placeholders may repeat (one `Dependency` per occurrence) or not occur;
+/// the first replacement recorded for a placeholder wins, as the sequential
+/// `str::replace` loop this supersedes did. A token that is not a placeholder
+/// (a user string, an escaped quote) simply misses the map.
+///
+/// Where this knowingly differs from that loop, the old output was already
+/// corrupted CSS (a 32-bit placeholder hash colliding with user text): an
+/// unquoted match is not replaced, an inserted replacement is not re-scanned,
+/// and an unterminated `"PH` at the end of the input is left as written.
+fn substitute_placeholders(code: String, pairs: &[(String, String)]) -> String {
+    if pairs.is_empty() {
+        return code;
+    }
+    let mut map: HashMap<&str, &str> = HashMap::with_capacity(pairs.len());
+    for (p, r) in pairs {
+        if !p.is_empty() {
+            map.entry(p.as_str()).or_insert(r.as_str());
+        }
+    }
+    let extra: usize = pairs
+        .iter()
+        .map(|(p, r)| r.len().saturating_sub(p.len()))
+        .sum();
+    let mut out = String::with_capacity(code.len() + extra);
+    let mut copied = 0usize; // start of the text not yet appended to `out`
+    let mut scan = 0usize; // where the next `"` search begins
+    while let Some(q) = code[scan..].find('"') {
+        let start = scan + q + 1; // first byte after the opening quote
+        let Some(n) = code[start..].find('"') else {
+            break;
+        };
+        let end = start + n; // the closing quote
+        if let Some(r) = map.get(&code[start..end]) {
+            out.push_str(&code[copied..start]);
+            out.push_str(r);
+            copied = end; // the closing quote stays in the copied tail
+            scan = end + 1;
+        } else {
+            scan = start; // the closing quote may open the next token
+        }
+    }
+    out.push_str(&code[copied..]);
+    out
 }
 
 fn rebase_relative(spec: &str, base_dir: &str) -> Option<String> {
@@ -2076,6 +2131,135 @@ mod tests {
         let r2 = CssResolve { root: Some(Path::new("/proj")), public_dir: None, alias: &outside, ..CssResolve::default() };
         let out = compile_css_dev("/src/a.css", ".a { background: url(~ui/i.png) }", false, &r2).unwrap().css;
         assert!(out.contains("/@fs/elsewhere/ui/i.png"), "{out}");
+    }
+
+    /// The sequential `str::replace` loop `substitute_placeholders` replaced.
+    fn sequential_replace(code: &str, pairs: &[(String, String)]) -> String {
+        pairs.iter().fold(code.to_string(), |c, (p, r)| c.replace(p, r))
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter().map(|(p, r)| (p.to_string(), r.to_string())).collect()
+    }
+
+    /// Every `"` followed by exactly six placeholder-alphabet bytes and a closing
+    /// `"`: the shape of an unsubstituted lightningcss dependency placeholder
+    /// (and of a six-character user string, which callers exclude by value).
+    fn quoted_six_char_tokens(css: &str) -> Vec<&str> {
+        let b = css.as_bytes();
+        (0..b.len())
+            .filter(|&i| {
+                b[i] == b'"'
+                    && i + 7 < b.len()
+                    && b[i + 7] == b'"'
+                    && b[i + 1..i + 7].iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
+            })
+            .map(|i| &css[i + 1..i + 7])
+            .collect()
+    }
+
+    #[test]
+    fn substitute_placeholders_handles_edge_shapes() {
+        // Empty pairs: the input comes back as-is, without a copy.
+        let input = ".a{content:\"abcdef\"}".to_string();
+        let (ptr, cap) = (input.as_ptr(), input.capacity());
+        let same = substitute_placeholders(input, &[]);
+        assert_eq!((same.as_ptr(), same.capacity()), (ptr, cap));
+        assert_eq!(same, ".a{content:\"abcdef\"}");
+
+        let cases = vec![
+            ("", pairs(&[("abcdef", "/a.png")]), ""),
+            (".a{color:red}", pairs(&[("abcdef", "/a.png")]), ".a{color:red}"),
+            // Placeholder at byte 0 and as the final quoted token.
+            ("\"abcdef\" .a{x:1}\"abcdef\"", pairs(&[("abcdef", "/a.png")]), "\"/a.png\" .a{x:1}\"/a.png\""),
+            // Duplicate placeholder with two replacements: first wins, both occurrences replaced.
+            (
+                ".a{background:url(\"abcdef\")}.b{background:url(\"abcdef\")}",
+                pairs(&[("abcdef", "/first.png"), ("abcdef", "/second.png")]),
+                ".a{background:url(\"/first.png\")}.b{background:url(\"/first.png\")}",
+            ),
+            // Zero-occurrence placeholder and a same-length user string.
+            (
+                ".a{content:\"qqqqqq\";background:url(\"abcdef\")}",
+                pairs(&[("zzzzzz", "/z.png"), ("abcdef", "/a.png")]),
+                ".a{content:\"qqqqqq\";background:url(\"/a.png\")}",
+            ),
+            // Escaped quote inside a user string before a placeholder.
+            (
+                ".a{content:\"a\\\"b\";background:url(\"Ab-_09\")}",
+                pairs(&[("Ab-_09", "/x/y.svg")]),
+                ".a{content:\"a\\\"b\";background:url(\"/x/y.svg\")}",
+            ),
+            // Adjacent quoted tokens.
+            ("\"P1P1P1\"\"P2P2P2\"", pairs(&[("P1P1P1", "/1"), ("P2P2P2", "/2")]), "\"/1\"\"/2\""),
+            // Multibyte neighbours and a multibyte replacement.
+            (
+                ".a::before{content:\"héllo\";background:url(\"Ab-_09\")}",
+                pairs(&[("Ab-_09", "/ünï/y.svg")]),
+                ".a::before{content:\"héllo\";background:url(\"/ünï/y.svg\")}",
+            ),
+            // Empty replacement.
+            (".a{x:url(\"abcdef\")}", pairs(&[("abcdef", "")]), ".a{x:url(\"\")}"),
+        ];
+        for (code, pairs, want) in cases {
+            let got = substitute_placeholders(code.to_string(), &pairs);
+            assert_eq!(got, want, "input {code:?}");
+            assert_eq!(got, sequential_replace(code, &pairs), "diverges from the sequential loop on {code:?}");
+        }
+
+        // An unterminated `"PH` at the end of the input is left as written.
+        let code = ".a{background:url(\"abcdef\")}\"abcdef";
+        let got = substitute_placeholders(code.to_string(), &pairs(&[("abcdef", "/a.png")]));
+        assert_eq!(got, ".a{background:url(\"/a.png\")}\"abcdef");
+    }
+
+    #[test]
+    fn substitute_placeholders_matches_sequential_replace_on_printed_css() {
+        let src = "@import \"./x.css\";\n\
+                   @font-face { font-family: F; src: url(\"./f.woff2\") format(\"woff2\"); }\n\
+                   .a { background: url(./a.png); }\n\
+                   .b { background: url(\"./b.png\"); }\n\
+                   .c { background: url(./a.png); }\n\
+                   .d { background: image-set(\"./a.png\" 1x, \"./b.png\" 2x); }\n\
+                   .e { background: -webkit-image-set(url(\"./c.png\") 1x, url(\"./d.png\") 2x); }\n\
+                   .f::before { content: \"abcdef\"; }\n\
+                   .g::before { content: \"a\\\"b\"; }\n\
+                   .h { background: url(\"data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg'/%3e\"); }\n";
+        let stylesheet = StyleSheet::parse(src, ParserOptions { filename: "/src/x.css".into(), ..ParserOptions::default() }).unwrap();
+        let result = stylesheet
+            .to_css(PrinterOptions { analyze_dependencies: Some(DependencyOptions::default()), ..PrinterOptions::default() })
+            .unwrap();
+        let deps = result.dependencies.unwrap();
+        let pairs: Vec<(String, String)> = deps
+            .into_iter()
+            .map(|dep| match dep {
+                Dependency::Url(u) => (u.placeholder, format!("/src/{}", u.url)),
+                Dependency::Import(i) => (i.placeholder, format!("/src/{}", i.url)),
+            })
+            .collect();
+        assert!(pairs.len() >= 9, "one Dependency per printed url/import: {pairs:?}");
+        assert!(pairs.iter().all(|(p, _)| p.len() == 6), "{pairs:?}");
+        // One quoted placeholder per Dependency, plus the user string.
+        assert_eq!(quoted_six_char_tokens(&result.code).len(), pairs.len() + 1, "{}", result.code);
+
+        let got = substitute_placeholders(result.code.clone(), &pairs);
+        assert_eq!(got, sequential_replace(&result.code, &pairs));
+        // Only the same-width user string survives as a six-char quoted token.
+        assert_eq!(quoted_six_char_tokens(&got), vec!["abcdef"], "{got}");
+        assert!(got.contains("/src/./a.png") && got.contains("/src/./x.css") && got.contains("/src/./f.woff2"), "{got}");
+        assert!(got.contains("/src/data:image/svg+xml"), "the test maps every dependency, data: included: {got}");
+    }
+
+    #[test]
+    fn dev_compile_rewrites_a_url_used_twice_and_an_import() {
+        // Distinct declarations keep the two rules from being merged by minify.
+        let src = "@import \"./b.css\";\n\
+                   .a { background: url(./a.png); color: red; }\n\
+                   .b { background: url(\"./a.png\"); color: blue; }\n";
+        let out = compile_css_dev("/src/x.css", src, false, &CssResolve::default()).unwrap().css;
+        assert_eq!(out.matches("url(\"/src/a.png\")").count(), 2, "both occurrences rewritten: {out}");
+        assert!(out.contains("@import \"/src/b.css\""), "{out}");
+        assert!(quoted_six_char_tokens(&out).is_empty(), "a placeholder survived substitution: {out}");
     }
 
     #[test]
