@@ -5153,11 +5153,11 @@ fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
         }
     }
     let mut graph = state.graph.lock().unwrap();
-    let local_imports: Vec<PathBuf> = module
+    let local_imports: Vec<&Path> = module
         .imports
         .iter()
         .filter(|s| s.starts_with('/') && !s.starts_with("/@oj/") && !is_worker_query(s))
-        .map(|s| PathBuf::from(s.split('?').next().unwrap_or(s)))
+        .map(|s| Path::new(s.split('?').next().unwrap_or(s)))
         .collect();
     let pruned = graph.set_imports(Path::new(url), &local_imports);
     if !pruned.is_empty() {
