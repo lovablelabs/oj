@@ -14,6 +14,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+use axum::body::Bytes;
 
 use oj_compiler::pkgbundle::{emit_package_bundle, DepTarget, ModuleKind, PkgModule};
 use oj_resolver::OjResolver;
@@ -62,15 +65,15 @@ pub fn entry_from_url(path: &str) -> Option<PathBuf> {
 
 // In-memory cache of built bundles, keyed by the `/@oj-pkg/<hex>` URL. A
 // package's files don't change during a dev session, so no invalidation.
-fn cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<String>>> {
-    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<String>>>> =
-        std::sync::OnceLock::new();
-    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+// Bodies are `Bytes`, so a hit hands hyper a refcount bump rather than a copy.
+fn cache() -> &'static Mutex<HashMap<String, Bytes>> {
+    static C: OnceLock<Mutex<HashMap<String, Bytes>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
 }
-pub fn cached(url: &str) -> Option<std::sync::Arc<String>> {
+pub fn cached(url: &str) -> Option<Bytes> {
     cache().lock().unwrap().get(url).cloned()
 }
-pub fn store(url: &str, code: std::sync::Arc<String>) {
+pub fn store(url: &str, code: Bytes) {
     cache().lock().unwrap().insert(url.to_string(), code);
 }
 

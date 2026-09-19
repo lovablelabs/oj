@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use axum::body::Bytes;
 use rolldown::{BundlerBuilder, BundlerOptions, InputItem, OutputFormat};
 use rolldown_common::{Output, Platform, ResolvedExternal};
 use rolldown_plugin::__inner::SharedPluginable;
@@ -72,24 +73,24 @@ pub fn is_forced(entry: &Path) -> bool {
 
 // Cache of emitted chunks keyed by their served path (`/@oj-pkg/<filename>`), so
 // a package's sibling chunks are already present when the browser requests them.
-fn chunk_cache() -> &'static Mutex<std::collections::HashMap<String, Arc<String>>> {
-    static C: OnceLock<Mutex<std::collections::HashMap<String, Arc<String>>>> = OnceLock::new();
+fn chunk_cache() -> &'static Mutex<std::collections::HashMap<String, Bytes>> {
+    static C: OnceLock<Mutex<std::collections::HashMap<String, Bytes>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 /// A chunk previously emitted by a rolldown bundle, if any.
-pub fn cached_chunk(path: &str) -> Option<Arc<String>> {
+pub fn cached_chunk(path: &str) -> Option<Bytes> {
     chunk_cache().lock().unwrap().get(path).cloned()
 }
 
-fn store_chunk(path: String, code: Arc<String>) {
+fn store_chunk(path: String, code: Bytes) {
     chunk_cache().lock().unwrap().insert(path, code);
 }
 
 /// Bundle one package (rooted at `entry`) with rolldown and cache every emitted
 /// chunk under its served path. Returns the entry chunk's code, or `None` if the
 /// bundle failed (caller then keeps the plain per-file fallback).
-pub async fn build(entry: &Path, root: &Path, resolver: Arc<OjResolver>) -> Option<Arc<String>> {
+pub async fn build(entry: &Path, root: &Path, resolver: Arc<OjResolver>) -> Option<Bytes> {
     let hex = hex_encode(&entry.to_string_lossy());
     let pkg_root = package_root(entry);
 
@@ -137,21 +138,21 @@ pub async fn build(entry: &Path, root: &Path, resolver: Arc<OjResolver>) -> Opti
     let output = outcome.ok()?;
 
     let prefix = crate::pkg_bundle::PKG_PREFIX;
-    let mut entry_code: Option<Arc<String>> = None;
+    let mut entry_code: Option<Bytes> = None;
     for asset in &output.assets {
         if let Output::Chunk(c) = asset {
-            let code = Arc::new(c.code.clone());
+            let code = Bytes::from(c.code.clone());
             let served = format!("{prefix}{}", c.filename);
-            store_chunk(served, Arc::clone(&code));
+            store_chunk(served, code.clone());
             if c.is_entry {
-                entry_code = Some(Arc::clone(&code));
+                entry_code = Some(code);
             }
         }
     }
     let entry_code = entry_code?;
     // The app requests the entry at `/@oj-pkg/<hex>` (no extension); serve the
     // entry chunk's code there too.
-    store_chunk(format!("{prefix}{hex}"), Arc::clone(&entry_code));
+    store_chunk(format!("{prefix}{hex}"), entry_code.clone());
     Some(entry_code)
 }
 

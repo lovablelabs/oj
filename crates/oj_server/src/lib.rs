@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{ws::Message, FromRequestParts, Query, State, WebSocketUpgrade},
     http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Redirect, Response},
@@ -367,7 +367,9 @@ struct ServerState {
     resolve_failed: Mutex<std::collections::HashSet<String>>,
     /// `assets/client.js` with the `server.hmr` options and the socket token
     /// filled in (Vite's clientInjections), rendered once at startup.
-    client_js: String,
+    client_js: Bytes,
+    /// Validator for `/@oj/client.js` (fixed per process).
+    client_js_etag: String,
     /// Per module url, the `import.meta.glob` patterns it expands (absolute):
     /// a file created or deleted under one changes the expansion, so the module
     /// is recompiled and hot updated (Vite's importMetaGlob hotUpdate).
@@ -1295,7 +1297,8 @@ impl DevServer {
             base: config.base.clone().filter(|b| b != "/"),
             buffered_error: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
-            client_js,
+            client_js_etag: format!("\"{}\"", &blake3::hash(client_js.as_bytes()).to_hex()[..16]),
+            client_js: Bytes::from(client_js),
             glob_importers: Mutex::new(HashMap::new()),
             app_type,
             watch_ignored,
@@ -1576,8 +1579,42 @@ fn js(body: impl IntoResponse) -> Response {
     ([(header::CONTENT_TYPE, "text/javascript")], body).into_response()
 }
 
-async fn serve_client_js(State(state): State<Arc<ServerState>>) -> Response {
-    js(state.client_js.clone())
+async fn serve_client_js(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    // Browsers refetch /@oj/client.js on every reload; the body is fixed for
+    // the server's lifetime, so a matching validator saves the transfer.
+    cached_js_response(&headers, state.client_js_etag.clone(), state.client_js.clone())
+}
+
+/// A cached, immutable-for-this-process JS body: 304 on a matching validator,
+/// otherwise the bytes verbatim (the header tuple overwrites the
+/// `application/octet-stream` that `Bytes` would set).
+fn cached_js_response(headers: &HeaderMap, etag: String, body: Bytes) -> Response {
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        == Some(etag.as_str())
+    {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [
+                (header::ETAG, etag),
+                (header::CACHE_CONTROL, "no-cache".to_string()),
+            ],
+        )
+            .into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript".to_string()),
+            (header::CACHE_CONTROL, "no-cache".to_string()),
+            (header::ETAG, etag),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// The path the HMR socket is served at: `server.hmr.path` (made absolute) or
@@ -6849,7 +6886,7 @@ async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -
 // entry's normal per-file compiled output, served at this same URL so the
 // importer's interop (which reads __cjs_exports) still resolves.
 async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool) -> Response {
-    let js = |code: String| {
+    let js = |code: Bytes| {
         (
             [
                 (header::CONTENT_TYPE, "text/javascript"),
@@ -6863,10 +6900,10 @@ async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool)
     // the entry re-served). These paths aren't decodable entry hexes, so they
     // must be checked before entry_from_url.
     if let Some(code) = pkg_rolldown::cached_chunk(path) {
-        return js((*code).clone());
+        return js(code);
     }
     if let Some(code) = pkg_bundle::cached(path) {
-        return js((*code).clone());
+        return js(code);
     }
     let Some(entry) = pkg_bundle::entry_from_url(path) else {
         return (StatusCode::NOT_FOUND, "oj: bad pkg bundle path").into_response();
@@ -6878,7 +6915,7 @@ async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool)
     // Force those straight through rolldown, bypassing the concatenator.
     if pkg_rolldown::enabled() && pkg_rolldown::is_forced(&entry) {
         if let Some(code) = pkg_rolldown::build(&entry, &state.root, Arc::clone(&resolver)).await {
-            return js((*code).clone());
+            return js(code);
         }
     }
     let entry_owned = entry.clone();
@@ -6889,9 +6926,9 @@ async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool)
     .await;
     match outcome {
         Ok(pkg_bundle::BundleOutcome::Bundle(code)) => {
-            let code = Arc::new(code);
-            pkg_bundle::store(path, Arc::clone(&code));
-            js((*code).clone())
+            let code = Bytes::from(code);
+            pkg_bundle::store(path, code.clone());
+            js(code)
         }
         Ok(pkg_bundle::BundleOutcome::Fallback) => {
             // The concatenator bailed. Before serving per-file, try bundling this
@@ -6900,7 +6937,7 @@ async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool)
                 if let Some(code) =
                     pkg_rolldown::build(&entry, &state.root, Arc::clone(&resolver)).await
                 {
-                    return js((*code).clone());
+                    return js(code);
                 }
                 if std::env::var("OJ_PB_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0") {
                     eprintln!("oj[pb] rolldown fallback failed, serving per-file: {path}");
@@ -6908,7 +6945,7 @@ async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool)
             }
             let url = url_of(&state.root, &entry);
             match ensure_module(state, &entry, &url).await {
-                Ok((_, module)) => js(module.code.clone()),
+                Ok((_, module)) => js(module.code.clone().into()),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {e}")).into_response(),
             }
         }
@@ -8247,6 +8284,40 @@ async fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The cached body reaches the wire verbatim and the header tuple
+    // *overwrites* the `application/octet-stream` that `Bytes` sets (insert,
+    // not append), so content-type stays a single text/javascript.
+    #[tokio::test]
+    async fn cached_js_response_serves_bytes_verbatim_with_text_javascript() {
+        let body = Bytes::from("console.log(1)".to_string());
+        let resp = cached_js_response(&HeaderMap::new(), "\"e\"".to_string(), body.clone());
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "text/javascript");
+        assert_eq!(
+            resp.headers().get_all(header::CONTENT_TYPE).iter().count(),
+            1
+        );
+        assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-cache");
+        assert_eq!(resp.headers()[header::ETAG], "\"e\"");
+        let got = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(got, body);
+    }
+
+    #[tokio::test]
+    async fn cached_js_response_304_on_matching_etag_has_empty_body() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, "\"e\"".parse().unwrap());
+        let resp = cached_js_response(&headers, "\"e\"".to_string(), Bytes::from_static(b"x"));
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers()[header::ETAG], "\"e\"");
+        let got = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(got.is_empty());
+    }
 
     // The watcher's pre-init fast-skip toward the lazy SSR host: recording a
     // skipped event is instant (the watcher path makes NO RPC toward a
