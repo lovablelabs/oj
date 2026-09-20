@@ -191,13 +191,22 @@ enum Command {
 /// reports into the app's `.oj-cache` — until the job ends, minutes later.
 /// Same net as the plugin host's ppid watchdog: poll for a reparent (the ppid
 /// CHANGING, not `== 1` — in a container the live parent can BE pid 1) and
-/// exit. The job's output is worthless with the parent gone. A parent that
-/// dies in the instants BEFORE this snapshot leaves it pointing at the
-/// subreaper and the net never fires — that one job runs out as every job
-/// did before the reaper, a bounded miss.
+/// exit. The job's output is worthless with the parent gone.
+///
+/// The spawner names itself in [`PARENT_PID_ENV`] so the comparison does not
+/// depend on a snapshot taken here: a parent that dies while this process is
+/// still loading (a debug binary on a slow CI disk takes over a second to
+/// reach `main`) has already reparented it, and a snapshot would point at
+/// the subreaper and never change — the child then ran its whole job, the
+/// recurring ENOTEMPTY in the e2e teardowns. With the declared pid the first
+/// poll catches that case before an engine boots or a code cache is written.
+/// Without the variable (a hand-run child) the snapshot is the fallback.
 #[cfg(unix)]
 fn reap_on_parent_death() {
-    let parent = unsafe { libc::getppid() };
+    let declared = std::env::var(PARENT_PID_ENV)
+        .ok()
+        .and_then(|v| v.parse::<libc::pid_t>().ok());
+    let parent = declared.unwrap_or_else(|| unsafe { libc::getppid() });
     std::thread::spawn(move || loop {
         if unsafe { libc::getppid() } != parent {
             std::process::exit(0);
@@ -205,6 +214,12 @@ fn reap_on_parent_death() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
 }
+
+/// Set by every spawner of a one-shot child (`oj_server::plugins`,
+/// `oj_server::preseed`, `start_dev`) to its own pid; read by
+/// `reap_on_parent_death`.
+#[cfg(unix)]
+const PARENT_PID_ENV: &str = oj_server::plugins::PARENT_PID_ENV;
 #[cfg(not(unix))]
 fn reap_on_parent_death() {}
 

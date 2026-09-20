@@ -42,7 +42,9 @@ function scaffold(publicDirName, config) {
 }
 
 async function withServer(app, port, fn) {
-  const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+  // Own process group (setsid), so the teardown can SIGKILL the server AND
+  // the one-shot children it spawned at boot (the dep optimizer engine job).
+  const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
   let log = "";
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
@@ -60,11 +62,19 @@ async function withServer(app, port, fn) {
     if (!up) throw new Error(`server did not start on ${port}:\n${log}`);
     await fn(`http://localhost:${port}`);
   } finally {
-    // SIGKILL like the run.mjs harness (no graceful shutdown = no engine
-    // code-cache flush writers), and WAIT for the exit so the caller's
-    // teardown rm never races the dying process (the recurring ENOTEMPTY);
-    // the rm retries absorb the orphan children's own ppid-reaper tail.
-    srv.kill("SIGKILL");
+    // SIGKILL the whole group like the run.mjs harness kills the server (no
+    // graceful shutdown = no engine code-cache flush writers), and WAIT for
+    // the exit so the caller's teardown rm never races the dying process.
+    // The group kill covers the boot-time engine-job child too: killed only
+    // through its parent, a child still loading the binary missed the ppid
+    // reaper and ran its whole job, writing code caches into the app dir the
+    // rm was deleting (the recurring ENOTEMPTY); the rm retries stay as a
+    // margin for any other straggler.
+    try {
+      process.kill(-srv.pid, "SIGKILL");
+    } catch {
+      srv.kill("SIGKILL");
+    }
     await new Promise((resolve) => srv.once("exit", resolve));
   }
 }
