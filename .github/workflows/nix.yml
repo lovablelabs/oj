@@ -43,3 +43,8 @@ jobs:
         run: nix build .#oj -L
       - name: smoke
         run: ./result/bin/oj --version
+      # The vendored rolldown must ride the binary's runtime closure (the
+      # embedded OJ_VENDORED_ROLLDOWN store path), or installed oj builds
+      # would fail vite-7 Start apps that a `nix build` checkout serves.
+      - name: vendored rolldown is a runtime dependency
+        run: nix-store --query --requisites ./result | grep -q oj-rolldown-vendor

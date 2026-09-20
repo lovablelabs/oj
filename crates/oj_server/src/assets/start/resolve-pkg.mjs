@@ -58,7 +58,22 @@ export function makeResolver(root) {
       }
       frontier = next;
     }
-    throw new Error(`oj: cannot resolve '${spec}' from ${root}`);
+    // Old TanStack apps (vite <= 7) carry no rolldown; fall back to the copy
+    // vendored next to the oj binary (OJ_VENDORED_ROLLDOWN, set by oj from
+    // its nix build or the environment). The app graph above always wins, so
+    // an app that ships its own rolldown keeps it.
+    const vendored = process.env.OJ_VENDORED_ROLLDOWN;
+    if (vendored && (spec === "rolldown" || spec.startsWith("@rolldown/"))) {
+      try {
+        return createRequire(pathToFileURL(join(vendored, "package.json")).href).resolve(spec);
+      } catch {}
+    }
+    throw new Error(
+      `oj: cannot resolve '${spec}' from ${root}` +
+        (spec === "rolldown"
+          ? "; this app's vite predates rolldown and this oj build vendors none — install 'rolldown' in the app or use an oj built with OJ_VENDORED_ROLLDOWN"
+          : ""),
+    );
   };
 }
 

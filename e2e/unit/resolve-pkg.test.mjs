@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -279,5 +279,53 @@ test("ssrExternalRule keeps explicit ssr.external deps out of the Start server b
     assert.equal(all("not-installed", undefined, false), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Old TanStack apps (vite <= 7) have no rolldown anywhere in their tree; the
+// resolver falls back to the copy vendored next to the oj binary
+// (OJ_VENDORED_ROLLDOWN) instead of failing the Start bundles.
+function fakePkg(dir, name) {
+  const root = join(dir, "node_modules", name);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name, version: "0.0.1", main: "index.cjs" }));
+  writeFileSync(join(root, "index.cjs"), `module.exports = { from: ${JSON.stringify(dir)} };`);
+  return root;
+}
+
+test("rolldown falls back to the vendored copy only when the app has none", () => {
+  const app = mkdtempSync(join(tmpdir(), "oj-vendor-app-"));
+  const vendor = mkdtempSync(join(tmpdir(), "oj-vendor-dir-"));
+  writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
+  fakePkg(vendor, "rolldown");
+  const prior = process.env.OJ_VENDORED_ROLLDOWN;
+  try {
+    process.env.OJ_VENDORED_ROLLDOWN = vendor;
+    const resolved = makeResolver(app)("rolldown");
+    // realpath both sides: macOS tmpdir is a /private symlink.
+    assert.ok(realpathSync(resolved).startsWith(realpathSync(vendor)), `vendored copy expected, got ${resolved}`);
+    // The app's own rolldown wins over the vendor (parity with byonm).
+    const own = fakePkg(app, "rolldown");
+    assert.ok(realpathSync(makeResolver(app)("rolldown")).startsWith(realpathSync(own)));
+    // The fallback covers rolldown only, never arbitrary packages.
+    assert.throws(() => makeResolver(app)("left-pad"), /cannot resolve 'left-pad'/);
+  } finally {
+    if (prior === undefined) delete process.env.OJ_VENDORED_ROLLDOWN;
+    else process.env.OJ_VENDORED_ROLLDOWN = prior;
+    rmSync(app, { recursive: true, force: true });
+    rmSync(vendor, { recursive: true, force: true });
+  }
+});
+
+test("a missing rolldown without a vendored copy names the fallback in its error", () => {
+  const app = mkdtempSync(join(tmpdir(), "oj-novendor-app-"));
+  writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
+  const prior = process.env.OJ_VENDORED_ROLLDOWN;
+  try {
+    delete process.env.OJ_VENDORED_ROLLDOWN;
+    assert.throws(() => makeResolver(app)("rolldown"), /OJ_VENDORED_ROLLDOWN/);
+  } finally {
+    if (prior !== undefined) process.env.OJ_VENDORED_ROLLDOWN = prior;
+    rmSync(app, { recursive: true, force: true });
   }
 });

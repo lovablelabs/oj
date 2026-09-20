@@ -5,6 +5,11 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- TanStack Start apps on a vite that predates rolldown (vite <= 7 — no rolldown anywhere in their dependency tree) failed every `oj build` and dev client bundle with "cannot resolve 'rolldown'", on every oj version. The nix package now vendors the pinned rolldown (~20MB per platform, embedded as `OJ_VENDORED_ROLLDOWN` and part of the binary's runtime closure), and the Start bundles fall back to it when — and only when — the app's own tree resolves none; the app's rolldown always wins. Non-nix builds keep the error, which now names the fallback.
+
 ## [0.2.7] - 2026-09-25
 
 ### Removed
