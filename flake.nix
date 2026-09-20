@@ -75,12 +75,13 @@
             hash = pin.hash;
           }} -C "$out"
         '';
-      # Old TanStack Start apps (vite <= 7) carry no rolldown in their
-      # dependency tree, and oj's Start bundles need one (resolve-pkg.mjs).
-      # Vendor the pinned rolldown next to the binary as a resolver FALLBACK —
-      # the app's own rolldown always wins. The store path is embedded at
-      # compile time (OJ_VENDORED_ROLLDOWN -> option_env!), which also makes
-      # it a runtime dependency of the binary's closure.
+      # oj's Start bundles run on rolldown, and they are oj's own code: they
+      # get the version oj is written and tested against, vendored next to
+      # the binary, rather than whatever the app's vite pins (a vite <= 7 app
+      # pins none at all). The store path is embedded at compile time
+      # (OJ_VENDORED_ROLLDOWN -> option_env!), which also makes it a runtime
+      # dependency of the binary's closure; the app's own rolldown remains
+      # the fallback for oj builds that vendor nothing (resolve-pkg.mjs).
       # On a bump: update the version and re-prefetch the hashes
       # (nix store prefetch-file <registry tarball url>).
       rolldownVersion = "1.2.1";

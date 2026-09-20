@@ -923,11 +923,11 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
     if let Some(entry) = configured_start_server_entry(&config, root) {
         vars.push(("OJ_START_SERVER_ENTRY".into(), entry.to_string_lossy().into_owned()));
     }
-    // Old TanStack apps (vite <= 7) ship no rolldown, which the Start bundles
-    // import from the app's own tree; point them at the copy vendored next to
-    // the binary as a fallback (nix embeds it at build time; the env var
-    // overrides for tests and non-nix builds). resolve-pkg.mjs prefers the
-    // app's own rolldown whenever one resolves.
+    // The Start bundles are oj's own code and run on the rolldown vendored
+    // next to the binary (nix embeds it at build time; the env var overrides
+    // for tests and non-nix builds). resolve-pkg.mjs prefers it over whatever
+    // the app's vite pins — a vite <= 7 app pins none at all — and falls back
+    // to the app's copy when no vendor exists.
     if let Some(vendored) = std::env::var("OJ_VENDORED_ROLLDOWN")
         .ok()
         .filter(|v| !v.is_empty())

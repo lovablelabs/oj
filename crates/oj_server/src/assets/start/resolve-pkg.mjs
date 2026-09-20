@@ -34,6 +34,18 @@ export function makeResolver(root) {
   const appRequire = createRequire(pathToFileURL(root + "/package.json").href);
   const directDeps = depsOf(root + "/package.json");
   return function resolvePkg(spec, preferred = []) {
+    // rolldown here is oj's own bundling tool, not the app's: these scripts
+    // are written and tested against the version vendored next to the binary
+    // (OJ_VENDORED_ROLLDOWN, from oj's nix build), so that copy wins whenever
+    // it exists — the app's pin belongs to its vite, and old app pins carry
+    // bindings that cannot survive re-registration (napi-rs < 3.10). The app
+    // graph below remains the fallback for oj builds that vendor nothing.
+    const vendored = process.env.OJ_VENDORED_ROLLDOWN;
+    if (vendored && (spec === "rolldown" || spec.startsWith("@rolldown/"))) {
+      try {
+        return createRequire(pathToFileURL(join(vendored, "package.json")).href).resolve(spec);
+      } catch {}
+    }
     try { return appRequire.resolve(spec); } catch {}
     // A transitive dependency is not resolvable from the app root under a
     // strict (pnpm) layout, so walk the dependency graph breadth-first,
@@ -57,16 +69,6 @@ export function makeResolver(root) {
         }
       }
       frontier = next;
-    }
-    // Old TanStack apps (vite <= 7) carry no rolldown; fall back to the copy
-    // vendored next to the oj binary (OJ_VENDORED_ROLLDOWN, set by oj from
-    // its nix build or the environment). The app graph above always wins, so
-    // an app that ships its own rolldown keeps it.
-    const vendored = process.env.OJ_VENDORED_ROLLDOWN;
-    if (vendored && (spec === "rolldown" || spec.startsWith("@rolldown/"))) {
-      try {
-        return createRequire(pathToFileURL(join(vendored, "package.json")).href).resolve(spec);
-      } catch {}
     }
     throw new Error(
       `oj: cannot resolve '${spec}' from ${root}` +

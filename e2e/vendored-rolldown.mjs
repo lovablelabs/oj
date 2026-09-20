@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-// Old TanStack Start apps (vite <= 7, the Lovable corpus's cluster-2 class:
-// ~12% of TSS projects) carry no rolldown anywhere in their tree, and oj's
-// Start bundles import it from the app — every build and client bundle died
-// with "cannot resolve 'rolldown'" on every oj version. Guards the fallback:
-// with OJ_VENDORED_ROLLDOWN pointing at a dir whose node_modules holds the
-// pinned rolldown (what the nix build embeds), `oj build` completes; without
-// it, the error names the fallback. Run with a built target/debug/oj;
-// installs a vite-7 variant of the start-app fixture (skips when offline or
-// when the fixture is not installed).
+// A TanStack Start app on a vite that predates rolldown (vite <= 7) has no
+// rolldown anywhere in its tree, and oj's Start bundles need one. With
+// OJ_VENDORED_ROLLDOWN pointing at a dir whose node_modules holds the pinned
+// rolldown (what the nix build embeds), `oj build` completes; without a
+// usable vendor, the error names the fallback. Run with a built
+// target/debug/oj; installs a vite-7 variant of the start-app fixture (skips
+// when offline).
 import { execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -33,8 +31,7 @@ fs.cpSync(fixture, app, {
 });
 const pkgPath = path.join(app, "package.json");
 const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-// The cluster-2 shape: a vite that predates rolldown, with the plugin
-// generation that matches it.
+// A vite that predates rolldown, with the plugin generation that matches it.
 pkg.devDependencies.vite = "~7.3.0";
 pkg.devDependencies["@vitejs/plugin-react"] = "^5";
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));

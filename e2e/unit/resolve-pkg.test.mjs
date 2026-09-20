@@ -282,9 +282,10 @@ test("ssrExternalRule keeps explicit ssr.external deps out of the Start server b
   }
 });
 
-// Old TanStack apps (vite <= 7) have no rolldown anywhere in their tree; the
-// resolver falls back to the copy vendored next to the oj binary
-// (OJ_VENDORED_ROLLDOWN) instead of failing the Start bundles.
+// The Start bundles are oj's own code: rolldown resolves to the copy
+// vendored next to the oj binary (OJ_VENDORED_ROLLDOWN) ahead of whatever
+// the app pins — a vite <= 7 app pins none at all — and the app's copy is
+// the fallback when no vendor exists.
 function fakePkg(dir, name) {
   const root = join(dir, "node_modules", name);
   mkdirSync(root, { recursive: true });
@@ -293,22 +294,23 @@ function fakePkg(dir, name) {
   return root;
 }
 
-test("rolldown falls back to the vendored copy only when the app has none", () => {
+test("rolldown prefers the vendored copy and falls back to the app's own", () => {
   const app = mkdtempSync(join(tmpdir(), "oj-vendor-app-"));
   const vendor = mkdtempSync(join(tmpdir(), "oj-vendor-dir-"));
   writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
   fakePkg(vendor, "rolldown");
+  const own = fakePkg(app, "rolldown");
   const prior = process.env.OJ_VENDORED_ROLLDOWN;
   try {
     process.env.OJ_VENDORED_ROLLDOWN = vendor;
     const resolved = makeResolver(app)("rolldown");
     // realpath both sides: macOS tmpdir is a /private symlink.
     assert.ok(realpathSync(resolved).startsWith(realpathSync(vendor)), `vendored copy expected, got ${resolved}`);
-    // The app's own rolldown wins over the vendor (parity with byonm).
-    const own = fakePkg(app, "rolldown");
-    assert.ok(realpathSync(makeResolver(app)("rolldown")).startsWith(realpathSync(own)));
-    // The fallback covers rolldown only, never arbitrary packages.
+    // The vendor covers rolldown only, never arbitrary packages.
     assert.throws(() => makeResolver(app)("left-pad"), /cannot resolve 'left-pad'/);
+    // Without a vendor, the app's own copy still serves.
+    delete process.env.OJ_VENDORED_ROLLDOWN;
+    assert.ok(realpathSync(makeResolver(app)("rolldown")).startsWith(realpathSync(own)));
   } finally {
     if (prior === undefined) delete process.env.OJ_VENDORED_ROLLDOWN;
     else process.env.OJ_VENDORED_ROLLDOWN = prior;
