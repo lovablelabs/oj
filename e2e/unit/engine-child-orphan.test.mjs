@@ -73,7 +73,9 @@ test("an orphaned start-script child reaps itself when its parent dies", async (
   // is SIGKILLed.
   const parentScript = `
     const { spawn } = require("node:child_process");
-    const c = spawn(process.argv[1], ["start-script", process.argv[2], "--root", process.argv[3]], { stdio: ["pipe", "ignore", "ignore"] });
+    // Every real spawner declares its pid (OJ_PARENT_PID) so a child that is
+    // still loading when the parent dies still catches the reparent.
+    const c = spawn(process.argv[1], ["start-script", process.argv[2], "--root", process.argv[3]], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, OJ_PARENT_PID: String(process.pid) } });
     c.stdin.end(JSON.stringify([]));
     console.log("CHILD=" + c.pid);
     setInterval(() => {}, 60_000);
@@ -112,6 +114,39 @@ test("an orphaned start-script child reaps itself when its parent dies", async (
     assert.ok(gone, "the orphaned child exits on the reparent instead of running out its job");
   } finally {
     parent.kill("SIGKILL");
+    fx.cleanup();
+  }
+});
+
+// The reaper compares the live ppid against the pid the SPAWNER declared in
+// OJ_PARENT_PID, not against a snapshot taken once the binary is up: a parent
+// that died while the child was still loading has already reparented it, and
+// a snapshot would never change. A declared pid that is not the real parent
+// models exactly that state; the child must exit on the first poll, before it
+// boots an engine or writes a code cache.
+test("an engine-job child whose declared parent is already gone exits before running its job", async () => {
+  const fx = tmpProject({ prefix: "oj-child-declared-parent-" });
+  fx.write("package.json", JSON.stringify({ name: "declared-fx", version: "1.0.0" }));
+  fx.write("forever.mjs", "export async function run() { setInterval(() => {}, 60_000); await new Promise(() => {}); }\n");
+  const result = path.join(fx.root, "result.json");
+  // pid_t max: never a live process, so never this child's real parent.
+  const child = spawn(
+    oj,
+    ["engine-job", path.join(fx.root, "forever.mjs"), "--root", fx.root, "--export", "run", "--timeout-secs", "60", "--result", result],
+    { cwd: fx.root, stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, OJ_PARENT_PID: "2147483647" } },
+  );
+  child.stdin.end("{}");
+  try {
+    const exited = await Promise.race([
+      new Promise((resolve) => child.once("exit", (code) => resolve({ code }))),
+      sleep(5_000).then(() => null),
+    ]);
+    if (!exited) child.kill("SIGKILL");
+    assert.ok(exited, "the child exits on its first ppid poll instead of running the forever job");
+    assert.equal(exited.code, 0);
+    assert.ok(!fs.existsSync(result), "no result is written for a parent that is gone");
+    assert.ok(!fs.existsSync(path.join(fx.root, ".oj-cache", "v1", "code-cache")), "no code cache is written before the reaper fires");
+  } finally {
     fx.cleanup();
   }
 });

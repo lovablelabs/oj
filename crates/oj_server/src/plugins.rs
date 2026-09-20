@@ -199,6 +199,11 @@ pub fn engine_jobs_via_subprocess(exe: PathBuf) {
     let _ = ENGINE_JOB_EXE.set(exe);
 }
 
+/// Env var naming the spawner's pid for a one-shot child's parent-death
+/// reaper (`oj engine-job` / `oj start-script`); see `reap_on_parent_death`
+/// in the `oj` binary. Every spawner sets it.
+pub const PARENT_PID_ENV: &str = "OJ_PARENT_PID";
+
 /// Runs one export of an oj-owned module on a short-lived JS engine and
 /// returns its JSON result: in a child `oj engine-job` process when the
 /// binary registered itself via [`engine_jobs_via_subprocess`] (see
@@ -331,6 +336,7 @@ fn run_engine_job_subprocess(
         .arg(timeout.as_secs().max(1).to_string())
         .arg("--result")
         .arg(&result_file)
+        .env(PARENT_PID_ENV, std::process::id().to_string())
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| boot(format!("could not run the engine job child (cwd {}): {e}", job_cwd.display())))?;

@@ -210,6 +210,10 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
         .arg("--root")
         .arg(root)
         .current_dir(root)
+        .env(
+            crate::plugins::PARENT_PID_ENV,
+            std::process::id().to_string(),
+        )
         .stdin(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
