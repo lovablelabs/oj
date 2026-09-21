@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- oj raises its soft file-descriptor limit at startup exactly as Node does (src/node.cc PlatformInit): the embedded engine hosts Node tooling written against that raised limit, and macOS's default soft cap of 256 made big-app boots fail with EMFILE storms that never happened under Vite.
+
 ## [0.2.3] - 2026-09-21
 
 ### Fixed
