@@ -5516,8 +5516,11 @@ pub fn is_importable_asset_ext(ext: &str) -> bool {
 
 // Node core modules. When one reaches the browser graph (usually via config-time
 // tooling a dep drags along), Vite serves a browser-externalized stub rather than
-// 404ing the whole module chain; oj does the same so the app still mounts.
-pub(crate) fn is_node_builtin(spec: &str) -> bool {
+// 404ing the whole module chain; oj does the same so the app still mounts. Pub:
+// the Start module host also consults it, because on the SSR side a builtin
+// outranks an installed polyfill package of the same name (Vite's fetchModule
+// checks isBuiltin before resolving), exactly as Node itself behaves.
+pub fn is_node_builtin(spec: &str) -> bool {
     // Vite's isNodeBuiltin: anything under the `node:` scheme is a builtin (this
     // covers node:sqlite, node:sea, node:test and whatever Node adds next); the
     // list below is `module.builtinModules` for the bare (scheme-less) names.

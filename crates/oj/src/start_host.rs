@@ -782,8 +782,32 @@ impl StartHost {
         let is_plugin_shaped = spec.starts_with("virtual:") || spec.starts_with('\0');
 
         // node_modules internals resolve with plain Node semantics, as they
-        // did under the node runner (only aliases and plugin ids cross).
+        // did under the node runner (only aliases and plugin ids cross) —
+        // except bare specifiers. This importer was entered through the entry
+        // the Vite-style resolver picked (mainFields: often an ESM `module`
+        // entry plain Node would never choose), so its bare imports must
+        // follow the same rule, or an ESM dependency file gets strict-linked
+        // against a sibling dependency's CJS `main` — a UMD wrapper there
+        // defeats the CJS named-export lexer (drei's ESM
+        // `import { getGPUTier } from "detect-gpu"` resolved to the UMD and
+        // died at link). Relative paths, `#` imports, and Node builtins keep
+        // Node semantics — a builtin outranks an installed polyfill package of
+        // the same name here, as under Node and Vite SSR — and an unresolvable
+        // bare name falls back to them too.
         if importer_id.contains("/node_modules/") && !is_plugin_shaped {
+            let bare = !spec.starts_with('.')
+                && !spec.starts_with('/')
+                && !spec.starts_with('#')
+                && !oj_server::is_node_builtin(spec);
+            if bare {
+                if let Ok(StartResolution::Dependency(p)) =
+                    self.bridge.resolve_start(&importer_id, spec).await
+                {
+                    if let Ok(u) = url::Url::from_file_path(&p) {
+                        return Ok(Some(HostResolved::External(u.to_string())));
+                    }
+                }
+            }
             return Ok(Some(HostResolved::External(spec.to_string())));
         }
 
