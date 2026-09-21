@@ -17,21 +17,21 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/lovablelabs/oj"
 
 [workspace.dependencies]
-oj_compiler = { version = "0.2.3", path = "crates/oj_compiler" }
-oj_resolver = { version = "0.2.3", path = "crates/oj_resolver" }
-oj_graph = { version = "0.2.3", path = "crates/oj_graph" }
-oj_cache = { version = "0.2.3", path = "crates/oj_cache" }
-oj_css = { version = "0.2.3", path = "crates/oj_css" }
-oj_env = { version = "0.2.3", path = "crates/oj_env" }
-oj_config = { version = "0.2.3", path = "crates/oj_config" }
-oj_server = { version = "0.2.3", path = "crates/oj_server" }
-oj_js = { version = "0.2.3", path = "crates/oj_js" }
+oj_compiler = { version = "0.2.4", path = "crates/oj_compiler" }
+oj_resolver = { version = "0.2.4", path = "crates/oj_resolver" }
+oj_graph = { version = "0.2.4", path = "crates/oj_graph" }
+oj_cache = { version = "0.2.4", path = "crates/oj_cache" }
+oj_css = { version = "0.2.4", path = "crates/oj_css" }
+oj_env = { version = "0.2.4", path = "crates/oj_env" }
+oj_config = { version = "0.2.4", path = "crates/oj_config" }
+oj_server = { version = "0.2.4", path = "crates/oj_server" }
+oj_js = { version = "0.2.4", path = "crates/oj_js" }
 
 # oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
 # to crates.io under these names), carrying oj's napi finalizer-registry patch:
@@ -41,8 +41,8 @@ oj_js = { version = "0.2.3", path = "crates/oj_js" }
 # children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
 # dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
 # published oj resolves them by version from crates.io.
-oj_deno_napi = { package = "oj_deno_napi", version = "0.2.3", path = "crates/oj_deno_napi" }
-oj_deno_runtime = { package = "oj_deno_runtime", version = "0.2.3", path = "crates/oj_deno_runtime" }
+oj_deno_napi = { package = "oj_deno_napi", version = "0.2.4", path = "crates/oj_deno_napi" }
+oj_deno_runtime = { package = "oj_deno_runtime", version = "0.2.4", path = "crates/oj_deno_runtime" }
 
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"
