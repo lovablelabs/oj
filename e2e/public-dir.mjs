@@ -41,20 +41,30 @@ function scaffold(publicDirName, config) {
   return app;
 }
 
-// Teardown rm that, when it still loses to a writer after its retries, names
-// the writer before rethrowing: surviving oj processes and the leftover
-// files with their mtimes — the evidence a CI-only ENOTEMPTY needs.
+// Teardown rm, start.mjs-style: retry the WHOLE rmSync so every attempt
+// re-traverses the tree. rmSync's own maxRetries only re-runs the failing
+// rmdir on already-visited nodes, so a dying child's code-cache flush burst
+// landing behind the traversal frontier defeats it no matter the count
+// (proven by CI diagnostics: zero surviving processes, a complete quiescent
+// burst on disk, and maxRetries still throwing). When even fresh traversals
+// lose, name the writer before rethrowing.
 function rmApp(app) {
-  try {
-    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  } catch (e) {
+  for (let i = 0; ; i++) {
     try {
-      console.error(`rm ${app} failed (${e.code}); surviving oj processes:`);
-      console.error(execSync(`ps -ef | grep -E "[o]j (dev|engine-job|start-script)" || true`).toString());
-      console.error("leftovers:");
-      console.error(execSync(`ls -laR ${app} 2>/dev/null | tail -40`).toString());
-    } catch {}
-    throw e;
+      return fs.rmSync(app, { recursive: true, force: true });
+    } catch (e) {
+      if (i < 20 && (e.code === "ENOTEMPTY" || e.code === "EBUSY" || e.code === "EPERM")) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+        continue;
+      }
+      try {
+        console.error(`rm ${app} failed (${e.code}); surviving oj processes:`);
+        console.error(execSync(`ps -ef | grep -E "[o]j (dev|engine-job|start-script)" || true`).toString());
+        console.error("leftovers:");
+        console.error(execSync(`ls -laR ${app} 2>/dev/null | tail -40`).toString());
+      } catch {}
+      throw e;
+    }
   }
 }
 
