@@ -218,7 +218,52 @@ fn reap_on_parent_death() {
 #[cfg(not(unix))]
 fn reap_on_parent_death() {}
 
+/// Raise the soft fd limit to the hard limit at startup, mirroring what the
+/// process embedding this engine always had: Node bumps it in
+/// `PlatformInit` (src/node.cc) and Deno's CLI in `cli/util/unix.rs`, and
+/// the Node tooling the engine hosts is written against that raised limit —
+/// TanStack's route generator alone opens hundreds of files concurrently,
+/// while macOS hands a plain binary a soft cap of 256, so big-app boots
+/// died in EMFILE storms Vite users never saw. Deno's shape exactly: an
+/// infinite hard limit (macOS refuses soft = RLIM_INFINITY for NOFILE) is
+/// binary-searched against the kernel's own rejections under a 1<<20
+/// ceiling, a finite one is set directly, and failures leave the inherited
+/// limit, as before.
+fn raise_fd_limit() {
+    #[cfg(unix)]
+    // SAFETY: getrlimit/setrlimit with valid pointers to an owned rlimit.
+    unsafe {
+        let mut limits = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if 0 != libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) {
+            return;
+        }
+        if limits.rlim_cur == libc::RLIM_INFINITY {
+            return;
+        }
+        if limits.rlim_max == libc::RLIM_INFINITY {
+            let mut min = limits.rlim_cur;
+            let mut max = 1 << 20;
+            while min + 1 < max {
+                limits.rlim_cur = min + (max - min) / 2;
+                match libc::setrlimit(libc::RLIMIT_NOFILE, &limits) {
+                    0 => min = limits.rlim_cur,
+                    _ => max = limits.rlim_cur,
+                }
+            }
+            return;
+        }
+        if limits.rlim_cur < limits.rlim_max {
+            limits.rlim_cur = limits.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &limits);
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    raise_fd_limit();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
