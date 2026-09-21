@@ -81,6 +81,9 @@ jobs:
       - name: ssr dev + hydration
         if: matrix.mode == 'unbundled'
         run: node e2e/ssr-dev.mjs
+      - name: ESM dependency's bare import of a UMD-main sibling (detect-gpu shape)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/dep-esm-bare-import.mjs
       - name: ssr streaming prod build + hydration
         if: matrix.mode == 'unbundled'
         run: node e2e/ssr-prod.mjs

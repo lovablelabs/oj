@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - oj raises its soft file-descriptor limit at startup exactly as Node does (src/node.cc PlatformInit): the embedded engine hosts Node tooling written against that raised limit, and macOS's default soft cap of 256 made big-app boots fail with EMFILE storms that never happened under Vite.
+- Start SSR died with "The requested module … does not provide an export named …" when a dependency entered through its ESM `module` entry imported a bare sibling whose `main` is a UMD build (no `exports` map) — `@react-three/drei`'s `import { getGPUTier } from "detect-gpu"` was the reported case. The module host resolved the importer with Vite mainFields semantics but handed its bare imports to plain Node semantics, strict-linking the ESM file against a UMD whose named exports no CJS lexer can see. Bare specifiers imported from inside node_modules now resolve through the same Vite-style resolver that picked the importer's entry; relative paths, `node:`, `#` imports, and unresolvable names keep Node semantics.
 
 ## [0.2.3] - 2026-09-21
 
