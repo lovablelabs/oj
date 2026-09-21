@@ -52,7 +52,19 @@
           # All dependencies are crates.io; the checked-in lockfile is the
           # single source of truth, so no fixed-output hash to maintain.
           cargoLock.lockFile = ./Cargo.lock;
-          cargoBuildFlags = [ "-p" "oj" ];
+          # deno_core's extension! records each extension JS file by absolute
+          # path via env!("CARGO_MANIFEST_DIR"), which --remap-path-prefix
+          # cannot rewrite (env! expands before remapping). Compile from store
+          # paths instead of the (randomized) build directory so the recorded
+          # paths — and therefore the binary — are identical on every builder:
+          # the vendor tree is used straight from the store (the symlink is
+          # realpath-resolved by cargoSetupHook), and the workspace itself is
+          # built from $src via --manifest-path.
+          cargoDepsHook = ''
+            ln -s "$cargoDeps" "$sourceRoot/nix-vendor"
+            cargoVendorDir=nix-vendor
+          '';
+          cargoBuildFlags = [ "--manifest-path" "${src}/Cargo.toml" "-p" "oj" ];
           # bindgenHook provides libclang for libsqlite3-sys (a deno_runtime
           # transitive dep) whose build script runs bindgen.
           nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook ];
@@ -63,8 +75,29 @@
           # the vendored tree in panic locations — remap them so the output is
           # independent of where it was built (bit-reproducibility, #188).
           preBuild = ''
+            # importCargoLock's shipped config names the vendor dir relative to
+            # the build dir (where the skipped copy would have been); point it
+            # at the store tree instead.
+            sed -i 's|directory = "cargo-vendor-dir"|directory = "'"$cargoDeps"'"|' \
+              "$NIX_BUILD_TOP/.cargo/config.toml"
+            # Subprocesses that run from the store workspace (cargo-auditable's
+            # cargo metadata) can't discover the config by walking up from
+            # their cwd; CARGO_HOME config is loaded from anywhere.
+            export CARGO_HOME="$NIX_BUILD_TOP/.cargo"
+            # The workspace builds from the read-only store src, so the target
+            # dir must be redirected somewhere writable — and stay at the
+            # cwd-relative target/ that cargoInstallHook expects.
+            export CARGO_TARGET_DIR="$PWD/target"
             export RUSTFLAGS="''${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix $NIX_BUILD_TOP=/build"
             export NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE:-} -ffile-prefix-map=$NIX_BUILD_TOP=/build"
+          '';
+          # Any build-dir reference in the binary would make the output depend
+          # on where it was built; fail the build rather than ship it.
+          postInstall = ''
+            if grep -aq "$NIX_BUILD_TOP" "$out/bin/oj"; then
+              echo "error: \$NIX_BUILD_TOP leaked into bin/oj; the build is not reproducible" >&2
+              exit 1
+            fi
           '';
           # The test suite drives real Node sidecars and network fixtures; it
           # runs in CI, not inside the sandboxed nix build.
