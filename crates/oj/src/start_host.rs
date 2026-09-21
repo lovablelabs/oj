@@ -790,13 +790,15 @@ impl StartHost {
         // against a sibling dependency's CJS `main` — a UMD wrapper there
         // defeats the CJS named-export lexer (drei's ESM
         // `import { getGPUTier } from "detect-gpu"` resolved to the UMD and
-        // died at link). Relative paths, `node:`, and `#` imports keep Node
-        // semantics; an unresolvable bare name falls back to them too.
+        // died at link). Relative paths, `#` imports, and Node builtins keep
+        // Node semantics — a builtin outranks an installed polyfill package of
+        // the same name here, as under Node and Vite SSR — and an unresolvable
+        // bare name falls back to them too.
         if importer_id.contains("/node_modules/") && !is_plugin_shaped {
             let bare = !spec.starts_with('.')
                 && !spec.starts_with('/')
                 && !spec.starts_with('#')
-                && !spec.starts_with("node:");
+                && !oj_server::is_node_builtin(spec);
             if bare {
                 if let Ok(StartResolution::Dependency(p)) =
                     self.bridge.resolve_start(&importer_id, spec).await

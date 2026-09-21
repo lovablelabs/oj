@@ -42,8 +42,31 @@ fs.writeFileSync(
   path.join(uiLib, "package.json"),
   JSON.stringify({ name: "ui-lib", version: "1.0.0", main: "index.cjs.js", module: "index.esm.js" }),
 );
-fs.writeFileSync(path.join(uiLib, "index.esm.js"), `import { getTier } from "gpu-lib";\nexport const tier = getTier();\n`);
+fs.writeFileSync(
+  path.join(uiLib, "index.esm.js"),
+  // The bare `events` import guards builtin precedence on the SSR side: a
+  // junk polyfill package of the same name is installed below, and the Node
+  // builtin must still win (as under Node and Vite SSR) or EventEmitter is
+  // missing and the page renders tier:0. A default import, because the
+  // client bundle maps builtins to its default-only browser shim.
+  `import { getTier } from "gpu-lib";
+import events from "events";
+export const tier = events.EventEmitter ? getTier() : 0;
+`,
+);
 fs.writeFileSync(path.join(uiLib, "index.cjs.js"), `const { getTier } = require("gpu-lib");\nexports.tier = getTier();\n`);
+
+// A browserify-style polyfill squatting on a builtin's name, as transitive
+// installs commonly leave behind. It exports nothing usable.
+const eventsPolyfill = path.join(app, "node_modules", "events");
+fs.rmSync(eventsPolyfill, { recursive: true, force: true });
+fs.mkdirSync(eventsPolyfill, { recursive: true });
+fs.writeFileSync(
+  path.join(eventsPolyfill, "package.json"),
+  JSON.stringify({ name: "events", version: "3.3.0", main: "browser.js", module: "browser.mjs" }),
+);
+fs.writeFileSync(path.join(eventsPolyfill, "browser.js"), `module.exports = {};\n`);
+fs.writeFileSync(path.join(eventsPolyfill, "browser.mjs"), `export default {};\n`);
 
 // gpu-lib: `main` is a MINIFIED UMD wrapper (detect-gpu's shape) — the
 // factory receives `exports` under a renamed parameter, so no CJS export
