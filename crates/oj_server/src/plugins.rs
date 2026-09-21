@@ -310,6 +310,7 @@ fn run_engine_job_subprocess(
     let boot = |m: String| oj_js::EngineError::Boot(m);
     let mut child = std::process::Command::new(exe)
         .arg("engine-job")
+        .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(module)
         .arg("--root")
         .arg(root)

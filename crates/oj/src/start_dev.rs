@@ -1178,6 +1178,7 @@ fn run_script_process(
     let exe = std::env::current_exe().map_err(|e| anyhow::anyhow!("oj executable path: {e}"))?;
     let mut child = std::process::Command::new(exe)
         .arg("start-script")
+        .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(script)
         .arg("--root")
         .arg(root)
