@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Start HMR socket echoes an `oj-hmr` subprotocol when offered (the identity mechanism readiness probes need, mirroring Vite's `vite-hmr` echo), and an upgrade no plugin claims now dangles on the client's patience exactly like Vite instead of failing with a timed 502.
+
 ## [0.2.2] - 2026-09-19
 
 ### Fixed

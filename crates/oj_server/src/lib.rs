@@ -3292,22 +3292,14 @@ async fn proxy_websocket(
         Some(tokio_tungstenite::Connector::Plain)
     };
     let connect = tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector);
-    // An upgrade relayed to the plugin middleware that no `upgrade` listener
-    // claims would otherwise dangle; proxied targets keep their own timeouts.
-    let connected = if entry.is_none() {
-        match tokio::time::timeout(std::time::Duration::from_secs(10), connect).await {
-            Ok(r) => r,
-            Err(_) => {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    format!("oj: no plugin handled the websocket upgrade for {url}"),
-                )
-                    .into_response()
-            }
-        }
-    } else {
-        connect.await
-    };
+    // No oj-side deadline, matching Vite: its plugin `upgrade` listeners
+    // share the http server, so an upgrade nobody claims simply dangles until
+    // the CLIENT gives up — the client owns the patience. Here the dangle is
+    // this pending dial (the middleware server accepted TCP but no listener
+    // answered the handshake); hyper aborts this future when the client
+    // disconnects, so the dangling cost is one socket and one parked task per
+    // waiting client, the same surface Vite exposes.
+    let connected = connect.await;
     let (upstream, upstream_resp) = match connected {
         Ok(pair) => pair,
         Err(e) => {
