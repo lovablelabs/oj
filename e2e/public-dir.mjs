@@ -5,7 +5,7 @@
 // middleware runs before any transform), an explicit asset query still yields
 // a module, `publicDir: "<dir>"` relocates it and `publicDir: false` turns it
 // off. Run with a built target/debug/oj.
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +39,23 @@ function scaffold(publicDirName, config) {
   fs.writeFileSync(path.join(pub, "page.html"), HTML);
   fs.writeFileSync(path.join(pub, "logo.svg"), `<svg xmlns="http://www.w3.org/2000/svg"/>`);
   return app;
+}
+
+// Teardown rm that, when it still loses to a writer after its retries, names
+// the writer before rethrowing: surviving oj processes and the leftover
+// files with their mtimes — the evidence a CI-only ENOTEMPTY needs.
+function rmApp(app) {
+  try {
+    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (e) {
+    try {
+      console.error(`rm ${app} failed (${e.code}); surviving oj processes:`);
+      console.error(execSync(`ps -ef | grep -E "[o]j (dev|engine-job|start-script)" || true`).toString());
+      console.error("leftovers:");
+      console.error(execSync(`ls -laR ${app} 2>/dev/null | tail -40`).toString());
+    } catch {}
+    throw e;
+  }
 }
 
 async function withServer(app, port, fn) {
@@ -102,7 +119,7 @@ async function get(url, headers = {}) {
       check("?url on a public asset is still a module", mod.status === 200 && /export default "\/logo\.svg"/.test(mod.body), JSON.stringify(mod));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    rmApp(app);
   }
 }
 
@@ -115,7 +132,7 @@ async function get(url, headers = {}) {
       check("custom publicDir file served verbatim", sw.status === 200 && sw.body === SW, JSON.stringify(sw));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    rmApp(app);
   }
 }
 
@@ -130,7 +147,7 @@ async function get(url, headers = {}) {
       check("root modules still compile with publicDir false", main.status === 200 && /__LOGO/.test(main.body), JSON.stringify(main));
     });
   } finally {
-    fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    rmApp(app);
   }
 }
 
