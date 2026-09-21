@@ -91,11 +91,17 @@
             export RUSTFLAGS="''${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix $NIX_BUILD_TOP=/build"
             export NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE:-} -ffile-prefix-map=$NIX_BUILD_TOP=/build"
           '';
-          # Any build-dir reference in the binary would make the output depend
-          # on where it was built; fail the build rather than ship it.
+          # A raw $NIX_BUILD_TOP path in the binary escaped the remapping
+          # (env!()-derived strings do) and makes the output depend on where
+          # it was built; fail rather than ship it. When the build dir IS the
+          # remap target (the Linux sandbox builds in a constant /build),
+          # remapped and raw paths are the same constant bytes — deterministic
+          # either way, and innocent strings like "src/build.rs" would match —
+          # so there is nothing to check.
           postInstall = ''
-            if grep -aq "$NIX_BUILD_TOP" "$out/bin/oj"; then
-              echo "error: \$NIX_BUILD_TOP leaked into bin/oj; the build is not reproducible" >&2
+            if [ "$NIX_BUILD_TOP" != /build ] && grep -aqF "$NIX_BUILD_TOP" "$out/bin/oj"; then
+              echo "error: build dir $NIX_BUILD_TOP leaked into bin/oj; the build is not reproducible" >&2
+              strings "$out/bin/oj" | grep -F "$NIX_BUILD_TOP" | head -5 >&2 || true
               exit 1
             fi
           '';
