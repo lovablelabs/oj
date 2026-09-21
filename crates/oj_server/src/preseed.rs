@@ -205,6 +205,7 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
     // (argv would print values in `ps`).
     let mut child = tokio::process::Command::new(exe)
         .arg("start-script")
+        .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(&script)
         .arg("--root")
         .arg(root)

@@ -171,10 +171,42 @@ async function devPhase() {
     await assertDevRouting(port);
     await assertInlineSourceMaps(port);
     await assertDevHydration(port);
+    await assertHmrSocketIdentity(port);
   } finally {
     srv.kill("SIGKILL");
   }
   await assertBuildStartResilient();
+}
+
+// Readiness probes identify oj by the `oj-hmr` subprotocol echo on the start
+// HMR socket, the same trust mechanism as Vite's `vite-hmr` echo: an offered
+// protocol comes back selected, and a client that offers none gets no header
+// (oj's own client offers none).
+async function assertHmrSocketIdentity(port) {
+  const dial = (protocols) =>
+    new Promise((resolve, reject) => {
+      const ws = protocols
+        ? new WebSocket(`ws://localhost:${port}/@oj-start/hmr`, protocols)
+        : new WebSocket(`ws://localhost:${port}/@oj-start/hmr`);
+      ws.addEventListener("open", () => {
+        const p = ws.protocol;
+        ws.close();
+        resolve(p);
+      });
+      ws.addEventListener("error", () => reject(new Error("hmr socket dial failed")));
+    });
+  const echoed = await dial(["oj-hmr"]);
+  if (echoed !== "oj-hmr") throw new Error(`start-dev: oj-hmr subprotocol not echoed (got "${echoed}")`);
+  const bare = await dial(null);
+  if (bare !== "") throw new Error(`start-dev: bare dial unexpectedly got a subprotocol ("${bare}")`);
+  // A foreign offer is NOT echoed (stricter than ws's echo-anything default,
+  // on purpose): undici enforces the spec and fails the dial client-side.
+  const foreign = await dial(["vite-hmr"]).then(
+    (p) => `unexpected open with protocol "${p}"`,
+    () => null,
+  );
+  if (foreign !== null) throw new Error(`start-dev: foreign subprotocol dial: ${foreign}`);
+  console.log("start-dev: hmr socket echoes the oj-hmr identity subprotocol (and only that)");
 }
 
 // The SSR pipeline inlines a source map into every transformed module (the

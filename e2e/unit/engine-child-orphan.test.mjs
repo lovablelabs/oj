@@ -33,6 +33,34 @@ const alive = (pid) => {
 // .oj-cache for minutes past the parent's death (the recurring ENOTEMPTY in
 // e2e teardowns, and stale writers after a real crash). The forever-awaiting
 // script models a long job; the reaper must notice the reparent and exit.
+// The birth window: a parent SIGKILLed between the spawn and the child's
+// ppid snapshot has already reparented the child, so change-detection alone
+// never fires. The spawner announces its pid via OJ_PARENT_PID; a child whose
+// observed ppid differs at arm time was born an orphan and exits at once.
+test("a child born an orphan exits immediately (OJ_PARENT_PID mismatch)", async () => {
+  const fx = tmpProject({ prefix: "oj-born-orphan-" });
+  fx.write("package.json", JSON.stringify({ name: "orphan-fx", version: "1.0.0" }));
+  fx.write("forever.mjs", "setInterval(() => {}, 60_000);\nawait new Promise(() => {});\n");
+  // Announce a parent that is not this process: to the child that reads as
+  // "my spawner is already gone".
+  const child = spawn(oj, ["start-script", path.join(fx.root, "forever.mjs"), "--root", fx.root], {
+    cwd: fx.root,
+    env: { ...process.env, OJ_PARENT_PID: "1" },
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  child.stdin.end(JSON.stringify([]));
+  try {
+    const code = await new Promise((resolve, reject) => {
+      child.on("exit", (c) => resolve(c));
+      setTimeout(() => reject(new Error("born-orphan child did not exit")), 5000);
+    });
+    assert.equal(code, 0, "a born orphan exits cleanly instead of running its job");
+  } finally {
+    child.kill("SIGKILL");
+    fx.cleanup();
+  }
+});
+
 test("an orphaned start-script child reaps itself when its parent dies", async () => {
   const fx = tmpProject({ prefix: "oj-child-orphan-" });
   fx.write("package.json", JSON.stringify({ name: "orphan-fx", version: "1.0.0" }));

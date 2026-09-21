@@ -1178,6 +1178,7 @@ fn run_script_process(
     let exe = std::env::current_exe().map_err(|e| anyhow::anyhow!("oj executable path: {e}"))?;
     let mut child = std::process::Command::new(exe)
         .arg("start-script")
+        .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(script)
         .arg("--root")
         .arg(root)
@@ -1376,7 +1377,12 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
             Ok(ws) => {
                 let rx = state.reload_tx.subscribe();
-                ws.on_upgrade(move |socket| start_hmr_socket(socket, rx))
+                // Echo the `oj-hmr` subprotocol when a client offers it: the
+                // positive identity signal for readiness probes, exactly as
+                // Vite's `vite-hmr` echo is theirs. oj's own client offers no
+                // subprotocol and is untouched (no match, no header).
+                ws.protocols(["oj-hmr"])
+                    .on_upgrade(move |socket| start_hmr_socket(socket, rx))
             }
             Err(e) => e.into_response(),
         };

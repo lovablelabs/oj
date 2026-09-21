@@ -191,15 +191,25 @@ enum Command {
 /// reports into the app's `.oj-cache` — until the job ends, minutes later.
 /// Same net as the plugin host's ppid watchdog: poll for a reparent (the ppid
 /// CHANGING, not `== 1` — in a container the live parent can BE pid 1) and
-/// exit. The job's output is worthless with the parent gone. A parent that
-/// dies in the instants BEFORE this snapshot leaves it pointing at the
-/// subreaper and the net never fires — that one job runs out as every job
-/// did before the reaper, a bounded miss.
+/// exit. The job's output is worthless with the parent gone. The spawner's
+/// `OJ_PARENT_PID` closes the birth window a bare snapshot leaves open: a
+/// parent SIGKILLed between the spawn and this arm has already reparented
+/// the child, the snapshot would point at the subreaper, and the orphan
+/// would run out its whole job (seen as e2e teardown rms losing to a cold
+/// extraction child). With the announced pid, born-an-orphan exits here.
 #[cfg(unix)]
 fn reap_on_parent_death() {
-    let parent = unsafe { libc::getppid() };
+    let observed = unsafe { libc::getppid() };
+    if let Some(announced) = std::env::var("OJ_PARENT_PID")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+    {
+        if announced != observed {
+            std::process::exit(0);
+        }
+    }
     std::thread::spawn(move || loop {
-        if unsafe { libc::getppid() } != parent {
+        if unsafe { libc::getppid() } != observed {
             std::process::exit(0);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));

@@ -214,10 +214,29 @@ try {
   assert.notEqual(hostile.body, "proxied-http-ok", "disallowed Host must not be proxied");
   assert.ok(hostile.status >= 400, `disallowed Host is rejected (got ${hostile.status})`);
 
-  // 5. an upgrade no plugin claims fails cleanly instead of hanging forever.
-  const none = await wsConnect(port, "/unclaimed");
-  assert.notEqual(none.status, 101, `unclaimed upgrade must not 101 (got ${none.status})`);
-  none.sock.destroy();
+  // 5. an upgrade no plugin claims dangles silently, like Vite: no listener
+  //    on Vite's shared http server answers it either, and the CLIENT owns
+  //    the patience. No 101, no error response, no bytes at all — the client
+  //    hangs up, and the server keeps serving afterwards.
+  const none = await new Promise((resolve, reject) => {
+    const sock = net.connect(port, "127.0.0.1", () => {
+      const key = crypto.randomBytes(16).toString("base64");
+      sock.write(
+        `GET /unclaimed HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\n` +
+          `Connection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+      );
+    });
+    let bytes = 0;
+    sock.on("data", (chunk) => (bytes += chunk.length));
+    sock.on("error", reject);
+    setTimeout(() => {
+      sock.destroy();
+      resolve(bytes);
+    }, 1500);
+  });
+  assert.equal(none, 0, `unclaimed upgrade answered ${none} bytes; Vite parity is silence`);
+  const after = await fetch(`http://127.0.0.1:${port}/api/anything`);
+  assert.equal(await after.text(), "proxied-http-ok", "server healthy after an abandoned dangle");
 
   console.log("PLUGIN WS UPGRADE E2E PASSED");
 } catch (e) {
