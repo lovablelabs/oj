@@ -102,6 +102,9 @@ jobs:
       - name: plugin-owned websocket upgrades (tunnel plugins)
         if: matrix.mode == 'unbundled'
         run: node e2e/plugin-ws-upgrade.mjs
+      - name: plugin process contract (listening emit at bind, process.exit)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/plugin-server-process.mjs
       - name: bundle hmr multi-frame boundary isolation
         if: matrix.mode == 'unbundled'
         run: node e2e/bundle-hmr-multiframe.mjs

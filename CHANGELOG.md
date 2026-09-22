@@ -5,6 +5,14 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Vite parity for the process-level plugin contract, both halves reported from a supervisor-style plugin that dials its own server on `listening` and forces a respawn with `process.exit`:
+  - The stub `httpServer` handed to `configureServer` emitted `listening` before oj's socket was bound, so a plugin's listening-time self-dial was refused. It now fires when the listener really accepts (Vite's `listen()` runs after `createServer`), and `address()` is null before the bind and carries the real bound port after.
+  - `process.exit(code)` in a plugin was swallowed by the in-process host (a throw that surfaced as an ignored hook error). Vite's contract is that plugins share the server process, so supervised-respawn plugins rely on exiting; oj now exits with that code, after naming the caller on stderr.
+
 ## [0.2.4] - 2026-09-21
 
 ### Fixed
