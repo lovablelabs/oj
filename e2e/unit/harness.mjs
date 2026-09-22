@@ -40,11 +40,13 @@ export function testWithRolldown(test) {
     ? test
     : (name, fn) => test(name, { skip: "fixture rolldown not installed" }, () => {});
 }
-// Symlink the fixture's rolldown into a tmpProject's node_modules (Node
+// Symlink the fixture's rolldown into a package root's node_modules (Node
 // resolves its native bindings from the symlink's realpath, next to the real
-// package).
-export function linkRolldown(fxRoot) {
-  fs.symlinkSync(rolldownSrc, path.join(fxRoot, "node_modules", "rolldown"));
+// package). The root may also be a dependency dir (the nested,
+// rolldown-under-vite shape), so create its node_modules if needed.
+export function linkRolldown(pkgRoot) {
+  fs.mkdirSync(path.join(pkgRoot, "node_modules"), { recursive: true });
+  fs.symlinkSync(rolldownSrc, path.join(pkgRoot, "node_modules", "rolldown"));
 }
 
 // A throwaway project dir with a node_modules/ and package.json. `linkEsbuild`

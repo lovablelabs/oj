@@ -163,6 +163,132 @@ testRolldown("the plugin host bundles the same config with rolldown and the ../p
   }
 });
 
+testRolldown("rolldown inject-file-scope: __dirname/__filename/import.meta.url stay per-file originals", async () => {
+  // The define map rewrites __dirname & co to __vite_injected_original_*
+  // and the transform hook prepends each file's own consts. If the define
+  // were ignored, the ESM bundle would hit a bare __dirname and the config
+  // would fail to load; if the consts were not scoped per module, the
+  // sibling file would see the config's paths instead of its own.
+  const fx = tmpProject({ prefix: "oj-cfg-scope-" });
+  linkRolldown(fx.root);
+  fx.write("app/package.json", JSON.stringify({ name: "app", type: "module" }));
+  fx.write(
+    "app/vite.config.ts",
+    `import { pkgProbe } from "../pkg/src/probe";
+export default {
+  plugins: [{
+    name: "scope-probe",
+    config() {
+      return { define: {
+        __CFG_DIRNAME__: JSON.stringify(__dirname),
+        __CFG_FILENAME__: JSON.stringify(__filename),
+        __CFG_URL__: JSON.stringify(import.meta.url),
+        __PKG_DIRNAME__: JSON.stringify(pkgProbe),
+      } };
+    },
+  }],
+};
+`,
+  );
+  fx.write("pkg/package.json", JSON.stringify({ name: "pkg", type: "module" }));
+  fx.write("pkg/src/probe.ts", `export const pkgProbe: string = __dirname;\n`);
+  const fxShaped = {
+    appRoot: path.join(fx.root, "app"),
+    configPath: path.join(fx.root, "app", "vite.config.ts"),
+    cleanup: fx.cleanup,
+  };
+  const { host, cleanup } = bootHost(fxShaped);
+  try {
+    const res = await host.send({ id: 1, hook: "getPluginConfig", args: [] });
+    assert.ok(res.result, `config() never ran; stderr:\n${host.stderr()}`);
+    const define = JSON.parse(res.result).define ?? {};
+    const appDir = fs.realpathSync(fxShaped.appRoot);
+    const norm = (v) => fs.realpathSync(JSON.parse(v));
+    assert.equal(norm(define.__CFG_DIRNAME__), appDir, "__dirname is the config's original dir");
+    assert.equal(
+      norm(define.__CFG_FILENAME__),
+      fs.realpathSync(fxShaped.configPath),
+      "__filename is the config's original path",
+    );
+    assert.ok(
+      JSON.parse(define.__CFG_URL__).endsWith("/app/vite.config.ts"),
+      `import.meta.url points at the original file, got ${define.__CFG_URL__}`,
+    );
+    assert.equal(
+      norm(define.__PKG_DIRNAME__),
+      fs.realpathSync(path.join(fx.root, "pkg", "src")),
+      "the inlined sibling file keeps ITS OWN __dirname (per-module scoping)",
+    );
+  } finally {
+    host.close();
+    cleanup();
+    fx.cleanup();
+  }
+});
+
+testRolldown("rolldown bundles a dynamic import into the single chunk (codeSplitting off)", async () => {
+  // Vite generates one chunk "like esbuild does with splitting: false"; a
+  // second chunk would be a sibling file the tmp-bundle import could never
+  // find. A dynamically imported first-party TS module must be inlined.
+  const fx = rolldownMonorepoFixture();
+  fx.write(
+    "app/vite.config.ts",
+    `const mod = await import("../pkg/src/plugin");
+export default {
+  base: mod.ojBase,
+  plugins: [mod.makePlugin()],
+};
+`,
+  );
+  const { host, cleanup } = bootHost(fx);
+  try {
+    const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
+    assert.equal(count.result, "1", `dynamically imported plugin did not load; stderr:\n${host.stderr()}`);
+    const res = await host.send({ id: 2, hook: "getPluginConfig", args: [] });
+    assert.equal(JSON.parse(res.result).define?.__FROM_PKG__, '"/from-pkg-dep/"');
+  } finally {
+    host.close();
+    cleanup();
+    fx.cleanup();
+  }
+});
+
+testRolldown("rolldown nested under the vite package resolves (a vite without loadConfigFromFile falls through)", async () => {
+  // The unhoisted shape: rolldown is vite's dependency, not the app's, so the
+  // fallback's resolver must reach node_modules/vite/node_modules/rolldown.
+  // The stub vite has no loadConfigFromFile, exercising the same fall-through
+  // an old vite takes.
+  const fx = tmpProject({ prefix: "oj-cfg-nested-" });
+  fx.pkg("vite", "index.mjs", { "index.mjs": `export const version = "0.0.0-stub";\n` });
+  linkRolldown(path.join(fx.root, "node_modules", "vite"));
+  fx.write(
+    "vite.config.ts",
+    `const marker: string = "/nested-rolldown/";
+export default {
+  plugins: [{
+    name: "nested-probe",
+    config() {
+      return { define: { __NESTED__: JSON.stringify(marker) } };
+    },
+  }],
+};
+`,
+  );
+  const fxShaped = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts"), cleanup: fx.cleanup };
+  const { host, cleanup } = bootHost(fxShaped);
+  try {
+    const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
+    assert.equal(count.result, "1", `TS config did not load; stderr:\n${host.stderr()}`);
+    const res = await host.send({ id: 2, hook: "getPluginConfig", args: [] });
+    assert.equal(JSON.parse(res.result).define?.__NESTED__, '"/nested-rolldown/"');
+    assert.doesNotMatch(host.stderr(), /Cannot find module/);
+  } finally {
+    host.close();
+    cleanup();
+    fx.cleanup();
+  }
+});
+
 test("an error thrown while vite's own loader ran the config propagates un-masked", async () => {
   // The incident shape: vite IS present, its loadConfigFromFile runs the
   // config, and the config's own top-level code throws (a secrets loader, a
