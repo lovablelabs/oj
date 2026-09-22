@@ -8,129 +8,35 @@
 // with "Cannot find module 'esbuild'" — and because the fallback also ran
 // when the config's OWN code had thrown inside vite.loadConfigFromFile, that
 // bundler error REPLACED the config's real error. Now:
-//   - the fallback bundles with whichever of esbuild/rolldown resolves;
+//   - the fallback bundles with the bundler the app's vite itself declares
+//     (rolldown-vite declares rolldown), falling back to whichever resolves;
 //   - an error thrown while vite's own loader ran the config propagates
-//     as-is (re-bundling re-runs the same code into the same error), exactly
-//     as Vite's loadConfigFromFile rethrows;
+//     as-is in BOTH loaders (re-bundling re-runs the same code into the same
+//     error), exactly as Vite's loadConfigFromFile rethrows;
 //   - with no vite and no bundler, the error says what is missing.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { asset, linkRolldown, rpcSidecar, testWithRolldown, tmpProject } from "./harness.mjs";
+import {
+  bootHost,
+  configMonorepoFixture,
+  linkRolldown,
+  runExtract,
+  testWithRolldown,
+  tmpProject,
+} from "./harness.mjs";
 
 const testRolldown = testWithRolldown(test);
 
-// The monorepo shape from config-externalize-deps.test.mjs, with rolldown
-// linked instead of esbuild: the config relatively imports a sibling
-// package's TS source (inlined), whose bare dep lives only under the
-// sibling's own node_modules (externalized by resolved path).
-function rolldownMonorepoFixture() {
-  const fx = tmpProject({ prefix: "oj-cfg-rd-" });
-  linkRolldown(fx.root);
-  fx.write("app/package.json", JSON.stringify({ name: "app", type: "module" }));
-  fx.write(
-    "app/vite.config.ts",
-    `import { makePlugin, ojBase } from "../pkg/src/plugin";
-export default {
-  base: ojBase,
-  plugins: [makePlugin()],
-};
-`,
-  );
-  fx.write("pkg/package.json", JSON.stringify({ name: "pkg", type: "module" }));
-  fx.write(
-    "pkg/src/plugin.ts",
-    `import { fromDep } from "only-dep";
-export const ojBase = fromDep;
-export function makePlugin() {
-  return {
-    name: "pkg-plugin",
-    config() {
-      return { define: { __FROM_PKG__: JSON.stringify(fromDep) } };
-    },
-  };
-}
-`,
-  );
-  fx.write(
-    "pkg/node_modules/only-dep/package.json",
-    JSON.stringify({ name: "only-dep", version: "1.0.0", type: "module", main: "index.js" }),
-  );
-  fx.write("pkg/node_modules/only-dep/index.js", `export const fromDep = "/from-pkg-dep/";\n`);
-  return {
-    base: fx.root,
-    appRoot: path.join(fx.root, "app"),
-    configPath: path.join(fx.root, "app", "vite.config.ts"),
-    write: fx.write,
-    cleanup: fx.cleanup,
-  };
-}
-
-// Run a copy of the extractor from a throwaway dir (the cache-dir shape);
-// same wrapper as config-externalize-deps.test.mjs.
-function runExtract(fx) {
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "oj-cfg-rd-run-"));
-  try {
-    const script = path.join(runDir, "vite-extract.mjs");
-    fs.copyFileSync(asset("vite-extract.mjs"), script);
-    const wrapper = `
-import { writeSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-const [script, vite, root] = process.argv.slice(1);
-const { extract } = await import(pathToFileURL(script).href);
-const { __stderr = "", ...rest } = await extract({ vite, root, command: "serve", mode: "development", modeKind: "default" });
-if (__stderr) writeSync(2, __stderr);
-writeSync(1, JSON.stringify(rest));
-process.exit(0);
-`;
-    const r = spawnSync(
-      process.execPath,
-      ["--input-type=module", "-e", wrapper, script, fx.configPath, fx.appRoot],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 },
-    );
-    assert.equal(r.status, 0, `extractor exited ${r.status}; stderr:\n${r.stderr}`);
-    let json;
-    try {
-      json = JSON.parse(r.stdout);
-    } catch {
-      assert.fail(`extractor wrote unparseable output: ${r.stdout}\nstderr:\n${r.stderr}`);
-    }
-    return { json, stderr: r.stderr };
-  } finally {
-    fs.rmSync(runDir, { recursive: true, force: true });
-  }
-}
-
-// Boot a copy of the plugin host from a throwaway dir on the fixture's
-// vite.config; returns the rpc handle (caller closes).
-function bootHost(fx) {
-  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "oj-cfg-rd-host-"));
-  const hostScript = path.join(runDir, "plugin-host.mjs");
-  fs.copyFileSync(asset("plugin-host.mjs"), hostScript);
-  const host = rpcSidecar(hostScript, {
-    args: [
-      fx.configPath,
-      JSON.stringify({
-        pluginsFormat: "vite",
-        config: { root: fx.appRoot },
-        env: { command: "serve", mode: "development" },
-        environment: { name: "client", mode: "dev" },
-      }),
-    ],
-    env: { OJ_CACHE_ROOT: fx.appRoot },
-    cwd: fx.appRoot,
-  });
-  return { host, cleanup: () => fs.rmSync(runDir, { recursive: true, force: true }) };
-}
+const rolldownMonorepoFixture = () =>
+  configMonorepoFixture({ prefix: "oj-cfg-rd-", bundler: "rolldown" });
 
 testRolldown("vite-extract bundles a TS config with rolldown when esbuild is absent", () => {
   const fx = rolldownMonorepoFixture();
   try {
-    const { json, stderr } = runExtract(fx);
+    const { json, stderr } = runExtract(fx, { prefix: "oj-cfg-rd-run-" });
     assert.equal(json.__ok, true, `extraction failed, got: ${JSON.stringify(json)}\nstderr:\n${stderr}`);
     assert.equal(json.base, "/from-pkg-dep/", "base set from the constant only pkg/node_modules provides");
     assert.doesNotMatch(stderr, /Cannot find module 'esbuild'/);
@@ -148,7 +54,7 @@ testRolldown("vite-extract bundles a TS config with rolldown when esbuild is abs
 
 testRolldown("the plugin host bundles the same config with rolldown and the ../pkg plugin is active", async () => {
   const fx = rolldownMonorepoFixture();
-  const { host, cleanup } = bootHost(fx);
+  const { host, cleanup } = bootHost(fx, { prefix: "oj-cfg-rd-host-" });
   try {
     const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
     assert.equal(count.result, "1", `plugin from ../pkg did not load; stderr:\n${host.stderr()}`);
@@ -192,22 +98,18 @@ export default {
   );
   fx.write("pkg/package.json", JSON.stringify({ name: "pkg", type: "module" }));
   fx.write("pkg/src/probe.ts", `export const pkgProbe: string = __dirname;\n`);
-  const fxShaped = {
-    appRoot: path.join(fx.root, "app"),
-    configPath: path.join(fx.root, "app", "vite.config.ts"),
-    cleanup: fx.cleanup,
-  };
-  const { host, cleanup } = bootHost(fxShaped);
+  const appFx = { appRoot: path.join(fx.root, "app"), configPath: path.join(fx.root, "app", "vite.config.ts") };
+  const { host, cleanup } = bootHost(appFx, { prefix: "oj-cfg-scope-host-" });
   try {
     const res = await host.send({ id: 1, hook: "getPluginConfig", args: [] });
     assert.ok(res.result, `config() never ran; stderr:\n${host.stderr()}`);
     const define = JSON.parse(res.result).define ?? {};
-    const appDir = fs.realpathSync(fxShaped.appRoot);
+    const appDir = fs.realpathSync(appFx.appRoot);
     const norm = (v) => fs.realpathSync(JSON.parse(v));
     assert.equal(norm(define.__CFG_DIRNAME__), appDir, "__dirname is the config's original dir");
     assert.equal(
       norm(define.__CFG_FILENAME__),
-      fs.realpathSync(fxShaped.configPath),
+      fs.realpathSync(appFx.configPath),
       "__filename is the config's original path",
     );
     assert.ok(
@@ -240,7 +142,7 @@ export default {
 };
 `,
   );
-  const { host, cleanup } = bootHost(fx);
+  const { host, cleanup } = bootHost(fx, { prefix: "oj-cfg-dyn-host-" });
   try {
     const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
     assert.equal(count.result, "1", `dynamically imported plugin did not load; stderr:\n${host.stderr()}`);
@@ -274,14 +176,57 @@ export default {
 };
 `,
   );
-  const fxShaped = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts"), cleanup: fx.cleanup };
-  const { host, cleanup } = bootHost(fxShaped);
+  const appFx = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts") };
+  const { host, cleanup } = bootHost(appFx, { prefix: "oj-cfg-nested-host-" });
   try {
     const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
     assert.equal(count.result, "1", `TS config did not load; stderr:\n${host.stderr()}`);
     const res = await host.send({ id: 2, hook: "getPluginConfig", args: [] });
     assert.equal(JSON.parse(res.result).define?.__NESTED__, '"/nested-rolldown/"');
     assert.doesNotMatch(host.stderr(), /Cannot find module/);
+  } finally {
+    host.close();
+    cleanup();
+    fx.cleanup();
+  }
+});
+
+testRolldown("the bundler vite declares wins over a hoisted impostor", async () => {
+  // A rolldown-vite app with a (broken, here) esbuild hoisted next to it —
+  // mid-migration trees and tsx/vitest installs produce exactly this. The
+  // selection must ask "what does this vite bundle configs with?" (its own
+  // dependencies), not "what is installed?": picking the hoisted esbuild
+  // would bundle the config differently than the app's own `vite dev`.
+  const fx = tmpProject({ prefix: "oj-cfg-prefer-" });
+  fx.pkg("vite", "index.mjs", { "index.mjs": `export const version = "0.0.0-stub";\n` });
+  const viteDir = path.join(fx.root, "node_modules", "vite");
+  fs.writeFileSync(
+    path.join(viteDir, "package.json"),
+    JSON.stringify({ name: "vite", version: "0.0.0-stub", main: "index.mjs", dependencies: { rolldown: "*" } }),
+  );
+  linkRolldown(viteDir);
+  fx.pkg("esbuild", "index.js", { "index.js": `throw new Error("the hoisted esbuild impostor was chosen");\n` });
+  fx.write(
+    "vite.config.ts",
+    `const marker: string = "/prefer-rolldown/";
+export default {
+  plugins: [{
+    name: "prefer-probe",
+    config() {
+      return { define: { __PREFER__: JSON.stringify(marker) } };
+    },
+  }],
+};
+`,
+  );
+  const appFx = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts") };
+  const { host, cleanup } = bootHost(appFx, { prefix: "oj-cfg-prefer-host-" });
+  try {
+    const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
+    assert.equal(count.result, "1", `TS config did not load; stderr:\n${host.stderr()}`);
+    const res = await host.send({ id: 2, hook: "getPluginConfig", args: [] });
+    assert.equal(JSON.parse(res.result).define?.__PREFER__, '"/prefer-rolldown/"');
+    assert.doesNotMatch(host.stderr(), /impostor was chosen/);
   } finally {
     host.close();
     cleanup();
@@ -302,8 +247,8 @@ test("an error thrown while vite's own loader ran the config propagates un-maske
 `,
   });
   fx.write("vite.config.ts", `export default { base: "/never-loads/" };\n`);
-  const fxShaped = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts"), cleanup: fx.cleanup };
-  const { host, cleanup } = bootHost(fxShaped);
+  const appFx = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts") };
+  const { host, cleanup } = bootHost(appFx, { prefix: "oj-cfg-prop-host-" });
   try {
     const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
     assert.equal(count.result, "0", "the host degrades to zero plugins");
@@ -321,11 +266,36 @@ test("an error thrown while vite's own loader ran the config propagates un-maske
   }
 });
 
+test("the extractor propagates a config-execution error the same way (no re-bundle, no masking)", () => {
+  // Same incident shape through vite-extract: the two loaders must degrade
+  // IDENTICALLY, or extraction hands the dev server a verdict the plugin
+  // host can never match (a half-configured server). The extractor reports
+  // __ok: false with the config's own error on stderr — not a re-bundled
+  // divergent success, and not "no vite, esbuild, or rolldown".
+  const fx = tmpProject({ prefix: "oj-cfg-xprop-" });
+  fx.pkg("vite", "index.mjs", {
+    "index.mjs": `export async function loadConfigFromFile() {
+  throw new Error("secrets loader exploded (the config's own failure)");
+}
+`,
+  });
+  fx.write("vite.config.ts", `export default { base: "/never-loads/" };\n`);
+  const appFx = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts") };
+  const { json, stderr } = runExtract(appFx, { prefix: "oj-cfg-xprop-run-" });
+  try {
+    assert.equal(json.__ok, false, `extraction must fail with the config, got: ${JSON.stringify(json)}`);
+    assert.match(stderr, /secrets loader exploded/, `the config's own error must surface; stderr:\n${stderr}`);
+    assert.doesNotMatch(stderr, /no vite, esbuild, or rolldown/);
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test("with no vite and no bundler, the fallback names what is missing", async () => {
   const fx = tmpProject({ prefix: "oj-cfg-none-" });
   fx.write("vite.config.ts", `export default { base: "/never-loads/" };\n`);
-  const fxShaped = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts"), cleanup: fx.cleanup };
-  const { host, cleanup } = bootHost(fxShaped);
+  const appFx = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts") };
+  const { host, cleanup } = bootHost(appFx, { prefix: "oj-cfg-none-host-" });
   try {
     const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
     assert.equal(count.result, "0", "the host degrades to zero plugins");

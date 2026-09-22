@@ -490,7 +490,7 @@ test("NODE_ENV-rule and externalizeDepsPlugin twins are byte-identical across th
       "injectFileScopeVariablesRolldownPlugin",
     ],
     [
-      /\nasync function bundleViteConfigFile\(configPath, appRoot, resolveSpec\) \{\n[\s\S]*?\n\}\n/,
+      /\nasync function bundleViteConfigFile\(configPath, appRoot\) \{\n[\s\S]*?\n\}\n/,
       "bundleViteConfigFile",
     ],
   ]) {

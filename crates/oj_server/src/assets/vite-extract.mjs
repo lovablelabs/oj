@@ -389,6 +389,9 @@ function externalizeDepsRolldownPlugin() {
         if (id.startsWith("node:") || id.startsWith("bun:") || isBuiltin(id)) {
           return { id, external: true };
         }
+        // npm: specifiers stay bare-external (Vite keeps them bare too); any
+        // other scheme-shaped id (data:, ...) is the bundler's to handle
+        // natively -- pathToFileURL on those would produce garbage.
         if (id.startsWith("npm:")) return { id, external: true };
         if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(id)) return null;
         let resolved = null;
@@ -449,12 +452,38 @@ function injectFileScopeVariablesRolldownPlugin() {
 // (the same two byte-identical copies again): stock Vite bundles configs with
 // esbuild, rolldown-vite with rolldown, and an app only carries the one its
 // vite uses -- hard-requiring esbuild turned a rolldown-vite app's config
-// failure into "Cannot find module 'esbuild'" (#215). `resolveSpec` resolves
-// a package specifier to a path or null; returns { code, deps } (deps as the
-// bundler reports them, resolvable against the app root), or null when
-// NEITHER bundler resolves -- the caller owns that error.
-async function bundleViteConfigFile(configPath, appRoot, resolveSpec) {
-  const esbuildPath = resolveSpec("esbuild");
+// failure into "Cannot find module 'esbuild'" (#215). Bundler SELECTION lives
+// in here so both shipped copies pick identically: the bundler vite itself
+// declares as a dependency wins over whichever happens to be installed (a
+// rolldown-vite app with a hoisted esbuild must bundle the way its own
+// `vite dev` would), and a missing preferred bundler falls back to the other.
+// Returns { code, deps } (deps as the bundler reports them, resolvable
+// against the app root), or null when NO bundler resolves -- the caller owns
+// that error.
+async function bundleViteConfigFile(configPath, appRoot) {
+  const req = createRequire(appRoot + "/package.json");
+  let vitePkgDir = null;
+  try {
+    vitePkgDir = dirname(req.resolve("vite/package.json"));
+  } catch {}
+  // The bundlers are vite's dependencies, not usually the app's own.
+  const resolveSpec = (spec) => {
+    try { return req.resolve(spec); } catch {}
+    if (vitePkgDir) {
+      try { return req.resolve(spec, { paths: [vitePkgDir] }); } catch {}
+    }
+    return null;
+  };
+  let viteDeps = null;
+  if (vitePkgDir) {
+    try {
+      viteDeps = JSON.parse(readFileSync(vitePkgDir + "/package.json", "utf8")).dependencies ?? null;
+    } catch {}
+  }
+  const preferRolldown = !!(viteDeps && viteDeps.rolldown);
+  let esbuildPath = preferRolldown ? null : resolveSpec("esbuild");
+  let rolldownPath = esbuildPath ? null : resolveSpec("rolldown");
+  if (!esbuildPath && !rolldownPath) esbuildPath = resolveSpec("esbuild");
   if (esbuildPath) {
     const esbuild = await import(pathToFileURL(esbuildPath).href);
     const result = await esbuild.build({
@@ -477,7 +506,6 @@ async function bundleViteConfigFile(configPath, appRoot, resolveSpec) {
     });
     return { code: result.outputFiles[0].text, deps: Object.keys(result.metafile?.inputs ?? {}) };
   }
-  const rolldownPath = resolveSpec("rolldown");
   if (!rolldownPath) return null;
   const { rolldown } = await import(pathToFileURL(rolldownPath).href);
   const bundle = await rolldown({
@@ -601,6 +629,9 @@ function snapshotPlainData(v, seen = new WeakMap()) {
 
 async function loadConfig() {
   let viteErr = null;
+  // An error raised while vite's own loader RAN the config file (as opposed
+  // to vite itself being unusable, which lands in viteErr).
+  let loadErr = null;
   const vitePath = resolvePkg("vite");
   if (vitePath) {
     try {
@@ -616,7 +647,6 @@ async function loadConfig() {
       // leaving raw null and runner-backed detection silently false while the
       // resolved workerd sugar was still emitted.
       let loaded = null;
-      let loadErr = null;
       if (typeof vite.loadConfigFromFile === "function") {
         try {
           // The configEnv Vite computes before the file loads: mode from the
@@ -631,6 +661,9 @@ async function loadConfig() {
       // resolveConfig runs the plugins' config hooks, so plugin-injected values
       // (e.g. TanStack Start's resolve.alias for `#tanstack-router-entry`) are
       // present. loadConfigFromFile only reads the raw user config and misses them.
+      // It still runs when the raw load threw: its own load path can succeed
+      // where loadConfigFromFile failed, and that degenerate success is handled
+      // loudly above (raw == null warns and withholds the raw-dependent sugar).
       if (typeof vite.resolveConfig === "function") {
         const singleEval = !!(loaded && loaded.config && typeof vite.mergeConfig === "function");
         // Hoisted OUT of the try: a resolveConfig throw mid-hook-run must not
@@ -739,11 +772,20 @@ async function loadConfig() {
       viteErr = e;
     }
   }
+  // Reached with loadErr set only when the whole vite attempt produced
+  // nothing: the config threw under vite's own loader and resolveConfig did
+  // not rescue it. That is the CONFIG's failure, exactly as `vite dev` would
+  // report it (loadConfigFromFile logs and rethrows; Vite has no
+  // alternate-bundler fallback): re-bundling below re-runs the same code into
+  // the same error -- or, worse, succeeds under different bundling and hands
+  // out a verdict the plugin host (which propagates the same way) will never
+  // match. Terminal, with the real error, never the bundler ladder's.
+  if (loadErr) throw loadErr;
   // The fallback loaders evaluate the config in THIS process: re-assert the
   // pre-load NODE_ENV (a resolveConfig attempt above may have unset it).
   if (!process.env.NODE_ENV) process.env.NODE_ENV = defaultNodeEnv;
   if (/\.(ts|tsx|mts|cts)$/.test(configPath)) {
-    const bundled = await bundleViteConfigFile(configPath, appRoot, resolvePkg);
+    const bundled = await bundleViteConfigFile(configPath, appRoot);
     if (!bundled) {
       throw viteErr ?? new Error("no vite, esbuild, or rolldown available to load the TS vite.config");
     }

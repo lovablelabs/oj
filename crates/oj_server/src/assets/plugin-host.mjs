@@ -694,6 +694,9 @@ function externalizeDepsRolldownPlugin() {
         if (id.startsWith("node:") || id.startsWith("bun:") || isBuiltin(id)) {
           return { id, external: true };
         }
+        // npm: specifiers stay bare-external (Vite keeps them bare too); any
+        // other scheme-shaped id (data:, ...) is the bundler's to handle
+        // natively -- pathToFileURL on those would produce garbage.
         if (id.startsWith("npm:")) return { id, external: true };
         if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(id)) return null;
         let resolved = null;
@@ -754,12 +757,38 @@ function injectFileScopeVariablesRolldownPlugin() {
 // (the same two byte-identical copies again): stock Vite bundles configs with
 // esbuild, rolldown-vite with rolldown, and an app only carries the one its
 // vite uses -- hard-requiring esbuild turned a rolldown-vite app's config
-// failure into "Cannot find module 'esbuild'" (#215). `resolveSpec` resolves
-// a package specifier to a path or null; returns { code, deps } (deps as the
-// bundler reports them, resolvable against the app root), or null when
-// NEITHER bundler resolves -- the caller owns that error.
-async function bundleViteConfigFile(configPath, appRoot, resolveSpec) {
-  const esbuildPath = resolveSpec("esbuild");
+// failure into "Cannot find module 'esbuild'" (#215). Bundler SELECTION lives
+// in here so both shipped copies pick identically: the bundler vite itself
+// declares as a dependency wins over whichever happens to be installed (a
+// rolldown-vite app with a hoisted esbuild must bundle the way its own
+// `vite dev` would), and a missing preferred bundler falls back to the other.
+// Returns { code, deps } (deps as the bundler reports them, resolvable
+// against the app root), or null when NO bundler resolves -- the caller owns
+// that error.
+async function bundleViteConfigFile(configPath, appRoot) {
+  const req = createRequire(appRoot + "/package.json");
+  let vitePkgDir = null;
+  try {
+    vitePkgDir = dirname(req.resolve("vite/package.json"));
+  } catch {}
+  // The bundlers are vite's dependencies, not usually the app's own.
+  const resolveSpec = (spec) => {
+    try { return req.resolve(spec); } catch {}
+    if (vitePkgDir) {
+      try { return req.resolve(spec, { paths: [vitePkgDir] }); } catch {}
+    }
+    return null;
+  };
+  let viteDeps = null;
+  if (vitePkgDir) {
+    try {
+      viteDeps = JSON.parse(readFileSync(vitePkgDir + "/package.json", "utf8")).dependencies ?? null;
+    } catch {}
+  }
+  const preferRolldown = !!(viteDeps && viteDeps.rolldown);
+  let esbuildPath = preferRolldown ? null : resolveSpec("esbuild");
+  let rolldownPath = esbuildPath ? null : resolveSpec("rolldown");
+  if (!esbuildPath && !rolldownPath) esbuildPath = resolveSpec("esbuild");
   if (esbuildPath) {
     const esbuild = await import(pathToFileURL(esbuildPath).href);
     const result = await esbuild.build({
@@ -782,7 +811,6 @@ async function bundleViteConfigFile(configPath, appRoot, resolveSpec) {
     });
     return { code: result.outputFiles[0].text, deps: Object.keys(result.metafile?.inputs ?? {}) };
   }
-  const rolldownPath = resolveSpec("rolldown");
   if (!rolldownPath) return null;
   const { rolldown } = await import(pathToFileURL(rolldownPath).href);
   const bundle = await rolldown({
@@ -837,15 +865,7 @@ async function loadViteConfig(configPath) {
   }
   let mod;
   if (/\.(ts|tsx|mts|cts)$/.test(configPath)) {
-    const resolveSpec = (spec) => {
-      try { return req.resolve(spec); } catch {}
-      try {
-        // rolldown is the app's vite's dependency, not the app's own.
-        return req.resolve(spec, { paths: [dirname(req.resolve("vite/package.json"))] });
-      } catch {}
-      return null;
-    };
-    const bundled = await bundleViteConfigFile(configPath, appRoot, resolveSpec);
+    const bundled = await bundleViteConfigFile(configPath, appRoot);
     if (!bundled) {
       throw new Error(
         "cannot bundle the TS vite.config: neither esbuild nor rolldown is installed (the app's vite ships one of them)",

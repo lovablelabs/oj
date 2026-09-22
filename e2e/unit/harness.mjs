@@ -8,7 +8,8 @@
 //   - rpcSidecar:  long-lived newline-delimited JSON RPC over stdin/stdout
 //                  (plugin-host.mjs)
 
-import { execFileSync, spawn } from "node:child_process";
+import assert from "node:assert/strict";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -237,4 +238,114 @@ export function rpcSidecar(sidecarRel, { args = [], env, cwd, controlToken } = {
       }
     },
   };
+}
+
+// The monorepo config fixture the config-bundling suites share (issue #146's
+// shape): the config relatively imports a sibling workspace package's TS
+// source (inlined by the bundler), whose bare dep lives only under the
+// sibling's own node_modules (externalized by resolved path). `bundler` links
+// the start-app fixture's real esbuild or rolldown into the root.
+export function configMonorepoFixture({ prefix, bundler }) {
+  const fx = tmpProject({ prefix, linkEsbuild: bundler === "esbuild" });
+  if (bundler === "rolldown") linkRolldown(fx.root);
+  fx.write("app/package.json", JSON.stringify({ name: "app", type: "module" }));
+  fx.write(
+    "app/vite.config.ts",
+    `import { makePlugin, ojBase } from "../pkg/src/plugin";
+export default {
+  base: ojBase,
+  plugins: [makePlugin()],
+};
+`,
+  );
+  fx.write("pkg/package.json", JSON.stringify({ name: "pkg", type: "module" }));
+  fx.write(
+    "pkg/src/plugin.ts",
+    `import { fromDep } from "only-dep";
+export const ojBase = fromDep;
+export function makePlugin() {
+  return {
+    name: "pkg-plugin",
+    config() {
+      return { define: { __FROM_PKG__: JSON.stringify(fromDep) } };
+    },
+  };
+}
+`,
+  );
+  fx.write(
+    "pkg/node_modules/only-dep/package.json",
+    JSON.stringify({ name: "only-dep", version: "1.0.0", type: "module", main: "index.js" }),
+  );
+  fx.write("pkg/node_modules/only-dep/index.js", `export const fromDep = "/from-pkg-dep/";\n`);
+  return {
+    base: fx.root,
+    appRoot: path.join(fx.root, "app"),
+    configPath: path.join(fx.root, "app", "vite.config.ts"),
+    write: fx.write,
+    cleanup: fx.cleanup,
+  };
+}
+
+// Run a copy of the extractor from a throwaway dir, the way it runs from a
+// fresh cache dir: nothing from the fixture's nested node_modules is
+// resolvable from there, and its tmp bundle lands there, not in the assets
+// dir. Returns { json, stderr }. extract() reports a config that failed to
+// evaluate as { __ok: false } rather than throwing, so the wrapper exits 0
+// either way.
+const EXTRACT_WRAPPER = `
+import { writeSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [script, vite, root] = process.argv.slice(1);
+const { extract } = await import(pathToFileURL(script).href);
+const { __stderr = "", ...rest } = await extract({ vite, root, command: "serve", mode: "development", modeKind: "default" });
+if (__stderr) writeSync(2, __stderr);
+writeSync(1, JSON.stringify(rest));
+process.exit(0);
+`;
+export function runExtract(fx, { prefix = "oj-extract-run-" } = {}) {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    const script = path.join(runDir, "vite-extract.mjs");
+    fs.copyFileSync(asset("vite-extract.mjs"), script);
+    const r = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", EXTRACT_WRAPPER, script, fx.configPath, fx.appRoot],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 },
+    );
+    assert.equal(r.status, 0, `extractor exited ${r.status}; stderr:\n${r.stderr}`);
+    let json;
+    try {
+      json = JSON.parse(r.stdout);
+    } catch {
+      assert.fail(`extractor wrote unparseable output: ${r.stdout}\nstderr:\n${r.stderr}`);
+    }
+    return { json, stderr: r.stderr };
+  } finally {
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
+}
+
+// Boot a copy of the plugin host from a throwaway dir (the cache-dir shape:
+// its tmp config bundle lands next to the running script, and that must never
+// be the checked-in assets dir) on `fx.configPath` as a vite-format config.
+// The returned cleanup removes the run dir; callers still close() the host.
+export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const hostScript = path.join(runDir, "plugin-host.mjs");
+  fs.copyFileSync(asset("plugin-host.mjs"), hostScript);
+  const host = rpcSidecar(hostScript, {
+    args: [
+      fx.configPath,
+      JSON.stringify({
+        pluginsFormat: "vite",
+        config: { root: fx.appRoot },
+        env: { command: "serve", mode: "development" },
+        environment: { name: "client", mode: "dev" },
+      }),
+    ],
+    env: { OJ_CACHE_ROOT: fx.appRoot },
+    cwd: fx.appRoot,
+  });
+  return { host, cleanup: () => fs.rmSync(runDir, { recursive: true, force: true }) };
 }
