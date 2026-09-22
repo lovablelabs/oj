@@ -29,16 +29,19 @@ fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "srvproc
 fs.writeFileSync(path.join(app, "index.html"), "<!doctype html><html><body>ok</body></html>");
 fs.writeFileSync(
   path.join(app, "oj.plugins.mjs"),
-  `const probe = { addressAtConfigure: "unset", listening: false, port: null, fetchStatus: null, fetchError: null };
+  `const probe = { addressAtConfigure: "unset", urlsAtConfigure: "unset", listening: false, port: null, interface: null, urls: null, fetchStatus: null, fetchError: null };
 export default [{
   name: "test:server-process",
   configureServer(server) {
     const httpServer = server.httpServer;
     probe.addressAtConfigure = httpServer.address();
+    probe.urlsAtConfigure = server.resolvedUrls;
     httpServer.once("listening", async () => {
       probe.listening = true;
       const address = httpServer.address();
       probe.port = address && address.port;
+      probe.interface = address && address.address;
+      probe.urls = server.resolvedUrls;
       try {
         const res = await fetch("http://127.0.0.1:" + probe.port + "/", {
           headers: { accept: "text/html" },
@@ -80,8 +83,18 @@ try {
     await sleep(200);
   }
   assert.equal(probe.addressAtConfigure, null, "address() must be null before the socket is bound (Vite parity)");
+  assert.equal(probe.urlsAtConfigure, null, "resolvedUrls is null until listen (Vite parity)");
   assert.equal(probe.listening, true, `"listening" never fired: ${JSON.stringify(probe)}`);
   assert.equal(probe.port, port, `address().port must be the real bound port: ${JSON.stringify(probe)}`);
+  assert.ok(
+    probe.interface === "127.0.0.1" || probe.interface === "::1",
+    `address().address is the real bind interface: ${JSON.stringify(probe)}`,
+  );
+  assert.deepEqual(
+    probe.urls && probe.urls.local,
+    [`http://localhost:${port}/`],
+    `resolvedUrls is set before listening callbacks run: ${JSON.stringify(probe)}`,
+  );
   assert.equal(probe.fetchError, null, `the listening-time self-dial failed: ${JSON.stringify(probe)}`);
   assert.equal(probe.fetchStatus, 200, `the listening-time self-dial got ${probe.fetchStatus}`);
   console.log("listening parity ok:", JSON.stringify(probe));

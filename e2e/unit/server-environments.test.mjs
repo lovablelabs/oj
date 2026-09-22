@@ -32,9 +32,11 @@ test("configureServer sees client/ssr environments, an addressable httpServer an
          seen.ssrHasPlugins = Array.isArray(envs.ssr.plugins);
          seen.ssrContainer = typeof envs.ssr.pluginContainer.resolveId === "function";
          seen.address = server.httpServer.address();
+         seen.urlsAtConfigure = server.resolvedUrls;
          server.httpServer.once("listening", () => {
            seen.listening = true;
            seen.addressAtListening = server.httpServer.address();
+           seen.urlsAtListening = server.resolvedUrls;
          });
          seen.unknownIsUndefined = server.moduleGraph.getModuleById("\\0never-seen") === undefined;
          seen.unknownFileIsUndefined = server.moduleGraph.getModuleById(${JSON.stringify(path.join(fx.root, "src", "missing.js"))}) === undefined;
@@ -77,11 +79,17 @@ test("configureServer sees client/ssr environments, an addressable httpServer an
     // address() is null (Vite's listen() runs after createServer); it carries
     // the dev port only once "listening" has fired.
     assert.equal(seen.address, null, "httpServer.address() is null before the socket is bound");
+    assert.equal(seen.urlsAtConfigure, null, "resolvedUrls is null until listen (Vite: set on listen)");
     assert.equal(seen.listening, true, 'httpServer.once("listening") fires after configureServer');
     assert.deepEqual(
       seen.addressAtListening,
       { address: "127.0.0.1", family: "IPv4", port: 6402 },
       "httpServer.address() is the dev port once listening",
+    );
+    assert.deepEqual(
+      seen.urlsAtListening,
+      { local: ["http://localhost:6402/"], network: [], networkInterfaceNames: [] },
+      "resolvedUrls is resolved before listening callbacks run (Vite prepends its handler)",
     );
     assert.equal(seen.unknownIsUndefined, true, "getModuleById(unknown virtual id) is undefined like Vite");
     assert.equal(seen.unknownFileIsUndefined, true, "getModuleById(missing file) is undefined");

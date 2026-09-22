@@ -681,10 +681,16 @@ pub async fn bind_dev_listener(
         let addr = SocketAddr::from((host, port));
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
-                let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+                let local = listener.local_addr();
+                let bound = local.as_ref().map(|a| a.port()).unwrap_or(port);
+                let interface = local
+                    .as_ref()
+                    .map(|a| a.ip().to_string())
+                    .unwrap_or_else(|_| host.to_string());
                 // The plugin hosts' stub httpServer emits "listening" on this
-                // (Vite parity: the event means the socket really accepts).
-                plugins::dev_listener_bound(bound);
+                // (Vite parity: the event means the socket really accepts,
+                // and address() reports the real bind).
+                plugins::dev_listener_bound(bound, &interface);
                 return Ok((listener, bound));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {

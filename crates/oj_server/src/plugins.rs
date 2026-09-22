@@ -1190,24 +1190,26 @@ pub struct PluginHost {
     self_ref: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
 }
 
-/// The dev listener's bound port, once [`dev_listener_bound`] ran. Hosts that
-/// boot (or revive) after the bind read it in `ignite`; hosts already up are
-/// announced to directly through [`LIVE_HOSTS`].
-static DEV_LISTENER_PORT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The dev listener's bound (port, interface), once [`dev_listener_bound`]
+/// ran. Hosts that boot (or revive) after the bind read it in `ignite`; hosts
+/// already up are announced to directly through [`LIVE_HOSTS`].
+static DEV_LISTENER: Mutex<Option<(u16, String)>> = Mutex::new(None);
 /// Every spawned host, weakly: the bind-time announce must reach hosts that
 /// booted before the listener existed (the normal boot order).
 static LIVE_HOSTS: Mutex<Vec<std::sync::Weak<PluginHost>>> = Mutex::new(Vec::new());
 
-/// oj's dev listener is bound: remember the port for hosts yet to boot and
+/// oj's dev listener is bound: remember the address for hosts yet to boot and
 /// tell every live one. The host's stub `httpServer` emits Vite's
 /// listen()-time "listening" on this signal — plugins wait on that event
 /// before dialing the server (Vite emits it only once the socket really
-/// accepts), so emitting it any earlier hands them a port nobody answers.
-pub fn dev_listener_bound(port: u16) {
-    DEV_LISTENER_PORT.store(u32::from(port), std::sync::atomic::Ordering::SeqCst);
+/// accepts), so emitting it any earlier hands them a port nobody answers. The
+/// interface travels along because Vite's `address()` is node's: it reports
+/// the real bind, not the configured host.
+pub fn dev_listener_bound(port: u16, interface: &str) {
+    *DEV_LISTENER.lock().unwrap() = Some((port, interface.to_string()));
     LIVE_HOSTS.lock().unwrap().retain(|w| match w.upgrade() {
         Some(host) => {
-            host.announce_dev_listener(port);
+            host.announce_dev_listener(port, interface);
             true
         }
         None => false,
@@ -1768,9 +1770,9 @@ impl PluginHost {
                 // revived) after the dev listener bound missed the bind-time
                 // announce — deliver it now.
                 Ok(_) => {
-                    let port = DEV_LISTENER_PORT.load(std::sync::atomic::Ordering::SeqCst);
-                    if port != 0 {
-                        boot_ref.announce_dev_listener(port as u16);
+                    let listener = DEV_LISTENER.lock().unwrap().clone();
+                    if let Some((port, interface)) = listener {
+                        boot_ref.announce_dev_listener(port, &interface);
                     }
                 }
                 Err(oj_js::EngineError::Closed) => {}
@@ -2029,10 +2031,13 @@ impl PluginHost {
     /// Fire-and-forget `serverListening` delivery (see [`dev_listener_bound`]):
     /// a failure only means this host's plugins never see "listening", which
     /// is also what a host death means for them.
-    fn announce_dev_listener(self: &std::sync::Arc<Self>, port: u16) {
+    fn announce_dev_listener(self: &std::sync::Arc<Self>, port: u16, interface: &str) {
         let host = std::sync::Arc::clone(self);
+        let interface = interface.to_string();
         tokio::spawn(async move {
-            let _ = host.call("serverListening", &[&port.to_string()]).await;
+            let _ = host
+                .call("serverListening", &[&port.to_string(), &interface])
+                .await;
         });
     }
 

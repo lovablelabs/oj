@@ -13,6 +13,7 @@ import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format as formatUtil, stripVTControlCharacters } from "node:util";
 import { EventEmitter } from "node:events";
+import os from "node:os";
 
 // IN-PROCESS mode: oj's embedded engine seeds `globalThis.__ojPluginHost`
 // (what used to be argv + spawn env) before importing this module, and the
@@ -1423,16 +1424,99 @@ let devServer = null;
 // emit stays at configureServer end, as before.
 let ojDevListenerBound = false;
 let ojDevListenerPort = null;
+let ojDevListenerAddress = null;
 let ojConfigureServerDone = false;
-async function ojAnnounceDevListener(port) {
+async function ojAnnounceDevListener(port, address) {
   ojDevListenerBound = true;
   if (Number.isFinite(port) && port > 0) ojDevListenerPort = port;
+  if (typeof address === "string" && address) ojDevListenerAddress = address;
   const httpServer = devServer && devServer.httpServer;
   if (!ojConfigureServerDone || !httpServer || httpServer.listening) return;
-  httpServer.emit("listening");
+  ojEmitListening(devServer);
   // A listening callback may have registered middleware or upgrade listeners
   // that the setup-time check saw none of; give them the forwarding server.
   await ensureConfigureServerMiddleware();
+}
+
+// Vite sets `server.resolvedUrls` in a PREPENDED "listening" handler
+// (server/index.ts listen()), so every plugin's own listening callback can
+// already read it; mirror that ordering by resolving right before the emit.
+function ojEmitListening(server) {
+  try {
+    server.resolvedUrls = ojResolveServerUrls();
+  } catch {}
+  server.httpServer.emit("listening");
+}
+
+// Vite's constants.ts loopbackHosts / wildcardHosts.
+const OJ_LOOPBACK_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "0000:0000:0000:0000:0000:0000:0000:0001",
+]);
+const OJ_WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "0000:0000:0000:0000:0000:0000:0000:0000"]);
+
+// Vite's utils.ts resolveHostname, minus the async localhost-vs-DNS probe
+// (it only reorders the printed name on machines where the two disagree; the
+// terminal URLs are oj's own, printed by Rust).
+function ojResolveHostname(optionsHost) {
+  let host;
+  if (optionsHost === undefined || optionsHost === null || optionsHost === false) host = "localhost";
+  else if (optionsHost === true) host = undefined;
+  else host = optionsHost;
+  const name = host === undefined || OJ_WILDCARD_HOSTS.has(host) ? "localhost" : host;
+  return { host, name };
+}
+
+// Vite's utils.ts resolveServerUrls over the announced (or configured) port,
+// minus the https-cert hostname extraction (the stub carries no httpsOptions).
+function ojResolveServerUrls() {
+  const cfg = resolvedConfig ?? initial.config ?? {};
+  const serverCfg = cfg.server ?? {};
+  const port = ojDevListenerPort ?? serverCfg.port;
+  if (!port) return { local: [], network: [], networkInterfaceNames: [] };
+  const hostname = ojResolveHostname(serverCfg.host);
+  const protocol = serverCfg.https ? "https" : "http";
+  const rawBase = cfg.rawBase ?? cfg.base;
+  const base = rawBase == null || rawBase === "./" || rawBase === "" ? "/" : rawBase;
+  const local = [];
+  const network = [];
+  const networkInterfaceNames = [];
+  if (hostname.host !== undefined && !OJ_WILDCARD_HOSTS.has(hostname.host)) {
+    let name = hostname.name;
+    if (name.includes(":")) name = `[${name}]`;
+    const url = `${protocol}://${name}:${port}${base}`;
+    if (OJ_LOOPBACK_HOSTS.has(hostname.host)) {
+      local.push(url);
+    } else {
+      network.push(url);
+      let interfaceName;
+      for (const [ifName, nInterface] of Object.entries(os.networkInterfaces())) {
+        if ((nInterface ?? []).some((detail) => detail.address === hostname.host)) {
+          interfaceName = ifName;
+          break;
+        }
+      }
+      networkInterfaceNames.push(interfaceName);
+    }
+  } else {
+    for (const [ifName, nInterface] of Object.entries(os.networkInterfaces())) {
+      for (const detail of nInterface ?? []) {
+        if (!detail.address || detail.family !== "IPv4") continue;
+        let hostPart = detail.address.replace("127.0.0.1", hostname.name);
+        if (hostPart.includes(":")) hostPart = `[${hostPart}]`;
+        const url = `${protocol}://${hostPart}:${port}${base}`;
+        if (detail.address.includes("127.0.0.1")) {
+          local.push(url);
+        } else {
+          network.push(url);
+          networkInterfaceNames.push(ifName);
+        }
+      }
+    }
+  }
+  return { local, network, networkInterfaceNames };
 }
 let appVite = null;
 async function loadAppVite() {
@@ -1924,13 +2008,17 @@ function stubHttpServer() {
     s.removeListener = remove;
     s.off = remove;
   }
-  // Vite parity: null until the socket is bound, the REAL bound port after
-  // (auto-increment can move it off the configured one). The config-port
-  // fallback only serves the direct-drive node mode, which has no announce.
+  // Vite parity: null until the socket is bound; after that node reports the
+  // REAL bound interface and port (auto-increment can move the port off the
+  // configured one, and the interface is the bind's, not the config's). The
+  // config fallbacks only serve the direct-drive node mode, which has no
+  // announce.
   s.address = () => {
     if (!listening) return null;
     const bound = ojDevListenerPort ?? (port || null);
-    return bound ? { address: host, family: host.includes(":") ? "IPv6" : "IPv4", port: bound } : null;
+    if (!bound) return null;
+    const address = ojDevListenerAddress ?? host;
+    return { address, family: address.includes(":") ? "IPv6" : "IPv4", port: bound };
   };
   s.listen = () => s;
   s.close = (cb) => { if (typeof cb === "function") cb(); return s; };
@@ -2323,10 +2411,29 @@ async function setupConfigureServer() {
     config: resolvedConfig,
     middlewares,
     httpServer: stubHttpServer(),
+    // Vite: "will be set on listen" (server/index.ts), null until then.
+    resolvedUrls: null,
     ws: wsApi,
     hot: wsApi,
     watcher: fileWatcher,
     moduleGraph,
+    // Vite's printUrls (logger.ts printServerUrls), uncolored: the host's
+    // logger is a stderr shim, not a TTY. Same pre-listen error as Vite's.
+    printUrls() {
+      if (!server.resolvedUrls) {
+        throw new Error("Cannot print server URLs before server.listen is called.");
+      }
+      const logger = server.config && server.config.logger;
+      const info =
+        logger && typeof logger.info === "function"
+          ? logger.info.bind(logger)
+          : (msg) => process.stderr.write(`${msg}\n`);
+      for (const url of server.resolvedUrls.local) info(`  ➜  Local:   ${url}`);
+      server.resolvedUrls.network.forEach((url, index) => {
+        const interfaceName = (server.resolvedUrls.networkInterfaceNames ?? [])[index];
+        info(`  ➜  Network: ${url}${interfaceName ? `  ${interfaceName}` : ""}`);
+      });
+    },
     // Vite restarts the dev server (re-reading the config); oj re-execs itself,
     // which is how it already handles a config-file change.
     restart: async () => ojServerEvent("restart"),
@@ -2458,7 +2565,7 @@ async function setupConfigureServer() {
   // `serverListening` hook — possibly already arrived (emit now then). Under
   // plain node (the direct-drive unit tests) no announce exists, so the emit
   // stays here like the old host's.
-  if (!ojEnginePost || ojDevListenerBound) server.httpServer.emit("listening");
+  if (!ojEnginePost || ojDevListenerBound) ojEmitListening(server);
   await ensureConfigureServerMiddleware();
 }
 
@@ -3122,9 +3229,9 @@ async function writeBundle(bundleJson, isWrite) {
 
 async function run(hook, args) {
   if (hook === "serverListening") {
-    // oj's dev listener is bound (args[0] = the real port): fire the stub
-    // httpServer's "listening" — Vite's listen()-time signal.
-    await ojAnnounceDevListener(Number(args[0]));
+    // oj's dev listener is bound (args = [port, interface address]): fire the
+    // stub httpServer's "listening" — Vite's listen()-time signal.
+    await ojAnnounceDevListener(Number(args[0]), args[1]);
     return null;
   }
   if (hook === "seedChunkNames") {
