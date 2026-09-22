@@ -675,25 +675,122 @@ function injectFileScopeVariablesPlugin() {
   };
 }
 
-async function loadViteConfig(configPath) {
-  const appRoot = initial.config?.root ?? process.cwd();
+// Rolldown twins of the two esbuild config-bundling plugins above (the same
+// two byte-identical copies again): an app whose vite is rolldown-vite ships
+// rolldown, not esbuild, so the direct config bundle must speak both APIs.
+// Semantics mirror the esbuild pair exactly -- resolve every bare import from
+// its importer, keep builtins/npm: bare-external, externalize resolved
+// node_modules deps as file:// URLs, and bundle TS sources, first-party files
+// and .json inline -- in the hook shapes rolldown-vite's own bundleConfigFile
+// installs (a filtered `resolveId` and a filtered `transform`).
+function externalizeDepsRolldownPlugin() {
+  const warned = new Set();
+  return {
+    name: "externalize-deps",
+    resolveId: {
+      filter: { id: /^[^./#]/ },
+      async handler(id, importer) {
+        if (!importer || isAbsolute(id)) return null;
+        if (id.startsWith("node:") || id.startsWith("bun:") || isBuiltin(id)) {
+          return { id, external: true };
+        }
+        // npm: specifiers stay bare-external (Vite keeps them bare too); any
+        // other scheme-shaped id (data:, ...) is the bundler's to handle
+        // natively -- pathToFileURL on those would produce garbage.
+        if (id.startsWith("npm:")) return { id, external: true };
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(id)) return null;
+        let resolved = null;
+        try {
+          // skipSelf defaults on: this.resolve never re-enters this hook.
+          resolved = await this.resolve(id, importer);
+        } catch {}
+        if (!resolved || !resolved.id) {
+          // Unresolvable here; keep the bare id external (see the esbuild
+          // twin: it may still resolve at import time), saying so once.
+          if (!warned.has(id)) {
+            warned.add(id);
+            process.stderr.write(
+              `oj: vite.config: could not resolve "${id}" imported from ${importer}; kept as a bare import that must resolve when the bundled config loads\n`,
+            );
+          }
+          return { id, external: true };
+        }
+        if (resolved.external) return { id: resolved.id, external: true };
+        // Another resolver's virtual namespace is not ours to externalize.
+        if (resolved.id.startsWith("\0")) return null;
+        if (
+          /\.(?:ts|tsx|mts|cts)$/.test(resolved.id) ||
+          !/[\\/]node_modules[\\/]/.test(resolved.id) ||
+          resolved.id.endsWith(".json")
+        ) {
+          return resolved.id;
+        }
+        return { id: pathToFileURL(resolved.id).href, external: true };
+      },
+    },
+  };
+}
+function injectFileScopeVariablesRolldownPlugin() {
+  return {
+    name: "inject-file-scope-variables",
+    transform: {
+      filter: { id: /\.[cm]?[jt]sx?$/ },
+      handler(code, id) {
+        const inject =
+          `const __vite_injected_original_dirname = ${JSON.stringify(dirname(id))};` +
+          `const __vite_injected_original_filename = ${JSON.stringify(id)};` +
+          `const __vite_injected_original_import_meta_url = ${JSON.stringify(pathToFileURL(id).href)};`;
+        let injected;
+        if (code.startsWith("#!")) {
+          const nl = code.indexOf("\n");
+          injected = nl === -1 ? code + "\n" + inject : code.slice(0, nl + 1) + inject + code.slice(nl + 1);
+        } else {
+          injected = inject + code;
+        }
+        return { code: injected, map: null };
+      },
+    },
+  };
+}
+
+// Vite's bundleConfigFile, for whichever bundler the app's vite lineage ships
+// (the same two byte-identical copies again): stock Vite bundles configs with
+// esbuild, rolldown-vite with rolldown, and an app only carries the one its
+// vite uses -- hard-requiring esbuild turned a rolldown-vite app's config
+// failure into "Cannot find module 'esbuild'" (#215). Bundler SELECTION lives
+// in here so both shipped copies pick identically: the bundler vite itself
+// declares as a dependency wins over whichever happens to be installed (a
+// rolldown-vite app with a hoisted esbuild must bundle the way its own
+// `vite dev` would), and a missing preferred bundler falls back to the other.
+// Returns { code, deps } (deps as the bundler reports them, resolvable
+// against the app root), or null when NO bundler resolves -- the caller owns
+// that error.
+async function bundleViteConfigFile(configPath, appRoot) {
   const req = createRequire(appRoot + "/package.json");
+  let vitePkgDir = null;
   try {
-    const vite = await import(req.resolve("vite"));
-    if (typeof vite.loadConfigFromFile === "function") {
-      const loaded = await vite.loadConfigFromFile(
-        { command: env.command, mode: env.mode },
-        configPath,
-        appRoot,
-      );
-      if (loaded && loaded.config) return loaded.config;
+    vitePkgDir = dirname(req.resolve("vite/package.json"));
+  } catch {}
+  // The bundlers are vite's dependencies, not usually the app's own.
+  const resolveSpec = (spec) => {
+    try { return req.resolve(spec); } catch {}
+    if (vitePkgDir) {
+      try { return req.resolve(spec, { paths: [vitePkgDir] }); } catch {}
     }
-  } catch (e) {
-    process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} vite.loadConfigFromFile unavailable (${e}); bundling config directly\n`);
+    return null;
+  };
+  let viteDeps = null;
+  if (vitePkgDir) {
+    try {
+      viteDeps = JSON.parse(readFileSync(vitePkgDir + "/package.json", "utf8")).dependencies ?? null;
+    } catch {}
   }
-  let mod;
-  if (/\.(ts|tsx|mts|cts)$/.test(configPath)) {
-    const esbuild = await import(req.resolve("esbuild"));
+  const preferRolldown = !!(viteDeps && viteDeps.rolldown);
+  let esbuildPath = preferRolldown ? null : resolveSpec("esbuild");
+  let rolldownPath = esbuildPath ? null : resolveSpec("rolldown");
+  if (!esbuildPath && !rolldownPath) esbuildPath = resolveSpec("esbuild");
+  if (esbuildPath) {
+    const esbuild = await import(pathToFileURL(esbuildPath).href);
     const result = await esbuild.build({
       entryPoints: [configPath],
       bundle: true,
@@ -707,10 +804,73 @@ async function loadViteConfig(configPath) {
       plugins: [externalizeDepsPlugin(), injectFileScopeVariablesPlugin()],
       write: false,
       sourcemap: false,
+      metafile: true,
       logLevel: "silent",
       absWorkingDir: appRoot,
       define: CONFIG_BUNDLE_DEFINES,
     });
+    return { code: result.outputFiles[0].text, deps: Object.keys(result.metafile?.inputs ?? {}) };
+  }
+  if (!rolldownPath) return null;
+  const { rolldown } = await import(pathToFileURL(rolldownPath).href);
+  const bundle = await rolldown({
+    input: configPath,
+    platform: "node",
+    cwd: appRoot,
+    // Node's resolver shape, as above (platform "node" already pins the
+    // "node" condition in rolldown).
+    resolve: { mainFields: ["main"] },
+    transform: { define: CONFIG_BUNDLE_DEFINES },
+    treeshake: false,
+    // No tsconfig discovery for config files, as in Vite's bundleConfigFile.
+    tsconfig: false,
+    logLevel: "silent",
+    plugins: [externalizeDepsRolldownPlugin(), injectFileScopeVariablesRolldownPlugin()],
+  });
+  let output;
+  try {
+    ({ output } = await bundle.generate({ format: "esm", sourcemap: false, codeSplitting: false }));
+  } finally {
+    await bundle.close();
+  }
+  const entry = output.find((c) => c.type === "chunk" && c.isEntry);
+  return {
+    code: entry.code,
+    deps: output.flatMap((c) => (c.type === "chunk" ? c.moduleIds : [])).filter((m) => !m.startsWith("\0")),
+  };
+}
+
+async function loadViteConfig(configPath) {
+  const appRoot = initial.config?.root ?? process.cwd();
+  const req = createRequire(appRoot + "/package.json");
+  let vite = null;
+  try {
+    vite = await import(req.resolve("vite"));
+  } catch (e) {
+    process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} vite unavailable (${e}); bundling config directly\n`);
+  }
+  if (vite && typeof vite.loadConfigFromFile === "function") {
+    // From here on a throw is the config's OWN failure: vite bundled the file
+    // with its own bundler and ran it, exactly as `vite dev` would have.
+    // Re-bundling re-runs the same code into the same error -- and when the
+    // fallback bundler is missing, buries it under a bundler error ("Cannot
+    // find module 'esbuild'", #215) -- so propagate it instead, as Vite's
+    // loadConfigFromFile itself rethrows.
+    const loaded = await vite.loadConfigFromFile(
+      { command: env.command, mode: env.mode },
+      configPath,
+      appRoot,
+    );
+    if (loaded && loaded.config) return loaded.config;
+  }
+  let mod;
+  if (/\.(ts|tsx|mts|cts)$/.test(configPath)) {
+    const bundled = await bundleViteConfigFile(configPath, appRoot);
+    if (!bundled) {
+      throw new Error(
+        "cannot bundle the TS vite.config: neither esbuild nor rolldown is installed (the app's vite ships one of them)",
+      );
+    }
     // A unique path per process: the config extractor bundles the same config
     // into this directory concurrently at boot, and two writers on one filename
     // made either importer see a truncated bundle.
@@ -718,7 +878,7 @@ async function loadViteConfig(configPath) {
       dirname(fileURLToPath(import.meta.url)),
       `oj-vite-config-${process.pid}-${Math.random().toString(36).slice(2)}.tmp.mjs`,
     );
-    writeFileSync(out, result.outputFiles[0].text);
+    writeFileSync(out, bundled.code);
     try {
       mod = await import(pathToFileURL(out).href);
     } finally {

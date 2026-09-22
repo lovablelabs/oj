@@ -1247,6 +1247,27 @@ struct ReviveState {
     /// `try_revive`); addons some other engine's teardown orphaned are not
     /// this host's to reload and never block it.
     pending_before: std::collections::HashSet<PathBuf>,
+    /// Whether this generation's death has already been declared. One wedge
+    /// times out EVERY in-flight call's belt at once (parallel workers poll
+    /// them before the first `host_gone` flip lands), and each would print
+    /// its own "treating the plugin host as gone" line — and worse,
+    /// re-snapshot `pending_before` AFTER the abandon, folding the dead
+    /// generation's own orphans into it and defeating the revive gate.
+    /// Reset by each revive.
+    reported: bool,
+}
+
+/// Whether this death report is the one that declares its generation gone:
+/// the first report for the live generation wins; a stale generation's
+/// report and every duplicate for an already-declared generation are
+/// dropped (see [`ReviveState::reported`]). Serialized by the caller
+/// holding the `revive` lock.
+fn first_death_report(revive: &mut ReviveState, generation: u64) -> bool {
+    if revive.generation != generation || revive.reported {
+        return false;
+    }
+    revive.reported = true;
+    true
 }
 
 /// Respawns per host lifetime (see `ReviveState::attempts`).
@@ -1667,6 +1688,7 @@ impl PluginHost {
                 attempts: 0,
                 last: None,
                 pending_before: std::collections::HashSet::new(),
+                reported: false,
             }),
             shut_down: std::sync::atomic::AtomicBool::new(false),
             self_ref: std::sync::OnceLock::new(),
@@ -2000,6 +2022,7 @@ impl PluginHost {
         revive.attempts += 1;
         revive.last = Some(std::time::Instant::now());
         revive.generation += 1;
+        revive.reported = false;
         eprintln!(
             "oj: respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
             revive.attempts
@@ -2248,7 +2271,7 @@ impl PluginHost {
     /// and must not kill the replacement.
     fn declare_gone(&self, why: &str, generation: u64) {
         let mut revive = self.revive.lock().unwrap();
-        if revive.generation != generation {
+        if !first_death_report(&mut revive, generation) {
             return;
         }
         // Snapshot the addons ALREADY orphaned before this death, so the
@@ -2868,6 +2891,30 @@ mod vite_values_tests {
         let boot = call_init_deadline(false, spawned, wait, now);
         assert_eq!(boot, spawned + wait, "the boot deadline stays shared and spawn-anchored");
         assert!(boot <= now, "sanity: the boot deadline has elapsed for this call");
+    }
+
+    // One wedge fires every in-flight call's belt at once, and each reports
+    // the same death: only the FIRST report per generation declares the host
+    // gone (one log line, one pending_before snapshot), duplicates and stale
+    // generations are dropped, and a revived generation reports fresh.
+    #[test]
+    fn only_the_first_death_report_per_generation_declares_the_host_gone() {
+        let mut revive = ReviveState {
+            generation: 3,
+            attempts: 0,
+            last: None,
+            pending_before: std::collections::HashSet::new(),
+            reported: false,
+        };
+        assert!(first_death_report(&mut revive, 3), "the first report wins");
+        assert!(!first_death_report(&mut revive, 3), "a concurrent belt's duplicate is dropped");
+        assert!(!first_death_report(&mut revive, 2), "a stale generation's report is dropped");
+        // A revive bumps the generation and re-arms reporting (try_revive).
+        revive.generation += 1;
+        revive.reported = false;
+        assert!(!first_death_report(&mut revive, 3), "the dead generation stays declared");
+        assert!(first_death_report(&mut revive, 4), "the fresh generation reports its own death");
+        assert!(!first_death_report(&mut revive, 4), "once");
     }
 
     // An oj.config.json that sets one ssr key (noExternal) must not drop the
