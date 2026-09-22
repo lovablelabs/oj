@@ -1,0 +1,25 @@
+"use strict"; return ((function () {
+const { core } = __bootstrap;
+const lazyInspector = core.createLazyLoader("node:inspector");
+const { promisify } = core.loadExtScript("ext:deno_node/internal/util.mjs");
+
+const inspector = lazyInspector().default;
+
+class Session extends inspector.Session {
+  constructor() {
+    super();
+  }
+}
+Session.prototype.post = promisify(inspector.Session.prototype.post);
+
+return {
+  close: inspector.close,
+  console: inspector.console,
+  DOMStorage: inspector.DOMStorage,
+  Network: inspector.Network,
+  open: inspector.open,
+  Session,
+  url: inspector.url,
+  waitForDebugger: inspector.waitForDebugger,
+};
+})());

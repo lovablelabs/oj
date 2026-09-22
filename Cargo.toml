@@ -14,6 +14,7 @@ members = [
     "crates/oj_wasm",
     "crates/oj_deno_napi",
     "crates/oj_deno_runtime",
+    "crates/oj_deno_snapshots",
 ]
 
 [workspace.package]

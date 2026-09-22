@@ -1,0 +1,11 @@
+"use strict"; return ((function() {
+  const { DTRACE_HTTP_CLIENT_REQUEST = (..._args)=>{}, DTRACE_HTTP_CLIENT_RESPONSE = (..._args)=>{}, DTRACE_HTTP_SERVER_REQUEST = (..._args)=>{}, DTRACE_HTTP_SERVER_RESPONSE = (..._args)=>{}, DTRACE_NET_SERVER_CONNECTION = (..._args)=>{}, DTRACE_NET_STREAM_END = (..._args)=>{} } = {};
+  return {
+    DTRACE_HTTP_CLIENT_REQUEST,
+    DTRACE_HTTP_CLIENT_RESPONSE,
+    DTRACE_HTTP_SERVER_REQUEST,
+    DTRACE_HTTP_SERVER_RESPONSE,
+    DTRACE_NET_SERVER_CONNECTION,
+    DTRACE_NET_STREAM_END
+  };
+})());
