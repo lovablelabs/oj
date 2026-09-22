@@ -1432,7 +1432,7 @@ async function ojAnnounceDevListener(port, address) {
   if (typeof address === "string" && address) ojDevListenerAddress = address;
   const httpServer = devServer && devServer.httpServer;
   if (!ojConfigureServerDone || !httpServer || httpServer.listening) return;
-  ojEmitListening(devServer);
+  await ojEmitListening(devServer);
   // A listening callback may have registered middleware or upgrade listeners
   // that the setup-time check saw none of; give them the forwarding server.
   await ensureConfigureServerMiddleware();
@@ -1441,10 +1441,24 @@ async function ojAnnounceDevListener(port, address) {
 // Vite sets `server.resolvedUrls` in a PREPENDED "listening" handler
 // (server/index.ts listen()), so every plugin's own listening callback can
 // already read it; mirror that ordering by resolving right before the emit.
-function ojEmitListening(server) {
+// Vite also runs the client buildStart before the socket listens (initServer
+// inside the wrapped httpServer.listen), so under Vite "listening" implies
+// buildStart settled — gate the in-process emit the same way. oj's Rust
+// listener serves regardless, so a failed buildStart logs (inside the gate)
+// and the emit still fires instead of stranding listening waiters, the same
+// degrade-not-die stance the gated serving hooks take.
+async function ojEmitListening(server) {
+  if (ojEnginePost) await gateOnBuildStart();
+  // A second announce (bind and ignite both deliver on close races) can pass
+  // the caller's `listening` check while this one is parked on the gate;
+  // node fires "listening" once per listen, so re-check past the await.
+  if (server.httpServer.listening) return;
   try {
     server.resolvedUrls = ojResolveServerUrls();
-  } catch {}
+  } catch (e) {
+    // A null resolvedUrls at listening breaks Vite's guarantee: say why.
+    process.stderr.write(`${OJ} plugin host: resolvedUrls failed: ${(e && e.message) || e}\n`);
+  }
   server.httpServer.emit("listening");
 }
 
@@ -2433,6 +2447,10 @@ async function setupConfigureServer() {
         const interfaceName = (server.resolvedUrls.networkInterfaceNames ?? [])[index];
         info(`  ➜  Network: ${url}${interfaceName ? `  ${interfaceName}` : ""}`);
       });
+      const optionsHost = (server.config && server.config.server && server.config.server.host) ?? undefined;
+      if (server.resolvedUrls.network.length === 0 && optionsHost === undefined) {
+        info("  ➜  Network: use --host to expose");
+      }
     },
     // Vite restarts the dev server (re-reading the config); oj re-execs itself,
     // which is how it already handles a config-file change.
@@ -2559,14 +2577,22 @@ async function setupConfigureServer() {
     }
   }
   ojConfigureServerDone = true;
+  // The middleware server exists as soon as configureServer registered
+  // anything, like Vite's connect stack exists at createServer — never
+  // behind the emit below, whose buildStart gate may be slow.
+  await ensureConfigureServerMiddleware();
   // Vite's listen() comes after createServer (configureServer included), so
   // `once("listening")` handlers registered above fire when the socket is
   // really bound. In-process that bind is oj's, announced through the
   // `serverListening` hook — possibly already arrived (emit now then). Under
   // plain node (the direct-drive unit tests) no announce exists, so the emit
   // stays here like the old host's.
-  if (!ojEnginePost || ojDevListenerBound) ojEmitListening(server);
-  await ensureConfigureServerMiddleware();
+  if (!ojEnginePost || ojDevListenerBound) {
+    await ojEmitListening(server);
+    // Listening callbacks may have registered the first middleware or
+    // upgrade listeners; on this path no later announce re-checks.
+    await ensureConfigureServerMiddleware();
+  }
 }
 
 function ojPushServeInfo() {
