@@ -45,8 +45,20 @@
         url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_simdutf_release_${rustyV8Target.${pkgs.stdenv.hostPlatform.system}}.a.gz";
         hash = rustyV8Hashes.${pkgs.stdenv.hostPlatform.system};
       };
+      # Pinned V8 snapshot bundles (issue #211): snapshot CREATION is not
+      # run-deterministic (rusty_v8 serializes live embedder memory into the
+      # blob), so reproducible builds consume a prebuilt per-target bundle via
+      # crates/oj_deno_snapshots. Regenerate with tools/gen-snapshot-pin.sh
+      # after a deno_runtime / deno_core / rusty_v8 bump (the build fails with
+      # a manifest mismatch until regenerated). Systems without a pin build
+      # the snapshot live, like plain cargo does — their output is then not
+      # bit-reproducible, which only the darwin cache's two-builder agreement
+      # actually requires today.
+      snapshotPins = {
+        aarch64-darwin = ./snapshot-pins/aarch64-apple-darwin;
+      };
       mkOj = pkgs:
-        pkgs.rustPlatform.buildRustPackage {
+        pkgs.rustPlatform.buildRustPackage ({
           pname = "oj";
           inherit version src;
           # All dependencies are crates.io; the checked-in lockfile is the
@@ -66,8 +78,12 @@
           '';
           cargoBuildFlags = [ "--manifest-path" "${src}/Cargo.toml" "-p" "oj" ];
           # bindgenHook provides libclang for libsqlite3-sys (a deno_runtime
-          # transitive dep) whose build script runs bindgen.
-          nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook ];
+          # transitive dep) whose build script runs bindgen. nukeReferences
+          # breaks the compile-time-only store-path references (see postFixup).
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook pkgs.nukeReferences ]
+            # signIfRequired for the post-nuke re-sign; patchelf for the RUNPATH keep-list.
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.autoSignDarwinBinariesHook ]
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.patchelf ];
           buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           RUSTY_V8_ARCHIVE = rustyV8Archive pkgs;
           # The build directory name varies between nix implementations (and is
@@ -105,6 +121,48 @@
               exit 1
             fi
           '';
+          # Compiling from store paths embeds $src and vendor-crate store paths
+          # in the binary, and the reference scanner would promote the whole
+          # vendor tree (~1.2GiB) to a RUNTIME dependency of every consumer.
+          # The strings are compile-time-only (deno_core reads them while
+          # building the snapshot; dead bytes at runtime — a crates.io-built oj
+          # carries ~/.cargo paths and runs fine without them), so break the
+          # references: nuke-refs rewrites their hash part to a constant,
+          # keeping the bytes deterministic while restoring the ~170MiB
+          # closure. The binary's REAL link-time references (dylib install
+          # names, the ELF interpreter and RUNPATH) are collected first and
+          # kept. Runs in postFixup, i.e. after darwin's auto-signing, so the
+          # mutated binary is re-signed explicitly.
+          postFixup = ''
+            keep=""
+            if [ "$(uname)" = Darwin ]; then
+              for p in $(otool -L "$out/bin/oj" | grep -o '/nix/store/[a-z0-9]\{32\}-[^/ ]*' | sort -u); do
+                keep="$keep -e $p"
+              done
+            else
+              for p in $( (patchelf --print-rpath "$out/bin/oj" | tr ':' '\n'; patchelf --print-interpreter "$out/bin/oj" 2>/dev/null) | grep -o '^/nix/store/[a-z0-9]\{32\}-[^/]*' | sort -u ); do
+                keep="$keep -e $p"
+              done
+            fi
+            nuke-refs $keep "$out/bin/oj"
+            for bad in "$cargoDeps" ${src}; do
+              h=$(basename "$bad" | cut -c1-32)
+              if grep -aqF "$h" "$out/bin/oj"; then
+                echo "error: build-input store path $bad still referenced from bin/oj after nuke-refs" >&2
+                exit 1
+              fi
+            done
+            if [ "$(uname)" = Darwin ]; then
+              if type -t signIfRequired > /dev/null; then
+                signIfRequired "$out/bin/oj"
+              elif command -v codesign > /dev/null; then
+                codesign -f -s - "$out/bin/oj"
+              else
+                echo "error: no darwin signing helper available after mutating bin/oj" >&2
+                exit 1
+              fi
+            fi
+          '';
           # The test suite drives real Node sidecars and network fixtures; it
           # runs in CI, not inside the sandboxed nix build.
           doCheck = false;
@@ -114,7 +172,9 @@
             license = nixpkgs.lib.licenses.mit;
             mainProgram = "oj";
           };
-        };
+        } // nixpkgs.lib.optionalAttrs (snapshotPins ? ${pkgs.stdenv.hostPlatform.system}) {
+          OJ_SNAPSHOT_ARCHIVE = snapshotPins.${pkgs.stdenv.hostPlatform.system};
+        });
     in
     {
       packages = forAllSystems (pkgs: rec {
