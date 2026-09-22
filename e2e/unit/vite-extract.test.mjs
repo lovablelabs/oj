@@ -481,4 +481,23 @@ test("NODE_ENV-rule and externalizeDepsPlugin twins are byte-identical across th
     block("plugin-host.mjs", extRE, "externalizeDepsPlugin"),
     "the two externalizeDepsPlugin copies drifted — keep them byte-identical",
   );
+  // The dual-bundler block (#215): the rolldown twins of the two esbuild
+  // config-bundling plugins, plus the bundler-selecting bundleViteConfigFile.
+  for (const [re, what] of [
+    [/\nfunction externalizeDepsRolldownPlugin\(\) \{\n[\s\S]*?\n\}\n/, "externalizeDepsRolldownPlugin"],
+    [
+      /\nfunction injectFileScopeVariablesRolldownPlugin\(\) \{\n[\s\S]*?\n\}\n/,
+      "injectFileScopeVariablesRolldownPlugin",
+    ],
+    [
+      /\nasync function bundleViteConfigFile\(configPath, appRoot, resolveSpec\) \{\n[\s\S]*?\n\}\n/,
+      "bundleViteConfigFile",
+    ],
+  ]) {
+    assert.equal(
+      block("vite-extract.mjs", re, what),
+      block("plugin-host.mjs", re, what),
+      `the two ${what} copies drifted — keep them byte-identical`,
+    );
+  }
 });

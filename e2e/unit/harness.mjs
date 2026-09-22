@@ -31,6 +31,22 @@ export function testWithEsbuild(test) {
     : (name, fn) => test(name, { skip: "fixture esbuild not installed" }, () => {});
 }
 
+// Same convention for rolldown (vite 8's bundler, hoisted by the start-app
+// fixture install): the config-bundler fallback tests need the real thing.
+const rolldownSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/rolldown");
+export const hasRolldownFixture = () => fs.existsSync(rolldownSrc);
+export function testWithRolldown(test) {
+  return hasRolldownFixture()
+    ? test
+    : (name, fn) => test(name, { skip: "fixture rolldown not installed" }, () => {});
+}
+// Symlink the fixture's rolldown into a tmpProject's node_modules (Node
+// resolves its native bindings from the symlink's realpath, next to the real
+// package).
+export function linkRolldown(fxRoot) {
+  fs.symlinkSync(rolldownSrc, path.join(fxRoot, "node_modules", "rolldown"));
+}
+
 // A throwaway project dir with a node_modules/ and package.json. `linkEsbuild`
 // symlinks the fixture's real esbuild (+ @esbuild binary) in, so the optimizer
 // resolves it without a per-test install.
