@@ -682,6 +682,9 @@ pub async fn bind_dev_listener(
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
                 let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+                // The plugin hosts' stub httpServer emits "listening" on this
+                // (Vite parity: the event means the socket really accepts).
+                plugins::dev_listener_bound(bound);
                 return Ok((listener, bound));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {

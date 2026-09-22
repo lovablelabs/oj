@@ -97,9 +97,11 @@ const initial = JSON.parse((ojEngineBoot ? ojEngineBoot.initialJson : process.ar
 // - `process.cwd()` pins to the app root, where the old child ran (plugins
 //   build cwd-relative filters from it). `process.chdir` moves only the
 //   shadow: a real chdir would move EVERY engine in the process.
-// - `process.exit` throws instead of exiting: in-process, a plugin calling it
-//   would take oj down; throwing fails that one hook, as close as the old
-//   "the host process died" gets without killing the server.
+// - `process.exit` really exits, taking oj down: that is Vite's contract
+//   (plugins share the server process), and supervisor-style plugins rely on
+//   it to force a supervised respawn of a wedged dev server. A stderr line
+//   names the caller's intent first, since oj dying without one would read as
+//   a crash.
 // - stdout is oj's own protocol-free terminal now: the old spawn PIPED the
 //   host's stdout and dropped unframed lines, so plugin stdout prints were
 //   swallowed; route them (console.log included — Deno's console does not go
@@ -134,8 +136,12 @@ if (ojEngineBoot) {
     };
   } catch {}
   try {
+    const realExit = process.exit.bind(process);
     process.exit = (code) => {
-      throw new Error(`oj plugin host: process.exit(${code ?? 0}) ignored (in-process host)`);
+      try {
+        process.stderr.write(`${OJ} plugin host: a plugin called process.exit(${code ?? 0}); exiting\n`);
+      } catch {}
+      realExit(code ?? 0);
     };
   } catch {}
   try {
@@ -1408,6 +1414,26 @@ let runnerEnvironmentsBuilt = false;
 // The ViteDevServer stand-in handed to configureServer; hotUpdate/handleHotUpdate
 // contexts carry it as `server` (plugins call server.ws.send / moduleGraph on it).
 let devServer = null;
+// Vite emits the http server's "listening" only when the socket is really
+// bound (createServer runs configureServer, listen() comes after). In-process,
+// oj binds AFTER this host boots, and announces the bound port with a
+// `serverListening` hook call; the stub emits then, so a plugin's
+// once("listening") fetch of its own server connects instead of being refused.
+// Under plain node (the direct-drive unit tests) no announce exists and the
+// emit stays at configureServer end, as before.
+let ojDevListenerBound = false;
+let ojDevListenerPort = null;
+let ojConfigureServerDone = false;
+async function ojAnnounceDevListener(port) {
+  ojDevListenerBound = true;
+  if (Number.isFinite(port) && port > 0) ojDevListenerPort = port;
+  const httpServer = devServer && devServer.httpServer;
+  if (!ojConfigureServerDone || !httpServer || httpServer.listening) return;
+  httpServer.emit("listening");
+  // A listening callback may have registered middleware or upgrade listeners
+  // that the setup-time check saw none of; give them the forwarding server.
+  await ensureConfigureServerMiddleware();
+}
 let appVite = null;
 async function loadAppVite() {
   if (appVite) return appVite;
@@ -1898,7 +1924,14 @@ function stubHttpServer() {
     s.removeListener = remove;
     s.off = remove;
   }
-  s.address = () => (port ? { address: host, family: host.includes(":") ? "IPv6" : "IPv4", port } : null);
+  // Vite parity: null until the socket is bound, the REAL bound port after
+  // (auto-increment can move it off the configured one). The config-port
+  // fallback only serves the direct-drive node mode, which has no announce.
+  s.address = () => {
+    if (!listening) return null;
+    const bound = ojDevListenerPort ?? (port || null);
+    return bound ? { address: host, family: host.includes(":") ? "IPv6" : "IPv4", port: bound } : null;
+  };
   s.listen = () => s;
   s.close = (cb) => { if (typeof cb === "function") cb(); return s; };
   Object.defineProperty(s, "listening", { get: () => listening });
@@ -2418,12 +2451,36 @@ async function setupConfigureServer() {
       process.stderr.write(`${OJ} plugin host: post configureServer skipped: ${(e && e.message) || e}\n`);
     }
   }
-  // oj listens as soon as the host is ready (before any hook request arrives);
-  // `httpServer.once("listening")` handlers registered in configureServer fire
-  // here like they would under Vite's listen().
-  server.httpServer.emit("listening");
+  ojConfigureServerDone = true;
+  // Vite's listen() comes after createServer (configureServer included), so
+  // `once("listening")` handlers registered above fire when the socket is
+  // really bound. In-process that bind is oj's, announced through the
+  // `serverListening` hook — possibly already arrived (emit now then). Under
+  // plain node (the direct-drive unit tests) no announce exists, so the emit
+  // stays here like the old host's.
+  if (!ojEnginePost || ojDevListenerBound) server.httpServer.emit("listening");
+  await ensureConfigureServerMiddleware();
+}
+
+function ojPushServeInfo() {
+  ctl({ ojServeInfo: { middlewarePort, runnerEnvironments: runnerEnvironmentsBuilt } });
+}
+
+// The forwarding middleware server, created once plugin middleware or upgrade
+// listeners exist. Usually both are known by configureServer end; a plugin
+// that only registers them inside a "listening" callback (in-process: fired
+// at oj's bind announce) gets the server created then, with the serve info
+// re-pushed so Rust starts forwarding.
+let ojMiddlewareServerStarted = false;
+async function ensureConfigureServerMiddleware() {
+  if (ojMiddlewareServerStarted || !devServer) return;
+  const server = devServer;
+  const middlewares = server.middlewares;
+  const stack = middlewares.stack;
+  const fileWatcher = server.watcher;
   const upgradeListeners = server.httpServer._upgradeListeners || [];
   if (stack.length === 0 && upgradeListeners.length === 0) return;
+  ojMiddlewareServerStarted = true;
 
   const srv = http.createServer((req, res) => {
     // The browser's Host travels as x-oj-host (hyper owns the loopback Host):
@@ -2495,6 +2552,9 @@ async function setupConfigureServer() {
   await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
   middlewarePort = srv.address().port;
   process.stderr.write(`${OJ} plugin host: configureServer middleware on :${middlewarePort}\n`);
+  // A late creation (post-boot listening callback) must reach Rust: the boot
+  // push already went out without this port.
+  if (env.command !== "build") ojPushServeInfo();
 }
 // Under plain node the push is re-sent until the driver ACKs ({ ojServeInfoAck }
 // on stdin): the serve info is a one-shot, state-bearing push, and a copy
@@ -2515,14 +2575,12 @@ if (env.command !== "build") {
   // reaches Rust whenever the host comes up, however late, and Rust flips to
   // the middleware then (it also flips Rust's "initialized" gate for RPC
   // timeouts).
-  const pushServeInfo = () =>
-    ctl({ ojServeInfo: { middlewarePort, runnerEnvironments: runnerEnvironmentsBuilt } });
-  pushServeInfo();
+  ojPushServeInfo();
   if (!ojEnginePost) {
     let repushes = 0;
     serveInfoRepush = setInterval(() => {
       if (++repushes > 120) return stopServeInfoRepush();
-      pushServeInfo();
+      ojPushServeInfo();
     }, 1000);
   }
 }
@@ -3063,6 +3121,12 @@ async function writeBundle(bundleJson, isWrite) {
 }
 
 async function run(hook, args) {
+  if (hook === "serverListening") {
+    // oj's dev listener is bound (args[0] = the real port): fire the stub
+    // httpServer's "listening" — Vite's listen()-time signal.
+    await ojAnnounceDevListener(Number(args[0]));
+    return null;
+  }
   if (hook === "seedChunkNames") {
     try {
       const m = JSON.parse(args[0] ?? "{}");
