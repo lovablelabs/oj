@@ -115,7 +115,7 @@ version = "0.167.0"
 # stripped on publish; a published copy resolves by version from crates.io.
 [dependencies.deno_napi]
 package = "oj_deno_napi"
-version = "0.2.4"
+version = "0.2.5"
 path = "../oj_deno_napi"
 
 [dependencies.deno_net]
