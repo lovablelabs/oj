@@ -142,11 +142,11 @@ fn file_digest(path: &Path) -> String {
 
 fn env_epoch(root: &Path) -> String {
     let mut hasher = blake3::Hasher::new();
+    hasher.update(b"lockfiles");
+    hasher.update(&[0]);
+    hasher.update(crate::lockfile_digest(root).digest.as_bytes());
+    hasher.update(&[0]);
     for name in [
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "bun.lockb",
         "package.json",
         ".env",
         ".env.local",

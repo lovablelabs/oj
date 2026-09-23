@@ -1054,14 +1054,7 @@ fn codegen_store(
     marker: Option<&str>,
 ) -> oj_cache::start_codegen::StartCodegenStore {
     let mut extra = std::fs::read(cache.join(script)).unwrap_or_default();
-    for name in [
-        "tsr.config.json",
-        "package.json",
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "bun.lockb",
-    ] {
+    for name in ["tsr.config.json", "package.json"] {
         if let Ok(bytes) = std::fs::read(root.join(name)) {
             extra.extend_from_slice(name.as_bytes());
             extra.push(0);
@@ -1069,6 +1062,10 @@ fn codegen_store(
             extra.push(0);
         }
     }
+    extra.extend_from_slice(b"lockfiles");
+    extra.push(0);
+    extra.extend_from_slice(oj_cache::lockfile_digest(root).digest.as_bytes());
+    extra.push(0);
     oj_cache::start_codegen::StartCodegenStore::new(
         root,
         kind,

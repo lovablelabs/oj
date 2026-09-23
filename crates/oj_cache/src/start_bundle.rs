@@ -500,12 +500,12 @@ impl StartBundleStore {
 
 fn epoch(root: &Path, mode: &str) -> String {
     let mut hasher = blake3::Hasher::new();
+    hasher.update(b"lockfiles");
+    hasher.update(&[0]);
+    hasher.update(crate::lockfile_digest(root).digest.as_bytes());
+    hasher.update(&[0]);
     let mode_env = [format!(".env.{mode}"), format!(".env.{mode}.local")];
     for name in [
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "bun.lockb",
         "package.json",
         "vite.config.ts",
         "vite.config.js",

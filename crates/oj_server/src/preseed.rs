@@ -41,49 +41,17 @@ fn stamp_key() -> String {
     )
 }
 
-/// Files that stand in for "the installed dependency tree changed". A
-/// superset of Vite's own lockfile lookup on purpose: this stamp is only
-/// compared against itself, so extra sensitivity can at worst re-run the
-/// child (which then performs Vite's exact freshness check and exits).
-const LOCKFILE_CANDIDATES: &[&str] = &[
-    "node_modules/.pnpm/lock.yaml",
-    "node_modules/.package-lock.json",
-    "node_modules/.yarn-state.yml",
-    "node_modules/.yarn-integrity",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "bun.lock",
-    "bun.lockb",
-    "deno.lock",
-    ".pnp.cjs",
-    ".pnp.js",
-    ".rush/temp/shrinkwrap-deps.json",
-];
-
-/// A digest of the dependency-tree manifests, Vite-style lookup: walk up from
-/// the root, stop at the first directory holding any candidate, hash them all.
+/// A digest of the dependency-tree manifests: the shared memoized lockfile
+/// digest (Vite-style lookup, walking up from the root). A superset of Vite's
+/// own lockfile lookup on purpose: this stamp is only compared against itself,
+/// so extra sensitivity can at worst re-run the child (which then performs
+/// Vite's exact freshness check and exits).
 fn lockfile_stamp(root: &Path) -> String {
-    let mut dir = Some(root);
-    while let Some(d) = dir {
-        let mut hasher = blake3::Hasher::new();
-        let mut found = false;
-        for name in LOCKFILE_CANDIDATES {
-            let p = d.join(name);
-            if let Ok(bytes) = std::fs::read(&p) {
-                found = true;
-                hasher.update(name.as_bytes());
-                hasher.update(&[0]);
-                hasher.update(&bytes);
-                hasher.update(&[0]);
-            }
-        }
-        if found {
-            return hasher.finalize().to_hex().to_string();
-        }
-        dir = d.parent();
+    let lock = oj_cache::lockfile_digest(root);
+    if lock.dir.is_none() {
+        return "none".to_string();
     }
-    "none".to_string()
+    lock.digest.to_hex().to_string()
 }
 
 fn file_digest(path: &Path) -> Option<String> {

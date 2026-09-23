@@ -141,57 +141,44 @@ pub fn optimizer_main_fields(config: &oj_config::OjConfig) -> Vec<String> {
     )
 }
 
-/// Vite's lockfileFormats (optimizer/index.ts): the lockfile a package manager
-/// writes, paired with the patch-package directory whose mtime must also
-/// invalidate the prebundle (`checkPatchesDir`).
-const LOCKFILES: &[(&str, Option<&str>)] = &[
-    ("node_modules/.pnpm/lock.yaml", None),
-    ("node_modules/.package-lock.json", Some("patches")),
-    ("node_modules/.yarn-state.yml", None),
-    ("bun.lock", Some("patches")),
-    (".rush/temp/shrinkwrap-deps.json", None),
-    ("aube-lock.yaml", None),
-    ("nub.lock", Some("patches")),
-    (".pnp.cjs", Some(".yarn/patches")),
-    (".pnp.js", Some(".yarn/patches")),
-    ("node_modules/.yarn-integrity", Some("patches")),
-    ("bun.lockb", Some("patches")),
-    // Top-level lockfiles oj has always keyed on (Vite reads the installed
-    // node_modules mirrors above instead; hashing both is a superset).
-    ("package-lock.json", Some("patches")),
-    ("yarn.lock", Some(".yarn/patches")),
-    ("pnpm-lock.yaml", None),
-    ("deno.lock", None),
-];
+/// Vite's lockfileFormats (optimizer/index.ts): the patch-package directory
+/// whose mtime must also invalidate the prebundle when this lockfile is
+/// present (`checkPatchesDir`). The lockfile list itself is the canonical
+/// `oj_cache::lockfiles::LOCKFILE_NAMES`.
+fn patches_dir(lockfile: &str) -> Option<&'static str> {
+    match lockfile {
+        "node_modules/.package-lock.json"
+        | "node_modules/.yarn-integrity"
+        | "bun.lock"
+        | "bun.lockb"
+        | "nub.lock"
+        | "package-lock.json" => Some("patches"),
+        ".pnp.cjs" | ".pnp.js" | "yarn.lock" => Some(".yarn/patches"),
+        _ => None,
+    }
+}
 
-/// Fold every lockfile found in the nearest ancestor directory that has one
-/// (Vite's lookupFile walks up from root), plus the mtime of its patch-package
-/// directory, into `hasher`.
+/// Fold the shared lockfile digest (nearest ancestor directory with one, as
+/// Vite's lookupFile walks up from root), plus the mtime of each present
+/// lockfile's patch-package directory, into `hasher`.
 fn hash_lockfiles(root: &Path, hasher: &mut blake3::Hasher) {
-    let mut dir = Some(root);
-    while let Some(d) = dir {
-        let mut found = false;
-        for (name, patches) in LOCKFILES {
-            if let Ok(bytes) = std::fs::read(d.join(name)) {
-                found = true;
-                hasher.update(name.as_bytes());
-                hasher.update(&bytes);
-                if let Some(patches) = patches {
-                    if let Ok(meta) = std::fs::metadata(d.join(patches)) {
-                        if meta.is_dir() {
-                            if let Ok(mtime) = meta.modified() {
-                                hasher.update(b"\0p");
-                                hasher.update(format!("{mtime:?}").as_bytes());
-                            }
-                        }
-                    }
+    let lock = oj_cache::lockfile_digest(root);
+    hasher.update(lock.digest.as_bytes());
+    let Some(dir) = &lock.dir else {
+        return;
+    };
+    for name in &lock.found {
+        let Some(patches) = patches_dir(name) else {
+            continue;
+        };
+        if let Ok(meta) = std::fs::metadata(dir.join(patches)) {
+            if meta.is_dir() {
+                if let Ok(mtime) = meta.modified() {
+                    hasher.update(b"\0p");
+                    hasher.update(format!("{mtime:?}").as_bytes());
                 }
             }
         }
-        if found {
-            return;
-        }
-        dir = d.parent();
     }
 }
 

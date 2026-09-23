@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod config_extract;
 pub mod integrity;
+pub mod lockfiles;
 pub mod start_bundle;
+
+pub use lockfiles::{lockfile_digest, LockfileDigest};
 
 use serde::{Deserialize, Serialize};
 
