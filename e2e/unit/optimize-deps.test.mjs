@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { linkRolldown, testWithRolldown } from "./harness.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..", "..");
@@ -46,13 +47,42 @@ const pkg = (nm, root, main, files) => {
   for (const [f, c] of Object.entries(files)) fs.writeFileSync(path.join(dir, f), c);
 };
 
-function fixture() {
+// `bundler`: "esbuild" links the fixture's esbuild into the app; "rolldown" is
+// the Vite 8 shape -- no esbuild anywhere, rolldown only as a dependency of the
+// app's vite; "none" links neither.
+function fixture({ bundler = "esbuild" } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdeps-"));
   fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
+  if (bundler === "esbuild") {
+    fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
+    const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
+    if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
+  } else if (bundler === "rolldown") {
+    const vite = path.join(root, "node_modules", "vite");
+    fs.mkdirSync(vite, { recursive: true });
+    fs.writeFileSync(
+      path.join(vite, "package.json"),
+      JSON.stringify({ name: "vite", version: "8.0.0", dependencies: { rolldown: "*" }, peerDependencies: { esbuild: "*" } }),
+    );
+    linkRolldown(vite);
+  }
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx" }));
+  // proj4 + geographiclib-geodesic in miniature: an ES-module dep with a named
+  // import from a UMD whose names only exist once its factory runs.
+  pkg("geodesiclike", root, "g.min.js", {
+    "g.min.js":
+      `(function(cb){var geodesic={Geodesic:{WGS84:{a:6378137}}};cb(geodesic);})(function(geo){` +
+      `if(typeof module==="object"&&module.exports){module.exports=geo;}` +
+      `else if(typeof define==="function"&&define.amd){define([],function(){return geo;});}` +
+      `else{window.geodesic=geo;}});\n`,
+  });
+  pkg("proj4like", root, "index.js", {
+    "index.js": `import { Geodesic } from "geodesiclike";\nexport const semiMajor = () => Geodesic.WGS84.a;\n`,
+  });
+  fs.writeFileSync(
+    path.join(root, "node_modules", "proj4like", "package.json"),
+    JSON.stringify({ name: "proj4like", version: "1.0.0", type: "module", main: "index.js" }),
+  );
 
   pkg("defprop", root, "index.js", {
     "index.js":
@@ -83,8 +113,15 @@ function fixture() {
   return root;
 }
 
-it("optimize-deps: scans + pre-bundles CJS deps with correct interop", async () => {
-  const root = fixture();
+const testRolldown = testWithRolldown(test);
+// Each bundler-agnostic case runs on esbuild and on rolldown (Vite 8, no esbuild).
+const bothBundlers = (name, fn) => {
+  it(`${name} [esbuild]`, () => fn("esbuild"));
+  testRolldown(`${name} [rolldown, no esbuild]`, () => fn("rolldown"));
+};
+
+bothBundlers("optimize-deps: scans + pre-bundles CJS deps with correct interop", async (bundler) => {
+  const root = fixture({ bundler });
   const outDir = path.join(root, ".oj-cache", "deps");
   const cfg = JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], autoDiscover: true });
   const { metadata } = runOptimize(cfg);
@@ -107,6 +144,81 @@ it("optimize-deps: scans + pre-bundles CJS deps with correct interop", async () 
   assert.equal(plain.default.b, 2);
 
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+bothBundlers("optimize-deps: an ESM dep's named import from a UMD dep is bundled (proj4/Geodesic)", async (bundler) => {
+  const root = fixture({ bundler });
+  const outDir = path.join(root, ".oj-cache", "deps");
+  const { metadata } = runOptimize({ root, outDir, include: ["proj4like"] });
+  assert.equal(metadata.proj4like?.needsInterop, false, "an ESM entry needs no interop");
+  assert.ok(metadata.proj4like.exports.includes("semiMajor"), JSON.stringify(metadata.proj4like));
+  // Linking the bundle is what failed in the browser ("does not provide an
+  // export named 'Geodesic'"); running it proves the UMD value came through.
+  const mod = await import(pathToFileURL(path.join(outDir, metadata.proj4like.file)).href);
+  assert.equal(mod.semiMajor(), 6378137);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// react + react-dom in miniature: rolldown's react-dom imports from react.mjs,
+// so the named-export proxy must not replace that file.
+bothBundlers("optimize-deps: a deduped CJS dep required by another keeps both linkable", async (bundler) => {
+  const root = fixture({ bundler });
+  pkg("corelib", root, "index.js", { "index.js": `exports.version = "1";\nexports.make = () => 42;\n` });
+  pkg("domlib", root, "index.js", {
+    "index.js": `var core = require("corelib");\nexports.render = () => core.make() + 1;\n`,
+  });
+  const outDir = path.join(root, ".oj-cache", "deps");
+  const { metadata } = runOptimize({ root, outDir, include: ["corelib", "domlib"], dedupe: ["corelib", "domlib"] });
+  try {
+    const load = (dep) => import(pathToFileURL(path.join(outDir, metadata[dep].file)).href);
+    const dom = await load("domlib");
+    assert.equal(dom.render(), 43, "the requirer links and runs against the shared bundle");
+    const core = await load("corelib");
+    assert.equal(core.make(), 42, "named exports on the deduped proxy");
+    assert.equal(core.default.version, "1");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// rolldown's napi binding needs symbols only the oj binary exports, so drive
+// the real binary's `js-eval` (see rolldown-under-engine.test.mjs).
+const ojBin = path.join(repo, "target", "debug", "oj");
+const testRolldownEngine = fs.existsSync(ojBin) ? testRolldown : (name) => test(name, { skip: "target/debug/oj not built" }, () => {});
+testRolldownEngine("optimize-deps: the rolldown pre-bundle runs on oj's embedded engine", async () => {
+  const root = fixture({ bundler: "rolldown" });
+  const outDir = path.join(root, ".oj-cache", "deps");
+  const probe = path.join(root, "probe.mjs");
+  fs.writeFileSync(
+    probe,
+    `const { optimize } = await import(${JSON.stringify(pathToFileURL(sidecar).href)});\n` +
+      `export default await optimize(${JSON.stringify({ root, outDir, include: ["proj4like", "plaincjs"] })});\n`,
+  );
+  try {
+    const { metadata } = JSON.parse(execFileSync(ojBin, ["js-eval", probe, "--root", root], { encoding: "utf8", timeout: 120_000 }));
+    assert.equal(metadata.plaincjs?.needsInterop, true, JSON.stringify(metadata));
+    assert.equal(metadata.proj4like?.needsInterop, false, JSON.stringify(metadata));
+    const mod = await import(pathToFileURL(path.join(outDir, metadata.proj4like.file)).href);
+    assert.equal(mod.semiMajor(), 6378137);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("optimize-deps: with neither esbuild nor rolldown the pre-bundle fails naming both", () => {
+  const root = fixture({ bundler: "none" });
+  try {
+    assert.throws(
+      () =>
+        execFileSync("node", ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, JSON.stringify({ root, outDir: path.join(root, "out") })], {
+          encoding: "utf8",
+          stdio: "pipe",
+        }),
+      (e) => /neither esbuild nor rolldown found/.test(String(e.stderr)),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it("optimize-deps: resolves tsconfig `paths` with /* and externalizes a dep's CSS/font", async () => {

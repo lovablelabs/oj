@@ -84,6 +84,9 @@ jobs:
       - name: ESM dependency's bare import of a UMD-main sibling (detect-gpu shape)
         if: matrix.mode == 'unbundled'
         run: node e2e/dep-esm-bare-import.mjs
+      - name: ESM dependency's named import from a UMD dependency (proj4/Geodesic shape)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/dep-esm-umd-interop.mjs
       - name: ssr streaming prod build + hydration
         if: matrix.mode == 'unbundled'
         run: node e2e/ssr-prod.mjs
