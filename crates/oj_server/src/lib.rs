@@ -322,6 +322,16 @@ struct ServerState {
     /// reconnects): index 0 verifies, index 1 is `secure: false`.
     proxy_tls: [std::sync::OnceLock<Result<std::sync::Arc<rustls::ClientConfig>, String>>; 2],
     virtual_modules: std::collections::BTreeMap<String, String>,
+    /// Plugin `resolveId` results per (specifier, importer), so a warm request
+    /// for a plugin-served module skips that RPC. Cleared with the compile
+    /// cache below on watcher changes and plugin invalidations; misses are not
+    /// cached (a plugin may start resolving an id after new state registers).
+    plugin_resolve_cache: Mutex<HashMap<(String, String), String>>,
+    /// Compiled plugin-served modules keyed by the hash of the source `load`
+    /// returned (plus id and route). `load` still runs per request, so a plugin
+    /// whose in-memory state changed recompiles naturally: the state change
+    /// changes the source, which changes the key.
+    plugin_code_cache: Mutex<HashMap<String, Arc<String>>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
     jsx: oj_compiler::JsxConfig,
     host_policy: HostPolicy,
@@ -1269,6 +1279,8 @@ impl DevServer {
             http_insecure: std::sync::OnceLock::new(),
             proxy_tls: [std::sync::OnceLock::new(), std::sync::OnceLock::new()],
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
+            plugin_resolve_cache: Mutex::new(HashMap::new()),
+            plugin_code_cache: Mutex::new(HashMap::new()),
             jsx_overrides,
             jsx,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),
@@ -3900,7 +3912,7 @@ async fn serve_path(
 
     if let Some(hex) = uri.path().strip_prefix("/@presolve/") {
         let id = hex_decode(hex).unwrap_or_default();
-        return serve_plugin_resolve(&state, &id).await;
+        return serve_plugin_resolve(&state, &id, &headers).await;
     }
 
     if let Some(seg) = uri.path().strip_prefix("/@id/") {
@@ -3910,7 +3922,7 @@ async fn serve_path(
             .and_then(|q| q.strip_prefix("importer="))
             .map(decode_at_id)
             .unwrap_or_default();
-        return serve_plugin_id(&state, &spec, &importer).await;
+        return serve_plugin_id(&state, &spec, &importer, &headers).await;
     }
 
     let file = if let Some(abs) = uri.path().strip_prefix("/@fs") {
@@ -3930,7 +3942,7 @@ async fn serve_path(
                 {
                     return resp;
                 }
-                if let Some(resp) = serve_plugin_load_fallback(&state, &uri).await {
+                if let Some(resp) = serve_plugin_load_fallback(&state, &uri, &headers).await {
                     return resp;
                 }
                 // Vite's htmlFallback: `/dir/` serves `dir/index.html` and `/page`
@@ -5715,6 +5727,14 @@ async fn compile_tailwind(
 /// request recompiles, re-running plugin transforms) and, for a file in the app,
 /// propagates an HMR update exactly as a change to that file would; a virtual id
 /// only loses its cache, as in Vite (plugins push their own ws message then).
+/// Drops the memoized plugin RPC results and compiled plugin modules. Called on
+/// any watcher change and on the plugin invalidate events: either can change
+/// what `resolveId` answers or what a compile's specifier rewrites resolve to.
+fn clear_plugin_request_caches(state: &ServerState) {
+    state.plugin_resolve_cache.lock().unwrap().clear();
+    state.plugin_code_cache.lock().unwrap().clear();
+}
+
 async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &serde_json::Value) {
     match ev.get("action").and_then(|a| a.as_str()) {
         Some("restart") => {
@@ -5724,6 +5744,7 @@ async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &serde_json::V
         Some("invalidateAll") => {
             state.mtime_keys.lock().unwrap().clear();
             state.memory.lock().unwrap().clear();
+            clear_plugin_request_caches(state);
             let _ = state
                 .reload_tx
                 .send(full_reload_frame("plugin invalidateAll", None, None));
@@ -5732,6 +5753,7 @@ async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &serde_json::V
             let Some(id) = ev.get("id").and_then(|i| i.as_str()) else {
                 return;
             };
+            clear_plugin_request_caches(state);
             let clean = id.split('?').next().unwrap_or(id);
             let path = Path::new(clean);
             let url = if path.is_absolute() && path.starts_with(&state.root) {
@@ -6780,7 +6802,52 @@ fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Option<Respon
     Some(Redirect::temporary(&url).into_response())
 }
 
-async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
+/// The cache key (and ETag identity) for a plugin-served module: the route tag
+/// separates the three serving paths (their rewrite closures differ), the id
+/// scopes the importer baked into `/@id/` fallback urls, and the source hash
+/// carries the plugin's actual output.
+fn plugin_code_key(route: &str, id: &str, source: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(route.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(id.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(source.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn plugin_etag(key: &str) -> String {
+    format!("\"{}\"", &key[..16])
+}
+
+/// Mirrors serve_compiled's conditional-request handling for plugin modules.
+fn plugin_not_modified(headers: &HeaderMap, etag: &str) -> Option<Response> {
+    let inm = headers.get(header::IF_NONE_MATCH)?.to_str().ok()?;
+    (inm == etag).then(|| {
+        (
+            StatusCode::NOT_MODIFIED,
+            [
+                (header::ETAG, etag.to_string()),
+                (header::CACHE_CONTROL, "no-cache".to_string()),
+            ],
+        )
+            .into_response()
+    })
+}
+
+fn plugin_js_response(etag: String, code: String) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript".to_string()),
+            (header::CACHE_CONTROL, "no-cache".to_string()),
+            (header::ETAG, etag),
+        ],
+        code,
+    )
+        .into_response()
+}
+
+async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str, headers: &HeaderMap) -> Response {
     let Some(host) = &state.plugins else {
         return (StatusCode::NOT_FOUND, "oj: no plugin host").into_response();
     };
@@ -6794,19 +6861,26 @@ async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
         }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
+    let key = plugin_code_key("presolve", id, &source);
+    let etag = plugin_etag(&key);
+    if let Some(resp) = plugin_not_modified(headers, &etag) {
+        return resp;
+    }
+    if let Some(code) = state.plugin_code_cache.lock().unwrap().get(&key).cloned() {
+        return plugin_js_response(etag, (*code).clone());
+    }
     let dep_map = state.optimized.ready().await;
     let root = state.root.clone();
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let virtual_ids: std::collections::BTreeSet<String> =
-        state.virtual_modules.keys().cloned().collect();
+    let virtual_state = Arc::clone(state);
     let plugin_fallback = state.plugins.is_some();
     let importer_abs = format!("\0{id}");
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
         let mut rewrite = |spec: &str| {
-            if virtual_ids.contains(spec) {
+            if virtual_state.virtual_modules.contains_key(spec) {
                 return Some(format!("/@virtual/{spec}"));
             }
             if let Some(meta) = dep_map.get(spec) {
@@ -6840,14 +6914,14 @@ async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
     })
     .await;
     match compiled {
-        Ok(Ok(code)) => (
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            code,
-        )
-            .into_response(),
+        Ok(Ok(code)) => {
+            state
+                .plugin_code_cache
+                .lock()
+                .unwrap()
+                .insert(key, Arc::new(code.clone()));
+            plugin_js_response(etag, code)
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -6890,7 +6964,42 @@ fn browser_external_stub(spec: &str) -> Response {
         .into_response()
 }
 
-async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -> Response {
+/// The memoized `resolveId` RPC. Only successful resolutions are cached: a
+/// plugin can start claiming an id once another module's transform registers
+/// state, so a miss must keep asking the host.
+async fn plugin_resolve_id_cached(
+    state: &Arc<ServerState>,
+    host: &PluginHost,
+    spec: &str,
+    importer: &str,
+) -> Result<Option<String>, String> {
+    let cache_key = (spec.to_string(), importer.to_string());
+    if let Some(id) = state
+        .plugin_resolve_cache
+        .lock()
+        .unwrap()
+        .get(&cache_key)
+        .cloned()
+    {
+        return Ok(Some(id));
+    }
+    let resolved = host.resolve_id(spec, importer).await?;
+    if let Some(id) = &resolved {
+        state
+            .plugin_resolve_cache
+            .lock()
+            .unwrap()
+            .insert(cache_key, id.clone());
+    }
+    Ok(resolved)
+}
+
+async fn serve_plugin_id(
+    state: &Arc<ServerState>,
+    spec: &str,
+    importer: &str,
+    headers: &HeaderMap,
+) -> Response {
     // A plugin may polyfill a node builtin (vite-plugin-node-polyfills), so the
     // host gets first refusal; with no host, or when no plugin claims it, the
     // builtin is browser-externalized like Vite does.
@@ -6900,7 +7009,7 @@ async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -
         }
         return (StatusCode::NOT_FOUND, "oj: no plugin host").into_response();
     };
-    let id = match host.resolve_id(spec, importer).await {
+    let id = match plugin_resolve_id_cached(state, host, spec, importer).await {
         Ok(Some(id)) => id,
         Ok(None) => {
             // A relative / absolute import routed here for a plugin's resolveId
@@ -6956,6 +7065,14 @@ async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -
         }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
+    let key = plugin_code_key("id", &id, &source);
+    let etag = plugin_etag(&key);
+    if let Some(resp) = plugin_not_modified(headers, &etag) {
+        return resp;
+    }
+    if let Some(code) = state.plugin_code_cache.lock().unwrap().get(&key).cloned() {
+        return plugin_js_response(etag, (*code).clone());
+    }
     let root = state.root.clone();
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
@@ -6995,14 +7112,14 @@ async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -
     })
     .await;
     match compiled {
-        Ok(Ok(code)) => (
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            code,
-        )
-            .into_response(),
+        Ok(Ok(code)) => {
+            state
+                .plugin_code_cache
+                .lock()
+                .unwrap()
+                .insert(key, Arc::new(code.clone()));
+            plugin_js_response(etag, code)
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -7097,10 +7214,14 @@ async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool)
     }
 }
 
-async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Option<Response> {
+async fn serve_plugin_load_fallback(
+    state: &Arc<ServerState>,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Option<Response> {
     let host = state.plugins.as_ref()?;
     let spec = uri.path().to_string();
-    let id = match host.resolve_id(&spec, "").await {
+    let id = match plugin_resolve_id_cached(state, host, &spec, "").await {
         Ok(Some(id)) => id,
         _ => return None,
     };
@@ -7113,6 +7234,11 @@ async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Opti
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(is_style_ext);
+    let key = plugin_code_key(if is_css { "fallback-css" } else { "fallback" }, &id, &source);
+    let etag = plugin_etag(&key);
+    if let Some(resp) = plugin_not_modified(headers, &etag) {
+        return Some(resp);
+    }
     if is_css {
         let url = id_path.to_string();
         let body = format!(
@@ -7123,16 +7249,10 @@ async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Opti
              import.meta.hot.accept(() => {{}});\n",
             css = serde_json::Value::String(source),
         );
-        return Some(
-            (
-                [
-                    (header::CONTENT_TYPE, "text/javascript"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                body,
-            )
-                .into_response(),
-        );
+        return Some(plugin_js_response(etag, body));
+    }
+    if let Some(code) = state.plugin_code_cache.lock().unwrap().get(&key).cloned() {
+        return Some(plugin_js_response(etag, (*code).clone()));
     }
     let root = state.root.clone();
     let resolver = Arc::clone(&state.resolver);
@@ -7173,16 +7293,14 @@ async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Opti
     })
     .await;
     match compiled {
-        Ok(Ok(code)) => Some(
-            (
-                [
-                    (header::CONTENT_TYPE, "text/javascript"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                code,
-            )
-                .into_response(),
-        ),
+        Ok(Ok(code)) => {
+            state
+                .plugin_code_cache
+                .lock()
+                .unwrap()
+                .insert(key, Arc::new(code.clone()));
+            Some(plugin_js_response(etag, code))
+        }
         _ => None,
     }
 }
@@ -8362,6 +8480,14 @@ fn spawn_watcher(state: Arc<ServerState>) {
             if paths.iter().any(|p| is_restart_trigger(p) || is_config_dependency(p)) {
                 restart_process();
             }
+            // Before the hmr_enabled check and the gate hold: with HMR off or
+            // held, a change must still stop warm requests from reusing
+            // pre-change plugin resolutions or Tailwind output (decide() bumps
+            // the generation again on flush; an extra bump only recompiles).
+            clear_plugin_request_caches(&state);
+            state
+                .tailwind_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if !state.hmr_enabled {
                 continue;
             }

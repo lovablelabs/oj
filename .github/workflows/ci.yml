@@ -97,6 +97,7 @@ jobs:
           node e2e/mtime-fastpath.mjs
           node e2e/hmr-hook-skip.mjs
           node e2e/tailwind-request-cache.mjs
+          node e2e/plugin-request-cache.mjs
       - name: startup compile error overlay + recovery by reload
         if: matrix.mode == 'unbundled'
         run: node e2e/hmr-overlay-recovery.mjs
