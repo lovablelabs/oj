@@ -24,7 +24,20 @@ pub fn compile_dep(
     source_text: &str,
     resolve: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Result<CompileOutput, CompileError> {
-    if has_module_syntax(path, source_text) {
+    let is_esm = has_module_syntax(path, source_text);
+    compile_dep_known(path, url, source_text, resolve, is_esm)
+}
+
+/// `compile_dep` for a caller that already ran the ESM/CJS detection
+/// (`has_module_syntax_pub`), so the detection parse is not repeated.
+pub fn compile_dep_known(
+    path: &Path,
+    url: &str,
+    source_text: &str,
+    resolve: &mut dyn FnMut(&str) -> Option<String>,
+    is_esm: bool,
+) -> Result<CompileOutput, CompileError> {
+    if is_esm {
         let opts = crate::CompileOptions {
             dev: true,
             refresh: false,
@@ -560,6 +573,55 @@ exports.named = 1;
         assert!(!has_module_syntax_pub(p, "module.exports = { a: 1 };"));
         assert!(!has_module_syntax_pub(p, "const x = require('y');"));
         assert!(!has_module_syntax_pub(p, "const p = import('y');"));
+    }
+
+    #[test]
+    fn compile_dep_known_matches_compile_dep() {
+        // The pre-classified variant must produce byte-identical output to
+        // compile_dep for every classification shape, including a mixed file
+        // (module syntax wins) and extensionless / .js (unambiguous) paths.
+        let cases: &[(&str, &str)] = &[
+            ("dep.js", "export const x = 1;\n"),
+            ("dep.js", "var r = require('react'); exports.x = r;\n"),
+            // Mixed: an import statement makes it ESM even with CJS globals.
+            ("dep.js", "import r from 'react';\nmodule.exports = r;\n"),
+            // Extensionless (some package entries have no extension).
+            ("dep", "exports.a = 1;\n"),
+            ("dep", "export default 1;\n"),
+        ];
+        for (name, src) in cases {
+            let p = Path::new(name);
+            let url = "/node_modules/pkg/dep.js";
+            let mut r1 = |spec: &str| Some(format!("/node_modules/{spec}/index.js"));
+            let via_detect = compile_dep(p, url, src, &mut r1);
+            let mut r2 = |spec: &str| Some(format!("/node_modules/{spec}/index.js"));
+            let is_esm = has_module_syntax_pub(p, src);
+            let via_known = compile_dep_known(p, url, src, &mut r2, is_esm);
+            // Errors too (an extensionless ESM entry is UnsupportedFileType on
+            // both paths), so compare the full result.
+            match (via_detect, via_known) {
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a.code, b.code, "case {name}: {src}");
+                    assert_eq!(a.imports, b.imports, "case {name}: {src}");
+                }
+                (a, b) => assert_eq!(
+                    format!("{a:?}"),
+                    format!("{b:?}"),
+                    "case {name}: {src}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_syntax_dep_classifies_as_esm() {
+        let p = Path::new("dep.js");
+        let src = "import r from 'react';\nmodule.exports = r;\n";
+        assert!(has_module_syntax_pub(p, src));
+        let mut resolve = |spec: &str| Some(format!("/node_modules/{spec}/index.js"));
+        let out = compile_dep_known(p, "/n/dep.js", src, &mut resolve, true).unwrap();
+        assert!(!out.code.contains("__cjs_exports"), "not wrapped: {}", out.code);
+        assert!(out.code.contains("import"), "{}", out.code);
     }
 
     #[test]

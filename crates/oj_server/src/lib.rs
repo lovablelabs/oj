@@ -4895,18 +4895,26 @@ async fn ensure_module(
             let output = if is_dep {
                 let dep_interop = interop_node_builtins(&source, &file_owned);
                 let dep_src = dep_interop.as_deref().unwrap_or(&source);
-                if oj_compiler::cjs::has_module_syntax_pub(&file_owned, dep_src) {
-                    oj_compiler::cjs::compile_dep(&file_owned, &url_owned, dep_src, &mut rewrite)
+                let dep_is_esm = oj_compiler::cjs::has_module_syntax_pub(&file_owned, dep_src);
+                if dep_is_esm {
+                    oj_compiler::cjs::compile_dep_known(
+                        &file_owned,
+                        &url_owned,
+                        dep_src,
+                        &mut rewrite,
+                        true,
+                    )
                 } else {
                     // A CommonJS dep's `require()`s resolve with the `require`
                     // condition (Vite's getConditions for a requirer), so a dual
                     // package hands it its CJS build (`module.exports = fn`), not
                     // the ESM one the interop would wrap as `{ default: fn }`.
-                    oj_compiler::cjs::compile_dep(
+                    oj_compiler::cjs::compile_dep_known(
                         &file_owned,
                         &url_owned,
                         dep_src,
                         &mut |spec: &str| rewrite_with(spec, &require_resolver),
+                        false,
                     )
                 }
             } else {

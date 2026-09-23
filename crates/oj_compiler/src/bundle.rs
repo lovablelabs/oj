@@ -99,6 +99,63 @@ pub fn compile_factory(
     compile_esm_factory_from_parsed(&allocator, parsed.program, path, url, source_text, resolve, false)
 }
 
+/// A dependency file classified and (when ESM) compiled from a single parse.
+pub enum DepModule {
+    Esm(FactoryOutput),
+    /// Script-like source: the caller runs its own CJS pipeline (which needs a
+    /// sloppy-mode re-parse for `with`, top-level `return`, etc.).
+    Cjs,
+}
+
+/// Classify a dependency and compile the ESM factory from the same parse.
+/// The detection is exactly `cjs::has_module_syntax_pub` (a module-mode parse
+/// scanned for top-level import/export statements), so a caller replacing an
+/// `is_esm -> compile_factory` sequence keeps its classification. Only for
+/// plain `.js`: there `SourceType::from_path` is `ModuleKind::Unambiguous`,
+/// which resolves to the same module parse when module syntax is present, so
+/// the ESM output matches `compile_factory`'s. jsx/cjs extensions parse under
+/// different grammars and must keep the two-step path.
+pub fn compile_dep_factory(
+    path: &Path,
+    url: &str,
+    source_text: &str,
+    resolve: &mut ImportRewriter,
+) -> Result<DepModule, CompileError> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, source_text, SourceType::mjs()).parse();
+    if parsed.panicked {
+        return Ok(DepModule::Cjs);
+    }
+    let has_module_syntax = parsed.program.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            Statement::ImportDeclaration(_)
+                | Statement::ExportDeclaration(_)
+                | Statement::ExportNamedDeclaration(_)
+                | Statement::ExportFromDeclaration(_)
+                | Statement::ExportAllDeclaration(_)
+                | Statement::ExportDefaultDeclaration(_)
+        )
+    });
+    if !has_module_syntax {
+        return Ok(DepModule::Cjs);
+    }
+    if !parsed.diagnostics.is_empty() {
+        let message = parsed
+            .diagnostics
+            .into_iter()
+            .map(|d| format!("{:?}", d.with_source_code(source_text.to_string())))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(CompileError::Parse {
+            path: path.to_path_buf(),
+            message,
+        });
+    }
+    compile_esm_factory_from_parsed(&allocator, parsed.program, path, url, source_text, resolve, false)
+        .map(DepModule::Esm)
+}
+
 fn compile_cjs_factory(
     path: &Path,
     source_text: &str,
@@ -608,6 +665,50 @@ mod tests {
             true,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn compile_dep_factory_matches_two_step_classification() {
+        // The single-parse classify+compile must agree with the old sequence
+        // (has_module_syntax_pub, then compile_factory) for plain .js deps:
+        // same classification and byte-identical ESM factory output.
+        let esm = "import r from 'react';\nexport const x = r;\n";
+        let cjs = "var r = require('react');\nexports.x = r;\n";
+        let mixed = "import r from 'react';\nmodule.exports = r;\n";
+        let p = Path::new("/node_modules/pkg/index.js");
+        let url = "/node_modules/pkg/index.js";
+        for (src, want_esm) in [(esm, true), (cjs, false), (mixed, true)] {
+            assert_eq!(crate::cjs::has_module_syntax_pub(p, src), want_esm, "{src}");
+            let mut r1 = |_: &str| Some("@/node_modules/react/index.js".to_string());
+            let got = compile_dep_factory(p, url, src, &mut r1).unwrap();
+            match got {
+                DepModule::Esm(f) => {
+                    assert!(want_esm, "classified ESM unexpectedly: {src}");
+                    let mut r2 = |_: &str| Some("@/node_modules/react/index.js".to_string());
+                    let two_step = compile_factory(p, url, src, &mut r2).unwrap();
+                    assert_eq!(two_step.kind, FactoryKind::Esm);
+                    assert_eq!(f.code, two_step.code, "{src}");
+                    assert_eq!(f.esm_named, two_step.esm_named, "{src}");
+                }
+                DepModule::Cjs => assert!(!want_esm, "classified CJS unexpectedly: {src}"),
+            }
+        }
+    }
+
+    #[test]
+    fn compile_dep_factory_extensionless_matches_mjs_fallback() {
+        // No extension: compile_factory falls back to SourceType::mjs(), which
+        // is exactly what compile_dep_factory parses with.
+        let p = Path::new("/node_modules/pkg/dep");
+        let src = "export const a = 1;\n";
+        let mut r1 = |_: &str| None;
+        let DepModule::Esm(f) = compile_dep_factory(p, "/node_modules/pkg/dep", src, &mut r1).unwrap()
+        else {
+            panic!("extensionless ESM source must classify as ESM");
+        };
+        let mut r2 = |_: &str| None;
+        let two_step = compile_factory(p, "/node_modules/pkg/dep", src, &mut r2).unwrap();
+        assert_eq!(f.code, two_step.code);
     }
 
     #[test]

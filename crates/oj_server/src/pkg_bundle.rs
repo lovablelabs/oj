@@ -259,11 +259,12 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
         // oj uses in --bundle mode) and register it alongside the CJS ones. The
         // resolve callback rewrites each import to a bundle-internal ("#id") or
         // cross-package ("@url") target that the runtime interprets.
-        if ext == "mjs" || is_esm(&file, &src) {
-            // import.meta.url / .resolve can't be honored inside a factory function.
-            if src.contains("import.meta.url") || src.contains("import.meta.resolve") {
-                return bail("uses import.meta.url/resolve", &file);
-            }
+        //
+        // Plain .js classifies and compiles from one parse (compile_dep_factory,
+        // whose detection is exactly is_esm); .mjs keeps compile_factory's
+        // internal detection, and .cjs/.jsx keep the two-step path since their
+        // extension-mode parse differs from the detection parse.
+        {
             let file_url = url_of(root, &file);
             let dir = file.parent().unwrap_or(&pkg_root).to_path_buf();
             let mut bail_spec: Option<String> = None;
@@ -314,42 +315,62 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
                         }
                     }
                 };
-                oj_compiler::bundle::compile_factory(&file, &file_url, &src, &mut resolve)
-            };
-            if let Some(reason) = bail_spec {
-                return bail(&reason, &file);
-            }
-            let factory = match factory {
-                Ok(f) => f,
-                Err(e) => {
-                    if pb_debug() {
-                        eprintln!("oj[pb] fallback: esm compile error ({e}) @ {}", file.display());
+                if ext == "js" {
+                    match oj_compiler::bundle::compile_dep_factory(&file, &file_url, &src, &mut resolve)
+                    {
+                        Ok(oj_compiler::bundle::DepModule::Esm(f)) => Some(Ok(f)),
+                        Ok(oj_compiler::bundle::DepModule::Cjs) => None,
+                        Err(e) => Some(Err(e)),
                     }
-                    return BundleOutcome::Fallback;
+                } else if ext == "mjs" || is_esm(&file, &src) {
+                    Some(oj_compiler::bundle::compile_factory(
+                        &file, &file_url, &src, &mut resolve,
+                    ))
+                } else {
+                    None
                 }
             };
-            // Dynamic imports are fine: compile_esm_factory lowered them to
-            // `__oj_import_lazy("#id"|"@url")`, which the emitted bundle runtime
-            // resolves (internal -> resolved namespace, external -> native import).
-            if factory.kind != oj_compiler::bundle::FactoryKind::Esm {
-                return bail("compiled as CJS unexpectedly", &file);
+            // No factory: script-like, handled by the CJS analysis below.
+            if let Some(factory) = factory {
+                // import.meta.url / .resolve can't be honored inside a factory function.
+                if src.contains("import.meta.url") || src.contains("import.meta.resolve") {
+                    return bail("uses import.meta.url/resolve", &file);
+                }
+                if let Some(reason) = bail_spec {
+                    return bail(&reason, &file);
+                }
+                let factory = match factory {
+                    Ok(f) => f,
+                    Err(e) => {
+                        if pb_debug() {
+                            eprintln!("oj[pb] fallback: esm compile error ({e}) @ {}", file.display());
+                        }
+                        return BundleOutcome::Fallback;
+                    }
+                };
+                // Dynamic imports are fine: compile_esm_factory lowered them to
+                // `__oj_import_lazy("#id"|"@url")`, which the emitted bundle runtime
+                // resolves (internal -> resolved namespace, external -> native import).
+                if factory.kind != oj_compiler::bundle::FactoryKind::Esm {
+                    return bail("compiled as CJS unexpectedly", &file);
+                }
+                for target in discovered {
+                    queue.push_back(target);
+                }
+                let reexport_ids: Vec<String> = factory
+                    .esm_star_targets
+                    .iter()
+                    .filter_map(|t| t.strip_prefix('#').map(|s| s.to_string()))
+                    .collect();
+                export_info.insert(id.clone(), (factory.esm_named.clone(), reexport_ids));
+                modules.push(PkgModule {
+                    id,
+                    kind: ModuleKind::Esm,
+                    body: factory.code,
+                    deps: Vec::new(),
+                });
+                continue;
             }
-            for target in discovered {
-                queue.push_back(target);
-            }
-            let reexport_ids: Vec<String> = factory
-                .esm_star_targets
-                .iter()
-                .filter_map(|t| t.strip_prefix('#').map(|s| s.to_string()))
-                .collect();
-            export_info.insert(id.clone(), (factory.esm_named.clone(), reexport_ids));
-            modules.push(PkgModule {
-                id,
-                kind: ModuleKind::Esm,
-                body: factory.code,
-                deps: Vec::new(),
-            });
-            continue;
         }
 
         let analysis = match oj_compiler::cjs::analyze_for_factory(&file, &src) {
