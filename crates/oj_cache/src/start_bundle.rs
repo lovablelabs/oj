@@ -195,7 +195,7 @@ impl StartBundleStore {
             return Err(Miss::ClosureUnreadable);
         };
         let memo = read_memo(&current_dir);
-        let (digests, rehashed) = verified_digests(&files, memo.as_ref());
+        let (digests, stats, rehashed) = verified_digests(&files, memo.as_ref());
         let key = self.key_from(&files, &digests)?;
         let entry = self.dir.join(&key);
         if !entry.is_dir() {
@@ -223,7 +223,7 @@ impl StartBundleStore {
             return Err(Miss::ArtifactWriteFailed(CSS_URLS_FILE.to_string()));
         }
         if rehashed > 0 || !entry.join(MEMO_FILE).is_file() {
-            write_memo(&entry, &build_memo(&files, &digests));
+            write_memo(&entry, &build_memo(&files, &digests, &stats));
         }
         touch(&entry);
         if key != current {
@@ -241,19 +241,25 @@ impl StartBundleStore {
 
     pub fn persist(&self, start_dir: &Path) -> Option<(String, PinnedBundle)> {
         let files = read_closure(&start_dir.join(CLOSURE_FILE))?;
-        let digests = par_map(&files, |p| hash_file(p));
+        // The previous generation's memo verifies unchanged files by stat,
+        // exactly as restore() does: a per-save persist over a node_modules
+        // sized closure re-hashes only what actually moved.
+        let memo = fs::read_to_string(self.dir.join(CURRENT_FILE))
+            .ok()
+            .and_then(|cur| read_memo(&self.dir.join(cur.trim())));
+        let (digests, stats, _) = verified_digests(&files, memo.as_ref());
         let key = self.key_from(&files, &digests).ok()?;
         let index = read_chunk_index(start_dir)?;
         let css_urls = read_css_urls(start_dir);
         let chunk_dir = start_dir.join(CHUNKS_DIR);
         let chunk_paths: Vec<PathBuf> = index.files.iter().map(|f| chunk_dir.join(&f.name)).collect();
-        let chunk_hashes = par_map(&chunk_paths, |p| hash_file(p));
+        let chunk_hashes = par_map(&chunk_paths, |p| hash_file_with_len(p));
         let blobs = self.dir.join(BLOBS_DIR);
         fs::create_dir_all(&blobs).ok()?;
         let mut manifest_files = BTreeMap::new();
         for (f, (path, hash)) in index.files.iter().zip(chunk_paths.iter().zip(&chunk_hashes)) {
-            let hex = hash.as_ref()?.to_hex().to_string();
-            let size = fs::metadata(path).ok()?.len();
+            let (hash, size) = hash.as_ref()?;
+            let hex = hash.to_hex().to_string();
             let blob = blobs.join(&hex);
             if !blob.is_file() {
                 let tmp = blobs.join(format!(".tmp-{}-{}", hex.get(..16)?, std::process::id()));
@@ -268,7 +274,7 @@ impl StartBundleStore {
                     }
                 }
             }
-            manifest_files.insert(f.name.clone(), ManifestFile { hash: hex, size });
+            manifest_files.insert(f.name.clone(), ManifestFile { hash: hex, size: *size });
         }
         let manifest = GenerationManifest {
             format: START_BUNDLE_FORMAT,
@@ -301,7 +307,7 @@ impl StartBundleStore {
                 }
             }
         }
-        write_memo(&entry, &build_memo(&files, &digests));
+        write_memo(&entry, &build_memo(&files, &digests, &stats));
         touch(&entry);
         self.write_current(&key);
         Some((key, self.pin(&manifest)))
@@ -592,14 +598,14 @@ fn write_memo(entry: &Path, memo: &Memo) {
     let _ = integrity::atomic_write(&entry.join(MEMO_FILE), &bytes);
 }
 
-fn build_memo(files: &[PathBuf], digests: &[Option<blake3::Hash>]) -> Memo {
+fn build_memo(
+    files: &[PathBuf],
+    digests: &[Option<blake3::Hash>],
+    stats: &[Option<(u64, u64)>],
+) -> Memo {
     let written_at_ns = now_ns();
-    let stats = par_map(files, |p| {
-        let meta = fs::metadata(p).ok()?;
-        Some((meta.len(), mtime_ns(&meta)?))
-    });
     let mut map = HashMap::new();
-    for ((path, digest), stat) in files.iter().zip(digests).zip(&stats) {
+    for ((path, digest), stat) in files.iter().zip(digests).zip(stats) {
         let (Some(digest), Some((size, mtime_ns)), Some(path)) = (digest, stat, path.to_str())
         else {
             continue;
@@ -622,26 +628,57 @@ fn build_memo(files: &[PathBuf], digests: &[Option<blake3::Hash>]) -> Memo {
     }
 }
 
-fn verified_digests(files: &[PathBuf], memo: Option<&Memo>) -> (Vec<Option<blake3::Hash>>, usize) {
+/// Digests plus the (size, mtime_ns) each digest was verified against, so
+/// build_memo needs no second stat pass over the closure.
+fn verified_digests(
+    files: &[PathBuf],
+    memo: Option<&Memo>,
+) -> (Vec<Option<blake3::Hash>>, Vec<Option<(u64, u64)>>, usize) {
     let rehashed = AtomicUsize::new(0);
-    let digests = par_map(files, |p| {
+    let results = par_map(files, |p| {
         if let Some(known) = memo.and_then(|m| p.to_str().and_then(|s| m.files.get(s))) {
             if let Ok(meta) = fs::metadata(p) {
                 if meta.len() == known.size && mtime_ns(&meta) == Some(known.mtime_ns) {
                     if let Ok(digest) = blake3::Hash::from_hex(&known.digest) {
-                        return Some(digest);
+                        return Some((digest, Some((known.size, known.mtime_ns))));
                     }
                 }
             }
         }
         rehashed.fetch_add(1, Ordering::Relaxed);
-        hash_file(p)
+        let digest = hash_file(p)?;
+        // Stat after hashing, as the old stat pass did: a file rewritten under
+        // the hash carries a fresh mtime, and the freshness slack keeps that
+        // digest out of the memo.
+        let stat = fs::metadata(p)
+            .ok()
+            .and_then(|m| Some((m.len(), mtime_ns(&m)?)));
+        Some((digest, stat))
     });
-    (digests, rehashed.into_inner())
+    let mut digests = Vec::with_capacity(results.len());
+    let mut stats = Vec::with_capacity(results.len());
+    for r in results {
+        match r {
+            Some((digest, stat)) => {
+                digests.push(Some(digest));
+                stats.push(stat);
+            }
+            None => {
+                digests.push(None);
+                stats.push(None);
+            }
+        }
+    }
+    (digests, stats, rehashed.into_inner())
 }
 
 fn hash_file(p: &Path) -> Option<blake3::Hash> {
     fs::read(p).ok().map(|bytes| blake3::hash(&bytes))
+}
+
+fn hash_file_with_len(p: &Path) -> Option<(blake3::Hash, u64)> {
+    let bytes = fs::read(p).ok()?;
+    Some((blake3::hash(&bytes), bytes.len() as u64))
 }
 
 fn mtime_ns(meta: &fs::Metadata) -> Option<u64> {
@@ -1144,6 +1181,66 @@ mod tests {
             matches!(fx.store().restore(&fx.start), Err(Miss::NoEntryForKey(_))),
             "stat-identical edit within the racy window must still miss"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_reuses_the_memo_for_unchanged_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::new("persist-memo");
+        fx.settle_modules();
+        let (key, _) = fx.store().persist(&fx.start).unwrap();
+        for name in ["a.tsx", "b.tsx"] {
+            fs::set_permissions(fx.module(name), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        // A save that rebuilds the same closure: persist must key it from the
+        // memo without reading any module contents (a read would fail here,
+        // and a failed hash aborts persist).
+        fx.write_build("bundle-v1");
+        let (key2, _) = fx.store().persist(&fx.start).unwrap();
+        assert_eq!(key2, key);
+        for name in ["a.tsx", "b.tsx"] {
+            fs::set_permissions(fx.module(name), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    }
+
+    #[test]
+    fn persist_rehashes_a_changed_file_and_updates_the_memo() {
+        let fx = Fixture::new("persist-memo-update");
+        fx.settle_modules();
+        let (key, _) = fx.store().persist(&fx.start).unwrap();
+        fx.write_module("a.tsx", "export const a = 42;");
+        fx.settle_modules();
+        fx.write_build("bundle-v2");
+        let (key2, _) = fx.store().persist(&fx.start).unwrap();
+        assert_ne!(key2, key, "changed content must re-hash into a new key");
+        let memo = read_memo(&fx.entry_dir(&key2)).unwrap();
+        let entry = memo
+            .files
+            .get(fx.module("a.tsx").to_str().unwrap())
+            .expect("settled changed file lands in the new memo");
+        assert_eq!(
+            entry.digest,
+            blake3::hash(b"export const a = 42;").to_hex().to_string()
+        );
+    }
+
+    #[test]
+    fn stat_identical_edit_still_changes_the_persist_key() {
+        let fx = Fixture::new("persist-racy");
+        // Fresh modules sit inside the freshness window, so the first persist
+        // must not memoize them.
+        let (key, _) = fx.store().persist(&fx.start).unwrap();
+        let orig_mtime = fs::metadata(fx.module("a.tsx"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        // Same length, same mtime, different content: only a re-hash sees it.
+        fx.write_module("a.tsx", "export const a = 9;");
+        set_mtime(&fx.module("a.tsx"), orig_mtime);
+        fx.write_build("bundle-v2");
+        let (key2, _) = fx.store().persist(&fx.start).unwrap();
+        assert_ne!(key2, key, "racy-window edit must still re-key persist");
     }
 
     #[test]
