@@ -2,7 +2,9 @@
 // Copyright (c) 2026 Raphael Amorim
 
 use std::path::Path;
+use std::sync::LazyLock;
 
+use memchr::memmem::Finder;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     AssignmentExpression, AssignmentOperator, AssignmentTarget, CallExpression, Expression,
@@ -17,6 +19,8 @@ use oxc_span::SourceType;
 use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 
 use crate::{CompileError, CompileOutput};
+
+static F_NODE_ENV: LazyLock<Finder<'static>> = LazyLock::new(|| Finder::new("NODE_ENV"));
 
 pub fn compile_dep(
     path: &Path,
@@ -120,13 +124,20 @@ fn lower_and_analyze(
     }
     let mut program = parsed.program;
 
-    let scoping = SemanticBuilder::new()
-        .build(&program)
-        .semantic
-        .into_scoping();
-    let config = ReplaceGlobalDefinesConfig::new(&[("process.env.NODE_ENV", "'development'")])
-        .expect("static define config");
-    let _ = ReplaceGlobalDefines::new(&allocator, config).build(scoping, &mut program);
+    // process.env.NODE_ENV is the only define replaced here, so a source that
+    // never mentions NODE_ENV skips the semantic build and the replacement (a
+    // guaranteed no-op). DCE still runs unconditionally: it also normalizes
+    // untouched code (e.g. strips single-statement block braces), so gating it
+    // would change the emitted bytes for deps with no dead code at all.
+    if F_NODE_ENV.find(source_text.as_bytes()).is_some() {
+        let scoping = SemanticBuilder::new()
+            .build(&program)
+            .semantic
+            .into_scoping();
+        let config = ReplaceGlobalDefinesConfig::new(&[("process.env.NODE_ENV", "'development'")])
+            .expect("static define config");
+        let _ = ReplaceGlobalDefines::new(&allocator, config).build(scoping, &mut program);
+    }
 
     Compressor::new(&allocator).dead_code_elimination(&mut program, CompressOptions::dce());
 
@@ -474,6 +485,63 @@ if (process.env.NODE_ENV === 'production') {
             .code
             .contains(r#"export * from "/node_modules/react/cjs/react.development.js""#));
         assert!(out.imports.iter().all(|i| !i.contains("production")));
+    }
+
+    #[test]
+    fn non_node_env_dep_body_matches_the_ungated_pipeline() {
+        // A CJS dep with no NODE_ENV mention skips defines + DCE; its lowered
+        // body must be byte-identical to running the full pass pipeline.
+        let src = r#"
+'use strict';
+var dep = require('dep');
+if (globalThis.someRuntimeFlag) {
+  exports.a = dep.a;
+} else {
+  exports.a = dep.b;
+}
+exports.pick = function (x) { return x ? dep.a : dep.b; };
+"#;
+        let (body, analysis) = lower_and_analyze(Path::new("x.js"), src).unwrap();
+        let expected = {
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, src, SourceType::cjs()).parse();
+            assert!(!parsed.panicked);
+            let mut program = parsed.program;
+            let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            let config =
+                ReplaceGlobalDefinesConfig::new(&[("process.env.NODE_ENV", "'development'")])
+                    .expect("static define config");
+            let _ = ReplaceGlobalDefines::new(&allocator, config).build(scoping, &mut program);
+            Compressor::new(&allocator).dead_code_elimination(&mut program, CompressOptions::dce());
+            Codegen::new().build(&program).code
+        };
+        assert_eq!(body, expected);
+        assert!(body.contains("dep.a") && body.contains("dep.b"), "{body}");
+        assert_eq!(analysis.requires, vec!["dep".to_string()]);
+        // Both branches assign exports.a; wrap_cjs dedupes later.
+        assert_eq!(
+            analysis.named_exports,
+            vec!["a".to_string(), "a".to_string(), "pick".to_string()]
+        );
+    }
+
+    #[test]
+    fn node_env_dep_still_gets_defines_and_dce() {
+        // Any NODE_ENV mention (memmem gate) keeps the full pipeline: the
+        // define replaces process.env.NODE_ENV and DCE drops the dead branch.
+        let src = r#"
+'use strict';
+if (process.env.NODE_ENV === 'production') {
+  exports.mode = require('./prod.js');
+} else {
+  exports.mode = require('./dev.js');
+}
+"#;
+        let (body, analysis) = lower_and_analyze(Path::new("index.js"), src).unwrap();
+        assert!(!body.contains("prod.js"), "production branch DCE'd: {body}");
+        assert!(!body.contains("process.env.NODE_ENV"), "define replaced: {body}");
+        assert!(body.contains("dev.js"), "{body}");
+        assert_eq!(analysis.requires, vec!["./dev.js".to_string()]);
     }
 
     #[test]
