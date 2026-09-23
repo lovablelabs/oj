@@ -282,7 +282,7 @@ struct ServerState {
     mtime_keys: Mutex<HashMap<String, (std::time::SystemTime, u64, String)>>,
     compile_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     crawl_done: tokio::sync::watch::Receiver<bool>,
-    fs_allow: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    fs_allow: Arc<Mutex<FsAllow>>,
     /// `server.fs.strict` (default true). When false the allow list is not
     /// consulted for `/@fs/` paths; the deny list always is, as in Vite.
     fs_strict: bool,
@@ -1247,20 +1247,17 @@ impl DevServer {
                 // workspace root is the DEFAULT, not an addition: a user allow list
                 // replaces it (so it can narrow serving), and without one workspace
                 // packages (shared UI, fonts) are served without per-package entries.
+                let mut allow = FsAllow::default();
                 match server_cfg.fs.as_ref().and_then(|f| f.allow.as_ref()) {
-                    Some(allow) => allow
-                        .iter()
-                        .map(|p| {
+                    Some(roots) => {
+                        for p in roots {
                             let pb = PathBuf::from(p);
-                            if pb.is_absolute() {
-                                pb
-                            } else {
-                                root.join(&pb)
-                            }
-                        })
-                        .collect(),
-                    None => std::iter::once(workspace_root(&root)).collect(),
+                            allow.insert(if pb.is_absolute() { pb } else { root.join(&pb) });
+                        }
+                    }
+                    None => allow.insert(workspace_root(&root)),
                 }
+                allow
             })),
             fs_strict: server_cfg
                 .fs
@@ -1851,11 +1848,7 @@ fn js_response_json(v: serde_json::Value) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], v.to_string()).into_response()
 }
 
-fn module_read_allowed(
-    root: &Path,
-    allow: &std::collections::HashSet<PathBuf>,
-    path: &Path,
-) -> bool {
+fn module_read_allowed(root: &Path, allow: &FsAllow, path: &Path) -> bool {
     let Ok(candidate) = std::fs::canonicalize(path) else {
         return true;
     };
@@ -1869,13 +1862,11 @@ fn module_read_allowed(
     {
         return true;
     }
-    allow
-        .iter()
-        .any(|allowed| candidate.starts_with(real(allowed)))
+    allow.allows(&candidate)
 }
 
 fn ssr_module_allowed(state: &ServerState, path: &Path) -> bool {
-    let allow = state.fs_allow.lock().unwrap().clone();
+    let allow = state.fs_allow.lock().unwrap();
     module_read_allowed(&state.root, &allow, path)
 }
 
@@ -5638,7 +5629,7 @@ fn workspace_root(root: &Path) -> PathBuf {
 // round-trips per page.
 fn resolved_imports_json(
     resolver: &OjResolver,
-    fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
+    fs_allow: &Mutex<FsAllow>,
     source: &str,
     file: &Path,
 ) -> String {
@@ -6290,7 +6281,7 @@ fn rewrite_specifier(
     root: &Path,
     dir: &Path,
     resolver: &OjResolver,
-    fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
+    fs_allow: &Mutex<FsAllow>,
     dir_cache: &Mutex<DirCache>,
     spec: &str,
     css_import_marker: bool,
@@ -7727,6 +7718,50 @@ async fn serve_worker_chunk(State(state): State<Arc<ServerState>>, uri: Uri) -> 
     }
 }
 
+/// The `/@fs` allow list. Roots are realpathed once at insert, so a request
+/// checks membership by walking the (already canonical) candidate's ancestors:
+/// O(depth) hash lookups and zero syscalls under the lock, instead of
+/// canonicalizing every root per request. A root that does not exist yet
+/// cannot be canonicalized; it is kept as written and checked the old way
+/// (canonicalize at check time), so allow-listing a directory that a codegen
+/// step creates after startup still works once it appears.
+#[derive(Default)]
+struct FsAllow {
+    canonical: std::collections::HashSet<PathBuf>,
+    pending: Vec<PathBuf>,
+}
+
+impl FsAllow {
+    fn insert(&mut self, root: PathBuf) {
+        // Most inserts repeat a root the resolver already realpathed; skip the
+        // canonicalize syscalls for those.
+        if self.canonical.contains(&root) {
+            return;
+        }
+        match std::fs::canonicalize(&root) {
+            Ok(real) => {
+                self.canonical.insert(real);
+            }
+            Err(_) => {
+                if !self.pending.contains(&root) {
+                    self.pending.push(root);
+                }
+            }
+        }
+    }
+
+    /// Whether `real` (a canonical path) falls under an allowed root.
+    fn allows(&self, real: &Path) -> bool {
+        real.ancestors().any(|a| self.canonical.contains(a))
+            || self.pending.iter().any(|root| {
+                real.starts_with(root)
+                    || std::fs::canonicalize(root)
+                        .map(|r| real.starts_with(r))
+                        .unwrap_or(false)
+            })
+    }
+}
+
 // The single gate for serving an absolute (`/@fs`) path. Decide on the
 // canonical target so neither `..` traversal nor a symlink can escape an
 // allow-listed root (component-wise `starts_with` on a raw path does not
@@ -7739,18 +7774,7 @@ fn fs_gate(state: &ServerState, candidate: &Path) -> Option<PathBuf> {
     let real = std::fs::canonicalize(candidate).ok()?;
     // Vite's isFileLoadingAllowed: `server.fs.strict: false` skips the allow
     // list entirely (the deny list below still applies).
-    let allowed = !state.fs_strict || {
-        let allow = state.fs_allow.lock().unwrap();
-        allow.iter().any(|root| {
-            // Fast path: roots are normally already canonical (the resolver
-            // realpaths them). Fall back to canonicalizing the root so a
-            // symlinked or /var-vs-/private/var root still matches.
-            real.starts_with(root)
-                || std::fs::canonicalize(root)
-                    .map(|r| real.starts_with(r))
-                    .unwrap_or(false)
-        })
-    };
+    let allowed = !state.fs_strict || state.fs_allow.lock().unwrap().allows(&real);
     if !allowed || path_is_denied(&real, &state.root, &state.fs_deny) {
         return None;
     }
@@ -8015,11 +8039,8 @@ fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::Sender<bool
                 }
                 let file = if let Some(abs) = url.strip_prefix("/@fs") {
                     let f = PathBuf::from(abs);
-                    let ok = {
-                        let a = state.fs_allow.lock().unwrap();
-                        a.iter().any(|r| f.starts_with(r))
-                    };
-                    if !ok {
+                    let real = std::fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+                    if !state.fs_allow.lock().unwrap().allows(&real) {
                         continue;
                     }
                     f
@@ -10258,7 +10279,7 @@ mod adapter_tests {
         std::fs::write(base.join("linked/node_modules/dep/index.js"), "x").unwrap();
         std::fs::write(base.join("allowed/shared.ts"), "x").unwrap();
 
-        let mut allow = std::collections::HashSet::new();
+        let mut allow = FsAllow::default();
         allow.insert(base.join("allowed"));
 
         // The project, its dependencies, and what `server.fs.allow` named.
@@ -10291,6 +10312,56 @@ mod adapter_tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn fs_allow_checks_membership_by_ancestors() {
+        let base = tmp("fsallow-anc");
+        std::fs::create_dir_all(base.join("pkg/deep/dir")).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        std::fs::write(base.join("pkg/deep/dir/mod.js"), "x").unwrap();
+        std::fs::write(base.join("other/mod.js"), "x").unwrap();
+        let mut allow = FsAllow::default();
+        allow.insert(base.join("pkg"));
+        let real = |p: std::path::PathBuf| std::fs::canonicalize(p).unwrap();
+        assert!(allow.allows(&real(base.join("pkg/deep/dir/mod.js"))));
+        assert!(allow.allows(&real(base.join("pkg"))), "the root itself is allowed");
+        assert!(!allow.allows(&real(base.join("other/mod.js"))));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fs_allow_accepts_a_symlinked_package_root() {
+        // pnpm shape: the allow-listed root is reached through a symlink, and
+        // requests may spell the file through the symlink or the real path.
+        let base = tmp("fsallow-link");
+        std::fs::create_dir_all(base.join("store/pkg")).unwrap();
+        std::fs::write(base.join("store/pkg/index.js"), "x").unwrap();
+        let link = base.join("node_modules-pkg");
+        std::os::unix::fs::symlink(base.join("store/pkg"), &link).unwrap();
+        let mut allow = FsAllow::default();
+        allow.insert(link.clone());
+        let via_link = std::fs::canonicalize(link.join("index.js")).unwrap();
+        let via_real = std::fs::canonicalize(base.join("store/pkg/index.js")).unwrap();
+        assert!(allow.allows(&via_link));
+        assert!(allow.allows(&via_real));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn fs_allow_keeps_a_root_that_does_not_exist_yet() {
+        // A config allow entry can name a directory a codegen step creates
+        // after startup; it must start matching once the directory appears,
+        // as the old canonicalize-at-check behavior did.
+        let base = tmp("fsallow-late");
+        let late = base.join("generated");
+        let mut allow = FsAllow::default();
+        allow.insert(late.clone());
+        std::fs::create_dir_all(&late).unwrap();
+        std::fs::write(late.join("out.js"), "x").unwrap();
+        assert!(allow.allows(&std::fs::canonicalize(late.join("out.js")).unwrap()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlink_out_of_the_project_does_not_widen_what_can_be_read() {
@@ -10302,7 +10373,7 @@ mod adapter_tests {
         let link = root.join("src/escape.ts");
         if std::os::unix::fs::symlink(base.join("secrets/id_rsa"), &link).is_ok() {
             assert!(
-                !module_read_allowed(&root, &std::collections::HashSet::new(), &link),
+                !module_read_allowed(&root, &FsAllow::default(), &link),
                 "a symlink inside the project must not expose its target"
             );
         }
