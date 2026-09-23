@@ -295,6 +295,10 @@ struct ServerState {
     preprocess: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     svelte: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     tailwind_urls: Mutex<std::collections::HashSet<String>>,
+    /// Bumped by `decide` on any app-source change: Tailwind output depends on
+    /// the class names used across the app, so a compiled entry stylesheet is
+    /// memoized per (url, css source, this counter), never per css source alone.
+    tailwind_generation: std::sync::atomic::AtomicU64,
     has_postcss: bool,
     scss_additional_data: Option<String>,
     sass_additional_data: Option<String>,
@@ -1221,6 +1225,7 @@ impl DevServer {
             preprocess: tokio::sync::OnceCell::new(),
             svelte: tokio::sync::OnceCell::new(),
             tailwind_urls: Mutex::new(std::collections::HashSet::new()),
+            tailwind_generation: std::sync::atomic::AtomicU64::new(0),
             has_postcss: has_postcss_config(&root),
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
@@ -4428,6 +4433,21 @@ async fn ensure_module(
         }
     }
     if file.extension().and_then(|e| e.to_str()) == Some("css") && is_tailwind_css(&source) {
+        // Memory-only memoization: the generation counter is process-local, so
+        // the persistent cache would serve stale utilities across restarts. The
+        // url stays out of mtime_keys on purpose: the stamp fast-path would
+        // keep serving the old key after a generation bump, since the css file
+        // itself does not change when an app component gains a class.
+        let generation = state
+            .tailwind_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let key = state
+            .cache
+            .key(source.as_bytes(), url, &format!("tailwind@{generation}"));
+        if let Some(module) = memory_get(state, url, &key) {
+            register_in_graph(state, url, &module);
+            return Ok((key, module));
+        }
         let css = compile_tailwind(state, url, &source).await?;
         let module = Arc::new(CachedModule {
             is_boundary: true,
@@ -4442,7 +4462,8 @@ async fn ensure_module(
             watch_files: Vec::new(),
         });
         register_in_graph(state, url, &module);
-        return Ok((String::new(), module));
+        memory_put(state, url, &key, &module);
+        return Ok((key, module));
     }
 
     let is_server = is_server_module(file) && !is_dep_early && !state.bundle;
@@ -8409,14 +8430,27 @@ async fn decide(
             .collect()
     };
 
-    let source_changed = paths.iter().any(|p| {
+    let is_app_file = |p: &PathBuf| {
         !p.components().any(|c| {
             let c = c.as_os_str();
             c == "node_modules" || c == ".oj-cache" || c == "dist"
-        }) && p
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| COMPILABLE.contains(&e))
+        })
+    };
+    if paths.iter().any(&is_app_file) {
+        // Invalidate memoized Tailwind output before any update frames go out,
+        // so a re-fetch can never hit the pre-edit compile. Every app file
+        // counts, not just COMPILABLE ones: Tailwind scans html (and anything
+        // else) for class names, and recompiling once per change is exactly
+        // what the uncached path did on every request.
+        state
+            .tailwind_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let source_changed = paths.iter().any(|p| {
+        is_app_file(p)
+            && p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| COMPILABLE.contains(&e))
     });
     if source_changed {
         let timestamp = now_millis() as u64;
