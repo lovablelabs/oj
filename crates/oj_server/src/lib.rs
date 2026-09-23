@@ -4918,50 +4918,52 @@ async fn ensure_module(
                     )
                 }
             } else {
-                let interopped =
-                    oj_compiler::interop::rewrite_cjs_interop(&source, &file_owned, &|spec| {
-                        // node builtins are browser-externalized to a stub with no
-                        // named exports; interop so `import { X } from "node:..."`
-                        // reads X off it (undefined) instead of failing to link.
-                        if is_node_builtin(spec) {
-                            return Some(format!("/@id/{}", hex_encode(spec)));
-                        }
-                        // lingui macro entrypoints go to the shim (which has real
-                        // named exports), never through default-access interop.
-                        if is_lingui_macro_specifier(spec) {
-                            return None;
-                        }
-                        if let Some(m) = dep_map.get(spec).filter(|m| m.needs_interop) {
-                            return Some(m.url.clone());
-                        }
-                        // A directly-served bare CJS dep (not pre-bundled): rewrite
-                        // `import { x } from "dep"` to read x off the default export,
-                        // so runtime-assigned CJS exports resolve. Vite pre-bundles
-                        // these; oj interops at the importer instead. Restricted to
-                        // node_modules so aliased app source (`~/x`, `@/x`, which
-                        // is_bare_specifier also matches) is never treated as a dep.
-                        if is_bare_specifier(spec) && dep_map.get(spec).is_none() {
-                            if let Ok(resolved) = resolver.resolve(&dir, spec) {
-                                let in_node_modules = resolved
-                                    .components()
-                                    .any(|c| c.as_os_str() == "node_modules");
-                                // optimizeDeps.needsInterop forces the interop
-                                // rewrite even when static analysis reads the dep
-                                // as ESM (its real exports only appear at runtime).
-                                if in_node_modules
-                                    && (is_cjs_dep_file(&resolved)
-                                        || pkg_bundle::needs_forced_interop(&resolved))
-                                {
-                                    fs_allow.lock().unwrap().insert(package_root(&resolved));
-                                    // With partial bundling on this is the /@oj-pkg
-                                    // bundle URL, which exports __cjs_exports too, so
-                                    // the destructured interop still reads names off it.
-                                    return Some(dep_serve_url(&resolved, &root));
-                                }
+                // The interop specifier check runs inside the compile's own
+                // parse; only a module that actually hits an interop target
+                // pays the rewrite + re-parse.
+                let interop = |spec: &str| -> Option<String> {
+                    // node builtins are browser-externalized to a stub with no
+                    // named exports; interop so `import { X } from "node:..."`
+                    // reads X off it (undefined) instead of failing to link.
+                    if is_node_builtin(spec) {
+                        return Some(format!("/@id/{}", hex_encode(spec)));
+                    }
+                    // lingui macro entrypoints go to the shim (which has real
+                    // named exports), never through default-access interop.
+                    if is_lingui_macro_specifier(spec) {
+                        return None;
+                    }
+                    if let Some(m) = dep_map.get(spec).filter(|m| m.needs_interop) {
+                        return Some(m.url.clone());
+                    }
+                    // A directly-served bare CJS dep (not pre-bundled): rewrite
+                    // `import { x } from "dep"` to read x off the default export,
+                    // so runtime-assigned CJS exports resolve. Vite pre-bundles
+                    // these; oj interops at the importer instead. Restricted to
+                    // node_modules so aliased app source (`~/x`, `@/x`, which
+                    // is_bare_specifier also matches) is never treated as a dep.
+                    if is_bare_specifier(spec) && dep_map.get(spec).is_none() {
+                        if let Ok(resolved) = resolver.resolve(&dir, spec) {
+                            let in_node_modules = resolved
+                                .components()
+                                .any(|c| c.as_os_str() == "node_modules");
+                            // optimizeDeps.needsInterop forces the interop
+                            // rewrite even when static analysis reads the dep
+                            // as ESM (its real exports only appear at runtime).
+                            if in_node_modules
+                                && (is_cjs_dep_file(&resolved)
+                                    || pkg_bundle::needs_forced_interop(&resolved))
+                            {
+                                fs_allow.lock().unwrap().insert(package_root(&resolved));
+                                // With partial bundling on this is the /@oj-pkg
+                                // bundle URL, which exports __cjs_exports too, so
+                                // the destructured interop still reads names off it.
+                                return Some(dep_serve_url(&resolved, &root));
                             }
                         }
-                        None
-                    });
+                    }
+                    None
+                };
                 let mut opts = if is_svelte {
                     oj_compiler::CompileOptions {
                         dev: true,
@@ -4974,12 +4976,13 @@ async fn ensure_module(
                     oj_compiler::CompileOptions::dev()
                 };
                 opts.jsx = jsx_config;
-                oj_compiler::compile_module_with_maps(
+                oj_compiler::compile_module_with_maps_interop(
                     &file_owned,
-                    interopped.as_deref().unwrap_or(&source),
+                    &source,
                     &opts,
                     Some(&mut rewrite),
                     &plugin_maps,
+                    Some(&interop),
                 )
             }
             .map_err(|err| format!("compile error:\n{err}"))?;

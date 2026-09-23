@@ -322,8 +322,23 @@ pub fn compile_module_with_maps(
     path: &Path,
     source_text: &str,
     opts: &CompileOptions,
+    rewriter: Option<&mut ImportRewriter>,
+    input_maps: &[String],
+) -> Result<CompileOutput, CompileError> {
+    compile_module_with_maps_interop(path, source_text, opts, rewriter, input_maps, None)
+}
+
+/// `compile_module_with_maps` with the CJS-interop specifier check folded into
+/// this compile's own parse, so a module with no interop target (almost all of
+/// them) pays no separate `rewrite_cjs_interop` detection parse. A module that
+/// does hit one falls back to the existing text-rewrite + re-parse path.
+pub fn compile_module_with_maps_interop(
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
     mut rewriter: Option<&mut ImportRewriter>,
     input_maps: &[String],
+    interop: Option<&dyn Fn(&str) -> Option<String>>,
 ) -> Result<CompileOutput, CompileError> {
     let source_type = SourceType::from_path(path)
         .map_err(|_| CompileError::UnsupportedFileType(path.to_path_buf()))?;
@@ -342,6 +357,14 @@ pub fn compile_module_with_maps(
             path: path.to_path_buf(),
             message,
         });
+    }
+
+    if let Some(interop_fn) = interop {
+        if interop::program_wants_interop(&parsed.program, interop_fn) {
+            if let Some(rewritten) = interop::rewrite_cjs_interop(source_text, path, interop_fn) {
+                return compile_module_with_maps(path, &rewritten, opts, rewriter, input_maps);
+            }
+        }
     }
     let mut program = parsed.program;
 

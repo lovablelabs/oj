@@ -150,6 +150,67 @@ pub fn rewrite_cjs_interop(
     Some(result)
 }
 
+/// Whether `rewrite_cjs_interop` would rewrite this program: some import,
+/// export-from, or string-literal dynamic import names a specifier the interop
+/// callback maps. Runs on an already-parsed program so the common no-interop
+/// module pays no dedicated detection parse; it must mirror the statement
+/// shapes `rewrite_cjs_interop` edits exactly.
+pub(crate) fn program_wants_interop(
+    program: &oxc_ast::ast::Program<'_>,
+    interop: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    for stmt in &program.body {
+        match stmt {
+            Statement::ImportDeclaration(decl) => {
+                if decl.import_kind.is_type() {
+                    continue;
+                }
+                if interop(decl.source.value.as_str()).is_some() {
+                    return true;
+                }
+            }
+            Statement::ExportFromDeclaration(decl) => {
+                if decl.export_kind.is_type() {
+                    continue;
+                }
+                if interop(decl.source.value.as_str()).is_some() {
+                    return true;
+                }
+            }
+            _ => continue,
+        }
+    }
+    let mut detect = DynamicImportDetect {
+        interop,
+        found: false,
+    };
+    {
+        use oxc_ast_visit::Visit;
+        detect.visit_program(program);
+    }
+    detect.found
+}
+
+struct DynamicImportDetect<'i> {
+    interop: &'i dyn Fn(&str) -> Option<String>,
+    found: bool,
+}
+
+impl<'a> oxc_ast_visit::Visit<'a> for DynamicImportDetect<'_> {
+    fn visit_import_expression(&mut self, it: &oxc_ast::ast::ImportExpression<'a>) {
+        if self.found {
+            return;
+        }
+        if let oxc_ast::ast::Expression::StringLiteral(lit) = &it.source {
+            if (self.interop)(lit.value.as_str()).is_some() {
+                self.found = true;
+                return;
+            }
+        }
+        oxc_ast_visit::walk::walk_import_expression(self, it);
+    }
+}
+
 /// Vite's `interopNamespace` for a dynamically imported CommonJS dependency: the
 /// CJS value becomes `default`, and its own properties the named exports, unless
 /// it already is an ES module namespace.
@@ -341,6 +402,80 @@ mod tests {
             &interop_all("/u")
         )
         .is_none());
+    }
+
+    #[test]
+    fn program_wants_interop_mirrors_rewrite() {
+        // The folded detection must fire exactly when rewrite_cjs_interop
+        // would rewrite, for every statement shape it edits (and none it
+        // ignores, like `export * from`).
+        let cases = [
+            r#"import a from "cjs-dep";"#,
+            r#"import { a } from "cjs-dep";"#,
+            r#"import * as ns from "cjs-dep";"#,
+            r#"import "cjs-dep";"#,
+            r#"export { a, b as c } from "cjs-dep";"#,
+            r#"export { default as X } from "cjs-dep";"#,
+            r#"const m = import("cjs-dep");"#,
+            r#"function f() { return import("cjs-dep"); }"#,
+            r#"import type T from "cjs-dep";"#,
+            r#"export type { T } from "cjs-dep";"#,
+            r#"export * from "cjs-dep";"#,
+            r#"import x from "other";"#,
+            r#"import("other");"#,
+            r#"import(`cjs-dep`);"#,
+            r#"const foo = 1; export { foo };"#,
+        ];
+        let interop = interop_all("/@oj-deps/cjs-dep.mjs");
+        for src in cases {
+            let path = Path::new("m.ts");
+            let source_type =
+                oxc_span::SourceType::from_path(path).unwrap_or_default();
+            let allocator = oxc_allocator::Allocator::default();
+            let parsed = oxc_parser::Parser::new(&allocator, src, source_type).parse();
+            assert!(!parsed.panicked, "{src}");
+            let wants = program_wants_interop(&parsed.program, &interop);
+            let rewrites = rewrite_cjs_interop(src, path, &interop).is_some();
+            assert_eq!(wants, rewrites, "detection mismatch for {src:?}");
+        }
+    }
+
+    #[test]
+    fn folded_interop_compile_matches_two_step() {
+        // compile_module_with_maps_interop must produce byte-identical output
+        // to the old flow (rewrite_cjs_interop first, then compile), on both
+        // a hit and a miss.
+        let opts = crate::CompileOptions::dev();
+        let cases = [
+            r#"import { a } from "cjs-dep";
+console.log(a);
+"#,
+            r#"const m = await import("cjs-dep");
+console.log(m);
+"#,
+            r#"import x from "other";
+console.log(x);
+"#,
+        ];
+        for src in cases {
+            let path = Path::new("mod.ts");
+            let interop = interop_all("/@oj-deps/cjs-dep.mjs");
+            let folded =
+                crate::compile_module_with_maps_interop(path, src, &opts, None, &[], Some(&interop))
+                    .unwrap();
+            let rewritten = rewrite_cjs_interop(src, path, &interop);
+            let two_step = crate::compile_module_with_maps(
+                path,
+                rewritten.as_deref().unwrap_or(src),
+                &opts,
+                None,
+                &[],
+            )
+            .unwrap();
+            assert_eq!(folded.code, two_step.code, "{src}");
+            assert_eq!(folded.imports, two_step.imports, "{src}");
+            assert_eq!(folded.dynamic_imports, two_step.dynamic_imports, "{src}");
+        }
     }
 
     #[test]
