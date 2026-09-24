@@ -1560,14 +1560,24 @@ struct OjUserPlugin {
     host: Arc<PluginHost>,
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     emit: Arc<EmitState>,
+    // Vite/rolldown push hook filters into the bundler so a filtered hook never
+    // runs for a module it does not claim; this plan gates the isolate RPCs the
+    // same way. It only over-approximates (the host re-filters per plugin), so
+    // a gated-out call is one no plugin would have acted on.
+    gate: oj_server::plugins::BuildHookPlan,
 }
 
 impl OjUserPlugin {
-    fn new(host: Arc<PluginHost>, emit: Arc<EmitState>) -> Self {
+    fn new(
+        host: Arc<PluginHost>,
+        emit: Arc<EmitState>,
+        gate: oj_server::plugins::BuildHookPlan,
+    ) -> Self {
         Self {
             host,
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             emit,
+            gate,
         }
     }
 }
@@ -1675,15 +1685,24 @@ impl Plugin for OjUserPlugin {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::BuildStart
-            | rolldown_plugin::HookUsage::ResolveId
-            | rolldown_plugin::HookUsage::Load
-            | rolldown_plugin::HookUsage::Transform
+        let mut usage = rolldown_plugin::HookUsage::BuildStart
             | rolldown_plugin::HookUsage::GenerateBundle
             | rolldown_plugin::HookUsage::RenderChunk
             | rolldown_plugin::HookUsage::WriteBundle
             | rolldown_plugin::HookUsage::RenderStart
-            | rolldown_plugin::HookUsage::CloseBundle
+            | rolldown_plugin::HookUsage::CloseBundle;
+        // When no user plugin has the hook at all, rolldown never needs to call
+        // the Rust hook either.
+        if self.gate.resolve_id.present {
+            usage |= rolldown_plugin::HookUsage::ResolveId;
+        }
+        if self.gate.load.present {
+            usage |= rolldown_plugin::HookUsage::Load;
+        }
+        if self.gate.transform.present {
+            usage |= rolldown_plugin::HookUsage::Transform;
+        }
+        usage
     }
 
     async fn build_start(
@@ -1704,10 +1723,14 @@ impl Plugin for OjUserPlugin {
         _ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
+        let pass = self.gate.resolve_id.wants(args.specifier, None);
         let host = Arc::clone(&self.host);
         let spec = args.specifier.to_string();
         let importer = args.importer.unwrap_or("").to_string();
         async move {
+            if !pass {
+                return Ok(None);
+            }
             host.resolve_id(&spec, &importer)
                 .await
                 .map(|r| r.map(HookResolveIdOutput::from_id))
@@ -1720,9 +1743,13 @@ impl Plugin for OjUserPlugin {
         _ctx: SharedLoadPluginContext,
         args: &HookLoadArgs<'_>,
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
+        let pass = self.gate.load.wants(args.id, None);
         let host = Arc::clone(&self.host);
         let id = args.id.to_string();
         async move {
+            if !pass {
+                return Ok(None);
+            }
             // A throwing plugin `load`/`transform` fails the build, as in Vite;
             // bundling the raw source instead would ship wrong output silently.
             host.load(&id)
@@ -1763,11 +1790,15 @@ impl Plugin for OjUserPlugin {
         ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
+        let pass = self.gate.transform.wants(args.id, Some(args.code.as_str()));
         let host = Arc::clone(&self.host);
         let emit = Arc::clone(&self.emit);
-        let code = args.code.to_string();
+        let code = if pass { args.code.to_string() } else { String::new() };
         let id = args.id.to_string();
         async move {
+            if !pass {
+                return Ok(None);
+            }
             // A `.svg` is componentized (or left as an asset) in the load hook, where
             // the plugin transform chain already ran on the raw markup. Re-running it
             // here would feed svgr its own component output (or an `export default`
@@ -1857,7 +1888,13 @@ impl Plugin for OjUserPlugin {
         let host = Arc::clone(&self.host);
         let enabled = Arc::clone(&self.render_chunk_enabled);
         let code = Arc::clone(&args.code);
-        let chunk_json = serialize_rendered_chunk(&args.chunk);
+        // Once the first call learned no plugin has renderChunk, later chunks
+        // skip the JSON serialization too, not just the RPC.
+        let chunk_json = if enabled.get() == Some(&false) {
+            String::new()
+        } else {
+            serialize_rendered_chunk(&args.chunk)
+        };
         async move {
             let on = *enabled
                 .get_or_init(|| async { host.has_render_chunk().await })
@@ -2443,6 +2480,7 @@ pub async fn build(
         oj_plugins.push(Arc::new(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
+            host.build_hook_plan().await,
         )));
     }
     let client_minify = oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
@@ -2774,10 +2812,18 @@ pub async fn build(
     // modulepreload polyfill (a worker or plugin-emitted entry has no document).
     let mut page_entry_files: Vec<String> = Vec::new();
     // Vite's build transformIndexHtml ctx (html.ts) carries the output bundle
-    // and the page's entry chunk; serialized once for every page.
-    let html_bundle: Option<serde_json::Value> = plugin_host
-        .as_ref()
-        .and_then(|_| serde_json::from_str(&serialize_bundle(&output.assets)).ok());
+    // and the page's entry chunk; serialized once for every page, and not at
+    // all when no plugin has the hook (the bundle JSON carries every chunk's
+    // full code).
+    let html_hook_on = match &plugin_host {
+        Some(host) => host.has_transform_index_html().await,
+        None => false,
+    };
+    let html_bundle: Option<serde_json::Value> = if html_hook_on {
+        serde_json::from_str(&serialize_bundle(&output.assets)).ok()
+    } else {
+        None
+    };
     for doc in &html_docs {
         let mut rewritten_html = oj_env::replace_html_env(&doc.src_html, &html_env);
         let page_base = page_base(&base, &doc.out_rel);
@@ -2913,7 +2959,7 @@ pub async fn build(
             }
         }
 
-        if let Some(host) = &plugin_host {
+        if let Some(host) = plugin_host.as_ref().filter(|_| html_hook_on) {
             // Vite (html.ts): `{ path: "/" + relative path, filename: <source
             // html>, bundle, chunk }`, and a throwing hook fails the build.
             let page_file = doc.dir.join(
@@ -3640,6 +3686,7 @@ pub(crate) async fn build_ssr(
         oj_plugins.push(Arc::new(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
+            host.build_hook_plan().await,
         )));
     }
     oj_plugins.push(Arc::new(OjCssPlugin {
@@ -4189,6 +4236,7 @@ async fn build_client_entry(
         oj_plugins.push(Arc::new(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
+            host.build_hook_plan().await,
         )));
     }
     oj_plugins.push(Arc::new(OjCssPlugin {

@@ -2941,6 +2941,13 @@ async function replayModuleParsed(id) {
 }
 
 const anyModuleParsed = () => pluginsWithHook("moduleParsed").length > 0;
+// transformIndexHtml accepts a legacy `transform` key that generic hookHandler
+// does not; this is the one unwrap both the runner and hasTransformIndexHtml use.
+function htmlHookFn(p) {
+  const hook = p && p.transformIndexHtml;
+  const fn = typeof hook === "function" ? hook : hook?.handler ?? hook?.transform;
+  return typeof fn === "function" ? fn : null;
+}
 
 async function watchChange(id, event) {
   for (const { fn } of pluginsWithHook("watchChange")) await fn.call(ctx, id, { event });
@@ -3278,10 +3285,9 @@ async function transformIndexHtml(html, ctxJson) {
   // Honor per-hook order: 'pre' hooks run first, 'post' last (stable within a rank).
   const entries = [];
   for (const p of plugins) {
-    const hook = p.transformIndexHtml;
-    const fn = typeof hook === "function" ? hook : hook?.handler ?? hook?.transform;
-    if (typeof fn !== "function") continue;
-    entries.push({ p, fn, rank: htmlHookRank(hook) });
+    const fn = htmlHookFn(p);
+    if (!fn) continue;
+    entries.push({ p, fn, rank: htmlHookRank(p.transformIndexHtml) });
   }
   entries.sort((a, b) => a.rank - b.rank);
   for (const { p, fn } of entries) {
@@ -3445,6 +3451,71 @@ async function run(hook, args) {
   if (hook === "getWatchFiles") return JSON.stringify([...watchedFiles]);
   if (hook === "hasModuleParsed") return String(anyModuleParsed());
   if (hook === "replayModuleParsed") return replayModuleParsed(args[0]);
+  if (hook === "hasTransformIndexHtml") {
+    return String(plugins.some((p) => typeof htmlHookFn(p) === "function"));
+  }
+  if (hook === "getBuildHookPlan") {
+    // Per-hook filter plan for the build's Rust-side gate: which plugins have
+    // the hook, and each plugin's `filter` include patterns. Vite/rolldown push
+    // hook filters into the bundler so a filtered hook is never called for a
+    // module it does not claim; this hands oj build the same information. The
+    // gate must only ever OVER-approximate, so anything it cannot represent
+    // exactly makes that plugin "unfiltered" (always called): function-form
+    // hooks, filters without includes (exclude- or moduleType-only), and
+    // string patterns (rolldown treats them as globs, not literals).
+    const regexes = (inc) => {
+      if (inc && typeof inc === "object" && !(inc instanceof RegExp) && !Array.isArray(inc)) {
+        inc = inc.include;
+      }
+      const list = Array.isArray(inc) ? inc : inc != null ? [inc] : [];
+      const out = [];
+      for (const r of list) {
+        if (!(r instanceof RegExp)) return null;
+        // i/m/s change what the pattern matches and Rust supports them inline;
+        // g/y only affect JS lastIndex statefulness, not the language. Any
+        // other flag (u/v change escape semantics) cannot be carried, so the
+        // whole plugin fails open rather than under-matching.
+        if (/[^imsgy]/.test(r.flags)) return null;
+        const inline = ["i", "m", "s"].filter((f) => r.flags.includes(f)).join("");
+        out.push(inline ? `(?${inline})${r.source}` : r.source);
+      }
+      return out;
+    };
+    const planFor = (name, withCode) => {
+      // moduleParsed only fires inside the transform RPC in build, and it also
+      // fills the moduleInfo cache getModuleInfo/getModuleIds read; gating
+      // transform would starve them, so its presence pins transform unfiltered.
+      if (name === "transform" && withCode && anyModuleParsed()) {
+        return { present: true, unfiltered: true, plugins: [] };
+      }
+      const entries = [];
+      let unfiltered = false;
+      let present = false;
+      for (const p of plugins) {
+        const h = p && p[name];
+        if (typeof hookHandler(h) !== "function") continue;
+        present = true;
+        const f = h && typeof h === "object" ? h.filter : null;
+        const id = f ? regexes(f.id) : null;
+        const code = withCode && f ? regexes(f.code) : null;
+        const idHas = Array.isArray(id) && id.length > 0;
+        const codeHas = Array.isArray(code) && code.length > 0;
+        // A pattern set regexes() refused (null) or a filter with no usable
+        // includes cannot gate; that plugin must always be offered the module.
+        if ((id === null && f && f.id != null) || (withCode && code === null && f && f.code != null) || (!idHas && !codeHas)) {
+          unfiltered = true;
+          continue;
+        }
+        entries.push({ id: idHas ? id : [], code: codeHas ? code : [] });
+      }
+      return { present, unfiltered, plugins: entries };
+    };
+    return JSON.stringify({
+      transform: planFor("transform", true),
+      load: planFor("load", false),
+      resolveId: planFor("resolveId", false),
+    });
+  }
   if (hook === "hasGenerateBundle") {
     return String(pluginsWithHook("generateBundle").length > 0);
   }
