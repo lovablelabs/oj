@@ -5434,11 +5434,11 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("oj-{name}-{nanos}"));
+        // pid-keyed and cleaned before use, never after: a later run reclaims
+        // the dir, and nothing deletes a directory the process cwd (moved by
+        // an in-process host's boot chdir) might still point at.
+        let dir = std::env::temp_dir().join(format!("oj-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
     }

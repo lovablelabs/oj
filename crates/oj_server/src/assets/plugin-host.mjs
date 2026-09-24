@@ -119,8 +119,9 @@ if (ojEngineBoot) {
   // process.cwd() THROWS NotFound when the process's directory was deleted
   // (another host chdir'd somewhere that vanished), so the boot path must
   // never require it; a config root is always present in practice.
+  const configRoot = initial.config?.root;
   const appRoot =
-    initial.config?.root ??
+    configRoot ??
     (() => {
       try {
         return process.cwd();
@@ -141,11 +142,23 @@ if (ojEngineBoot) {
   // cwd), never from a process.cwd() read-back: cwd is process-global, so
   // another engine booting a different root between our chdir and a read
   // would leak ITS root into this host's shadow, and the read itself throws
-  // once the process's directory has been deleted.
+  // once the process's directory has been deleted. Only a configured root is
+  // worth a REAL chdir; a rootless boot must not move every other engine's
+  // relative-fs anchor to wherever this one happens to start.
   let shadowCwd = String(appRoot);
-  try {
-    process.chdir(String(appRoot));
-  } catch {}
+  if (configRoot != null) {
+    try {
+      process.chdir(String(configRoot));
+    } catch (e) {
+      // The host still boots (the shadow anchors cwd() readers), but relative
+      // fs stays wherever the process was; say so instead of failing quietly.
+      try {
+        process.stderr.write(
+          `${OJ} plugin host: could not chdir to ${configRoot}: ${e?.message ?? e}\n`
+        );
+      } catch {}
+    }
+  }
   try {
     shadowCwd = realpathSync(String(appRoot));
   } catch {}

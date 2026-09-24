@@ -308,13 +308,19 @@ fn run_engine_job_subprocess(
     let result_file =
         std::env::temp_dir().join(format!("oj-engine-job-{}-{seq}.json", std::process::id()));
     let boot = |m: String| oj_js::EngineError::Boot(m);
+    // The job operates on `root` anyway, and inheriting the parent's cwd makes
+    // the spawn itself fail with ENOENT when that directory has been deleted
+    // (in-process hosts chdir the whole process at boot, so the inherited cwd
+    // can be any root a host ever ran in). A root that is itself gone falls
+    // back to the temp dir so the child still spawns and can report properly.
+    let job_cwd = if root.is_dir() {
+        root.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
     let mut child = std::process::Command::new(exe)
         .arg("engine-job")
-        // The job operates on `root` anyway, and inheriting the parent's cwd
-        // makes the spawn itself fail with ENOENT when that directory has been
-        // deleted (in-process hosts chdir the whole process at boot, so the
-        // inherited cwd can be any root a host ever ran in).
-        .current_dir(root)
+        .current_dir(&job_cwd)
         .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(module)
         .arg("--root")
@@ -327,7 +333,7 @@ fn run_engine_job_subprocess(
         .arg(&result_file)
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| boot(format!("could not run the engine job child: {e}")))?;
+        .map_err(|e| boot(format!("could not run the engine job child (cwd {}): {e}", job_cwd.display())))?;
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -3116,6 +3122,7 @@ mod vite_values_tests {
     #[tokio::test]
     async fn addon_keeper_tolerates_unloadable_addons() {
         let root = std::env::temp_dir().join(format!("oj-keeper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         keep_addons_alive(
             &root,
