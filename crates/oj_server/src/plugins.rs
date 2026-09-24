@@ -310,6 +310,11 @@ fn run_engine_job_subprocess(
     let boot = |m: String| oj_js::EngineError::Boot(m);
     let mut child = std::process::Command::new(exe)
         .arg("engine-job")
+        // The job operates on `root` anyway, and inheriting the parent's cwd
+        // makes the spawn itself fail with ENOENT when that directory has been
+        // deleted (in-process hosts chdir the whole process at boot, so the
+        // inherited cwd can be any root a host ever ran in).
+        .current_dir(root)
         .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(module)
         .arg("--root")
@@ -3074,7 +3079,6 @@ mod vite_values_tests {
         assert_eq!(revive.attempts, 1, "one respawn consumed");
         drop(revive);
         assert!(!*host.host_gone.borrow(), "the host is live again");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // A death report about a replaced engine (an old call's transport belt
@@ -3093,7 +3097,6 @@ mod vite_values_tests {
             "a stale-generation report is ignored"
         );
         host.resolve_id("x", "").await.expect("still serving");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // shutdown() retires the host on purpose: never revived.
@@ -3105,7 +3108,6 @@ mod vite_values_tests {
         let err = host.resolve_id("x", "").await.expect_err("stays dead");
         assert!(err.contains("plugin host exited"), "{err}");
         assert_eq!(host.revive.lock().unwrap().attempts, 0, "no respawn burned");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The keeper is best effort per addon: an unloadable path is skipped (the
@@ -3128,7 +3130,6 @@ mod vite_values_tests {
             ADDON_KEEPER.lock().unwrap().is_some(),
             "the keeper engine stays resident"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The engine's heap cap mirrors the cap the process host inherited as a
@@ -3215,7 +3216,6 @@ export default [{
             .await
             .expect("the next call revives the host on a fresh heap");
         assert_eq!(host.revive.lock().unwrap().attempts, 1, "one respawn consumed");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The budget is a LIFETIME cap: past it the host stays gone (the outer
@@ -3247,7 +3247,6 @@ export default [{
         let err = host.resolve_id("x", "").await.expect_err("budget spent");
         assert!(err.contains("plugin host exited"), "{err}");
         assert!(!host.can_revive(), "no revive left for waiters to hold on");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -3322,7 +3321,6 @@ export default [{
             !*evidence.borrow_and_update(),
             "init progressing clears the wedge evidence"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The submit-before-gate hazard, pinned: a wedged init holds the isolate
@@ -3379,7 +3377,6 @@ export default [{
             elapsed < std::time::Duration::from_secs(5),
             "concurrent windows, not calls serialized behind a wedged engine: {elapsed:?}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The stall monitor is the REAL evidence flip site for the boot host: its
@@ -3485,7 +3482,6 @@ export default [{
         .await
         .is_ok_and(|r| r.is_ok()));
         host.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // A hook that wedges the isolate in SYNCHRONOUS JS (an infinite loop —
@@ -3554,7 +3550,6 @@ export default [{
             .await
             .expect("the host survives a terminated synchronous wedge");
         host.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The transport belt: a hook that blocks the isolate thread in NATIVE
@@ -3646,7 +3641,6 @@ export default [{
             "fail-fast on a declared-gone host: {:?}",
             t1.elapsed()
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The other half of the belt distinction: a hook that merely never
@@ -3721,7 +3715,6 @@ export default [{
             .await
             .expect("the host survives an abandoned hook promise");
         host.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // Process isolation: the in-process host shares oj's process, so a
@@ -3777,7 +3770,6 @@ export default [{
             "a plugin's chdir must not move oj's real cwd"
         );
         host.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // Vite's ordering guarantee: buildStart completes before any serving hook
@@ -3838,7 +3830,6 @@ export default [{
             );
         }
         host.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The push channel end to end: a configureServer middleware makes the
@@ -3907,7 +3898,6 @@ export default [{
             .expect("channel alive");
         assert_eq!(ev.get("action").and_then(|a| a.as_str()), Some("restart"));
         host.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

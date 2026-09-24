@@ -3,7 +3,7 @@
 
 import http from "node:http";
 import https from "node:https";
-import { existsSync, fstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, stat as fsStat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
@@ -126,10 +126,18 @@ if (ojEngineBoot) {
   // readers follow the shadow; its relative fs stays anchored at the root —
   // the one divergence from a real child, documented cost of sharing the
   // process).
+  let shadowCwd = process.cwd();
   try {
     process.chdir(String(appRoot));
+    // Seed the shadow from the root itself (realpathed, like a real child's
+    // cwd), not from a process.cwd() read-back: cwd is process-global, and
+    // another engine booting a different root between our chdir and the read
+    // would leak ITS root into this host's shadow.
+    shadowCwd = String(appRoot);
+    try {
+      shadowCwd = realpathSync(String(appRoot));
+    } catch {}
   } catch {}
-  let shadowCwd = process.cwd();
   try {
     process.cwd = () => shadowCwd;
     process.chdir = (dir) => {
