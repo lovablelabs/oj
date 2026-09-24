@@ -322,6 +322,8 @@ jobs:
         run: node e2e/emit-html-chunk.mjs
       - name: build-side plugin hook gating (filter plan, all hook shapes)
         run: node e2e/plugin-hook-gating-build.mjs
+      - name: dev-side plugin hook gating (filtered hooks skip the bridge)
+        run: node e2e/plugin-hook-gating-dev.mjs
       - name: plugin-loaded virtual .jsx keeps JSX semantics
         run: node e2e/plugin-load-jsx.mjs
       - name: plugin transform runs on CSS sources before compile

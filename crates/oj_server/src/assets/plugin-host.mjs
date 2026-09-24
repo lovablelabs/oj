@@ -3471,12 +3471,14 @@ async function run(hook, args) {
       const out = [];
       for (const r of list) {
         if (!(r instanceof RegExp)) return null;
-        // i/m/s change what the pattern matches and Rust supports them inline;
-        // g/y only affect JS lastIndex statefulness, not the language. Any
-        // other flag (u/v change escape semantics) cannot be carried, so the
-        // whole plugin fails open rather than under-matching.
-        if (/[^imsgy]/.test(r.flags)) return null;
-        const inline = ["i", "m", "s"].filter((f) => r.flags.includes(f)).join("");
+        // i/s change what the pattern matches and Rust supports them inline;
+        // g/y/d only affect JS-side statefulness or match metadata, not the
+        // language. m cannot be carried: JS multiline anchors honor \r and
+        // \u2028, Rust's (?m) only \n, so an m-filtered plugin could be
+        // under-matched on CRLF sources. Any uncarryable flag (m, u, v, ...)
+        // fails the whole plugin open rather than risking an under-match.
+        if (/[^isgyd]/.test(r.flags)) return null;
+        const inline = ["i", "s"].filter((f) => r.flags.includes(f)).join("");
         out.push(inline ? `(?${inline})${r.source}` : r.source);
       }
       return out;

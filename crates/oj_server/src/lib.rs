@@ -347,6 +347,9 @@ struct ServerState {
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
+    /// Per-plugin filter plan: skips a filtered hook's RPC for app modules its
+    /// filter can never claim. The has_* flags stay the coarse gates.
+    hook_plan: plugins::BuildHookPlan,
     // A dep is transformed only when its source matches one of these (the plugins'
     // own transform `filter.code` patterns); app source always goes through.
     dep_transform_res: Vec<regex::Regex>,
@@ -1060,6 +1063,13 @@ impl DevServer {
                 .collect(),
             None => Vec::new(),
         };
+        // The per-plugin filter plan: what the coarse has_* flags above cannot
+        // express, so a filtered hook's RPC is skipped for the app modules its
+        // filter can never claim (the has_* flags gate deps and hook absence).
+        let hook_plan = match &plugin_host {
+            Some(host) => host.build_hook_plan().await,
+            None => plugins::BuildHookPlan::default(),
+        };
         // Same idea for HMR: a host without watchChange/handleHotUpdate hooks (the
         // tagger case) doesn't need those per-save stdio round-trips.
         let (plugins_watch_change, plugins_hot_update) = match &plugin_host {
@@ -1290,6 +1300,7 @@ impl DevServer {
             plugins_use_module_parsed,
             plugins_have_transform,
             plugins_have_load,
+            hook_plan,
             dep_transform_res,
             dep_load_res,
             resolve_id_res,
@@ -4401,11 +4412,18 @@ async fn ensure_module(
                     Some((_, q)) => format!("{}?{}", file.display(), q),
                     None => file.to_string_lossy().into_owned(),
                 };
-                // A throwing `load` fails the module like Vite (500 + overlay),
-                // rather than silently reading the disk file it meant to replace.
-                host.load(&load_id)
-                    .await
-                    .map_err(|e| format!("plugin load error for {url}:\n{e}"))?
+                if !state.hook_plan.load.wants(&load_id, None) {
+                    if *HOOK_GATE_DEBUG {
+                        eprintln!("oj: hook gate skipped load for {load_id}");
+                    }
+                    None
+                } else {
+                    // A throwing `load` fails the module like Vite (500 + overlay),
+                    // rather than silently reading the disk file it meant to replace.
+                    host.load(&load_id)
+                        .await
+                        .map_err(|e| format!("plugin load error for {url}:\n{e}"))?
+                }
             }
             None => None,
         }
@@ -4554,24 +4572,38 @@ async fn ensure_module(
             || state.dep_transform_res.iter().any(|re| re.is_match(&source)));
     let source = match &state.plugins {
         Some(host) if state.plugins_have_transform && (!is_dep || dep_wants_transform) => {
-            let resolved =
-                resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
             // Pass the id WITH its query (e.g. `?tsr-shared=1`), like Vite: the router
             // code-splitter emits a different variant per query, keyed off the id.
             let transform_id = match url.split_once('?') {
                 Some((_, q)) => format!("{}?{}", file.display(), q),
                 None => file.to_string_lossy().into_owned(),
             };
-            match host.transform(&source, &transform_id, &resolved).await {
-                Ok((code, watches, maps, _)) => {
-                    plugin_watch_files = watches;
-                    plugin_maps = maps;
-                    code
+            if !state
+                .hook_plan
+                .transform
+                .wants(&transform_id, Some(&source))
+            {
+                if *HOOK_GATE_DEBUG {
+                    eprintln!("oj: hook gate skipped transform for {transform_id}");
                 }
-                // Vite fails the request with the plugin's error (code frame in the
-                // overlay); serving the untransformed source would ship wrong code.
-                Err(e) => {
-                    return Err(format!("plugin transform error for {}:\n{e}", file.display()));
+                source
+            } else {
+                let resolved =
+                    resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
+                match host.transform(&source, &transform_id, &resolved).await {
+                    Ok((code, watches, maps, _)) => {
+                        plugin_watch_files = watches;
+                        plugin_maps = maps;
+                        code
+                    }
+                    // Vite fails the request with the plugin's error (code frame in the
+                    // overlay); serving the untransformed source would ship wrong code.
+                    Err(e) => {
+                        return Err(format!(
+                            "plugin transform error for {}:\n{e}",
+                            file.display()
+                        ));
+                    }
                 }
             }
         }
@@ -8206,6 +8238,12 @@ fn is_restart_trigger(path: &Path) -> bool {
 /// Re-exec the current binary with the same arguments so a fresh process
 /// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
 /// dev port is released as the image is replaced. Does not return on success.
+/// OJ_DEBUG_HOOK_GATE=1: log each hook RPC the filter plan gates out, so a
+/// test can assert a skip actually happened (output alone cannot tell, the
+/// host's own per-plugin filters would produce identical bytes).
+static HOOK_GATE_DEBUG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OJ_DEBUG_HOOK_GATE").is_ok_and(|v| v == "1"));
+
 fn restart_process() -> ! {
     eprintln!("{} config/env changed — restarting dev server", oj_brand());
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));

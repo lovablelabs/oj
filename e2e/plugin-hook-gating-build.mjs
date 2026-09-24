@@ -9,7 +9,7 @@
 // matches nothing, a string-filtered transform (conservatively unfiltered in
 // the plan, still filtered by the host), a RegExp-filtered load for a real
 // import, and transformIndexHtml.
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -132,6 +132,66 @@ try {
 
   const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
   assert.match(html, /html-crossed/, "transformIndexHtml still runs");
+
+  // Second app: ONLY RegExp-filtered plugins (no function-form, no
+  // moduleParsed, no string filter), so the plan is genuinely filtered and a
+  // no-op gate is detectable: OJ_DEBUG_HOOK_GATE must report skipped RPCs.
+  const app2 = fs.mkdtempSync(path.join(os.tmpdir(), "oj-hookgate2-"));
+  fs.mkdirSync(path.join(app2, "src"), { recursive: true });
+  fs.writeFileSync(path.join(app2, "package.json"), JSON.stringify({ name: "hookgate2", version: "1.0.0" }));
+  fs.writeFileSync(
+    path.join(app2, "src", "entry.js"),
+    'import { special } from "./data.special.js";\nimport { other } from "./other.js";\nconsole.log(special, other);\n',
+  );
+  fs.writeFileSync(path.join(app2, "src", "data.special.js"), 'export const special = "placeholder";\n');
+  fs.writeFileSync(path.join(app2, "src", "other.js"), 'export const other = 1;\n');
+  fs.writeFileSync(
+    path.join(app2, "index.html"),
+    `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/entry.js"></script></body></html>`,
+  );
+  fs.writeFileSync(
+    path.join(app2, "oj.plugins.mjs"),
+    `export default [
+  {
+    name: "strict-load",
+    load: {
+      filter: { id: /\\.special\\.js$/ },
+      handler() {
+        return 'export const special = "strict-load-crossed";';
+      },
+    },
+  },
+  {
+    name: "strict-transform",
+    transform: {
+      filter: { id: /entry\\.js$/ },
+      handler(code) {
+        return { code: code + '\\nconsole.log("strict-transform-crossed");', map: null };
+      },
+    },
+  },
+];
+`,
+  );
+  const res = spawnSync(oj, ["build", ".", "--out", "dist2"], {
+    cwd: app2,
+    env: { ...process.env, OJ_DEBUG_HOOK_GATE: "1" },
+    encoding: "utf8",
+  });
+  if (res.status !== 0) throw new Error(`strict-filter build failed: ${res.stderr}`);
+  const gateLog = res.stderr ?? "";
+  const m = gateLog.match(/hook gate skipped resolveId=(\d+) load=(\d+) transform=(\d+)/);
+  assert.ok(m, `gate report missing from stderr:\n${gateLog}`);
+  assert.ok(Number(m[2]) > 0, "the filtered load plan skipped at least one RPC");
+  assert.ok(Number(m[3]) > 0, "the filtered transform plan skipped at least one RPC");
+  const assets2 = fs
+    .readdirSync(path.join(app2, "dist2", "assets"))
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(app2, "dist2", "assets", f), "utf8"))
+    .join("\n");
+  assert.match(assets2, /strict-load-crossed/, "filtered load still crossed for its match");
+  assert.match(assets2, /strict-transform-crossed/, "filtered transform still crossed for its match");
+  fs.rmSync(app2, { recursive: true, force: true });
 
   const parsed = fs.readFileSync(path.join(dist, "module-parsed.txt"), "utf8").split("\n").filter(Boolean);
   assert.ok(parsed.some((id) => id.endsWith("entry.js")), "moduleParsed saw the entry");

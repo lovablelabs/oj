@@ -1207,9 +1207,10 @@ pub struct PluginHost {
     engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
     /// The plugin-host.mjs path on disk — the module every hook call targets.
     host_module: String,
-    /// The build hook plan, fetched once per host: the plugin list is fixed
-    /// after init, and an SSR build constructs several OjUserPlugins.
-    hook_plan: tokio::sync::OnceCell<BuildHookPlan>,
+    /// The hook plan, fetched once per engine generation: the plugin list is
+    /// fixed after init, but a respawned engine re-evaluates the plugins file,
+    /// so the respawn path resets this to avoid gating on a stale plan.
+    hook_plan: Mutex<Option<BuildHookPlan>>,
     ws_out: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart().
@@ -1778,7 +1779,7 @@ impl PluginHost {
         let host = std::sync::Arc::new(PluginHost {
             engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
-            hook_plan: tokio::sync::OnceCell::new(),
+            hook_plan: Mutex::new(None),
             ws_out: Mutex::new(None),
             server_events: Mutex::new(None),
             serve_info_push: tokio::sync::watch::channel(None).0,
@@ -2152,6 +2153,9 @@ impl PluginHost {
         let _ = self.initialized.send_replace(false);
         let _ = self.init_failed.send_replace(false);
         self.serve_info_push.send_replace(None);
+        // The fresh engine re-evaluates the plugins file, which may carry
+        // different hooks or filters; a stale plan could gate them out.
+        *self.hook_plan.lock().unwrap() = None;
         *self.spawned.lock().unwrap() = tokio::time::Instant::now();
         let generation = revive.generation;
         drop(revive);
@@ -2658,23 +2662,27 @@ impl PluginHost {
     /// once per host. Any failure to fetch or parse degrades to "hook present,
     /// unfiltered", which is exactly the ungated behavior.
     pub async fn build_hook_plan(&self) -> BuildHookPlan {
-        self.hook_plan
-            .get_or_init(|| async {
-                let raw = match self.call("getBuildHookPlan", &[]).await {
-                    Ok(Some(s)) => s,
-                    _ => return BuildHookPlan::fail_open(),
-                };
-                match serde_json::from_str::<serde_json::Value>(&raw) {
-                    Ok(v) => BuildHookPlan {
-                        transform: HookFilterPlan::from_json(v.get("transform")),
-                        load: HookFilterPlan::from_json(v.get("load")),
-                        resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
-                    },
-                    Err(_) => BuildHookPlan::fail_open(),
-                }
-            })
-            .await
-            .clone()
+        if let Some(plan) = self.hook_plan.lock().unwrap().clone() {
+            return plan;
+        }
+        // Fetched without holding the lock; a concurrent racer fetches the
+        // same plan and first-write wins.
+        let fetched = match self.call("getBuildHookPlan", &[]).await {
+            Ok(Some(raw)) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                Ok(v) => BuildHookPlan {
+                    transform: HookFilterPlan::from_json(v.get("transform")),
+                    load: HookFilterPlan::from_json(v.get("load")),
+                    resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
+                },
+                Err(_) => BuildHookPlan::fail_open(),
+            },
+            _ => BuildHookPlan::fail_open(),
+        };
+        let mut slot = self.hook_plan.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(fetched);
+        }
+        slot.clone().unwrap()
     }
 
     #[inline]
