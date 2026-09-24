@@ -215,6 +215,13 @@ pub fn prepare_cache_root(root: &Path) {
     }
     oj_cache::heal_legacy_layout(root);
     let _ = std::fs::create_dir_all(oj_cache::cache_root(root));
+    // Vite-style boot hygiene (cleanupDepsCacheStaleDirs), off the boot
+    // path: sweep torn-write tmp leftovers past the 24h age threshold.
+    let current = engine_code_cache_dir(root);
+    std::thread::spawn(move || {
+        oj_js::code_cache::FsCodeCache::new(current)
+            .sweep_stale_tmp(oj_js::code_cache::STALE_TMP_MAX_AGE);
+    });
 }
 
 pub fn write_start_assets(dir: &Path) -> std::io::Result<()> {
