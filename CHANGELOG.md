@@ -5,7 +5,7 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.6] - 2026-09-24
 
 ### Fixed
 - The on-disk V8 code cache keyed entries by the raw module URL, and host-served modules carry a `?v=N` cache-busting query bumped on every edit — so each edit permanently wrote a new, never-again-readable bytecode entry. Long-lived checkouts (persistent-home remote dev boxes) accumulated tens of GB of unreachable entries in `.oj-cache/v1/code-cache`, and the cache never hit for app modules at all. Entry keys now strip the volatile `v`/`t` params — Vite's dep-version and HMR-timestamp busters — so an edit overwrites one entry in place (the embedded source hash already guards staleness) and an unedited module hits across restarts; intent params like `?url`/`?raw` still key their own entries. Boot sweeps torn-write tmp leftovers older than 24h, mirroring Vite's deps-cache cleanup. A checkout bloated by the old keying is cleaned once with `rm -rf .oj-cache`.
