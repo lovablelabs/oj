@@ -11,7 +11,7 @@
 //! two runtimes are dropped on the same thread.
 
 mod bridge;
-mod code_cache;
+pub mod code_cache;
 mod host;
 mod loader;
 mod worker;

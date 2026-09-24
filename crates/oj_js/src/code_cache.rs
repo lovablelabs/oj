@@ -31,7 +31,7 @@ use deno_resolver::cjs::analyzer::NodeAnalysisCacheSourceHash;
 use deno_runtime::code_cache::CodeCache;
 use deno_runtime::code_cache::CodeCacheType;
 
-pub(crate) struct FsCodeCache {
+pub struct FsCodeCache {
     dir: PathBuf,
 }
 
@@ -69,9 +69,40 @@ impl FsCodeCache {
         hash64(source)
     }
 
+    /// The entry key strips the volatile cache-busting params (`v`, `t`) from
+    /// the specifier: a host-served module carries `?v=N`, bumped on every
+    /// edit, so keying on the raw URL wrote one permanently unreachable entry
+    /// per edit (measured tens of GB on long-lived checkouts) and never hit.
+    /// Keyed per module instead, an edit overwrites in place — the embedded
+    /// source hash already guards staleness — and an unedited module hits
+    /// across restarts. Intent params (`?url`, `?raw`) stay in the key: their
+    /// compiled forms differ.
+    fn entry_key(specifier: &Url) -> u64 {
+        if specifier.query().is_none() && specifier.fragment().is_none() {
+            return hash64(specifier.as_str().as_bytes());
+        }
+        let kept: Vec<&str> = specifier
+            .query()
+            .unwrap_or("")
+            .split('&')
+            .filter(|p| {
+                let name = p.split('=').next().unwrap_or(p);
+                !p.is_empty() && name != "v" && name != "t"
+            })
+            .collect();
+        let mut base = specifier.clone();
+        base.set_fragment(None);
+        if kept.is_empty() {
+            base.set_query(None);
+        } else {
+            base.set_query(Some(&kept.join("&")));
+        }
+        hash64(base.as_str().as_bytes())
+    }
+
     fn entry_path(&self, specifier: &Url, suffix: &str) -> PathBuf {
         self.dir
-            .join(format!("{:016x}-{suffix}.bin", hash64(specifier.as_str().as_bytes())))
+            .join(format!("{:016x}-{suffix}.bin", Self::entry_key(specifier)))
     }
 
     fn kind_suffix(kind: CodeCacheType) -> &'static str {
@@ -113,7 +144,37 @@ impl FsCodeCache {
     pub fn put(&self, specifier: &Url, kind: CodeCacheType, source_hash: u64, data: &[u8]) {
         self.put_entry(specifier, Self::kind_suffix(kind), source_hash, data);
     }
+
+    /// Removes torn-write leftovers (`.tmp*` files) older than `max_age` —
+    /// Vite's boot hygiene for its deps cache (cleanupDepsCacheStaleDirs,
+    /// 24h), applied to this cache's atomic-publish temp files. Live tmp
+    /// files from a concurrent engine are younger than any sane age and
+    /// survive.
+    pub fn sweep_stale_tmp(&self, max_age: std::time::Duration) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let now = std::time::SystemTime::now();
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.contains(".tmp") {
+                continue;
+            }
+            let stale = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| now.duration_since(m).ok())
+                .is_some_and(|age| age > max_age);
+            if stale {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
 }
+
+/// Vite's MAX_TEMP_DIR_AGE_MS for its deps-cache temp dirs: 24 hours.
+pub const STALE_TMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 impl CodeCache for FsCodeCache {
     fn get_sync(
@@ -194,5 +255,96 @@ mod tests {
         if !deno_core::v8::VERSION_STRING.contains(crate_version) {
             assert!(!key.contains(crate_version));
         }
+    }
+}
+
+#[cfg(test)]
+mod hygiene_tests {
+    use super::*;
+
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    // The bug that grew long-lived checkouts by tens of GB: every edit bumps
+    // `?v=N`, and raw-URL keying wrote a fresh, permanently unreachable entry
+    // per bump. Volatile params must collapse to one overwritten entry.
+    #[test]
+    fn version_bumps_overwrite_one_entry_instead_of_accumulating() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        for v in 1..=5u32 {
+            let spec = url(&format!("oj:///src/App.tsx?v={v}"));
+            cache.put(&spec, CodeCacheType::EsModule, u64::from(v), format!("bytecode-{v}").as_bytes());
+        }
+        let entries = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(entries, 1, "five version bumps must reuse one entry");
+        // The latest generation is served; a stale source hash misses.
+        let spec = url("oj:///src/App.tsx?v=5");
+        assert_eq!(cache.get(&spec, CodeCacheType::EsModule, 5).as_deref(), Some(b"bytecode-5".as_ref()));
+        assert_eq!(cache.get(&spec, CodeCacheType::EsModule, 4), None);
+    }
+
+    // Versions reset when the dev server restarts; an unedited module (same
+    // source hash) must hit whatever version its URL carries, or warm boots
+    // recompile the whole app graph.
+    #[test]
+    fn an_unedited_module_hits_across_a_version_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        cache.put(&url("oj:///src/App.tsx?v=7"), CodeCacheType::EsModule, 42, b"bytecode");
+        assert_eq!(
+            cache.get(&url("oj:///src/App.tsx?v=1"), CodeCacheType::EsModule, 42).as_deref(),
+            Some(b"bytecode".as_ref())
+        );
+        // `t` is the other cache-busting param convention; fragments never key.
+        assert_eq!(
+            cache.get(&url("oj:///src/App.tsx?t=123#frag"), CodeCacheType::EsModule, 42).as_deref(),
+            Some(b"bytecode".as_ref())
+        );
+    }
+
+    // Intent params compile differently (`?url` is a string module, `?raw`
+    // the file text), so they keep entries of their own.
+    #[test]
+    fn intent_params_keep_their_own_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        cache.put(&url("file:///a/logo.svg?url&v=1"), CodeCacheType::EsModule, 1, b"as-url");
+        cache.put(&url("file:///a/logo.svg?raw&v=2"), CodeCacheType::EsModule, 2, b"as-raw");
+        cache.put(&url("file:///a/logo.svg"), CodeCacheType::EsModule, 3, b"plain");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+        assert_eq!(
+            cache.get(&url("file:///a/logo.svg?url&v=9"), CodeCacheType::EsModule, 1).as_deref(),
+            Some(b"as-url".as_ref())
+        );
+    }
+
+    // Boot hygiene mirrors Vite's deps-cache cleanup: only torn-write tmp
+    // leftovers past the age threshold go; entries and fresh tmp files stay.
+    #[test]
+    fn sweep_removes_only_stale_tmp_leftovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        cache.put(&url("file:///m.js"), CodeCacheType::EsModule, 1, b"bytecode");
+        let stale = dir.path().join("deadbeef-esm.bin.tmp999");
+        std::fs::write(&stale, b"torn").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60);
+        std::fs::File::options()
+            .append(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        std::fs::write(dir.path().join("cafebabe-esm.bin.tmp111"), b"in flight").unwrap();
+        cache.sweep_stale_tmp(STALE_TMP_MAX_AGE);
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n.ends_with(".tmp999")), "stale tmp swept: {names:?}");
+        assert!(names.iter().any(|n| n.ends_with(".tmp111")), "fresh tmp kept: {names:?}");
+        assert_eq!(names.iter().filter(|n| n.ends_with(".bin")).count(), 1, "entry kept: {names:?}");
     }
 }
