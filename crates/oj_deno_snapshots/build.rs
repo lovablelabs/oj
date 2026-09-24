@@ -36,17 +36,45 @@ fn main() {
 
 /// What a pinned bundle must have been built against to be loadable: the V8
 /// snapshot format is tied to the exact V8 build, TS_VERSION tracks the
-/// shared runtime sources, and the blob embeds the TARGET triple. V8 also
-/// verifies its own version hash at deserialize time as the runtime backstop;
-/// this check turns a stale pin into a readable build error instead.
+/// shared runtime sources, and the blob embeds the TARGET triple. The
+/// deno_runtime / deno_core versions come from the workspace lockfile — the
+/// V8 string alone misses bumps that keep the same rusty_v8 while changing
+/// extension JS or op tables, which would otherwise silently ship a stale
+/// blob. The two DENO_SNAPSHOT_* toggles change what the create path emits,
+/// so a pin records them too. V8 also verifies its own version hash at
+/// deserialize time as the runtime backstop; this check turns a stale pin
+/// into a readable build error instead.
 #[cfg(not(feature = "disable"))]
 fn manifest_contents() -> String {
+  let lock = std::fs::read_to_string(
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock"),
+  )
+  .unwrap_or_default();
   format!(
-    "target={}\nv8={}\nts={}\n",
+    "target={}\nv8={}\nts={}\ndeno_runtime={}\ndeno_core={}\nminify={}\nimport_graph={}\n",
     std::env::var("TARGET").unwrap(),
     deno_runtime::deno_core::v8::VERSION_STRING,
     shared::TS_VERSION,
+    locked_version(&lock, "deno_runtime"),
+    locked_version(&lock, "deno_core"),
+    u8::from(std::env::var_os("DENO_SNAPSHOT_MINIFY_SOURCES").is_some()),
+    u8::from(std::env::var_os("DENO_SNAPSHOT_IMPORT_GRAPH").is_some()),
   )
+}
+
+/// The locked version of an (upstream-named, so unique) package in the
+/// workspace Cargo.lock. "unknown" off-workspace (the published crate), where
+/// only the vanilla create path ever runs and the manifest is advisory.
+#[cfg(not(feature = "disable"))]
+fn locked_version<'a>(lock: &'a str, name: &str) -> &'a str {
+  let needle = format!("name = \"{name}\"\nversion = \"");
+  lock
+    .find(&needle)
+    .map(|i| {
+      let rest = &lock[i + needle.len()..];
+      &rest[..rest.find('"').unwrap_or(0)]
+    })
+    .unwrap_or("unknown")
 }
 
 #[cfg(not(feature = "disable"))]
@@ -57,6 +85,14 @@ fn write_manifest(out_dir: &std::path::Path) {
 
 #[cfg(not(feature = "disable"))]
 fn use_snapshot_archive(archive: &std::path::Path, out_dir: &std::path::Path) {
+  // Printing any rerun directive disables cargo's whole-package rescans, so
+  // the archive contents must be watched explicitly or a regenerated pin at
+  // the same path keeps serving the stale OUT_DIR (cargo scans directories
+  // recursively). Nix never reuses a target dir; this is for local builds.
+  #[allow(clippy::print_stdout, reason = "build script output")]
+  {
+    println!("cargo:rerun-if-changed={}", archive.display());
+  }
   let manifest_path = archive.join("OJ_SNAPSHOT_MANIFEST");
   let manifest = std::fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
     panic!(
@@ -80,6 +116,9 @@ fn use_snapshot_archive(archive: &std::path::Path, out_dir: &std::path::Path) {
   }
   let residual_src = archive.join("residual_sources");
   let residual_dst = out_dir.join("residual_sources");
+  // Clear first: leftovers from an earlier create-path run could satisfy an
+  // include_str! a partial pin no longer provides, silently mixing builds.
+  let _ = std::fs::remove_dir_all(&residual_dst);
   std::fs::create_dir_all(&residual_dst).unwrap();
   for entry in std::fs::read_dir(&residual_src).unwrap_or_else(|e| {
     panic!(
@@ -88,7 +127,12 @@ fn use_snapshot_archive(archive: &std::path::Path, out_dir: &std::path::Path) {
     )
   }) {
     let entry = entry.unwrap();
-    std::fs::copy(entry.path(), residual_dst.join(entry.file_name())).unwrap();
+    std::fs::copy(entry.path(), residual_dst.join(entry.file_name())).unwrap_or_else(|e| {
+      panic!(
+        "copying residual source {:?} from the snapshot bundle failed: {e}",
+        entry.file_name()
+      )
+    });
   }
 }
 

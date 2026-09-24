@@ -81,8 +81,9 @@
           # transitive dep) whose build script runs bindgen. nukeReferences
           # breaks the compile-time-only store-path references (see postFixup).
           nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook pkgs.nukeReferences ]
-            # signIfRequired for the post-nuke re-sign; patchelf for the RUNPATH keep-list.
-            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.autoSignDarwinBinariesHook ]
+            # signIfRequired for the post-nuke re-sign; python3 for the LC_UUID
+            # rewrite; patchelf for the RUNPATH keep-list.
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.autoSignDarwinBinariesHook pkgs.python3 ]
             ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.patchelf ];
           buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           RUSTY_V8_ARCHIVE = rustyV8Archive pkgs;
@@ -139,6 +140,12 @@
               for p in $(otool -L "$out/bin/oj" | grep -o '/nix/store/[a-z0-9]\{32\}-[^/ ]*' | sort -u); do
                 keep="$keep -e $p"
               done
+              # LC_RPATH entries are load commands too (otool -l, not -L);
+              # today's binary has none, but a future store-pathed rpath must
+              # survive the nuke like the dylib install names do.
+              for p in $(otool -l "$out/bin/oj" | grep -A2 LC_RPATH | grep ' path /nix/store/' | grep -o '/nix/store/[a-z0-9]\{32\}-[^/ ]*' | sort -u); do
+                keep="$keep -e $p"
+              done
             else
               for p in $( (patchelf --print-rpath "$out/bin/oj" | tr ':' '\n'; patchelf --print-interpreter "$out/bin/oj" 2>/dev/null) | grep -o '^/nix/store/[a-z0-9]\{32\}-[^/]*' | sort -u ); do
                 keep="$keep -e $p"
@@ -153,6 +160,37 @@
               fi
             done
             if [ "$(uname)" = Darwin ]; then
+              # ld64 seeds LC_UUID from link-time state that includes the
+              # randomized build-dir object paths (strip removes the paths,
+              # the UUID survives), so two builders differed in exactly the
+              # UUID plus the code directory's page-0 hash over it. Rewrite
+              # it as a hash of the post-strip content (UUID and signature
+              # regions zeroed in the hash input): identical across builders,
+              # still unique per real change. The re-sign below covers it.
+              python3 - "$out/bin/oj" <<'PYUUID'
+import hashlib, struct, sys
+p = sys.argv[1]
+d = bytearray(open(p, "rb").read())
+assert struct.unpack_from("<I", d, 0)[0] == 0xFEEDFACF, "not a 64-bit macho"
+ncmds = struct.unpack_from("<I", d, 16)[0]
+off = 32
+uuid_off = None
+sig_off = len(d)
+for _ in range(ncmds):
+    cmd, size = struct.unpack_from("<II", d, off)
+    if cmd == 0x1B:
+        uuid_off = off + 8
+    if cmd == 0x1D:
+        sig_off = struct.unpack_from("<II", d, off + 8)[0]
+    off += size
+assert uuid_off is not None, "no LC_UUID"
+h = hashlib.sha256()
+h.update(d[:uuid_off])
+h.update(bytes(16))
+h.update(d[uuid_off + 16 : sig_off])
+d[uuid_off : uuid_off + 16] = h.digest()[:16]
+open(p, "wb").write(d)
+PYUUID
               if type -t signIfRequired > /dev/null; then
                 signIfRequired "$out/bin/oj"
               elif command -v codesign > /dev/null; then
