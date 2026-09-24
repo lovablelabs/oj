@@ -1081,6 +1081,111 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     }
 }
 
+/// One hook's gate for the build: whether any plugin has the hook, whether one
+/// of them must always be offered every module (function-form, or a filter the
+/// plan cannot represent), and the include filters of the rest. The gate only
+/// ever over-approximates: `wants` may say yes for a module every plugin then
+/// declines in JS, never no for one a plugin would have claimed.
+#[derive(Debug, Default, Clone)]
+pub struct HookFilterPlan {
+    pub present: bool,
+    pub unfiltered: bool,
+    pub plugins: Vec<PluginFilter>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginFilter {
+    pub id: Vec<regex::Regex>,
+    pub code: Vec<regex::Regex>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct BuildHookPlan {
+    pub transform: HookFilterPlan,
+    pub load: HookFilterPlan,
+    pub resolve_id: HookFilterPlan,
+}
+
+impl HookFilterPlan {
+    fn fail_open() -> Self {
+        Self {
+            present: true,
+            unfiltered: true,
+            plugins: Vec::new(),
+        }
+    }
+
+    fn from_json(v: Option<&serde_json::Value>) -> Self {
+        let Some(v) = v else {
+            return Self::fail_open();
+        };
+        let present = v.get("present").and_then(|b| b.as_bool()).unwrap_or(true);
+        let mut unfiltered = v
+            .get("unfiltered")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(true);
+        let mut plugins = Vec::new();
+        for entry in v
+            .get("plugins")
+            .and_then(|p| p.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[])
+        {
+            let compile = |key: &str| -> Option<Vec<regex::Regex>> {
+                let mut out = Vec::new();
+                for s in entry.get(key).and_then(|x| x.as_array())? {
+                    // A JS regex the regex crate cannot compile (lookaround,
+                    // backrefs) cannot gate; the plugin then always crosses.
+                    out.push(regex::Regex::new(s.as_str()?).ok()?);
+                }
+                Some(out)
+            };
+            match (compile("id"), compile("code")) {
+                (Some(id), Some(code)) if !id.is_empty() || !code.is_empty() => {
+                    plugins.push(PluginFilter { id, code });
+                }
+                _ => unfiltered = true,
+            }
+        }
+        Self {
+            present,
+            unfiltered,
+            plugins,
+        }
+    }
+
+    /// Whether any plugin's filter could claim this module. `code` is only
+    /// consulted where the caller has it (transform); a code filter with no
+    /// code available passes, keeping the gate an over-approximation.
+    pub fn wants(&self, id: &str, code: Option<&str>) -> bool {
+        if !self.present {
+            return false;
+        }
+        if self.unfiltered {
+            return true;
+        }
+        self.plugins.iter().any(|p| {
+            let id_ok = p.id.is_empty() || p.id.iter().any(|re| re.is_match(id));
+            let code_ok = p.code.is_empty()
+                || match code {
+                    Some(c) => p.code.iter().any(|re| re.is_match(c)),
+                    None => true,
+                };
+            id_ok && code_ok
+        })
+    }
+}
+
+impl BuildHookPlan {
+    pub fn fail_open() -> Self {
+        Self {
+            transform: HookFilterPlan::fail_open(),
+            load: HookFilterPlan::fail_open(),
+            resolve_id: HookFilterPlan::fail_open(),
+        }
+    }
+}
+
 pub struct PluginHost {
     /// The embedded engine hosting plugin-host.mjs. In an Option so
     /// `declare_gone`/`shutdown` can take + abandon it explicitly (background
@@ -2527,6 +2632,29 @@ impl PluginHost {
     #[inline]
     pub async fn has_generate_bundle(&self) -> bool {
         matches!(self.call("hasGenerateBundle", &[]).await, Ok(Some(s)) if s == "true")
+    }
+
+    #[inline]
+    pub async fn has_transform_index_html(&self) -> bool {
+        matches!(self.call("hasTransformIndexHtml", &[]).await, Ok(Some(s)) if s == "true")
+    }
+
+    /// The per-hook filter plan the build's Rust-side gate runs on. Any failure
+    /// to fetch or parse degrades to "hook present, unfiltered", which is
+    /// exactly the ungated behavior.
+    pub async fn build_hook_plan(&self) -> BuildHookPlan {
+        let raw = match self.call("getBuildHookPlan", &[]).await {
+            Ok(Some(s)) => s,
+            _ => return BuildHookPlan::fail_open(),
+        };
+        match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) => BuildHookPlan {
+                transform: HookFilterPlan::from_json(v.get("transform")),
+                load: HookFilterPlan::from_json(v.get("load")),
+                resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
+            },
+            Err(_) => BuildHookPlan::fail_open(),
+        }
     }
 
     #[inline]
@@ -4656,5 +4784,84 @@ export async function run() {
                 _ => panic!("outcome {outcome:?} came back as {back:?}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hook_plan_tests {
+    use super::HookFilterPlan;
+
+    fn plan(json: &str) -> HookFilterPlan {
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        HookFilterPlan::from_json(Some(&v))
+    }
+
+    #[test]
+    fn absent_hook_wants_nothing() {
+        let p = plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#);
+        assert!(!p.wants("/app/src/main.tsx", None));
+    }
+
+    #[test]
+    fn unfiltered_hook_wants_everything() {
+        let p = plan(r#"{"present":true,"unfiltered":true,"plugins":[]}"#);
+        assert!(p.wants("anything", None));
+    }
+
+    #[test]
+    fn id_filter_gates_by_module_id() {
+        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["\\.tsx$"],"code":[]}]}"#);
+        assert!(p.wants("/app/src/App.tsx", None));
+        assert!(!p.wants("/app/node_modules/react/index.js", None));
+    }
+
+    #[test]
+    fn id_and_code_filters_of_one_plugin_both_apply() {
+        let p = plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":["\\.js$"],"code":["import\\.meta\\.glob"]}]}"#,
+        );
+        assert!(p.wants("/a.js", Some("import.meta.glob(\"./x\")")));
+        assert!(!p.wants("/a.js", Some("plain code")));
+        assert!(!p.wants("/a.ts", Some("import.meta.glob(\"./x\")")));
+        // No code available (load/resolveId shape): the code half must pass.
+        assert!(p.wants("/a.js", None));
+    }
+
+    #[test]
+    fn filters_union_across_plugins() {
+        let p = plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":["\\.md$"],"code":[]},{"id":["\\.svg$"],"code":[]}]}"#,
+        );
+        assert!(p.wants("/doc.md", None));
+        assert!(p.wants("/icon.svg", None));
+        assert!(!p.wants("/main.ts", None));
+    }
+
+    #[test]
+    fn case_insensitive_js_regex_carries_over() {
+        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["(?i)\\.SVG$"],"code":[]}]}"#);
+        assert!(p.wants("/icon.svg", None));
+    }
+
+    #[test]
+    fn uncompilable_regex_fails_open_to_unfiltered() {
+        // JS lookahead does not compile in the regex crate; the plan must then
+        // treat that plugin as unfiltered rather than never offering it modules.
+        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["(?!never)x"],"code":[]}]}"#);
+        assert!(p.wants("/anything/at/all", None));
+    }
+
+    #[test]
+    fn malformed_plan_fails_open() {
+        let p = HookFilterPlan::from_json(None);
+        assert!(p.wants("x", None));
+        let p = plan(r#"{"plugins":"nope"}"#);
+        assert!(p.wants("x", None));
+    }
+
+    #[test]
+    fn empty_filter_entry_fails_open() {
+        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":[]}]}"#);
+        assert!(p.wants("/anything", None));
     }
 }

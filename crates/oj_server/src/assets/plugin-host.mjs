@@ -3445,6 +3445,64 @@ async function run(hook, args) {
   if (hook === "getWatchFiles") return JSON.stringify([...watchedFiles]);
   if (hook === "hasModuleParsed") return String(anyModuleParsed());
   if (hook === "replayModuleParsed") return replayModuleParsed(args[0]);
+  if (hook === "hasTransformIndexHtml") {
+    const has = plugins.some((p) => {
+      const h = p && p.transformIndexHtml;
+      const fn = typeof h === "function" ? h : h?.handler ?? h?.transform;
+      return typeof fn === "function";
+    });
+    return String(has);
+  }
+  if (hook === "getBuildHookPlan") {
+    // Per-hook filter plan for the build's Rust-side gate: which plugins have
+    // the hook, and each plugin's `filter` include patterns. Vite/rolldown push
+    // hook filters into the bundler so a filtered hook is never called for a
+    // module it does not claim; this hands oj build the same information. The
+    // gate must only ever OVER-approximate, so anything it cannot represent
+    // exactly makes that plugin "unfiltered" (always called): function-form
+    // hooks, filters without includes (exclude- or moduleType-only), and
+    // string patterns (rolldown treats them as globs, not literals).
+    const regexes = (inc) => {
+      if (inc && typeof inc === "object" && !(inc instanceof RegExp) && !Array.isArray(inc)) {
+        inc = inc.include;
+      }
+      const list = Array.isArray(inc) ? inc : inc != null ? [inc] : [];
+      const out = [];
+      for (const r of list) {
+        if (!(r instanceof RegExp)) return null;
+        out.push(r.ignoreCase ? `(?i)${r.source}` : r.source);
+      }
+      return out;
+    };
+    const planFor = (name, withCode) => {
+      const entries = [];
+      let unfiltered = false;
+      let present = false;
+      for (const p of plugins) {
+        const h = p && p[name];
+        if (typeof hookHandler(h) !== "function") continue;
+        present = true;
+        const f = h && typeof h === "object" ? h.filter : null;
+        const id = f ? regexes(f.id) : null;
+        const code = withCode && f ? regexes(f.code) : null;
+        const idHas = Array.isArray(id) && id.length > 0;
+        const codeHas = Array.isArray(code) && code.length > 0;
+        // A pattern set regexes() refused (null) or a filter with no usable
+        // includes cannot gate; that plugin must always be offered the module.
+        if ((id === null && f && f.id != null) || (withCode && code === null && f && f.code != null) || (!idHas && !codeHas)) {
+          unfiltered = true;
+          continue;
+        }
+        entries.push({ id: idHas ? id : [], code: codeHas ? code : [] });
+      }
+      return { present, unfiltered, plugins: entries };
+    };
+    return JSON.stringify({
+      transform: planFor("transform", true),
+      load: planFor("load", false),
+      resolveId: planFor("resolveId", false),
+    });
+  }
   if (hook === "hasGenerateBundle") {
     return String(pluginsWithHook("generateBundle").length > 0);
   }
