@@ -116,7 +116,18 @@ if (ojEngineBoot) {
     });
   } catch {}
   if (ojEngineBoot.cacheRoot) process.env.OJ_CACHE_ROOT = String(ojEngineBoot.cacheRoot);
-  const appRoot = initial.config?.root ?? process.cwd();
+  // process.cwd() THROWS NotFound when the process's directory was deleted
+  // (another host chdir'd somewhere that vanished), so the boot path must
+  // never require it; a config root is always present in practice.
+  const appRoot =
+    initial.config?.root ??
+    (() => {
+      try {
+        return process.cwd();
+      } catch {
+        return "/";
+      }
+    })();
   // The old spawn ran with cwd = the app root, and plugins depend on it for
   // RELATIVE fs paths (a lifecycle hook writing ".oj-cache/…") as much as for
   // process.cwd() readers. Really chdir — the Start-phase scripts set the
@@ -126,17 +137,17 @@ if (ojEngineBoot) {
   // readers follow the shadow; its relative fs stays anchored at the root —
   // the one divergence from a real child, documented cost of sharing the
   // process).
-  let shadowCwd = process.cwd();
+  // Seed the shadow from the root itself (realpathed, like a real child's
+  // cwd), never from a process.cwd() read-back: cwd is process-global, so
+  // another engine booting a different root between our chdir and a read
+  // would leak ITS root into this host's shadow, and the read itself throws
+  // once the process's directory has been deleted.
+  let shadowCwd = String(appRoot);
   try {
     process.chdir(String(appRoot));
-    // Seed the shadow from the root itself (realpathed, like a real child's
-    // cwd), not from a process.cwd() read-back: cwd is process-global, and
-    // another engine booting a different root between our chdir and the read
-    // would leak ITS root into this host's shadow.
-    shadowCwd = String(appRoot);
-    try {
-      shadowCwd = realpathSync(String(appRoot));
-    } catch {}
+  } catch {}
+  try {
+    shadowCwd = realpathSync(String(appRoot));
   } catch {}
   try {
     process.cwd = () => shadowCwd;

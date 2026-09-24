@@ -5535,8 +5535,6 @@ mod tests {
         // An explicit setting wins either way.
         assert!(out_dir_emptiable(&root, &outside, Some(true), false));
         assert!(!out_dir_emptiable(&root, &inside, Some(false), false));
-        fs::remove_dir_all(&root).unwrap();
-        fs::remove_dir_all(&outside).unwrap();
     }
 
     #[test]
@@ -5562,7 +5560,6 @@ mod tests {
         prepare_out_dir(&root, &dist, None).unwrap();
         assert!(!dist.join("stale.js").exists());
         assert!(dist.join(".git").is_dir());
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[tokio::test]
@@ -5626,7 +5623,6 @@ mod tests {
                 expected,
                 "{config_name}: {config}\n{html}"
             );
-            fs::remove_dir_all(root).unwrap();
         }
     }
 
@@ -5759,7 +5755,6 @@ mod tests {
                 "{config_name}: {config}"
             );
             assert!(root.join("dist/index.html").is_file());
-            fs::remove_dir_all(root).unwrap();
         }
     }
 
@@ -5801,7 +5796,6 @@ mod tests {
             .expect("ssr build");
         let server = fs::read_to_string(root.join("dist-ssr/server.mjs")).unwrap();
         assert!(server.contains("process.env.SOME_FLAG"), "ssr bundle must keep process.env:\n{server}");
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// Vite's build-html asset pass: attribute references to source assets are
@@ -5870,7 +5864,6 @@ mod tests {
         assert!(html.contains("<img src=\"https://example.com/x.png\">"), "{html}");
         assert!(html.contains("<img src=\"./src/big.png\">"), "{html}");
         assert!(!html.contains("vite-ignore"), "{html}");
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// `build.lib` from vite.config: Vite's entry forms, default formats
@@ -5896,7 +5889,6 @@ mod tests {
         assert!(root.join("dist/my-lib.umd.cjs").is_file(), "umd is a default format; .cjs under type module");
         assert!(root.join("dist/my-lib.css").is_file());
         assert!(!root.join("dist/index.js").exists());
-        fs::remove_dir_all(&root).unwrap();
 
         // Several aliased entries in a commonjs package: es+cjs, per-entry names.
         let root = scratch("vite-lib-multi");
@@ -5916,7 +5908,6 @@ mod tests {
             assert!(root.join("dist").join(f).is_file(), "missing {f}");
         }
         assert!(!root.join("dist/main.umd.js").exists(), "umd is not a default with several entries");
-        fs::remove_dir_all(&root).unwrap();
 
         // umd without a name is Vite's error, not a silent es-only build.
         let root = scratch("vite-lib-noname");
@@ -5932,7 +5923,6 @@ mod tests {
             .await
             .expect_err("umd needs build.lib.name");
         assert!(err.to_string().contains("build.lib.name"), "{err}");
-        fs::remove_dir_all(&root).unwrap();
     }
 
     /// Vite's `bundleWorkerEntry`: a `?worker&inline` bundle is built under the
@@ -5980,7 +5970,6 @@ mod tests {
         assert!(!code.contains("__APP_VERSION__"), "define not applied inside the inline worker:\n{code}");
         assert!(code.contains("1.2.3") && code.contains("hi "), "{code}");
         assert!(!code.contains("process.env"), "process.env defines missing inside the inline worker:\n{code}");
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// The plugin host of an SSR (and client-entry) build is told the real mode,
@@ -6002,7 +5991,6 @@ mod tests {
             .expect("ssr build");
         let seen = fs::read_to_string(root.join("mode.txt")).expect("plugin configResolved ran");
         assert_eq!(seen.trim(), "staging");
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6112,7 +6100,6 @@ mod tests {
         assert_eq!(m["src/style.css"]["name"], "main-abc.css");
         assert!(m["src/style.css"].get("isEntry").is_none());
         assert_eq!(m["_gen-1.css"]["file"], "assets/gen-1.css");
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -6217,7 +6204,6 @@ mod tests {
         let w = chunk_size_warning(500.0);
         assert!(w.contains("larger than 500 kB after minification"));
         assert!(w.contains("build.chunkSizeWarningLimit"));
-        fs::remove_dir_all(&out).unwrap();
     }
 
     #[test]

@@ -1642,7 +1642,6 @@ mod tests {
         // Memoized: a second ask answers from the caches.
         assert!(cache.is_cjs_file(&cjs.to_string_lossy()));
         assert!(!cache.is_cjs_file(&typed.to_string_lossy()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // The ESM-syntax verdict is keyed on the file's mtime: an edited file
@@ -1668,7 +1667,6 @@ mod tests {
             !cache.is_cjs_file(&file.to_string_lossy()),
             "an mtime move re-reads the file"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // The framework seam, from the consumer's side: start-server-core imports
@@ -1750,7 +1748,6 @@ mod tests {
             node_env_before,
             "the script's NODE_ENV write must not alter oj's real env"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
