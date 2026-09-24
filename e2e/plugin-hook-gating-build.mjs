@@ -9,7 +9,7 @@
 // matches nothing, a string-filtered transform (conservatively unfiltered in
 // the plan, still filtered by the host), a RegExp-filtered load for a real
 // import, and transformIndexHtml.
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -93,6 +93,18 @@ fs.writeFileSync(
     },
   },
   {
+    // moduleParsed only fires inside the transform RPC in build; its presence
+    // must pin transform unfiltered so every module still reaches it.
+    name: "gate-module-parsed",
+    moduleParsed(info) {
+      globalThis.__seen = globalThis.__seen || [];
+      globalThis.__seen.push(info.id);
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "module-parsed.txt", source: (globalThis.__seen || []).join("\\n") });
+    },
+  },
+  {
     name: "gate-html",
     transformIndexHtml(html) {
       return html.replace("</head>", '<meta name="gate" content="html-crossed" /></head>');
@@ -104,7 +116,7 @@ fs.writeFileSync(
 
 let failed = false;
 try {
-  execSync(`${oj} build ${app}`, { stdio: "pipe" });
+  execFileSync(oj, ["build", app], { stdio: "pipe" });
 
   const dist = path.join(app, "dist");
   const assets = fs
@@ -120,6 +132,11 @@ try {
 
   const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
   assert.match(html, /html-crossed/, "transformIndexHtml still runs");
+
+  const parsed = fs.readFileSync(path.join(dist, "module-parsed.txt"), "utf8").split("\n").filter(Boolean);
+  assert.ok(parsed.some((id) => id.endsWith("entry.js")), "moduleParsed saw the entry");
+  assert.ok(parsed.some((id) => id.includes("gate-info")), "moduleParsed saw the virtual module");
+  assert.ok(parsed.some((id) => id.endsWith(".special")), "moduleParsed saw the plugin-loaded module");
 
   console.log("PLUGIN HOOK GATING BUILD VERIFIED");
 } catch (e) {

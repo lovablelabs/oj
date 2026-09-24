@@ -1164,6 +1164,15 @@ impl HookFilterPlan {
         if self.unfiltered {
             return true;
         }
+        // The host matches filters against the slash-normalized id (its
+        // slash() helper), so a Windows path must be normalized the same way
+        // or the gate under-matches.
+        let id = if id.contains('\\') {
+            std::borrow::Cow::Owned(id.replace('\\', "/"))
+        } else {
+            std::borrow::Cow::Borrowed(id)
+        };
+        let id = id.as_ref();
         self.plugins.iter().any(|p| {
             let id_ok = p.id.is_empty() || p.id.iter().any(|re| re.is_match(id));
             let code_ok = p.code.is_empty()
@@ -1198,6 +1207,9 @@ pub struct PluginHost {
     engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
     /// The plugin-host.mjs path on disk — the module every hook call targets.
     host_module: String,
+    /// The build hook plan, fetched once per host: the plugin list is fixed
+    /// after init, and an SSR build constructs several OjUserPlugins.
+    hook_plan: tokio::sync::OnceCell<BuildHookPlan>,
     ws_out: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart().
@@ -1766,6 +1778,7 @@ impl PluginHost {
         let host = std::sync::Arc::new(PluginHost {
             engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
+            hook_plan: tokio::sync::OnceCell::new(),
             ws_out: Mutex::new(None),
             server_events: Mutex::new(None),
             serve_info_push: tokio::sync::watch::channel(None).0,
@@ -2634,27 +2647,34 @@ impl PluginHost {
         matches!(self.call("hasGenerateBundle", &[]).await, Ok(Some(s)) if s == "true")
     }
 
+    /// Fails open: only an explicit "false" skips the hook, so a wedged host
+    /// still fails the build at the RPC instead of shipping untransformed HTML.
     #[inline]
     pub async fn has_transform_index_html(&self) -> bool {
-        matches!(self.call("hasTransformIndexHtml", &[]).await, Ok(Some(s)) if s == "true")
+        !matches!(self.call("hasTransformIndexHtml", &[]).await, Ok(Some(s)) if s == "false")
     }
 
-    /// The per-hook filter plan the build's Rust-side gate runs on. Any failure
-    /// to fetch or parse degrades to "hook present, unfiltered", which is
-    /// exactly the ungated behavior.
+    /// The per-hook filter plan the build's Rust-side gate runs on, fetched
+    /// once per host. Any failure to fetch or parse degrades to "hook present,
+    /// unfiltered", which is exactly the ungated behavior.
     pub async fn build_hook_plan(&self) -> BuildHookPlan {
-        let raw = match self.call("getBuildHookPlan", &[]).await {
-            Ok(Some(s)) => s,
-            _ => return BuildHookPlan::fail_open(),
-        };
-        match serde_json::from_str::<serde_json::Value>(&raw) {
-            Ok(v) => BuildHookPlan {
-                transform: HookFilterPlan::from_json(v.get("transform")),
-                load: HookFilterPlan::from_json(v.get("load")),
-                resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
-            },
-            Err(_) => BuildHookPlan::fail_open(),
-        }
+        self.hook_plan
+            .get_or_init(|| async {
+                let raw = match self.call("getBuildHookPlan", &[]).await {
+                    Ok(Some(s)) => s,
+                    _ => return BuildHookPlan::fail_open(),
+                };
+                match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(v) => BuildHookPlan {
+                        transform: HookFilterPlan::from_json(v.get("transform")),
+                        load: HookFilterPlan::from_json(v.get("load")),
+                        resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
+                    },
+                    Err(_) => BuildHookPlan::fail_open(),
+                }
+            })
+            .await
+            .clone()
     }
 
     #[inline]
@@ -4841,6 +4861,23 @@ mod hook_plan_tests {
     fn case_insensitive_js_regex_carries_over() {
         let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["(?i)\\.SVG$"],"code":[]}]}"#);
         assert!(p.wants("/icon.svg", None));
+    }
+
+    #[test]
+    fn multiline_and_dotall_inline_flags_apply() {
+        let p = plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":["(?m)^import\\s"]}]}"#,
+        );
+        assert!(p.wants("/a.js", Some("// banner\nimport x from \"y\";")));
+        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":["(?s)a.b"]}]}"#);
+        assert!(p.wants("/a.js", Some("a\nb")));
+    }
+
+    #[test]
+    fn windows_ids_match_slash_normalized_like_the_host() {
+        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["/src/.*\\.tsx$"],"code":[]}]}"#);
+        assert!(p.wants(r"C:\app\src\App.tsx", None));
+        assert!(!p.wants(r"C:\app\node_modules\x\index.js", None));
     }
 
     #[test]

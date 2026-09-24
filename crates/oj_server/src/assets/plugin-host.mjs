@@ -2941,6 +2941,13 @@ async function replayModuleParsed(id) {
 }
 
 const anyModuleParsed = () => pluginsWithHook("moduleParsed").length > 0;
+// transformIndexHtml accepts a legacy `transform` key that generic hookHandler
+// does not; this is the one unwrap both the runner and hasTransformIndexHtml use.
+function htmlHookFn(p) {
+  const hook = p && p.transformIndexHtml;
+  const fn = typeof hook === "function" ? hook : hook?.handler ?? hook?.transform;
+  return typeof fn === "function" ? fn : null;
+}
 
 async function watchChange(id, event) {
   for (const { fn } of pluginsWithHook("watchChange")) await fn.call(ctx, id, { event });
@@ -3278,10 +3285,9 @@ async function transformIndexHtml(html, ctxJson) {
   // Honor per-hook order: 'pre' hooks run first, 'post' last (stable within a rank).
   const entries = [];
   for (const p of plugins) {
-    const hook = p.transformIndexHtml;
-    const fn = typeof hook === "function" ? hook : hook?.handler ?? hook?.transform;
-    if (typeof fn !== "function") continue;
-    entries.push({ p, fn, rank: htmlHookRank(hook) });
+    const fn = htmlHookFn(p);
+    if (!fn) continue;
+    entries.push({ p, fn, rank: htmlHookRank(p.transformIndexHtml) });
   }
   entries.sort((a, b) => a.rank - b.rank);
   for (const { p, fn } of entries) {
@@ -3446,12 +3452,7 @@ async function run(hook, args) {
   if (hook === "hasModuleParsed") return String(anyModuleParsed());
   if (hook === "replayModuleParsed") return replayModuleParsed(args[0]);
   if (hook === "hasTransformIndexHtml") {
-    const has = plugins.some((p) => {
-      const h = p && p.transformIndexHtml;
-      const fn = typeof h === "function" ? h : h?.handler ?? h?.transform;
-      return typeof fn === "function";
-    });
-    return String(has);
+    return String(plugins.some((p) => typeof htmlHookFn(p) === "function"));
   }
   if (hook === "getBuildHookPlan") {
     // Per-hook filter plan for the build's Rust-side gate: which plugins have
@@ -3470,11 +3471,23 @@ async function run(hook, args) {
       const out = [];
       for (const r of list) {
         if (!(r instanceof RegExp)) return null;
-        out.push(r.ignoreCase ? `(?i)${r.source}` : r.source);
+        // i/m/s change what the pattern matches and Rust supports them inline;
+        // g/y only affect JS lastIndex statefulness, not the language. Any
+        // other flag (u/v change escape semantics) cannot be carried, so the
+        // whole plugin fails open rather than under-matching.
+        if (/[^imsgy]/.test(r.flags)) return null;
+        const inline = ["i", "m", "s"].filter((f) => r.flags.includes(f)).join("");
+        out.push(inline ? `(?${inline})${r.source}` : r.source);
       }
       return out;
     };
     const planFor = (name, withCode) => {
+      // moduleParsed only fires inside the transform RPC in build, and it also
+      // fills the moduleInfo cache getModuleInfo/getModuleIds read; gating
+      // transform would starve them, so its presence pins transform unfiltered.
+      if (name === "transform" && withCode && anyModuleParsed()) {
+        return { present: true, unfiltered: true, plugins: [] };
+      }
       const entries = [];
       let unfiltered = false;
       let present = false;
