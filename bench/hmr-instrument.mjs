@@ -1,4 +1,4 @@
-//node bench/hmr-instrument.mjs <app-dir> [--bundle] [edits]
+//node bench/hmr-instrument.mjs <app-dir> [edits]
 import { chromium } from "playwright";
 import { spawn, execSync } from "node:child_process";
 import { writeFileSync, readFileSync } from "node:fs";
@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const app = path.resolve(process.argv[2] ?? path.join(here, "apps", "app-1000"));
-const bundle = process.argv.includes("--bundle");
 const EDITS = Number(process.argv.find((a, i) => i >= 3 && /^\d+$/.test(a)) ?? 20);
 const OJ = path.join(repo, "target", "release", "oj");
 const PORT = 5199;
@@ -48,7 +47,6 @@ async function main() {
   try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
   try { execSync(`rm -rf ${app}/.oj-cache`); } catch {}
   const args = ["dev", app, "--port", String(PORT)];
-  if (bundle) args.push("--bundle");
   const proc = spawn(OJ, args, { stdio: "ignore" });
   // wait for server
   for (let i=0;i<600;i++){ try { const r=await fetch(`http://localhost:${PORT}/`); if(r.ok) break; } catch{} await sleep(50); }
@@ -90,7 +88,7 @@ async function main() {
 
   const ok = rows.filter(Boolean);
   const g = (k) => ok.map(r => r[k]);
-  console.log(`\napp-${N} ${bundle ? "--bundle" : "(unbundled)"} — ${ok.length} edits, medians (ms):`);
+  console.log(`\napp-${N} — ${ok.length} edits, medians (ms):`);
   console.log(`  total save->paint      : ${med(g("total")).toFixed(1)}`);
   console.log(`  server + transport     : ${med(g("serverTransport")).toFixed(1)}   (edit -> HMR msg: debounce + recompile + serialize + ws)`);
   console.log(`  client apply           : ${med(g("clientApply")).toFixed(1)}   (HMR msg -> DOM paint: fetch + refresh + rerender)`);

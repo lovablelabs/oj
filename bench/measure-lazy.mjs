@@ -8,7 +8,6 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const OJ = path.join(repo, "target", "release", "oj");
 const ITERS = Number(process.argv.find((a, i) => i >= 2 && /^\d+$/.test(a)) ?? 5);
-const BUNDLE = process.argv.includes("--bundle");
 const PORT = 5199;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
@@ -17,7 +16,7 @@ async function coldOnce(app, browser) {
   try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
   rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const log = "/tmp/oj-lazy.log";
-  const proc = spawn("sh", ["-c", `'${OJ}' dev '${app}' --port ${PORT} ${BUNDLE ? "--bundle" : ""} > ${log} 2>&1`]);
+  const proc = spawn("sh", ["-c", `'${OJ}' dev '${app}' --port ${PORT} > ${log} 2>&1`]);
   const t0 = Date.now();
   const page = await browser.newPage();
   for (;;) {

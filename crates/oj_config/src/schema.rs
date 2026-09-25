@@ -35,7 +35,6 @@ pub struct OjConfig {
     /// (no SPA fallback) or `custom`.
     pub app_type: Option<String>,
     pub virtual_modules: Option<BTreeMap<String, String>>,
-    pub bundle: Option<bool>,
     pub environments: Option<BTreeMap<String, serde_json::Value>>,
     pub optimize_deps: Option<OptimizeDepsConfig>,
     /// Vite's `oxc` block (`oxc.jsx.{runtime,importSource,pragma,pragmaFrag}`);

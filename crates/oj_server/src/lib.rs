@@ -92,8 +92,6 @@ const SERVER_FN_JS: &str = include_str!("assets/server-fn.js");
 const LINGUI_MACRO_SHIM_JS: &str = include_str!("assets/lingui-macro-shim.mjs");
 const REFRESH_RUNTIME_JS: &str = include_str!("assets/refresh-runtime.js");
 const REFRESH_PREAMBLE_JS: &str = include_str!("assets/refresh-preamble.js");
-const BUNDLE_RUNTIME_JS: &str = include_str!("assets/bundle-runtime.js");
-const WORKER_RUNTIME_JS: &str = include_str!("assets/worker-runtime.js");
 // Probed in Vite's DEFAULT_EXTENSIONS order (js before ts, .mts included) so the
 // extensionless quick path agrees with the resolver; .cts/.svelte trail as
 // compilable-but-not-default-probed.
@@ -256,7 +254,6 @@ fn dedup_defines_last_wins(defines: Vec<(String, String)>) -> Vec<(String, Strin
 pub struct DevServer {
     pub root: PathBuf,
     pub port: Option<u16>,
-    pub bundle: bool,
     pub host: Option<String>,
     pub config: Option<PathBuf>,
     /// Enable the experimental on-disk module cache (off by default).
@@ -274,7 +271,6 @@ struct ServerState {
     root: PathBuf,
     /// Vite's `publicDir`; None when the config disables it (`publicDir: false`).
     public_dir: Option<PathBuf>,
-    bundle: bool,
     persistent_cache: bool,
     reload_tx: broadcast::Sender<String>,
     graph: Mutex<ModuleGraph>,
@@ -295,8 +291,6 @@ struct ServerState {
     fs_strict: bool,
     fs_deny: Vec<(glob::Pattern, bool)>,
     dir_cache: Arc<Mutex<DirCache>>,
-    patch_seq: std::sync::atomic::AtomicU64,
-    chunk_cache: Mutex<Option<(String, Arc<String>)>>,
     cache_writes: tokio::sync::mpsc::Sender<(String, Arc<CachedModule>)>,
     tailwind: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     preprocess: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
@@ -374,7 +368,6 @@ struct ServerState {
     /// `assets/client.js` with the `server.hmr` options and the socket token
     /// filled in (Vite's clientInjections), rendered once at startup.
     client_js: String,
-    bundle_runtime_js: String,
     /// Per module url, the `import.meta.glob` patterns it expands (absolute):
     /// a file created or deleted under one changes the expansion, so the module
     /// is recompiled and hot updated (Vite's importMetaGlob hotUpdate).
@@ -846,7 +839,6 @@ impl DevServer {
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
-        let bundle = self.bundle || config.bundle.unwrap_or(false);
         // The on-disk module cache is experimental and off by default. Opt in
         // with `oj dev --enable-cache` (or OJ_ENABLE_CACHE=1); `--no-cache`
         // (or OJ_NO_CACHE=1) forces it off even when otherwise enabled.
@@ -1141,8 +1133,6 @@ impl DevServer {
                 .and_then(|l| l.skip_web_socket_token_check)
                 != Some(true);
         let client_js = render_client_js(CLIENT_JS, hmr_options.as_ref(), &hmr_ws_path, &ws_token);
-        let bundle_runtime_js =
-            render_client_js(BUNDLE_RUNTIME_JS, hmr_options.as_ref(), &hmr_ws_path, &ws_token);
         let app_type = config.app_type.clone().unwrap_or_else(|| "spa".to_string());
         if app_type != "spa" {
             println!("  appType: {app_type}");
@@ -1193,7 +1183,6 @@ impl DevServer {
             persistent_cache,
             root: root.clone(),
             public_dir,
-            bundle,
             reload_tx: reload_tx.clone(),
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),
@@ -1268,8 +1257,6 @@ impl DevServer {
                 .unwrap_or(true),
             fs_deny: compile_fs_deny(&oj_config::server_fs_deny(&config)),
             dir_cache: Arc::new(Mutex::new(DirCache::new())),
-            patch_seq: std::sync::atomic::AtomicU64::new(0),
-            chunk_cache: Mutex::new(None),
             cache_writes: write_tx,
             preload_snapshot: load_graph_snapshot(&root),
             proxy,
@@ -1309,15 +1296,12 @@ impl DevServer {
             buffered_error: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
             client_js,
-            bundle_runtime_js,
             glob_importers: Mutex::new(HashMap::new()),
             app_type,
             watch_ignored,
             ws_token,
             ws_token_check,
-            optimized: Arc::new(if bundle {
-                optimize::OptimizedDeps::disabled()
-            } else {
+            optimized: Arc::new({
                 let (include, exclude, entries) = oj_config::optimize_deps_lists(&config);
                 optimize::OptimizedDeps::prepare(
                     &root,
@@ -1384,11 +1368,6 @@ impl DevServer {
                 "/@oj/refresh-preamble.js",
                 get(|| async { js(REFRESH_PREAMBLE_JS) }),
             )
-            .route("/@oj/bundle-runtime.js", get(serve_bundle_runtime_js))
-            .route("/@oj/chunk.js", get(serve_chunk))
-            .route("/@oj/patch.js", get(serve_patch))
-            .route("/@oj/lazy.js", get(serve_lazy))
-            .route("/@oj/worker.js", get(serve_worker_chunk))
             .route("/@oj/routes.js", get(serve_oj_routes))
             .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
             .route(
@@ -1596,10 +1575,6 @@ fn js(body: impl IntoResponse) -> Response {
 
 async fn serve_client_js(State(state): State<Arc<ServerState>>) -> Response {
     js(state.client_js.clone())
-}
-
-async fn serve_bundle_runtime_js(State(state): State<Arc<ServerState>>) -> Response {
-    js(state.bundle_runtime_js.clone())
 }
 
 /// The path the HMR socket is served at: `server.hmr.path` (made absolute) or
@@ -3423,11 +3398,7 @@ async fn serve_html(state: &ServerState, bytes: Vec<u8>, url: &str, file: &Path)
             }
         }
     }
-    let mut html = if state.bundle {
-        inject_bundle_scripts(raw)
-    } else {
-        inject_module_preloads(inject_dev_scripts(raw), state)
-    };
+    let mut html = inject_module_preloads(inject_dev_scripts(raw), state);
     if let Some(nonce) = &state.csp_nonce {
         html = inject_csp_nonce(&html, nonce);
     }
@@ -4195,12 +4166,12 @@ async fn serve_compiled(
         }
     }
 
-    let mut body = if !state.bundle && module.kind == "svelte" {
+    let mut body = if module.kind == "svelte" {
         format!("{}{}", svelte_hot_glue(url), module.code)
     } else {
         module.code.clone()
     };
-    if !state.bundle && module.kind != "svelte" {
+    if module.kind != "svelte" {
         let ctx_predefined = module.hot.is_some();
         if ctx_predefined {
             // The module reads import.meta.hot itself: define the context before
@@ -4246,77 +4217,9 @@ async fn ensure_module(
     // per its own include filter, and an svg it does not match falls back to a URL
     // asset after the transform runs.
     let svgr_candidate = !react_svg
-        && !state.bundle
         && state.plugins_have_transform
         && file.extension().and_then(|e| e.to_str()) == Some("svg")
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
-
-    if !react_svg && state.bundle {
-        if let Some(kind) = query_asset_kind(url.split_once('?').map(|(_, q)| q)) {
-            if matches!(kind, "url" | "raw" | "inline" | "init") {
-                let style = file.extension().and_then(|e| e.to_str()).is_some_and(is_style_ext);
-                let code = if kind == "inline" && style {
-                    inline_css_module(state, file, url).await?
-                } else {
-                    asset_module(file, url, kind).await?
-                };
-                let mut noop = |_: &str| None;
-                let factory = oj_compiler::bundle::compile_factory(file, url, &code, &mut noop)
-                    .map_err(|err| format!("asset module error for {url}: {err}"))?;
-                let module = Arc::new(CachedModule {
-                    is_boundary: false,
-                    hot: None,
-                    kind: match factory.kind {
-                        oj_compiler::bundle::FactoryKind::Esm => "esm".into(),
-                        oj_compiler::bundle::FactoryKind::Cjs => "cjs".into(),
-                    },
-                    code: factory.code,
-                    map_data_url: None,
-                    imports: factory.imports,
-                    require_map: factory.require_map,
-                    css_exports: Vec::new(),
-                    fs_allow: Vec::new(),
-                    watch_files: Vec::new(),
-                });
-                register_in_graph(state, url, &module);
-                return Ok((String::new(), module));
-            }
-            if matches!(kind, "worker" | "sharedworker") {
-                let clean = url.split('?').next().unwrap_or(url);
-                let shared = kind == "sharedworker";
-                let code = if worker_query_is_inline(url) {
-                    let chunk = Box::pin(build_worker_chunk(state, clean)).await?;
-                    inline_worker_module(&chunk, shared)
-                } else {
-                    let ctor = if shared { "SharedWorker" } else { "Worker" };
-                    format!(
-                        "export default function () {{ return new {ctor}(\"/@oj/worker.js?entry={}\", {{ type: \"module\" }}); }}\n",
-                        hex_encode(clean)
-                    )
-                };
-                let mut noop = |_: &str| None;
-                let factory = oj_compiler::bundle::compile_factory(file, url, &code, &mut noop)
-                    .map_err(|err| format!("worker module error for {url}: {err}"))?;
-                let module = Arc::new(CachedModule {
-                    is_boundary: false,
-                    hot: None,
-                    kind: match factory.kind {
-                        oj_compiler::bundle::FactoryKind::Esm => "esm".into(),
-                        oj_compiler::bundle::FactoryKind::Cjs => "cjs".into(),
-                    },
-                    code: factory.code,
-                    map_data_url: None,
-                    imports: factory.imports,
-                    require_map: factory.require_map,
-                    css_exports: Vec::new(),
-                    fs_allow: Vec::new(),
-                    watch_files: Vec::new(),
-                });
-                register_in_graph(state, url, &module);
-                return Ok((String::new(), module));
-            }
-        }
-    }
 
     if !react_svg && !svgr_candidate && is_asset_path(file) {
         let clean = url.split('?').next().unwrap_or(url);
@@ -4324,39 +4227,18 @@ async fn ensure_module(
             "export default {};\n",
             serde_json::Value::String(clean.to_string())
         );
-        let module = if state.bundle {
-            let mut noop = |_: &str| None;
-            let factory = oj_compiler::bundle::compile_factory(file, url, &default, &mut noop)
-                .map_err(|err| format!("asset module error for {url}: {err}"))?;
-            Arc::new(CachedModule {
-                is_boundary: false,
-                hot: None,
-                kind: match factory.kind {
-                    oj_compiler::bundle::FactoryKind::Esm => "esm".into(),
-                    oj_compiler::bundle::FactoryKind::Cjs => "cjs".into(),
-                },
-                code: factory.code,
-                map_data_url: None,
-                imports: factory.imports,
-                require_map: factory.require_map,
-                css_exports: Vec::new(),
-                fs_allow: Vec::new(),
-                watch_files: Vec::new(),
-            })
-        } else {
-            Arc::new(CachedModule {
-                is_boundary: false,
-                hot: None,
-                kind: String::new(),
-                code: default,
-                map_data_url: None,
-                imports: Vec::new(),
-                require_map: Vec::new(),
-                css_exports: Vec::new(),
-                fs_allow: Vec::new(),
-                watch_files: Vec::new(),
-            })
-        };
+        let module = Arc::new(CachedModule {
+            is_boundary: false,
+            hot: None,
+            kind: String::new(),
+            code: default,
+            map_data_url: None,
+            imports: Vec::new(),
+            require_map: Vec::new(),
+            css_exports: Vec::new(),
+            fs_allow: Vec::new(),
+            watch_files: Vec::new(),
+        });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
     }
@@ -4435,7 +4317,7 @@ async fn ensure_module(
         )
         .map_err(|err| format!("read error for {url}: {err}"))?,
     };
-    if !state.bundle && source.contains("import.meta.glob") {
+    if source.contains("import.meta.glob") {
         let patterns: Vec<glob::Pattern> = oj_compiler::glob::glob_patterns(&source, file)
             .iter()
             .filter_map(|p| glob::Pattern::new(p).ok())
@@ -4466,23 +4348,13 @@ async fn ensure_module(
         return Ok((String::new(), module));
     }
 
-    let is_server = is_server_module(file) && !is_dep_early && !state.bundle;
+    let is_server = is_server_module(file) && !is_dep_early;
 
-    let mode = if state.bundle {
-        "bundle"
-    } else if is_server {
-        "server"
-    } else {
-        "dev"
-    };
+    let mode = if is_server { "server" } else { "dev" };
     // Fold the newest HMR stamp among this module's imports into the key: after a
     // dependency updates, the (unchanged) importer must recompile so its import of
     // that dependency carries the new `?t=`, or the browser keeps the stale one.
-    let imports_stamp = if state.bundle {
-        0
-    } else {
-        state.graph.lock().unwrap().imports_timestamp(Path::new(url))
-    };
+    let imports_stamp = state.graph.lock().unwrap().imports_timestamp(Path::new(url));
     let mode_key = if imports_stamp > 0 {
         format!("{mode}@{imports_stamp}")
     } else {
@@ -4741,32 +4613,27 @@ async fn ensure_module(
         .as_ref()
         .and_then(|c| c.dev_sourcemap)
         .unwrap_or(false);
-    let bundle = state.bundle;
     let hmr_state = Arc::clone(state);
-    let plugin_fallback = state.plugins.is_some() && !bundle;
-    let svgr_active = state.plugins_have_transform && !bundle;
+    let plugin_fallback = state.plugins.is_some();
+    let svgr_active = state.plugins_have_transform;
     let resolve_id_res = if plugin_fallback { state.resolve_id_res.clone() } else { Vec::new() };
     let importer_abs = file.to_string_lossy().into_owned();
     let ext = file.extension().and_then(|e| e.to_str());
     let is_css = ext.is_some_and(is_style_ext);
     let is_json = ext == Some("json");
-    let dep_map = if bundle || is_css || is_json {
+    let dep_map = if is_css || is_json {
         Arc::new(optimize::DepMap::new())
     } else {
         state.optimized.ready().await
     };
     let compiled = tokio::task::spawn_blocking(move || -> Result<CachedModule, String> {
         if is_json {
-            let code = if bundle {
-                oj_compiler::json::to_factory_body(&source, &url_owned)
-            } else {
-                oj_compiler::json::to_esm(&source, &url_owned)
-            }
-            .map_err(|err| format!("compile error:\n{err}"))?;
+            let code = oj_compiler::json::to_esm(&source, &url_owned)
+                .map_err(|err| format!("compile error:\n{err}"))?;
             return Ok(CachedModule {
                 is_boundary: false,
                 hot: None,
-                kind: if bundle { "esm".into() } else { String::new() },
+                kind: String::new(),
                 code,
                 map_data_url: None,
                 imports: Vec::new(),
@@ -4848,7 +4715,7 @@ async fn ensure_module(
                 }
             }
             if let Some(url) =
-                rewrite_specifier(&root, &dir, resolver, &fs_allow, &dir_cache, spec, !bundle)
+                rewrite_specifier(&root, &dir, resolver, &fs_allow, &dir_cache, spec, true)
             {
                 // `.svg` resolves to `<url>?url` (asset). When a transform plugin is
                 // active (vite-plugin-svgr), leave the svg unmarked instead so it
@@ -4859,9 +4726,6 @@ async fn ensure_module(
                     if let Some(base) = url.strip_suffix(".svg?url") {
                         return Some(format!("{base}.svg"));
                     }
-                }
-                if bundle {
-                    return Some(url);
                 }
                 // Vite's importAnalysis appends `?t=<lastHMRTimestamp>` to an import
                 // of a module an HMR update invalidated, so the re-fetched importer
@@ -4895,140 +4759,111 @@ async fn ensure_module(
             None
         };
         let mut rewrite = |spec: &str| rewrite_with(spec, &resolver);
-        if bundle {
-            let bundle_interop = interop_node_builtins(&source, &file_owned);
-            let factory = oj_compiler::bundle::compile_factory(
-                &file_owned,
-                &url_owned,
-                bundle_interop.as_deref().unwrap_or(&source),
-                &mut rewrite,
-            )
-            .map_err(|err| format!("compile error:\n{err}"))?;
-            if let Some(spec) = unresolved.borrow().as_ref() {
-                return Err(unresolved_import_error(&root, &file_owned, &source, spec));
-            }
-            Ok(CachedModule {
-                is_boundary: factory.is_boundary(),
-                hot: None,
-                kind: match factory.kind {
-                    oj_compiler::bundle::FactoryKind::Esm => "esm".into(),
-                    oj_compiler::bundle::FactoryKind::Cjs => "cjs".into(),
-                },
-                code: factory.code,
-                map_data_url: None,
-                fs_allow: fs_allow_from(&factory.imports),
-                watch_files: Vec::new(),
-                imports: factory.imports,
-                require_map: factory.require_map,
-                css_exports: Vec::new(),
-            })
-        } else {
-            let output = if is_dep {
-                let dep_interop = interop_node_builtins(&source, &file_owned);
-                let dep_src = dep_interop.as_deref().unwrap_or(&source);
-                if oj_compiler::cjs::has_module_syntax_pub(&file_owned, dep_src) {
-                    oj_compiler::cjs::compile_dep(&file_owned, &url_owned, dep_src, &mut rewrite)
-                } else {
-                    // A CommonJS dep's `require()`s resolve with the `require`
-                    // condition (Vite's getConditions for a requirer), so a dual
-                    // package hands it its CJS build (`module.exports = fn`), not
-                    // the ESM one the interop would wrap as `{ default: fn }`.
-                    oj_compiler::cjs::compile_dep(
-                        &file_owned,
-                        &url_owned,
-                        dep_src,
-                        &mut |spec: &str| rewrite_with(spec, &require_resolver),
-                    )
-                }
+        let output = if is_dep {
+            let dep_interop = interop_node_builtins(&source, &file_owned);
+            let dep_src = dep_interop.as_deref().unwrap_or(&source);
+            if oj_compiler::cjs::has_module_syntax_pub(&file_owned, dep_src) {
+                oj_compiler::cjs::compile_dep(&file_owned, &url_owned, dep_src, &mut rewrite)
             } else {
-                let interopped =
-                    oj_compiler::interop::rewrite_cjs_interop(&source, &file_owned, &|spec| {
-                        // node builtins are browser-externalized to a stub with no
-                        // named exports; interop so `import { X } from "node:..."`
-                        // reads X off it (undefined) instead of failing to link.
-                        if is_node_builtin(spec) {
-                            return Some(format!("/@id/{}", hex_encode(spec)));
-                        }
-                        // lingui macro entrypoints go to the shim (which has real
-                        // named exports), never through default-access interop.
-                        if is_lingui_macro_specifier(spec) {
-                            return None;
-                        }
-                        if let Some(m) = dep_map.get(spec).filter(|m| m.needs_interop) {
-                            return Some(m.url.clone());
-                        }
-                        // A directly-served bare CJS dep (not pre-bundled): rewrite
-                        // `import { x } from "dep"` to read x off the default export,
-                        // so runtime-assigned CJS exports resolve. Vite pre-bundles
-                        // these; oj interops at the importer instead. Restricted to
-                        // node_modules so aliased app source (`~/x`, `@/x`, which
-                        // is_bare_specifier also matches) is never treated as a dep.
-                        if is_bare_specifier(spec) && dep_map.get(spec).is_none() {
-                            if let Ok(resolved) = resolver.resolve(&dir, spec) {
-                                let in_node_modules = resolved
-                                    .components()
-                                    .any(|c| c.as_os_str() == "node_modules");
-                                // optimizeDeps.needsInterop forces the interop
-                                // rewrite even when static analysis reads the dep
-                                // as ESM (its real exports only appear at runtime).
-                                if in_node_modules
-                                    && (is_cjs_dep_file(&resolved)
-                                        || pkg_bundle::needs_forced_interop(&resolved))
-                                {
-                                    fs_allow.lock().unwrap().insert(package_root(&resolved));
-                                    // With partial bundling on this is the /@oj-pkg
-                                    // bundle URL, which exports __cjs_exports too, so
-                                    // the destructured interop still reads names off it.
-                                    return Some(dep_serve_url(&resolved, &root));
-                                }
-                            }
-                        }
-                        None
-                    });
-                let mut opts = if is_svelte {
-                    oj_compiler::CompileOptions {
-                        dev: true,
-                        refresh: false,
-                        sourcemap: true,
-                        ssr: false,
-                        jsx: oj_compiler::JsxConfig::default(),
-                    }
-                } else {
-                    oj_compiler::CompileOptions::dev()
-                };
-                opts.jsx = jsx_config;
-                oj_compiler::compile_module_with_maps(
+                // A CommonJS dep's `require()`s resolve with the `require`
+                // condition (Vite's getConditions for a requirer), so a dual
+                // package hands it its CJS build (`module.exports = fn`), not
+                // the ESM one the interop would wrap as `{ default: fn }`.
+                oj_compiler::cjs::compile_dep(
                     &file_owned,
-                    interopped.as_deref().unwrap_or(&source),
-                    &opts,
-                    Some(&mut rewrite),
-                    &plugin_maps,
+                    &url_owned,
+                    dep_src,
+                    &mut |spec: &str| rewrite_with(spec, &require_resolver),
                 )
             }
-            .map_err(|err| format!("compile error:\n{err}"))?;
-            if let Some(spec) = unresolved.borrow().as_ref() {
-                return Err(unresolved_import_error(&root, &file_owned, &source, spec));
-            }
-            Ok(CachedModule {
-                is_boundary: is_svelte || (!is_dep && output.has_refresh_registrations()),
-                hot: output.hot_accept.map(|h| oj_cache::HotMeta {
-                    self_accept: h.self_accepting,
-                    deps: h.deps,
-                }),
-                code: output.code,
-                map_data_url: output.map_data_url,
-                fs_allow: fs_allow_from(&output.imports),
-                watch_files: Vec::new(),
-                imports: output.imports,
-                kind: if is_svelte {
-                    "svelte".into()
-                } else {
-                    String::new()
-                },
-                require_map: Vec::new(),
-                css_exports: Vec::new(),
-            })
+        } else {
+            let interopped =
+                oj_compiler::interop::rewrite_cjs_interop(&source, &file_owned, &|spec| {
+                    // node builtins are browser-externalized to a stub with no
+                    // named exports; interop so `import { X } from "node:..."`
+                    // reads X off it (undefined) instead of failing to link.
+                    if is_node_builtin(spec) {
+                        return Some(format!("/@id/{}", hex_encode(spec)));
+                    }
+                    // lingui macro entrypoints go to the shim (which has real
+                    // named exports), never through default-access interop.
+                    if is_lingui_macro_specifier(spec) {
+                        return None;
+                    }
+                    if let Some(m) = dep_map.get(spec).filter(|m| m.needs_interop) {
+                        return Some(m.url.clone());
+                    }
+                    // A directly-served bare CJS dep (not pre-bundled): rewrite
+                    // `import { x } from "dep"` to read x off the default export,
+                    // so runtime-assigned CJS exports resolve. Vite pre-bundles
+                    // these; oj interops at the importer instead. Restricted to
+                    // node_modules so aliased app source (`~/x`, `@/x`, which
+                    // is_bare_specifier also matches) is never treated as a dep.
+                    if is_bare_specifier(spec) && dep_map.get(spec).is_none() {
+                        if let Ok(resolved) = resolver.resolve(&dir, spec) {
+                            let in_node_modules = resolved
+                                .components()
+                                .any(|c| c.as_os_str() == "node_modules");
+                            // optimizeDeps.needsInterop forces the interop
+                            // rewrite even when static analysis reads the dep
+                            // as ESM (its real exports only appear at runtime).
+                            if in_node_modules
+                                && (is_cjs_dep_file(&resolved)
+                                    || pkg_bundle::needs_forced_interop(&resolved))
+                            {
+                                fs_allow.lock().unwrap().insert(package_root(&resolved));
+                                // With partial bundling on this is the /@oj-pkg
+                                // bundle URL, which exports __cjs_exports too, so
+                                // the destructured interop still reads names off it.
+                                return Some(dep_serve_url(&resolved, &root));
+                            }
+                        }
+                    }
+                    None
+                });
+            let mut opts = if is_svelte {
+                oj_compiler::CompileOptions {
+                    dev: true,
+                    refresh: false,
+                    sourcemap: true,
+                    ssr: false,
+                    jsx: oj_compiler::JsxConfig::default(),
+                }
+            } else {
+                oj_compiler::CompileOptions::dev()
+            };
+            opts.jsx = jsx_config;
+            oj_compiler::compile_module_with_maps(
+                &file_owned,
+                interopped.as_deref().unwrap_or(&source),
+                &opts,
+                Some(&mut rewrite),
+                &plugin_maps,
+            )
         }
+        .map_err(|err| format!("compile error:\n{err}"))?;
+        if let Some(spec) = unresolved.borrow().as_ref() {
+            return Err(unresolved_import_error(&root, &file_owned, &source, spec));
+        }
+        Ok(CachedModule {
+            is_boundary: is_svelte || (!is_dep && output.has_refresh_registrations()),
+            hot: output.hot_accept.map(|h| oj_cache::HotMeta {
+                self_accept: h.self_accepting,
+                deps: h.deps,
+            }),
+            code: output.code,
+            map_data_url: output.map_data_url,
+            fs_allow: fs_allow_from(&output.imports),
+            watch_files: Vec::new(),
+            imports: output.imports,
+            kind: if is_svelte {
+                "svelte".into()
+            } else {
+                String::new()
+            },
+            require_map: Vec::new(),
+            css_exports: Vec::new(),
+        })
     })
     .await;
 
@@ -5291,7 +5126,7 @@ fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
         .map(|s| PathBuf::from(s.split('?').next().unwrap_or(s)))
         .collect();
     let pruned = graph.set_imports(Path::new(url), &local_imports);
-    if !pruned.is_empty() && !state.bundle {
+    if !pruned.is_empty() {
         // Dependencies this module dropped that nothing imports any more: the
         // client runs their `hot.prune` callbacks (a stylesheet removes its
         // <style>), and they are stamped so a later re-import re-runs them, as
@@ -5616,8 +5451,8 @@ fn workspace_root(root: &Path) -> PathBuf {
 // Rewrite `import { X } from "node:builtin"` to read X off the browser-externalized
 // stub (undefined) instead of a native named import that fails to link, matching
 // Vite's importAnalysis interop for browser-external modules. Returns None when the
-// source imports no node builtins. Applied on every compile path so deps, bundled
-// factories, and app source all interop consistently.
+// source imports no node builtins. Applied on every compile path so deps and app
+// source interop consistently.
 // Pre-resolve a module's static imports (same resolver ctx.resolve uses) into a
 // {spec: id|null} JSON map, handed to the plugin transform so a plugin's per-import
 // `this.resolve` is a local lookup instead of a host round-trip. This is what keeps
@@ -5757,47 +5592,14 @@ fn handle_client_message(state: &Arc<ServerState>, text: &str) {
         return;
     };
     // Vite's client sends `import.meta.hot.invalidate()` as the custom event
-    // `vite:invalidate` (`{path, message, firstInvalidatedBy}`); oj's bundle
-    // runtime still sends the legacy `{type:'invalidate', path}` frame.
-    let vite_invalidate = msg["type"] == "custom" && msg["event"] == "vite:invalidate";
-    if msg["type"] == "invalidate" || vite_invalidate {
-        let body = if vite_invalidate { &msg["data"] } else { &msg };
+    // `vite:invalidate` (`{path, message, firstInvalidatedBy}`).
+    if msg["type"] == "custom" && msg["event"] == "vite:invalidate" {
+        let body = &msg["data"];
         let Some(path) = body["path"].as_str() else {
             return;
         };
         let first_invalidated_by = body["firstInvalidatedBy"].as_str();
-        let reply = if state.bundle {
-            match state
-                .graph
-                .lock()
-                .unwrap()
-                .update_plan_from_importers(Path::new(path))
-            {
-                Ok(plan) => {
-                    println!("oj: invalidate {path} -> patch {:?}", plan.boundaries);
-                    let seq = state
-                        .patch_seq
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        + 1;
-                    let to_urls = |v: &[PathBuf]| -> Vec<String> {
-                        v.iter().map(|p| p.display().to_string()).collect()
-                    };
-                    serde_json::json!({
-                        "type": "patch",
-                        "changed": [],
-                        "dirty": to_urls(&plan.dirty),
-                        "boundaries": to_urls(&plan.boundaries),
-                        "timestamp": now_millis() as u64,
-                        "seq": seq,
-                    })
-                    .to_string()
-                }
-                Err(reason) => {
-                    println!("oj: invalidate {path} -> full-reload ({reason})");
-                    full_reload_frame(&reason, None, None)
-                }
-            }
-        } else {
+        let reply = {
             let timestamp = now_millis() as u64;
             let (dirty, targets) = {
                 let mut graph = state.graph.lock().unwrap();
@@ -6532,18 +6334,6 @@ fn is_worker_query(url: &str) -> bool {
     }
 }
 
-fn is_bundle_asset_query(url: &str) -> bool {
-    match url.split_once('?') {
-        Some((_, q)) => {
-            matches!(
-                query_asset_kind(Some(q)),
-                Some("url" | "raw" | "inline" | "init" | "worker" | "sharedworker")
-            ) || q.split('&').any(|kv| kv == "react")
-        }
-        None => false,
-    }
-}
-
 fn query_asset_kind(query: Option<&str>) -> Option<&'static str> {
     let q = query?;
     for kind in ["url", "raw", "worker", "sharedworker", "inline", "init"] {
@@ -6556,17 +6346,6 @@ fn query_asset_kind(query: Option<&str>) -> Option<&'static str> {
         return Some("url");
     }
     None
-}
-
-fn worker_query_is_inline(url: &str) -> bool {
-    match url.split_once('?') {
-        Some((_, q)) => {
-            let parts = || q.split('&');
-            parts().any(|kv| kv == "worker" || kv == "sharedworker")
-                && parts().any(|kv| kv == "inline")
-        }
-        None => false,
-    }
 }
 
 async fn asset_module(file: &Path, url: &str, kind: &str) -> Result<String, String> {
@@ -6959,7 +6738,6 @@ async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let plugin_fallback = !state.bundle;
     let importer_id = id.clone();
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
@@ -6973,7 +6751,7 @@ async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -
             // message groups import their `virtual:i18n-facade/*` counterpart). Route
             // bare specifiers back through the plugin like the on-disk compile path
             // does, instead of leaving `virtual:...` for the browser to fetch and fail.
-            if plugin_fallback && is_bare_specifier(s) {
+            if is_bare_specifier(s) {
                 return Some(format!(
                     "/@id/{}?importer={}",
                     hex_encode(s),
@@ -7137,7 +6915,6 @@ async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Opti
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let plugin_fallback = !state.bundle;
     let importer_id = id.clone();
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
@@ -7151,7 +6928,7 @@ async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Opti
             // message groups import their `virtual:i18n-facade/*` counterpart). Route
             // bare specifiers back through the plugin like the on-disk compile path
             // does, instead of leaving `virtual:...` for the browser to fetch and fail.
-            if plugin_fallback && is_bare_specifier(s) {
+            if is_bare_specifier(s) {
                 return Some(format!(
                     "/@id/{}?importer={}",
                     hex_encode(s),
@@ -7369,245 +7146,6 @@ fn inject_module_preloads(html: String, state: &ServerState) -> String {
     }
 }
 
-fn inject_bundle_scripts(html: String) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut rest = html.as_str();
-    while let Some(start) = rest.find("<script") {
-        let Some(tag_close) = rest[start..].find('>') else {
-            break;
-        };
-        let tag = &rest[start..start + tag_close];
-        let entry_src = tag.contains("type=\"module\"")
-            && tag
-                .find("src=\"")
-                .and_then(|at| tag[at + 5..].split('"').next())
-                .and_then(html_entry_src)
-                .is_some();
-        if entry_src {
-            out.push_str(&rest[..start]);
-            let after_tag = &rest[start + tag_close + 1..];
-            rest = match after_tag.find("</script>") {
-                Some(end) => &after_tag[end + "</script>".len()..],
-                None => after_tag,
-            };
-        } else {
-            out.push_str(&rest[..start + tag_close + 1]);
-            rest = &rest[start + tag_close + 1..];
-        }
-    }
-    out.push_str(rest);
-
-    let tags = "<script type=\"module\" src=\"/@oj/bundle-runtime.js\"></script>\n\
-                <script type=\"module\" src=\"/@oj/chunk.js\"></script>";
-    match out.find("<head>") {
-        Some(idx) => {
-            let insert_at = idx + "<head>".len();
-            format!("{}\n{}{}", &out[..insert_at], tags, &out[insert_at..])
-        }
-        None => format!("{tags}\n{out}"),
-    }
-}
-
-async fn serve_chunk(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    if let Some((etag, body)) = state.chunk_cache.lock().unwrap().clone() {
-        return chunk_response(&headers, etag, body);
-    }
-
-    let mut crawl_done = state.crawl_done.clone();
-    if !*crawl_done.borrow() {
-        let _ = crawl_done.wait_for(|done| *done).await;
-    }
-    let urls: Vec<String> = state
-        .graph
-        .lock()
-        .unwrap()
-        .module_paths()
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
-
-    let lock = {
-        let mut locks = state.compile_locks.lock().unwrap();
-        Arc::clone(locks.entry("/@oj/chunk.js".into()).or_default())
-    };
-    let _guard = lock.lock().await;
-    if let Some((etag, body)) = state.chunk_cache.lock().unwrap().clone() {
-        return chunk_response(&headers, etag, body);
-    }
-
-    let mut chunk = String::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut queue: std::collections::VecDeque<String> = urls.into_iter().collect();
-    while let Some(url) = queue.pop_front() {
-        if !seen.insert(url.clone()) {
-            continue;
-        }
-        let file = match locate_url(&state, &url) {
-            Ok(file) => file,
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("oj: chunk: {err}"),
-                )
-                    .into_response();
-            }
-        };
-        let module = match ensure_module(&state, &file, &url).await {
-            Ok((_, module)) => module,
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("oj: chunk: {err}"),
-                )
-                    .into_response();
-            }
-        };
-        chunk.push_str(&render_registration(&url, &module));
-        for imp in &module.imports {
-            if is_bundle_asset_query(imp) && !seen.contains(imp) {
-                queue.push_back(imp.clone());
-            }
-        }
-    }
-    for entry in html_entries(&state.root) {
-        chunk.push_str(&format!("__oj_start({entry:?});\n"));
-    }
-    let etag = format!(
-        "\"{}\"",
-        state.cache.key(chunk.as_bytes(), "/@oj/chunk.js", "chunk")
-    );
-    let body = Arc::new(chunk);
-    *state.chunk_cache.lock().unwrap() = Some((etag.clone(), Arc::clone(&body)));
-    chunk_response(&headers, etag, body)
-}
-
-fn chunk_response(headers: &HeaderMap, etag: String, body: Arc<String>) -> Response {
-    if headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        == Some(etag.as_str())
-    {
-        return (
-            StatusCode::NOT_MODIFIED,
-            [
-                (header::ETAG, etag),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-        )
-            .into_response();
-    }
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript".to_string()),
-            (header::CACHE_CONTROL, "no-cache".to_string()),
-            (header::ETAG, etag),
-        ],
-        body.as_str().to_string(),
-    )
-        .into_response()
-}
-
-async fn serve_patch(State(state): State<Arc<ServerState>>, uri: Uri) -> Response {
-    let query = uri.query().unwrap_or("");
-    let modules = query
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("m="))
-        .map(|v| urldecode(v))
-        .unwrap_or_default();
-
-    let mut patch = String::new();
-    for url in modules.split(',').filter(|u| !u.is_empty()) {
-        match registration_for(&state, url).await {
-            Ok(registration) => patch.push_str(&registration),
-            Err(err) => {
-                send_error(&state, &err);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("oj: patch: {err}"),
-                )
-                    .into_response();
-            }
-        }
-    }
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        patch,
-    )
-        .into_response()
-}
-
-async fn build_worker_chunk(state: &Arc<ServerState>, entry: &str) -> Result<String, String> {
-    let mut chunk = String::from(WORKER_RUNTIME_JS);
-    chunk.push('\n');
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut queue = vec![entry.to_string()];
-    while let Some(url) = queue.pop() {
-        if url.starts_with("/@oj/") || !seen.insert(url.clone()) {
-            continue;
-        }
-        let Ok(file) = locate_url(state, &url) else {
-            continue;
-        };
-        let (_, module) = ensure_module(state, &file, &url).await?;
-        chunk.push_str(&render_registration(&url, &module));
-        for imp in &module.imports {
-            let next = if is_bundle_asset_query(imp) {
-                imp.clone()
-            } else {
-                imp.split('?').next().unwrap_or(imp).to_string()
-            };
-            if next.starts_with('/') && !next.starts_with("/@oj/") && !seen.contains(&next) {
-                queue.push(next);
-            }
-        }
-    }
-    chunk.push_str(&format!(
-        "__oj_start({});\n",
-        serde_json::Value::String(entry.to_string())
-    ));
-    Ok(chunk)
-}
-
-fn inline_worker_module(chunk: &str, shared: bool) -> String {
-    let js = serde_json::Value::String(chunk.to_string()).to_string();
-    let ctor = if shared { "SharedWorker" } else { "Worker" };
-    let opts = "{ type: \"module\", name: options?.name }";
-    if shared {
-        format!(
-            "const jsContent = {js};\nexport default function WorkerWrapper(options) {{\n  return new {ctor}(\"data:text/javascript;charset=utf-8,\" + encodeURIComponent(jsContent), {opts});\n}}\n"
-        )
-    } else {
-        format!(
-            "const jsContent = {js};\nconst blob = typeof self !== \"undefined\" && self.Blob && new Blob([\"URL.revokeObjectURL(import.meta.url);\", jsContent], {{ type: \"text/javascript;charset=utf-8\" }});\nexport default function WorkerWrapper(options) {{\n  let objURL;\n  try {{\n    objURL = blob && (self.URL || self.webkitURL).createObjectURL(blob);\n    if (!objURL) throw \"\";\n    const worker = new {ctor}(objURL, {opts});\n    worker.addEventListener(\"error\", () => {{\n      (self.URL || self.webkitURL).revokeObjectURL(objURL);\n    }});\n    return worker;\n  }} catch (e) {{\n    return new {ctor}(\"data:text/javascript;charset=utf-8,\" + encodeURIComponent(jsContent), {opts});\n  }}\n}}\n"
-        )
-    }
-}
-
-async fn serve_worker_chunk(State(state): State<Arc<ServerState>>, uri: Uri) -> Response {
-    let entry = uri
-        .query()
-        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("entry=")))
-        .and_then(hex_decode)
-        .unwrap_or_default();
-    if entry.is_empty() {
-        return (StatusCode::BAD_REQUEST, "oj: worker: entry required").into_response();
-    }
-    match build_worker_chunk(&state, &entry).await {
-        Ok(chunk) => (
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            chunk,
-        )
-            .into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: worker: {err}")).into_response(),
-    }
-}
-
 // The single gate for serving an absolute (`/@fs`) path. Decide on the
 // canonical target so neither `..` traversal nor a symlink can escape an
 // allow-listed root (component-wise `starts_with` on a raw path does not
@@ -7636,128 +7174,6 @@ fn fs_gate(state: &ServerState, candidate: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(candidate.to_path_buf())
-}
-
-fn locate_url(state: &ServerState, url: &str) -> Result<PathBuf, String> {
-    let base = url.split('?').next().unwrap_or(url);
-    if let Some(abs) = base.strip_prefix("/@fs") {
-        // Bundle routes (lazy/patch/worker) resolve here too: gate them exactly
-        // like the top-level /@fs route so they cannot read outside the roots.
-        // These callers already pass a decoded path (the lazy route urldecodes
-        // its id, the worker route hex-decodes, patch URLs come from url_of), so
-        // do not decode again here.
-        fs_gate(state, &PathBuf::from(abs)).ok_or_else(|| format!("forbidden: {url}"))
-    } else {
-        let rel = base.trim_start_matches('/');
-        locate(&state.root, state.public_dir.as_deref(),rel).ok_or_else(|| format!("no such module: {url}"))
-    }
-}
-
-fn render_registration(url: &str, module: &CachedModule) -> String {
-    let deps: serde_json::Map<String, serde_json::Value> = module
-        .require_map
-        .iter()
-        .map(|(spec, target)| (spec.clone(), serde_json::Value::String(target.clone())))
-        .collect();
-    if module.kind == "css" {
-        let exports = if module.css_exports.is_empty() && !oj_css::is_css_module(url) {
-            "void 0".to_string()
-        } else {
-            let map: serde_json::Map<String, serde_json::Value> = module
-                .css_exports
-                .iter()
-                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                .collect();
-            serde_json::Value::Object(map).to_string()
-        };
-        return format!(
-            "__oj_register({url:?}, \"esm\", {{}}, function(module, __oj_exports, __oj_require) {{\n             __oj_esm(__oj_exports, {{ \"default\": () => __oj_css_default }});\n             var __oj_css_default = {exports};\n             __oj_inject_css({url:?}, {css});\n             }});\n",
-            css = serde_json::Value::String(module.code.clone()),
-        );
-    }
-    let params = if module.kind == "cjs" {
-        "module, exports, require"
-    } else {
-        "module, __oj_exports, __oj_require"
-    };
-    format!(
-        "__oj_register({url:?}, {kind:?}, {deps}, function({params}) {{\n{body}\n}});\n",
-        kind = module.kind,
-        deps = serde_json::Value::Object(deps),
-        body = module.code,
-    )
-}
-
-async fn registration_for(state: &Arc<ServerState>, url: &str) -> Result<String, String> {
-    let file = locate_url(state, url)?;
-    let (_, module) = ensure_module(state, &file, url).await?;
-    Ok(render_registration(url, &module))
-}
-
-async fn serve_lazy(State(state): State<Arc<ServerState>>, uri: Uri) -> Response {
-    let query = uri.query().unwrap_or("");
-    let field = |k: &str| {
-        query
-            .split('&')
-            .find_map(|kv| kv.strip_prefix(k))
-            .map(urldecode)
-    };
-    let Some(id) = field("id=").filter(|s| !s.is_empty()) else {
-        return (StatusCode::BAD_REQUEST, "oj: lazy: id required").into_response();
-    };
-    let mut visited: std::collections::HashSet<String> = field("have=")
-        .map(|v| {
-            v.split(',')
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut chunk = String::new();
-    let start = if is_bundle_asset_query(&id) {
-        id.clone()
-    } else {
-        id.split('?').next().unwrap_or(&id).to_string()
-    };
-    let mut queue = vec![start];
-    while let Some(url) = queue.pop() {
-        if url.starts_with("/@oj/") || !visited.insert(url.clone()) {
-            continue;
-        }
-        let Ok(file) = locate_url(&state, &url) else {
-            continue;
-        };
-        let module = match ensure_module(&state, &file, &url).await {
-            Ok((_, module)) => module,
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("oj: lazy: {err}"),
-                )
-                    .into_response()
-            }
-        };
-        chunk.push_str(&render_registration(&url, &module));
-        for imp in &module.imports {
-            let next = if is_bundle_asset_query(imp) {
-                imp.clone()
-            } else {
-                imp.split('?').next().unwrap_or(imp).to_string()
-            };
-            if next.starts_with('/') && !next.starts_with("/@oj/") && !visited.contains(&next) {
-                queue.push(next);
-            }
-        }
-    }
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        chunk,
-    )
-        .into_response()
 }
 
 fn urldecode(input: &str) -> String {
@@ -8050,7 +7466,6 @@ impl HmrGate {
             let _ = state.gate_flush_tx.send(());
         }
         if !entries.is_empty() {
-            *state.chunk_cache.lock().unwrap() = None;
             state.dir_cache.lock().unwrap().clear();
             if self.full_reload {
                 let _ = state.reload_tx.send(
@@ -8373,7 +7788,6 @@ fn spawn_watcher(state: Arc<ServerState>) {
             if messages.is_empty() {
                 continue;
             }
-            *state.chunk_cache.lock().unwrap() = None;
             state.dir_cache.lock().unwrap().clear();
             for message in messages {
                 let _ = state.reload_tx.send(message);
@@ -8640,33 +8054,31 @@ async fn decide(
                     }
                     Ok(Some(d)) => {
                         if let Some(seeds) = parse_hmr_filter(&d) {
-                            if !state.bundle {
-                                let seed_refs: Vec<&Path> =
-                                    seeds.iter().map(PathBuf::as_path).collect();
-                                let decision =
-                                    state.graph.lock().unwrap().propagate_from_seeds(&seed_refs);
-                                match decision {
-                                    HmrDecision::Update { boundaries } => {
-                                        println!(
-                                            "oj: change {file} -> plugin-filtered update {boundaries:?}"
-                                        );
-                                        let timestamp = now_millis() as u64;
-                                        updates.extend(boundaries.iter().map(|b| {
-                                            let mut p = format!("{}", b.display());
-                                            if is_style_url(&p) {
-                                                p.push_str("?import");
-                                            }
-                                            update_entry("js-update", &p, timestamp)
-                                        }));
-                                        continue;
-                                    }
-                                    HmrDecision::FullReload { reason } => {
-                                        println!("oj: change {file} -> full-reload ({reason})");
-                                        messages.push(
-                                            full_reload_frame(&reason, None, Some(path)),
-                                        );
-                                        return messages;
-                                    }
+                            let seed_refs: Vec<&Path> =
+                                seeds.iter().map(PathBuf::as_path).collect();
+                            let decision =
+                                state.graph.lock().unwrap().propagate_from_seeds(&seed_refs);
+                            match decision {
+                                HmrDecision::Update { boundaries } => {
+                                    println!(
+                                        "oj: change {file} -> plugin-filtered update {boundaries:?}"
+                                    );
+                                    let timestamp = now_millis() as u64;
+                                    updates.extend(boundaries.iter().map(|b| {
+                                        let mut p = format!("{}", b.display());
+                                        if is_style_url(&p) {
+                                            p.push_str("?import");
+                                        }
+                                        update_entry("js-update", &p, timestamp)
+                                    }));
+                                    continue;
+                                }
+                                HmrDecision::FullReload { reason } => {
+                                    println!("oj: change {file} -> full-reload ({reason})");
+                                    messages.push(
+                                        full_reload_frame(&reason, None, Some(path)),
+                                    );
+                                    return messages;
                                 }
                             }
                         }
@@ -8725,40 +8137,6 @@ async fn decide(
         let url = url_of(&state.root, path);
         if !state.graph.lock().unwrap().contains(Path::new(&url)) {
             continue;
-        }
-        if state.bundle {
-            let plan = state.graph.lock().unwrap().update_plan(Path::new(&url));
-            match plan {
-                Ok(plan) => {
-                    println!("oj: change {url} -> patch {:?}", plan.boundaries);
-                    let to_urls = |v: &[PathBuf]| -> Vec<String> {
-                        v.iter().map(|p| p.display().to_string()).collect()
-                    };
-                    let seq = state
-                        .patch_seq
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        + 1;
-                    messages.push(
-                        serde_json::json!({
-                            "type": "patch",
-                            "changed": [url],
-                            "dirty": to_urls(&plan.dirty),
-                            "boundaries": to_urls(&plan.boundaries),
-                            "timestamp": now_millis() as u64,
-                            "seq": seq,
-                        })
-                        .to_string(),
-                    );
-                    continue;
-                }
-                Err(reason) => {
-                    println!("oj: change {url} -> full-reload ({reason})");
-                    messages.push(
-                        full_reload_frame(&reason, None, Some(path)),
-                    );
-                    return messages;
-                }
-            }
         }
         let targets = state.graph.lock().unwrap().update_targets(Path::new(&url));
         match targets {
@@ -10343,44 +9721,6 @@ mod adapter_tests {
         assert_eq!(query_asset_kind(Some("sharedworker&inline")), Some("sharedworker"));
         assert_eq!(query_asset_kind(Some("inline")), Some("inline"));
         assert_eq!(query_asset_kind(Some("worker")), Some("worker"));
-    }
-
-    #[test]
-    fn worker_query_is_inline_needs_both_flags() {
-        assert!(worker_query_is_inline("/w.js?worker&inline"));
-        assert!(worker_query_is_inline("/w.js?sharedworker&inline"));
-        assert!(!worker_query_is_inline("/w.js?worker"));
-        assert!(!worker_query_is_inline("/w.js?inline"));
-        assert!(!worker_query_is_inline("/w.js"));
-    }
-
-    #[test]
-    fn inline_worker_module_wraps_worker_and_sharedworker() {
-        let chunk = "self.onmessage = () => {};\n";
-
-        // Worker: Blob + createObjectURL primary, data:+encodeURIComponent
-        // fallback, the module self-revoke prelude, and the chunk embedded.
-        let w = inline_worker_module(chunk, false);
-        assert!(w.contains("new Blob("), "uses a Blob: {w}");
-        assert!(w.contains("createObjectURL(blob)"), "creates an object URL: {w}");
-        assert!(
-            w.contains("URL.revokeObjectURL(import.meta.url);"),
-            "module self-revoke prelude: {w}",
-        );
-        assert!(w.contains("new Worker(objURL"), "constructs a Worker from the blob url: {w}");
-        assert!(
-            w.contains("encodeURIComponent(jsContent)") && w.contains("data:text/javascript"),
-            "data: URI fallback via encodeURIComponent: {w}",
-        );
-        assert!(w.contains("type: \"module\""), "module worker: {w}");
-        assert!(w.contains("self.onmessage"), "embeds the bundled chunk: {w}");
-        assert!(!w.contains("new SharedWorker"), "not a SharedWorker: {w}");
-
-        // SharedWorker: data-URI only, no Blob (a Blob URL yields duplicate instances).
-        let s = inline_worker_module(chunk, true);
-        assert!(s.contains("new SharedWorker("), "constructs a SharedWorker: {s}");
-        assert!(s.contains("encodeURIComponent(jsContent)"), "data: via encodeURIComponent: {s}");
-        assert!(!s.contains("new Blob("), "SharedWorker must not use a Blob: {s}");
     }
 
     #[test]

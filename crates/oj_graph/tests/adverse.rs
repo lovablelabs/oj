@@ -48,17 +48,20 @@ fn a_deep_import_chain_does_not_exhaust_the_stack() {
 
 #[test]
 fn a_deep_chain_of_accepting_modules_stops_at_the_first_boundary() {
-    let decision = on_worker_stack(|| {
+    let targets = on_worker_stack(|| {
         let mut g = chain(100_000);
         // Every module accepts: the walk must stop at the immediate importer.
         for i in 0..=100_000 {
             g.set_self_accepting(&p(i), true);
         }
-        g.propagate_update_from_importers(&p(0))
+        g.update_targets_from_importers(&p(0))
     });
-    match decision {
-        HmrDecision::Update { boundaries } => assert_eq!(boundaries, vec![p(1)]),
-        HmrDecision::FullReload { reason } => panic!("unexpected full reload: {reason}"),
+    match targets {
+        Ok(targets) => assert_eq!(
+            targets.iter().map(|t| t.boundary.clone()).collect::<Vec<_>>(),
+            vec![p(1)]
+        ),
+        Err(reason) => panic!("unexpected full reload: {reason}"),
     }
 }
 
@@ -91,9 +94,8 @@ fn a_deep_chain_with_no_boundary_falls_back_to_a_full_reload() {
 
 #[test]
 fn the_dirty_closure_of_a_deep_chain_is_the_whole_chain() {
-    let plan = on_worker_stack(|| chain(50_000).update_plan(&p(0)).unwrap());
-    assert_eq!(plan.dirty.len(), 50_001);
-    assert_eq!(plan.boundaries, vec![p(50_000)]);
+    let dirty = on_worker_stack(|| chain(50_000).stamp_update(&p(0), 1));
+    assert_eq!(dirty.len(), 50_001);
 }
 
 #[test]
@@ -193,7 +195,7 @@ fn unknown_modules_never_produce_a_partial_update() {
         panic!("an unknown module must force a reload");
     };
     assert!(reason.contains("not in the module graph"), "{reason}");
-    assert!(g.update_plan(Path::new("/src/never-seen.tsx")).is_err());
+    assert!(g.update_targets(Path::new("/src/never-seen.tsx")).is_err());
 }
 
 #[test]

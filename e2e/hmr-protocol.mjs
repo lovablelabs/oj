@@ -61,8 +61,6 @@ let failed = false;
 try {
   await run(["dev", app, "--port", "5472"], 5472, "client.js");
   console.log("[dev] hmr protocol OK");
-  await run(["dev", app, "--port", "5473", "--bundle"], 5473, "bundle-runtime.js");
-  console.log("[bundle] hmr protocol OK");
   console.log("HMR-PROTOCOL E2E PASSED");
 } catch (err) {
   failed = true;

@@ -96,7 +96,7 @@ pub fn emit_package_bundle(
     out.push_str("  return importerKind === \"esm\" ? ns : __oj_extcjs(ns);\n");
     out.push_str("}\n");
 
-    // 2. ESM interop helpers, mirrored from oj's bundle-runtime.js.
+    // 2. ESM interop helpers (Vite's __esModule/default interop shape).
     out.push_str("function __oj_esm(exports, getters) {\n");
     out.push_str("  Object.defineProperty(exports, \"__esModule\", { value: true });\n");
     out.push_str("  for (const k of Object.keys(getters)) Object.defineProperty(exports, k, { enumerable: true, get: getters[k] });\n");
@@ -155,8 +155,8 @@ pub fn emit_package_bundle(
     }
     out.push_str("};\n");
 
-    // 5. Instantiation + interop-aware require, mirroring bundle-runtime's
-    //    instantiate/requireRaw so CJS<->ESM edges resolve identically.
+    // 5. Instantiation + interop-aware require, so CJS<->ESM edges resolve
+    //    the way Node/Vite interop does.
     out.push_str(
         "const __oj_inst = {};\n\
          function __oj_get(id) { return __oj_inst[id] || __oj_instantiate(id); }\n\

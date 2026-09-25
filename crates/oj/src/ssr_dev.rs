@@ -31,7 +31,6 @@ pub async fn ssr_dev(
     let built = oj_server::DevServer {
         root,
         port,
-        bundle: false,
         host,
         config: None,
         enable_cache: false,

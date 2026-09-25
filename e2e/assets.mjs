@@ -35,10 +35,9 @@ fs.writeFileSync(
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
 );
 
-async function check(mode, port) {
+async function check(port) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const args = ["dev", app, "--port", String(port)];
-  if (mode === "bundle") args.push("--bundle");
   const srv = spawn(oj, args, { stdio: "ignore" });
   for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
   const browser = await chromium.launch();
@@ -56,8 +55,8 @@ async function check(mode, port) {
     if (!asurl || !asurl.endsWith("/src/pic.svg")) bad.push(`new URL ${asurl}`);
     if (svgStatus !== 200) bad.push(`asset fetch ${svgStatus}`);
     if (errors.length) bad.push(`page errors ${errors.join("|")}`);
-    if (bad.length) throw new Error(`[${mode}] ${bad.join("; ")}`);
-    console.log(`[${mode}] pic=${pic} newURL=${asurl} fetch=${svgStatus} OK`);
+    if (bad.length) throw new Error(`[dev] ${bad.join("; ")}`);
+    console.log(`[dev] pic=${pic} newURL=${asurl} fetch=${svgStatus} OK`);
   } finally {
     await browser.close();
     srv.kill("SIGKILL");
@@ -66,9 +65,8 @@ async function check(mode, port) {
 
 let failed = false;
 try {
-  await check("non-bundle", 5293);
-  await check("bundle", 5294);
-  console.log("ASSETS E2E PASSED (both modes)");
+  await check(5293);
+  console.log("ASSETS E2E PASSED");
 } catch (err) {
   failed = true;
   console.error("ASSETS E2E FAILED:", err.message);

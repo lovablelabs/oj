@@ -42,10 +42,9 @@ fs.writeFileSync(
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
 );
 
-async function check(mode, port) {
+async function check(port) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const args = ["dev", app, "--port", String(port)];
-  if (mode === "bundle") args.push("--bundle");
   const srv = spawn(oj, args, { stdio: "ignore" });
   for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
   const browser = await chromium.launch();
@@ -62,8 +61,8 @@ async function check(mode, port) {
     if (r.inline !== true) bad.push(`?inline ${r.inline}`);
     if (r.sum !== 9) bad.push(`?init add=${r.sum}`);
     if (errors.length) bad.push(`errors ${errors.join("|")}`);
-    if (bad.length) throw new Error(`[${mode}] ${bad.join("; ")}`);
-    console.log(`[${mode}] url/raw/inline/init all OK`);
+    if (bad.length) throw new Error(`[dev] ${bad.join("; ")}`);
+    console.log(`[dev] url/raw/inline/init all OK`);
   } finally {
     await browser.close();
     srv.kill("SIGKILL");
@@ -72,9 +71,8 @@ async function check(mode, port) {
 
 let failed = false;
 try {
-  await check("non-bundle", 5323);
-  await check("bundle", 5324);
-  console.log("QUERY-ASSETS E2E PASSED (both modes)");
+  await check(5323);
+  console.log("QUERY-ASSETS E2E PASSED");
 } catch (err) {
   failed = true;
   console.error("QUERY-ASSETS E2E FAILED:", err.message);

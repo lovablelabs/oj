@@ -79,8 +79,7 @@ async function mode(label, args, port, build) {
 
 let failed = false;
 try {
-  await mode("non-bundle", ["dev", app, "--port", "5392"], 5392, false);
-  await mode("bundle", ["dev", app, "--port", "5393", "--bundle"], 5393, false);
+  await mode("dev", ["dev", app, "--port", "5392"], 5392, false);
   await mode("prod", ["preview", app, "--port", "5394"], 5394, true);
   console.log("SVGR E2E PASSED");
 } catch (err) {

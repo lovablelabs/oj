@@ -80,8 +80,7 @@ async function run(label, args, port, isBuild) {
 
 let failed = false;
 try {
-  await run("non-bundle", ["dev", app, "--port", "5342"], 5342, false);
-  await run("bundle", ["dev", app, "--port", "5343", "--bundle"], 5343, false);
+  await run("dev", ["dev", app, "--port", "5342"], 5342, false);
   await run("prod", ["preview", app, "--port", "5344"], 5344, true);
   console.log("PREPROCESSORS E2E PASSED");
 } catch (err) {

@@ -66,8 +66,7 @@ async function mode(label, args, port, build) {
 
 let failed = false;
 try {
-  await mode("non-bundle", ["dev", app, "--port", "5411"], 5411, false);
-  await mode("bundle", ["dev", app, "--port", "5412", "--bundle"], 5412, false);
+  await mode("dev", ["dev", app, "--port", "5411"], 5411, false);
   await mode("prod", ["preview", app, "--port", "5413"], 5413, true);
   console.log("HTML-ENTRY E2E PASSED");
 } catch (err) {

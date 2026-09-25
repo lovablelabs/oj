@@ -23,11 +23,6 @@ const TOOLS = {
     spawn: () => spawn(OJ_BIN, ["dev", app, "--port", "5199"], { stdio: "ignore" }),
     clearCache: () => fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true }),
   },
-  "oj-bundle": {
-    port: 5199,
-    spawn: () => spawn(OJ_BIN, ["dev", app, "--port", "5199", "--bundle"], { stdio: "ignore" }),
-    clearCache: () => fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true }),
-  },
   vite: {
     port: 5200,
     spawn: () =>

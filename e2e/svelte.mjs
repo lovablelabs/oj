@@ -84,8 +84,7 @@ async function mode(label, args, port, build, hmr) {
 
 let failed = false;
 try {
-  await mode("non-bundle", ["dev", app, "--port", "5431"], 5431, false, true);
-  await mode("bundle", ["dev", app, "--port", "5432", "--bundle"], 5432, false, false);
+  await mode("dev", ["dev", app, "--port", "5431"], 5431, false, true);
   await mode("prod", ["preview", app, "--port", "5433"], 5433, true, false);
   console.log("SVELTE E2E PASSED");
 } catch (err) {

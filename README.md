@@ -65,8 +65,7 @@ Generated fanout-10 React component trees, measured save-to-paint with Playwrigh
 
 | tool | cold start | warm start | reload | HMR | server RSS |
 |---|---|---|---|---|---|
-| **oj --bundle** | **311/315ms** | **240/243ms** | **41/42ms** | **56/57ms** | **43MB** |
-| oj (unbundled) | 434/582ms | 352/354ms | 170/173ms | 56/59ms | 43MB |
+| **oj** | **434/582ms** | **352/354ms** | **170/173ms** | **56/59ms** | **43MB** |
 | vite | 701/734ms | 653/659ms | 172/176ms | 55/73ms | 434MB |
 | vite-fbm | 326/344ms | 334/338ms | 49/52ms | 55/58ms | 361MB |
 
@@ -74,8 +73,7 @@ Generated fanout-10 React component trees, measured save-to-paint with Playwrigh
 
 | tool | cold start | warm start | reload | HMR | server RSS |
 |---|---|---|---|---|---|
-| **oj --bundle** | **750/783ms** | **588/604ms** | **132/133ms** | **59/61ms** | **75MB** |
-| oj (unbundled) | 1281/1402ms | 1058/1080ms | 744/839ms | 60/63ms | 65MB |
+| **oj** | **1281/1402ms** | **1058/1080ms** | **744/839ms** | **60/63ms** | **65MB** |
 | vite | 2649/2656ms | 2424/2532ms | 758/807ms | 56/147ms | 949MB |
 | vite-fbm | 927/970ms | 965/973ms | 174/177ms | 59/80ms | 976MB |
 
@@ -83,12 +81,11 @@ Generated fanout-10 React component trees, measured save-to-paint with Playwrigh
 
 | tool | cold start | warm start | reload | HMR | server RSS |
 |---|---|---|---|---|---|
-| **oj --bundle** | **1315/1333ms** | **1129/1442ms** | **232/237ms** | **67/72ms** | **115MB** |
-| oj (unbundled) | 2492/2543ms | 2068/2303ms | 1523/1687ms | 67/176ms | 94MB |
+| **oj** | **2492/2543ms** | **2068/2303ms** | **1523/1687ms** | **67/176ms** | **94MB** |
 | vite | 5693/6085ms | 5304/6289ms | 1781/1820ms | 59/64ms | 1552MB |
 | vite-fbm | 1528/2225ms | 1482/2176ms | 302/414ms | 59/65ms | 1751MB |
 
-Bundle-mode oj wins cold start, warm start, and reload against Vite's default dev at every size (4-8x at 10k), and now also beats Vite's experimental bundled dev on all three at every size (cold, warm, and reload). HMR is a wash across all four (within ~10ms). oj's decisive, consistent win is memory: 43-115MB against Vite's 361MB-1.75GB, an 8-15x gap that widens with app size.
+oj wins cold start and warm start against Vite's default dev at every size (~2x at 10k). HMR is a wash across all three (within ~10ms). oj's decisive, consistent win is memory: 43-94MB against Vite's 361MB-1.75GB, an 8-15x gap that widens with app size.
 
 Production builds (`oj build` vs `vite build`) land at parity: same engine (Rolldown), byte-identical output sizes.
 
@@ -104,19 +101,18 @@ Production builds (`oj build` vs `vite build`) land at parity: same engine (Roll
 
 ```sh
 cargo run -p oj -- dev                            # dev server for ./playground on :5199
-cargo run -p oj -- dev --bundle                   # registry-runtime bundle mode
 cargo run -p oj -- dev --ssr src/entry-server.tsx # streaming SSR + hydration
 cargo run -p oj -- build playground               # production build into playground/dist
 cargo test --workspace                            # rust unit tests
 node --test e2e/unit/*.test.mjs                   # js unit tests (adapter helpers)
-node e2e/run.mjs                                  # browser e2e suite (add --bundle for bundle mode)
+node e2e/run.mjs                                  # browser e2e suite
 node e2e/ssr-dev.mjs                              # SSR dev e2e, e2e/ssr-prod.mjs for the built server
 node e2e/start.mjs                                # tanstack start integration (see e2e/fixtures/start-app)
 node e2e/dep-optimize.mjs                         # dependency pre-bundle + cjs interop integration
 node e2e/assets.mjs                               # asset url imports + new URL(import.meta.url)
 node e2e/dynamic-import.mjs                       # dynamic import with variables (glob switch)
 node e2e/wasm.mjs                                 # wasm ?init instantiation (dev + build)
-node e2e/query-assets.mjs                         # ?url/?raw/?inline/?init in bundle mode
+node e2e/query-assets.mjs                         # ?url/?raw/?inline/?init asset queries
 node e2e/rolldown-options.mjs                     # build.rollupOptions filenames + external
 node e2e/preprocessors.mjs                        # less + stylus css (installs both, then dev+build)
 node e2e/assets-inline.mjs                        # assetsInlineLimit: small assets become data uris
@@ -126,9 +122,9 @@ node e2e/config-function.mjs                      # oj.config function form ({ c
 node e2e/build-target-raw-inline.mjs              # build.target downleveling + ?raw/?inline in build
 node e2e/manual-chunks.mjs                        # rollupOptions output.manualChunks vendor splitting
 node e2e/svgr.mjs                                 # svg as react component (?react), installs react
-node e2e/worker-modes.mjs                         # ?worker in dev, bundle, and production build
+node e2e/worker-modes.mjs                         # ?worker in dev and production build
 node e2e/html-entry.mjs                           # relative index.html script entry (src="src/x")
-node e2e/svelte.mjs                               # svelte 5 components in dev, bundle, and build
+node e2e/svelte.mjs                               # svelte 5 components in dev and build
 node e2e/build-mode.mjs                           # build --mode (import.meta.env.MODE + .env.<mode>)
 node e2e/hmr-protocol.mjs                         # hmr client derives wss (behind https proxy)
 node e2e/hmr-overlay-recovery.mjs                 # startup compile error: buffered overlay, reload on first update

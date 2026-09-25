@@ -146,7 +146,6 @@ pub async fn start_dev(
         oj_server::DevServer {
             root: root.clone(),
             port,
-            bundle: false,
             host,
             config,
             enable_cache: false,

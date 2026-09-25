@@ -36,8 +36,6 @@ enum Command {
         #[arg(long)]
         port: Option<u16>,
         #[arg(long)]
-        bundle: bool,
-        #[arg(long)]
         ssr: Option<String>,
         #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
         host: Option<String>,
@@ -282,7 +280,6 @@ async fn run() -> anyhow::Result<()> {
         Command::Dev {
             root,
             port,
-            bundle,
             ssr,
             host,
             config,
@@ -307,7 +304,6 @@ async fn run() -> anyhow::Result<()> {
                 oj_server::DevServer {
                     root,
                     port,
-                    bundle,
                     host,
                     config,
                     enable_cache,

@@ -69,19 +69,6 @@ pub fn to_esm(source: &str, url: &str) -> Result<String, CompileError> {
     Ok(out)
 }
 
-pub fn to_factory_body(source: &str, url: &str) -> Result<String, CompileError> {
-    let value = parse(source, url)?;
-    let raw = js_expression(source, &value);
-    let mut getters = vec!["\"default\": () => __oj_json".to_string()];
-    for key in named_keys(&value) {
-        getters.push(format!("{key:?}: () => __oj_json[{key:?}]"));
-    }
-    Ok(format!(
-        "var __oj_json = {raw};\n__oj_esm(__oj_exports, {{ {} }});\n",
-        getters.join(", ")
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,14 +100,6 @@ mod tests {
         let out = to_esm(r#"{"default":1,"ok":2}"#, "/r.json").unwrap();
         assert!(!out.contains("export const default"), "{out}");
         assert!(out.contains("export const ok ="), "{out}");
-    }
-
-    #[test]
-    fn factory_body_installs_getters() {
-        let out = to_factory_body(r#"{"a":1}"#, "/f.json").unwrap();
-        assert!(out.contains("var __oj_json = {\"a\":1}"), "{out}");
-        assert!(out.contains(r#""default": () => __oj_json"#), "{out}");
-        assert!(out.contains(r#""a": () => __oj_json["a"]"#), "{out}");
     }
 
     #[test]
@@ -176,24 +155,6 @@ mod tests {
             );
             assert!(out.contains("export default __oj_json"), "{label}: {out}");
         }
-    }
-
-    #[test]
-    fn factory_body_filters_invalid_and_reserved_keys() {
-        let out = to_factory_body(r#"{"ok":1,"bad-key":2,"default":3}"#, "/f.json").unwrap();
-        assert!(
-            out.contains(r#""ok": () => __oj_json["ok"]"#),
-            "valid key getter: {out}"
-        );
-        assert!(
-            !out.contains(r#""bad-key": () =>"#),
-            "invalid key gets no getter: {out}"
-        );
-        assert_eq!(
-            out.matches(r#""default": () =>"#).count(),
-            1,
-            "one default getter: {out}"
-        );
     }
 
     #[test]

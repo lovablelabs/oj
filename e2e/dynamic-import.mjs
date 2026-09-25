@@ -62,12 +62,7 @@ try {
   let s = await serve("dev", [], 5307);
   await inBrowser(5307);
   s.kill("SIGKILL");
-  console.log("[non-bundle dev] OK");
-
-  s = await serve("dev", ["--bundle"], 5308);
-  await inBrowser(5308);
-  s.kill("SIGKILL");
-  console.log("[bundle dev] OK");
+  console.log("[dev] OK");
 
   fs.rmSync(path.join(app, "dist"), { recursive: true, force: true });
   execSync(`${oj} build ${app}`, { stdio: "ignore" });

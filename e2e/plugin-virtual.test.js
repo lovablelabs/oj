@@ -4,10 +4,6 @@
 const base = "http://localhost:5199";
 
 (async () => {
-  if (process.env.OJ_E2E_MODE === "bundle") {
-    console.log("SKIP plugin virtual (bundle registry does not register plugin ids)");
-    return;
-  }
   const demo = await (await fetch(`${base}/src/virtual-demo.tsx`)).text();
   const idUrl = demo.match(/\/@id\/[a-f0-9]+\?importer=[a-f0-9]+/)?.[0];
   if (!idUrl) throw new Error("plugin resolveId did not rewrite the import to /@id/:\n" + demo);
