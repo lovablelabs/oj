@@ -1561,10 +1561,18 @@ struct OjUserPlugin {
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     emit: Arc<EmitState>,
     // Vite/rolldown push hook filters into the bundler so a filtered hook never
-    // runs for a module it does not claim; this plan gates the isolate RPCs the
-    // same way. It only over-approximates (the host re-filters per plugin), so
-    // a gated-out call is one no plugin would have acted on.
+    // runs for a module it does not claim; the host's live plan gates the
+    // isolate RPCs the same way. It only over-approximates (the host
+    // re-filters per plugin), so a gated-out call is one no plugin would have
+    // acted on. This construction-time snapshot only decides HookUsage bits;
+    // per-call gates read the live plan, which a respawned host resets.
     gate: oj_server::plugins::BuildHookPlan,
+    // OJ_DEBUG_HOOK_GATE=1: count gated-out RPCs and report at closeBundle,
+    // so a test can assert the gate actually skipped something.
+    gate_debug: bool,
+    skipped_resolve: std::sync::atomic::AtomicU64,
+    skipped_load: std::sync::atomic::AtomicU64,
+    skipped_transform: std::sync::atomic::AtomicU64,
 }
 
 impl OjUserPlugin {
@@ -1578,6 +1586,10 @@ impl OjUserPlugin {
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             emit,
             gate,
+            gate_debug: oj_server::plugins::hook_gate_debug(),
+            skipped_resolve: Default::default(),
+            skipped_load: Default::default(),
+            skipped_transform: Default::default(),
         }
     }
 }
@@ -1723,7 +1735,11 @@ impl Plugin for OjUserPlugin {
         _ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
-        let pass = self.gate.resolve_id.wants(args.specifier, None);
+        let pass = self.host.hook_wants_resolve_id(args.specifier);
+        if !pass && self.gate_debug {
+            self.skipped_resolve
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let host = Arc::clone(&self.host);
         let spec = args.specifier.to_string();
         let importer = args.importer.unwrap_or("").to_string();
@@ -1743,7 +1759,11 @@ impl Plugin for OjUserPlugin {
         _ctx: SharedLoadPluginContext,
         args: &HookLoadArgs<'_>,
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
-        let pass = self.gate.load.wants(args.id, None);
+        let pass = self.host.hook_wants_load(args.id);
+        if !pass && self.gate_debug {
+            self.skipped_load
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let host = Arc::clone(&self.host);
         let id = args.id.to_string();
         async move {
@@ -1790,7 +1810,11 @@ impl Plugin for OjUserPlugin {
         ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
-        let pass = self.gate.transform.wants(args.id, Some(args.code.as_str()));
+        let pass = self.host.hook_wants_transform(args.id, args.code.as_str());
+        if !pass && self.gate_debug {
+            self.skipped_transform
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let host = Arc::clone(&self.host);
         let emit = Arc::clone(&self.emit);
         let code = if pass { args.code.to_string() } else { String::new() };
@@ -1943,6 +1967,15 @@ impl Plugin for OjUserPlugin {
         _ctx: &PluginContext,
         _args: Option<&rolldown_plugin::HookCloseBundleArgs<'_>>,
     ) -> rolldown_plugin::HookNoopReturn {
+        if self.gate_debug {
+            use std::sync::atomic::Ordering::Relaxed;
+            eprintln!(
+                "oj: hook gate skipped resolveId={} load={} transform={}",
+                self.skipped_resolve.load(Relaxed),
+                self.skipped_load.load(Relaxed),
+                self.skipped_transform.load(Relaxed),
+            );
+        }
         self.host
             .close_bundle()
             .await

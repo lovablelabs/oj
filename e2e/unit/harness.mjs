@@ -209,6 +209,17 @@ export function rpcSidecar(sidecarRel, { args = [], env, cwd, controlToken } = {
   return {
     child,
     stderr: () => stderr,
+    // A positive stderr assertion right after an RPC reply races the pipe:
+    // the reply frame can beat the stderr delivery under load. Poll until the
+    // pattern (or the deadline) arrives; the caller still asserts, for the
+    // failure message.
+    waitStderr: async (re, ms = 5000) => {
+      const t0 = Date.now();
+      while (!re.test(stderr) && Date.now() - t0 < ms) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return stderr;
+    },
     // The host's serve-info push: awaits it (`serveInfo()`), or peeks at what
     // has arrived so far (`serveInfoPushed()`, undefined until the push lands).
     serveInfo: () => serveInfoArrived,

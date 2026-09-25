@@ -1060,6 +1060,13 @@ impl DevServer {
                 .collect(),
             None => Vec::new(),
         };
+        // Prime the per-plugin filter plan (the hook_wants_* gates read it
+        // live from the host): what the coarse has_* flags above cannot
+        // express, so a filtered hook's RPC is skipped for the app modules
+        // its filter can never claim.
+        if let Some(host) = &plugin_host {
+            let _ = host.build_hook_plan().await;
+        }
         // Same idea for HMR: a host without watchChange/handleHotUpdate hooks (the
         // tagger case) doesn't need those per-save stdio round-trips.
         let (plugins_watch_change, plugins_hot_update) = match &plugin_host {
@@ -4401,11 +4408,18 @@ async fn ensure_module(
                     Some((_, q)) => format!("{}?{}", file.display(), q),
                     None => file.to_string_lossy().into_owned(),
                 };
-                // A throwing `load` fails the module like Vite (500 + overlay),
-                // rather than silently reading the disk file it meant to replace.
-                host.load(&load_id)
-                    .await
-                    .map_err(|e| format!("plugin load error for {url}:\n{e}"))?
+                if !host.hook_wants_load(&load_id) {
+                    if plugins::hook_gate_debug() {
+                        eprintln!("oj: hook gate skipped load for {load_id}");
+                    }
+                    None
+                } else {
+                    // A throwing `load` fails the module like Vite (500 + overlay),
+                    // rather than silently reading the disk file it meant to replace.
+                    host.load(&load_id)
+                        .await
+                        .map_err(|e| format!("plugin load error for {url}:\n{e}"))?
+                }
             }
             None => None,
         }
@@ -4554,24 +4568,34 @@ async fn ensure_module(
             || state.dep_transform_res.iter().any(|re| re.is_match(&source)));
     let source = match &state.plugins {
         Some(host) if state.plugins_have_transform && (!is_dep || dep_wants_transform) => {
-            let resolved =
-                resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
             // Pass the id WITH its query (e.g. `?tsr-shared=1`), like Vite: the router
             // code-splitter emits a different variant per query, keyed off the id.
             let transform_id = match url.split_once('?') {
                 Some((_, q)) => format!("{}?{}", file.display(), q),
                 None => file.to_string_lossy().into_owned(),
             };
-            match host.transform(&source, &transform_id, &resolved).await {
-                Ok((code, watches, maps, _)) => {
-                    plugin_watch_files = watches;
-                    plugin_maps = maps;
-                    code
+            if !host.hook_wants_transform(&transform_id, &source) {
+                if plugins::hook_gate_debug() {
+                    eprintln!("oj: hook gate skipped transform for {transform_id}");
                 }
-                // Vite fails the request with the plugin's error (code frame in the
-                // overlay); serving the untransformed source would ship wrong code.
-                Err(e) => {
-                    return Err(format!("plugin transform error for {}:\n{e}", file.display()));
+                source
+            } else {
+                let resolved =
+                    resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
+                match host.transform(&source, &transform_id, &resolved).await {
+                    Ok((code, watches, maps, _)) => {
+                        plugin_watch_files = watches;
+                        plugin_maps = maps;
+                        code
+                    }
+                    // Vite fails the request with the plugin's error (code frame in the
+                    // overlay); serving the untransformed source would ship wrong code.
+                    Err(e) => {
+                        return Err(format!(
+                            "plugin transform error for {}:\n{e}",
+                            file.display()
+                        ));
+                    }
                 }
             }
         }

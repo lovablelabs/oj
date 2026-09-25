@@ -3471,21 +3471,38 @@ async function run(hook, args) {
       const out = [];
       for (const r of list) {
         if (!(r instanceof RegExp)) return null;
-        // i/m/s change what the pattern matches and Rust supports them inline;
-        // g/y only affect JS lastIndex statefulness, not the language. Any
-        // other flag (u/v change escape semantics) cannot be carried, so the
-        // whole plugin fails open rather than under-matching.
-        if (/[^imsgy]/.test(r.flags)) return null;
-        const inline = ["i", "m", "s"].filter((f) => r.flags.includes(f)).join("");
+        // i/s change what the pattern matches and Rust supports them inline;
+        // g/y/d only affect JS-side statefulness or match metadata, not the
+        // language. m cannot be carried: JS multiline anchors honor \r and
+        // \u2028, Rust's (?m) only \n, so an m-filtered plugin could be
+        // under-matched on CRLF sources. Any uncarryable flag (m, u, v, ...)
+        // fails the whole plugin open rather than risking an under-match.
+        if (/[^isgyd]/.test(r.flags)) return null;
+        // JS perl classes are ASCII-defined (\b \w \d and their negations)
+        // while Rust's are Unicode: /\bimport\b/ matches next to a non-ASCII
+        // letter in JS but not in Rust, an under-match. Any pattern using them
+        // fails the plugin open. (\s differs too on rare code points.)
+        if (/\\[bBwWdDsS]/.test(r.source)) return null;
+        const inline = ["i", "s"].filter((f) => r.flags.includes(f)).join("");
         out.push(inline ? `(?${inline})${r.source}` : r.source);
       }
       return out;
     };
     const planFor = (name, withCode) => {
-      // moduleParsed only fires inside the transform RPC in build, and it also
-      // fills the moduleInfo cache getModuleInfo/getModuleIds read; gating
-      // transform would starve them, so its presence pins transform unfiltered.
-      if (name === "transform" && withCode && anyModuleParsed()) {
+      // The transform RPC is what fires moduleParsed AND fills the module-info
+      // map that this.getModuleInfo()/getModuleIds() read from later hooks, so
+      // gating it would starve them. Any plugin that could consume that map
+      // (moduleParsed itself, or a bundle-stage hook that may call the ctx
+      // getters, the manifest-plugin shape) pins transform unfiltered.
+      if (
+        name === "transform" &&
+        withCode &&
+        (anyModuleParsed() ||
+          pluginsWithHook("generateBundle").length > 0 ||
+          pluginsWithHook("renderChunk").length > 0 ||
+          pluginsWithHook("writeBundle").length > 0 ||
+          pluginsWithHook("buildEnd").length > 0)
+      ) {
         return { present: true, unfiltered: true, plugins: [] };
       }
       const entries = [];
