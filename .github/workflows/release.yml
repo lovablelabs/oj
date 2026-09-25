@@ -4,8 +4,11 @@ name: release
 # version's CHANGELOG section as notes, then publishes the workspace crates to
 # crates.io (cargo publish --workspace resolves the dependency order itself
 # and skips publish = false). After a partial failure, re-run with
-# --exclude <already-published> if cargo refuses the duplicates. Needs the
-# CARGO_REGISTRY_TOKEN secret.
+# --exclude <already-published> if cargo refuses the duplicates. Auth is
+# crates.io Trusted Publishing (OIDC): each crate lists this repo+workflow as
+# a publisher, and the auth action mints a run-scoped token — no stored
+# secret. A crate's very first publish cannot be trust-configured yet; do
+# that one manually with a scoped token, then it joins the flow.
 on:
   push:
     tags: ["v*"]
@@ -43,10 +46,15 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
+      - name: authenticate with crates.io (trusted publishing)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
       - name: publish the workspace
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --workspace --locked
