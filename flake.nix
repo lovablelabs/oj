@@ -48,15 +48,31 @@
       # Pinned V8 snapshot bundles (issue #211): snapshot CREATION is not
       # run-deterministic (rusty_v8 serializes live embedder memory into the
       # blob), so reproducible builds consume a prebuilt per-target bundle via
-      # crates/oj_deno_snapshots. Regenerate with tools/gen-snapshot-pin.sh
-      # after a deno_runtime / deno_core / rusty_v8 bump (the build fails with
-      # a manifest mismatch until regenerated). Systems without a pin build
-      # the snapshot live, like plain cargo does — their output is then not
-      # bit-reproducible, which only the darwin cache's two-builder agreement
-      # actually requires today.
+      # crates/oj_deno_snapshots. The bundles are release assets on the
+      # rolling `snapshot-pins` tag (same shape as RUSTY_V8_ARCHIVE above:
+      # fetched by SRI hash, never overwritten — a new harvest gets a new
+      # name), so ~8MB of generated artifacts stay out of the git tree.
+      # Regenerate + upload with tools/gen-snapshot-pin.sh after a
+      # deno_runtime / deno_core / rusty_v8 bump (the build fails with a
+      # manifest mismatch until regenerated), then update file+hash here.
+      # Systems without a pin build the snapshot live, like plain cargo does —
+      # their output is then not bit-reproducible, which only the darwin
+      # cache's two-builder agreement actually requires today.
       snapshotPins = {
-        aarch64-darwin = ./snapshot-pins/aarch64-apple-darwin;
+        aarch64-darwin = {
+          file = "oj-snapshot-pin-aarch64-apple-darwin-dc0.412.0-6f8e4d21.tar.gz";
+          hash = "sha256-RTe+9f4HGqaIm417kZ49C8HbYtGX02gi3Jij6L/e3ko=";
+        };
       };
+      snapshotPin = pkgs:
+        let pin = snapshotPins.${pkgs.stdenv.hostPlatform.system};
+        in pkgs.runCommand "oj-snapshot-pin" { } ''
+          mkdir -p "$out"
+          tar -xzf ${pkgs.fetchurl {
+            url = "https://github.com/lovablelabs/oj/releases/download/snapshot-pins/${pin.file}";
+            hash = pin.hash;
+          }} -C "$out"
+        '';
       mkOj = pkgs:
         pkgs.rustPlatform.buildRustPackage ({
           pname = "oj";
@@ -211,7 +227,7 @@ PYUUID
             mainProgram = "oj";
           };
         } // nixpkgs.lib.optionalAttrs (snapshotPins ? ${pkgs.stdenv.hostPlatform.system}) {
-          OJ_SNAPSHOT_ARCHIVE = snapshotPins.${pkgs.stdenv.hostPlatform.system};
+          OJ_SNAPSHOT_ARCHIVE = snapshotPin pkgs;
         });
     in
     {

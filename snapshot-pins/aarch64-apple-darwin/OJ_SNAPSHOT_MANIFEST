@@ -1,7 +1,0 @@
-target=aarch64-apple-darwin
-v8=15.0.245.2-rusty
-ts=6.0.3
-deno_runtime=0.267.0
-deno_core=0.412.0
-minify=0
-import_graph=0
