@@ -188,6 +188,14 @@
           # mutated binary is re-signed explicitly.
           postFixup = ''
             keep=""
+            # The vendored rolldown is a REAL runtime reference, not a
+            # compile-only leftover: the binary hands the embedded
+            # OJ_VENDORED_ROLLDOWN store path to the Start bundle scripts at
+            # run time, so it must survive the nuke (and thereby stay in the
+            # runtime closure, which nix.yml asserts).
+            if [ -n "''${OJ_VENDORED_ROLLDOWN:-}" ]; then
+              keep="$keep -e ''${OJ_VENDORED_ROLLDOWN}"
+            fi
             if [ "$(uname)" = Darwin ]; then
               for p in $(otool -L "$out/bin/oj" | grep -o '/nix/store/[a-z0-9]\{32\}-[^/ ]*' | sort -u); do
                 keep="$keep -e $p"
