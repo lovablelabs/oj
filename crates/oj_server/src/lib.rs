@@ -5453,8 +5453,8 @@ fn workspace_root(root: &Path) -> PathBuf {
 // Rewrite `import { X } from "node:builtin"` to read X off the browser-externalized
 // stub (undefined) instead of a native named import that fails to link, matching
 // Vite's importAnalysis interop for browser-external modules. Returns None when the
-// source imports no node builtins. Applied on every compile path so deps, bundled
-// factories, and app source all interop consistently.
+// source imports no node builtins. Applied on every compile path so deps and app
+// source interop consistently.
 // Pre-resolve a module's static imports (same resolver ctx.resolve uses) into a
 // {spec: id|null} JSON map, handed to the plugin transform so a plugin's per-import
 // `this.resolve` is a local lookup instead of a host round-trip. This is what keeps
