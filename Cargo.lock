@@ -2874,15 +2874,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deno_snapshots"
-version = "0.74.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1511c534c77e0e0a60e436f27650d17d12d3ed9d7789fe305af16afa7576f58"
-dependencies = [
- "deno_runtime",
-]
-
-[[package]]
 name = "deno_subprocess_windows"
 version = "0.54.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6227,6 +6218,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oj_deno_snapshots"
+version = "0.2.6"
+dependencies = [
+ "deno_runtime",
+]
+
+[[package]]
 name = "oj_env"
 version = "0.2.6"
 dependencies = [
@@ -6252,10 +6250,10 @@ dependencies = [
  "deno_media_type",
  "deno_path_util",
  "deno_resolver",
- "deno_snapshots",
  "node_resolver",
  "oj_deno_napi",
  "oj_deno_runtime",
+ "oj_deno_snapshots",
  "serde_json",
  "sys_traits",
  "tempfile",

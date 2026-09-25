@@ -1,0 +1,30 @@
+# Fork of deno_snapshots 0.74.0 (https://github.com/denoland/deno, cli/snapshot)
+# maintained for oj. Only change: build.rs can consume a prebuilt snapshot
+# bundle via OJ_SNAPSHOT_ARCHIVE instead of creating the V8 snapshot at build
+# time. Snapshot creation is not run-deterministic (lovablelabs/oj#211:
+# rusty_v8 serializes live embedder memory into the blob), so reproducible
+# builds — the two-builder agreement oj's nix cache requires — must pin the
+# blob per target and take the nondeterministic step out of the build.
+# lib.rs and shared.rs are verbatim upstream.
+
+[package]
+edition = "2024"
+name = "oj_deno_snapshots"
+version.workspace = true
+authors = ["the Deno authors"]
+build = "build.rs"
+description = "Fork of deno_snapshots 0.74.0 maintained for oj: the v8 snapshot can be consumed from a prebuilt per-target bundle (OJ_SNAPSHOT_ARCHIVE) for reproducible builds. Use upstream deno_snapshots unless you need this."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/lovablelabs/oj"
+
+[features]
+disable = []
+
+[lib]
+name = "oj_deno_snapshots"
+path = "lib.rs"
+
+[build-dependencies.deno_runtime]
+version = "0.267.0"
+features = ["snapshot"]
