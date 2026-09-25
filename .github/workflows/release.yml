@@ -58,7 +58,11 @@ jobs:
       - name: publish the workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --workspace --locked
+        # --no-verify: verifying a fork crate standalone compiles deno_v8
+        # without the v8 feature that only the full workspace unifies (the
+        # same wall the manual fork publishes always hit); ci.yml on main is
+        # the build gate.
+        run: cargo publish --workspace --locked --no-verify
 
   # The pinned V8 snapshot bundle (issue #211): snapshot creation is
   # run-nondeterministic, so reproducible nix builds consume a prebuilt bundle
