@@ -84,7 +84,6 @@ proptest! {
     #[test]
     fn json_conversion_is_total(source in ".{0,200}") {
         let _ = json::to_esm(&source, "/data.json");
-        let _ = json::to_factory_body(&source, "/data.json");
     }
 
     /// Anything the compiler accepts, it emits as valid JavaScript -- in dev
@@ -215,8 +214,6 @@ proptest! {
             let reserved = !esm.contains(&format!("export const {key} "));
             prop_assert!(exported || reserved, "{key} in {esm}");
         }
-        let factory = json::to_factory_body(&source, "/data.json").unwrap();
-        prop_assert!(factory.contains("\"default\": () => __oj_json"));
     }
 
     /// The dev/prod split never changes what a module imports, only how it is

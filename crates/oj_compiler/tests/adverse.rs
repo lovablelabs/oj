@@ -284,7 +284,6 @@ fn json_that_is_not_json_is_an_error() {
             json::to_esm(source, "/data.json").is_err(),
             "accepted invalid JSON: {source:?}"
         );
-        assert!(json::to_factory_body(source, "/data.json").is_err());
     }
 }
 
@@ -324,12 +323,6 @@ fn a_json_proto_key_stays_an_own_property() {
         !esm.contains("export const __proto__"),
         "__proto__ is not an exportable name: {esm}"
     );
-
-    let factory = json::to_factory_body(source, "/data.json").unwrap();
-    assert!(
-        !factory.contains("\"__proto__\": ()"),
-        "a __proto__ getter would replace the namespace prototype: {factory}"
-    );
     // Nested occurrences count too: it is the JS object literal that is unsafe.
     let nested = json::to_esm(r#"{"a":{"__proto__":{"x":1}}}"#, "/data.json").unwrap();
     assert!(parses(&nested), "invalid output: {nested}");
@@ -344,7 +337,6 @@ fn json_scalars_and_deep_nesting_are_accepted() {
     for source in ["1", "-0.5e10", "\"str\"", "true", "false", "null", "[]", "{}"] {
         let esm = json::to_esm(source, "/data.json").unwrap();
         assert!(parses(&esm), "{source} -> {esm}");
-        assert!(json::to_factory_body(source, "/data.json").is_ok());
     }
     // serde_json has a recursion limit; hitting it must be an error, not a crash.
     let deep = format!("{}1{}", "[".repeat(2_000), "]".repeat(2_000));
@@ -356,8 +348,6 @@ fn json_strings_with_script_terminators_are_safe_to_inline() {
     let source = r#"{"html":"</script><script>alert(1)</script>","sep":"a b"}"#;
     let esm = json::to_esm(source, "/data.json").unwrap();
     assert!(parses(&esm), "invalid output: {esm}");
-    let factory = json::to_factory_body(source, "/data.json").unwrap();
-    assert!(!factory.is_empty());
 }
 
 #[test]

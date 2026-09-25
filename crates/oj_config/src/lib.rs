@@ -1523,9 +1523,9 @@ mod tests {
     fn defineconfig_function_form_works() {
         let cfg = eval_config_in(
             "definefn",
-            "import { defineConfig } from \"oj\";\nexport default defineConfig(({ mode }) => ({ bundle: mode === \"development\" }));\n",
+            "import { defineConfig } from \"oj\";\nexport default defineConfig(({ mode }) => ({ base: mode === \"development\" ? \"/dev/\" : \"/prod/\" }));\n",
         );
-        assert_eq!(cfg.bundle, Some(true));
+        assert_eq!(cfg.base.as_deref(), Some("/dev/"));
     }
 
     #[test]
@@ -1622,11 +1622,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("oj.config.json"),
-            r#"{"bundle":true,"base":"/app/"}"#,
+            r#"{"appType":"mpa","base":"/app/"}"#,
         )
         .unwrap();
         let cfg = load(&dir).unwrap();
-        assert_eq!(cfg.bundle, Some(true));
+        assert_eq!(cfg.app_type.as_deref(), Some("mpa"));
         assert_eq!(cfg.base.as_deref(), Some("/app/"));
         let _ = std::fs::remove_dir_all(&dir);
     }

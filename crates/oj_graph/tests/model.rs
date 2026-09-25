@@ -201,9 +201,9 @@ proptest! {
                     }
 
                     // The dirty closure is only defined when an update is possible.
-                    if let Ok(plan) = graph.update_plan(&changed) {
+                    if matches!(&decision, HmrDecision::Update { .. }) {
                         prop_assert_eq!(
-                            plan.dirty,
+                            graph.stamp_update(&changed, 0),
                             paths(&model.dirty(*module)),
                             "step {}: dirty closure", step
                         );
@@ -228,26 +228,30 @@ proptest! {
             // surface by asking for an update from each module's importers.
             for slot in 0..MODULES {
                 if !model.known.contains(&slot) {
-                    prop_assert!(matches!(
-                        graph.propagate_update_from_importers(&path(slot)),
-                        HmrDecision::FullReload { .. }
-                    ), "step {}: unknown module {} must reload", step, slot);
+                    prop_assert!(
+                        graph.update_targets_from_importers(&path(slot)).is_err(),
+                        "step {}: unknown module {} must reload", step, slot
+                    );
                     continue;
                 }
                 let importers = model.importers_of(slot);
-                let decision = graph.propagate_update_from_importers(&path(slot));
+                let result = graph.update_targets_from_importers(&path(slot));
                 if importers.is_empty() {
-                    prop_assert!(matches!(decision, HmrDecision::FullReload { .. }),
-                        "step {}: {} has no importers but got {:?}", step, slot, decision);
+                    prop_assert!(result.is_err(),
+                        "step {}: {} has no importers but got {:?}", step, slot, result);
                     continue;
                 }
                 let seeds: Vec<u8> = importers.iter().copied().collect();
-                match (&decision, model.climb(&seeds, &[slot])) {
-                    (HmrDecision::Update { boundaries }, Ok(expected)) => {
-                        prop_assert_eq!(boundaries, &paths(&expected),
+                match (&result, model.climb(&seeds, &[slot])) {
+                    (Ok(targets), Ok(expected)) => {
+                        let mut boundaries: Vec<PathBuf> =
+                            targets.iter().map(|t| t.boundary.clone()).collect();
+                        boundaries.sort();
+                        boundaries.dedup();
+                        prop_assert_eq!(boundaries, paths(&expected),
                             "step {}: importer-seeded boundaries for {}", step, slot);
                     }
-                    (HmrDecision::FullReload { .. }, Err(_)) => {}
+                    (Err(_), Err(_)) => {}
                     (got, want) => prop_assert!(
                         false,
                         "step {step}: importer-seeded {slot}: graph said {got:?}, model said {want:?}"
@@ -318,7 +322,7 @@ proptest! {
         for _ in 0..3 {
             prop_assert_eq!(&graph.propagate_update(&path(changed)), &first);
         }
-        let plan = graph.update_plan(&path(changed));
-        prop_assert_eq!(graph.update_plan(&path(changed)).is_ok(), plan.is_ok());
+        let targets = graph.update_targets(&path(changed));
+        prop_assert_eq!(graph.update_targets(&path(changed)).is_ok(), targets.is_ok());
     }
 }

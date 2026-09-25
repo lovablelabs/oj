@@ -30,12 +30,6 @@ pub struct ModuleGraph {
     modules: HashMap<PathBuf, ModuleNode>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct UpdatePlan {
-    pub dirty: Vec<PathBuf>,
-    pub boundaries: Vec<PathBuf>,
-}
-
 /// One boundary an update stops at (Vite's `PropagationBoundary`): the module
 /// that accepts, the module it accepts (itself, or a declared dependency), and
 /// whether the boundary sits inside an import cycle with the changed chain, in
@@ -279,26 +273,6 @@ impl ModuleGraph {
         }
     }
 
-    pub fn update_plan(&self, changed: &Path) -> Result<UpdatePlan, String> {
-        match self.propagate_update(changed) {
-            HmrDecision::FullReload { reason } => Err(reason),
-            HmrDecision::Update { boundaries } => Ok(UpdatePlan {
-                dirty: self.dirty_closure(changed),
-                boundaries,
-            }),
-        }
-    }
-
-    pub fn update_plan_from_importers(&self, changed: &Path) -> Result<UpdatePlan, String> {
-        match self.propagate_update_from_importers(changed) {
-            HmrDecision::FullReload { reason } => Err(reason),
-            HmrDecision::Update { boundaries } => Ok(UpdatePlan {
-                dirty: self.dirty_closure(changed),
-                boundaries,
-            }),
-        }
-    }
-
     fn dirty_closure(&self, changed: &Path) -> Vec<PathBuf> {
         let mut dirty: Vec<PathBuf> = vec![changed.to_path_buf()];
         let mut queue = vec![changed.to_path_buf()];
@@ -324,30 +298,6 @@ impl ModuleGraph {
         }
         dirty.sort();
         dirty
-    }
-
-    pub fn propagate_update_from_importers(&self, changed: &Path) -> HmrDecision {
-        let Some(node) = self.modules.get(changed) else {
-            return HmrDecision::FullReload {
-                reason: format!("{} is not in the module graph", changed.display()),
-            };
-        };
-        if node.importers.is_empty() {
-            return HmrDecision::FullReload {
-                reason: format!("{} invalidated at an entry", changed.display()),
-            };
-        }
-
-        let seeds: Vec<&Path> = node.importers.iter().map(PathBuf::as_path).collect();
-        match self.collect_boundaries(&seeds, &[changed]) {
-            Ok(targets) => {
-                let mut boundaries: Vec<PathBuf> = targets.into_iter().map(|t| t.boundary).collect();
-                boundaries.sort();
-                boundaries.dedup();
-                HmrDecision::Update { boundaries }
-            }
-            Err(reason) => HmrDecision::FullReload { reason },
-        }
     }
 
     fn collect_boundaries<'a>(
@@ -628,29 +578,13 @@ mod tests {
     }
 
     #[test]
-    fn update_plan_collects_dirty_chain_through_non_boundaries() {
-        let mut g = graph();
-        g.add_import(&p("Button.tsx"), &p("utils.ts"));
-        let plan = g.update_plan(&p("utils.ts")).unwrap();
-        assert_eq!(plan.boundaries, vec![p("Button.tsx")]);
-        assert_eq!(plan.dirty, vec![p("Button.tsx"), p("utils.ts")]);
-        assert!(!plan.dirty.contains(&p("App.tsx")));
-        assert!(g.update_plan(&p("main.tsx")).is_err());
-    }
-
-    #[test]
     fn invalidate_skips_own_acceptance_and_climbs_to_importer() {
-        let decision = graph().propagate_update_from_importers(&p("Button.tsx"));
+        let targets = graph().update_targets_from_importers(&p("Button.tsx")).unwrap();
         assert_eq!(
-            decision,
-            HmrDecision::Update {
-                boundaries: vec![p("App.tsx")]
-            }
+            targets.iter().map(|t| t.boundary.clone()).collect::<Vec<_>>(),
+            vec![p("App.tsx")]
         );
-        assert!(matches!(
-            graph().propagate_update_from_importers(&p("App.tsx")),
-            HmrDecision::FullReload { .. }
-        ));
+        assert!(graph().update_targets_from_importers(&p("App.tsx")).is_err());
     }
 
     #[test]
@@ -685,25 +619,10 @@ mod tests {
                 boundaries: vec![p("A.tsx"), p("B.tsx")]
             }
         );
-        let plan = g.update_plan(&p("shared.ts")).unwrap();
-        assert_eq!(plan.dirty, vec![p("A.tsx"), p("B.tsx"), p("shared.ts")]);
-    }
-
-    #[test]
-    fn invalidate_plan_escalates_to_importer_boundaries() {
-        let plan = graph()
-            .update_plan_from_importers(&p("Button.tsx"))
-            .unwrap();
-        assert_eq!(plan.boundaries, vec![p("App.tsx")]);
-        assert!(
-            plan.dirty.contains(&p("Button.tsx")),
-            "changed module is dirty"
+        assert_eq!(
+            g.stamp_update(&p("shared.ts"), 1),
+            vec![p("A.tsx"), p("B.tsx"), p("shared.ts")]
         );
-        assert!(
-            plan.dirty.contains(&p("App.tsx")),
-            "importer boundary is dirty"
-        );
-        assert!(graph().update_plan_from_importers(&p("App.tsx")).is_err());
     }
 
     #[test]
