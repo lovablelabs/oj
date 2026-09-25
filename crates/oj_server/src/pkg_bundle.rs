@@ -255,8 +255,8 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
             continue;
         }
 
-        // ES module inside the package: compile it to an ESM factory (same lowering
-        // oj uses in --bundle mode) and register it alongside the CJS ones. The
+        // ES module inside the package: compile it to an ESM factory and
+        // register it alongside the CJS ones. The
         // resolve callback rewrites each import to a bundle-internal ("#id") or
         // cross-package ("@url") target that the runtime interprets.
         if ext == "mjs" || is_esm(&file, &src) {

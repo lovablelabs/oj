@@ -61,7 +61,7 @@ symlinkSync(path.join(donor, "node_modules"), path.join(app, "node_modules"), "d
 rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
 
 try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
-const proc = spawn(OJ, ["dev", app, "--port", String(PORT), "--bundle"], { stdio: "ignore" });
+const proc = spawn(OJ, ["dev", app, "--port", String(PORT),], { stdio: "ignore" });
 const errors = [];
 let pass = true;
 const check = (cond, msg) => { console.log(`  ${cond ? "OK " : "FAIL"} ${msg}`); if (!cond) pass = false; };

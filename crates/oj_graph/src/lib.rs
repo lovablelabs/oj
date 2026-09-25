@@ -273,7 +273,9 @@ impl ModuleGraph {
         }
     }
 
-    fn dirty_closure(&self, changed: &Path) -> Vec<PathBuf> {
+    /// The dirty set an update of `changed` would stamp (its importers up to
+    /// and including the accepting boundaries), without mutating anything.
+    pub fn dirty_closure(&self, changed: &Path) -> Vec<PathBuf> {
         let mut dirty: Vec<PathBuf> = vec![changed.to_path_buf()];
         let mut queue = vec![changed.to_path_buf()];
         let mut seen: HashSet<PathBuf> = queue.iter().cloned().collect();

@@ -22,7 +22,6 @@ fuzz_target!(|data: &[u8]| {
         Ok(value) => value,
         Err(_) => {
             assert!(json::to_esm(source, "/data.json").is_err());
-            assert!(json::to_factory_body(source, "/data.json").is_err());
             return;
         }
     };
@@ -35,12 +34,6 @@ fuzz_target!(|data: &[u8]| {
         "exactly one default export:\n{esm}"
     );
 
-    let factory = json::to_factory_body(source, "/data.json").expect("valid JSON converts");
-    assert!(
-        factory.contains("\"default\": () => __oj_json"),
-        "factory without a default export:\n{factory}"
-    );
-
     // `__proto__` in an object literal would set the prototype instead of
     // defining a property, so it must never appear as a bare key or as an
     // export name.
@@ -51,7 +44,6 @@ fuzz_target!(|data: &[u8]| {
         );
     }
     assert!(!esm.contains("export const __proto__"), "{esm}");
-    assert!(!factory.contains("\"__proto__\": ()"), "{factory}");
 });
 
 fn json_has_proto(value: &serde_json::Value) -> bool {

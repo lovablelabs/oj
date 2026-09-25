@@ -201,9 +201,12 @@ proptest! {
                     }
 
                     // The dirty closure is only defined when an update is possible.
+                    // Read-only on purpose: stamping here would corrupt the
+                    // hmr timestamps mid-property-run with values production
+                    // never produces.
                     if matches!(&decision, HmrDecision::Update { .. }) {
                         prop_assert_eq!(
-                            graph.stamp_update(&changed, 0),
+                            graph.dirty_closure(&changed),
                             paths(&model.dirty(*module)),
                             "step {}: dirty closure", step
                         );

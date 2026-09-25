@@ -124,7 +124,7 @@ node e2e/manual-chunks.mjs                        # rollupOptions output.manualC
 node e2e/svgr.mjs                                 # svg as react component (?react), installs react
 node e2e/worker-modes.mjs                         # ?worker in dev and production build
 node e2e/html-entry.mjs                           # relative index.html script entry (src="src/x")
-node e2e/svelte.mjs                               # svelte 5 components in dev, bundle, and build
+node e2e/svelte.mjs                               # svelte 5 components in dev and build
 node e2e/build-mode.mjs                           # build --mode (import.meta.env.MODE + .env.<mode>)
 node e2e/hmr-protocol.mjs                         # hmr client derives wss (behind https proxy)
 node e2e/hmr-overlay-recovery.mjs                 # startup compile error: buffered overlay, reload on first update
