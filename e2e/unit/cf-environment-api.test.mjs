@@ -716,6 +716,8 @@ test("initial.runnerBacked=true keeps the Environment-API path even when the dec
   try {
     const info = await host.serveInfo();
     assert.equal(info.runnerEnvironments, true, "environments built although the host-side hook threw");
+    await host.waitStderr(/decided by config extraction/);
+    await host.waitStderr(/config\(acme-workerd:dev\) skipped/);
     assert.match(host.stderr(), /decided by config extraction/, "the deciding source is logged");
     assert.match(host.stderr(), /config\(acme-workerd:dev\) skipped/, "the host-side hook failure is on stderr");
     assert.doesNotMatch(host.stderr(), /none came up/);

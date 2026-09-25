@@ -301,6 +301,8 @@ test("with no vite and no bundler, the fallback names what is missing", async ()
     assert.equal(count.result, "0", "the host degrades to zero plugins");
     // The unavailability note carries the resolver's multi-line require
     // stack, so match the two halves separately.
+    await host.waitStderr(/vite unavailable \(/);
+    await host.waitStderr(/bundling config directly/);
     assert.match(host.stderr(), /vite unavailable \(/);
     assert.match(host.stderr(), /bundling config directly/);
     assert.match(

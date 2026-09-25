@@ -140,6 +140,7 @@ test("this.meta.viteVersion is set and this.warn names the plugin", async () => 
     assert.match(seen.viteVersion, /^\d+\.\d+/, "viteVersion looks like a version");
     assert.equal(typeof seen.rollupVersion, "string");
     assert.equal(seen.pluginName, "warner");
+    await host.waitStderr(/warning: careful now\n\s+Plugin: warner/);
     assert.match(host.stderr(), /warning: careful now\n\s+Plugin: warner/, "the warning names its plugin");
   } finally {
     host.close();
@@ -197,6 +198,7 @@ test("applyToEnvironment is awaited; a returned plugin list replaces the wrapper
   const host = spawnHost(fx);
   try {
     assert.deepEqual(await probe(host, fx), { inner: true });
+    await host.waitStderr(/Plugin "inner" defines Vite-specific hooks \(configureServer\)/);
     assert.match(host.stderr(), /Plugin "inner" defines Vite-specific hooks \(configureServer\)/, "config-phase hooks on returned plugins are warned about");
     const count = await host.send({ id: 2, hook: "getPluginCount", args: [] });
     assert.equal(count.result, "1");
