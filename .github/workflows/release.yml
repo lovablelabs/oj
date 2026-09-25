@@ -1,6 +1,6 @@
 name: release
 
-# Pushing a version tag (v0.2.7) creates the GitHub release with that
+# Pushing a version tag creates the GitHub release with that
 # version's CHANGELOG section as notes, then publishes the workspace crates to
 # crates.io (cargo publish --workspace resolves the dependency order itself
 # and skips publish = false). After a partial failure, re-run with
