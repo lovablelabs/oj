@@ -1,0 +1,51 @@
+name: release
+
+# Pushing a version tag (v0.2.7) creates the GitHub release with that
+# version's CHANGELOG section as notes, then publishes the workspace crates to
+# crates.io in dependency order. Re-running after a partial failure is safe:
+# already-published crate versions are skipped. Needs the
+# CARGO_REGISTRY_TOKEN secret.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: github release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: tag matches the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ "$tag" = "$ver" ] || { echo "tag v$tag != workspace version $ver" >&2; exit 1; }
+      - name: create the release with the changelog section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v ver="$ver" '$0 ~ "^## \\[" ver "\\]" {f=1; next} /^## \[/ {f=0} f' \
+            CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" --title "oj $GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --title "oj $GITHUB_REF_NAME" --generate-notes
+          fi
+
+  publish:
+    name: cargo publish
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: publish workspace crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: ./tools/publish-workspace.sh
