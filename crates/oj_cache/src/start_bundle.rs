@@ -177,7 +177,7 @@ impl StartBundleStore {
             dir: crate::cache_root(root).join("start-bundle"),
             salt: format!(
                 "{tool_version}:{START_BUNDLE_FORMAT}:start-bundle:{mode}:{}",
-                epoch(root, mode)
+                epoch(root, mode, vendored_rolldown().epoch_input().as_deref())
             ),
             verify,
         }
@@ -492,7 +492,107 @@ impl StartBundleStore {
     }
 }
 
-fn epoch(root: &Path, mode: &str) -> String {
+/// The rolldown vendored next to the binary for oj's own Start bundles. The
+/// runtime variable wins over the nix build's compile-time store path, and a
+/// set-but-empty variable is an explicit opt-out (no vendor, the app's copy
+/// serves).
+///
+/// A configured vendor is resolved HERE, once, to the identity of the
+/// rolldown that will actually build (its version, read from exactly
+/// `<path>/node_modules/rolldown/package.json` — never node's walk-up), and
+/// that identity is what salts the bundle cache key: like Vite's dep cache,
+/// which keys on the lockfile that pins its bundler, the key records what
+/// built the bundle, not what was asked for. A vendor that is set but does
+/// not hold a rolldown is `Broken`: the command fails loudly before any
+/// bundle runs (start_script_env), and the key salts it distinctly so a
+/// broken window can never alias a real one.
+pub enum VendoredRolldown {
+    None,
+    Broken { path: String, reason: String },
+    Resolved { path: String, version: String },
+}
+
+/// Resolved once per process: the vendor is fixed for the process lifetime,
+/// and resolving at each call site would let an in-place vendor change slip
+/// between the cache-key read and the script-env read — a bundle built by
+/// one rolldown persisted under another's key, the exact aliasing the
+/// identity keying exists to prevent.
+pub fn vendored_rolldown() -> &'static VendoredRolldown {
+    static RESOLVED: std::sync::OnceLock<VendoredRolldown> = std::sync::OnceLock::new();
+    RESOLVED.get_or_init(resolve_vendored_rolldown)
+}
+
+fn resolve_vendored_rolldown() -> VendoredRolldown {
+    let configured = match std::env::var_os("OJ_VENDORED_ROLLDOWN") {
+        Some(v) if v.is_empty() => return VendoredRolldown::None,
+        Some(v) => match v.into_string() {
+            Ok(v) => v,
+            Err(raw) => {
+                return VendoredRolldown::Broken {
+                    path: raw.to_string_lossy().into_owned(),
+                    reason: "the value is not valid UTF-8".into(),
+                }
+            }
+        },
+        None => match option_env!("OJ_VENDORED_ROLLDOWN").filter(|v| !v.is_empty()) {
+            Some(v) => v.to_string(),
+            None => return VendoredRolldown::None,
+        },
+    };
+    // Absolute and symlink-free: the bundle scripts run with cwd at the app
+    // root, so a relative path validated here would name a DIFFERENT
+    // directory there. A path that cannot canonicalize is kept verbatim and
+    // fails below with the real reason.
+    let configured = fs::canonicalize(&configured)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(configured);
+    let pkg = Path::new(&configured)
+        .join("node_modules")
+        .join("rolldown")
+        .join("package.json");
+    let bytes = match fs::read(&pkg) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return VendoredRolldown::Broken {
+                path: configured,
+                reason: "it has no node_modules/rolldown".into(),
+            }
+        }
+        Err(e) => {
+            return VendoredRolldown::Broken {
+                path: configured,
+                reason: format!("node_modules/rolldown/package.json is unreadable: {e}"),
+            }
+        }
+    };
+    let version = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|pkg| pkg.get("version")?.as_str().map(str::to_string));
+    match version {
+        Some(version) => VendoredRolldown::Resolved { path: configured, version },
+        None => VendoredRolldown::Broken {
+            path: configured,
+            reason: "node_modules/rolldown/package.json has no parseable version".into(),
+        },
+    }
+}
+
+impl VendoredRolldown {
+    /// The cache-key input: what will actually build the bundle. Variants are
+    /// discriminated so a version string that HAPPENS to read "broken" can
+    /// never alias the Broken salt.
+    fn epoch_input(&self) -> Option<String> {
+        match self {
+            VendoredRolldown::None => None,
+            VendoredRolldown::Broken { path, .. } => Some(format!("broken\0{path}")),
+            VendoredRolldown::Resolved { path, version } => {
+                Some(format!("resolved\0{version}\0{path}"))
+            }
+        }
+    }
+}
+
+fn epoch(root: &Path, mode: &str, vendored_rolldown_identity: Option<&str>) -> String {
     let mut hasher = blake3::Hasher::new();
     let mode_env = [format!(".env.{mode}"), format!(".env.{mode}.local")];
     for name in [
@@ -532,6 +632,13 @@ fn epoch(root: &Path, mode: &str) -> String {
         hasher.update(k.as_bytes());
         hasher.update(&[0]);
         hasher.update(v.as_bytes());
+    }
+    // The identity (version + path) of the vendored rolldown that will build
+    // the client bundle: a vendor change — including an in-place upgrade at
+    // the same path — must not restore a bundle another rolldown produced.
+    if let Some(identity) = vendored_rolldown_identity {
+        hasher.update(b"\0vendored-rolldown\0");
+        hasher.update(identity.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
 }
@@ -958,6 +1065,33 @@ mod tests {
         let other_version =
             StartBundleStore::new(&fx.root, "9.9.9", VerifyMode::Standard).persist(&fx.start);
         assert_ne!(other_version.unwrap().0, key, "tool version salts the key");
+    }
+
+    #[test]
+    fn vendored_rolldown_identity_is_an_epoch_input() {
+        let fx = Fixture::new("vendor-epoch");
+        let path = "/opt/vendor".to_string();
+        let identity = |version: &str| {
+            VendoredRolldown::Resolved { path: path.clone(), version: version.into() }
+                .epoch_input()
+                .unwrap()
+        };
+        let v1 = epoch(&fx.root, "development", Some(&identity("1.2.1")));
+        assert_ne!(v1, epoch(&fx.root, "development", None));
+        assert_ne!(
+            v1,
+            epoch(&fx.root, "development", Some(&identity("1.3.0"))),
+            "an in-place upgrade at the same path is a different epoch"
+        );
+        let broken = VendoredRolldown::Broken { path: path.clone(), reason: "x".into() }
+            .epoch_input()
+            .unwrap();
+        assert_ne!(
+            v1,
+            epoch(&fx.root, "development", Some(&broken)),
+            "a broken vendor window never aliases a resolved one"
+        );
+        assert_eq!(VendoredRolldown::None.epoch_input(), None);
     }
 
     #[test]

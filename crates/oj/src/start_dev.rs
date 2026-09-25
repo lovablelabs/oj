@@ -923,6 +923,29 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
     if let Some(entry) = configured_start_server_entry(&config, root) {
         vars.push(("OJ_START_SERVER_ENTRY".into(), entry.to_string_lossy().into_owned()));
     }
+    // The Start bundles are oj's own code and run on the rolldown vendored
+    // next to the binary (nix embeds it at build time; the env var overrides
+    // for tests and non-nix builds, and set-but-empty opts out entirely).
+    // resolve-pkg.mjs prefers it at oj's own import sites over whatever the
+    // app's vite pins — a vite <= 7 app pins none at all — and falls back to
+    // the app's copy when no vendor exists. A configured-but-broken vendor
+    // fails HERE, before any bundle runs: the cache key records the vendor's
+    // resolved identity, so silently building with something else would
+    // poison the bundle store.
+    match oj_cache::start_bundle::vendored_rolldown() {
+        oj_cache::start_bundle::VendoredRolldown::None => {}
+        oj_cache::start_bundle::VendoredRolldown::Broken { path, reason } => {
+            let hint = if reason.contains("UTF-8") {
+                "unset it or re-export a valid path"
+            } else {
+                "repair the vendor dir, or set OJ_VENDORED_ROLLDOWN= (empty) to use the app's rolldown"
+            };
+            anyhow::bail!("OJ_VENDORED_ROLLDOWN ({path}) is unusable: {reason}; {hint}");
+        }
+        oj_cache::start_bundle::VendoredRolldown::Resolved { path, .. } => {
+            vars.push(("OJ_VENDORED_ROLLDOWN".into(), path.clone()));
+        }
+    }
     Ok(vars)
 }
 

@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { importPkg, viteEnvDefine, environmentDefines, jsxTransformOptions } from "./resolve-pkg.mjs";
+import { importPkg, importOjRolldown, viteEnvDefine, environmentDefines, jsxTransformOptions } from "./resolve-pkg.mjs";
 import { assetsPlugin, makeVitePlugins, nodeBuiltinShims, workspaceRoot } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob } from "./glob-transform.mjs";
@@ -26,7 +26,7 @@ async function main() {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP = process.env.OJ_APP_ROOT ?? process.cwd();
-const { build } = await importPkg(APP, "rolldown", ["vite", "@tanstack/react-start"]);
+const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
 const WORKSPACE = workspaceRoot(APP);
 const SERVER_FN_BASE = process.env.TSS_SERVER_FN_BASE ?? "/_serverFn/";
 // Vite's `--mode` (OJ_MODE from oj; `development` for `oj dev` without one).

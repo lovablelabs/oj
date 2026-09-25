@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { dirname, join, resolve, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { importPkg, viteEnvDefine, environmentDefines, jsxTransformOptions, ssrExternalRule } from "./resolve-pkg.mjs";
+import { importPkg, importOjRolldown, viteEnvDefine, environmentDefines, jsxTransformOptions, ssrExternalRule } from "./resolve-pkg.mjs";
 import {
   assetsPlugin, makeVitePlugins, nodeBuiltinShims, workspaceRoot, contentHashEmitter,
 } from "./rolldown-assets.mjs";
@@ -44,7 +44,7 @@ const CLIENT_CONDITIONS = (() => {
   } catch {}
   return ["browser", "module", "import", NODE_ENV === "production" ? "production" : "development"];
 })();
-const { build } = await importPkg(APP, "rolldown", ["vite", "@tanstack/react-start"]);
+const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
 

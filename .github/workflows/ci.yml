@@ -78,6 +78,8 @@ jobs:
         run: node e2e/ssr-prod.mjs
       - name: native addon re-registration across one-shot engines (rolldown 1.1.0)
         run: node e2e/native-addon-reregister.mjs
+      - name: vendored rolldown serves vite-7 Start apps (no rolldown in-app)
+        run: node e2e/vendored-rolldown.mjs
       - name: server fast-paths (cache bound, mtime, hmr gating)
         run: |
           node e2e/memory-cache.mjs
