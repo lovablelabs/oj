@@ -262,6 +262,10 @@ fn raise_fd_limit() {
 
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
+    // Before any in-process engine boots (each really chdirs to its app root):
+    // a restart must re-resolve relative CLI args against the directory oj was
+    // launched from, not wherever a plugin host moved the process.
+    oj_server::capture_startup_cwd();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)

@@ -2468,7 +2468,6 @@ mod tests {
                 Some(r#"["node","module-sync"]"#),
                 "the workerd externalConditions never cross either; Vite's DEFAULT_EXTERNAL_CONDITIONS apply"
             );
-            let _ = std::fs::remove_dir_all(&runner_backed);
 
             // The user's RAW top-level lists (the extractor's `rawResolve`)
             // are user-authored and runtime-neutral: conditions join the node
@@ -2495,7 +2494,6 @@ mod tests {
                 Some(r#"["custom-ext","development"]"#),
                 "raw top-level externalConditions replace the default, as a user list does in Vite"
             );
-            let _ = std::fs::remove_dir_all(&with_raw);
 
             let plain_browser = tmp("script-env-browser-honored");
             std::fs::write(
@@ -2536,7 +2534,6 @@ mod tests {
                 Some(r#"["module","node","development","import","default"]"#),
                 "neither the workerd sugar nor the client top-level list crosses into the Node loader"
             );
-            let _ = std::fs::remove_dir_all(&cf_shape);
         }
         let ssr: serde_json::Value = serde_json::from_str(&get("OJ_DEFINE_SSR").unwrap()).unwrap();
         assert_eq!(ssr["__SIDE__"], "\"server\"");
@@ -2553,8 +2550,6 @@ mod tests {
         assert!(!names.contains(&"OJ_DEFINE_CLIENT"));
         assert!(!names.contains(&"OJ_DEFINE_SSR"));
         assert!(!names.contains(&"OJ_RESOLVE_CONDITIONS"));
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::remove_dir_all(&plain);
     }
 
     // The static Cloudflare hint gates skipping the boot prewarm: true only
@@ -2575,7 +2570,6 @@ mod tests {
             &root,
             &Some(root.join("other.config.ts"))
         ));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The live-reload tail goes onto html responses only, and never onto a
@@ -2621,7 +2615,6 @@ mod tests {
         std::fs::write(root.join(".env.prodlike"), "NODE_ENV=production\n").unwrap();
         // Only development is honored from a .env file (Vite warns and ignores).
         assert_eq!(dev_node_env(&root, "prodlike"), "development");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2648,7 +2641,6 @@ mod tests {
         assert!(custom.iter().any(|c| c == "custom"), "{custom:?}");
         assert!(custom.iter().any(|c| c == "development"), "placeholder mapped: {custom:?}");
         assert!(!custom.iter().any(|c| c == "browser"), "user list replaces the defaults: {custom:?}");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2666,7 +2658,6 @@ mod tests {
             std::fs::write(app.join("package.json"), pkg).unwrap();
             assert_eq!(app_uses_tailwind(&app), *expected, "case {i}: {pkg}");
         }
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     // Buffered request bodies are bounded, and a read failure surfaces as a
@@ -2759,7 +2750,6 @@ mod tests {
         std::fs::create_dir_all(base.join("web").join("src")).unwrap();
         std::fs::create_dir_all(base.join("web").join("node_modules")).unwrap();
         assert_eq!(workspace_root(&base.join("web")), base);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -2768,7 +2758,6 @@ mod tests {
         let app = base.join("solo");
         std::fs::create_dir_all(&app).unwrap();
         assert_eq!(workspace_root(&app), app);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -2788,8 +2777,6 @@ mod tests {
         assert!(!app_uses_tailwind(&base));
         let none = tmp("tw-none");
         assert!(!app_uses_tailwind(&none));
-        let _ = std::fs::remove_dir_all(&base);
-        let _ = std::fs::remove_dir_all(&none);
     }
 
     #[test]
@@ -2903,7 +2890,6 @@ mod tests {
         assert!(!names
             .iter()
             .any(|n| n.ends_with(".css") || n.ends_with(".json")));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2918,14 +2904,12 @@ mod tests {
         std::fs::write(src.join("styles.css"), "").unwrap();
         let found = list_src_ts_files(&root);
         assert_eq!(found.len(), 3, "ts/tsx (incl. .d.ts) only: {found:?}");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn list_route_files_missing_dir_is_empty() {
         let root = tmp("noroutes");
         assert!(list_route_files(&root).is_empty());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3002,6 +2986,5 @@ mod tests {
         ))
         .unwrap();
         assert!(configured_start_server_entry(&env_scoped, &root).is_some(), "environments.ssr.resolve.alias counts");
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

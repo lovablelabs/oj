@@ -1509,6 +1509,9 @@ pub fn open_browser(url: &str) {
         None => std::process::Command::new("xdg-open"),
     };
     cmd.arg(url)
+        // The launcher takes a URL, not a path, and the process cwd may be a
+        // since-deleted app root (host boot chdir), which fails the spawn.
+        .current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -7649,22 +7652,42 @@ fn restart_process() -> ! {
     eprintln!("{} config/env changed — restarting dev server", oj_brand());
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // In-process plugin hosts chdir the whole process to their app root, so a
+    // bare re-exec would resolve relative CLI args (`oj dev ./web`) against
+    // the wrong directory. Restart from where oj was launched.
+    let launch_dir = STARTUP_CWD.get().filter(|d| d.is_dir());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new(&exe).args(&args).exec();
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args(&args);
+        if let Some(dir) = launch_dir {
+            cmd.current_dir(dir);
+        }
+        let err = cmd.exec();
         eprintln!("oj: restart failed: {err}");
         std::process::exit(1);
     }
     #[cfg(not(unix))]
     {
-        let code = std::process::Command::new(&exe)
-            .args(&args)
-            .status()
-            .ok()
-            .and_then(|s| s.code())
-            .unwrap_or(0);
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args(&args);
+        if let Some(dir) = launch_dir {
+            cmd.current_dir(dir);
+        }
+        let code = cmd.status().ok().and_then(|s| s.code()).unwrap_or(0);
         std::process::exit(code);
+    }
+}
+
+/// The directory oj was launched from, pinned by `capture_startup_cwd` before
+/// any engine boots (each in-process host really chdirs to its app root).
+static STARTUP_CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Call once at process start, before any plugin host or engine exists.
+pub fn capture_startup_cwd() {
+    if let Ok(dir) = std::env::current_dir() {
+        let _ = STARTUP_CWD.set(dir);
     }
 }
 
