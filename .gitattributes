@@ -1,0 +1,3 @@
+# Harvested V8 snapshot pins (tools/gen-snapshot-pin.sh): collapsed in review
+# and excluded from language stats, like any generated artifact.
+snapshot-pins/** linguist-generated=true
