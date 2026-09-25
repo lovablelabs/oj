@@ -62,3 +62,12 @@ echo
 echo "pin in flake.nix snapshotPins:"
 echo "  file = \"$name\";"
 echo "  hash = \"$sri\";"
+
+# Machine-readable outputs for the snapshot-pin workflow.
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  {
+    echo "pin_target=$target"
+    echo "pin_file=$name"
+    echo "pin_hash=$sri"
+  } >> "$GITHUB_OUTPUT"
+fi
