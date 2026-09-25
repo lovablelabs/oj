@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- A config / `.env` rewrite with byte-identical content no longer restarts the dev server: restart triggers are content-compared against a baseline captured at startup, where Vite restarts on the watcher event alone. Checkouts and provisioning flows that rewrite these files wholesale keep the server (and its warm state) running; a real content change, a delete, or a trigger file created after startup restarts exactly as before.
+
 ## [0.2.6] - 2026-09-24
 
 ### Fixed

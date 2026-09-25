@@ -8178,6 +8178,54 @@ impl ContentChanges {
     }
 }
 
+/// Content-identity baseline for the restart triggers below. Vite restarts
+/// on the watcher event alone, but a checkout or a sandbox clone reset
+/// rewrites .env / config files wholesale with often-identical bytes, and a
+/// process re-exec for content the running server already loaded is pure
+/// loss — so oj compares content and only restarts when it really moved.
+/// Hashes are captured when the watcher starts (alongside the startup that
+/// read these files); a trigger with no baseline (created later, unreadable
+/// at capture, or a config dependency reported after capture) always
+/// restarts — the safe verdict is never "adopt the new content and skip".
+struct RestartBaseline {
+    hashes: std::collections::HashMap<PathBuf, blake3::Hash>,
+}
+
+impl RestartBaseline {
+    fn capture(root: &Path) -> Self {
+        let mut hashes = std::collections::HashMap::new();
+        let mut snap = |p: &Path| {
+            if let Ok(bytes) = std::fs::read(p) {
+                let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                hashes.insert(key, blake3::hash(&bytes));
+            }
+        };
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if is_restart_trigger(&path) {
+                    snap(&path);
+                }
+            }
+        }
+        for dep in plugins::config_dependencies() {
+            snap(dep);
+        }
+        Self { hashes }
+    }
+
+    /// Whether this trigger file's content actually moved from the baseline.
+    fn changed(&self, p: &Path) -> bool {
+        let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        match (self.hashes.get(&key), std::fs::read(&key)) {
+            (Some(baseline), Ok(bytes)) => *baseline != blake3::hash(&bytes),
+            // No baseline (appeared after capture) or unreadable now
+            // (deleted mid-batch): restart.
+            _ => true,
+        }
+    }
+}
+
 /// True for config / env files whose change requires a full server restart
 /// (they are read once at startup and cannot be hot-applied).
 fn is_restart_trigger(path: &Path) -> bool {
@@ -8279,6 +8327,7 @@ fn spawn_watcher(state: Arc<ServerState>) {
             }
         }
 
+        let restart_baseline = RestartBaseline::capture(&state.root);
         use std::sync::mpsc::RecvTimeoutError;
         let debounce_ms: u64 = std::env::var("OJ_HMR_DEBOUNCE_MS")
             .ok()
@@ -8333,9 +8382,23 @@ fn spawn_watcher(state: Arc<ServerState>) {
             created.retain(|p| !seen_paths.contains(p));
             seen_paths.extend(paths.iter().cloned());
             // A config or .env change can't be hot-applied (config is read once at
-            // startup), so restart the process to pick it up — matching Vite.
-            if paths.iter().any(|p| is_restart_trigger(p) || is_config_dependency(p)) {
-                restart_process();
+            // startup), so restart the process to pick it up — matching Vite,
+            // except that a rewrite with byte-identical content is skipped:
+            // the running server already reflects it (see RestartBaseline).
+            let (triggers, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths
+                .into_iter()
+                .partition(|p| is_restart_trigger(p) || is_config_dependency(p));
+            if !triggers.is_empty() {
+                if triggers.iter().any(|p| restart_baseline.changed(p)) {
+                    restart_process();
+                }
+                eprintln!(
+                    "{} config/env rewritten with unchanged content — not restarting",
+                    oj_brand()
+                );
+            }
+            if paths.is_empty() {
+                continue;
             }
             if !state.hmr_enabled {
                 continue;
@@ -9494,6 +9557,38 @@ export default [{{
         for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
             assert!(!is_restart_trigger(Path::new(f)), "{f}");
         }
+    }
+
+    // A restart trigger rewritten with identical bytes is not a change: the
+    // running server already loaded that content (a checkout / sandbox clone
+    // reset rewrites .env wholesale). Everything else — real edits, deletes,
+    // files with no baseline — restarts, the safe verdict.
+    #[test]
+    fn restart_baseline_skips_byte_identical_rewrites_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join(".env");
+        let cfg = dir.path().join("vite.config.ts");
+        std::fs::write(&env, "VITE_FOO=1\n").unwrap();
+        std::fs::write(&cfg, "export default {};\n").unwrap();
+        let baseline = RestartBaseline::capture(dir.path());
+
+        // Byte-identical rewrite (new mtime, same content): unchanged.
+        std::fs::write(&env, "VITE_FOO=1\n").unwrap();
+        assert!(!baseline.changed(&env), "identical rewrite must not count");
+        assert!(!baseline.changed(&cfg), "untouched file must not count");
+
+        // Real content movement counts.
+        std::fs::write(&env, "VITE_FOO=2\n").unwrap();
+        assert!(baseline.changed(&env), "a content edit must count");
+
+        // A delete counts.
+        std::fs::remove_file(&cfg).unwrap();
+        assert!(baseline.changed(&cfg), "a delete must count");
+
+        // A trigger created after capture has no baseline: counts.
+        let local = dir.path().join(".env.local");
+        std::fs::write(&local, "VITE_FOO=1\n").unwrap();
+        assert!(baseline.changed(&local), "no baseline means restart");
     }
 
     #[test]

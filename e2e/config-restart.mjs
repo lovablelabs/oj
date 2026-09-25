@@ -43,6 +43,25 @@ try {
   console.log("initial start:      ok");
 
   stderr = "";
+  // Rewrite .env with byte-identical content (a checkout / clone-reset shape):
+  // the content-identity baseline must skip the restart and say so.
+  fs.writeFileSync(path.join(app, ".env"), "VITE_FOO=1\n");
+  const deduped = await (async () => {
+    for (let i = 0; i < 40; i++) {
+      if (/unchanged content/.test(stderr)) return true;
+      if (/restarting dev server/i.test(stderr)) return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  })();
+  if (!deduped) throw new Error("identical .env rewrite was not deduped:\n" + stderr);
+  if (/restarting dev server/i.test(stderr)) {
+    throw new Error("identical .env rewrite restarted anyway:\n" + stderr);
+  }
+  if (!(await fetch(BASE)).ok) throw new Error("server stopped serving after deduped rewrite");
+  console.log("identical rewrite:  deduped, no restart");
+
+  stderr = "";
   // Touch a watched config/.env file → expect a restart.
   fs.appendFileSync(path.join(app, ".env"), "VITE_BAR=2\n");
 
@@ -58,7 +77,7 @@ try {
 
   if (!(await up())) throw new Error("server did not come back after restart");
   console.log("server recovered:   yes");
-  console.log("\nCONFIG RESTART VERIFIED: .env change restarts the dev server");
+  console.log("\nCONFIG RESTART VERIFIED: identical rewrite deduped, real change restarts");
 } catch (e) {
   failed = true;
   console.error("FAIL:", e.message);
