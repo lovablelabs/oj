@@ -966,8 +966,10 @@ impl StartHost {
                 None => clean.clone(),
             };
             let loaded = match self.bridge.plugin_host().await {
-                Some(host) => host.load(&plugin_id).await.ok().flatten(),
-                None => None,
+                Some(host) if host.hook_wants_load(&plugin_id) => {
+                    host.load(&plugin_id).await.ok().flatten()
+                }
+                _ => None,
             };
             let code = loaded
                 .unwrap_or_else(|| format!("export default {};", json_str(&format!("/@oj-start/fs{clean}"))));
@@ -1023,8 +1025,19 @@ impl StartHost {
         // runs load before the fs read); app sources get the server-fn
         // rewrite; the pipeline does plugin transforms + compile.
         let in_deps = clean.contains("/node_modules/");
+        // Vite runs load before the fs read, but only plugins whose filter can
+        // claim the id are consulted; the gate skips the per-module isolate RPC
+        // for everything else (the whole server graph on the first render).
         let plugin_loaded = match self.bridge.plugin_host().await {
-            Some(host) => host.load(&clean).await.ok().flatten(),
+            Some(host) if host.hook_wants_load(&clean) => {
+                host.load(&clean).await.ok().flatten()
+            }
+            Some(_) => {
+                if oj_server::plugins::hook_gate_debug() {
+                    eprintln!("oj: hook gate skipped start load for {clean}");
+                }
+                None
+            }
             None => None,
         };
         let from_plugin = plugin_loaded.is_some();
