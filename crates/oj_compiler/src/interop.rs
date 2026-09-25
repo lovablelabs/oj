@@ -8,10 +8,61 @@ use oxc_ast::ast::{ImportDeclarationSpecifier, ModuleExportName, Statement};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
 
+/// Cheap pre-gate for `rewrite_cjs_interop` on hot paths: can this source
+/// possibly import a bare specifier? Scans for a quote opening a non-relative
+/// specifier right after `from`, `import` or `import(`. A false positive just
+/// runs the parse; the patterns cover every syntactic position an interop
+/// candidate can occupy (static import, re-export, side-effect import,
+/// dynamic import), so `false` is safe to skip on.
+pub fn may_import_bare(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let bare_after = |mut i: usize| -> bool {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        // dynamic import: an optional opening paren before the specifier
+        if i < bytes.len() && bytes[i] == b'(' {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+        if i + 1 >= bytes.len() || (bytes[i] != b'"' && bytes[i] != b'\'') {
+            return false;
+        }
+        !matches!(bytes[i + 1], b'.' | b'/')
+    };
+    for kw in ["from", "import"] {
+        let mut at = 0;
+        while let Some(pos) = source[at..].find(kw) {
+            let i = at + pos;
+            // a keyword, not the tail of an identifier
+            let standalone = i == 0
+                || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_' && bytes[i - 1] != b'$');
+            if standalone && bare_after(i + kw.len()) {
+                return true;
+            }
+            at = i + kw.len();
+        }
+    }
+    false
+}
+
 pub fn rewrite_cjs_interop(
     source: &str,
     path: &Path,
     interop: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    rewrite_cjs_interop_logged(source, path, interop, &mut |_| {})
+}
+
+/// Like `rewrite_cjs_interop`, with a sink for the dev warnings the rewrite
+/// cannot fix (Vite logs the same class from `transformCjsImport`).
+pub fn rewrite_cjs_interop_logged(
+    source: &str,
+    path: &Path,
+    interop: &dyn Fn(&str) -> Option<String>,
+    warn: &mut dyn FnMut(String),
 ) -> Option<String> {
     let source_type = SourceType::from_path(path).unwrap_or_default();
     let allocator = Allocator::default();
@@ -22,6 +73,7 @@ pub fn rewrite_cjs_interop(
 
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let mut idx = 0usize;
+    let mut needs_ns_helper = false;
 
     for stmt in &parsed.program.body {
         match stmt {
@@ -117,6 +169,48 @@ pub fn rewrite_cjs_interop(
                 }
                 edits.push((decl.span.start as usize, decl.span.end as usize, out));
             }
+            // `export * as ns from "cjs"`: the namespace consumers see must be
+            // the interop namespace (module.exports as `default` plus its
+            // properties as members), the same shape the dynamic-import helper
+            // builds — so build it with that helper.
+            //
+            // A bare `export * from "cjs"` is left alone on purpose: ESM has
+            // no dynamic named exports, so a rewrite could only forward names
+            // known statically — exactly what the un-rewritten statement
+            // already re-exports from the compiled dep. Runtime-only names
+            // (true UMD) through a star barrel need the dep pre-bundled
+            // (optimizeDeps.include), which is also how Vite covers the shape.
+            Statement::ExportAllDeclaration(decl) => {
+                if decl.export_kind.is_type() {
+                    continue;
+                }
+                let Some(exported) = &decl.exported else {
+                    // Vite warns here too ("Unable to interop ... may lose
+                    // module exports"): runtime-assigned names cannot ride a
+                    // bare star re-export.
+                    if interop(decl.source.value.as_str()).is_some() {
+                        warn(format!(
+                            "cannot interop `export * from \"{}\"` in {}; runtime-assigned CommonJS exports are lost through a bare star re-export — use named exports, or pre-bundle the dep (optimizeDeps.include)",
+                            decl.source.value,
+                            path.display(),
+                        ));
+                    }
+                    continue;
+                };
+                let Some(url) = interop(decl.source.value.as_str()) else {
+                    continue;
+                };
+                let n = idx;
+                let ns = format!("__ojns{n}");
+                idx += 1;
+                needs_ns_helper = true;
+                let out = format!(
+                    "import * as {ns} from {};const __ojex{n} = __oj_dyn_interop({ns});export {{ __ojex{n} as {} }};",
+                    json_str(&url),
+                    json_key(&export_name(exported)),
+                );
+                edits.push((decl.span.start as usize, decl.span.end as usize, out));
+            }
             _ => continue,
         }
     }
@@ -133,7 +227,7 @@ pub fn rewrite_cjs_interop(
         use oxc_ast_visit::Visit;
         dyn_edits.visit_program(&parsed.program);
     }
-    let has_dynamic = !dyn_edits.edits.is_empty();
+    let has_dynamic = !dyn_edits.edits.is_empty() || needs_ns_helper;
     edits.extend(dyn_edits.edits);
 
     if edits.is_empty() {
@@ -352,5 +446,87 @@ mod tests {
             &interop_all("/u")
         )
         .is_none());
+    }
+    #[test]
+    fn export_star_as_builds_the_interop_namespace() {
+        let out = run(r#"export * as geo from "cjs-dep";"#);
+        assert!(out.starts_with("const __oj_dyn_interop = "), "helper prepended: {out}");
+        assert!(
+            out.contains(r#"import * as __ojns0 from "/@oj-deps/cjs-dep.mjs";"#),
+            "{out}"
+        );
+        assert!(out.contains("const __ojex0 = __oj_dyn_interop(__ojns0);"), "{out}");
+        assert!(out.contains("export { __ojex0 as geo };"), "{out}");
+    }
+
+    #[test]
+    fn bare_export_star_is_left_alone() {
+        // ESM has no dynamic named exports: a bare star re-export can only
+        // forward statically known names, which the unrewritten statement
+        // already does. Runtime-only names need pre-bundling (like Vite).
+        assert!(rewrite_cjs_interop(
+            r#"export * from "cjs-dep";"#,
+            Path::new("m.js"),
+            &interop_all("/u")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn may_import_bare_finds_every_candidate_position() {
+        for src in [
+            r#"import { a } from "dep";"#,
+            "import x from 'dep';",
+            r#"export { a } from "dep";"#,
+            r#"export * from "dep";"#,
+            r#"export * as ns from "dep";"#,
+            r#"import "dep";"#,
+            r#"const m = await import("dep");"#,
+            "import(  'dep')",
+            // minified: no space between keyword and quote
+            r#"import{a}from"dep";"#,
+            r#"import x from"node:path";"#,
+        ] {
+            assert!(may_import_bare(src), "expected candidate: {src}");
+        }
+    }
+
+    #[test]
+    fn may_import_bare_skips_relative_only_modules() {
+        for src in [
+            r#"import { a } from "./sib.js";"#,
+            r#"import x from "../up.js";"#,
+            r#"export * from "/abs.js";"#,
+            r#"import("./dyn.js")"#,
+            "const platform_from = \"linux\";",
+            r#"const s = "written from ./here";"#,
+            "export const a = 1;",
+            "",
+        ] {
+            assert!(!may_import_bare(src), "expected no candidate: {src}");
+        }
+    }
+
+    #[test]
+    fn bare_export_star_warns_but_is_left_alone() {
+        let mut warnings = Vec::new();
+        let out = rewrite_cjs_interop_logged(
+            r#"export * from "cjs-dep";"#,
+            Path::new("m.js"),
+            &interop_all("/u"),
+            &mut |w| warnings.push(w),
+        );
+        assert!(out.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("export * from \"cjs-dep\""), "{}", warnings[0]);
+        // No warning when the source is not an interop candidate.
+        warnings.clear();
+        rewrite_cjs_interop_logged(
+            r#"export * from "./sib.js";"#,
+            Path::new("m.js"),
+            &interop_all("/u"),
+            &mut |w| warnings.push(w),
+        );
+        assert!(warnings.is_empty());
     }
 }

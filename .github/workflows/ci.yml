@@ -74,6 +74,8 @@ jobs:
         run: node e2e/ssr-dev.mjs
       - name: ESM dependency's bare import of a UMD-main sibling (detect-gpu shape)
         run: node e2e/dep-esm-bare-import.mjs
+      - name: ESM dependency's named import of an unbundled UMD sibling (proj4 shape)
+        run: node e2e/dep-esm-umd-interop.mjs
       - name: ssr streaming prod build + hydration
         run: node e2e/ssr-prod.mjs
       - name: native addon re-registration across one-shot engines (rolldown 1.1.0)
