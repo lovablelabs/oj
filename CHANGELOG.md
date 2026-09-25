@@ -5,7 +5,11 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.7] - 2026-09-25
+
+### Removed
+
+- `oj dev --bundle` (the bundled dev mode). Unbundled dev is the mode Vite has, the mode every fixture and production consumer runs, and the only one the plugin-hook gating work optimizes; the flag and its legacy websocket invalidate frame are gone.
 
 ### Fixed
 
