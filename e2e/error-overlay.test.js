@@ -10,10 +10,6 @@ const URL = "http://localhost:5199/";
 const DIALOG = 'div[role="dialog"][aria-label="Build error"]';
 
 (async () => {
-  if (process.env.OJ_E2E_MODE === "bundle") {
-    console.log("SKIP error-overlay: unbundled dev overlay only");
-    return;
-  }
   const original = fs.readFileSync(APP, "utf8");
   const browser = await chromium.launch();
   const page = await browser.newPage();

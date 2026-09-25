@@ -4,10 +4,6 @@
 const { chromium } = require("playwright");
 
 (async () => {
-  if (process.env.OJ_E2E_MODE === "bundle") {
-    console.log("SKIP routes manifest (bundle registry does not serve virtual ids)");
-    return;
-  }
   const browser = await chromium.launch();
   const page = await browser.newPage();
   const errors = [];

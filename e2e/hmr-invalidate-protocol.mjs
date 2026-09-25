@@ -107,17 +107,6 @@ try {
   assert.equal(last().reason, "circular import invalidate");
   assert.equal(last().path, "*");
 
-  // The legacy frame shape still works (oj's bundle runtime sends it).
-  n = frames.length;
-  fs.writeFileSync(path.join(app, "src", "child.js"), child(4));
-  await waitFor(() => frames.length > n && last().type === "update", "child update 3");
-  n = frames.length;
-  send({ type: "invalidate", path: "/src/child.js" });
-  await waitFor(() => frames.length > n, "legacy invalidate answer");
-  assert.equal(last().type, "update");
-  assert.equal(last().updates[0].acceptedPath, "/src/main.js");
-  assert.equal(last().updates[0].firstInvalidatedBy, "/src/child.js");
-
   // An edited page names itself; triggeredBy is the absolute file.
   n = frames.length;
   fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head><title>t2</title></head><body><script type="module" src="/src/main.js"></script></body></html>`);

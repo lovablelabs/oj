@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
-const bundle = process.argv.includes("--bundle");
 const oj = path.join(repo, "target", "debug", "oj");
 const playground = path.join(repo, "playground");
 
@@ -27,7 +26,6 @@ async function startServer(logFd) {
   killPort();
   await sleep(300);
   const args = ["dev", playground, "--port", "5199"];
-  if (bundle) args.push("--bundle");
   const server = spawn(oj, args, { stdio: ["ignore", logFd, logFd] });
   for (let i = 0; i < 80; i++) {
     try {
@@ -41,7 +39,7 @@ async function startServer(logFd) {
 
 let failed = 0;
 for (const file of fs.readdirSync(here).filter((f) => f.endsWith(".test.js")).sort()) {
-  process.stdout.write(`\n${file} (${bundle ? "bundle" : "unbundled"})\n`);
+  process.stdout.write(`\n${file}\n`);
   const logPath = path.join(here, `.server-${file}.log`);
   const logFd = fs.openSync(logPath, "w");
   let server;
@@ -51,7 +49,6 @@ for (const file of fs.readdirSync(here).filter((f) => f.endsWith(".test.js")).so
     execSync(`node ${path.join(here, file)}`, {
       stdio: "inherit",
       cwd: here,
-      env: { ...process.env, OJ_E2E_MODE: bundle ? "bundle" : "unbundled" },
     });
   } catch {
     failed++;

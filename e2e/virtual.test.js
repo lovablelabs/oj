@@ -3,10 +3,6 @@
 
 const { chromium } = require("playwright");
 (async () => {
-  if (process.env.OJ_E2E_MODE === "bundle") {
-    console.log("SKIP virtual (bundle registry does not register virtual ids yet)");
-    return;
-  }
   const browser = await chromium.launch();
   const page = await browser.newPage();
   try {

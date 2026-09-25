@@ -34,13 +34,9 @@ jobs:
           cargo check -p oj_wasm --target wasm32-unknown-unknown
 
   e2e:
-    name: e2e (${{ matrix.mode }})
+    name: e2e
     runs-on: ubuntu-latest
     timeout-minutes: 150
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [unbundled, bundle]
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
@@ -57,11 +53,9 @@ jobs:
       # The Start-app scripts (start.mjs, start-define-mode, start-ssr-external,
       # start-build-options) skip themselves when the fixture is not installed.
       - name: install start-app fixture
-        if: matrix.mode == 'unbundled'
         run: npm ci --prefix e2e/fixtures/start-app
       - run: npx --prefix e2e playwright install --with-deps chromium
       - name: install wasm-pack + www deps (wasm playground e2e)
-        if: matrix.mode == 'unbundled'
         # A version-pinned release tarball, not `curl | sh` of whatever the
         # installer page serves today.
         run: |
@@ -71,156 +65,106 @@ jobs:
           wasm-pack --version
           npm ci --prefix www
       - name: run e2e suite
-        run: node e2e/run.mjs ${{ matrix.mode == 'bundle' && '--bundle' || '' }}
+        run: node e2e/run.mjs
       - name: wasm playground (editor, preview, error strip)
-        if: matrix.mode == 'unbundled'
         run: node e2e/wasm-playground.mjs
       - name: warm-cache plugin side effects
-        if: matrix.mode == 'unbundled'
         run: node e2e/warm-cache.mjs
       - name: ssr dev + hydration
-        if: matrix.mode == 'unbundled'
         run: node e2e/ssr-dev.mjs
       - name: ESM dependency's bare import of a UMD-main sibling (detect-gpu shape)
-        if: matrix.mode == 'unbundled'
         run: node e2e/dep-esm-bare-import.mjs
       - name: ssr streaming prod build + hydration
-        if: matrix.mode == 'unbundled'
         run: node e2e/ssr-prod.mjs
       - name: native addon re-registration across one-shot engines (rolldown 1.1.0)
-        if: matrix.mode == 'unbundled'
         run: node e2e/native-addon-reregister.mjs
       - name: server fast-paths (cache bound, mtime, hmr gating)
-        if: matrix.mode == 'unbundled'
         run: |
           node e2e/memory-cache.mjs
           node e2e/mtime-fastpath.mjs
           node e2e/hmr-hook-skip.mjs
       - name: startup compile error overlay + recovery by reload
-        if: matrix.mode == 'unbundled'
         run: node e2e/hmr-overlay-recovery.mjs
       - name: plugin-owned websocket upgrades (tunnel plugins)
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-ws-upgrade.mjs
       - name: plugin process contract (listening emit at bind, process.exit)
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-server-process.mjs
-      - name: bundle hmr multi-frame boundary isolation
-        if: matrix.mode == 'unbundled'
-        run: node e2e/bundle-hmr-multiframe.mjs
       - name: json import edit reaches the boundary (stamped import)
-        if: matrix.mode == 'unbundled'
         run: node e2e/hmr-json-update.mjs
       - name: unresolved relative import errors, creating the file recovers
-        if: matrix.mode == 'unbundled'
         run: node e2e/hmr-unresolved-import.mjs
       - name: server.proxy regex (^) contexts match path plus query
-        if: matrix.mode == 'unbundled'
         run: node e2e/proxy-regex-context.mjs
       - name: server.proxy URL/object targets and a bypass string served locally
-        if: matrix.mode == 'unbundled'
         run: node e2e/proxy-target-forms.mjs
       - name: request paths (encoded filenames, traversal containment)
-        if: matrix.mode == 'unbundled'
         run: node e2e/awkward-paths.mjs
       - name: plugin resolveId without a load hook serves from disk
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-resolve-no-load.mjs
       - name: client env define (dotenv + process env + plugin config mutations)
-        if: matrix.mode == 'unbundled'
         run: node e2e/env-define.mjs
       - name: a vite.config that fails to load is an error, not an empty config
-        if: matrix.mode == 'unbundled'
         run: node e2e/config-load-failure.mjs
       # These drive a dev server (and svgr-plugin also a browser via playwright),
       # so they belong here where e2e deps + chromium are installed, not in the
       # prod build smoke job, which has neither.
       - name: plugin load runs before the disk read (load-first)
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-load-first.mjs
       - name: plain .svg import goes through the svgr plugin transform
-        if: matrix.mode == 'unbundled'
         run: node e2e/svgr-plugin.mjs
       - name: .js-suffixed aliased and tsconfig-paths imports remap to .ts (dev + build)
-        if: matrix.mode == 'unbundled'
         run: node e2e/ts-output-remap.mjs
       - name: require() in a served CJS dep resolves with the require condition
-        if: matrix.mode == 'unbundled'
         run: node e2e/cjs-require-condition.mjs
       - name: optimizeDeps.exclude'd packages run through every plugin load/transform
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-excluded-dep.mjs
       - name: start prod build honors outDir, base, sourcemap, minify
-        if: matrix.mode == 'unbundled'
         run: node e2e/start-build-options.mjs
       - name: throwing lifecycle hooks fail the build and dev startup
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-lifecycle-errors.mjs
       - name: this.resolve / this.load consult sibling plugins first
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-ctx-chain.mjs
       - name: plugin config() define reaches dev and build compiles
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-config-define.mjs
       - name: removed files reach hotUpdate / watchChange as delete
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-hot-update-delete.mjs
       - name: start dev applies config define to the client bundle; --mode selects .env.<mode>
-        if: matrix.mode == 'unbundled'
         run: node e2e/start-define-mode.mjs
       - name: start prod build honors ssr.external (bare imports, server still renders)
-        if: matrix.mode == 'unbundled'
         run: node e2e/start-ssr-external.mjs
       - name: ssr dev stack frames map back to the original .ts lines
-        if: matrix.mode == 'unbundled'
         run: node e2e/ssr-stacktrace.mjs
       - name: stylesheet Vite parity (alias, root-absolute, hacks, css modules, ?inline, postcss order)
-        if: matrix.mode == 'unbundled'
         run: node e2e/css-vite-parity.mjs
       - name: start prod build for @cloudflare/vite-plugin is a Worker bundle that renders in workerd
-        if: matrix.mode == 'unbundled'
         run: node e2e/start-cloudflare.mjs
       - name: start dev for @cloudflare/vite-plugin serves from the worker; an edit yields a fresh document
-        if: matrix.mode == 'unbundled'
         run: node e2e/start-cloudflare-dev.mjs
       - name: experimental.bundledDev is coerced off; the standard dev client entry serves and the page hydrates
-        if: matrix.mode == 'unbundled'
         run: node e2e/bundleddev-coerce.mjs
       - name: server.proxy covers the worker's outbound fetch (one proxy in the middleware stack), function rewrite applied
-        if: matrix.mode == 'unbundled'
         run: node e2e/proxy-worker-fetch.mjs
       - name: transformIndexHtml ctx (path, filename, server, bundle, chunk) and hook errors fail
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-html-ctx.mjs
       - name: buildEnd(error) and closeBundle on failed builds and dev close
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-close-hooks.mjs
       - name: relative imports claimed by a resolveId filter go to the plugins first
-        if: matrix.mode == 'unbundled'
         run: node e2e/plugin-resolve-relative.mjs
       - name: server.fs allow list, strict:false, workspace-root default
-        if: matrix.mode == 'unbundled'
         run: node e2e/server-fs-allow.mjs
       - name: optimized deps are versioned and served immutable with an ETag
-        if: matrix.mode == 'unbundled'
         run: node e2e/dep-optimize.mjs
       - name: worker build forms (?worker, inline, url, new URL) and worker-only chunks skip document helpers
-        if: matrix.mode == 'unbundled'
         run: node e2e/worker-build.mjs
       - name: publicDir files served verbatim; publicDir path and false honored
-        if: matrix.mode == 'unbundled'
         run: node e2e/public-dir.mjs
       - name: css.modules options (localsConvention, generateScopedName, globalModulePaths, composes from)
-        if: matrix.mode == 'unbundled'
         run: node e2e/css-modules-options.mjs
       - name: ?no-inline asset query (dev url module, build never inlines)
-        if: matrix.mode == 'unbundled'
         run: node e2e/assets-no-inline.mjs
       - name: html.cspNonce stamps scripts, styles and preload links (dev + build)
-        if: matrix.mode == 'unbundled'
         run: node e2e/html-csp-nonce.mjs
       - name: hmr protocol parity round 2 (css module exports, prune, html reload scope)
-        if: matrix.mode == 'unbundled'
         run: |
           node e2e/hmr-css-module-exports.mjs
           node e2e/hmr-prune-html-scope.mjs
@@ -230,16 +174,12 @@ jobs:
           node e2e/hmr-glob-add-delete.mjs
           node e2e/watch-config-deps-ignored.mjs
       - name: transformIndexHtml per-page ctx (dev + build) via the css fixture
-        if: matrix.mode == 'unbundled'
         run: node e2e/html-transform-ctx.mjs
       - name: start dotted non-GET server routes, streamed bodies, set-cookie (dev + prod server)
-        if: matrix.mode == 'unbundled'
         run: node e2e/start-server-routes.mjs
       - name: generic ssr dev runs requests concurrently, action bodies stay bytes
-        if: matrix.mode == 'unbundled'
         run: node e2e/ssr-concurrent.mjs
       - name: start dev holds the page reload behind the editor HMR gate until the flush
-        if: matrix.mode == 'unbundled'
         run: node e2e/start-hmr-gate.mjs
 
   # i need to fix this or automate

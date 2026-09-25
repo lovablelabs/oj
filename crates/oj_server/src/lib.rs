@@ -5595,9 +5595,8 @@ fn handle_client_message(state: &Arc<ServerState>, text: &str) {
     };
     // Vite's client sends `import.meta.hot.invalidate()` as the custom event
     // `vite:invalidate` (`{path, message, firstInvalidatedBy}`).
-    let vite_invalidate = msg["type"] == "custom" && msg["event"] == "vite:invalidate";
-    if msg["type"] == "invalidate" || vite_invalidate {
-        let body = if vite_invalidate { &msg["data"] } else { &msg };
+    if msg["type"] == "custom" && msg["event"] == "vite:invalidate" {
+        let body = &msg["data"];
         let Some(path) = body["path"].as_str() else {
             return;
         };

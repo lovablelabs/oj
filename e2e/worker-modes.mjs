@@ -68,8 +68,7 @@ async function mode(label, args, port, build) {
 
 let failed = false;
 try {
-  await mode("non-bundle", ["dev", app, "--port", "5402"], 5402, false);
-  await mode("bundle", ["dev", app, "--port", "5403", "--bundle"], 5403, false);
+  await mode("dev", ["dev", app, "--port", "5402"], 5402, false);
   await mode("prod", ["preview", app, "--port", "5404"], 5404, true);
   console.log("WORKER-MODES E2E PASSED");
 } catch (err) {

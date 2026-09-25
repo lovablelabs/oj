@@ -7,10 +7,6 @@ const path = require("path");
 const APP = path.join(__dirname, "..", "playground", "src", "App.tsx");
 
 (async () => {
-  if (process.env.OJ_E2E_MODE === "bundle") {
-    console.log("SKIP hot-api (bundle mode has no import.meta.hot)");
-    return;
-  }
   const original = fs.readFileSync(APP, "utf8");
   const browser = await chromium.launch();
   const page = await browser.newPage();
