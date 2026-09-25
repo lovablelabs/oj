@@ -92,6 +92,9 @@ export async function importPkg(root, spec, preferred = []) {
 export function resolveOjRolldown(root, preferred = []) {
   const vendored = process.env.OJ_VENDORED_ROLLDOWN;
   if (vendored) {
+    // Backstop for standalone-node runs: the authoritative validation (a
+    // parseable package.json with a version) already ran in Rust
+    // (oj_cache::start_bundle::vendored_rolldown) before this script spawned.
     if (!existsSync(join(vendored, "node_modules", "rolldown", "package.json"))) {
       throw new Error(
         `oj: OJ_VENDORED_ROLLDOWN (${vendored}) has no node_modules/rolldown; ` +
@@ -105,7 +108,9 @@ export function resolveOjRolldown(root, preferred = []) {
   } catch {
     throw new Error(
       `oj: cannot resolve 'rolldown' from ${root}` +
-        "; this app's vite predates rolldown and this oj build vendors none — install 'rolldown' in the app or use an oj built with OJ_VENDORED_ROLLDOWN",
+        (vendored === ""
+          ? "; OJ_VENDORED_ROLLDOWN= opted out of this build's vendored copy — unset it, or install 'rolldown' in the app"
+          : "; this app's vite predates rolldown and this oj build vendors none — install 'rolldown' in the app or use an oj built with OJ_VENDORED_ROLLDOWN"),
     );
   }
 }
@@ -117,9 +122,14 @@ export async function importOjRolldown(root, preferred = []) {
   } catch (err) {
     // A vendor that resolves but cannot LOAD (a missing transitive dep in a
     // hand-curated bundle, a broken binding) must name the vendor too: the
-    // raw loader error points nowhere near OJ_VENDORED_ROLLDOWN.
-    if (vendored && !`${err?.message}`.includes("OJ_VENDORED_ROLLDOWN")) {
-      err.message = `oj: the vendored rolldown (OJ_VENDORED_ROLLDOWN=${vendored}) failed to load: ${err.message}`;
+    // raw loader error points nowhere near OJ_VENDORED_ROLLDOWN. A new Error
+    // (never a mutation): the throw may be a primitive or a frozen object.
+    const msg = err?.message ?? String(err);
+    if (vendored && !`${msg}`.includes("OJ_VENDORED_ROLLDOWN")) {
+      throw new Error(
+        `oj: the vendored rolldown (OJ_VENDORED_ROLLDOWN=${vendored}) failed to load: ${msg}`,
+        { cause: err },
+      );
     }
     throw err;
   }

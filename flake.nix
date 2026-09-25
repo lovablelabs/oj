@@ -91,6 +91,8 @@
             x86_64-linux = { name = "binding-linux-x64-gnu"; hash = "sha256-XGQQ1QeuyO6AYcAdLhSOX7jYV1/vc+1jP9ofijepdjI="; };
             aarch64-linux = { name = "binding-linux-arm64-gnu"; hash = "sha256-i/r/gxVuu+9sH3Gz9Cs0HgI5oyxheU5DywfXTN2fuYY="; };
             aarch64-darwin = { name = "binding-darwin-arm64"; hash = "sha256-LmQwkt6QqhNj7zMqPDk21Ow0vmmn9Es0zmdCt5STI1I="; };
+            # No x86_64-darwin runner in nix.yml: this entry is the one the
+            # CI e2e never exercises — double-check name+hash on bumps.
             x86_64-darwin = { name = "binding-darwin-x64"; hash = "sha256-/yxkh+aXEDcR54NpQ4NeulZEcn+q+vFzny49OWDe/GE="; };
           }.${pkgs.stdenv.hostPlatform.system};
         in [

@@ -934,11 +934,16 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
     // poison the bundle store.
     match oj_cache::start_bundle::vendored_rolldown() {
         oj_cache::start_bundle::VendoredRolldown::None => {}
-        oj_cache::start_bundle::VendoredRolldown::Broken { path, reason } => anyhow::bail!(
-            "OJ_VENDORED_ROLLDOWN ({path}) is unusable: {reason}; repair the vendor dir or set OJ_VENDORED_ROLLDOWN= (empty) to use the app's rolldown"
-        ),
+        oj_cache::start_bundle::VendoredRolldown::Broken { path, reason } => {
+            let hint = if reason.contains("UTF-8") {
+                "unset it or re-export a valid path"
+            } else {
+                "repair the vendor dir, or set OJ_VENDORED_ROLLDOWN= (empty) to use the app's rolldown"
+            };
+            anyhow::bail!("OJ_VENDORED_ROLLDOWN ({path}) is unusable: {reason}; {hint}");
+        }
         oj_cache::start_bundle::VendoredRolldown::Resolved { path, .. } => {
-            vars.push(("OJ_VENDORED_ROLLDOWN".into(), path));
+            vars.push(("OJ_VENDORED_ROLLDOWN".into(), path.clone()));
         }
     }
     Ok(vars)

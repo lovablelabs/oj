@@ -512,7 +512,17 @@ pub enum VendoredRolldown {
     Resolved { path: String, version: String },
 }
 
-pub fn vendored_rolldown() -> VendoredRolldown {
+/// Resolved once per process: the vendor is fixed for the process lifetime,
+/// and resolving at each call site would let an in-place vendor change slip
+/// between the cache-key read and the script-env read — a bundle built by
+/// one rolldown persisted under another's key, the exact aliasing the
+/// identity keying exists to prevent.
+pub fn vendored_rolldown() -> &'static VendoredRolldown {
+    static RESOLVED: std::sync::OnceLock<VendoredRolldown> = std::sync::OnceLock::new();
+    RESOLVED.get_or_init(resolve_vendored_rolldown)
+}
+
+fn resolve_vendored_rolldown() -> VendoredRolldown {
     let configured = match std::env::var_os("OJ_VENDORED_ROLLDOWN") {
         Some(v) if v.is_empty() => return VendoredRolldown::None,
         Some(v) => match v.into_string() {
@@ -529,30 +539,55 @@ pub fn vendored_rolldown() -> VendoredRolldown {
             None => return VendoredRolldown::None,
         },
     };
+    // Absolute and symlink-free: the bundle scripts run with cwd at the app
+    // root, so a relative path validated here would name a DIFFERENT
+    // directory there. A path that cannot canonicalize is kept verbatim and
+    // fails below with the real reason.
+    let configured = fs::canonicalize(&configured)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(configured);
     let pkg = Path::new(&configured)
         .join("node_modules")
         .join("rolldown")
         .join("package.json");
-    let version = fs::read(&pkg)
+    let bytes = match fs::read(&pkg) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return VendoredRolldown::Broken {
+                path: configured,
+                reason: "it has no node_modules/rolldown".into(),
+            }
+        }
+        Err(e) => {
+            return VendoredRolldown::Broken {
+                path: configured,
+                reason: format!("node_modules/rolldown/package.json is unreadable: {e}"),
+            }
+        }
+    };
+    let version = serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .and_then(|pkg| pkg.get("version")?.as_str().map(str::to_string));
     match version {
         Some(version) => VendoredRolldown::Resolved { path: configured, version },
         None => VendoredRolldown::Broken {
             path: configured,
-            reason: "it has no readable node_modules/rolldown/package.json".into(),
+            reason: "node_modules/rolldown/package.json has no parseable version".into(),
         },
     }
 }
 
 impl VendoredRolldown {
-    /// The cache-key input: what will actually build the bundle.
+    /// The cache-key input: what will actually build the bundle. Variants are
+    /// discriminated so a version string that HAPPENS to read "broken" can
+    /// never alias the Broken salt.
     fn epoch_input(&self) -> Option<String> {
         match self {
             VendoredRolldown::None => None,
             VendoredRolldown::Broken { path, .. } => Some(format!("broken\0{path}")),
-            VendoredRolldown::Resolved { path, version } => Some(format!("{version}\0{path}")),
+            VendoredRolldown::Resolved { path, version } => {
+                Some(format!("resolved\0{version}\0{path}"))
+            }
         }
     }
 }
