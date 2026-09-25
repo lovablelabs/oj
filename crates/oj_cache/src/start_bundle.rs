@@ -177,7 +177,7 @@ impl StartBundleStore {
             dir: crate::cache_root(root).join("start-bundle"),
             salt: format!(
                 "{tool_version}:{START_BUNDLE_FORMAT}:start-bundle:{mode}:{}",
-                epoch(root, mode)
+                epoch(root, mode, vendored_rolldown().as_deref())
             ),
             verify,
         }
@@ -492,7 +492,22 @@ impl StartBundleStore {
     }
 }
 
-fn epoch(root: &Path, mode: &str) -> String {
+/// The rolldown vendored next to the binary for oj's own Start bundles. The
+/// runtime variable wins over the nix build's compile-time store path, and a
+/// set-but-empty variable is an explicit opt-out (no vendor, the app's copy
+/// serves). Used both to configure the bundle scripts and as a cache-key
+/// input: a bundle built by one rolldown must not restore as another's.
+pub fn vendored_rolldown() -> Option<String> {
+    match std::env::var("OJ_VENDORED_ROLLDOWN") {
+        Ok(v) => (!v.is_empty()).then_some(v),
+        Err(std::env::VarError::NotUnicode(_)) => None,
+        Err(std::env::VarError::NotPresent) => option_env!("OJ_VENDORED_ROLLDOWN")
+            .map(str::to_string)
+            .filter(|v| !v.is_empty()),
+    }
+}
+
+fn epoch(root: &Path, mode: &str, vendored_rolldown: Option<&str>) -> String {
     let mut hasher = blake3::Hasher::new();
     let mode_env = [format!(".env.{mode}"), format!(".env.{mode}.local")];
     for name in [
@@ -532,6 +547,13 @@ fn epoch(root: &Path, mode: &str) -> String {
         hasher.update(k.as_bytes());
         hasher.update(&[0]);
         hasher.update(v.as_bytes());
+    }
+    // The client bundle is built by whichever rolldown the vendor preference
+    // picks (resolve-pkg.mjs), so a vendor change must not restore a bundle
+    // the other rolldown produced.
+    if let Some(vendored) = vendored_rolldown {
+        hasher.update(b"\0vendored-rolldown\0");
+        hasher.update(vendored.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
 }
@@ -958,6 +980,18 @@ mod tests {
         let other_version =
             StartBundleStore::new(&fx.root, "9.9.9", VerifyMode::Standard).persist(&fx.start);
         assert_ne!(other_version.unwrap().0, key, "tool version salts the key");
+    }
+
+    #[test]
+    fn vendored_rolldown_is_an_epoch_input() {
+        let fx = Fixture::new("vendor-epoch");
+        let vendored = epoch(&fx.root, "development", Some("/nix/store/aaa-vendor"));
+        assert_ne!(vendored, epoch(&fx.root, "development", None));
+        assert_ne!(
+            vendored,
+            epoch(&fx.root, "development", Some("/nix/store/bbb-vendor")),
+            "a different vendor is a different epoch"
+        );
     }
 
     #[test]

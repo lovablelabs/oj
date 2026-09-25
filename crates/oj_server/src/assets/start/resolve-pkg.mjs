@@ -34,18 +34,6 @@ export function makeResolver(root) {
   const appRequire = createRequire(pathToFileURL(root + "/package.json").href);
   const directDeps = depsOf(root + "/package.json");
   return function resolvePkg(spec, preferred = []) {
-    // rolldown here is oj's own bundling tool, not the app's: these scripts
-    // are written and tested against the version vendored next to the binary
-    // (OJ_VENDORED_ROLLDOWN, from oj's nix build), so that copy wins whenever
-    // it exists — the app's pin belongs to its vite, and old app pins carry
-    // bindings that cannot survive re-registration (napi-rs < 3.10). The app
-    // graph below remains the fallback for oj builds that vendor nothing.
-    const vendored = process.env.OJ_VENDORED_ROLLDOWN;
-    if (vendored && (spec === "rolldown" || spec.startsWith("@rolldown/"))) {
-      try {
-        return createRequire(pathToFileURL(join(vendored, "package.json")).href).resolve(spec);
-      } catch {}
-    }
     try { return appRequire.resolve(spec); } catch {}
     // A transitive dependency is not resolvable from the app root under a
     // strict (pnpm) layout, so walk the dependency graph breadth-first,
@@ -70,18 +58,50 @@ export function makeResolver(root) {
       }
       frontier = next;
     }
-    throw new Error(
-      `oj: cannot resolve '${spec}' from ${root}` +
-        (spec === "rolldown"
-          ? "; this app's vite predates rolldown and this oj build vendors none — install 'rolldown' in the app or use an oj built with OJ_VENDORED_ROLLDOWN"
-          : ""),
-    );
+    throw new Error(`oj: cannot resolve '${spec}' from ${root}`);
   };
 }
 
 export async function importPkg(root, spec, preferred = []) {
   const p = makeResolver(root)(spec, preferred);
   const m = await import(pathToFileURL(p).href);
+  return m.default ?? m;
+}
+
+// rolldown here is oj's own bundling tool, not the app's: the Start bundle
+// scripts are written and tested against the version vendored next to the
+// binary (OJ_VENDORED_ROLLDOWN, from oj's nix build), so that copy wins
+// whenever it exists — the app's pin belongs to its vite, and old app pins
+// carry bindings that cannot survive re-registration (napi-rs < 3.10). The
+// app graph remains the fallback for oj builds that vendor nothing. This
+// preference applies only at oj's own import sites: the app's module-graph
+// resolution (makeResolver above, used by the plugin bridge) must keep
+// resolving 'rolldown' and '@rolldown/*' to whatever the app's lockfile pins.
+export function resolveOjRolldown(root, preferred = []) {
+  const vendored = process.env.OJ_VENDORED_ROLLDOWN;
+  if (vendored) {
+    try {
+      return createRequire(pathToFileURL(join(vendored, "package.json")).href).resolve("rolldown");
+    } catch (err) {
+      console.warn(
+        `oj: OJ_VENDORED_ROLLDOWN (${vendored}) does not resolve 'rolldown' (${err?.message}); falling back to the app's copy`,
+      );
+    }
+  }
+  try {
+    return makeResolver(root)("rolldown", preferred);
+  } catch {
+    throw new Error(
+      `oj: cannot resolve 'rolldown' from ${root}` +
+        (vendored
+          ? `; the configured OJ_VENDORED_ROLLDOWN (${vendored}) cannot resolve it either`
+          : "; this app's vite predates rolldown and this oj build vendors none — install 'rolldown' in the app or use an oj built with OJ_VENDORED_ROLLDOWN"),
+    );
+  }
+}
+
+export async function importOjRolldown(root, preferred = []) {
+  const m = await import(pathToFileURL(resolveOjRolldown(root, preferred)).href);
   return m.default ?? m;
 }
 

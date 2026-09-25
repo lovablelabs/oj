@@ -925,14 +925,11 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
     }
     // The Start bundles are oj's own code and run on the rolldown vendored
     // next to the binary (nix embeds it at build time; the env var overrides
-    // for tests and non-nix builds). resolve-pkg.mjs prefers it over whatever
-    // the app's vite pins — a vite <= 7 app pins none at all — and falls back
-    // to the app's copy when no vendor exists.
-    if let Some(vendored) = std::env::var("OJ_VENDORED_ROLLDOWN")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .or_else(|| option_env!("OJ_VENDORED_ROLLDOWN").map(str::to_string))
-    {
+    // for tests and non-nix builds, and set-but-empty opts out entirely).
+    // resolve-pkg.mjs prefers it at oj's own import sites over whatever the
+    // app's vite pins — a vite <= 7 app pins none at all — and falls back to
+    // the app's copy when no vendor exists.
+    if let Some(vendored) = oj_cache::start_bundle::vendored_rolldown() {
         vars.push(("OJ_VENDORED_ROLLDOWN".into(), vendored));
     }
     Ok(vars)

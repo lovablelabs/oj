@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from "nod
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { viteEnvDefine, envPrefixes, environmentDefines, makeResolver, importPkg, ssrExternalRule } from "../../crates/oj_server/src/assets/start/resolve-pkg.mjs";
+import { viteEnvDefine, envPrefixes, environmentDefines, makeResolver, importPkg, resolveOjRolldown, ssrExternalRule } from "../../crates/oj_server/src/assets/start/resolve-pkg.mjs";
 
 test("viteEnvDefine builds import.meta.env with the standard flags", () => {
   process.env.VITE_ONLY_FOR_TEST = "hello";
@@ -294,40 +294,60 @@ function fakePkg(dir, name) {
   return root;
 }
 
-test("rolldown prefers the vendored copy and falls back to the app's own", () => {
+test("resolveOjRolldown prefers the vendored copy and falls back to the app's own", () => {
   const app = mkdtempSync(join(tmpdir(), "oj-vendor-app-"));
   const vendor = mkdtempSync(join(tmpdir(), "oj-vendor-dir-"));
   writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
   fakePkg(vendor, "rolldown");
   const own = fakePkg(app, "rolldown");
   const prior = process.env.OJ_VENDORED_ROLLDOWN;
+  let scratchBroken;
   try {
     process.env.OJ_VENDORED_ROLLDOWN = vendor;
-    const resolved = makeResolver(app)("rolldown");
+    const resolved = resolveOjRolldown(app);
     // realpath both sides: macOS tmpdir is a /private symlink.
     assert.ok(realpathSync(resolved).startsWith(realpathSync(vendor)), `vendored copy expected, got ${resolved}`);
-    // The vendor covers rolldown only, never arbitrary packages.
-    assert.throws(() => makeResolver(app)("left-pad"), /cannot resolve 'left-pad'/);
+    // The vendor is oj's own tooling preference: the app's module-graph
+    // resolution (makeResolver) keeps the lockfile's copy, never the vendor's.
+    assert.ok(realpathSync(makeResolver(app)("rolldown")).startsWith(realpathSync(own)));
+    // Set-but-empty is the explicit opt-out; the app's own copy serves.
+    process.env.OJ_VENDORED_ROLLDOWN = "";
+    assert.ok(realpathSync(resolveOjRolldown(app)).startsWith(realpathSync(own)));
+    // A vendor that cannot resolve rolldown falls back to the app's copy
+    // (an isolated dir: node's lookup walks up, so a subdir of the vendor
+    // would still find the vendor's own node_modules).
+    process.env.OJ_VENDORED_ROLLDOWN = mkdtempSync(join(tmpdir(), "oj-broken-vendor-"));
+    scratchBroken = process.env.OJ_VENDORED_ROLLDOWN;
+    assert.ok(realpathSync(resolveOjRolldown(app)).startsWith(realpathSync(own)));
     // Without a vendor, the app's own copy still serves.
     delete process.env.OJ_VENDORED_ROLLDOWN;
-    assert.ok(realpathSync(makeResolver(app)("rolldown")).startsWith(realpathSync(own)));
+    assert.ok(realpathSync(resolveOjRolldown(app)).startsWith(realpathSync(own)));
   } finally {
     if (prior === undefined) delete process.env.OJ_VENDORED_ROLLDOWN;
     else process.env.OJ_VENDORED_ROLLDOWN = prior;
     rmSync(app, { recursive: true, force: true });
     rmSync(vendor, { recursive: true, force: true });
+    if (scratchBroken) rmSync(scratchBroken, { recursive: true, force: true });
   }
 });
 
-test("a missing rolldown without a vendored copy names the fallback in its error", () => {
+test("a missing rolldown names the fallback, or the broken vendor, in its error", () => {
   const app = mkdtempSync(join(tmpdir(), "oj-novendor-app-"));
   writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
   const prior = process.env.OJ_VENDORED_ROLLDOWN;
   try {
     delete process.env.OJ_VENDORED_ROLLDOWN;
-    assert.throws(() => makeResolver(app)("rolldown"), /OJ_VENDORED_ROLLDOWN/);
+    assert.throws(() => resolveOjRolldown(app), /OJ_VENDORED_ROLLDOWN/);
+    // A configured-but-unreadable vendor is named, not reported as absent.
+    const broken = join(app, "no-such-vendor");
+    process.env.OJ_VENDORED_ROLLDOWN = broken;
+    assert.throws(
+      () => resolveOjRolldown(app),
+      (err) => err.message.includes(broken) && !err.message.includes("vendors none"),
+    );
   } finally {
-    if (prior !== undefined) process.env.OJ_VENDORED_ROLLDOWN = prior;
+    if (prior === undefined) delete process.env.OJ_VENDORED_ROLLDOWN;
+    else process.env.OJ_VENDORED_ROLLDOWN = prior;
     rmSync(app, { recursive: true, force: true });
   }
 });
