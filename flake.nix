@@ -48,18 +48,20 @@
       # Pinned V8 snapshot bundles (issue #211): snapshot CREATION is not
       # run-deterministic (rusty_v8 serializes live embedder memory into the
       # blob), so reproducible builds consume a prebuilt per-target bundle via
-      # crates/oj_deno_snapshots. The bundles are release assets on the
-      # rolling `snapshot-pins` tag (same shape as RUSTY_V8_ARCHIVE above:
-      # fetched by SRI hash, never overwritten — a new harvest gets a new
-      # name), so ~8MB of generated artifacts stay out of the git tree.
-      # Regenerate + upload with tools/gen-snapshot-pin.sh after a
-      # deno_runtime / deno_core / rusty_v8 bump (the build fails with a
-      # manifest mismatch until regenerated), then update file+hash here.
-      # Systems without a pin build the snapshot live, like plain cargo does —
-      # their output is then not bit-reproducible, which only the darwin
-      # cache's two-builder agreement actually requires today.
+      # crates/oj_deno_snapshots. The bundles are GitHub release assets (same
+      # shape as RUSTY_V8_ARCHIVE above: fetched by SRI hash, uniquely named,
+      # never overwritten — old revisions keep building), so ~8MB of generated
+      # artifacts stay out of the git tree. The release pipeline regenerates
+      # them: on a version tag, release.yml compares the pinned manifest with
+      # Cargo.lock and, when a deno_runtime / deno_core bump made it stale,
+      # harvests a fresh bundle onto that version's release and opens a PR
+      # updating release/file/hash here (tools/gen-snapshot-pin.sh is the
+      # manual fallback). Systems without a pin build the snapshot live, like
+      # plain cargo does — their output is then not bit-reproducible, which
+      # only the darwin cache's two-builder agreement actually requires today.
       snapshotPins = {
         aarch64-darwin = {
+          release = "snapshot-pins";
           file = "oj-snapshot-pin-aarch64-apple-darwin-dc0.412.0-6f8e4d21.tar.gz";
           hash = "sha256-RTe+9f4HGqaIm417kZ49C8HbYtGX02gi3Jij6L/e3ko=";
         };
@@ -69,7 +71,7 @@
         in pkgs.runCommand "oj-snapshot-pin" { } ''
           mkdir -p "$out"
           tar -xzf ${pkgs.fetchurl {
-            url = "https://github.com/lovablelabs/oj/releases/download/snapshot-pins/${pin.file}";
+            url = "https://github.com/lovablelabs/oj/releases/download/${pin.release}/${pin.file}";
             hash = pin.hash;
           }} -C "$out"
         '';
