@@ -1185,6 +1185,15 @@ impl HookFilterPlan {
     }
 }
 
+/// OJ_DEBUG_HOOK_GATE=1: gates log/count the RPCs they skip, so a test can
+/// assert a skip actually happened (output alone cannot: the host's own
+/// per-plugin filters produce identical bytes).
+pub fn hook_gate_debug() -> bool {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("OJ_DEBUG_HOOK_GATE").is_ok_and(|v| v == "1"));
+    *ON
+}
+
 impl BuildHookPlan {
     pub fn fail_open() -> Self {
         Self {
@@ -1207,10 +1216,13 @@ pub struct PluginHost {
     engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
     /// The plugin-host.mjs path on disk — the module every hook call targets.
     host_module: String,
-    /// The hook plan, fetched once per engine generation: the plugin list is
-    /// fixed after init, but a respawned engine re-evaluates the plugins file,
-    /// so the respawn path resets this to avoid gating on a stale plan.
-    hook_plan: Mutex<Option<BuildHookPlan>>,
+    /// The live hook plan every gate reads. Starts fail-open (gate off), is
+    /// overwritten only by a successful fetch, reverts to fail-open on engine
+    /// respawn (the fresh engine re-evaluates the plugins file), and a failed
+    /// fetch is never cached, so a transient boot-time RPC failure costs
+    /// gating only until the next fetch attempt.
+    hook_plan: std::sync::RwLock<BuildHookPlan>,
+    hook_plan_fetched: std::sync::atomic::AtomicBool,
     ws_out: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart().
@@ -1779,7 +1791,8 @@ impl PluginHost {
         let host = std::sync::Arc::new(PluginHost {
             engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
-            hook_plan: Mutex::new(None),
+            hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
+            hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
             ws_out: Mutex::new(None),
             server_events: Mutex::new(None),
             serve_info_push: tokio::sync::watch::channel(None).0,
@@ -2154,8 +2167,12 @@ impl PluginHost {
         let _ = self.init_failed.send_replace(false);
         self.serve_info_push.send_replace(None);
         // The fresh engine re-evaluates the plugins file, which may carry
-        // different hooks or filters; a stale plan could gate them out.
-        *self.hook_plan.lock().unwrap() = None;
+        // different hooks or filters; every gate reads the live plan, so the
+        // fail-open reset takes effect immediately and the refetch (spawned
+        // below once the engine is up) restores precise gating.
+        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
+        self.hook_plan_fetched
+            .store(false, std::sync::atomic::Ordering::Release);
         *self.spawned.lock().unwrap() = tokio::time::Instant::now();
         let generation = revive.generation;
         drop(revive);
@@ -2164,6 +2181,10 @@ impl PluginHost {
                 // Live again: lift the death flag last, so a caller either
                 // sees a dead host or a fully re-armed one.
                 let _ = self.host_gone.send_replace(false);
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    let host = std::sync::Arc::clone(&host);
+                    handle.spawn(async move { host.ensure_hook_plan().await });
+                }
                 true
             }
             Err(e) => {
@@ -2661,28 +2682,48 @@ impl PluginHost {
     /// The per-hook filter plan the build's Rust-side gate runs on, fetched
     /// once per host. Any failure to fetch or parse degrades to "hook present,
     /// unfiltered", which is exactly the ungated behavior.
+    /// Ensures the plan was fetched from the live engine and returns a
+    /// snapshot. Gates should prefer the `hook_wants_*` accessors, which read
+    /// the live plan and so see a respawn's fail-open reset immediately.
     pub async fn build_hook_plan(&self) -> BuildHookPlan {
-        if let Some(plan) = self.hook_plan.lock().unwrap().clone() {
-            return plan;
+        self.ensure_hook_plan().await;
+        self.hook_plan.read().unwrap().clone()
+    }
+
+    async fn ensure_hook_plan(&self) {
+        use std::sync::atomic::Ordering;
+        if self.hook_plan_fetched.load(Ordering::Acquire) {
+            return;
         }
-        // Fetched without holding the lock; a concurrent racer fetches the
-        // same plan and first-write wins.
-        let fetched = match self.call("getBuildHookPlan", &[]).await {
-            Ok(Some(raw)) => match serde_json::from_str::<serde_json::Value>(&raw) {
-                Ok(v) => BuildHookPlan {
+        // Only a successful fetch is cached: it overwrites unconditionally (a
+        // racer's stale failure can never shadow it), and a failure leaves the
+        // fail-open default in place to be retried on the next call.
+        if let Ok(Some(raw)) = self.call("getBuildHookPlan", &[]).await {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let plan = BuildHookPlan {
                     transform: HookFilterPlan::from_json(v.get("transform")),
                     load: HookFilterPlan::from_json(v.get("load")),
                     resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
-                },
-                Err(_) => BuildHookPlan::fail_open(),
-            },
-            _ => BuildHookPlan::fail_open(),
-        };
-        let mut slot = self.hook_plan.lock().unwrap();
-        if slot.is_none() {
-            *slot = Some(fetched);
+                };
+                *self.hook_plan.write().unwrap() = plan;
+                self.hook_plan_fetched.store(true, Ordering::Release);
+            }
         }
-        slot.clone().unwrap()
+    }
+
+    #[inline]
+    pub fn hook_wants_transform(&self, id: &str, code: &str) -> bool {
+        self.hook_plan.read().unwrap().transform.wants(id, Some(code))
+    }
+
+    #[inline]
+    pub fn hook_wants_load(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().load.wants(id, None)
+    }
+
+    #[inline]
+    pub fn hook_wants_resolve_id(&self, spec: &str) -> bool {
+        self.hook_plan.read().unwrap().resolve_id.wants(spec, None)
     }
 
     #[inline]

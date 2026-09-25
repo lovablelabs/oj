@@ -191,6 +191,44 @@ try {
     .join("\n");
   assert.match(assets2, /strict-load-crossed/, "filtered load still crossed for its match");
   assert.match(assets2, /strict-transform-crossed/, "filtered transform still crossed for its match");
+
+  // A perl-class pattern (\b: ASCII in JS, Unicode in Rust) must fail its
+  // plugin OPEN: with it present the transform plan is unfiltered and the
+  // gate must skip nothing, while filtered load skips keep working.
+  fs.writeFileSync(
+    path.join(app2, "oj.plugins.mjs"),
+    `export default [
+  {
+    name: "strict-load",
+    load: {
+      filter: { id: /\\.special\\.js$/ },
+      handler() {
+        return 'export const special = "strict-load-crossed";';
+      },
+    },
+  },
+  {
+    name: "boundary-transform",
+    transform: {
+      filter: { code: /\\bimport\\b/ },
+      handler(code) {
+        return { code, map: null };
+      },
+    },
+  },
+];
+`,
+  );
+  const res3 = spawnSync(oj, ["build", ".", "--out", "dist3"], {
+    cwd: app2,
+    env: { ...process.env, OJ_DEBUG_HOOK_GATE: "1" },
+    encoding: "utf8",
+  });
+  if (res3.status !== 0) throw new Error(`boundary-filter build failed: ${res3.stderr}`);
+  const m3 = (res3.stderr ?? "").match(/hook gate skipped resolveId=(\d+) load=(\d+) transform=(\d+)/);
+  assert.ok(m3, "gate report present for the boundary app");
+  assert.equal(Number(m3[3]), 0, "a perl-class code filter pins transform unfiltered (no skips)");
+  assert.ok(Number(m3[2]) > 0, "load gating still active alongside the pinned transform");
   fs.rmSync(app2, { recursive: true, force: true });
 
   const parsed = fs.readFileSync(path.join(dist, "module-parsed.txt"), "utf8").split("\n").filter(Boolean);

@@ -347,9 +347,6 @@ struct ServerState {
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
-    /// Per-plugin filter plan: skips a filtered hook's RPC for app modules its
-    /// filter can never claim. The has_* flags stay the coarse gates.
-    hook_plan: plugins::BuildHookPlan,
     // A dep is transformed only when its source matches one of these (the plugins'
     // own transform `filter.code` patterns); app source always goes through.
     dep_transform_res: Vec<regex::Regex>,
@@ -1063,13 +1060,13 @@ impl DevServer {
                 .collect(),
             None => Vec::new(),
         };
-        // The per-plugin filter plan: what the coarse has_* flags above cannot
-        // express, so a filtered hook's RPC is skipped for the app modules its
-        // filter can never claim (the has_* flags gate deps and hook absence).
-        let hook_plan = match &plugin_host {
-            Some(host) => host.build_hook_plan().await,
-            None => plugins::BuildHookPlan::default(),
-        };
+        // Prime the per-plugin filter plan (the hook_wants_* gates read it
+        // live from the host): what the coarse has_* flags above cannot
+        // express, so a filtered hook's RPC is skipped for the app modules
+        // its filter can never claim.
+        if let Some(host) = &plugin_host {
+            let _ = host.build_hook_plan().await;
+        }
         // Same idea for HMR: a host without watchChange/handleHotUpdate hooks (the
         // tagger case) doesn't need those per-save stdio round-trips.
         let (plugins_watch_change, plugins_hot_update) = match &plugin_host {
@@ -1300,7 +1297,6 @@ impl DevServer {
             plugins_use_module_parsed,
             plugins_have_transform,
             plugins_have_load,
-            hook_plan,
             dep_transform_res,
             dep_load_res,
             resolve_id_res,
@@ -4412,8 +4408,8 @@ async fn ensure_module(
                     Some((_, q)) => format!("{}?{}", file.display(), q),
                     None => file.to_string_lossy().into_owned(),
                 };
-                if !state.hook_plan.load.wants(&load_id, None) {
-                    if *HOOK_GATE_DEBUG {
+                if !host.hook_wants_load(&load_id) {
+                    if plugins::hook_gate_debug() {
                         eprintln!("oj: hook gate skipped load for {load_id}");
                     }
                     None
@@ -4578,12 +4574,8 @@ async fn ensure_module(
                 Some((_, q)) => format!("{}?{}", file.display(), q),
                 None => file.to_string_lossy().into_owned(),
             };
-            if !state
-                .hook_plan
-                .transform
-                .wants(&transform_id, Some(&source))
-            {
-                if *HOOK_GATE_DEBUG {
+            if !host.hook_wants_transform(&transform_id, &source) {
+                if plugins::hook_gate_debug() {
                     eprintln!("oj: hook gate skipped transform for {transform_id}");
                 }
                 source
@@ -8238,12 +8230,6 @@ fn is_restart_trigger(path: &Path) -> bool {
 /// Re-exec the current binary with the same arguments so a fresh process
 /// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
 /// dev port is released as the image is replaced. Does not return on success.
-/// OJ_DEBUG_HOOK_GATE=1: log each hook RPC the filter plan gates out, so a
-/// test can assert a skip actually happened (output alone cannot tell, the
-/// host's own per-plugin filters would produce identical bytes).
-static HOOK_GATE_DEBUG: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("OJ_DEBUG_HOOK_GATE").is_ok_and(|v| v == "1"));
-
 fn restart_process() -> ! {
     eprintln!("{} config/env changed — restarting dev server", oj_brand());
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));

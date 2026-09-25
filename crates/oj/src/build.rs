@@ -1561,9 +1561,11 @@ struct OjUserPlugin {
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     emit: Arc<EmitState>,
     // Vite/rolldown push hook filters into the bundler so a filtered hook never
-    // runs for a module it does not claim; this plan gates the isolate RPCs the
-    // same way. It only over-approximates (the host re-filters per plugin), so
-    // a gated-out call is one no plugin would have acted on.
+    // runs for a module it does not claim; the host's live plan gates the
+    // isolate RPCs the same way. It only over-approximates (the host
+    // re-filters per plugin), so a gated-out call is one no plugin would have
+    // acted on. This construction-time snapshot only decides HookUsage bits;
+    // per-call gates read the live plan, which a respawned host resets.
     gate: oj_server::plugins::BuildHookPlan,
     // OJ_DEBUG_HOOK_GATE=1: count gated-out RPCs and report at closeBundle,
     // so a test can assert the gate actually skipped something.
@@ -1584,7 +1586,7 @@ impl OjUserPlugin {
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             emit,
             gate,
-            gate_debug: std::env::var("OJ_DEBUG_HOOK_GATE").is_ok_and(|v| v == "1"),
+            gate_debug: oj_server::plugins::hook_gate_debug(),
             skipped_resolve: Default::default(),
             skipped_load: Default::default(),
             skipped_transform: Default::default(),
@@ -1733,7 +1735,7 @@ impl Plugin for OjUserPlugin {
         _ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
-        let pass = self.gate.resolve_id.wants(args.specifier, None);
+        let pass = self.host.hook_wants_resolve_id(args.specifier);
         if !pass && self.gate_debug {
             self.skipped_resolve
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1757,7 +1759,7 @@ impl Plugin for OjUserPlugin {
         _ctx: SharedLoadPluginContext,
         args: &HookLoadArgs<'_>,
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
-        let pass = self.gate.load.wants(args.id, None);
+        let pass = self.host.hook_wants_load(args.id);
         if !pass && self.gate_debug {
             self.skipped_load
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1808,7 +1810,7 @@ impl Plugin for OjUserPlugin {
         ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
-        let pass = self.gate.transform.wants(args.id, Some(args.code.as_str()));
+        let pass = self.host.hook_wants_transform(args.id, args.code.as_str());
         if !pass && self.gate_debug {
             self.skipped_transform
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

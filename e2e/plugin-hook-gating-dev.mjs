@@ -112,8 +112,13 @@ try {
 
   // The gate must have SKIPPED the transform RPC for the module no filter
   // claims, and never for the entry the filter matches (output alone cannot
-  // tell: the host's own per-plugin filters produce identical bytes).
-  assert.match(stderr, /hook gate skipped transform for .*data\.special\.js/, "gate skipped the unclaimed module");
+  // tell: the host's own per-plugin filters produce identical bytes). The
+  // skip line races the child's stderr pipe, so poll for it briefly.
+  const skipRe = /hook gate skipped transform for .*data\.special\.js/;
+  for (const t1 = Date.now(); !skipRe.test(stderr) && Date.now() - t1 < 5000; ) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.match(stderr, skipRe, "gate skipped the unclaimed module");
   assert.doesNotMatch(stderr, /hook gate skipped transform for .*entry\.js/, "gate never skipped the claimed entry");
 
   console.log("PLUGIN HOOK GATING DEV VERIFIED");
