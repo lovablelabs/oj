@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "oj in the browser: the shared compile pipeline behind a wasm-bindgen API over an in-memory fs"
+# The playground demo, wasm32-only: not a crates.io artifact, and its publish
+# verify would build for the host target and fail the release run.
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
