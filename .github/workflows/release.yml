@@ -2,8 +2,9 @@ name: release
 
 # Pushing a version tag (v0.2.7) creates the GitHub release with that
 # version's CHANGELOG section as notes, then publishes the workspace crates to
-# crates.io in dependency order. Re-running after a partial failure is safe:
-# already-published crate versions are skipped. Needs the
+# crates.io (cargo publish --workspace resolves the dependency order itself
+# and skips publish = false). After a partial failure, re-run with
+# --exclude <already-published> if cargo refuses the duplicates. Needs the
 # CARGO_REGISTRY_TOKEN secret.
 on:
   push:
@@ -45,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
-      - name: publish workspace crates in dependency order
+      - name: publish the workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: ./tools/publish-workspace.sh
+        run: cargo publish --workspace --locked
