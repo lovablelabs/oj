@@ -6219,7 +6219,7 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_snapshots"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "deno_runtime",
 ]
