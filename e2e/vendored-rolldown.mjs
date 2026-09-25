@@ -10,7 +10,10 @@
 // the start-app fixture (skips only when npm fails for network reasons).
 // OJ_TEST_VENDORED_ROLLDOWN points at a prebuilt vendor dir to use instead of
 // npm-installing one — nix.yml passes the flake's own vendor derivation so
-// the hand-curated store layout is what gets exercised.
+// the hand-curated store layout is what gets exercised. OJ_TEST_EMBEDDED=1
+// (nix.yml) additionally builds with NO env var at all, so the binary's
+// compile-time embedded default is what serves — the production nix-install
+// path, which env-var inheritance would otherwise keep green by accident.
 import { execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,7 +35,9 @@ if (!rolldownVersion) throw new Error("rolldownVersion not found in flake.nix");
 
 // npm's failure is only a SKIP when it is network-shaped; a resolver or
 // peer-dep failure must fail the run, or this guard goes silently green.
-const NETWORK_ERR = /ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|fetch failed|network/i;
+// Specific codes only: npm's advice text mentions the word "network" in
+// plenty of non-network failures (ERESOLVE included), so no bare substring.
+const NETWORK_ERR = /ENOTFOUND|ETIMEDOUT|ERR_SOCKET_TIMEOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EPROTO|ERR_TLS|fetch failed|503 Service Unavailable/;
 function npmInstall(cwd, ...pkgs) {
   try {
     execSync(`npm install ${pkgs.join(" ")} --no-audit --no-fund --no-package-lock --loglevel=error`, {
@@ -72,6 +77,9 @@ function run() {
   if (!vendor) {
     vendor = fs.mkdtempSync(path.join(os.tmpdir(), "oj-vendored-rolldown-dir-"));
     scratch.push(vendor);
+    // Pin npm's project root: without a package.json, npm walks up from cwd
+    // and can install into an ancestor, leaving the vendor dir empty.
+    fs.writeFileSync(path.join(vendor, "package.json"), JSON.stringify({ name: "oj-vendor", private: true }));
     if (!npmInstall(vendor, `rolldown@${rolldownVersion}`)) return false;
   }
   if (fs.existsSync(path.join(app, "node_modules", "rolldown"))) {
@@ -89,6 +97,22 @@ function run() {
     throw new Error("without a vendor, the build must fail naming OJ_VENDORED_ROLLDOWN");
   }
 
+  // A configured vendor is authoritative: one that holds no rolldown must
+  // fail loudly (naming the dir), never silently build with the app's copy —
+  // the cache key already recorded the vendor as the builder.
+  const brokenVendor = fs.mkdtempSync(path.join(os.tmpdir(), "oj-vendored-rolldown-broken-"));
+  scratch.push(brokenVendor);
+  const broken = spawnSync(oj, ["build"], {
+    cwd: app,
+    encoding: "utf8",
+    timeout: 300_000,
+    env: { ...env, OJ_VENDORED_ROLLDOWN: brokenVendor },
+  });
+  if (broken.status === 0 || !`${broken.stderr}`.includes(brokenVendor)) {
+    console.error(broken.stdout ?? "", broken.stderr ?? "");
+    throw new Error("a broken vendor must fail the build naming its path");
+  }
+
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const withVendor = spawnSync(oj, ["build"], {
     cwd: app,
@@ -103,6 +127,22 @@ function run() {
   const dist = path.join(app, "dist");
   if (!fs.existsSync(dist) || !fs.readdirSync(dist).length) {
     throw new Error("vendored rolldown build reported success but wrote no dist");
+  }
+
+  // The embedded compile-time default (nix builds): no env var anywhere, the
+  // option_env! path pushed by start_script_env is the only route to the
+  // vendor. Guards the Rust plumbing that plain env inheritance bypasses.
+  if (process.env.OJ_TEST_EMBEDDED) {
+    const bare = { ...process.env };
+    delete bare.OJ_VENDORED_ROLLDOWN;
+    delete bare.OJ_TEST_VENDORED_ROLLDOWN;
+    fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+    fs.rmSync(dist, { recursive: true, force: true });
+    const embedded = spawnSync(oj, ["build"], { cwd: app, encoding: "utf8", timeout: 300_000, env: bare });
+    if (embedded.status !== 0 || !fs.existsSync(dist) || !fs.readdirSync(dist).length) {
+      console.error(embedded.stdout ?? "", embedded.stderr ?? "");
+      throw new Error("build with no env var must serve from the embedded vendor default");
+    }
   }
   return true;
 }

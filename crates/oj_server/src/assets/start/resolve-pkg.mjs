@@ -62,10 +62,13 @@ export function makeResolver(root) {
   };
 }
 
-export async function importPkg(root, spec, preferred = []) {
-  const p = makeResolver(root)(spec, preferred);
+async function importResolved(p) {
   const m = await import(pathToFileURL(p).href);
   return m.default ?? m;
+}
+
+export async function importPkg(root, spec, preferred = []) {
+  return importResolved(makeResolver(root)(spec, preferred));
 }
 
 // rolldown here is oj's own bundling tool, not the app's: the Start bundle
@@ -77,32 +80,49 @@ export async function importPkg(root, spec, preferred = []) {
 // preference applies only at oj's own import sites: the app's module-graph
 // resolution (makeResolver above, used by the plugin bridge) must keep
 // resolving 'rolldown' and '@rolldown/*' to whatever the app's lockfile pins.
+//
+// A configured vendor is authoritative, never a hint: the bundle cache is
+// keyed by the rolldown that built the bundle (like Vite's dep cache, keyed
+// by the lockfile that pins its bundler), so a vendor that is set but broken
+// must fail the build loudly — a silent fallback to the app's copy would
+// cache an app-built bundle under the vendor's key. `OJ_VENDORED_ROLLDOWN=`
+// (set but empty) is the explicit opt-out. rolldown must sit at exactly
+// <vendor>/node_modules/rolldown: node's walk-up resolution would otherwise
+// accept an ancestor's unrelated copy as "the vendor".
 export function resolveOjRolldown(root, preferred = []) {
   const vendored = process.env.OJ_VENDORED_ROLLDOWN;
   if (vendored) {
-    try {
-      return createRequire(pathToFileURL(join(vendored, "package.json")).href).resolve("rolldown");
-    } catch (err) {
-      console.warn(
-        `oj: OJ_VENDORED_ROLLDOWN (${vendored}) does not resolve 'rolldown' (${err?.message}); falling back to the app's copy`,
+    if (!existsSync(join(vendored, "node_modules", "rolldown", "package.json"))) {
+      throw new Error(
+        `oj: OJ_VENDORED_ROLLDOWN (${vendored}) has no node_modules/rolldown; ` +
+          "repair the vendor dir or set OJ_VENDORED_ROLLDOWN= (empty) to use the app's copy",
       );
     }
+    return createRequire(pathToFileURL(join(vendored, "package.json")).href).resolve("rolldown");
   }
   try {
     return makeResolver(root)("rolldown", preferred);
   } catch {
     throw new Error(
       `oj: cannot resolve 'rolldown' from ${root}` +
-        (vendored
-          ? `; the configured OJ_VENDORED_ROLLDOWN (${vendored}) cannot resolve it either`
-          : "; this app's vite predates rolldown and this oj build vendors none — install 'rolldown' in the app or use an oj built with OJ_VENDORED_ROLLDOWN"),
+        "; this app's vite predates rolldown and this oj build vendors none — install 'rolldown' in the app or use an oj built with OJ_VENDORED_ROLLDOWN",
     );
   }
 }
 
 export async function importOjRolldown(root, preferred = []) {
-  const m = await import(pathToFileURL(resolveOjRolldown(root, preferred)).href);
-  return m.default ?? m;
+  const vendored = process.env.OJ_VENDORED_ROLLDOWN;
+  try {
+    return await importResolved(resolveOjRolldown(root, preferred));
+  } catch (err) {
+    // A vendor that resolves but cannot LOAD (a missing transitive dep in a
+    // hand-curated bundle, a broken binding) must name the vendor too: the
+    // raw loader error points nowhere near OJ_VENDORED_ROLLDOWN.
+    if (vendored && !`${err?.message}`.includes("OJ_VENDORED_ROLLDOWN")) {
+      err.message = `oj: the vendored rolldown (OJ_VENDORED_ROLLDOWN=${vendored}) failed to load: ${err.message}`;
+    }
+    throw err;
+  }
 }
 
 /// JSX transform options for rolldown / oxc-transform from `OJ_JSX` (the config's

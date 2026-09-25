@@ -294,7 +294,7 @@ function fakePkg(dir, name) {
   return root;
 }
 
-test("resolveOjRolldown prefers the vendored copy and falls back to the app's own", () => {
+test("resolveOjRolldown: vendor wins, broken vendors fail loudly, unset falls back", () => {
   const app = mkdtempSync(join(tmpdir(), "oj-vendor-app-"));
   const vendor = mkdtempSync(join(tmpdir(), "oj-vendor-dir-"));
   writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
@@ -313,12 +313,18 @@ test("resolveOjRolldown prefers the vendored copy and falls back to the app's ow
     // Set-but-empty is the explicit opt-out; the app's own copy serves.
     process.env.OJ_VENDORED_ROLLDOWN = "";
     assert.ok(realpathSync(resolveOjRolldown(app)).startsWith(realpathSync(own)));
-    // A vendor that cannot resolve rolldown falls back to the app's copy
-    // (an isolated dir: node's lookup walks up, so a subdir of the vendor
-    // would still find the vendor's own node_modules).
+    // A configured vendor is authoritative: one that holds no rolldown is a
+    // loud error, never a silent fallback (the cache key already recorded the
+    // vendor as the builder).
     process.env.OJ_VENDORED_ROLLDOWN = mkdtempSync(join(tmpdir(), "oj-broken-vendor-"));
     scratchBroken = process.env.OJ_VENDORED_ROLLDOWN;
-    assert.ok(realpathSync(resolveOjRolldown(app)).startsWith(realpathSync(own)));
+    assert.throws(() => resolveOjRolldown(app), /no node_modules\/rolldown/);
+    // Nor may node's walk-up resolution smuggle in an ancestor's copy: a
+    // vendor subdir under the app (whose node_modules HAS rolldown) still
+    // fails the exact-location check.
+    mkdirSync(join(app, "not-a-vendor"));
+    process.env.OJ_VENDORED_ROLLDOWN = join(app, "not-a-vendor");
+    assert.throws(() => resolveOjRolldown(app), /no node_modules\/rolldown/);
     // Without a vendor, the app's own copy still serves.
     delete process.env.OJ_VENDORED_ROLLDOWN;
     assert.ok(realpathSync(resolveOjRolldown(app)).startsWith(realpathSync(own)));

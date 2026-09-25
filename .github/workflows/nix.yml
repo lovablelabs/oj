@@ -52,7 +52,12 @@ jobs:
       # app: the flake's parts list is maintained by hand, so a missing
       # runtime dependency or a broken tar layout has to fail here, not on
       # every nix-installed oj.
+      # OJ_TEST_EMBEDDED additionally builds with no env var at all, so the
+      # binary's compile-time embedded default (the production nix-install
+      # path) is what serves — plain env inheritance would keep the Rust
+      # plumbing untested otherwise.
       - name: vendored rolldown builds a vite-7 Start app
         run: |
           nix build .#rolldown-vendor -o result-vendor
-          OJ_BIN=./result/bin/oj OJ_TEST_VENDORED_ROLLDOWN="$(readlink -f result-vendor)" node e2e/vendored-rolldown.mjs
+          OJ_BIN=./result/bin/oj OJ_TEST_VENDORED_ROLLDOWN="$(readlink -f result-vendor)" \
+            OJ_TEST_EMBEDDED=1 node e2e/vendored-rolldown.mjs
