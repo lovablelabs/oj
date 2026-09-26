@@ -7,9 +7,9 @@ pub mod cjs;
 pub mod glob;
 pub mod html;
 pub mod interop;
-pub mod ssr;
 pub mod json;
 pub mod pkgbundle;
+pub mod ssr;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -564,7 +564,9 @@ fn lex_hot_accept<'a>(
     program: &mut Program<'a>,
     rewriter: &mut Option<&mut ImportRewriter>,
 ) -> Option<HotAccept> {
-    use oxc_ast::ast::{Argument, ArrayExpressionElement, CallExpression, Expression, StaticMemberExpression};
+    use oxc_ast::ast::{
+        Argument, ArrayExpressionElement, CallExpression, Expression, StaticMemberExpression,
+    };
     use oxc_ast_visit::{walk_mut, VisitMut};
 
     fn is_import_meta_hot(e: &Expression) -> bool {
@@ -635,12 +637,22 @@ fn lex_hot_accept<'a>(
     let mut noop = |_: &str| None;
     let accept = match rewriter.as_deref_mut() {
         Some(rw) => {
-            let mut lexer = Lexer { allocator, rewriter: rw, uses_hot: false, accept: HotAccept::default() };
+            let mut lexer = Lexer {
+                allocator,
+                rewriter: rw,
+                uses_hot: false,
+                accept: HotAccept::default(),
+            };
             lexer.visit_program(program);
             (lexer.uses_hot, lexer.accept)
         }
         None => {
-            let mut lexer = Lexer { allocator, rewriter: &mut noop, uses_hot: false, accept: HotAccept::default() };
+            let mut lexer = Lexer {
+                allocator,
+                rewriter: &mut noop,
+                uses_hot: false,
+                accept: HotAccept::default(),
+            };
             lexer.visit_program(program);
             (lexer.uses_hot, lexer.accept)
         }
@@ -781,7 +793,10 @@ mod tests {
             const x = await import("./dynamic");
         "#;
         let got = imports(src, Path::new("m.tsx"));
-        assert_eq!(got, vec!["react".to_string(), "./b".to_string(), "./c".to_string()]);
+        assert_eq!(
+            got,
+            vec!["react".to_string(), "./b".to_string(), "./c".to_string()]
+        );
     }
 
     #[test]
@@ -809,9 +824,21 @@ mod tests {
             .lookup_source_view_token(&lut, 1, 4)
             .expect("served (1,4) should map");
         // The served position now points at the ORIGINAL source, not the intermediate.
-        assert_eq!(vt.get_source(), Some("src.tsx"), "source is the original file");
-        assert_eq!(vt.get_src_line(), 5, "original line preserved through compose");
-        assert_eq!(vt.get_src_col(), 2, "original column preserved through compose");
+        assert_eq!(
+            vt.get_source(),
+            Some("src.tsx"),
+            "source is the original file"
+        );
+        assert_eq!(
+            vt.get_src_line(),
+            5,
+            "original line preserved through compose"
+        );
+        assert_eq!(
+            vt.get_src_col(),
+            2,
+            "original column preserved through compose"
+        );
     }
 
     #[test]
@@ -828,9 +855,12 @@ mod tests {
         let oj_map = ob.into_sourcemap();
 
         // The fold traces through the plugin map to the original file.
-        let folded =
-            compose_two(&oj_map, &SourceMap::from_json_string(&plugin_map).unwrap()).to_json_string();
-        assert!(folded.contains("app.tsx"), "folded map references the original source: {folded}");
+        let folded = compose_two(&oj_map, &SourceMap::from_json_string(&plugin_map).unwrap())
+            .to_json_string();
+        assert!(
+            folded.contains("app.tsx"),
+            "folded map references the original source: {folded}"
+        );
 
         // The public entry point emits an inline JSON sourcemap data URL and never panics.
         let url = compose_input_maps_data_url(&oj_map, &[plugin_map]);
@@ -856,10 +886,17 @@ export function App() {
   return <div className={import.meta.env.DEV ? "dev" : "prod"}>{import.meta.env.MODE}</div>;
 }
 "#;
-        let out =
-            compile_module(Path::new("App.tsx"), src, &CompileOptions::prod(), None).unwrap();
-        assert!(out.code.contains("false"), "import.meta.env.DEV -> false: {}", out.code);
-        assert!(out.code.contains("production"), "MODE -> production: {}", out.code);
+        let out = compile_module(Path::new("App.tsx"), src, &CompileOptions::prod(), None).unwrap();
+        assert!(
+            out.code.contains("false"),
+            "import.meta.env.DEV -> false: {}",
+            out.code
+        );
+        assert!(
+            out.code.contains("production"),
+            "MODE -> production: {}",
+            out.code
+        );
     }
 
     #[test]
@@ -1206,7 +1243,13 @@ export const used: A extends B ? number : number = c + d;
     #[test]
     fn lexes_import_meta_hot_accept_forms_and_rewrites_dep_specifiers() {
         let mut rw = |spec: &str| spec.strip_prefix("./").map(|r| format!("/src/{r}"));
-        let none = compile_module(Path::new("a.ts"), "export const x = 1;", &CompileOptions::dev(), Some(&mut rw)).unwrap();
+        let none = compile_module(
+            Path::new("a.ts"),
+            "export const x = 1;",
+            &CompileOptions::dev(),
+            Some(&mut rw),
+        )
+        .unwrap();
         assert_eq!(none.hot_accept, None);
 
         let self_accept = compile_module(
@@ -1216,9 +1259,21 @@ export const used: A extends B ? number : number = c + d;
             Some(&mut rw),
         )
         .unwrap();
-        assert_eq!(self_accept.hot_accept, Some(HotAccept { self_accepting: true, deps: vec![] }));
+        assert_eq!(
+            self_accept.hot_accept,
+            Some(HotAccept {
+                self_accepting: true,
+                deps: vec![]
+            })
+        );
 
-        let cb = compile_module(Path::new("a.ts"), "import.meta.hot?.accept((m) => m);", &CompileOptions::dev(), Some(&mut rw)).unwrap();
+        let cb = compile_module(
+            Path::new("a.ts"),
+            "import.meta.hot?.accept((m) => m);",
+            &CompileOptions::dev(),
+            Some(&mut rw),
+        )
+        .unwrap();
         assert!(cb.hot_accept.unwrap().self_accepting);
 
         let deps = compile_module(
@@ -1230,12 +1285,30 @@ export const used: A extends B ? number : number = c + d;
         .unwrap();
         let hot = deps.hot_accept.unwrap();
         assert!(!hot.self_accepting);
-        assert_eq!(hot.deps, vec!["/src/one.js", "/src/other.js", "/src/util.js"]);
-        assert!(deps.code.contains("\"/src/util.js\", \"/src/other.js\"") || deps.code.contains("\"/src/util.js\",\"/src/other.js\""), "{}", deps.code);
+        assert_eq!(
+            hot.deps,
+            vec!["/src/one.js", "/src/other.js", "/src/util.js"]
+        );
+        assert!(
+            deps.code.contains("\"/src/util.js\", \"/src/other.js\"")
+                || deps.code.contains("\"/src/util.js\",\"/src/other.js\""),
+            "{}",
+            deps.code
+        );
         assert!(deps.code.contains("\"/src/one.js\""), "{}", deps.code);
 
-        let read_only = compile_module(Path::new("a.ts"), "console.log(import.meta.hot?.data);", &CompileOptions::dev(), Some(&mut rw)).unwrap();
-        assert_eq!(read_only.hot_accept, Some(HotAccept::default()), "referencing import.meta.hot needs a context even without accept");
+        let read_only = compile_module(
+            Path::new("a.ts"),
+            "console.log(import.meta.hot?.data);",
+            &CompileOptions::dev(),
+            Some(&mut rw),
+        )
+        .unwrap();
+        assert_eq!(
+            read_only.hot_accept,
+            Some(HotAccept::default()),
+            "referencing import.meta.hot needs a context even without accept"
+        );
     }
 
     #[test]
@@ -1244,19 +1317,33 @@ export const used: A extends B ? number : number = c + d;
         let mut opts = CompileOptions::prod();
         opts.jsx.import_source = Some("preact".into());
         let out = compile_module(Path::new("A.tsx"), src, &opts, None).unwrap();
-        assert!(out.imports.iter().any(|i| i == "preact/jsx-runtime"), "{:?}", out.imports);
+        assert!(
+            out.imports.iter().any(|i| i == "preact/jsx-runtime"),
+            "{:?}",
+            out.imports
+        );
         assert!(!out.code.contains("\"react/jsx-runtime\""), "{}", out.code);
 
         // Dev uses the dev runtime of the same source.
         let mut dev = CompileOptions::dev();
         dev.jsx.import_source = Some("@emotion/react".into());
         let out = compile_module(Path::new("A.tsx"), src, &dev, None).unwrap();
-        assert!(out.imports.iter().any(|i| i == "@emotion/react/jsx-dev-runtime"), "{:?}", out.imports);
+        assert!(
+            out.imports
+                .iter()
+                .any(|i| i == "@emotion/react/jsx-dev-runtime"),
+            "{:?}",
+            out.imports
+        );
 
         // A file pragma wins over the config (oxc reads leading comments).
         let pragma = format!("/** @jsxImportSource solid-js */\n{src}");
         let out = compile_module(Path::new("A.tsx"), &pragma, &opts, None).unwrap();
-        assert!(out.imports.iter().any(|i| i == "solid-js/jsx-runtime"), "{:?}", out.imports);
+        assert!(
+            out.imports.iter().any(|i| i == "solid-js/jsx-runtime"),
+            "{:?}",
+            out.imports
+        );
     }
 
     #[test]
@@ -1272,7 +1359,11 @@ export const used: A extends B ? number : number = c + d;
         let out = compile_module(Path::new("A.tsx"), src, &opts, None).unwrap();
         assert!(out.code.contains("h(Fragment"), "{}", out.code);
         assert!(out.code.contains("h(\"b\""), "{}", out.code);
-        assert!(!out.imports.iter().any(|i| i.contains("jsx-runtime")), "{:?}", out.imports);
+        assert!(
+            !out.imports.iter().any(|i| i.contains("jsx-runtime")),
+            "{:?}",
+            out.imports
+        );
     }
 
     #[test]

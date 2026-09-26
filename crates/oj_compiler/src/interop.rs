@@ -27,13 +27,15 @@ pub fn bare_import_specifiers(source: &str) -> Vec<String> {
         let bytes = source.as_bytes();
         loop {
             let rest = &source[i..];
-            let Some(c) = rest.chars().next() else { return i };
+            let Some(c) = rest.chars().next() else {
+                return i;
+            };
             if c.is_whitespace() {
                 i += c.len_utf8();
             } else if rest.starts_with("//") {
                 i += rest.find('\n').unwrap_or(rest.len());
-            } else if rest.starts_with("/*") {
-                i += rest[2..].find("*/").map(|p| p + 4).unwrap_or(rest.len());
+            } else if let Some(body) = rest.strip_prefix("/*") {
+                i += body.find("*/").map(|p| p + 4).unwrap_or(rest.len());
             } else if parens && bytes[i] == b'(' {
                 i += 1;
             } else {
@@ -49,7 +51,9 @@ pub fn bare_import_specifiers(source: &str) -> Vec<String> {
             at = i + kw.len();
             // a keyword, not the tail of an identifier
             let standalone = i == 0
-                || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_' && bytes[i - 1] != b'$');
+                || (!bytes[i - 1].is_ascii_alphanumeric()
+                    && bytes[i - 1] != b'_'
+                    && bytes[i - 1] != b'$');
             if !standalone {
                 continue;
             }
@@ -58,7 +62,9 @@ pub fn bare_import_specifiers(source: &str) -> Vec<String> {
                 continue;
             }
             let quote = bytes[s] as char;
-            let Some(end) = source[s + 1..].find(quote) else { continue };
+            let Some(end) = source[s + 1..].find(quote) else {
+                continue;
+            };
             let spec = &source[s + 1..s + 1 + end];
             if !spec.is_empty()
                 && !spec.starts_with('.')
@@ -125,7 +131,10 @@ pub fn rewrite_cjs_interop_logged(
                 let mut out = match &decl.specifiers {
                     None => format!("import {};", json_str(&url)),
                     Some(_) => {
-                        format!("import * as {ns} from {};const {cjs} = {cjs_value};", json_str(&url))
+                        format!(
+                            "import * as {ns} from {};const {cjs} = {cjs_value};",
+                            json_str(&url)
+                        )
                     }
                 };
                 if let Some(specs) = &decl.specifiers {
@@ -357,9 +366,18 @@ mod tests {
         })
         .expect("rewritten");
         assert!(out.starts_with("const __oj_dyn_interop = "), "{out}");
-        assert!(out.contains("import(\"/@oj-deps/cjs-dep.js\").then(__oj_dyn_interop)"), "{out}");
-        assert!(out.contains("import(\"esm-dep\")"), "untouched non-interop import: {out}");
-        assert!(out.contains("import(`tpl`)"), "template specifiers are left alone: {out}");
+        assert!(
+            out.contains("import(\"/@oj-deps/cjs-dep.js\").then(__oj_dyn_interop)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("import(\"esm-dep\")"),
+            "untouched non-interop import: {out}"
+        );
+        assert!(
+            out.contains("import(`tpl`)"),
+            "template specifiers are left alone: {out}"
+        );
         // Nothing to interop: no rewrite, no helper.
         assert!(rewrite_cjs_interop(src, Path::new("a.ts"), &|_| None).is_none());
     }
@@ -488,12 +506,18 @@ mod tests {
     #[test]
     fn export_star_as_builds_the_interop_namespace() {
         let out = run(r#"export * as geo from "cjs-dep";"#);
-        assert!(out.starts_with("const __oj_dyn_interop = "), "helper prepended: {out}");
+        assert!(
+            out.starts_with("const __oj_dyn_interop = "),
+            "helper prepended: {out}"
+        );
         assert!(
             out.contains(r#"import * as __ojns0 from "/@oj-deps/cjs-dep.mjs";"#),
             "{out}"
         );
-        assert!(out.contains("const __ojex0 = __oj_dyn_interop(__ojns0);"), "{out}");
+        assert!(
+            out.contains("const __ojex0 = __oj_dyn_interop(__ojns0);"),
+            "{out}"
+        );
         assert!(out.contains("export { __ojex0 as geo };"), "{out}");
     }
 
@@ -525,13 +549,19 @@ mod tests {
             (r#"import{a}from"dep";"#, "dep"),
             (r#"import x from"node:path";"#, "node:path"),
             // legal trivia between the keyword and the specifier
-            (r#"import(/* webpackChunkName: "geo" */ "geodesiclib")"#, "geodesiclib"),
+            (
+                r#"import(/* webpackChunkName: "geo" */ "geodesiclib")"#,
+                "geodesiclib",
+            ),
             ("import x from // eol\n 'dep';", "dep"),
             (r#"import(("dep"))"#, "dep"),
             ("import x from\u{00a0}'dep';", "dep"),
         ] {
             let specs = bare_import_specifiers(src);
-            assert!(specs.iter().any(|s| s == want), "expected {want} in {specs:?} for: {src}");
+            assert!(
+                specs.iter().any(|s| s == want),
+                "expected {want} in {specs:?} for: {src}"
+            );
         }
         // dedup across positions
         assert_eq!(
@@ -552,7 +582,10 @@ mod tests {
             "export const a = 1;",
             "",
         ] {
-            assert!(bare_import_specifiers(src).is_empty(), "expected none: {src}");
+            assert!(
+                bare_import_specifiers(src).is_empty(),
+                "expected none: {src}"
+            );
         }
     }
 
@@ -564,7 +597,10 @@ mod tests {
             &interop_all("/u"),
         )
         .unwrap();
-        assert!(out.starts_with("#!/usr/bin/env node\nconst __oj_dyn_interop"), "{out}");
+        assert!(
+            out.starts_with("#!/usr/bin/env node\nconst __oj_dyn_interop"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -578,7 +614,11 @@ mod tests {
         );
         assert!(out.is_none());
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("export * from \"cjs-dep\""), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("export * from \"cjs-dep\""),
+            "{}",
+            warnings[0]
+        );
         // No warning when the source is not an interop candidate.
         warnings.clear();
         rewrite_cjs_interop_logged(

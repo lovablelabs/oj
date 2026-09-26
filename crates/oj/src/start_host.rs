@@ -383,8 +383,24 @@ fn regex_can_follow(prev: Option<u8>) -> bool {
         None => true,
         Some(c) => matches!(
             c,
-            b'(' | b'[' | b'{' | b',' | b';' | b':' | b'!' | b'&' | b'|' | b'?' | b'='
-                | b'+' | b'-' | b'*' | b'%' | b'<' | b'>' | b'~' | b'^'
+            b'(' | b'['
+                | b'{'
+                | b','
+                | b';'
+                | b':'
+                | b'!'
+                | b'&'
+                | b'|'
+                | b'?'
+                | b'='
+                | b'+'
+                | b'-'
+                | b'*'
+                | b'%'
+                | b'<'
+                | b'>'
+                | b'~'
+                | b'^'
         ),
     }
 }
@@ -477,7 +493,11 @@ impl CjsCache {
                 is_module = std::fs::read_to_string(&pj)
                     .ok()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                    .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|t| t == "module"))
+                    .and_then(|v| {
+                        v.get("type")
+                            .and_then(|t| t.as_str())
+                            .map(|t| t == "module")
+                    })
                     .unwrap_or(false);
                 break;
             }
@@ -761,9 +781,7 @@ impl StartHost {
             let bridge_first = spec.starts_with('#');
             if !bridge_first {
                 if let Some(hit) = probe(target) {
-                    return Ok(Some(
-                        self.module_url(&hit.to_string_lossy(), importer_id),
-                    ));
+                    return Ok(Some(self.module_url(&hit.to_string_lossy(), importer_id)));
                 }
             } else {
                 if let Ok(StartResolution::Module(id)) =
@@ -772,9 +790,7 @@ impl StartHost {
                     return Ok(Some(self.module_url(&id, importer_id)));
                 }
                 if let Some(hit) = probe(target) {
-                    return Ok(Some(
-                        self.module_url(&hit.to_string_lossy(), importer_id),
-                    ));
+                    return Ok(Some(self.module_url(&hit.to_string_lossy(), importer_id)));
                 }
             }
         }
@@ -929,8 +945,7 @@ impl StartHost {
             return Ok(None);
         }
         self.ensure_plugins_started().await;
-        let source =
-            std::fs::read_to_string(&path).map_err(|e| format!("read {path_str}: {e}"))?;
+        let source = std::fs::read_to_string(&path).map_err(|e| format!("read {path_str}: {e}"))?;
         let code = self
             .bridge
             .transform_module(&path_str, source, false, true)
@@ -971,8 +986,12 @@ impl StartHost {
                 }
                 _ => None,
             };
-            let code = loaded
-                .unwrap_or_else(|| format!("export default {};", json_str(&format!("/@oj-start/fs{clean}"))));
+            let code = loaded.unwrap_or_else(|| {
+                format!(
+                    "export default {};",
+                    json_str(&format!("/@oj-start/fs{clean}"))
+                )
+            });
             return Ok(js(code));
         }
 
@@ -1001,8 +1020,7 @@ impl StartHost {
         }
 
         if clean.ends_with(".mdx") {
-            let raw =
-                std::fs::read_to_string(&clean).map_err(|e| format!("read {clean}: {e}"))?;
+            let raw = std::fs::read_to_string(&clean).map_err(|e| format!("read {clean}: {e}"))?;
             let compiled = match self.bridge.plugin_host().await {
                 Some(host) => host
                     .transform(&raw, &clean, "{}")
@@ -1029,9 +1047,7 @@ impl StartHost {
         // claim the id are consulted; the gate skips the per-module isolate RPC
         // for everything else (the whole server graph on the first render).
         let plugin_loaded = match self.bridge.plugin_host().await {
-            Some(host) if host.hook_wants_load(&clean) => {
-                host.load(&clean).await.ok().flatten()
-            }
+            Some(host) if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
             Some(_) => {
                 if oj_server::plugins::hook_gate_debug() {
                     eprintln!("oj: hook gate skipped start load for {clean}");
@@ -1238,13 +1254,14 @@ impl StartEngine {
             "bodyBase64": req.body.map(|b| crate::ssr_host::base64(&b)),
         });
         let value = engine
-            .call(self.bootstrap.clone(), "handle", vec![entry.into(), payload])
+            .call(
+                self.bootstrap.clone(),
+                "handle",
+                vec![entry.into(), payload],
+            )
             .await
             .map_err(|e| e.to_string())?;
-        let status = value
-            .get("status")
-            .and_then(|s| s.as_u64())
-            .unwrap_or(500) as u16;
+        let status = value.get("status").and_then(|s| s.as_u64()).unwrap_or(500) as u16;
         let pairs = |key: &str| -> Vec<(String, String)> {
             value
                 .get(key)
@@ -1449,9 +1466,8 @@ mod tests {
     fn server_fn_rewrite_matches_the_node_loader() {
         let code = "import { createServerFn } from \"@tanstack/react-start\";\nexport const getGreeting = createServerFn({ method: \"GET\" }).handler(async () => \"hi\");\n";
         let out = rewrite_server_fns(code, "src/server/data.ts");
-        assert!(out.starts_with(
-            "import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; "
-        ));
+        assert!(out
+            .starts_with("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; "));
         let id = base64url(b"src/server/data.ts#getGreeting");
         assert!(
             out.contains(&format!(
@@ -1557,7 +1573,13 @@ mod tests {
 
     #[test]
     fn base64_roundtrips() {
-        for input in [b"".as_slice(), b"f", b"fo", b"foo", &[0xff, 0x00, 0x10, 0x88]] {
+        for input in [
+            b"".as_slice(),
+            b"f",
+            b"fo",
+            b"foo",
+            &[0xff, 0x00, 0x10, 0x88],
+        ] {
             assert_eq!(
                 base64_decode(&crate::ssr_host::base64(input)),
                 input,
@@ -1649,7 +1671,10 @@ mod tests {
         std::fs::write(&typed, "module.exports = 1;\n").unwrap();
         assert!(cache.is_cjs_file(&cjs.to_string_lossy()));
         assert!(!cache.is_cjs_file(&esmish.to_string_lossy()));
-        assert!(!cache.is_cjs_file(&typed.to_string_lossy()), "type:module wins");
+        assert!(
+            !cache.is_cjs_file(&typed.to_string_lossy()),
+            "type:module wins"
+        );
         assert!(cache.is_cjs_file("/whatever/x.cjs"));
         assert!(!cache.is_cjs_file("/whatever/x.mjs"));
         // Memoized: a second ask answers from the caches.
@@ -1673,7 +1698,10 @@ mod tests {
         // Rewrite as ESM and push the mtime forward explicitly (same-second
         // writes can share an mtime on coarse filesystems).
         std::fs::write(&file, "export const a = 1;\n").unwrap();
-        let f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        let f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
         f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
             .unwrap();
         assert!(
@@ -1775,5 +1803,4 @@ mod tests {
         );
         assert_eq!(pkg_name_of_path("/a/src/x.ts"), None);
     }
-
 }

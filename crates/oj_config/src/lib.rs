@@ -97,7 +97,10 @@ pub fn css_modules(config: &OjConfig) -> CssModulesSettings {
             .flatten()
             .filter_map(|v| match v {
                 serde_json::Value::String(s) => Some(s.clone()),
-                serde_json::Value::Object(o) => o.get("__oj_regex__").and_then(|r| r.as_str()).map(str::to_string),
+                serde_json::Value::Object(o) => o
+                    .get("__oj_regex__")
+                    .and_then(|r| r.as_str())
+                    .map(str::to_string),
                 _ => None,
             })
             .collect(),
@@ -181,8 +184,13 @@ pub fn build_chunk_size_warning_limit(config: &OjConfig) -> f64 {
 }
 
 /// Vite 8's `'baseline-widely-available'` default target (constants.ts).
-pub const BASELINE_WIDELY_AVAILABLE: &[&str] =
-    &["chrome111", "edge111", "firefox114", "safari16.4", "ios16.4"];
+pub const BASELINE_WIDELY_AVAILABLE: &[&str] = &[
+    "chrome111",
+    "edge111",
+    "firefox114",
+    "safari16.4",
+    "ios16.4",
+];
 /// Vite's legacy `'modules'` target.
 pub const MODULES_TARGET: &[&str] = &["es2020", "edge88", "firefox78", "chrome87", "safari14"];
 
@@ -241,7 +249,10 @@ pub fn build_css_minify(config: &OjConfig, server: bool) -> bool {
 /// imports: on unless `build.modulePreload` is `false` (Vite's html plugin).
 pub fn module_preload_links(config: &OjConfig) -> bool {
     !matches!(
-        config.build.as_ref().and_then(|b| b.module_preload.as_ref()),
+        config
+            .build
+            .as_ref()
+            .and_then(|b| b.module_preload.as_ref()),
         Some(serde_json::Value::Bool(false))
     )
 }
@@ -249,7 +260,11 @@ pub fn module_preload_links(config: &OjConfig) -> bool {
 /// Whether page entries get Vite's modulepreload polyfill: on unless
 /// `build.modulePreload` is `false` or `{ polyfill: false }`.
 pub fn module_preload_polyfill(config: &OjConfig) -> bool {
-    match config.build.as_ref().and_then(|b| b.module_preload.as_ref()) {
+    match config
+        .build
+        .as_ref()
+        .and_then(|b| b.module_preload.as_ref())
+    {
         Some(serde_json::Value::Bool(false)) => false,
         Some(serde_json::Value::Object(o)) => {
             o.get("polyfill").and_then(|v| v.as_bool()) != Some(false)
@@ -257,7 +272,6 @@ pub fn module_preload_polyfill(config: &OjConfig) -> bool {
         _ => true,
     }
 }
-
 
 /// The SSR entry `oj build` uses when none is given on the command line:
 /// `build.ssr` as a path, or with `build.ssr: true` the `rollupOptions.input`
@@ -270,13 +284,19 @@ pub fn build_ssr_entry(config: &OjConfig) -> Result<Option<String>, String> {
             let input = rolldown_options(config).and_then(|ro| ro.get("input"));
             let entry = match input {
                 Some(serde_json::Value::String(s)) => Some(s.clone()),
-                Some(serde_json::Value::Array(a)) => a.first().and_then(|v| v.as_str()).map(str::to_string),
-                Some(serde_json::Value::Object(o)) => o.values().next().and_then(|v| v.as_str()).map(str::to_string),
+                Some(serde_json::Value::Array(a)) => {
+                    a.first().and_then(|v| v.as_str()).map(str::to_string)
+                }
+                Some(serde_json::Value::Object(o)) => o
+                    .values()
+                    .next()
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
                 _ => None,
             };
-            entry
-                .map(Some)
-                .ok_or_else(|| "build.ssr: true needs the SSR entry in build.rollupOptions.input".to_string())
+            entry.map(Some).ok_or_else(|| {
+                "build.ssr: true needs the SSR entry in build.rollupOptions.input".to_string()
+            })
         }
     }
 }
@@ -336,7 +356,9 @@ pub fn css_preprocessor_json(config: &OjConfig, lang: &str) -> serde_json::Value
         .as_ref()
         .and_then(|c| c.preprocessor_options.as_ref())
         .and_then(|m| m.get(lang))
-        .map(|e| serde_json::Value::Object(e.rest.iter().map(|(k, v)| (k.clone(), v.clone())).collect()))
+        .map(|e| {
+            serde_json::Value::Object(e.rest.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        })
         .unwrap_or(serde_json::Value::Null)
 }
 
@@ -449,7 +471,9 @@ pub fn ssr_externals(config: &OjConfig) -> SsrExternals {
         let items: Vec<&serde_json::Value> = match v {
             Some(serde_json::Value::Bool(true)) => return (true, names, regexes),
             Some(serde_json::Value::Array(a)) => a.iter().collect(),
-            Some(other @ (serde_json::Value::String(_) | serde_json::Value::Object(_))) => vec![other],
+            Some(other @ (serde_json::Value::String(_) | serde_json::Value::Object(_))) => {
+                vec![other]
+            }
             _ => Vec::new(),
         };
         for item in items {
@@ -472,7 +496,10 @@ pub fn ssr_externals(config: &OjConfig) -> SsrExternals {
     let (all, names, _) = entries(ssr.get("external"));
     out.external_all = all;
     out.external = names;
-    out.target = ssr.get("target").and_then(|t| t.as_str()).map(str::to_string);
+    out.target = ssr
+        .get("target")
+        .and_then(|t| t.as_str())
+        .map(str::to_string);
     out
 }
 
@@ -704,7 +731,12 @@ pub fn user_external_conditions(config: &OjConfig, env_name: &str) -> Option<Vec
                 .and_then(|r| r.get("externalConditions"))
                 .and_then(&str_list)
         })
-        .or_else(|| config.resolve.as_ref().and_then(|r| r.external_conditions.clone()))
+        .or_else(|| {
+            config
+                .resolve
+                .as_ref()
+                .and_then(|r| r.external_conditions.clone())
+        })
 }
 
 /// Export conditions for an environment, as Vite resolves them: the default set
@@ -719,7 +751,11 @@ pub fn resolve_conditions_for(config: &OjConfig, env_name: &str, dev: bool) -> V
     if let Some(user) = user_resolve_conditions(config, env_name) {
         let mut out: Vec<String> = Vec::new();
         for c in user {
-            let c = if c == "development|production" { dev_prod.to_string() } else { c };
+            let c = if c == "development|production" {
+                dev_prod.to_string()
+            } else {
+                c
+            };
             if !out.contains(&c) {
                 out.push(c);
             }
@@ -777,7 +813,11 @@ pub fn node_server_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
         .and_then(|r| r.conditions.clone())
         .unwrap_or_default();
     for c in user {
-        let c = if c == "development|production" { dev_prod.to_string() } else { c };
+        let c = if c == "development|production" {
+            dev_prod.to_string()
+        } else {
+            c
+        };
         if !out.contains(&c) {
             out.push(c);
         }
@@ -796,10 +836,20 @@ pub fn node_server_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
 /// else Vite's DEFAULT_EXTERNAL_CONDITIONS (`node`, `module-sync`).
 pub fn node_server_external_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
     let dev_prod = if dev { "development" } else { "production" };
-    match config.raw_resolve.as_ref().and_then(|r| r.external_conditions.clone()) {
+    match config
+        .raw_resolve
+        .as_ref()
+        .and_then(|r| r.external_conditions.clone())
+    {
         Some(user) => user
             .into_iter()
-            .map(|c| if c == "development|production" { dev_prod.to_string() } else { c })
+            .map(|c| {
+                if c == "development|production" {
+                    dev_prod.to_string()
+                } else {
+                    c
+                }
+            })
             .collect(),
         None => ["node", "module-sync"].map(String::from).to_vec(),
     }
@@ -968,8 +1018,8 @@ pub fn load_with(root: &Path, command: &str, mode: &str) -> Result<OjConfig, Con
         evaluate(&path, &source, command, mode)?
     };
 
-    let value: serde_json::Value =
-        serde_json::from_str(&json).map_err(|e| ConfigError::Schema(path.clone(), e.to_string()))?;
+    let value: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| ConfigError::Schema(path.clone(), e.to_string()))?;
     match &value {
         serde_json::Value::Object(_) => {
             serde_json::from_value(value).map_err(|e| ConfigError::Schema(path, e.to_string()))
@@ -1004,7 +1054,9 @@ fn evaluate(path: &Path, source: &str, command: &str, mode: &str) -> Result<Stri
         .map_err(|e| ConfigError::Eval(path.to_path_buf(), e.to_string()))?;
     rt.set_memory_limit(EVAL_MEMORY_LIMIT);
     let deadline = std::time::Instant::now() + EVAL_TIME_LIMIT;
-    rt.set_interrupt_handler(Some(Box::new(move || std::time::Instant::now() >= deadline)));
+    rt.set_interrupt_handler(Some(Box::new(move || {
+        std::time::Instant::now() >= deadline
+    })));
     let ctx = rquickjs::Context::full(&rt)
         .map_err(|e| ConfigError::Eval(path.to_path_buf(), e.to_string()))?;
 
@@ -1140,17 +1192,32 @@ mod tests {
                  "ssr": { "resolve": { "externalConditions": ["sugar"] } },
                  "resolve": { "externalConditions": ["top"] } }"#,
         );
-        assert_eq!(super::user_external_conditions(&env, "ssr"), Some(vec!["env".to_string()]));
+        assert_eq!(
+            super::user_external_conditions(&env, "ssr"),
+            Some(vec!["env".to_string()])
+        );
         let sugar = from(
             r#"{ "ssr": { "resolve": { "externalConditions": ["sugar"] } },
                  "resolve": { "externalConditions": ["top"] } }"#,
         );
-        assert_eq!(super::user_external_conditions(&sugar, "ssr"), Some(vec!["sugar".to_string()]));
+        assert_eq!(
+            super::user_external_conditions(&sugar, "ssr"),
+            Some(vec!["sugar".to_string()])
+        );
         // The ssr sugar names the ssr environment only.
-        assert_eq!(super::user_external_conditions(&sugar, "worker"), Some(vec!["top".to_string()]));
+        assert_eq!(
+            super::user_external_conditions(&sugar, "worker"),
+            Some(vec!["top".to_string()])
+        );
         let top = from(r#"{ "resolve": { "externalConditions": ["top"] } }"#);
-        assert_eq!(super::user_external_conditions(&top, "ssr"), Some(vec!["top".to_string()]));
-        assert_eq!(super::user_external_conditions(&OjConfig::default(), "ssr"), None);
+        assert_eq!(
+            super::user_external_conditions(&top, "ssr"),
+            Some(vec!["top".to_string()])
+        );
+        assert_eq!(
+            super::user_external_conditions(&OjConfig::default(), "ssr"),
+            None
+        );
     }
 
     // `resolve.conditions` falls back the same way: environment, then the ssr
@@ -1167,7 +1234,10 @@ mod tests {
                  "ssr": { "resolve": { "conditions": ["sugar"] } },
                  "resolve": { "conditions": ["top"] } }"#,
         );
-        assert_eq!(super::user_resolve_conditions(&env, "ssr"), Some(vec!["env".to_string()]));
+        assert_eq!(
+            super::user_resolve_conditions(&env, "ssr"),
+            Some(vec!["env".to_string()])
+        );
         let sugar = from(
             r#"{ "ssr": { "resolve": { "conditions": ["workerd", "worker", "module", "browser"] } },
                  "resolve": { "conditions": ["module", "browser", "development|production"] } }"#,
@@ -1191,8 +1261,14 @@ mod tests {
             ])
         );
         let top = from(r#"{ "resolve": { "conditions": ["top"] } }"#);
-        assert_eq!(super::user_resolve_conditions(&top, "ssr"), Some(vec!["top".to_string()]));
-        assert_eq!(super::user_resolve_conditions(&OjConfig::default(), "ssr"), None);
+        assert_eq!(
+            super::user_resolve_conditions(&top, "ssr"),
+            Some(vec!["top".to_string()])
+        );
+        assert_eq!(
+            super::user_resolve_conditions(&OjConfig::default(), "ssr"),
+            None
+        );
     }
 
     // Conditions never cross runtimes: `ssr.runnerBacked` (published by the
@@ -1203,9 +1279,15 @@ mod tests {
     #[test]
     fn ssr_runner_backed_reads_the_extractor_flag() {
         let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
-        assert!(super::ssr_runner_backed(&from(r#"{ "ssr": { "runnerBacked": true } }"#)));
-        assert!(!super::ssr_runner_backed(&from(r#"{ "ssr": { "runnerBacked": false } }"#)));
-        assert!(!super::ssr_runner_backed(&from(r#"{ "ssr": { "noExternal": true } }"#)));
+        assert!(super::ssr_runner_backed(&from(
+            r#"{ "ssr": { "runnerBacked": true } }"#
+        )));
+        assert!(!super::ssr_runner_backed(&from(
+            r#"{ "ssr": { "runnerBacked": false } }"#
+        )));
+        assert!(!super::ssr_runner_backed(&from(
+            r#"{ "ssr": { "noExternal": true } }"#
+        )));
         assert!(!super::ssr_runner_backed(&OjConfig::default()));
     }
 
@@ -1249,7 +1331,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             super::node_server_conditions(&with_user, true),
-            list(&["module", "node", "development", "custom", "import", "default"])
+            list(&[
+                "module",
+                "node",
+                "development",
+                "custom",
+                "import",
+                "default"
+            ])
         );
         assert_eq!(
             super::node_server_external_conditions(&with_user, true),
@@ -1277,10 +1366,7 @@ mod tests {
     fn a_config_that_declares_an_enum_loads() {
         static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "oj-config-enum-{}-{seq}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("oj-config-enum-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1359,8 +1445,7 @@ mod tests {
         let one: OjConfig = serde_json::from_str(r#"{"envPrefix":"PUBLIC_"}"#).unwrap();
         assert_eq!(env_prefixes(&one), vec!["PUBLIC_".to_string()]);
         // An array exposes every listed prefix.
-        let many: OjConfig =
-            serde_json::from_str(r#"{"envPrefix":["VITE_","PUBLIC_"]}"#).unwrap();
+        let many: OjConfig = serde_json::from_str(r#"{"envPrefix":["VITE_","PUBLIC_"]}"#).unwrap();
         assert_eq!(
             env_prefixes(&many),
             vec!["VITE_".to_string(), "PUBLIC_".to_string()]
@@ -1408,7 +1493,8 @@ mod tests {
         assert!(off.server.unwrap().hmr.unwrap().is_disabled());
         let on: OjConfig = serde_json::from_str(r#"{"server":{"hmr":true}}"#).unwrap();
         assert!(!on.server.unwrap().hmr.unwrap().is_disabled());
-        let obj: OjConfig = serde_json::from_str(r#"{"server":{"hmr":{"overlay":false}}}"#).unwrap();
+        let obj: OjConfig =
+            serde_json::from_str(r#"{"server":{"hmr":{"overlay":false}}}"#).unwrap();
         assert!(!obj.server.unwrap().hmr.unwrap().is_disabled());
         let empty: OjConfig = serde_json::from_str(r#"{"server":{"port":3000}}"#).unwrap();
         assert!(empty.server.unwrap().hmr.is_none());
@@ -1473,11 +1559,20 @@ mod tests {
         }"#;
         let cfg: OjConfig = serde_json::from_str(json).unwrap();
         let (inc, exc, _) = optimize_deps_lists(&cfg);
-        assert_eq!(inc, vec!["object-inspect".to_string(), "@apollo/client".to_string()]);
+        assert_eq!(
+            inc,
+            vec!["object-inspect".to_string(), "@apollo/client".to_string()]
+        );
         assert_eq!(exc, vec!["big-esm".to_string()]);
-        assert_eq!(optimize_deps_needs_interop(&cfg), vec!["object-inspect".to_string()]);
+        assert_eq!(
+            optimize_deps_needs_interop(&cfg),
+            vec!["object-inspect".to_string()]
+        );
         assert!(optimize_deps_force(&cfg));
-        assert!(optimize_deps_bundler_options(&cfg).unwrap().get("define").is_some());
+        assert!(optimize_deps_bundler_options(&cfg)
+            .unwrap()
+            .get("define")
+            .is_some());
         let (client, ssr) = server_warmup_files(&cfg);
         assert_eq!(client, vec!["./src/App.tsx".to_string()]);
         assert_eq!(ssr, vec!["./src/entry-server.tsx".to_string()]);
@@ -1486,12 +1581,14 @@ mod tests {
     #[test]
     fn optimize_deps_bundler_options_prefers_rolldown_then_esbuild() {
         // esbuildOptions is honored when rolldownOptions is absent (Vite <=7 configs).
-        let cfg: OjConfig = serde_json::from_str(
-            r#"{"optimizeDeps":{"esbuildOptions":{"target":"es2020"}}}"#,
-        )
-        .unwrap();
+        let cfg: OjConfig =
+            serde_json::from_str(r#"{"optimizeDeps":{"esbuildOptions":{"target":"es2020"}}}"#)
+                .unwrap();
         assert_eq!(
-            optimize_deps_bundler_options(&cfg).unwrap().get("target").unwrap(),
+            optimize_deps_bundler_options(&cfg)
+                .unwrap()
+                .get("target")
+                .unwrap(),
             "es2020"
         );
     }
@@ -1512,7 +1609,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            optimize_deps_bundler_options(&string).unwrap().get("jsx").unwrap(),
+            optimize_deps_bundler_options(&string)
+                .unwrap()
+                .get("jsx")
+                .unwrap(),
             "preserve"
         );
     }
@@ -1636,11 +1736,19 @@ mod tests {
         // Vite) but import/default are always kept so exports maps still match.
         assert_eq!(
             resolve_conditions(&cfg, "ssr"),
-            vec!["node-only".to_string(), "import".to_string(), "default".to_string()]
+            vec![
+                "node-only".to_string(),
+                "import".to_string(),
+                "default".to_string()
+            ]
         );
         assert_eq!(
             resolve_conditions(&cfg, "client"),
-            vec!["custom".to_string(), "import".to_string(), "default".to_string()]
+            vec![
+                "custom".to_string(),
+                "import".to_string(),
+                "default".to_string()
+            ]
         );
 
         assert_eq!(
@@ -1688,19 +1796,29 @@ mod jsx_settings_tests {
 
     #[test]
     fn oxc_jsx_wins_over_esbuild_and_esbuild_maps_its_names() {
-        let mut c = OjConfig::default();
-        c.esbuild = Some(serde_json::json!({ "jsx": "transform", "jsxImportSource": "preact", "jsxFactory": "h", "jsxFragment": "Fragment" }));
+        let mut c = OjConfig {
+            esbuild: Some(
+                serde_json::json!({ "jsx": "transform", "jsxImportSource": "preact", "jsxFactory": "h", "jsxFragment": "Fragment" }),
+            ),
+            ..Default::default()
+        };
         let s = jsx_settings(&c);
         assert_eq!(s.runtime.as_deref(), Some("classic"));
         assert_eq!(s.import_source.as_deref(), Some("preact"));
         assert_eq!(s.pragma.as_deref(), Some("h"));
         assert_eq!(s.pragma_frag.as_deref(), Some("Fragment"));
 
-        c.oxc = Some(serde_json::json!({ "jsx": { "runtime": "automatic", "importSource": "@emotion/react" } }));
+        c.oxc = Some(
+            serde_json::json!({ "jsx": { "runtime": "automatic", "importSource": "@emotion/react" } }),
+        );
         let s = jsx_settings(&c);
         assert_eq!(s.runtime.as_deref(), Some("automatic"));
         assert_eq!(s.import_source.as_deref(), Some("@emotion/react"));
-        assert_eq!(s.pragma.as_deref(), Some("h"), "esbuild fills what oxc left unset");
+        assert_eq!(
+            s.pragma.as_deref(),
+            Some("h"),
+            "esbuild fills what oxc left unset"
+        );
     }
 
     #[test]
@@ -1714,22 +1832,28 @@ mod jsx_settings_tests {
 
     #[test]
     fn user_conditions_map_vites_dev_prod_placeholder() {
-        let mut cfg = OjConfig::default();
-        cfg.resolve = Some(ResolveConfig {
-            conditions: Some(vec![
-                "custom".into(),
-                "development|production".into(),
-                "import".into(),
-            ]),
+        let cfg = OjConfig {
+            resolve: Some(ResolveConfig {
+                conditions: Some(vec![
+                    "custom".into(),
+                    "development|production".into(),
+                    "import".into(),
+                ]),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         assert_eq!(
             resolve_conditions_for(&cfg, "client", true),
-            ["custom", "development", "import", "default"].map(String::from).to_vec()
+            ["custom", "development", "import", "default"]
+                .map(String::from)
+                .to_vec()
         );
         assert_eq!(
             resolve_conditions_for(&cfg, "client", false),
-            ["custom", "production", "import", "default"].map(String::from).to_vec()
+            ["custom", "production", "import", "default"]
+                .map(String::from)
+                .to_vec()
         );
     }
 }
@@ -1739,9 +1863,10 @@ mod ssr_externals_tests {
     use super::*;
 
     fn cfg(v: serde_json::Value) -> OjConfig {
-        let mut c = OjConfig::default();
-        c.ssr = Some(v);
-        c
+        OjConfig {
+            ssr: Some(v),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1758,28 +1883,55 @@ mod ssr_externals_tests {
         assert!(r.is_no_external("@tanstack/react-query"));
         assert!(!r.is_no_external("react"));
         assert_eq!(r.is_external("sharp", true), Some(true), "external wins");
-        assert_eq!(r.is_external("/app/node_modules/sharp/lib/index.js", true), Some(true));
+        assert_eq!(
+            r.is_external("/app/node_modules/sharp/lib/index.js", true),
+            Some(true)
+        );
         assert_eq!(r.is_external("lodash-es", false), Some(false));
-        assert_eq!(r.is_external("/app/node_modules/react/index.js", true), Some(true));
-        assert_eq!(r.is_external("./local", false), None, "undecided until resolved");
+        assert_eq!(
+            r.is_external("/app/node_modules/react/index.js", true),
+            Some(true)
+        );
+        assert_eq!(
+            r.is_external("./local", false),
+            None,
+            "undecided until resolved"
+        );
         assert_eq!(r.target.as_deref(), Some("node"));
 
         let all = ssr_externals(&cfg(serde_json::json!({ "noExternal": true })));
         assert!(all.no_external_all);
-        assert_eq!(all.is_external("/app/node_modules/react/index.js", true), Some(false));
-        let ext_all = ssr_externals(&cfg(serde_json::json!({ "noExternal": true, "external": true })));
+        assert_eq!(
+            all.is_external("/app/node_modules/react/index.js", true),
+            Some(false)
+        );
+        let ext_all = ssr_externals(&cfg(
+            serde_json::json!({ "noExternal": true, "external": true }),
+        ));
         assert_eq!(ext_all.is_external("react", false), Some(true));
         let none = ssr_externals(&OjConfig::default());
-        assert_eq!(none.is_external("/app/node_modules/react/index.js", true), Some(true));
+        assert_eq!(
+            none.is_external("/app/node_modules/react/index.js", true),
+            Some(true)
+        );
         assert_eq!(none.is_external("react", false), None);
     }
 
     #[test]
     fn package_names_from_specifiers_and_paths() {
         assert_eq!(package_name_of("react").as_deref(), Some("react"));
-        assert_eq!(package_name_of("react/jsx-runtime").as_deref(), Some("react"));
-        assert_eq!(package_name_of("@scope/pkg/sub?x").as_deref(), Some("@scope/pkg"));
-        assert_eq!(package_name_of("/a/node_modules/x/node_modules/@s/p/i.js").as_deref(), Some("@s/p"));
+        assert_eq!(
+            package_name_of("react/jsx-runtime").as_deref(),
+            Some("react")
+        );
+        assert_eq!(
+            package_name_of("@scope/pkg/sub?x").as_deref(),
+            Some("@scope/pkg")
+        );
+        assert_eq!(
+            package_name_of("/a/node_modules/x/node_modules/@s/p/i.js").as_deref(),
+            Some("@s/p")
+        );
         assert_eq!(package_name_of(""), None);
         assert_eq!(package_name_of("@scope"), None);
     }
@@ -1796,10 +1948,22 @@ mod build_option_defaults_tests {
     #[test]
     fn sourcemap_accepts_bool_and_vite_strings() {
         assert_eq!(build_sourcemap(&cfg("{}")), Sourcemap::Off);
-        assert_eq!(build_sourcemap(&cfg(r#"{"build":{"sourcemap":true}}"#)), Sourcemap::File);
-        assert_eq!(build_sourcemap(&cfg(r#"{"build":{"sourcemap":false}}"#)), Sourcemap::Off);
-        assert_eq!(build_sourcemap(&cfg(r#"{"build":{"sourcemap":"inline"}}"#)), Sourcemap::Inline);
-        assert_eq!(build_sourcemap(&cfg(r#"{"build":{"sourcemap":"hidden"}}"#)), Sourcemap::Hidden);
+        assert_eq!(
+            build_sourcemap(&cfg(r#"{"build":{"sourcemap":true}}"#)),
+            Sourcemap::File
+        );
+        assert_eq!(
+            build_sourcemap(&cfg(r#"{"build":{"sourcemap":false}}"#)),
+            Sourcemap::Off
+        );
+        assert_eq!(
+            build_sourcemap(&cfg(r#"{"build":{"sourcemap":"inline"}}"#)),
+            Sourcemap::Inline
+        );
+        assert_eq!(
+            build_sourcemap(&cfg(r#"{"build":{"sourcemap":"hidden"}}"#)),
+            Sourcemap::Hidden
+        );
     }
 
     #[test]
@@ -1807,14 +1971,22 @@ mod build_option_defaults_tests {
         assert!(build_minify(&cfg("{}")));
         assert!(!build_minify(&cfg(r#"{"build":{"minify":false}}"#)));
         assert!(build_minify(&cfg(r#"{"build":{"minify":"terser"}}"#)));
-        assert!(build_minify(&cfg(r#"{"build":{"minify":"esbuild","terserOptions":{"compress":{}}}}"#)));
+        assert!(build_minify(&cfg(
+            r#"{"build":{"minify":"esbuild","terserOptions":{"compress":{}}}}"#
+        )));
     }
 
     #[test]
     fn target_expands_vite_presets_and_accepts_arrays() {
         assert_eq!(build_targets(&cfg("{}")), BASELINE_WIDELY_AVAILABLE);
-        assert_eq!(build_targets(&cfg(r#"{"build":{"target":"es2015"}}"#)), vec!["es2015"]);
-        assert_eq!(build_targets(&cfg(r#"{"build":{"target":"modules"}}"#)), MODULES_TARGET);
+        assert_eq!(
+            build_targets(&cfg(r#"{"build":{"target":"es2015"}}"#)),
+            vec!["es2015"]
+        );
+        assert_eq!(
+            build_targets(&cfg(r#"{"build":{"target":"modules"}}"#)),
+            MODULES_TARGET
+        );
         assert_eq!(
             build_targets(&cfg(r#"{"build":{"target":["es2020","safari14"]}}"#)),
             vec!["es2020", "safari14"]
@@ -1824,17 +1996,34 @@ mod build_option_defaults_tests {
     #[test]
     fn module_preload_polyfill_defaults_on() {
         assert!(module_preload_polyfill(&cfg("{}")));
-        assert!(!module_preload_polyfill(&cfg(r#"{"build":{"modulePreload":false}}"#)));
-        assert!(!module_preload_polyfill(&cfg(r#"{"build":{"modulePreload":{"polyfill":false}}}"#)));
-        assert!(module_preload_polyfill(&cfg(r#"{"build":{"modulePreload":{"polyfill":true}}}"#)));
+        assert!(!module_preload_polyfill(&cfg(
+            r#"{"build":{"modulePreload":false}}"#
+        )));
+        assert!(!module_preload_polyfill(&cfg(
+            r#"{"build":{"modulePreload":{"polyfill":false}}}"#
+        )));
+        assert!(module_preload_polyfill(&cfg(
+            r#"{"build":{"modulePreload":{"polyfill":true}}}"#
+        )));
         assert!(module_preload_links(&cfg("{}")));
-        assert!(!module_preload_links(&cfg(r#"{"build":{"modulePreload":false}}"#)));
-        assert!(module_preload_links(&cfg(r#"{"build":{"modulePreload":{"polyfill":false}}}"#)), "polyfill off still links");
+        assert!(!module_preload_links(&cfg(
+            r#"{"build":{"modulePreload":false}}"#
+        )));
+        assert!(
+            module_preload_links(&cfg(r#"{"build":{"modulePreload":{"polyfill":false}}}"#)),
+            "polyfill off still links"
+        );
     }
 
     #[test]
     fn empty_out_dir_parses() {
-        assert_eq!(cfg(r#"{"build":{"emptyOutDir":false}}"#).build.unwrap().empty_out_dir, Some(false));
+        assert_eq!(
+            cfg(r#"{"build":{"emptyOutDir":false}}"#)
+                .build
+                .unwrap()
+                .empty_out_dir,
+            Some(false)
+        );
         assert_eq!(cfg("{}").build.and_then(|b| b.empty_out_dir), None);
     }
 }
@@ -1854,7 +2043,9 @@ mod ssr_option_tests {
         assert_eq!(SsrExternals::package_of("@scope/pkg/sub/x"), "@scope/pkg");
         assert_eq!(SsrExternals::package_of("@scope/pkg"), "@scope/pkg");
         assert_eq!(
-            SsrExternals::package_of_path("/app/node_modules/.pnpm/x/node_modules/@scope/pkg/dist/i.js"),
+            SsrExternals::package_of_path(
+                "/app/node_modules/.pnpm/x/node_modules/@scope/pkg/dist/i.js"
+            ),
             Some("@scope/pkg")
         );
         assert_eq!(SsrExternals::package_of_path("/app/src/x.js"), None);
@@ -1864,12 +2055,17 @@ mod ssr_option_tests {
     fn ssr_externals_follow_vite_precedence() {
         let e = ssr_externals(&cfg("{}"));
         assert!(e.is_external_pkg("react"), "deps are external by default");
-        let e = ssr_externals(&cfg(r#"{"ssr":{"noExternal":["ui-kit"],"external":["react"]}}"#));
+        let e = ssr_externals(&cfg(
+            r#"{"ssr":{"noExternal":["ui-kit"],"external":["react"]}}"#,
+        ));
         assert!(!e.is_external_pkg("ui-kit"));
         assert!(e.is_external_pkg("react"));
         assert!(e.is_external_pkg("lodash"));
         let e = ssr_externals(&cfg(r#"{"ssr":{"noExternal":true,"external":["react"]}}"#));
-        assert!(!e.is_external_pkg("lodash"), "noExternal: true bundles everything");
+        assert!(
+            !e.is_external_pkg("lodash"),
+            "noExternal: true bundles everything"
+        );
         assert!(e.is_external_pkg("react"), "except explicit externals");
         let e = ssr_externals(&cfg(r#"{"ssr":{"noExternal":"single"}}"#));
         assert!(!e.is_external_pkg("single"));
@@ -1880,20 +2076,34 @@ mod ssr_option_tests {
     #[test]
     fn build_ssr_true_takes_the_rollup_input() {
         assert_eq!(build_ssr_entry(&cfg("{}")), Ok(None));
-        assert_eq!(build_ssr_entry(&cfg(r#"{"build":{"ssr":"src/s.ts"}}"#)), Ok(Some("src/s.ts".into())));
         assert_eq!(
-            build_ssr_entry(&cfg(r#"{"build":{"ssr":true,"rollupOptions":{"input":"src/entry-server.ts"}}}"#)),
+            build_ssr_entry(&cfg(r#"{"build":{"ssr":"src/s.ts"}}"#)),
+            Ok(Some("src/s.ts".into()))
+        );
+        assert_eq!(
+            build_ssr_entry(&cfg(
+                r#"{"build":{"ssr":true,"rollupOptions":{"input":"src/entry-server.ts"}}}"#
+            )),
             Ok(Some("src/entry-server.ts".into()))
         );
         assert!(build_ssr_entry(&cfg(r#"{"build":{"ssr":true}}"#)).is_err());
-        assert_eq!(build_ssr_entry(&cfg(r#"{"build":{"ssr":false}}"#)), Ok(None));
+        assert_eq!(
+            build_ssr_entry(&cfg(r#"{"build":{"ssr":false}}"#)),
+            Ok(None)
+        );
     }
 
     #[test]
     fn ssr_manifest_name_resolves() {
         assert_eq!(ssr_manifest_name(&cfg("{}")), None);
-        assert_eq!(ssr_manifest_name(&cfg(r#"{"build":{"ssrManifest":true}}"#)), Some(".vite/ssr-manifest.json".into()));
-        assert_eq!(ssr_manifest_name(&cfg(r#"{"build":{"ssrManifest":"m.json"}}"#)), Some("m.json".into()));
+        assert_eq!(
+            ssr_manifest_name(&cfg(r#"{"build":{"ssrManifest":true}}"#)),
+            Some(".vite/ssr-manifest.json".into())
+        );
+        assert_eq!(
+            ssr_manifest_name(&cfg(r#"{"build":{"ssrManifest":"m.json"}}"#)),
+            Some("m.json".into())
+        );
     }
 }
 
@@ -1910,7 +2120,10 @@ mod preprocessor_options_tests {
         )
         .unwrap();
         assert_eq!(css_additional_data(&cfg, "scss").as_deref(), Some("$x: 1;"));
-        assert_eq!(css_load_paths(&cfg, "scss"), vec!["styles".to_string(), "legacy".to_string()]);
+        assert_eq!(
+            css_load_paths(&cfg, "scss"),
+            vec!["styles".to_string(), "legacy".to_string()]
+        );
         let less = css_preprocessor_json(&cfg, "less");
         assert_eq!(less["javascriptEnabled"], true);
         assert_eq!(less["globalVars"]["brand"], "#f00");
@@ -1927,8 +2140,15 @@ mod build_manifest_css_minify_tests {
     #[test]
     fn manifest_css_minify_and_assets_dir_follow_vite_defaults() {
         let cfg = OjConfig::default();
-        assert_eq!(build_manifest_name(&cfg), None, "Vite writes no manifest by default");
-        assert!(build_css_minify(&cfg, false), "cssMinify defaults to minify (on)");
+        assert_eq!(
+            build_manifest_name(&cfg),
+            None,
+            "Vite writes no manifest by default"
+        );
+        assert!(
+            build_css_minify(&cfg, false),
+            "cssMinify defaults to minify (on)"
+        );
         assert_eq!(build_assets_dir(&cfg), "assets");
         assert!(build_report_compressed_size(&cfg));
         assert_eq!(build_chunk_size_warning_limit(&cfg), 500.0);
@@ -1937,8 +2157,14 @@ mod build_manifest_css_minify_tests {
             r#"{"build":{"manifest":true,"minify":false,"assetsDir":"/static/","chunkSizeWarningLimit":1000,"reportCompressedSize":false}}"#,
         )
         .unwrap();
-        assert_eq!(build_manifest_name(&cfg).as_deref(), Some(".vite/manifest.json"));
-        assert!(!build_css_minify(&cfg, false), "cssMinify unset follows minify: false");
+        assert_eq!(
+            build_manifest_name(&cfg).as_deref(),
+            Some(".vite/manifest.json")
+        );
+        assert!(
+            !build_css_minify(&cfg, false),
+            "cssMinify unset follows minify: false"
+        );
         assert_eq!(build_assets_dir(&cfg), "static");
         assert_eq!(build_chunk_size_warning_limit(&cfg), 1000.0);
         assert!(!build_report_compressed_size(&cfg));
@@ -1948,8 +2174,14 @@ mod build_manifest_css_minify_tests {
         )
         .unwrap();
         assert_eq!(build_manifest_name(&cfg).as_deref(), Some("meta/m.json"));
-        assert!(build_css_minify(&cfg, false), "an explicit cssMinify is independent of minify");
-        assert_eq!(ssr_manifest_name(&cfg).as_deref(), Some(".vite/ssr-manifest.json"));
+        assert!(
+            build_css_minify(&cfg, false),
+            "an explicit cssMinify is independent of minify"
+        );
+        assert_eq!(
+            ssr_manifest_name(&cfg).as_deref(),
+            Some(".vite/ssr-manifest.json")
+        );
     }
 }
 
@@ -1959,11 +2191,14 @@ mod proxy_secure_tests {
 
     #[test]
     fn proxy_secure_defaults_on_and_reads_false() {
-        let cfg: OjConfig = serde_json::from_str(r#"{"server":{"proxy":{
+        let cfg: OjConfig = serde_json::from_str(
+            r#"{"server":{"proxy":{
             "/a": "https://a.test",
             "/b": { "target": "https://b.test", "ws": true },
             "/c": { "target": "https://c.test", "secure": false }
-        }}}"#).unwrap();
+        }}}"#,
+        )
+        .unwrap();
         let proxy = cfg.server.unwrap().proxy.unwrap();
         assert!(proxy["/a"].secure());
         assert!(proxy["/b"].secure());
@@ -1981,14 +2216,23 @@ mod public_dir_tests {
         assert_eq!(build_css_targets(&none), build_targets(&none));
         assert!(build_css_minify(&none, false));
         let js_off: OjConfig = serde_json::from_str(r#"{"build":{"minify":false}}"#).unwrap();
-        assert!(!build_css_minify(&js_off, false), "cssMinify follows build.minify");
-        assert!(build_css_minify(&js_off, true), "server builds minify CSS by default");
+        assert!(
+            !build_css_minify(&js_off, false),
+            "cssMinify follows build.minify"
+        );
+        assert!(
+            build_css_minify(&js_off, true),
+            "server builds minify CSS by default"
+        );
         let explicit: OjConfig =
             serde_json::from_str(r#"{"build":{"minify":false,"cssMinify":"lightningcss","cssTarget":["chrome120","modules"]}}"#).unwrap();
         assert!(build_css_minify(&explicit, false));
         let t = build_css_targets(&explicit);
         assert_eq!(t[0], "chrome120");
-        assert!(t.contains(&"safari14".to_string()), "modules preset expands: {t:?}");
+        assert!(
+            t.contains(&"safari14".to_string()),
+            "modules preset expands: {t:?}"
+        );
         let off: OjConfig = serde_json::from_str(r#"{"build":{"cssMinify":false}}"#).unwrap();
         assert!(!build_css_minify(&off, false));
     }
@@ -2009,8 +2253,14 @@ mod public_dir_tests {
         assert_eq!(m.locals_convention.as_deref(), Some("camelCaseOnly"));
         assert_eq!(m.generate_scoped_name, None, "function form is dropped");
         assert!(m.global_scope);
-        assert_eq!(m.global_module_paths, vec!["global\\.css$".to_string(), "legacy".to_string()]);
-        assert_eq!(css_modules(&serde_json::from_str("{}").unwrap()), CssModulesSettings::default());
+        assert_eq!(
+            m.global_module_paths,
+            vec!["global\\.css$".to_string(), "legacy".to_string()]
+        );
+        assert_eq!(
+            css_modules(&serde_json::from_str("{}").unwrap()),
+            CssModulesSettings::default()
+        );
     }
 
     #[test]
@@ -2019,7 +2269,10 @@ mod public_dir_tests {
         let none: OjConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(public_dir(&none, root), Some(PathBuf::from("/app/public")));
         let custom: OjConfig = serde_json::from_str(r#"{"publicDir":"static"}"#).unwrap();
-        assert_eq!(public_dir(&custom, root), Some(PathBuf::from("/app/static")));
+        assert_eq!(
+            public_dir(&custom, root),
+            Some(PathBuf::from("/app/static"))
+        );
         let off: OjConfig = serde_json::from_str(r#"{"publicDir":false}"#).unwrap();
         assert_eq!(public_dir(&off, root), None);
     }

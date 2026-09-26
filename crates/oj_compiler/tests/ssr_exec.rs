@@ -10,7 +10,11 @@ use std::path::Path;
 use std::process::Command;
 
 fn node_available() -> bool {
-    Command::new("node").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 const HARNESS: &str = r#"
@@ -98,7 +102,10 @@ fn ssr_output_executes_with_live_bindings_and_reexports() {
 
     assert_eq!(result["def"], 42, "default import");
     assert_eq!(result["before"], 0, "live binding before mutation");
-    assert_eq!(result["after"], 2, "live binding after inc() x2 (member access is live)");
+    assert_eq!(
+        result["after"], 2,
+        "live binding after inc() x2 (member access is live)"
+    );
     assert_eq!(result["nsAfter"], 2, "namespace member is live");
     assert_eq!(result["label"], "dep", "named import");
     assert_eq!(result["tag"], "dep", "re-export alias through barrel");
@@ -135,10 +142,20 @@ fn ssr_output_handles_extends_import_and_this_stripping() {
         .arg(codes_file.path())
         .output()
         .expect("run node harness");
-    assert!(out.status.success(), "harness failed: {}\n--- main ---\n{main}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "harness failed: {}\n--- main ---\n{main}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|_| panic!("bad json: {}", String::from_utf8_lossy(&out.stdout)));
 
-    assert_eq!(result["sub"], "derived:base", "subclass extending an imported class + super()");
-    assert_eq!(result["thisMode"], "unbound", "(0, import.fn)() strips `this` at call sites");
+    assert_eq!(
+        result["sub"], "derived:base",
+        "subclass extending an imported class + super()"
+    );
+    assert_eq!(
+        result["thisMode"], "unbound",
+        "(0, import.fn)() strips `this` at call sites"
+    );
 }

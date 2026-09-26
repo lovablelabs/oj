@@ -128,7 +128,10 @@ pub fn package_name(entry: &Path) -> Option<String> {
     }
 }
 
-fn pkg_in(path: &Path, set: impl Fn(&OptimizeConfig) -> &std::collections::HashSet<String>) -> bool {
+fn pkg_in(
+    path: &Path,
+    set: impl Fn(&OptimizeConfig) -> &std::collections::HashSet<String>,
+) -> bool {
     match (config(), package_name(path)) {
         (Some(c), Some(name)) => set(c).contains(&name),
         _ => false,
@@ -289,7 +292,8 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
                         }
                         discovered.push(target);
                         Some(format!("#{tid}"))
-                    } else if let Some(target) = resolve_same_package(&pkg_root, &dir, spec, resolver)
+                    } else if let Some(target) =
+                        resolve_same_package(&pkg_root, &dir, spec, resolver)
                     {
                         // Same-package subpath (`jotai/react`): treat as internal.
                         match id_of(&pkg_root, &target) {
@@ -326,7 +330,10 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
                 Ok(f) => f,
                 Err(e) => {
                     if pb_debug() {
-                        eprintln!("oj[pb] fallback: esm compile error ({e}) @ {}", file.display());
+                        eprintln!(
+                            "oj[pb] fallback: esm compile error ({e}) @ {}",
+                            file.display()
+                        );
                     }
                     return BundleOutcome::Fallback;
                 }
@@ -359,7 +366,10 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
             Ok(a) => a,
             Err(e) => {
                 if pb_debug() {
-                    eprintln!("oj[pb] fallback: cjs analyze error ({e}) @ {}", file.display());
+                    eprintln!(
+                        "oj[pb] fallback: cjs analyze error ({e}) @ {}",
+                        file.display()
+                    );
                 }
                 return BundleOutcome::Fallback;
             }
@@ -374,11 +384,17 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
                     return bail(&format!("unresolved relative require({spec:?})"), &file);
                 };
                 let Some(tid) = id_of(&pkg_root, &target) else {
-                    return bail(&format!("relative require({spec:?}) escapes package"), &file);
+                    return bail(
+                        &format!("relative require({spec:?}) escapes package"),
+                        &file,
+                    );
                 };
                 let t_ext = target.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if !INTERNAL_EXTS.contains(&t_ext) {
-                    return bail(&format!("relative require({spec:?}) -> unsupported .{t_ext}"), &file);
+                    return bail(
+                        &format!("relative require({spec:?}) -> unsupported .{t_ext}"),
+                        &file,
+                    );
                 }
                 deps.push((spec.clone(), DepTarget::Internal(tid)));
                 queue.push_back(target);
@@ -407,19 +423,31 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
             .reexport_requires
             .iter()
             .filter_map(|spec| {
-                deps.iter().find(|(s, _)| s == spec).and_then(|(_, t)| match t {
-                    DepTarget::Internal(id) => Some(id.clone()),
-                    DepTarget::External(_) => None,
-                })
+                deps.iter()
+                    .find(|(s, _)| s == spec)
+                    .and_then(|(_, t)| match t {
+                        DepTarget::Internal(id) => Some(id.clone()),
+                        DepTarget::External(_) => None,
+                    })
             })
             .collect();
         export_info.insert(id.clone(), (analysis.named_exports.clone(), reexport_ids));
-        modules.push(PkgModule { id, kind: ModuleKind::Cjs, body: analysis.body, deps });
+        modules.push(PkgModule {
+            id,
+            kind: ModuleKind::Cjs,
+            body: analysis.body,
+            deps,
+        });
     }
 
     let entry_named = collect_exports(&entry_id, &export_info);
     externals.sort();
-    BundleOutcome::Bundle(emit_package_bundle(&modules, &entry_id, &externals, &entry_named))
+    BundleOutcome::Bundle(emit_package_bundle(
+        &modules,
+        &entry_id,
+        &externals,
+        &entry_named,
+    ))
 }
 
 /// The entry's full ESM export names: its own plus everything re-exported
@@ -508,36 +536,30 @@ mod tests {
             vec!["big-esm".into()],
             vec!["@scope/legacy".into()],
         );
-        assert!(is_include_forced(Path::new("/a/node_modules/object-inspect/index.js")));
-        assert!(!is_include_forced(Path::new("/a/node_modules/react/index.js")));
+        assert!(is_include_forced(Path::new(
+            "/a/node_modules/object-inspect/index.js"
+        )));
+        assert!(!is_include_forced(Path::new(
+            "/a/node_modules/react/index.js"
+        )));
         assert!(is_excluded(Path::new("/a/node_modules/big-esm/dist/x.js")));
-        assert!(!is_excluded(Path::new("/a/node_modules/object-inspect/index.js")));
-        assert!(needs_forced_interop(Path::new("/a/node_modules/@scope/legacy/index.js")));
-        assert!(!needs_forced_interop(Path::new("/a/node_modules/big-esm/x.js")));
+        assert!(!is_excluded(Path::new(
+            "/a/node_modules/object-inspect/index.js"
+        )));
+        assert!(needs_forced_interop(Path::new(
+            "/a/node_modules/@scope/legacy/index.js"
+        )));
+        assert!(!needs_forced_interop(Path::new(
+            "/a/node_modules/big-esm/x.js"
+        )));
     }
 
-    // Build a synthetic package on disk, bundle it, node-eval the result.
-    fn eval_bundle(src: &str) -> serde_json::Value {
-        let dir = std::env::temp_dir().join(format!("oj-pkgbuild-{}", fnv(src)));
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("bundle.mjs");
-        std::fs::write(&f, src).unwrap();
-        let probe = dir.join("probe.mjs");
-        std::fs::write(
-            &probe,
-            format!(
-                "import def, * as ns from {:?};\nprocess.stdout.write(JSON.stringify({{ def, keys: Object.keys(ns) }}));\n",
-                f.to_string_lossy()
-            ),
-        )
-        .unwrap();
-        let out = std::process::Command::new("node").arg(&probe).output().unwrap();
-        assert!(out.status.success(), "node: {}", String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice(&out.stdout).unwrap()
-    }
     fn fnv(s: &str) -> u64 {
         let mut h: u64 = 1469598103934665603;
-        for b in s.bytes() { h ^= b as u64; h = h.wrapping_mul(1099511628211); }
+        for b in s.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
         h
     }
 
@@ -545,10 +567,18 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oj-pkg-{}-{}", std::process::id(), fnv("x")));
         let nm = root.join("node_modules").join("acme");
         std::fs::create_dir_all(nm.join("lib")).unwrap();
-        std::fs::write(nm.join("package.json"), r#"{"name":"acme","version":"1.0.0","main":"index.js"}"#).unwrap();
+        std::fs::write(
+            nm.join("package.json"),
+            r#"{"name":"acme","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
         // entry -> internal ./lib/impl + ./data.json; re-exports a name.
         std::fs::write(nm.join("index.js"), "const impl = require('./lib/impl');\nconst data = require('./data.json');\nmodule.exports.greet = (n) => impl.hi + n + data.mark;\nmodule.exports.value = 42;\n").unwrap();
-        std::fs::write(nm.join("lib").join("impl.js"), "module.exports.hi = 'hi ';\n").unwrap();
+        std::fs::write(
+            nm.join("lib").join("impl.js"),
+            "module.exports.hi = 'hi ';\n",
+        )
+        .unwrap();
         std::fs::write(nm.join("data.json"), r#"{"mark":"!"}"#).unwrap();
         (root, nm.join("index.js"))
     }
@@ -564,9 +594,18 @@ mod tests {
         };
         // one bundle, no externals, internal graph + json included.
         assert!(src.contains(r#""index.js""#), "entry registered");
-        assert!(src.contains(r#""lib/impl.js""#), "subdir file registered: {src}");
-        assert!(src.contains(r#""data.json""#) && src.contains("module.exports = {"), "json inlined");
-        assert!(!src.contains("import * as __oj_extns"), "no externals expected");
+        assert!(
+            src.contains(r#""lib/impl.js""#),
+            "subdir file registered: {src}"
+        );
+        assert!(
+            src.contains(r#""data.json""#) && src.contains("module.exports = {"),
+            "json inlined"
+        );
+        assert!(
+            !src.contains("import * as __oj_extns"),
+            "no externals expected"
+        );
 
         // Runtime: named exports resolve across files + json.
         let probe = format!(
@@ -581,10 +620,21 @@ mod tests {
         );
         let pf = std::env::temp_dir().join(format!("oj-pkgrun-probe-{}.mjs", fnv(&src)));
         std::fs::write(&pf, probe).unwrap();
-        let out = std::process::Command::new("node").arg(&pf).output().unwrap();
-        assert!(out.status.success(), "node: {}", String::from_utf8_lossy(&out.stderr));
+        let out = std::process::Command::new("node")
+            .arg(&pf)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "node: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(v["g"], serde_json::json!("hi x!"), "cross-file + json require works: {v}");
+        assert_eq!(
+            v["g"],
+            serde_json::json!("hi x!"),
+            "cross-file + json require works: {v}"
+        );
         assert_eq!(v["v"], serde_json::json!(42));
         std::fs::remove_dir_all(&root).ok();
     }
@@ -595,9 +645,20 @@ mod tests {
         let f = root.join(format!("bundle-{}.mjs", fnv(src)));
         std::fs::write(&f, src).unwrap();
         let pf = root.join(format!("probe-{}.mjs", fnv(&(src.to_string() + probe))));
-        std::fs::write(&pf, probe.replace("BUNDLE", &format!("{:?}", f.to_string_lossy()))).unwrap();
-        let out = std::process::Command::new("node").arg(&pf).output().unwrap();
-        assert!(out.status.success(), "node: {}", String::from_utf8_lossy(&out.stderr));
+        std::fs::write(
+            &pf,
+            probe.replace("BUNDLE", &format!("{:?}", f.to_string_lossy())),
+        )
+        .unwrap();
+        let out = std::process::Command::new("node")
+            .arg(&pf)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "node: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
@@ -608,13 +669,21 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oj-pkg-esm-{}", std::process::id()));
         let nm = root.join("node_modules").join("esmpkg");
         std::fs::create_dir_all(nm.join("lib")).unwrap();
-        std::fs::write(nm.join("package.json"), r#"{"name":"esmpkg","type":"module","main":"index.js"}"#).unwrap();
+        std::fs::write(
+            nm.join("package.json"),
+            r#"{"name":"esmpkg","type":"module","main":"index.js"}"#,
+        )
+        .unwrap();
         std::fs::write(
             nm.join("index.js"),
             "export * from './lib/util.js';\nexport const version = '1.0';\nexport default 7;\n",
         )
         .unwrap();
-        std::fs::write(nm.join("lib").join("util.js"), "export const add = (a, b) => a + b;\n").unwrap();
+        std::fs::write(
+            nm.join("lib").join("util.js"),
+            "export const add = (a, b) => a + b;\n",
+        )
+        .unwrap();
         let resolver = OjResolver::new(&root);
         let src = match build(&nm.join("index.js"), &resolver, &root) {
             BundleOutcome::Bundle(s) => s,
@@ -626,8 +695,16 @@ mod tests {
             "import def, { version, add } from BUNDLE;\nprocess.stdout.write(JSON.stringify({ def, version, sum: add(2,3) }));\n",
         );
         assert_eq!(v["def"], serde_json::json!(7), "esm default: {v}");
-        assert_eq!(v["version"], serde_json::json!("1.0"), "esm direct named: {v}");
-        assert_eq!(v["sum"], serde_json::json!(5), "star-barrel re-export callable: {v}");
+        assert_eq!(
+            v["version"],
+            serde_json::json!("1.0"),
+            "esm direct named: {v}"
+        );
+        assert_eq!(
+            v["sum"],
+            serde_json::json!(5),
+            "star-barrel re-export callable: {v}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -644,7 +721,11 @@ mod tests {
             r#"{"name":"jotaiish","type":"module","exports":{".":"./esm/index.mjs","./react":"./esm/react.mjs"}}"#,
         )
         .unwrap();
-        std::fs::write(nm.join("esm").join("index.mjs"), "export * from 'jotaiish/react';\n").unwrap();
+        std::fs::write(
+            nm.join("esm").join("index.mjs"),
+            "export * from 'jotaiish/react';\n",
+        )
+        .unwrap();
         std::fs::write(
             nm.join("esm").join("react.mjs"),
             "function useAtomValue(a) { return a; }\nexport { useAtomValue };\n",
@@ -656,13 +737,20 @@ mod tests {
             BundleOutcome::Fallback => panic!("expected bundle, got fallback"),
         };
         // react.mjs bundled internally (no external import for the subpath).
-        assert!(!src.contains("import * as __oj_extns"), "subpath must be internal: {src}");
+        assert!(
+            !src.contains("import * as __oj_extns"),
+            "subpath must be internal: {src}"
+        );
         let v = eval_named(
             &root,
             &src,
             "import { useAtomValue } from BUNDLE;\nprocess.stdout.write(JSON.stringify({ ok: typeof useAtomValue }));\n",
         );
-        assert_eq!(v["ok"], serde_json::json!("function"), "subpath name statically re-exported: {v}");
+        assert_eq!(
+            v["ok"],
+            serde_json::json!("function"),
+            "subpath name statically re-exported: {v}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -673,7 +761,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oj-pkg-mixed-{}", std::process::id()));
         let nm = root.join("node_modules").join("mixed");
         std::fs::create_dir_all(&nm).unwrap();
-        std::fs::write(nm.join("package.json"), r#"{"name":"mixed","main":"index.js"}"#).unwrap();
+        std::fs::write(
+            nm.join("package.json"),
+            r#"{"name":"mixed","main":"index.js"}"#,
+        )
+        .unwrap();
         std::fs::write(
             nm.join("index.js"),
             "import impl from './impl.cjs';\nexport const shout = (s) => impl(s).toUpperCase();\n",
@@ -690,7 +782,11 @@ mod tests {
             &src,
             "import { shout } from BUNDLE;\nprocess.stdout.write(JSON.stringify({ out: shout('ada') }));\n",
         );
-        assert_eq!(v["out"], serde_json::json!("HI ADA"), "esm-over-cjs interop: {v}");
+        assert_eq!(
+            v["out"],
+            serde_json::json!("HI ADA"),
+            "esm-over-cjs interop: {v}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -702,17 +798,25 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oj-pkg-barrel-{}", std::process::id()));
         let nm = root.join("node_modules").join("guards");
         std::fs::create_dir_all(nm.join("g")).unwrap();
-        std::fs::write(nm.join("package.json"), r#"{"name":"guards","main":"index.js"}"#).unwrap();
+        std::fs::write(
+            nm.join("package.json"),
+            r#"{"name":"guards","main":"index.js"}"#,
+        )
+        .unwrap();
         std::fs::write(
             nm.join("index.js"),
-            "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", { value: true });\nvar tslib = require(\"tslib\");\n__exportStar(require(\"./g/prims\"), exports);\n".to_string(),
+            "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", { value: true });\nvar tslib = require(\"tslib\");\n__exportStar(require(\"./g/prims\"), exports);\n",
         )
         .unwrap();
         std::fs::write(nm.join("g").join("prims.js"), "exports.isNonEmptyString = (x) => typeof x === 'string' && x.length > 0;\nexports.isUndefined = (x) => x === undefined;\n").unwrap();
         // tslib external (provides __exportStar at runtime; here it just needs to resolve)
         let tslib = root.join("node_modules").join("tslib");
         std::fs::create_dir_all(&tslib).unwrap();
-        std::fs::write(tslib.join("package.json"), r#"{"name":"tslib","main":"index.js"}"#).unwrap();
+        std::fs::write(
+            tslib.join("package.json"),
+            r#"{"name":"tslib","main":"index.js"}"#,
+        )
+        .unwrap();
         std::fs::write(tslib.join("index.js"), "exports.__exportStar = function(m, e){ for (var k in m) if (k!=='default') e[k]=m[k]; };\n").unwrap();
 
         let resolver = OjResolver::new(&root);
@@ -720,8 +824,14 @@ mod tests {
             BundleOutcome::Bundle(s) => s,
             BundleOutcome::Fallback => panic!("fallback"),
         };
-        assert!(src.contains("as isNonEmptyString"), "barrel re-export name missing: {src}");
-        assert!(src.contains("as isUndefined"), "barrel re-export name missing");
+        assert!(
+            src.contains("as isNonEmptyString"),
+            "barrel re-export name missing: {src}"
+        );
+        assert!(
+            src.contains("as isUndefined"),
+            "barrel re-export name missing"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -733,7 +843,11 @@ mod tests {
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
         std::fs::write(a.join("package.json"), r#"{"name":"a","main":"index.js"}"#).unwrap();
-        std::fs::write(a.join("index.js"), "const b = require('b');\nmodule.exports = b;\n").unwrap();
+        std::fs::write(
+            a.join("index.js"),
+            "const b = require('b');\nmodule.exports = b;\n",
+        )
+        .unwrap();
         std::fs::write(b.join("package.json"), r#"{"name":"b","main":"index.js"}"#).unwrap();
         std::fs::write(b.join("index.js"), "module.exports = 5;\n").unwrap();
         let resolver = OjResolver::new(&root);
@@ -741,8 +855,14 @@ mod tests {
             BundleOutcome::Bundle(s) => s,
             BundleOutcome::Fallback => panic!("fallback"),
         };
-        assert!(src.contains(PKG_PREFIX), "external routed to a /@oj-pkg bundle: {src}");
-        assert!(src.contains("import * as __oj_extns0"), "external ESM import emitted");
+        assert!(
+            src.contains(PKG_PREFIX),
+            "external routed to a /@oj-pkg bundle: {src}"
+        );
+        assert!(
+            src.contains("import * as __oj_extns0"),
+            "external ESM import emitted"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }

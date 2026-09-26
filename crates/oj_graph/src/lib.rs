@@ -239,7 +239,8 @@ impl ModuleGraph {
         }
         match self.collect_boundaries(&[changed], &[]) {
             Ok(targets) => {
-                let mut boundaries: Vec<PathBuf> = targets.into_iter().map(|t| t.boundary).collect();
+                let mut boundaries: Vec<PathBuf> =
+                    targets.into_iter().map(|t| t.boundary).collect();
                 boundaries.sort();
                 boundaries.dedup();
                 HmrDecision::Update { boundaries }
@@ -300,7 +301,8 @@ impl ModuleGraph {
         }
         match self.collect_boundaries(seeds, &[]) {
             Ok(targets) => {
-                let mut boundaries: Vec<PathBuf> = targets.into_iter().map(|t| t.boundary).collect();
+                let mut boundaries: Vec<PathBuf> =
+                    targets.into_iter().map(|t| t.boundary).collect();
                 boundaries.sort();
                 boundaries.dedup();
                 HmrDecision::Update { boundaries }
@@ -487,18 +489,33 @@ mod tests {
 
         let mut dirty = g.stamp_update(utils, 7);
         dirty.sort();
-        assert_eq!(dirty, vec![app.to_path_buf(), hooks.to_path_buf(), utils.to_path_buf()]);
+        assert_eq!(
+            dirty,
+            vec![app.to_path_buf(), hooks.to_path_buf(), utils.to_path_buf()]
+        );
         assert_eq!(g.hmr_timestamp(utils), 7);
         assert_eq!(g.hmr_timestamp(hooks), 7);
-        assert_eq!(g.hmr_timestamp(app), 7, "the boundary is re-fetched, so it is stamped");
-        assert_eq!(g.hmr_timestamp(main), 0, "above the boundary nothing is re-fetched");
+        assert_eq!(
+            g.hmr_timestamp(app),
+            7,
+            "the boundary is re-fetched, so it is stamped"
+        );
+        assert_eq!(
+            g.hmr_timestamp(main),
+            0,
+            "above the boundary nothing is re-fetched"
+        );
         assert_eq!(g.hmr_timestamp(Path::new("/nope.ts")), 0);
     }
 
     #[test]
     fn imports_timestamp_is_the_newest_direct_import_stamp() {
         let mut g = ModuleGraph::new();
-        let (app, a, b) = (Path::new("/App.tsx"), Path::new("/a.ts"), Path::new("/b.ts"));
+        let (app, a, b) = (
+            Path::new("/App.tsx"),
+            Path::new("/a.ts"),
+            Path::new("/b.ts"),
+        );
         g.add_import(app, a);
         g.add_import(app, b);
         g.set_self_accepting(app, true);
@@ -617,12 +634,19 @@ mod tests {
 
     #[test]
     fn invalidate_skips_own_acceptance_and_climbs_to_importer() {
-        let targets = graph().update_targets_from_importers(&p("Button.tsx")).unwrap();
+        let targets = graph()
+            .update_targets_from_importers(&p("Button.tsx"))
+            .unwrap();
         assert_eq!(
-            targets.iter().map(|t| t.boundary.clone()).collect::<Vec<_>>(),
+            targets
+                .iter()
+                .map(|t| t.boundary.clone())
+                .collect::<Vec<_>>(),
             vec![p("App.tsx")]
         );
-        assert!(graph().update_targets_from_importers(&p("App.tsx")).is_err());
+        assert!(graph()
+            .update_targets_from_importers(&p("App.tsx"))
+            .is_err());
     }
 
     #[test]
@@ -711,12 +735,17 @@ mod tests {
         );
         assert_eq!(
             g.propagate_update(&p("util.ts")),
-            HmrDecision::Update { boundaries: vec![p("main.ts")] }
+            HmrDecision::Update {
+                boundaries: vec![p("main.ts")]
+            }
         );
         // The importer is not re-fetched, so it is not dirty.
         assert_eq!(g.stamp_update(&p("util.ts"), 1), vec![p("util.ts")]);
         // Editing main itself still reaches the entry with no boundary.
-        assert!(matches!(g.propagate_update(&p("main.ts")), HmrDecision::FullReload { .. }));
+        assert!(matches!(
+            g.propagate_update(&p("main.ts")),
+            HmrDecision::FullReload { .. }
+        ));
         // A self-accepting module reports itself as acceptedPath.
         g.set_self_accepting(&p("main.ts"), true);
         assert_eq!(
@@ -857,14 +886,27 @@ mod tests {
         g.add_import(&p("main.tsx"), &p("shared.ts"));
         g.add_import(&p("App.tsx"), &p("shared.ts"));
         // App drops a.css (nothing else imports it) and shared.ts (main still does).
-        assert_eq!(g.set_imports(&p("App.tsx"), &[p("Button.tsx")]), vec![p("a.css")]);
-        assert!(g.node(&p("shared.ts")).unwrap().importers.contains(&p("main.tsx")));
+        assert_eq!(
+            g.set_imports(&p("App.tsx"), &[p("Button.tsx")]),
+            vec![p("a.css")]
+        );
+        assert!(g
+            .node(&p("shared.ts"))
+            .unwrap()
+            .importers
+            .contains(&p("main.tsx")));
         // Re-adding the import yields no prune and the pruned stamp makes a re-import fetch anew.
         g.stamp_pruned(&[p("a.css")], 42);
         assert_eq!(g.hmr_timestamp(&p("a.css")), 42);
-        assert_eq!(g.set_imports(&p("App.tsx"), &[p("Button.tsx"), p("a.css")]), Vec::<PathBuf>::new());
+        assert_eq!(
+            g.set_imports(&p("App.tsx"), &[p("Button.tsx"), p("a.css")]),
+            Vec::<PathBuf>::new()
+        );
         // Untouched imports never prune.
-        assert_eq!(g.set_imports(&p("App.tsx"), &[p("Button.tsx"), p("a.css")]), Vec::<PathBuf>::new());
+        assert_eq!(
+            g.set_imports(&p("App.tsx"), &[p("Button.tsx"), p("a.css")]),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[test]
@@ -874,12 +916,26 @@ mod tests {
         // Never updated: Vite ignores the invalidate.
         assert_eq!(g.accept_invalidation(&p("Button.tsx"), 5), None);
         g.stamp_update(&p("Button.tsx"), 3);
-        assert_eq!(g.accept_invalidation(&p("Button.tsx"), 5), Some(vec![p("App.tsx")]));
+        assert_eq!(
+            g.accept_invalidation(&p("Button.tsx"), 5),
+            Some(vec![p("App.tsx")])
+        );
         assert_eq!(g.hmr_timestamp(&p("App.tsx")), 5, "the importer is stamped");
-        assert_eq!(g.hmr_timestamp(&p("Button.tsx")), 3, "the invalidated module keeps its stamp");
-        assert_eq!(g.accept_invalidation(&p("Button.tsx"), 6), None, "second call for the same update");
+        assert_eq!(
+            g.hmr_timestamp(&p("Button.tsx")),
+            3,
+            "the invalidated module keeps its stamp"
+        );
+        assert_eq!(
+            g.accept_invalidation(&p("Button.tsx"), 6),
+            None,
+            "second call for the same update"
+        );
         g.stamp_update(&p("Button.tsx"), 7);
-        assert!(g.accept_invalidation(&p("Button.tsx"), 8).is_some(), "a new update re-arms it");
+        assert!(
+            g.accept_invalidation(&p("Button.tsx"), 8).is_some(),
+            "a new update re-arms it"
+        );
         // Not self-accepting: ignored.
         g.add_import(&p("Button.tsx"), &p("util.ts"));
         g.stamp_update(&p("util.ts"), 9);
@@ -888,7 +944,10 @@ mod tests {
             g.update_targets_from_importers(&p("Button.tsx")).unwrap(),
             vec![target("App.tsx", "App.tsx", false)]
         );
-        assert!(g.update_targets_from_importers(&p("main.tsx")).is_err(), "an entry reloads");
+        assert!(
+            g.update_targets_from_importers(&p("main.tsx")).is_err(),
+            "an entry reloads"
+        );
     }
 
     #[test]
@@ -901,10 +960,15 @@ mod tests {
         g.set_self_accepting(&p("App.tsx"), true);
         assert_eq!(
             g.propagate_update(&p("b.ts")),
-            HmrDecision::Update { boundaries: vec![p("App.tsx")] }
+            HmrDecision::Update {
+                boundaries: vec![p("App.tsx")]
+            }
         );
         // ...but a cycle whose other importer path reaches an entry still reloads.
         g.add_import(&p("main.ts"), &p("b.ts"));
-        assert!(matches!(g.propagate_update(&p("b.ts")), HmrDecision::FullReload { .. }));
+        assert!(matches!(
+            g.propagate_update(&p("b.ts")),
+            HmrDecision::FullReload { .. }
+        ));
     }
 }

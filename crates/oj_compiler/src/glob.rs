@@ -122,7 +122,11 @@ struct GlobOptions {
 fn relative_spec(from_dir: &Path, to: &Path) -> String {
     let from: Vec<_> = from_dir.components().collect();
     let to_parts: Vec<_> = to.components().collect();
-    let common = from.iter().zip(&to_parts).take_while(|(a, b)| a == b).count();
+    let common = from
+        .iter()
+        .zip(&to_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
     let mut out = String::new();
     for _ in common..from.len() {
         out.push_str("../");
@@ -308,18 +312,25 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
         let Expression::Identifier(id) = &n.callee else {
             return None;
         };
-        if id.name != "URL" || n.arguments.len() != 2 || !Self::is_import_meta_url(&n.arguments[1]) {
+        if id.name != "URL" || n.arguments.len() != 2 || !Self::is_import_meta_url(&n.arguments[1])
+        {
             return None;
         }
         match n.arguments[0].as_expression()? {
             Expression::StringLiteral(spec) => {
                 let spec = spec.value.as_str();
-                (spec.starts_with("./") || spec.starts_with("../")).then(|| UrlSpec::Literal(spec.to_string()))
+                (spec.starts_with("./") || spec.starts_with("../"))
+                    .then(|| UrlSpec::Literal(spec.to_string()))
             }
             Expression::TemplateLiteral(tpl) if !tpl.expressions.is_empty() => {
                 let mut pattern = String::new();
                 for (i, q) in tpl.quasis.iter().enumerate() {
-                    let piece = q.value.cooked.as_ref().map(|c| c.as_str()).unwrap_or(q.value.raw.as_str());
+                    let piece = q
+                        .value
+                        .cooked
+                        .as_ref()
+                        .map(|c| c.as_str())
+                        .unwrap_or(q.value.raw.as_str());
                     pattern.push_str(piece);
                     if i < tpl.expressions.len() {
                         pattern.push('*');
@@ -328,7 +339,10 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
                 if !(pattern.starts_with("./") || pattern.starts_with("../")) {
                     return None;
                 }
-                let arg = self.source.get(tpl.span.start as usize..tpl.span.end as usize)?.to_string();
+                let arg = self
+                    .source
+                    .get(tpl.span.start as usize..tpl.span.end as usize)?
+                    .to_string();
                 Some(UrlSpec::Template { pattern, arg })
             }
             _ => None,
@@ -371,8 +385,10 @@ impl<'a> VisitMut<'a> for NewUrlAsset<'a, '_, '_> {
             if let Some((spec, kind)) = self.worker_url_spec(n) {
                 let ident = format!("__oj_worker_{}", self.uid);
                 self.uid += 1;
-                self.hoisted
-                    .push(format!("import {ident} from {:?};", format!("{spec}?{kind}&url")));
+                self.hoisted.push(format!(
+                    "import {ident} from {:?};",
+                    format!("{spec}?{kind}&url")
+                ));
                 if let Some(url_expr) = self.parse_expr(&ident) {
                     if let Some(first) = n.arguments.first_mut() {
                         *first = Argument::from(url_expr);
@@ -394,7 +410,8 @@ impl<'a> VisitMut<'a> for NewUrlAsset<'a, '_, '_> {
                     self.uid += 1;
                     self.hoisted
                         .push(format!("import {ident} from {:?};", format!("{spec}?url")));
-                    if let Some(e) = self.parse_expr(&format!("new URL({ident}, import.meta.url)")) {
+                    if let Some(e) = self.parse_expr(&format!("new URL({ident}, import.meta.url)"))
+                    {
                         *expr = e;
                     }
                     return;
@@ -631,7 +648,9 @@ fn hidden_by_default(rel: &str, pattern: &str) -> bool {
             || (seg.starts_with('.')
                 && seg != "."
                 && seg != ".."
-                && !pattern_dots.iter().any(|p| glob::Pattern::new(p).is_ok_and(|g| g.matches(seg))))
+                && !pattern_dots
+                    .iter()
+                    .any(|p| glob::Pattern::new(p).is_ok_and(|g| g.matches(seg))))
     })
 }
 
@@ -713,7 +732,10 @@ mod tests {
         // The resolved pattern matches the files `expand` would list (with `*`
         // stopping at `/`, as the directory walk in glob_matches does).
         let p = glob::Pattern::new(&pats[0]).unwrap();
-        let opts = glob::MatchOptions { require_literal_separator: true, ..Default::default() };
+        let opts = glob::MatchOptions {
+            require_literal_separator: true,
+            ..Default::default()
+        };
         assert!(p.matches_path_with(std::path::Path::new("/app/src/pages/About.tsx"), opts));
         assert!(!p.matches_path_with(std::path::Path::new("/app/src/pages/nested/Deep.tsx"), opts));
     }
@@ -723,14 +745,32 @@ mod tests {
         let d = tmp("tpl");
         let src = "const n = 'a';\nexport const u = new URL(`./img/${n}.png`, import.meta.url);\n";
         let out = expand_new_url_asset_source(src, &d.join("main.js"));
-        assert!(out.contains("import __oj_url_0 from \"./img/a.png?url\""), "{out}");
-        assert!(out.contains("import __oj_url_1 from \"./img/b.png?url\""), "{out}");
+        assert!(
+            out.contains("import __oj_url_0 from \"./img/a.png?url\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("import __oj_url_1 from \"./img/b.png?url\""),
+            "{out}"
+        );
         assert!(out.contains("\"./img/a.png\": __oj_url_0"), "{out}");
-        assert!(out.contains("m[p] ?? p"), "unmatched keys fall back to the literal url: {out}");
-        assert!(out.contains("`./img/${n}.png`"), "the original template is the lookup key: {out}");
+        assert!(
+            out.contains("m[p] ?? p"),
+            "unmatched keys fall back to the literal url: {out}"
+        );
+        assert!(
+            out.contains("`./img/${n}.png`"),
+            "the original template is the lookup key: {out}"
+        );
         // A template that matches nothing is left alone.
-        let none = expand_new_url_asset_source("new URL(`./nope/${x}.png`, import.meta.url);", &d.join("main.js"));
-        assert!(none.contains("new URL(`./nope/${x}.png`, import.meta.url)"), "{none}");
+        let none = expand_new_url_asset_source(
+            "new URL(`./nope/${x}.png`, import.meta.url);",
+            &d.join("main.js"),
+        );
+        assert!(
+            none.contains("new URL(`./nope/${x}.png`, import.meta.url)"),
+            "{none}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -739,11 +779,23 @@ mod tests {
         let d = tmp("worker");
         let src = "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n";
         let out = expand_new_url_asset_source(src, &d.join("main.js"));
-        assert!(out.contains("import __oj_worker_0 from \"./w.ts?worker&url\""), "{out}");
-        assert!(out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url\""), "{out}");
-        assert!(out.contains("new Worker(__oj_worker_0, { type: \"module\" })"), "{out}");
+        assert!(
+            out.contains("import __oj_worker_0 from \"./w.ts?worker&url\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("new Worker(__oj_worker_0, { type: \"module\" })"),
+            "{out}"
+        );
         assert!(out.contains("new SharedWorker(__oj_worker_1)"), "{out}");
-        assert!(!out.contains("w.ts?url"), "the worker entry is not a plain asset: {out}");
+        assert!(
+            !out.contains("w.ts?url"),
+            "the worker entry is not a plain asset: {out}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
     use super::*;
@@ -809,8 +861,14 @@ mod tests {
             "key relative to base, import relative to importer: {out}"
         );
         // A base under the importer directory.
-        let out = expand_source(&dir, "const m = import.meta.glob('./*.json', { base: './locales', eager: true });\n");
-        assert!(out.contains(r#"import * as __oj_glob_0 from "./locales/_ignore.json""#), "{out}");
+        let out = expand_source(
+            &dir,
+            "const m = import.meta.glob('./*.json', { base: './locales', eager: true });\n",
+        );
+        assert!(
+            out.contains(r#"import * as __oj_glob_0 from "./locales/_ignore.json""#),
+            "{out}"
+        );
         assert!(out.contains(r#""./_ignore.json": __oj_glob_0"#), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -823,13 +881,25 @@ mod tests {
         std::fs::write(dir.join("locales/node_modules/dep/x.json"), "{}").unwrap();
         let out = expand_source(&dir, "const m = import.meta.glob('./locales/**/*.json');\n");
         assert!(out.contains("en.json"), "{out}");
-        assert!(!out.contains(".hidden.json"), "dotfiles hidden by default: {out}");
-        assert!(!out.contains("node_modules"), "node_modules hidden by default: {out}");
-        let out = expand_source(&dir, "const m = import.meta.glob('./locales/**/*.json', { exhaustive: true });\n");
+        assert!(
+            !out.contains(".hidden.json"),
+            "dotfiles hidden by default: {out}"
+        );
+        assert!(
+            !out.contains("node_modules"),
+            "node_modules hidden by default: {out}"
+        );
+        let out = expand_source(
+            &dir,
+            "const m = import.meta.glob('./locales/**/*.json', { exhaustive: true });\n",
+        );
         assert!(out.contains(".hidden.json"), "{out}");
         assert!(out.contains("node_modules/dep/x.json"), "{out}");
         // A dot-led segment spelled out in the pattern is not hidden.
-        let out = expand_source(&dir, "const m = import.meta.glob('./locales/.hidden.json');\n");
+        let out = expand_source(
+            &dir,
+            "const m = import.meta.glob('./locales/.hidden.json');\n",
+        );
         assert!(out.contains(".hidden.json"), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }

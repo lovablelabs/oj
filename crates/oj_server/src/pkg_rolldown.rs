@@ -109,7 +109,6 @@ pub async fn build(entry: &Path, root: &Path, resolver: Arc<OjResolver>) -> Opti
                 // package and never collide across concurrently-bundled deps.
                 name: Some(hex.clone()),
                 import: entry.to_string_lossy().into_owned(),
-                ..Default::default()
             }]),
             cwd: Some(root.to_path_buf()),
             platform: Some(Platform::Browser),
@@ -190,20 +189,6 @@ fn external(id: String) -> HookResolveIdOutput {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_forced;
-    use std::path::Path;
-
-    #[test]
-    fn builtin_hard_packages_are_forced() {
-        // The curated known-broken package is forced without any env override or
-        // config; a benign package is not (config include is unset in tests).
-        assert!(is_forced(Path::new("/x/node_modules/object-inspect/index.js")));
-        assert!(!is_forced(Path::new("/x/node_modules/lodash-es/index.js")));
-    }
-}
-
 impl Plugin for ExternalizePlugin {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("oj:pkg-externalize")
@@ -256,5 +241,21 @@ impl Plugin for ExternalizePlugin {
                 Err(_) => Ok(None),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_forced;
+    use std::path::Path;
+
+    #[test]
+    fn builtin_hard_packages_are_forced() {
+        // The curated known-broken package is forced without any env override or
+        // config; a benign package is not (config include is unset in tests).
+        assert!(is_forced(Path::new(
+            "/x/node_modules/object-inspect/index.js"
+        )));
+        assert!(!is_forced(Path::new("/x/node_modules/lodash-es/index.js")));
     }
 }

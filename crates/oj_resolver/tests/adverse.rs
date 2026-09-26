@@ -111,7 +111,9 @@ fn a_traversal_out_of_the_project_resolves_to_an_absolute_path_outside_it() {
     let inside = tree.dir("app/src");
     let resolver = OjResolver::new(&tree.root().join("app"));
 
-    let resolved = resolver.resolve(&inside, "../../outside/secret.js").unwrap();
+    let resolved = resolver
+        .resolve(&inside, "../../outside/secret.js")
+        .unwrap();
     assert!(resolved.is_absolute());
     assert_eq!(
         fs::canonicalize(&resolved).unwrap(),
@@ -153,7 +155,10 @@ fn extension_probing_order_is_stable() {
     assert!(resolved.ends_with("Ambiguous.mjs"), "{resolved:?}");
     std::fs::remove_file(src.join("Ambiguous.mjs")).unwrap();
     let resolved = tree.resolver().resolve(&src, "./Ambiguous").unwrap();
-    assert!(resolved.ends_with("Ambiguous.js"), ".js before .ts: {resolved:?}");
+    assert!(
+        resolved.ends_with("Ambiguous.js"),
+        ".js before .ts: {resolved:?}"
+    );
 }
 
 #[test]
@@ -195,7 +200,10 @@ fn an_exports_map_that_hides_a_file_keeps_hiding_it() {
     tree.file("node_modules/pkg/private.js", "");
     let resolver = tree.resolver();
 
-    assert!(resolver.resolve(tree.root(), "pkg").unwrap().ends_with("public.js"));
+    assert!(resolver
+        .resolve(tree.root(), "pkg")
+        .unwrap()
+        .ends_with("public.js"));
     assert!(resolver
         .resolve(tree.root(), "pkg/allowed")
         .unwrap()
@@ -241,7 +249,10 @@ fn private_imports_are_only_visible_inside_their_package() {
     let resolver = tree.resolver();
     let inside = tree.root().join("node_modules/pkg");
 
-    assert!(resolver.resolve(&inside, "#internal").unwrap().ends_with("internal.js"));
+    assert!(resolver
+        .resolve(&inside, "#internal")
+        .unwrap()
+        .ends_with("internal.js"));
     assert!(
         resolver.resolve(tree.root(), "#internal").is_err(),
         "a `#` import must not resolve from outside the package"
@@ -259,7 +270,10 @@ fn a_self_referential_package_name_resolves_through_its_own_exports() {
     tree.file("src/util.js", "");
     let resolver = tree.resolver();
     let src = tree.root().join("src");
-    assert!(resolver.resolve(&src, "the-app/util").unwrap().ends_with("util.js"));
+    assert!(resolver
+        .resolve(&src, "the-app/util")
+        .unwrap()
+        .ends_with("util.js"));
     assert!(
         resolver.resolve(&src, "the-app/src/util.js").is_err(),
         "self-reference honours the exports map too"
@@ -270,7 +284,11 @@ fn a_self_referential_package_name_resolves_through_its_own_exports() {
 fn a_symlinked_dependency_resolves_through_the_link() {
     let tree = Tree::new();
     let real = tree.dir("linked-pkg");
-    fs::write(real.join("package.json"), r#"{"name":"linked-pkg","main":"index.js"}"#).unwrap();
+    fs::write(
+        real.join("package.json"),
+        r#"{"name":"linked-pkg","main":"index.js"}"#,
+    )
+    .unwrap();
     fs::write(real.join("index.js"), "module.exports = 1;").unwrap();
     tree.dir("app/node_modules");
     let link = tree.root().join("app/node_modules/linked-pkg");
@@ -284,7 +302,9 @@ fn a_symlinked_dependency_resolves_through_the_link() {
     }
 
     let resolver = OjResolver::new(&tree.root().join("app"));
-    let resolved = resolver.resolve(&tree.root().join("app"), "linked-pkg").unwrap();
+    let resolved = resolver
+        .resolve(&tree.root().join("app"), "linked-pkg")
+        .unwrap();
     assert!(resolved.ends_with("index.js"), "{resolved:?}");
 }
 
@@ -301,7 +321,7 @@ fn a_cyclic_symlink_does_not_hang_resolution() {
         return;
     }
     let resolver = tree.resolver();
-    let deep = "./loop".repeat(1) + &"/loop".repeat(40) + "/missing.js";
+    let deep = "./loop".to_string() + &"/loop".repeat(40) + "/missing.js";
     // Must terminate, with either answer.
     let _ = resolver.resolve(&a, &deep);
 }
@@ -314,7 +334,10 @@ fn dedupe_only_applies_to_bare_specifiers_and_falls_back_when_the_root_has_no_co
         "pkg/node_modules/dep/package.json",
         r#"{"name":"dep","main":"index.js"}"#,
     );
-    tree.file("pkg/node_modules/dep/index.js", "module.exports = 'nested';");
+    tree.file(
+        "pkg/node_modules/dep/index.js",
+        "module.exports = 'nested';",
+    );
     tree.file("pkg/local.js", "");
 
     let resolver = OjResolver::with_options(
@@ -329,7 +352,10 @@ fn dedupe_only_applies_to_bare_specifiers_and_falls_back_when_the_root_has_no_co
     let resolved = resolver.resolve(&nested, "dep").unwrap();
     assert!(resolved.ends_with("index.js"), "{resolved:?}");
     // Relative and absolute specifiers are never deduped.
-    assert!(resolver.resolve(&nested, "./local.js").unwrap().ends_with("local.js"));
+    assert!(resolver
+        .resolve(&nested, "./local.js")
+        .unwrap()
+        .ends_with("local.js"));
     // A package that merely starts with a deduped name is not deduped.
     assert!(resolver.resolve(&nested, "deputy").is_err());
 }
@@ -355,8 +381,7 @@ fn dedupe_matches_scoped_packages_by_their_full_name() {
         .unwrap()
         .ends_with("nested.js"));
 
-    let deduped =
-        OjResolver::with_options(tree.root(), &conds(), &[], &["@scope/dep".to_string()]);
+    let deduped = OjResolver::with_options(tree.root(), &conds(), &[], &["@scope/dep".to_string()]);
     assert!(deduped
         .resolve(&nested, "@scope/dep")
         .unwrap()
@@ -375,9 +400,11 @@ fn a_degenerate_dedupe_list_is_harmless() {
     tree.file("src/App.tsx", "");
     let src = tree.root().join("src");
     for entry in ["", " ", "/", "..", "@", "@scope", "a".repeat(300).as_str()] {
-        let resolver =
-            OjResolver::with_options(tree.root(), &conds(), &[], &[entry.to_string()]);
-        assert!(resolver.resolve(&src, "./App").unwrap().ends_with("App.tsx"));
+        let resolver = OjResolver::with_options(tree.root(), &conds(), &[], &[entry.to_string()]);
+        assert!(resolver
+            .resolve(&src, "./App")
+            .unwrap()
+            .ends_with("App.tsx"));
     }
 }
 
@@ -385,7 +412,10 @@ fn a_degenerate_dedupe_list_is_harmless() {
 fn aliases_are_applied_before_node_resolution_and_degenerate_ones_are_inert() {
     let tree = Tree::new();
     tree.file("src/App.tsx", "");
-    tree.file("node_modules/real/package.json", r#"{"name":"real","main":"i.js"}"#);
+    tree.file(
+        "node_modules/real/package.json",
+        r#"{"name":"real","main":"i.js"}"#,
+    );
     tree.file("node_modules/real/i.js", "");
 
     // A relative alias target is resolved against the project root.
@@ -395,7 +425,10 @@ fn aliases_are_applied_before_node_resolution_and_degenerate_ones_are_inert() {
         &[("~".to_string(), "./src".to_string())],
         &[],
     );
-    assert!(aliased.resolve(tree.root(), "~/App").unwrap().ends_with("App.tsx"));
+    assert!(aliased
+        .resolve(tree.root(), "~/App")
+        .unwrap()
+        .ends_with("App.tsx"));
 
     // An alias can shadow a real package.
     let shadowing = OjResolver::with_options(
@@ -433,10 +466,16 @@ fn aliases_are_applied_before_node_resolution_and_degenerate_ones_are_inert() {
 #[test]
 fn an_empty_condition_list_still_resolves_a_plain_package() {
     let tree = Tree::new();
-    tree.file("node_modules/pkg/package.json", r#"{"name":"pkg","main":"i.js"}"#);
+    tree.file(
+        "node_modules/pkg/package.json",
+        r#"{"name":"pkg","main":"i.js"}"#,
+    );
     tree.file("node_modules/pkg/i.js", "");
     let resolver = OjResolver::with_conditions(tree.root(), &[]);
-    assert!(resolver.resolve(tree.root(), "pkg").unwrap().ends_with("i.js"));
+    assert!(resolver
+        .resolve(tree.root(), "pkg")
+        .unwrap()
+        .ends_with("i.js"));
 }
 
 #[test]
@@ -466,7 +505,10 @@ fn a_jsonc_tsconfig_is_understood() {
     tree.file("src/App.tsx", "");
     let resolver = tree.resolver();
     let src = tree.root().join("src");
-    assert!(resolver.resolve(&src, "@/App").unwrap().ends_with("App.tsx"));
+    assert!(resolver
+        .resolve(&src, "@/App")
+        .unwrap()
+        .ends_with("App.tsx"));
 }
 
 #[test]
@@ -480,7 +522,10 @@ fn a_tsconfig_paths_entry_pointing_nowhere_is_an_error_not_a_panic() {
     let resolver = tree.resolver();
     let src = tree.root().join("src");
     assert!(resolver.resolve(&src, "@/App").is_err());
-    assert!(resolver.resolve(&src, "./App").unwrap().ends_with("App.tsx"));
+    assert!(resolver
+        .resolve(&src, "./App")
+        .unwrap()
+        .ends_with("App.tsx"));
 }
 
 #[test]

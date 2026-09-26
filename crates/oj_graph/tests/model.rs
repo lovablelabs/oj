@@ -39,11 +39,10 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0..MODULES, proptest::collection::vec(0..MODULES, 0..4))
             .prop_map(|(importer, imports)| Op::Link { importer, imports }),
-        (0..MODULES, 0..MODULES).prop_map(|(importer, imported)| Op::AddImport {
-            importer,
-            imported
-        }),
-        (0..MODULES, any::<bool>()).prop_map(|(module, accepting)| Op::Accept { module, accepting }),
+        (0..MODULES, 0..MODULES)
+            .prop_map(|(importer, imported)| Op::AddImport { importer, imported }),
+        (0..MODULES, any::<bool>())
+            .prop_map(|(module, accepting)| Op::Accept { module, accepting }),
         (0..MODULES).prop_map(|module| Op::Change { module }),
     ]
 }

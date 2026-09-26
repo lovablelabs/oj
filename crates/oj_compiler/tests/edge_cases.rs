@@ -39,7 +39,11 @@ fn empty_and_trivial_modules_compile_to_nothing() {
 fn comments_are_carried_through_to_the_output() {
     for source in ["// just a comment", "/* block */", "/** @license MIT */"] {
         let out = dev("/src/comment.ts", source).unwrap();
-        assert!(out.code.contains(source.trim()), "{source:?} -> {:?}", out.code);
+        assert!(
+            out.code.contains(source.trim()),
+            "{source:?} -> {:?}",
+            out.code
+        );
         assert!(out.imports.is_empty());
     }
 }
@@ -49,7 +53,10 @@ fn a_byte_order_mark_does_not_become_part_of_the_first_statement() {
     let out = dev("/src/App.ts", "\u{feff}export const a = 1;").unwrap();
     assert!(out.code.contains("export const a = 1"), "{}", out.code);
     assert!(!out.code.starts_with('\u{feff}'), "BOM copied into output");
-    assert_eq!(exports("\u{feff}export const a = 1;", Path::new("/src/App.ts")), ["a"]);
+    assert_eq!(
+        exports("\u{feff}export const a = 1;", Path::new("/src/App.ts")),
+        ["a"]
+    );
 }
 
 #[test]
@@ -91,7 +98,11 @@ fn typescript_enums_are_lowered_rather_than_dropped() {
     let out = dev("/src/App.ts", "export const enum Flag { On = 1 }").unwrap();
     assert!(out.code.contains("Flag"), "{}", out.code);
 
-    let out = dev("/src/App.ts", "enum S { A = \"a\", B = \"b\" }\nexport const s = S.A;").unwrap();
+    let out = dev(
+        "/src/App.ts",
+        "enum S { A = \"a\", B = \"b\" }\nexport const s = S.A;",
+    )
+    .unwrap();
     assert!(out.code.contains("\"a\""), "{}", out.code);
 
     // Ambient declarations still vanish.
@@ -397,7 +408,11 @@ fn a_cjs_dep_without_module_syntax_is_wrapped() {
         &mut resolve,
     )
     .unwrap();
-    assert!(out.imports.contains(&"/@id/./dep".to_string()), "{:?}", out.imports);
+    assert!(
+        out.imports.contains(&"/@id/./dep".to_string()),
+        "{:?}",
+        out.imports
+    );
     // The body keeps its `require("./dep")` call, but it now resolves through a
     // local shim over the statically imported dependency map.
     assert!(out.code.contains("__oj_deps"), "{}", out.code);

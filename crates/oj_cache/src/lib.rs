@@ -83,7 +83,9 @@ pub fn heal_legacy_layout(app_root: &Path) {
         let name = e.file_name();
         let Some(name) = name.to_str() else { continue };
         if name.len() == 2
-            && name.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
             && e.path().is_dir()
         {
             let _ = fs::remove_dir_all(e.path());
@@ -167,7 +169,9 @@ impl PersistentCache {
     }
 
     pub fn put(&self, key: &str, module: &CachedModule) {
-        let Some(path) = self.path_for(key) else { return };
+        let Some(path) = self.path_for(key) else {
+            return;
+        };
         let Some(parent) = path.parent() else { return };
         if fs::create_dir_all(parent).is_err() {
             return;
@@ -292,7 +296,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| name.contains(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files must be renamed away: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files must be renamed away: {leftovers:?}"
+        );
     }
 
     #[test]
@@ -346,7 +353,10 @@ mod tests {
         }
         assert!(cache.join(".gitignore").exists());
         assert!(cache_root(&app).join("start").exists());
-        assert!(cache.join("user-stuff").exists(), "unknown dirs are left alone");
+        assert!(
+            cache.join("user-stuff").exists(),
+            "unknown dirs are left alone"
+        );
     }
 
     #[test]

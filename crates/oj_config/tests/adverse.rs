@@ -83,9 +83,8 @@ fn a_config_that_throws_reports_the_exception() {
 
 #[test]
 fn a_config_with_a_throwing_getter_is_an_error_not_a_partial_config() {
-    let project = Project::ts(
-        "export default { base: '/ok/', get server() { throw new Error('boom'); } };",
-    );
+    let project =
+        Project::ts("export default { base: '/ok/', get server() { throw new Error('boom'); } };");
     let err = project.load().unwrap_err();
     assert!(matches!(err, ConfigError::Eval(..)), "{err}");
 }
@@ -146,10 +145,7 @@ fn fields_of_the_wrong_type_are_schema_errors_naming_the_file() {
     ] {
         let project = Project::ts(source);
         let err = project.load().unwrap_err();
-        assert!(
-            matches!(err, ConfigError::Schema(..)),
-            "{source:?}: {err}"
-        );
+        assert!(matches!(err, ConfigError::Schema(..)), "{source:?}: {err}");
         assert_error_names_the_file(&err, "oj.config.ts");
     }
 }
@@ -199,9 +195,8 @@ fn typescript_in_a_config_is_stripped() {
 
 #[test]
 fn a_config_function_receives_the_command_and_mode() {
-    let project = Project::ts(
-        "export default ({ command, mode }) => ({ base: `/${command}-${mode}/` });",
-    );
+    let project =
+        Project::ts("export default ({ command, mode }) => ({ base: `/${command}-${mode}/` });");
     assert_eq!(
         load_with(project.path(), "build", "production")
             .unwrap()
@@ -253,7 +248,10 @@ fn a_multiline_import_statement_is_not_mistaken_for_config() {
     );
     match project.load() {
         Ok(config) => assert_eq!(config.base.as_deref(), Some("/multi/")),
-        Err(err) => assert!(matches!(err, ConfigError::Parse(..) | ConfigError::Eval(..)), "{err}"),
+        Err(err) => assert!(
+            matches!(err, ConfigError::Parse(..) | ConfigError::Eval(..)),
+            "{err}"
+        ),
     }
 }
 
@@ -270,9 +268,8 @@ fn a_deeply_nested_config_object_is_an_error_not_a_crash() {
 
 #[test]
 fn process_env_is_readable_but_a_missing_variable_is_undefined() {
-    let project = Project::ts(
-        "export default { base: process.env.OJ_TEST_NOT_SET ? '/set/' : '/unset/' };",
-    );
+    let project =
+        Project::ts("export default { base: process.env.OJ_TEST_NOT_SET ? '/set/' : '/unset/' };");
     assert_eq!(project.load().unwrap().base.as_deref(), Some("/unset/"));
 }
 
@@ -301,9 +298,7 @@ fn a_config_cannot_reach_the_filesystem_or_the_network() {
         }
     }
     // `process` itself exists, but only as the injected environment.
-    let project = Project::ts(
-        "export default { base: Object.keys(process).sort().join(',') };",
-    );
+    let project = Project::ts("export default { base: Object.keys(process).sort().join(',') };");
     assert_eq!(project.load().unwrap().base.as_deref(), Some("env"));
 }
 
@@ -313,10 +308,18 @@ fn the_first_candidate_filename_wins() {
     std::fs::write(dir.path().join("oj.config.json"), r#"{"base":"/json/"}"#).unwrap();
     assert_eq!(load(dir.path()).unwrap().base.as_deref(), Some("/json/"));
 
-    std::fs::write(dir.path().join("oj.config.js"), "export default { base: '/js/' };").unwrap();
+    std::fs::write(
+        dir.path().join("oj.config.js"),
+        "export default { base: '/js/' };",
+    )
+    .unwrap();
     assert_eq!(load(dir.path()).unwrap().base.as_deref(), Some("/js/"));
 
-    std::fs::write(dir.path().join("oj.config.ts"), "export default { base: '/ts/' };").unwrap();
+    std::fs::write(
+        dir.path().join("oj.config.ts"),
+        "export default { base: '/ts/' };",
+    )
+    .unwrap();
     assert_eq!(load(dir.path()).unwrap().base.as_deref(), Some("/ts/"));
 }
 
@@ -326,7 +329,10 @@ fn a_json_config_is_not_evaluated_as_javascript() {
     assert_eq!(project.load().unwrap().base.as_deref(), Some("/j/"));
 
     // JSON with JS in it is a schema error, not code that runs.
-    let hostile = Project::with("oj.config.json", "{\"base\": (function(){ return '/x/' })()}");
+    let hostile = Project::with(
+        "oj.config.json",
+        "{\"base\": (function(){ return '/x/' })()}",
+    );
     assert!(matches!(
         hostile.load().unwrap_err(),
         ConfigError::Schema(..)

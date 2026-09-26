@@ -67,13 +67,18 @@ fn empty_stylesheets_are_valid_and_empty() {
 
 #[test]
 fn very_large_stylesheets_stay_linear() {
-    let many_rules: String = (0..20_000).map(|i| format!(".c{i} {{ color: #fff }}\n")).collect();
+    let many_rules: String = (0..20_000)
+        .map(|i| format!(".c{i} {{ color: #fff }}\n"))
+        .collect();
     let out = compile_css("/big.css", &many_rules, true).unwrap();
     assert!(out.css.contains(".c19999"));
 
     let one_huge_selector = format!(
         "{} {{ color: red }}",
-        (0..20_000).map(|i| format!(".c{i}")).collect::<Vec<_>>().join(",")
+        (0..20_000)
+            .map(|i| format!(".c{i}"))
+            .collect::<Vec<_>>()
+            .join(",")
     );
     assert!(compile_css("/wide.css", &one_huge_selector, true).is_ok());
 
@@ -93,7 +98,10 @@ fn deeply_nested_rules_within_the_supported_envelope_compile() {
             for depth in [8usize, 64, 500] {
                 let nested = format!("{}color:red;{}", ".a{".repeat(depth), "}".repeat(depth));
                 let css = compile_sass(&nested, None).unwrap();
-                assert!(compile_css("/deep.css", &css, true).is_ok(), "depth {depth}");
+                assert!(
+                    compile_css("/deep.css", &css, true).is_ok(),
+                    "depth {depth}"
+                );
                 let flat = format!("{}color:red;{}", ".a{".repeat(depth), "}".repeat(depth));
                 let _ = compile_css("/deep.css", &flat, true);
             }
@@ -209,7 +217,11 @@ fn a_sass_load_path_confines_imports_to_files_that_parse_as_sass() {
     let outside = dir.path().join("outside.txt");
     std::fs::write(&outside, "definitely not sass {{{\n").unwrap();
 
-    let ok = compile_sass("@use \"vars\";\n.a { padding: vars.$pad }", Some(dir.path())).unwrap();
+    let ok = compile_sass(
+        "@use \"vars\";\n.a { padding: vars.$pad }",
+        Some(dir.path()),
+    )
+    .unwrap();
     assert!(ok.contains("1rem"), "{ok}");
 
     // A traversal that lands on a real file still has to parse as Sass, and the
@@ -287,5 +299,8 @@ fn compile_css_never_reads_the_filesystem() {
 #[ignore = "aborts the process: unbounded recursion in grass"]
 fn recursive_sass_definitions_abort_the_process() {
     let _ = compile_sass("@mixin a { @include a; } .x { @include a; }", None);
-    let _ = compile_sass("@function f($n) { @return f($n); } .x { width: f(1) }", None);
+    let _ = compile_sass(
+        "@function f($n) { @return f($n); } .x { width: f(1) }",
+        None,
+    );
 }

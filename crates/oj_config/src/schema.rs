@@ -196,7 +196,7 @@ pub struct WatchConfig {
 #[serde(untagged)]
 pub enum CorsConfig {
     Toggle(bool),
-    Options(CorsOptions),
+    Options(Box<CorsOptions>),
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

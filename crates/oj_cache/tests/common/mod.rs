@@ -21,6 +21,7 @@ pub fn fixture() -> Fixture {
 /// The on-disk location of an entry. `path_for` is private, so the layout is
 /// re-derived here on purpose: it is a compatibility contract between oj
 /// versions sharing a `.oj-cache`.
+#[allow(dead_code)] // not every test binary that includes `common` uses it
 pub fn entry_path(dir: &std::path::Path, key: &str) -> std::path::PathBuf {
     dir.join(&key[..2]).join(format!("{key}.json"))
 }

@@ -9,19 +9,50 @@
 
 pub const KNOWN_ASSET_TYPES: &[&str] = &[
     // images
-    "apng", "bmp", "png", "jpg", "jpeg", "jfif", "pjpeg", "pjp", "gif", "svg", "ico", "webp",
-    "avif", "cur", "jxl",
+    "apng",
+    "bmp",
+    "png",
+    "jpg",
+    "jpeg",
+    "jfif",
+    "pjpeg",
+    "pjp",
+    "gif",
+    "svg",
+    "ico",
+    "webp",
+    "avif",
+    "cur",
+    "jxl",
     // media
-    "mp4", "webm", "ogg", "mp3", "wav", "flac", "aac", "opus", "mov", "m4a", "vtt",
+    "mp4",
+    "webm",
+    "ogg",
+    "mp3",
+    "wav",
+    "flac",
+    "aac",
+    "opus",
+    "mov",
+    "m4a",
+    "vtt",
     // fonts
-    "woff", "woff2", "eot", "ttf", "otf",
+    "woff",
+    "woff2",
+    "eot",
+    "ttf",
+    "otf",
     // other
-    "webmanifest", "pdf", "txt",
+    "webmanifest",
+    "pdf",
+    "txt",
 ];
 
 /// Whether a file extension (no dot) names a known asset type, ignoring case.
 pub fn is_asset_ext(ext: &str) -> bool {
-    KNOWN_ASSET_TYPES.iter().any(|k| k.eq_ignore_ascii_case(ext))
+    KNOWN_ASSET_TYPES
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(ext))
 }
 
 /// The extension of a url or path with any `?query` / `#hash` removed, e.g.
@@ -80,7 +111,21 @@ mod tests {
 
     #[test]
     fn matches_vite_known_types_case_insensitively() {
-        for ext in ["png", "PNG", "Jpg", "webmanifest", "pdf", "flac", "m4a", "aac", "opus", "vtt", "cur", "jxl", "txt"] {
+        for ext in [
+            "png",
+            "PNG",
+            "Jpg",
+            "webmanifest",
+            "pdf",
+            "flac",
+            "m4a",
+            "aac",
+            "opus",
+            "vtt",
+            "cur",
+            "jxl",
+            "txt",
+        ] {
             assert!(is_asset_ext(ext), "{ext}");
         }
         for ext in ["ts", "tsx", "js", "css", "scss", "json", "html", "wasm", ""] {

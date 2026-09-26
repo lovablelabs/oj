@@ -342,7 +342,15 @@ fn read_entry_manifest(entry: &Path) -> Option<HashMap<String, ExpectedFile>> {
     let raw: HashMap<String, Rec> = serde_json::from_slice(&bytes).ok()?;
     Some(
         raw.into_iter()
-            .map(|(k, r)| (k, ExpectedFile { size: r.size, hash: r.hash }))
+            .map(|(k, r)| {
+                (
+                    k,
+                    ExpectedFile {
+                        size: r.size,
+                        hash: r.hash,
+                    },
+                )
+            })
             .collect(),
     )
 }
@@ -358,7 +366,15 @@ fn write_entry_manifest(
     }
     let raw: HashMap<&str, Rec> = manifest
         .iter()
-        .map(|(k, e)| (k.as_str(), Rec { size: e.size, hash: &e.hash }))
+        .map(|(k, e)| {
+            (
+                k.as_str(),
+                Rec {
+                    size: e.size,
+                    hash: &e.hash,
+                },
+            )
+        })
         .collect();
     integrity::write_self_verified(
         &entry.join(FILES_FILE),

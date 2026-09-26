@@ -68,9 +68,19 @@ impl PinnedBundle {
         for f in index.files {
             let path = chunk_dir.join(&f.name);
             let size = fs::metadata(&path).ok()?.len();
-            chunks.insert(f.name, PinnedChunk { path, size, hash: None });
+            chunks.insert(
+                f.name,
+                PinnedChunk {
+                    path,
+                    size,
+                    hash: None,
+                },
+            );
         }
-        Some(Self { entry: index.entry, chunks })
+        Some(Self {
+            entry: index.entry,
+            chunks,
+        })
     }
 }
 
@@ -246,12 +256,20 @@ impl StartBundleStore {
         let index = read_chunk_index(start_dir)?;
         let css_urls = read_css_urls(start_dir);
         let chunk_dir = start_dir.join(CHUNKS_DIR);
-        let chunk_paths: Vec<PathBuf> = index.files.iter().map(|f| chunk_dir.join(&f.name)).collect();
+        let chunk_paths: Vec<PathBuf> = index
+            .files
+            .iter()
+            .map(|f| chunk_dir.join(&f.name))
+            .collect();
         let chunk_hashes = par_map(&chunk_paths, |p| hash_file(p));
         let blobs = self.dir.join(BLOBS_DIR);
         fs::create_dir_all(&blobs).ok()?;
         let mut manifest_files = BTreeMap::new();
-        for (f, (path, hash)) in index.files.iter().zip(chunk_paths.iter().zip(&chunk_hashes)) {
+        for (f, (path, hash)) in index
+            .files
+            .iter()
+            .zip(chunk_paths.iter().zip(&chunk_hashes))
+        {
             let hex = hash.as_ref()?.to_hex().to_string();
             let size = fs::metadata(path).ok()?.len();
             let blob = blobs.join(&hex);
@@ -569,7 +587,10 @@ fn resolve_vendored_rolldown() -> VendoredRolldown {
         .ok()
         .and_then(|pkg| pkg.get("version")?.as_str().map(str::to_string));
     match version {
-        Some(version) => VendoredRolldown::Resolved { path: configured, version },
+        Some(version) => VendoredRolldown::Resolved {
+            path: configured,
+            version,
+        },
         None => VendoredRolldown::Broken {
             path: configured,
             reason: "node_modules/rolldown/package.json has no parseable version".into(),
@@ -769,7 +790,7 @@ fn par_map<I: Sync, T: Send>(items: &[I], f: impl Fn(&I) -> Option<T> + Sync) ->
         .map_or(1, |n| n.get())
         .min(items.len().max(1));
     if threads <= 1 {
-        return items.iter().map(|p| f(p)).collect();
+        return items.iter().map(&f).collect();
     }
     let chunk = items.len().div_ceil(threads);
     let mut out: Vec<Option<T>> = Vec::new();
@@ -883,7 +904,11 @@ mod tests {
                 ],
             });
             fs::write(self.start.join(CHUNK_INDEX_FILE), index.to_string()).unwrap();
-            fs::write(self.start.join(CSS_URLS_FILE), br#"["/@oj-start/fs/a.css"]"#).unwrap();
+            fs::write(
+                self.start.join(CSS_URLS_FILE),
+                br#"["/@oj-start/fs/a.css"]"#,
+            )
+            .unwrap();
             fs::write(self.start.join("client-entry.modules"), "2").unwrap();
             fs::write(self.start.join("manifest.ts"), format!("// {marker}")).unwrap();
         }
@@ -900,7 +925,9 @@ mod tests {
         }
 
         fn blob_dir(&self) -> PathBuf {
-            crate::cache_root(&self.root).join("start-bundle").join(BLOBS_DIR)
+            crate::cache_root(&self.root)
+                .join("start-bundle")
+                .join(BLOBS_DIR)
         }
 
         fn blob_count(&self) -> usize {
@@ -972,12 +999,11 @@ mod tests {
         let fx = Fixture::new("blobpaths");
         let (_, pinned) = fx.store().persist(&fx.start).unwrap();
         let chunk = pinned.chunk("client-entry.js").unwrap();
-        assert!(
-            chunk.path.starts_with(fx.blob_dir()),
-            "{:?}",
-            chunk.path
+        assert!(chunk.path.starts_with(fx.blob_dir()), "{:?}", chunk.path);
+        assert_eq!(
+            chunk.hash.as_deref(),
+            Some(blake3::hash(b"bundle-v1").to_hex().as_str())
         );
-        assert_eq!(chunk.hash.as_deref(), Some(blake3::hash(b"bundle-v1").to_hex().as_str()));
     }
 
     #[test]
@@ -1024,10 +1050,16 @@ mod tests {
         assert_eq!(stats.key, key);
         assert_eq!(fx.entry_bytes(&pinned), "bundle-v1");
         let current = fs::read_to_string(
-            crate::cache_root(&fx.root).join("start-bundle").join(CURRENT_FILE),
+            crate::cache_root(&fx.root)
+                .join("start-bundle")
+                .join(CURRENT_FILE),
         )
         .unwrap();
-        assert_eq!(current.trim(), key, "pointer swaps to the pinned generation");
+        assert_eq!(
+            current.trim(),
+            key,
+            "pointer swaps to the pinned generation"
+        );
     }
 
     #[test]
@@ -1072,9 +1104,12 @@ mod tests {
         let fx = Fixture::new("vendor-epoch");
         let path = "/opt/vendor".to_string();
         let identity = |version: &str| {
-            VendoredRolldown::Resolved { path: path.clone(), version: version.into() }
-                .epoch_input()
-                .unwrap()
+            VendoredRolldown::Resolved {
+                path: path.clone(),
+                version: version.into(),
+            }
+            .epoch_input()
+            .unwrap()
         };
         let v1 = epoch(&fx.root, "development", Some(&identity("1.2.1")));
         assert_ne!(v1, epoch(&fx.root, "development", None));
@@ -1083,9 +1118,12 @@ mod tests {
             epoch(&fx.root, "development", Some(&identity("1.3.0"))),
             "an in-place upgrade at the same path is a different epoch"
         );
-        let broken = VendoredRolldown::Broken { path: path.clone(), reason: "x".into() }
-            .epoch_input()
-            .unwrap();
+        let broken = VendoredRolldown::Broken {
+            path: path.clone(),
+            reason: "x".into(),
+        }
+        .epoch_input()
+        .unwrap();
         assert_ne!(
             v1,
             epoch(&fx.root, "development", Some(&broken)),
@@ -1127,7 +1165,10 @@ mod tests {
             }
             other => panic!("expected chunk corruption, got {other:?}"),
         }
-        assert!(!fx.entry_dir(&key).exists(), "corrupt entry must be removed");
+        assert!(
+            !fx.entry_dir(&key).exists(),
+            "corrupt entry must be removed"
+        );
     }
 
     #[test]
@@ -1229,7 +1270,10 @@ mod tests {
             2,
             "evicted generations' unshared blobs swept; shared blob kept"
         );
-        assert!(fx.store().restore(&fx.start).is_ok(), "survivor still restores");
+        assert!(
+            fx.store().restore(&fx.start).is_ok(),
+            "survivor still restores"
+        );
     }
 
     #[cfg(unix)]

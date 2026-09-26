@@ -194,7 +194,15 @@ fn html_percent_soup_is_left_alone() {
     env.insert("T".to_string(), "Title".to_string());
     // Nothing here names a known key, so every one of these is an identity.
     for html in [
-        "%", "%%", "%%%%%%%%", "% T %", "%T", "T%", "%NOT SET%", "% %", "%\n%",
+        "%",
+        "%%",
+        "%%%%%%%%",
+        "% T %",
+        "%T",
+        "T%",
+        "%NOT SET%",
+        "% %",
+        "%\n%",
     ] {
         assert_eq!(
             replace_html_env(html, &env),
@@ -264,7 +272,10 @@ fn html_env_map_unwraps_only_json_strings() {
         ("import.meta.env.S".to_string(), "\"str\"".to_string()),
         ("import.meta.env.B".to_string(), "true".to_string()),
         ("import.meta.env.N".to_string(), "42".to_string()),
-        ("import.meta.env.BROKEN".to_string(), "\"unclosed".to_string()),
+        (
+            "import.meta.env.BROKEN".to_string(),
+            "\"unclosed".to_string(),
+        ),
         ("unrelated.define".to_string(), "\"ignored\"".to_string()),
     ];
     let env = html_env_map(&defines);
@@ -299,9 +310,8 @@ fn later_env_files_win_and_only_changed_keys_are_reported() {
     // A file for another mode must not be read.
     std::fs::write(dir.path().join(".env.development"), "VITE_DEV_ONLY=nope\n").unwrap();
 
-    let loaded: BTreeMap<String, String> = oj_env::load(dir.path(), "production")
-        .into_iter()
-        .collect();
+    let loaded: BTreeMap<String, String> =
+        oj_env::load(dir.path(), "production").into_iter().collect();
     assert_eq!(loaded["VITE_A"], "base");
     assert_eq!(loaded["VITE_B"], "local");
     assert_eq!(loaded["VITE_C"], "prod-local");
@@ -336,8 +346,7 @@ fn multiple_prefixes_expose_every_matching_var() {
         ("PUBLIC_B".into(), "2".into()),
         ("SECRET_C".into(), "3".into()),
     ];
-    let defines =
-        import_meta_env_defines(&loaded, "production", false, "/", &["VITE_", "PUBLIC_"]);
+    let defines = import_meta_env_defines(&loaded, "production", false, "/", &["VITE_", "PUBLIC_"]);
     let keys: Vec<&str> = defines.iter().map(|(k, _)| k.as_str()).collect();
     assert!(keys.contains(&"import.meta.env.VITE_A"));
     assert!(keys.contains(&"import.meta.env.PUBLIC_B"));

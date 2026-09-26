@@ -58,7 +58,10 @@ fn a_deep_chain_of_accepting_modules_stops_at_the_first_boundary() {
     });
     match targets {
         Ok(targets) => assert_eq!(
-            targets.iter().map(|t| t.boundary.clone()).collect::<Vec<_>>(),
+            targets
+                .iter()
+                .map(|t| t.boundary.clone())
+                .collect::<Vec<_>>(),
             vec![p(1)]
         ),
         Err(reason) => panic!("unexpected full reload: {reason}"),
@@ -137,7 +140,10 @@ fn self_import_is_a_cycle() {
     let mut g = ModuleGraph::new();
     let a = p(0);
     g.add_import(&a, &a);
-    assert_eq!(g.propagate_update(&a), HmrDecision::Update { boundaries: vec![] });
+    assert_eq!(
+        g.propagate_update(&a),
+        HmrDecision::Update { boundaries: vec![] }
+    );
 }
 
 #[test]
@@ -183,7 +189,9 @@ fn a_cycle_below_an_accepting_boundary_still_updates() {
     // The cycle is skipped and the accepting importer above it is the boundary.
     assert_eq!(
         g.propagate_update(&leaf),
-        HmrDecision::Update { boundaries: vec![boundary] }
+        HmrDecision::Update {
+            boundaries: vec![boundary]
+        }
     );
 }
 
@@ -204,9 +212,8 @@ fn relinking_a_module_leaves_no_stale_edges() {
     let importer = p(0);
     g.set_self_accepting(&importer, true);
     // Re-link the same importer many times over a rotating dependency set.
-    let deps = |round: usize| -> Vec<PathBuf> {
-        (0..10).map(|i| p(1 + (round + i) % 50)).collect()
-    };
+    let deps =
+        |round: usize| -> Vec<PathBuf> { (0..10).map(|i| p(1 + (round + i) % 50)).collect() };
     for round in 0..500 {
         g.set_imports(&importer, &deps(round));
     }

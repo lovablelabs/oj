@@ -179,7 +179,11 @@ impl JsEngine {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
             EngineError::Boot("spawn_with_host must be called from inside a tokio runtime".into())
         })?;
-        Self::spawn_inner(config, Some(host::HostBridge::new(runtime, module_host)), None)
+        Self::spawn_inner(
+            config,
+            Some(host::HostBridge::new(runtime, module_host)),
+            None,
+        )
     }
 
     /// Spawns an engine with JS→Rust bridges installed as globals before any

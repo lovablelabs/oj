@@ -25,7 +25,8 @@ const JS_EXTS: &[&str] = &["tsx", "ts", "jsx", "js", "mjs", "mts", "cts"];
 // The native resolver's lists, so `./foo` and a NodeNext `./x.js` pick exactly
 // the file the dev server would.
 static PROBE_EXTS: LazyLock<Vec<String>> = LazyLock::new(oj_resolver::default_extensions);
-static EXT_ALIAS: LazyLock<Vec<(String, Vec<String>)>> = LazyLock::new(oj_resolver::default_extension_alias);
+static EXT_ALIAS: LazyLock<Vec<(String, Vec<String>)>> =
+    LazyLock::new(oj_resolver::default_extension_alias);
 
 #[derive(Debug, Serialize)]
 pub struct BuildResult {
@@ -58,7 +59,10 @@ impl BuildResult {
             html: String::new(),
             modules: Vec::new(),
             bare: Vec::new(),
-            errors: vec![BuildError { path: path.to_string(), message }],
+            errors: vec![BuildError {
+                path: path.to_string(),
+                message,
+            }],
         }
     }
 }
@@ -139,14 +143,18 @@ pub fn resolve(files: &BTreeMap<String, String>, importer_dir: &str, spec: &str)
 }
 
 fn ext_of(path: &str) -> &str {
-    Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("")
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
 }
 
 // Tags are matched whole (attributes read by the shared `html_attr` scanner);
 // SCRIPT_RE also captures the body so an inline module script can be refused
 // loudly instead of shipping imports that cannot resolve from about:srcdoc.
-static SCRIPT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<script\b[^>]*/\s*>|(<script\b[^>]*>)(.*?)</script\s*>").unwrap());
+static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<script\b[^>]*/\s*>|(<script\b[^>]*>)(.*?)</script\s*>").unwrap()
+});
 static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<link\b[^>]*/?>").unwrap());
 static COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
 static STYLE_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</(style)").unwrap());
@@ -154,8 +162,10 @@ static STYLE_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</(st
 // onto its own line, so a real @import always starts a line there, while a
 // `; @import` inside a string value never does.
 static CSS_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@import\b").unwrap());
-static SASS_LOAD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*@(use|import|forward)\b").unwrap());
-static SASS_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/|//[^\n]*").unwrap());
+static SASS_LOAD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s*@(use|import|forward)\b").unwrap());
+static SASS_COMMENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/|//[^\n]*").unwrap());
 static COMPOSES_FROM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"\bcomposes\s*:[^;{}]*\bfrom\s+["']"#).unwrap());
 
@@ -230,7 +240,10 @@ fn css_to_js(id: &str, css: &str, exports: Option<&[(String, String)]>) -> Strin
     out
 }
 
-fn compile_stylesheet(path: &str, source: &str) -> Result<(String, Option<Vec<(String, String)>>), String> {
+/// Compiled CSS plus, for a CSS module, its `(local, scoped)` class names.
+type CompiledStylesheet = (String, Option<Vec<(String, String)>>);
+
+fn compile_stylesheet(path: &str, source: &str) -> Result<CompiledStylesheet, String> {
     let id = module_id(path);
     // Cross-file `composes: x from "./other.css"` resolves through std::fs in
     // oj_css and would silently drop the composed classes on wasm32. Scoping
@@ -417,7 +430,10 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
             // identifier keys, JSON.parse fallback for the rest (__proto__
             // included), invalid json as an error with the file's path.
             match oj_compiler::json::to_esm(source, &path) {
-                Ok(code) => modules.push(Module { id: module_id(&path), code }),
+                Ok(code) => modules.push(Module {
+                    id: module_id(&path),
+                    code,
+                }),
                 Err(err) => errors.push(BuildError {
                     path: path.clone(),
                     message: err.to_string(),
@@ -513,7 +529,10 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
         // behind a syntax error would hand the user a second error round after
         // they fix the first.
         for message in problems {
-            errors.push(BuildError { path: path.clone(), message });
+            errors.push(BuildError {
+                path: path.clone(),
+                message,
+            });
         }
         match compiled {
             Ok(out) => {
@@ -524,7 +543,10 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
                 });
             }
             Err(err) => {
-                errors.push(BuildError { path: path.clone(), message: err.to_string() });
+                errors.push(BuildError {
+                    path: path.clone(),
+                    message: err.to_string(),
+                });
             }
         }
     }
@@ -561,9 +583,18 @@ mod tests {
             "import styles from \"./App.module.css\";\nexport default function App() {\n  return <h1 className={styles.title}>hi</h1>;\n}\n"
                 .to_string(),
         );
-        files.insert("/src/style.css".to_string(), "body { margin: 0; }".to_string());
-        files.insert("/src/App.module.css".to_string(), ".title { color: rebeccapurple; }".to_string());
-        files.insert("/src/global.css".to_string(), ":root { --x: 1; }".to_string());
+        files.insert(
+            "/src/style.css".to_string(),
+            "body { margin: 0; }".to_string(),
+        );
+        files.insert(
+            "/src/App.module.css".to_string(),
+            ".title { color: rebeccapurple; }".to_string(),
+        );
+        files.insert(
+            "/src/global.css".to_string(),
+            ":root { --x: 1; }".to_string(),
+        );
         files
     }
 
@@ -576,23 +607,38 @@ mod tests {
         assert!(ids.contains(&"@app/src/App.tsx"));
         assert!(ids.contains(&"@app/src/style.css"));
         assert!(ids.contains(&"@app/src/App.module.css"));
-        assert!(!ids.contains(&"@app/src/global.css"), "linked css is inlined, not a module");
+        assert!(
+            !ids.contains(&"@app/src/global.css"),
+            "linked css is inlined, not a module"
+        );
     }
 
     #[test]
     fn rewrites_imports_and_collects_bare() {
         let result = build(&demo());
-        let main = result.modules.iter().find(|m| m.id == "@app/src/main.tsx").unwrap();
+        let main = result
+            .modules
+            .iter()
+            .find(|m| m.id == "@app/src/main.tsx")
+            .unwrap();
         assert!(main.code.contains("\"@app/src/App.tsx\""), "{}", main.code);
         assert!(main.code.contains("\"@app/src/style.css\""));
         assert!(result.bare.contains(&"react-dom/client".to_string()));
-        assert!(result.bare.iter().any(|b| b.starts_with("react/jsx")), "{:?}", result.bare);
+        assert!(
+            result.bare.iter().any(|b| b.starts_with("react/jsx")),
+            "{:?}",
+            result.bare
+        );
     }
 
     #[test]
     fn html_entry_becomes_inline_import_and_link_is_inlined() {
         let result = build(&demo());
-        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(
+            result.html.contains("import \"@app/src/main.tsx\";"),
+            "{}",
+            result.html
+        );
         assert!(!result.html.contains("src=\"/src/main.tsx\""));
         assert!(result.html.contains("--x: 1"), "{}", result.html);
         assert!(!result.html.contains("<link"));
@@ -601,15 +647,26 @@ mod tests {
     #[test]
     fn css_modules_export_scoped_names() {
         let result = build(&demo());
-        let module = result.modules.iter().find(|m| m.id == "@app/src/App.module.css").unwrap();
-        assert!(module.code.contains("export const title = "), "{}", module.code);
+        let module = result
+            .modules
+            .iter()
+            .find(|m| m.id == "@app/src/App.module.css")
+            .unwrap();
+        assert!(
+            module.code.contains("export const title = "),
+            "{}",
+            module.code
+        );
         assert!(module.code.contains("export default"));
     }
 
     #[test]
     fn missing_import_is_reported_not_fatal() {
         let mut files = demo();
-        files.insert("/src/main.tsx".to_string(), "import \"./nope\";\nconsole.log(1);\n".to_string());
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import \"./nope\";\nconsole.log(1);\n".to_string(),
+        );
         let result = build(&files);
         assert!(!result.ok);
         assert!(result.errors.iter().any(|e| e.message.contains("./nope")));
@@ -627,7 +684,11 @@ mod tests {
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
-        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(
+            result.html.contains("import \"@app/src/main.tsx\";"),
+            "{}",
+            result.html
+        );
         assert!(result.html.contains("--x: 1"));
     }
 
@@ -641,18 +702,33 @@ mod tests {
                 .to_string(),
         );
         let result = build(&files);
-        assert!(result.html.contains("<link rel=\"icon\""), "{}", result.html);
-        assert!(result.html.contains("<script src=\"/legacy.js\"></script>"), "{}", result.html);
+        assert!(
+            result.html.contains("<link rel=\"icon\""),
+            "{}",
+            result.html
+        );
+        assert!(
+            result.html.contains("<script src=\"/legacy.js\"></script>"),
+            "{}",
+            result.html
+        );
         assert!(result.html.contains("import \"@app/src/main.tsx\";"));
     }
 
     #[test]
     fn css_at_import_is_a_loud_error() {
         let mut files = demo();
-        files.insert("/src/style.css".to_string(), "@import \"./global.css\";\nbody { margin: 0 }".to_string());
+        files.insert(
+            "/src/style.css".to_string(),
+            "@import \"./global.css\";\nbody { margin: 0 }".to_string(),
+        );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("@import")), "{:?}", result.errors);
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("@import")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -663,44 +739,87 @@ mod tests {
             "import x from \"https://esm.sh/lodash-es\";\nconsole.log(x);\n".to_string(),
         );
         let result = build(&files);
-        let main = result.modules.iter().find(|m| m.id == "@app/src/main.tsx").unwrap();
-        assert!(main.code.contains("\"https://esm.sh/lodash-es\""), "{}", main.code);
-        assert!(!result.bare.iter().any(|b| b.contains("https://")), "{:?}", result.bare);
+        let main = result
+            .modules
+            .iter()
+            .find(|m| m.id == "@app/src/main.tsx")
+            .unwrap();
+        assert!(
+            main.code.contains("\"https://esm.sh/lodash-es\""),
+            "{}",
+            main.code
+        );
+        assert!(
+            !result.bare.iter().any(|b| b.contains("https://")),
+            "{:?}",
+            result.bare
+        );
     }
 
     #[test]
     fn json_proto_keys_go_through_json_parse_and_bad_json_errors() {
         let mut files = demo();
-        files.insert("/src/main.tsx".to_string(), "import d from \"./data.json\";\nconsole.log(d);\n".to_string());
-        files.insert("/src/data.json".to_string(), "{\"__proto__\": {\"a\": 1}}".to_string());
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import d from \"./data.json\";\nconsole.log(d);\n".to_string(),
+        );
+        files.insert(
+            "/src/data.json".to_string(),
+            "{\"__proto__\": {\"a\": 1}}".to_string(),
+        );
         let result = build(&files);
-        let json = result.modules.iter().find(|m| m.id == "@app/src/data.json").unwrap();
+        let json = result
+            .modules
+            .iter()
+            .find(|m| m.id == "@app/src/data.json")
+            .unwrap();
         assert!(json.code.contains("JSON.parse("), "{}", json.code);
         assert!(json.code.contains("export default"), "{}", json.code);
 
         files.insert("/src/data.json".to_string(), "{oops}".to_string());
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.path == "/src/data.json"), "{:?}", result.errors);
+        assert!(
+            result.errors.iter().any(|e| e.path == "/src/data.json"),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]
     fn inlined_css_cannot_close_the_style_tag() {
         let mut files = demo();
-        files.insert("/src/global.css".to_string(), ".x::after { content: \"</StYlE>\" }".to_string());
+        files.insert(
+            "/src/global.css".to_string(),
+            ".x::after { content: \"</StYlE>\" }".to_string(),
+        );
         let result = build(&files);
         assert!(result.ok, "{:?}", result.errors);
-        assert!(!result.html.to_lowercase().contains("content: \"</style"), "{}", result.html);
+        assert!(
+            !result.html.to_lowercase().contains("content: \"</style"),
+            "{}",
+            result.html
+        );
         assert!(result.html.contains("<\\/StYlE>"), "{}", result.html);
     }
 
     #[test]
     fn no_module_entry_is_an_error() {
         let mut files = demo();
-        files.insert("/index.html".to_string(), "<html><body><p>static</p></body></html>".to_string());
+        files.insert(
+            "/index.html".to_string(),
+            "<html><body><p>static</p></body></html>".to_string(),
+        );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("no <script")), "{:?}", result.errors);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("no <script")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -714,8 +833,18 @@ mod tests {
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
-        assert!(result.html.contains("data-type=\"module\" src=\"/legacy.js\""), "{}", result.html);
-        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(
+            result
+                .html
+                .contains("data-type=\"module\" src=\"/legacy.js\""),
+            "{}",
+            result.html
+        );
+        assert!(
+            result.html.contains("import \"@app/src/main.tsx\";"),
+            "{}",
+            result.html
+        );
     }
 
     #[test]
@@ -729,7 +858,11 @@ mod tests {
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
-        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(
+            result.html.contains("import \"@app/src/main.tsx\";"),
+            "{}",
+            result.html
+        );
         assert!(result.html.contains("--x: 1"), "{}", result.html);
     }
 
@@ -757,11 +890,17 @@ mod tests {
         // A parse error precedes the rewriter, so it is the only diagnostic
         // for that file; resolver problems from OTHER files still surface.
         let mut files = demo();
-        files.insert("/src/App.tsx".to_string(), "const broken = (;\n".to_string());
+        files.insert(
+            "/src/App.tsx".to_string(),
+            "const broken = (;\n".to_string(),
+        );
         let result = build(&files);
         assert!(!result.ok);
         assert!(
-            result.errors.iter().any(|e| e.path == "/src/App.tsx" && e.message.contains("parse error")),
+            result
+                .errors
+                .iter()
+                .any(|e| e.path == "/src/App.tsx" && e.message.contains("parse error")),
             "{:?}",
             result.errors
         );
@@ -771,11 +910,24 @@ mod tests {
     #[test]
     fn sass_use_is_a_loud_error() {
         let mut files = demo();
-        files.insert("/src/main.tsx".to_string(), "import \"./app.scss\";\nconsole.log(1);\n".to_string());
-        files.insert("/src/app.scss".to_string(), "@use \"./vars\";\nbody { color: $ink }".to_string());
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import \"./app.scss\";\nconsole.log(1);\n".to_string(),
+        );
+        files.insert(
+            "/src/app.scss".to_string(),
+            "@use \"./vars\";\nbody { color: $ink }".to_string(),
+        );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("sass @use/@import")), "{:?}", result.errors);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("sass @use/@import")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -788,7 +940,10 @@ mod tests {
         let result = build(&files);
         assert!(!result.ok);
         assert!(
-            result.errors.iter().any(|e| e.message.contains("?raw imports are not supported")),
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("?raw imports are not supported")),
             "{:?}",
             result.errors
         );
@@ -797,9 +952,18 @@ mod tests {
     #[test]
     fn probe_order_matches_vite_js_before_ts() {
         let mut files = demo();
-        files.insert("/src/main.tsx".to_string(), "import \"./dual\";\n".to_string());
-        files.insert("/src/dual.js".to_string(), "console.log(\"js\");\n".to_string());
-        files.insert("/src/dual.ts".to_string(), "console.log(\"ts\");\n".to_string());
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import \"./dual\";\n".to_string(),
+        );
+        files.insert(
+            "/src/dual.js".to_string(),
+            "console.log(\"js\");\n".to_string(),
+        );
+        files.insert(
+            "/src/dual.ts".to_string(),
+            "console.log(\"ts\");\n".to_string(),
+        );
         let result = build(&files);
         let ids: Vec<&str> = result.modules.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"@app/src/dual.js"), "{ids:?}");
@@ -818,8 +982,16 @@ mod tests {
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
-        assert!(result.html.contains("fonts.googleapis.com"), "{}", result.html);
-        assert!(result.html.contains("//cdn.example/x.js"), "{}", result.html);
+        assert!(
+            result.html.contains("fonts.googleapis.com"),
+            "{}",
+            result.html
+        );
+        assert!(
+            result.html.contains("//cdn.example/x.js"),
+            "{}",
+            result.html
+        );
     }
 
     #[test]
@@ -831,7 +1003,10 @@ mod tests {
              <script type=\"module\" src=\"/src/main.tsx\"></script></body></html>"
                 .to_string(),
         );
-        files.insert("/src/broken.tsx".to_string(), "not!valid syntax(((".to_string());
+        files.insert(
+            "/src/broken.tsx".to_string(),
+            "not!valid syntax(((".to_string(),
+        );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
         assert!(!result.modules.iter().any(|m| m.id.contains("broken")));
@@ -842,11 +1017,19 @@ mod tests {
         let mut files = demo();
         files.insert(
             "/index.html".to_string(),
-            "<html><body><script type=\"module\">import \"/src/main.tsx\";</script></body></html>".to_string(),
+            "<html><body><script type=\"module\">import \"/src/main.tsx\";</script></body></html>"
+                .to_string(),
         );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("inline module scripts")), "{:?}", result.errors);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("inline module scripts")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -867,11 +1050,21 @@ mod tests {
     #[test]
     fn json_named_exports_match_the_native_module() {
         let mut files = demo();
-        files.insert("/src/main.tsx".to_string(), "import { version } from \"./pkg.json\";\nconsole.log(version);\n".to_string());
-        files.insert("/src/pkg.json".to_string(), "{\"version\": \"1.0.0\"}".to_string());
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import { version } from \"./pkg.json\";\nconsole.log(version);\n".to_string(),
+        );
+        files.insert(
+            "/src/pkg.json".to_string(),
+            "{\"version\": \"1.0.0\"}".to_string(),
+        );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
-        let json = result.modules.iter().find(|m| m.id == "@app/src/pkg.json").unwrap();
+        let json = result
+            .modules
+            .iter()
+            .find(|m| m.id == "@app/src/pkg.json")
+            .unwrap();
         assert!(json.code.contains("export const version"), "{}", json.code);
     }
 
@@ -883,7 +1076,10 @@ mod tests {
             "import config from \"./config\";\nimport { x } from \"./mod.js\";\nconsole.log(config, x);\n".to_string(),
         );
         files.insert("/src/config.json".to_string(), "{\"a\": 1}".to_string());
-        files.insert("/src/mod.ts".to_string(), "export const x = 1;\n".to_string());
+        files.insert(
+            "/src/mod.ts".to_string(),
+            "export const x = 1;\n".to_string(),
+        );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
         let ids: Vec<&str> = result.modules.iter().map(|m| m.id.as_str()).collect();
@@ -901,9 +1097,30 @@ mod tests {
         );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("?inline imports are not supported")), "{:?}", result.errors);
-        assert!(result.errors.iter().any(|e| e.message.contains("alias imports are not configured")), "{:?}", result.errors);
-        assert!(result.errors.iter().any(|e| e.message.contains("internal prefix")), "{:?}", result.errors);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("?inline imports are not supported")),
+            "{:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("alias imports are not configured")),
+            "{:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("internal prefix")),
+            "{:?}",
+            result.errors
+        );
         assert!(result.bare.is_empty(), "{:?}", result.bare);
     }
 
@@ -916,7 +1133,14 @@ mod tests {
         );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("import.meta.glob")), "{:?}", result.errors);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("import.meta.glob")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -928,10 +1152,17 @@ mod tests {
         );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("composes")), "{:?}", result.errors);
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("composes")),
+            "{:?}",
+            result.errors
+        );
 
         let mut files = demo();
-        files.insert("/src/main.tsx".to_string(), "import \"./app.scss\";\nconsole.log(1);\n".to_string());
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import \"./app.scss\";\nconsole.log(1);\n".to_string(),
+        );
         files.insert(
             "/src/app.scss".to_string(),
             "/*\n@use \"./vars\";\n*/\n// @import \"./other\";\nbody { color: teal }".to_string(),
@@ -964,9 +1195,17 @@ mod tests {
         );
         let result = build(&files);
         assert!(result.ok, "errors: {:?}", result.errors);
-        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(
+            result.html.contains("import \"@app/src/main.tsx\";"),
+            "{}",
+            result.html
+        );
         assert!(result.html.contains("<div id=\"root\">"), "{}", result.html);
-        assert!(result.html.contains("<script src=\"/legacy.js\"></script>"), "{}", result.html);
+        assert!(
+            result.html.contains("<script src=\"/legacy.js\"></script>"),
+            "{}",
+            result.html
+        );
     }
 
     #[test]
@@ -985,10 +1224,20 @@ mod tests {
     #[test]
     fn subpath_imports_error_loudly() {
         let mut files = demo();
-        files.insert("/src/main.tsx".to_string(), "import { fmt } from \"#utils\";\nconsole.log(fmt);\n".to_string());
+        files.insert(
+            "/src/main.tsx".to_string(),
+            "import { fmt } from \"#utils\";\nconsole.log(fmt);\n".to_string(),
+        );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("subpath imports")), "{:?}", result.errors);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("subpath imports")),
+            "{:?}",
+            result.errors
+        );
         assert!(result.bare.is_empty(), "{:?}", result.bare);
     }
 
@@ -1003,7 +1252,14 @@ mod tests {
         );
         let result = build(&files);
         assert!(!result.ok);
-        assert!(result.errors.iter().any(|e| e.message.contains("css module cannot be linked")), "{:?}", result.errors);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("css module cannot be linked")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -1029,7 +1285,11 @@ mod tests {
         );
         // Never panics on overlapping edits; the script span wins whole.
         let result = build(&files);
-        assert!(result.html.contains("import \"@app/src/main.tsx\";"), "{}", result.html);
+        assert!(
+            result.html.contains("import \"@app/src/main.tsx\";"),
+            "{}",
+            result.html
+        );
         assert!(!result.html.contains("<style"), "{}", result.html);
     }
 

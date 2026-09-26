@@ -195,7 +195,10 @@ pub async fn start_dev(
         let entry = configured_start_server_entry(&config, &root)
             .unwrap_or_else(|| cache.join("server-entry.tsx"));
         let mut init_env = vec![
-            ("OJ_APP_ROOT".to_string(), root.to_string_lossy().into_owned()),
+            (
+                "OJ_APP_ROOT".to_string(),
+                root.to_string_lossy().into_owned(),
+            ),
             (
                 "OJ_CACHE_ROOT".to_string(),
                 oj_cache::cache_root(&root).to_string_lossy().into_owned(),
@@ -337,7 +340,8 @@ pub async fn start_dev(
     {
         let (root, mode) = (root.clone(), mode.clone());
         tokio::task::spawn_blocking(move || {
-            start_bundle_store(&root, &mode).prune(oj_cache::start_bundle::DEFAULT_PRUNE_BUDGET_BYTES);
+            start_bundle_store(&root, &mode)
+                .prune(oj_cache::start_bundle::DEFAULT_PRUNE_BUDGET_BYTES);
         });
     }
 
@@ -810,7 +814,11 @@ async fn rebundle_worker(
 /// `OJ_DEFINE_SSR`, Vite's `environments.<name>.define`) and the JSX settings
 /// from the config (`OJ_JSX`, consumed by `jsxTransformOptions` in
 /// resolve-pkg.mjs).
-fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Vec<(String, String)>> {
+fn start_script_env(
+    root: &Path,
+    command: &str,
+    mode: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
     let mut config = oj_config::load(root).unwrap_or_default();
     oj_server::plugins::adopt_vite_config_values(&mut config, root, command, mode)
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -845,7 +853,10 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
     }
     let jsx = oj_config::jsx_settings(&config);
     if jsx != oj_config::JsxSettings::default() {
-        vars.push(("OJ_JSX".into(), serde_json::to_string(&jsx).unwrap_or_default()));
+        vars.push((
+            "OJ_JSX".into(),
+            serde_json::to_string(&jsx).unwrap_or_default(),
+        ));
     }
     // The config's `define` map (values are JS expressions), applied by the SSR
     // loader and the production bundles like Vite's define plugin.
@@ -854,7 +865,10 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
         .map(|(k, v)| (k, serde_json::Value::String(v)))
         .collect();
     if !defines.is_empty() {
-        vars.push(("OJ_DEFINE".into(), serde_json::Value::Object(defines).to_string()));
+        vars.push((
+            "OJ_DEFINE".into(),
+            serde_json::Value::Object(defines).to_string(),
+        ));
     }
     // The conditions the SSR loader adds to Node's export conditions, and the
     // externalConditions swap for externalized deps. Vite-shaped selection:
@@ -872,7 +886,13 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
     let map_dev = |list: Vec<String>| -> Vec<String> {
         let dev_prod = if dev { "development" } else { "production" };
         list.into_iter()
-            .map(|c| if c == "development|production" { dev_prod.to_string() } else { c })
+            .map(|c| {
+                if c == "development|production" {
+                    dev_prod.to_string()
+                } else {
+                    c
+                }
+            })
             .collect()
     };
     let runner_backed = oj_config::ssr_runner_backed(&config);
@@ -921,7 +941,10 @@ fn start_script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Ve
         .unwrap_or_default(),
     ));
     if let Some(entry) = configured_start_server_entry(&config, root) {
-        vars.push(("OJ_START_SERVER_ENTRY".into(), entry.to_string_lossy().into_owned()));
+        vars.push((
+            "OJ_START_SERVER_ENTRY".into(),
+            entry.to_string_lossy().into_owned(),
+        ));
     }
     // The Start bundles are oj's own code and run on the rolldown vendored
     // next to the binary (nix embeds it at build time; the env var overrides
@@ -961,10 +984,17 @@ fn configured_start_server_entry(config: &oj_config::OjConfig, root: &Path) -> O
         .find(|(find, _)| find == "virtual:tanstack-start-server-entry")
         .map(|(_, replacement)| replacement)?;
     let path = PathBuf::from(target.split('?').next().unwrap_or(&target));
-    let path = if path.is_absolute() { path } else { root.join(path) };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
     let real = path.canonicalize().ok()?;
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    if !real.starts_with(&root) || real.components().any(|c| c.as_os_str() == "node_modules") || !real.is_file() {
+    if !real.starts_with(&root)
+        || real.components().any(|c| c.as_os_str() == "node_modules")
+        || !real.is_file()
+    {
         return None;
     }
     Some(real)
@@ -1001,7 +1031,11 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
     let out = out
         .or_else(|| build_cfg.out_dir.as_ref().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("dist"));
-    let out_dir = if out.is_absolute() { out } else { root.join(out) };
+    let out_dir = if out.is_absolute() {
+        out
+    } else {
+        root.join(out)
+    };
     if out_dir.canonicalize().ok().as_deref() == Some(root.as_path()) {
         anyhow::bail!(
             "build.outDir {} is the project root; refusing to empty it. Point outDir at a subdirectory.",
@@ -1034,7 +1068,10 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
         "production",
     );
     let mut env = vec![
-        ("OJ_APP_ROOT".to_string(), root.to_string_lossy().into_owned()),
+        (
+            "OJ_APP_ROOT".to_string(),
+            root.to_string_lossy().into_owned(),
+        ),
         (
             "OJ_CACHE_ROOT".to_string(),
             oj_cache::cache_root(&root).to_string_lossy().into_owned(),
@@ -1042,7 +1079,10 @@ pub async fn start_build(root: PathBuf, mode: &str, out: Option<PathBuf>) -> any
         ("NODE_ENV".to_string(), node_env.clone()),
         ("OJ_MODE".to_string(), mode.to_string()),
         ("OJ_PRERENDER".to_string(), prerender),
-        ("OJ_OUT_DIR".to_string(), out_dir.to_string_lossy().into_owned()),
+        (
+            "OJ_OUT_DIR".to_string(),
+            out_dir.to_string_lossy().into_owned(),
+        ),
         ("OJ_BASE".to_string(), base),
         ("OJ_SOURCEMAP".to_string(), sourcemap.to_string()),
         (
@@ -1306,7 +1346,10 @@ fn dev_node_env(root: &Path, mode: &str) -> String {
 /// the same values `node` used to get as spawn env.
 fn script_env(root: &Path, command: &str, mode: &str) -> anyhow::Result<Vec<(String, String)>> {
     let mut env = vec![
-        ("OJ_APP_ROOT".to_string(), root.to_string_lossy().into_owned()),
+        (
+            "OJ_APP_ROOT".to_string(),
+            root.to_string_lossy().into_owned(),
+        ),
         (
             "OJ_CACHE_ROOT".to_string(),
             oj_cache::cache_root(root).to_string_lossy().into_owned(),
@@ -1501,7 +1544,14 @@ async fn forward_document(
         }
     }
     ensure_runner_fresh(state).await;
-    forward(&state.engine, "GET".into(), document_url(&raw), headers, None).await
+    forward(
+        &state.engine,
+        "GET".into(),
+        document_url(&raw),
+        headers,
+        None,
+    )
+    .await
 }
 
 /// The cap on a buffered request body (`OJ_START_MAX_BODY`, bytes). Bodies
@@ -1558,11 +1608,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     // The middleware may pipe an unclaimed request on to the runner
     // (x-oj-forward-to), so start refreshing it — without blocking this
     // request, which the worker middleware typically serves itself.
-    if state.lazy_runner()
-        && state
-            .runner_dirty
-            .load(std::sync::atomic::Ordering::SeqCst)
-    {
+    if state.lazy_runner() && state.runner_dirty.load(std::sync::atomic::Ordering::SeqCst) {
         let st = Arc::clone(state);
         tokio::spawn(async move { ensure_runner_fresh(&st).await });
     }
@@ -1589,8 +1635,14 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {
         headers.insert("x-oj-forward-to", v);
     }
-    match oj_server::proxy_to_loopback_streaming(port, &method, &url, &headers, Some(req.into_body()))
-        .await
+    match oj_server::proxy_to_loopback_streaming(
+        port,
+        &method,
+        &url,
+        &headers,
+        Some(req.into_body()),
+    )
+    .await
     {
         Ok(resp) if resp.headers().contains_key("x-oj-fallthrough") => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1750,7 +1802,6 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-
 /// Builds the engine request for one incoming request. The browser's Host is
 /// taken from the `Host` header (first value, Node's rule); on the loopback
 /// shim (`from_loopback`) the plugin middleware forwards the original Host as
@@ -1798,7 +1849,8 @@ fn engine_request(
 
 fn engine_response(resp: StartResponse) -> Response {
     let mut out = Response::new(axum::body::Body::from(resp.body));
-    *out.status_mut() = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    *out.status_mut() =
+        StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let headers = out.headers_mut();
     for (name, value) in resp.headers {
         if let (Ok(n), Ok(v)) = (
@@ -1832,7 +1884,9 @@ async fn forward(
             // The runner's 500 page shape (Vite's errorMiddleware): message +
             // stack in an HTML page the overlay can read.
             let esc = |s: &str| {
-                s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+                s.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
             };
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1854,27 +1908,27 @@ async fn forward(
 async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
-    let app = axum::Router::new().fallback(axum::routing::any(
-        |State(engine): State<Arc<StartEngine>>, req: Request| async move {
-            let method = req.method().to_string();
-            let url = path_and_query(&req);
-            let headers = req.headers().clone();
-            let body = match read_body_capped(req.into_body(), start_max_body_bytes()).await {
-                Ok(body) => body,
-                Err(resp) => return resp,
-            };
-            match engine
-                .handle(engine_request(method, url, &headers, body, true))
-                .await
-            {
-                Ok(resp) => engine_response(resp),
-                Err(e) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}")).into_response()
+    let app = axum::Router::new()
+        .fallback(axum::routing::any(
+            |State(engine): State<Arc<StartEngine>>, req: Request| async move {
+                let method = req.method().to_string();
+                let url = path_and_query(&req);
+                let headers = req.headers().clone();
+                let body = match read_body_capped(req.into_body(), start_max_body_bytes()).await {
+                    Ok(body) => body,
+                    Err(resp) => return resp,
+                };
+                match engine
+                    .handle(engine_request(method, url, &headers, body, true))
+                    .await
+                {
+                    Ok(resp) => engine_response(resp),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}"))
+                        .into_response(),
                 }
-            }
-        },
-    ))
-    .with_state(engine);
+            },
+        ))
+        .with_state(engine);
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -2311,7 +2365,8 @@ mod tests {
         assert!(hold_prewarm_for_serve_info(&mut hold).await.is_none());
         let held = start.elapsed();
         assert!(
-            held >= std::time::Duration::from_secs(60) && held < std::time::Duration::from_secs(300),
+            held >= std::time::Duration::from_secs(60)
+                && held < std::time::Duration::from_secs(300),
             "standing evidence released the hold after its confirmation window: {held:?}"
         );
 
@@ -2354,7 +2409,10 @@ mod tests {
             std::mem::forget(info_tx);
         });
         let known = hold_prewarm_for_serve_info(&mut hold).await;
-        assert!(known.is_some(), "the cleared evidence re-armed the hold; the info decided");
+        assert!(
+            known.is_some(),
+            "the cleared evidence re-armed the hold; the info decided"
+        );
         let held = start.elapsed();
         assert!(
             held >= std::time::Duration::from_secs(120),
@@ -2392,7 +2450,10 @@ mod tests {
         std::fs::write(&resolver, "resolver v1").unwrap();
         let changed = changed_regen_outputs(&files, &mut seen);
         let paths: Vec<&str> = changed.iter().map(|(p, _)| p.as_str()).collect();
-        assert_eq!(paths, vec![tree.to_str().unwrap(), resolver.to_str().unwrap()]);
+        assert_eq!(
+            paths,
+            vec![tree.to_str().unwrap(), resolver.to_str().unwrap()]
+        );
         assert!(changed.iter().all(|(_, t)| *t == "update"));
 
         // Same content written again: hashes match, no change detected.
@@ -2427,11 +2488,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        std::fs::write(
-            root.join(".env.staging"),
-            "VITE_X=1\nAPP_Y=2\nSECRET_Z=3\n",
-        )
-        .unwrap();
+        std::fs::write(root.join(".env.staging"), "VITE_X=1\nAPP_Y=2\nSECRET_Z=3\n").unwrap();
         let vars = start_script_env(&root, "serve", "staging").unwrap();
         let get = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get("VITE_X").as_deref(), Some("1"));
@@ -2439,8 +2496,14 @@ mod tests {
         assert_eq!(get("SECRET_Z"), None);
         assert_eq!(get("OJ_ENV_PREFIX").as_deref(), Some(r#"["VITE_","APP_"]"#));
         assert_eq!(get("OJ_DEFINE").as_deref(), Some(r#"{"__SHARED__":"1"}"#));
-        assert_eq!(get("OJ_DEFINE_CLIENT").as_deref(), Some(r#"{"__SIDE__":"\"client\""}"#));
-        assert_eq!(get("OJ_RESOLVE_CONDITIONS").as_deref(), Some(r#"["custom","development"]"#));
+        assert_eq!(
+            get("OJ_DEFINE_CLIENT").as_deref(),
+            Some(r#"{"__SIDE__":"\"client\""}"#)
+        );
+        assert_eq!(
+            get("OJ_RESOLVE_CONDITIONS").as_deref(),
+            Some(r#"["custom","development"]"#)
+        );
 
         // Conditions never cross runtimes: on a runner-backed ssr environment
         // (the extractor's `ssr.runnerBacked`, set when a plugin declares a
@@ -2459,9 +2522,7 @@ mod tests {
             )
             .unwrap();
             let vars = start_script_env(&runner_backed, "serve", "development").unwrap();
-            let var = |k: &str| {
-                vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
-            };
+            let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
             assert_eq!(
                 var("OJ_RESOLVE_CONDITIONS").as_deref(),
                 Some(r#"["module","node","development","import","default"]"#),
@@ -2485,9 +2546,7 @@ mod tests {
             )
             .unwrap();
             let vars = start_script_env(&with_raw, "serve", "development").unwrap();
-            let var = |k: &str| {
-                vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
-            };
+            let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
             assert_eq!(
                 var("OJ_RESOLVE_CONDITIONS").as_deref(),
                 Some(r#"["module","node","development","custom","import","default"]"#),
@@ -2586,7 +2645,9 @@ mod tests {
             .unwrap();
         let body_of = |resp: Response| {
             rt.block_on(async {
-                let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+                let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
                 String::from_utf8_lossy(&bytes).into_owned()
             })
         };
@@ -2598,9 +2659,16 @@ mod tests {
             b.body(axum::body::Body::from("<html></html>")).unwrap()
         };
         assert!(body_of(inject_reload_client(resp("text/html", None))).contains(RELOAD_CLIENT));
-        assert!(!body_of(inject_reload_client(resp("text/html", Some("gzip")))).contains(RELOAD_CLIENT));
-        assert!(body_of(inject_reload_client(resp("text/html", Some("identity")))).contains(RELOAD_CLIENT));
-        assert!(!body_of(inject_reload_client(resp("text/javascript", None))).contains(RELOAD_CLIENT));
+        assert!(
+            !body_of(inject_reload_client(resp("text/html", Some("gzip")))).contains(RELOAD_CLIENT)
+        );
+        assert!(
+            body_of(inject_reload_client(resp("text/html", Some("identity"))))
+                .contains(RELOAD_CLIENT)
+        );
+        assert!(
+            !body_of(inject_reload_client(resp("text/javascript", None))).contains(RELOAD_CLIENT)
+        );
     }
 
     // Vite's NODE_ENV rule for the dev server: the shell wins (so
@@ -2627,14 +2695,24 @@ mod tests {
         std::fs::write(root.join("package.json"), r#"{"name":"app"}"#).unwrap();
         let conds = |command: &str| -> Vec<String> {
             let vars = start_script_env(&root, command, "development").unwrap();
-            let raw = &vars.iter().find(|(k, _)| k == "OJ_CLIENT_CONDITIONS").expect("var").1;
+            let raw = &vars
+                .iter()
+                .find(|(k, _)| k == "OJ_CLIENT_CONDITIONS")
+                .expect("var")
+                .1;
             serde_json::from_str(raw).unwrap()
         };
         // Defaults: Vite's client set, development for dev and production for build.
         let dev = conds("serve");
-        assert!(dev.iter().any(|c| c == "browser") && dev.iter().any(|c| c == "development"), "{dev:?}");
+        assert!(
+            dev.iter().any(|c| c == "browser") && dev.iter().any(|c| c == "development"),
+            "{dev:?}"
+        );
         let build = conds("build");
-        assert!(build.iter().any(|c| c == "production") && !build.iter().any(|c| c == "development"), "{build:?}");
+        assert!(
+            build.iter().any(|c| c == "production") && !build.iter().any(|c| c == "development"),
+            "{build:?}"
+        );
         // A user resolve.conditions list reaches the client bundle.
         std::fs::write(
             root.join("oj.config.json"),
@@ -2643,8 +2721,14 @@ mod tests {
         .unwrap();
         let custom = conds("serve");
         assert!(custom.iter().any(|c| c == "custom"), "{custom:?}");
-        assert!(custom.iter().any(|c| c == "development"), "placeholder mapped: {custom:?}");
-        assert!(!custom.iter().any(|c| c == "browser"), "user list replaces the defaults: {custom:?}");
+        assert!(
+            custom.iter().any(|c| c == "development"),
+            "placeholder mapped: {custom:?}"
+        );
+        assert!(
+            !custom.iter().any(|c| c == "browser"),
+            "user list replaces the defaults: {custom:?}"
+        );
     }
 
     #[test]
@@ -2671,7 +2755,10 @@ mod tests {
     async fn body_reads_cap_at_the_knob_and_fail_on_stream_errors() {
         // Under the cap: buffered whole; empty stays None (the engine's shape).
         let body = axum::body::Body::from(vec![7u8; 1024]);
-        assert_eq!(read_body_capped(body, 4096).await.unwrap().unwrap().len(), 1024);
+        assert_eq!(
+            read_body_capped(body, 4096).await.unwrap().unwrap().len(),
+            1024
+        );
         assert!(read_body_capped(axum::body::Body::empty(), 4096)
             .await
             .unwrap()
@@ -2682,7 +2769,9 @@ mod tests {
             .await
             .expect_err("an oversized body is refused");
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert!(
             String::from_utf8_lossy(&bytes).contains("OJ_START_MAX_BODY"),
             "the 413 names the knob"
@@ -2821,7 +2910,7 @@ mod tests {
             Route::StaticOrDocument
         ));
         assert!(matches!(
-            classify(&req("GET", "/api/v1.2/x"), &vec!["/api".to_string()]),
+            classify(&req("GET", "/api/v1.2/x"), &["/api".to_string()]),
             Route::Pass
         ));
         assert!(matches!(
@@ -2964,7 +3053,11 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/@tanstack/react-start/dist")).unwrap();
         std::fs::write(root.join("src/ssr-entry.ts"), "export default {};").unwrap();
-        std::fs::write(root.join("node_modules/@tanstack/react-start/dist/server-entry.js"), "").unwrap();
+        std::fs::write(
+            root.join("node_modules/@tanstack/react-start/dist/server-entry.js"),
+            "",
+        )
+        .unwrap();
         let cfg = |target: &str| -> oj_config::OjConfig {
             serde_json::from_str(&format!(
                 r#"{{"resolve":{{"alias":{{"virtual:tanstack-start-server-entry":"{}"}}}}}}"#,
@@ -2978,10 +3071,20 @@ mod tests {
             Some(app.canonicalize().unwrap()),
             "an app file named by the Start alias is the server entry"
         );
-        assert_eq!(configured_start_server_entry(&cfg("src/ssr-entry.ts"), &root).is_some(), true, "root-relative works too");
+        assert!(
+            configured_start_server_entry(&cfg("src/ssr-entry.ts"), &root).is_some(),
+            "root-relative works too"
+        );
         let pkg = root.join("node_modules/@tanstack/react-start/dist/server-entry.js");
-        assert_eq!(configured_start_server_entry(&cfg(&pkg.to_string_lossy()), &root), None, "Start's own default entry is not an app entry");
-        assert_eq!(configured_start_server_entry(&cfg("src/missing.ts"), &root), None);
+        assert_eq!(
+            configured_start_server_entry(&cfg(&pkg.to_string_lossy()), &root),
+            None,
+            "Start's own default entry is not an app entry"
+        );
+        assert_eq!(
+            configured_start_server_entry(&cfg("src/missing.ts"), &root),
+            None
+        );
         let none: oj_config::OjConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(configured_start_server_entry(&none, &root), None);
         let env_scoped: oj_config::OjConfig = serde_json::from_str(&format!(
@@ -2989,6 +3092,9 @@ mod tests {
             app.to_string_lossy().replace('\\', "/")
         ))
         .unwrap();
-        assert!(configured_start_server_entry(&env_scoped, &root).is_some(), "environments.ssr.resolve.alias counts");
+        assert!(
+            configured_start_server_entry(&env_scoped, &root).is_some(),
+            "environments.ssr.resolve.alias counts"
+        );
     }
 }

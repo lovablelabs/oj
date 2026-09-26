@@ -74,12 +74,27 @@ mod tests {
 
     #[test]
     fn tokenizes_names_and_never_matches_inside_values_or_data_attrs() {
-        assert_eq!(html_attr(r#"<script data-src="/x" src="/y">"#, "src"), Some("/y"));
-        assert_eq!(html_attr(r#"<script data-type="module" src="/y">"#, "type"), None);
-        assert_eq!(html_attr(r#"<script data-cfg="a type=module b" src="/y">"#, "type"), None);
-        assert_eq!(html_attr(r#"<SCRIPT TYPE="module" SRC=/y>"#, "type"), Some("module"));
+        assert_eq!(
+            html_attr(r#"<script data-src="/x" src="/y">"#, "src"),
+            Some("/y")
+        );
+        assert_eq!(
+            html_attr(r#"<script data-type="module" src="/y">"#, "type"),
+            None
+        );
+        assert_eq!(
+            html_attr(r#"<script data-cfg="a type=module b" src="/y">"#, "type"),
+            None
+        );
+        assert_eq!(
+            html_attr(r#"<SCRIPT TYPE="module" SRC=/y>"#, "type"),
+            Some("module")
+        );
         // The tag is the text between `<` and `>`: callers strip the closing
         // bracket, or a bare value at the end of the tag would swallow it.
-        assert_eq!(html_attr("<link rel='stylesheet' href=app.css", "href"), Some("app.css"));
+        assert_eq!(
+            html_attr("<link rel='stylesheet' href=app.css", "href"),
+            Some("app.css")
+        );
     }
 }

@@ -115,7 +115,12 @@ pub fn default_extension_alias() -> Vec<(String, Vec<String>)> {
         (".cjs", &[".cjs", ".cts"][..]),
     ]
     .iter()
-    .map(|(ext, alts)| (ext.to_string(), alts.iter().map(|s| s.to_string()).collect()))
+    .map(|(ext, alts)| {
+        (
+            ext.to_string(),
+            alts.iter().map(|s| s.to_string()).collect(),
+        )
+    })
     .collect()
 }
 
@@ -190,7 +195,7 @@ impl OjResolver {
             alias,
             extension_alias: default_extension_alias(),
             symlinks: !settings.preserve_symlinks,
-            tsconfig: tsconfig.is_file().then(|| {
+            tsconfig: tsconfig.is_file().then_some({
                 TsconfigDiscovery::Manual(TsconfigOptions {
                     config_file: tsconfig,
                     references: TsconfigReferences::Auto,
@@ -346,7 +351,9 @@ mod tests {
             &[],
         );
         let ends = |spec: &str, suffix: &str| {
-            let p = r.resolve(&src, spec).unwrap_or_else(|e| panic!("{spec}: {e}"));
+            let p = r
+                .resolve(&src, spec)
+                .unwrap_or_else(|e| panic!("{spec}: {e}"));
             assert!(p.ends_with(suffix), "{spec} -> {p:?}, want *{suffix}");
         };
         ends("../utils/a.js", "utils/a.ts");
@@ -437,7 +444,10 @@ mod tests {
             "ssr keeps the node build: {:?}",
             server.resolve(&dir, "br-pkg")
         );
-        assert!(server.resolve(&dir, "mf-pkg").unwrap().ends_with("esm.js"), "module still leads");
+        assert!(
+            server.resolve(&dir, "mf-pkg").unwrap().ends_with("esm.js"),
+            "module still leads"
+        );
         // Naming `browser` in a server mainFields opts back in (Vite: mapping
         // applies whenever the effective mainFields include it).
         let opted_in = OjResolver::with_settings(
@@ -449,7 +459,10 @@ mod tests {
                 ..ResolveSettings::default()
             },
         );
-        assert!(opted_in.resolve(&dir, "br-pkg").unwrap().ends_with("browser.js"));
+        assert!(opted_in
+            .resolve(&dir, "br-pkg")
+            .unwrap()
+            .ends_with("browser.js"));
         assert_eq!(
             default_server_main_fields(),
             ["module", "jsnext:main", "jsnext", "main"].map(String::from)
@@ -526,11 +539,17 @@ mod tests {
         std::fs::write(root.join("main.ts"), "").unwrap();
         let resolver = OjResolver::new(root);
         assert!(
-            resolver.resolve(root, "./both").unwrap().ends_with("both.js"),
+            resolver
+                .resolve(root, "./both")
+                .unwrap()
+                .ends_with("both.js"),
             ".js wins over a sibling .ts as in Vite",
         );
         assert!(
-            resolver.resolve(root, "./modern").unwrap().ends_with("modern.mts"),
+            resolver
+                .resolve(root, "./modern")
+                .unwrap()
+                .ends_with("modern.mts"),
             ".mts is in the default probe list",
         );
         assert_eq!(
@@ -617,13 +636,18 @@ mod tests {
             ResolveSettings {
                 conditions: ["import", "default"].map(String::from).to_vec(),
                 main_fields: Some(
-                    ["browser", "module", "jsnext:main", "jsnext"].map(String::from).to_vec(),
+                    ["browser", "module", "jsnext:main", "jsnext"]
+                        .map(String::from)
+                        .to_vec(),
                 ),
                 ..ResolveSettings::default()
             },
         );
         assert!(
-            vite_shaped.resolve(root, "@acme/parser").unwrap().ends_with("parse.ts"),
+            vite_shaped
+                .resolve(root, "@acme/parser")
+                .unwrap()
+                .ends_with("parse.ts"),
             "a main-only package must resolve under Vite's main-less mainFields",
         );
         // The fallback is LAST: a list preferring `module` still picks it over main.
@@ -637,7 +661,10 @@ mod tests {
             },
         );
         assert!(
-            module_first.resolve(&dir, "mf-pkg").unwrap().ends_with("esm.js"),
+            module_first
+                .resolve(&dir, "mf-pkg")
+                .unwrap()
+                .ends_with("esm.js"),
             "the appended main fallback must not outrank the user's fields",
         );
     }

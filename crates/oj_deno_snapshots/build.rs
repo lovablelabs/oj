@@ -109,7 +109,11 @@ fn use_snapshot_archive(archive: &std::path::Path, out_dir: &std::path::Path) {
      / rusty_v8 bump changes the snapshot format).",
     archive.display()
   );
-  for name in ["CLI_SNAPSHOT.bin", "EXTENSION_RESIDUAL_SOURCES.rs", "OJ_SNAPSHOT_MANIFEST"] {
+  for name in [
+    "CLI_SNAPSHOT.bin",
+    "EXTENSION_RESIDUAL_SOURCES.rs",
+    "OJ_SNAPSHOT_MANIFEST",
+  ] {
     std::fs::copy(archive.join(name), out_dir.join(name)).unwrap_or_else(|e| {
       panic!("copying {name} from the snapshot bundle failed: {e}")
     });
@@ -127,12 +131,13 @@ fn use_snapshot_archive(archive: &std::path::Path, out_dir: &std::path::Path) {
     )
   }) {
     let entry = entry.unwrap();
-    std::fs::copy(entry.path(), residual_dst.join(entry.file_name())).unwrap_or_else(|e| {
-      panic!(
-        "copying residual source {:?} from the snapshot bundle failed: {e}",
-        entry.file_name()
-      )
-    });
+    std::fs::copy(entry.path(), residual_dst.join(entry.file_name()))
+      .unwrap_or_else(|e| {
+        panic!(
+          "copying residual source {:?} from the snapshot bundle failed: {e}",
+          entry.file_name()
+        )
+      });
   }
 }
 

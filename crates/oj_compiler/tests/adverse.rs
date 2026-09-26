@@ -51,8 +51,16 @@ fn malformed_sources_are_errors_not_panics() {
 fn lone_surrogate_escapes_round_trip_unchanged() {
     // `"\ud800"` is a legal string literal that is not well-formed UTF-16. It
     // must reach the browser as written, not as a replacement character.
-    let out = dev("/src/App.ts", "export const a = \"\\ud800\\udc00 \\ud800\";").unwrap();
-    assert!(out.code.contains("\\ud800"), "escape rewritten: {}", out.code);
+    let out = dev(
+        "/src/App.ts",
+        "export const a = \"\\ud800\\udc00 \\ud800\";",
+    )
+    .unwrap();
+    assert!(
+        out.code.contains("\\ud800"),
+        "escape rewritten: {}",
+        out.code
+    );
     assert!(parses(&out.code), "invalid output: {}", out.code);
 }
 
@@ -120,7 +128,11 @@ fn deeply_nested_expressions_do_not_overflow_a_compile_thread() {
                 let _ = dev("/src/ternary.ts", &ternary);
             }
             // The shape a data-shaped generated file actually reaches.
-            let arrays = format!("export const x = {}1{};", "[".repeat(2_000), "]".repeat(2_000));
+            let arrays = format!(
+                "export const x = {}1{};",
+                "[".repeat(2_000),
+                "]".repeat(2_000)
+            );
             assert!(dev("/src/arrays.ts", &arrays).is_ok());
             // A long flat chain is iterative in the parser but not in codegen.
             let chain = format!("export const x = 1{};", "+1".repeat(5_000));
@@ -158,10 +170,18 @@ fn very_large_sources_compile_in_linear_time() {
 fn unused_type_only_imports_are_elided_from_a_typescript_module() {
     // Documented TypeScript semantics, and the reason the count above needs its
     // imports used: an unused import in a .ts file is not a module edge.
-    let out = dev("/src/App.ts", "import d from \"./d.js\";\nexport const a = 1;").unwrap();
+    let out = dev(
+        "/src/App.ts",
+        "import d from \"./d.js\";\nexport const a = 1;",
+    )
+    .unwrap();
     assert!(out.imports.is_empty(), "{:?}", out.imports);
     // In a .js module there is no elision.
-    let out = dev("/src/App.js", "import d from \"./d.js\";\nexport const a = 1;").unwrap();
+    let out = dev(
+        "/src/App.js",
+        "import d from \"./d.js\";\nexport const a = 1;",
+    )
+    .unwrap();
     assert_eq!(out.imports, vec!["./d.js".to_string()]);
     // A bare side-effect import is kept either way.
     let out = dev("/src/App.ts", "import \"./side-effect.css\";").unwrap();
@@ -174,7 +194,7 @@ fn unicode_identifiers_and_bidi_text_survive_a_round_trip() {
                   export const 日本 = 2;\n\
                   export const $ = \"\u{202e}reversed\u{202c}\";\n\
                   export const zwj = \"👩‍👩‍👧‍👦\";\n";
-    let out = dev("/src/unicode.ts", &source).unwrap();
+    let out = dev("/src/unicode.ts", source).unwrap();
     assert!(parses(&out.code), "invalid output: {}", out.code);
     let mut names = oj_compiler::exports(source, Path::new("/src/unicode.ts"));
     names.sort();
@@ -210,8 +230,12 @@ export { a, b, c, d, e, f, g };
 ";
     let out = dev("/src/App.tsx", source).unwrap();
     assert_eq!(out.imports.len(), 7, "{:?}", out.imports);
-    assert!(out.imports.contains(&"../../../../../../etc/passwd".to_string()));
-    assert!(out.imports.contains(&"http://evil.example/x.js".to_string()));
+    assert!(out
+        .imports
+        .contains(&"../../../../../../etc/passwd".to_string()));
+    assert!(out
+        .imports
+        .contains(&"http://evil.example/x.js".to_string()));
 
     // A rewriter sees each specifier exactly once and its answer is what lands
     // in the output.
@@ -289,7 +313,8 @@ fn json_that_is_not_json_is_an_error() {
 
 #[test]
 fn json_keys_that_are_not_identifiers_are_default_only() {
-    let source = r#"{"kebab-case":1,"with space":2,"1numeric":3,"":4,"default":5,"class":6,"ok":7}"#;
+    let source =
+        r#"{"kebab-case":1,"with space":2,"1numeric":3,"":4,"default":5,"class":6,"ok":7}"#;
     let esm = json::to_esm(source, "/data.json").unwrap();
     assert!(parses(&esm), "invalid output: {esm}");
     assert!(esm.contains("export const ok ="));
@@ -334,7 +359,9 @@ fn a_json_proto_key_stays_an_own_property() {
 
 #[test]
 fn json_scalars_and_deep_nesting_are_accepted() {
-    for source in ["1", "-0.5e10", "\"str\"", "true", "false", "null", "[]", "{}"] {
+    for source in [
+        "1", "-0.5e10", "\"str\"", "true", "false", "null", "[]", "{}",
+    ] {
         let esm = json::to_esm(source, "/data.json").unwrap();
         assert!(parses(&esm), "{source} -> {esm}");
     }
@@ -377,7 +404,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
     .unwrap();
     assert!(!out.code.is_empty());
 
-    let analysis = cjs::analyze_for_factory(Path::new("/node_modules/pkg/index.js"), source).unwrap();
+    let analysis =
+        cjs::analyze_for_factory(Path::new("/node_modules/pkg/index.js"), source).unwrap();
     // Only statically known specifiers can be pre-resolved.
     for spec in &analysis.requires {
         assert!(
@@ -478,8 +506,7 @@ fn glob_options_that_make_no_sense_are_ignored_safely() {
         "[]",
         "42",
     ] {
-        let source =
-            format!("export const m = import.meta.glob(\"./locales/*.json\", {options});");
+        let source = format!("export const m = import.meta.glob(\"./locales/*.json\", {options});");
         let out = glob::expand_source(&source, &entry);
         assert!(
             compile(Path::new("/verify.mjs"), &out, &CompileOptions::prod()).is_ok(),
@@ -543,7 +570,10 @@ fn source_expanders_are_the_identity_on_unparsable_input() {
     let broken = "const a = ( // import.meta.glob import( import.meta.url";
     let path = Path::new("/src/broken.js");
     assert_eq!(glob::expand_source(broken, path), broken);
-    assert_eq!(glob::expand_dynamic_import_vars_source(broken, path), broken);
+    assert_eq!(
+        glob::expand_dynamic_import_vars_source(broken, path),
+        broken
+    );
     assert_eq!(glob::expand_new_url_asset_source(broken, path), broken);
 }
 
@@ -579,6 +609,9 @@ fn cjs_interop_rewriting_produces_valid_code_for_every_import_form() {
             compile(Path::new("/verify.mjs"), &code, &CompileOptions::prod()).is_ok(),
             "{source} -> invalid code: {code}"
         );
-        assert!(!code.contains("\"cjs-pkg\""), "specifier left behind: {code}");
+        assert!(
+            !code.contains("\"cjs-pkg\""),
+            "specifier left behind: {code}"
+        );
     }
 }

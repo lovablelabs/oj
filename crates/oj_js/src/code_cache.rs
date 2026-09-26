@@ -186,7 +186,13 @@ impl CodeCache for FsCodeCache {
         self.get(specifier, code_cache_type, source_hash)
     }
 
-    fn set_sync(&self, specifier: Url, code_cache_type: CodeCacheType, source_hash: u64, data: &[u8]) {
+    fn set_sync(
+        &self,
+        specifier: Url,
+        code_cache_type: CodeCacheType,
+        source_hash: u64,
+        data: &[u8],
+    ) {
         self.put(&specifier, code_cache_type, source_hash, data);
     }
 }
@@ -275,13 +281,21 @@ mod hygiene_tests {
         let cache = FsCodeCache::new(dir.path().to_path_buf());
         for v in 1..=5u32 {
             let spec = url(&format!("oj:///src/App.tsx?v={v}"));
-            cache.put(&spec, CodeCacheType::EsModule, u64::from(v), format!("bytecode-{v}").as_bytes());
+            cache.put(
+                &spec,
+                CodeCacheType::EsModule,
+                u64::from(v),
+                format!("bytecode-{v}").as_bytes(),
+            );
         }
         let entries = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(entries, 1, "five version bumps must reuse one entry");
         // The latest generation is served; a stale source hash misses.
         let spec = url("oj:///src/App.tsx?v=5");
-        assert_eq!(cache.get(&spec, CodeCacheType::EsModule, 5).as_deref(), Some(b"bytecode-5".as_ref()));
+        assert_eq!(
+            cache.get(&spec, CodeCacheType::EsModule, 5).as_deref(),
+            Some(b"bytecode-5".as_ref())
+        );
         assert_eq!(cache.get(&spec, CodeCacheType::EsModule, 4), None);
     }
 
@@ -292,14 +306,27 @@ mod hygiene_tests {
     fn an_unedited_module_hits_across_a_version_reset() {
         let dir = tempfile::tempdir().unwrap();
         let cache = FsCodeCache::new(dir.path().to_path_buf());
-        cache.put(&url("oj:///src/App.tsx?v=7"), CodeCacheType::EsModule, 42, b"bytecode");
+        cache.put(
+            &url("oj:///src/App.tsx?v=7"),
+            CodeCacheType::EsModule,
+            42,
+            b"bytecode",
+        );
         assert_eq!(
-            cache.get(&url("oj:///src/App.tsx?v=1"), CodeCacheType::EsModule, 42).as_deref(),
+            cache
+                .get(&url("oj:///src/App.tsx?v=1"), CodeCacheType::EsModule, 42)
+                .as_deref(),
             Some(b"bytecode".as_ref())
         );
         // `t` is the other cache-busting param convention; fragments never key.
         assert_eq!(
-            cache.get(&url("oj:///src/App.tsx?t=123#frag"), CodeCacheType::EsModule, 42).as_deref(),
+            cache
+                .get(
+                    &url("oj:///src/App.tsx?t=123#frag"),
+                    CodeCacheType::EsModule,
+                    42
+                )
+                .as_deref(),
             Some(b"bytecode".as_ref())
         );
     }
@@ -310,12 +337,33 @@ mod hygiene_tests {
     fn intent_params_keep_their_own_entries() {
         let dir = tempfile::tempdir().unwrap();
         let cache = FsCodeCache::new(dir.path().to_path_buf());
-        cache.put(&url("file:///a/logo.svg?url&v=1"), CodeCacheType::EsModule, 1, b"as-url");
-        cache.put(&url("file:///a/logo.svg?raw&v=2"), CodeCacheType::EsModule, 2, b"as-raw");
-        cache.put(&url("file:///a/logo.svg"), CodeCacheType::EsModule, 3, b"plain");
+        cache.put(
+            &url("file:///a/logo.svg?url&v=1"),
+            CodeCacheType::EsModule,
+            1,
+            b"as-url",
+        );
+        cache.put(
+            &url("file:///a/logo.svg?raw&v=2"),
+            CodeCacheType::EsModule,
+            2,
+            b"as-raw",
+        );
+        cache.put(
+            &url("file:///a/logo.svg"),
+            CodeCacheType::EsModule,
+            3,
+            b"plain",
+        );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
         assert_eq!(
-            cache.get(&url("file:///a/logo.svg?url&v=9"), CodeCacheType::EsModule, 1).as_deref(),
+            cache
+                .get(
+                    &url("file:///a/logo.svg?url&v=9"),
+                    CodeCacheType::EsModule,
+                    1
+                )
+                .as_deref(),
             Some(b"as-url".as_ref())
         );
     }
@@ -326,7 +374,12 @@ mod hygiene_tests {
     fn sweep_removes_only_stale_tmp_leftovers() {
         let dir = tempfile::tempdir().unwrap();
         let cache = FsCodeCache::new(dir.path().to_path_buf());
-        cache.put(&url("file:///m.js"), CodeCacheType::EsModule, 1, b"bytecode");
+        cache.put(
+            &url("file:///m.js"),
+            CodeCacheType::EsModule,
+            1,
+            b"bytecode",
+        );
         let stale = dir.path().join("deadbeef-esm.bin.tmp999");
         std::fs::write(&stale, b"torn").unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60);
@@ -343,8 +396,18 @@ mod hygiene_tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(!names.iter().any(|n| n.ends_with(".tmp999")), "stale tmp swept: {names:?}");
-        assert!(names.iter().any(|n| n.ends_with(".tmp111")), "fresh tmp kept: {names:?}");
-        assert_eq!(names.iter().filter(|n| n.ends_with(".bin")).count(), 1, "entry kept: {names:?}");
+        assert!(
+            !names.iter().any(|n| n.ends_with(".tmp999")),
+            "stale tmp swept: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with(".tmp111")),
+            "fresh tmp kept: {names:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|n| n.ends_with(".bin")).count(),
+            1,
+            "entry kept: {names:?}"
+        );
     }
 }
