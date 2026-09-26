@@ -1905,11 +1905,11 @@ async fn ssr_module_inner(
     let (source, from_plugin) = match std::fs::read(&path).and_then(bytes_to_string) {
         Ok(s) => (s, false),
         Err(read_err) => match ssr_plugin_host(state).await {
-            Some(host) => match host.load(id).await {
+            Some(host) if host.hook_wants_load(id) => match host.load(id).await {
                 Ok(Some(code)) => (code, true),
                 _ => return Err(SsrModuleError::NotFound(format!("{id}: {read_err}"))),
             },
-            None => return Err(SsrModuleError::NotFound(format!("{id}: {read_err}"))),
+            Some(_) | None => return Err(SsrModuleError::NotFound(format!("{id}: {read_err}"))),
         },
     };
     let ext = path.extension().and_then(|e| e.to_str());
@@ -1941,7 +1941,10 @@ async fn ssr_transform_source(
     runner: bool,
 ) -> Result<String, SsrModuleError> {
     let source = match ssr_plugin_host(state).await {
-        Some(host) => {
+        // The same per-plugin filter gate the client path runs: an SSR module
+        // no plugin's filter can claim skips the isolate RPC (and the import
+        // pre-resolution that only exists to feed it).
+        Some(host) if host.hook_wants_transform(id, &source) => {
             let resolved =
                 resolved_imports_json(&state.resolver, &state.fs_allow, &source, Path::new(id));
             match host.transform(&source, id, &resolved).await {
@@ -1952,6 +1955,12 @@ async fn ssr_transform_source(
                     )));
                 }
             }
+        }
+        Some(_) => {
+            if plugins::hook_gate_debug() {
+                eprintln!("oj: hook gate skipped ssr transform for {id}");
+            }
+            source
         }
         None => source,
     };
@@ -2008,7 +2017,7 @@ async fn ssr_module(
 }
 
 async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<PluginHost>> {
-    state
+    let host = state
         .plugins_ssr
         .get_or_init(|| async {
             let file = match plugins::plugin_source(&state.root)? {
@@ -2044,7 +2053,14 @@ async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<Plug
             }
         })
         .await
-        .clone()
+        .clone();
+    // Every consumer acquires the host here (the SSR gates and the Start
+    // bridge alike), so this is the one seam where the plan can be primed
+    // before any gated dispatch; a no-op once the plan is live.
+    if let Some(h) = &host {
+        h.prime_hook_plan().await;
+    }
+    host
 }
 
 /// Watcher events (file, change type) the lazily spawned SSR host could not
