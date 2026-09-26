@@ -1395,6 +1395,12 @@ impl DevServer {
                 get(|| async { js(REFRESH_PREAMBLE_JS) }),
             )
             .route("/@oj/routes.js", get(serve_oj_routes))
+            // OJ_DEBUG_MEM=1: force a full V8 collection in every live
+            // engine, so memory probes measure retained heap instead of
+            // whatever V8 has not bothered to collect yet (issue #202's
+            // GC-before-measuring point, symmetric with probing a Node
+            // server through its inspector). 404 unless enabled.
+            .route("/@oj/debug/gc", get(debug_gc))
             .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
             .route(
                 "/@oj/lingui-macro-shim.js",
@@ -6626,6 +6632,39 @@ fn server_fn_stub(exports: &[String], url: &str) -> String {
         }
     }
     out
+}
+
+fn debug_mem() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("OJ_DEBUG_MEM").is_ok_and(|v| !v.is_empty() && v != "0")
+    });
+    *ON
+}
+
+async fn debug_gc(headers: axum::http::HeaderMap) -> Response {
+    if !debug_mem() {
+        return (axum::http::StatusCode::NOT_FOUND, "").into_response();
+    }
+    // Probes (curl, the bench harness) send no Origin header; a hostile web
+    // page's cross-origin fetch always does. GC-hammering from a browser tab
+    // is the only remote vector this debug surface opens, so close it.
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return (axum::http::StatusCode::FORBIDDEN, "").into_response();
+    }
+    // Fans out through oj_js's engine registry (plugin hosts, SSR, Start,
+    // CSS, addon-keeper alike) and returns only after each counted engine
+    // ACKNOWLEDGED running its collection — a barrier, not a request, so a
+    // probe reading RSS right after this response sees post-GC numbers.
+    let collected = tokio::task::spawn_blocking(|| {
+        oj_js::collect_all_garbage(std::time::Duration::from_secs(10))
+    })
+    .await
+    .unwrap_or(0);
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        format!("{{\"collected\":{collected}}}"),
+    )
+        .into_response()
 }
 
 async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {

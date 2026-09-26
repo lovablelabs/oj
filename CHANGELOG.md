@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.8] - 2026-09-26
 
+### Added
+
+- `OJ_DEBUG_MEM=1` exposes `/@oj/debug/gc`: a memory-probing instrument that forces a full V8 collection (`low_memory_notification`) in every live engine, so probes measure retained heap rather than garbage V8 has not collected yet. The symmetric counterpart to forcing GC in a Node server through its inspector (issue #202); 404 unless enabled, never a runtime lever.
+
 ### Removed
 
 - `oj dev --bundle` (the bundled dev mode), which the 0.2.7 notes announced one merge too early: the removal ships in this release. Unbundled dev is the mode Vite has, the mode every fixture and production consumer runs, and the only one the plugin-hook gating work optimizes; the flag and its legacy websocket invalidate frame are gone.

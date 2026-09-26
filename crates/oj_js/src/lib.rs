@@ -117,6 +117,13 @@ enum Job {
         deadline: Option<Duration>,
         reply: Reply,
     },
+    /// Force a full V8 collection (`low_memory_notification`) on the engine
+    /// thread and acknowledge when it has RUN — a completion barrier, not a
+    /// request. A job (not an isolate interrupt) on purpose: interrupts only
+    /// fire while JS executes, so an idle engine — the exact state a memory
+    /// probe measures — would defer the collection past the measurement, and
+    /// v8's interrupt contract forbids reentering the isolate anyway.
+    Gc { reply: std::sync::mpsc::Sender<()> },
     /// Execute a module, then call one of its exports with JSON arguments.
     /// A returned promise is resolved before replying. Call jobs run
     /// concurrently: while one call's promise is pending (a fetch, a timer),
@@ -145,6 +152,21 @@ pub struct JsEngine {
 impl JsEngine {
     pub fn spawn(config: EngineConfig) -> Result<JsEngine, EngineError> {
         Self::spawn_inner(config, None, None)
+    }
+
+    /// Force a full garbage collection in this engine and return once it has
+    /// run (false when the engine is already gone). A memory-probing
+    /// instrument (the `/@oj/debug/gc` endpoint behind OJ_DEBUG_MEM), never a
+    /// runtime lever: V8 schedules its own collections better than callers
+    /// can. Blocking send + bounded wait: callers probe from async contexts,
+    /// so the wait runs through spawn_blocking there.
+    pub fn collect_garbage(&self, wait: Duration) -> bool {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let sent = match self.tx.lock().unwrap().as_ref() {
+            Some(tx) => tx.send(Job::Gc { reply: ack_tx }).is_ok(),
+            None => false,
+        };
+        sent && ack_rx.recv_timeout(wait).is_ok()
     }
 
     /// Spawns an engine whose module loading is governed by `host` (see
@@ -178,6 +200,7 @@ impl JsEngine {
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
         let (tx, rx) = mpsc::unbounded_channel();
+        ENGINES.lock().unwrap().push(tx.downgrade());
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("oj-js-engine".into())
@@ -324,6 +347,47 @@ impl Drop for JsEngine {
             let _ = thread.join();
         }
     }
+}
+
+/// Every live engine's job sender, registered WEAK at spawn: the process-wide
+/// fan-out for the memory-probing GC reaches Start, CSS, addon-keeper and
+/// plugin-host engines alike, including engines added later, instead of a
+/// hand-enumerated field list somewhere above. Weak is load-bearing, not
+/// hygiene: an engine thread exits when its job channel closes, and
+/// `JsEngine::drop` JOINS that thread — a strong sender here would keep every
+/// dropped engine's channel open and deadlock the drop (a one-shot config
+/// extraction hangs its whole build). Dead entries are pruned on each
+/// fan-out.
+static ENGINES: Mutex<Vec<mpsc::WeakUnboundedSender<Job>>> = Mutex::new(Vec::new());
+
+/// Force a full V8 collection in every live engine and return how many
+/// acknowledged having RUN it within `wait` (shared across engines). Blocking:
+/// async callers go through spawn_blocking.
+pub fn collect_all_garbage(wait: Duration) -> usize {
+    let senders: Vec<mpsc::WeakUnboundedSender<Job>> = ENGINES.lock().unwrap().clone();
+    let mut acks = Vec::new();
+    for weak in &senders {
+        let Some(tx) = weak.upgrade() else { continue };
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        if tx.send(Job::Gc { reply: ack_tx }).is_ok() {
+            acks.push(ack_rx);
+        }
+    }
+    let deadline = std::time::Instant::now() + wait;
+    let mut collected = 0usize;
+    for rx in acks {
+        let left = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .max(Duration::from_millis(1));
+        if rx.recv_timeout(left).is_ok() {
+            collected += 1;
+        }
+    }
+    ENGINES
+        .lock()
+        .unwrap()
+        .retain(|weak| weak.upgrade().is_some_and(|tx| !tx.is_closed()));
+    collected
 }
 
 fn init_v8_platform_once() {
@@ -506,6 +570,10 @@ fn engine_thread(
                         run_eval(&mut worker, &config, &root_url, eval_counter, input).await;
                     let result = classify(&mut worker, result, guard, &oom);
                     let _ = reply.send(result);
+                }
+                Tick::Job(Job::Gc { reply }) => {
+                    worker.js_runtime.v8_isolate().low_memory_notification();
+                    let _ = reply.send(());
                 }
                 Tick::Job(Job::Call {
                     module,
