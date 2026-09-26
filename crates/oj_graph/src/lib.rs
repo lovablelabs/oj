@@ -54,16 +54,23 @@ impl ModuleGraph {
     }
 
     pub fn ensure_module(&mut self, path: &Path) -> &mut ModuleNode {
-        self.modules.entry(path.to_path_buf()).or_default()
+        // Look the node up before allocating an owned key: the dev server
+        // re-registers a module on every request, so it is nearly always there.
+        if !self.modules.contains_key(path) {
+            return self.modules.entry(path.to_path_buf()).or_default();
+        }
+        self.modules.get_mut(path).expect("module is present")
     }
 
     pub fn add_import(&mut self, importer: &Path, imported: &Path) {
-        self.ensure_module(importer)
-            .imports
-            .insert(imported.to_path_buf());
-        self.ensure_module(imported)
-            .importers
-            .insert(importer.to_path_buf());
+        let imports = &mut self.ensure_module(importer).imports;
+        if !imports.contains(imported) {
+            imports.insert(imported.to_path_buf());
+        }
+        let importers = &mut self.ensure_module(imported).importers;
+        if !importers.contains(importer) {
+            importers.insert(importer.to_path_buf());
+        }
     }
 
     pub fn set_self_accepting(&mut self, path: &Path, accepting: bool) {
@@ -119,12 +126,41 @@ impl ModuleGraph {
     /// imports that nothing else imports either (Vite's `prunedImports` in
     /// `updateModuleInfo`): the client is told to prune them so their side
     /// effects (an injected stylesheet) are undone.
-    pub fn set_imports(&mut self, importer: &Path, imports: &[PathBuf]) -> Vec<PathBuf> {
+    pub fn set_imports<P: AsRef<Path>>(&mut self, importer: &Path, imports: &[P]) -> Vec<PathBuf> {
+        let listed = |old: &Path| imports.iter().any(|i| i.as_ref() == old);
+        // Re-registering a module with the imports it already has (every warm
+        // request in dev) changes nothing: skip building anything. `imports`
+        // may repeat a path (`./a.css` and `./a.css?inline` key the same one),
+        // so equality is set-shaped. Typical modules take the allocation-free
+        // double scan (the warm path must not touch the heap, see
+        // tests/warm_path.rs); a barrel-sized list amortizes one borrowed set
+        // against the O(n*m) the scan would cost per request.
+        const SCAN_LIMIT: usize = 32;
+        let unchanged = self.modules.get(importer).is_some_and(|node| {
+            if imports.len() <= SCAN_LIMIT && node.imports.len() <= SCAN_LIMIT {
+                imports.iter().all(|i| node.imports.contains(i.as_ref()))
+                    && node.imports.iter().all(|old| listed(old))
+            } else {
+                let mut distinct: std::collections::HashSet<&Path> =
+                    std::collections::HashSet::with_capacity(imports.len());
+                for i in imports {
+                    let p = i.as_ref();
+                    if !node.imports.contains(p) {
+                        return false;
+                    }
+                    distinct.insert(p);
+                }
+                distinct.len() == node.imports.len()
+            }
+        });
+        if unchanged {
+            return Vec::new();
+        }
         let stale: Vec<PathBuf> = self
             .ensure_module(importer)
             .imports
             .iter()
-            .filter(|old| !imports.contains(old))
+            .filter(|old| !listed(old))
             .cloned()
             .collect();
         let mut pruned = Vec::new();
@@ -138,7 +174,7 @@ impl ModuleGraph {
             self.ensure_module(importer).imports.remove(&old);
         }
         for import in imports {
-            self.add_import(importer, import);
+            self.add_import(importer, import.as_ref());
         }
         pruned.sort();
         pruned
@@ -740,6 +776,77 @@ mod tests {
         assert_eq!(
             g.update_targets(&p("util.ts")).unwrap(),
             vec![target("main.ts", "store.ts", false)]
+        );
+    }
+
+    #[test]
+    fn set_imports_with_the_same_set_changes_nothing() {
+        let mut g = ModuleGraph::new();
+        g.set_imports(&p("App.tsx"), &[p("a.ts"), p("b.ts")]);
+        g.set_imports(&p("main.tsx"), &[p("a.ts")]);
+        // Order and repeats do not matter; the list may be borrowed paths.
+        for same in [
+            vec![p("b.ts"), p("a.ts")],
+            vec![p("a.ts"), p("a.ts"), p("b.ts")],
+            // Path equality is component-wise, as the keys are: a trailing
+            // separator is the same path.
+            vec![p("a.ts/"), p("b.ts")],
+        ] {
+            assert_eq!(g.set_imports(&p("App.tsx"), &same), Vec::<PathBuf>::new());
+            let borrowed: Vec<&Path> = same.iter().map(PathBuf::as_path).collect();
+            assert_eq!(
+                g.set_imports(&p("App.tsx"), &borrowed),
+                Vec::<PathBuf>::new()
+            );
+        }
+        assert_eq!(
+            g.node(&p("App.tsx")).unwrap().imports,
+            [p("a.ts"), p("b.ts")].into_iter().collect()
+        );
+        assert_eq!(
+            g.node(&p("a.ts")).unwrap().importers,
+            [p("App.tsx"), p("main.tsx")].into_iter().collect()
+        );
+        assert_eq!(
+            g.node(&p("b.ts")).unwrap().importers,
+            [p("App.tsx")].into_iter().collect()
+        );
+        // A module with no imports stays that way; an unknown one is created.
+        g.ensure_module(&p("leaf.ts"));
+        assert_eq!(
+            g.set_imports(&p("leaf.ts"), &Vec::<PathBuf>::new()),
+            Vec::<PathBuf>::new()
+        );
+        assert_eq!(
+            g.set_imports(&p("new.ts"), &Vec::<PathBuf>::new()),
+            Vec::<PathBuf>::new()
+        );
+        assert!(g.contains(&p("new.ts")));
+    }
+
+    #[test]
+    fn a_repeated_import_still_prunes_the_dropped_one() {
+        // `./a.css` and `./a.css?inline` both key a.css, so a module's import
+        // list can repeat a path: [a, a] must not pass for {a, b}, and a
+        // leading `./` is not the same path as none.
+        let mut g = ModuleGraph::new();
+        g.set_imports(&p("App.tsx"), &[p("a.css"), p("b.ts")]);
+        assert_eq!(
+            g.set_imports(&p("App.tsx"), &[p("a.css"), p("a.css")]),
+            vec![p("b.ts")]
+        );
+        assert!(g.node(&p("b.ts")).unwrap().importers.is_empty());
+        assert_eq!(
+            g.node(&p("App.tsx")).unwrap().imports,
+            [p("a.css")].into_iter().collect()
+        );
+        assert_eq!(
+            g.set_imports(&p("App.tsx"), &[p("./a.css")]),
+            vec![p("a.css")]
+        );
+        assert_eq!(
+            g.node(&p("App.tsx")).unwrap().imports,
+            [p("./a.css")].into_iter().collect()
         );
     }
 

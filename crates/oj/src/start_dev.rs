@@ -1205,6 +1205,10 @@ fn run_script_process(
         .arg("--root")
         .arg(root)
         .current_dir(root)
+        .env(
+            oj_server::plugins::PARENT_PID_ENV,
+            std::process::id().to_string(),
+        )
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| anyhow::anyhow!("could not run {what}: {e}"))?;

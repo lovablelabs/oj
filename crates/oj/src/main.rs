@@ -189,30 +189,41 @@ enum Command {
 /// reports into the app's `.oj-cache` — until the job ends, minutes later.
 /// Same net as the plugin host's ppid watchdog: poll for a reparent (the ppid
 /// CHANGING, not `== 1` — in a container the live parent can BE pid 1) and
-/// exit. The job's output is worthless with the parent gone. The spawner's
-/// `OJ_PARENT_PID` closes the birth window a bare snapshot leaves open: a
-/// parent SIGKILLed between the spawn and this arm has already reparented
-/// the child, the snapshot would point at the subreaper, and the orphan
-/// would run out its whole job (seen as e2e teardown rms losing to a cold
-/// extraction child). With the announced pid, born-an-orphan exits here.
+/// exit. The job's output is worthless with the parent gone.
+///
+/// The spawner names itself in [`PARENT_PID_ENV`] so the comparison does not
+/// depend on a snapshot taken here: a parent that dies while this process is
+/// still loading (a debug binary on a slow CI disk takes over a second to
+/// reach `main`) has already reparented it, and a snapshot would point at
+/// the subreaper and never change — the child then ran its whole job, the
+/// recurring ENOTEMPTY in the e2e teardowns. With the declared pid the first
+/// poll catches that case before an engine boots or a code cache is written.
+/// Without the variable (a hand-run child) the snapshot is the fallback.
 #[cfg(unix)]
 fn reap_on_parent_death() {
-    let observed = unsafe { libc::getppid() };
-    if let Some(announced) = std::env::var("OJ_PARENT_PID")
+    let declared = std::env::var(PARENT_PID_ENV)
         .ok()
-        .and_then(|v| v.parse::<i32>().ok())
-    {
-        if announced != observed {
-            std::process::exit(0);
-        }
+        .and_then(|v| v.parse::<libc::pid_t>().ok());
+    let parent = declared.unwrap_or_else(|| unsafe { libc::getppid() });
+    // Born an orphan: exit synchronously, BEFORE any work (an engine boot or a
+    // code-cache write racing the poll thread is the ENOTEMPTY teardown class
+    // this exists to close).
+    if unsafe { libc::getppid() } != parent {
+        std::process::exit(0);
     }
     std::thread::spawn(move || loop {
-        if unsafe { libc::getppid() } != observed {
+        if unsafe { libc::getppid() } != parent {
             std::process::exit(0);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
 }
+
+/// Set by every spawner of a one-shot child (`oj_server::plugins`,
+/// `oj_server::preseed`, `start_dev`) to its own pid; read by
+/// `reap_on_parent_death`.
+#[cfg(unix)]
+const PARENT_PID_ENV: &str = oj_server::plugins::PARENT_PID_ENV;
 #[cfg(not(unix))]
 fn reap_on_parent_death() {}
 
@@ -266,6 +277,19 @@ fn main() -> anyhow::Result<()> {
     // a restart must re-resolve relative CLI args against the directory oj was
     // launched from, not wherever a plugin host moved the process.
     oj_server::capture_startup_cwd();
+    // One-shot children (`engine-job` / `start-script`) reap on parent death.
+    // This must run while the process is single-threaded: the reaper reads
+    // AND REMOVES the spawner's pid variable (anything the child spawns must
+    // not inherit it and self-reap against the wrong ancestor), and mutating
+    // environ with live threads is the POSIX getenv/setenv race.
+    #[cfg(unix)]
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("engine-job") | Some("start-script")
+    ) {
+        reap_on_parent_death();
+        std::env::remove_var(PARENT_PID_ENV);
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
@@ -335,7 +359,6 @@ async fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Command::StartScript { script, root } => {
-            reap_on_parent_death();
             let root = root.canonicalize().context("engine root not found")?;
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
@@ -352,7 +375,6 @@ async fn run() -> anyhow::Result<()> {
             timeout_secs,
             result,
         } => {
-            reap_on_parent_death();
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
                 .context("engine-job payload on stdin")?;
