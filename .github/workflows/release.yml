@@ -62,7 +62,20 @@ jobs:
         # without the v8 feature that only the full workspace unifies (the
         # same wall the manual fork publishes always hit); ci.yml on main is
         # the build gate.
-        run: cargo publish --workspace --locked --no-verify
+        #
+        # Retried: cargo can time out waiting for crates.io index propagation
+        # between dependency tiers (0.2.9 published 10/13 crates and stranded
+        # the top of the graph). Retries only converge on a cargo that SKIPS
+        # already-published versions instead of erroring on them (the runner
+        # image's cargo errored), so stable is updated first.
+        run: |
+          rustup update --no-self-update stable
+          for attempt in 1 2 3; do
+            cargo publish --workspace --locked --no-verify && exit 0
+            echo "publish attempt $attempt did not converge; retrying in 60s" >&2
+            sleep 60
+          done
+          exit 1
 
   # The pinned V8 snapshot bundle (issue #211): snapshot creation is
   # run-nondeterministic, so reproducible nix builds consume a prebuilt bundle
