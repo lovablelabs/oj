@@ -30,17 +30,25 @@ fn lexical_join(base: &Path, spec: &str) -> PathBuf {
 }
 
 /// Node's PACKAGE_EXPORTS_RESOLVE narrowed to the "." subpath: the root
-/// target under `conditions` (plus the always-matching "default"), walking
+/// target under `conditions` (plus the always-matching "default" —
+/// resolve.exports seeds it even under Vite's `unsafe: true`), walking
 /// condition maps in source order and arrays first-hit, as Vite's
 /// resolveExportsOrImports does for resolvePackageEntry. Source order holds
 /// because oxc_resolver already turns on serde_json's preserve_order for the
-/// whole build.
-fn exports_dot_target<'a>(
-    exports: &'a serde_json::Value,
-    conditions: &[String],
-) -> Option<&'a str> {
+/// whole build. A bare string target ("lib.js") is kept: resolve.exports
+/// accepts any string and Vite path.joins it onto the directory, so it
+/// normalizes to "./lib.js" rather than being read as a package name.
+fn exports_dot_target(exports: &serde_json::Value, conditions: &[String]) -> Option<String> {
     match exports {
-        serde_json::Value::String(target) => target.starts_with("./").then_some(target.as_str()),
+        serde_json::Value::String(target) => {
+            if target.is_empty() {
+                None
+            } else if target.starts_with("./") || target.starts_with("../") {
+                Some(target.clone())
+            } else {
+                Some(format!("./{target}"))
+            }
+        }
         serde_json::Value::Array(entries) => entries
             .iter()
             .find_map(|entry| exports_dot_target(entry, conditions)),
@@ -348,15 +356,26 @@ impl OjResolver {
         let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             return DirectoryEntry::NotApplicable;
         };
-        let Some(exports) = manifest.get("exports") else {
-            return DirectoryEntry::NotApplicable;
+        // Vite gates on JS truthiness (`if (data.exports)`), so a false/null/
+        // empty exports field falls to the mainFields walk like an absent one.
+        let exports = match manifest.get("exports") {
+            None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => {
+                return DirectoryEntry::NotApplicable
+            }
+            Some(serde_json::Value::String(s)) if s.is_empty() => {
+                return DirectoryEntry::NotApplicable;
+            }
+            Some(exports) => exports,
         };
-        let Some(target) = exports_dot_target(exports, &self.inner.options().condition_names)
-        else {
-            return DirectoryEntry::NotApplicable;
-        };
-        if let Ok(resolution) = self.inner.resolve(&joined, target) {
-            return DirectoryEntry::Resolved(resolution.full_path());
+        // With a truthy exports field, resolve.exports THROWS when "." has no
+        // derivable target ('No known conditions'/'Missing "." specifier'),
+        // and resolvePackageEntry converts any throw to packageEntryFailure —
+        // so mainFields never run: a no-target map lands on index probing
+        // exactly like a target missing on disk.
+        if let Some(target) = exports_dot_target(exports, &self.inner.options().condition_names) {
+            if let Ok(resolution) = self.inner.resolve(&joined, &target) {
+                return DirectoryEntry::Resolved(resolution.full_path());
+            }
         }
         if let Ok(resolution) = self.inner.resolve(&joined, "./index") {
             return DirectoryEntry::Resolved(resolution.full_path());
@@ -870,6 +889,67 @@ mod tests {
         assert!(
             hit.ends_with("sugar-conditions/i.js"),
             "expected the import-condition entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_without_matching_condition_falls_to_index() {
+        // resolve.exports THROWS on a truthy exports field with no derivable
+        // "." target ('No known conditions'), and resolvePackageEntry turns
+        // any throw into packageEntryFailure — mainFields never run, index
+        // probing does. "require" is absent from the import-side conditions.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./nomatch-idx").unwrap();
+        assert!(
+            hit.ends_with("nomatch-idx/index.js"),
+            "expected the index fallback, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_without_matching_condition_or_index_fails() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let err = resolver.resolve(&dir, "./nomatch-noidx").unwrap_err();
+        assert!(
+            err.reason.contains("exports name a missing file"),
+            "expected the package-entry failure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_falsy_exports_uses_main_fields() {
+        // Vite gates on JS truthiness (`if (data.exports)`): exports: false
+        // behaves like no exports field at all.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./falsy-exports").unwrap();
+        assert!(
+            hit.ends_with("falsy-exports/m.js"),
+            "expected the module entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_bare_string_export_target_resolves() {
+        // resolve.exports accepts any string target and Vite path.joins it,
+        // so a sloppy '"exports": "lib.js"' resolves the file — it must not
+        // be read as a bare package name.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./bare-target").unwrap();
+        assert!(
+            hit.ends_with("bare-target/lib.js"),
+            "expected the bare-string entry, got {hit:?}"
         );
     }
 
