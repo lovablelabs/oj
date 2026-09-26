@@ -33,7 +33,11 @@ async function boot(port, env) {
   // The disabled case must not inherit an OJ_DEBUG_MEM the caller exported
   // (plausibly set by whoever is using the very feature under test).
   if (!("OJ_DEBUG_MEM" in env)) delete childEnv.OJ_DEBUG_MEM;
-  const proc = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", env: childEnv });
+  // detached: the server gets its own process group, so the kill below can
+  // take the whole group — config extraction runs in an `oj engine-job`
+  // child, and killing only the parent orphans it mid-write into .oj-cache
+  // (the teardown then races its writes: the ENOTEMPTY class).
+  const proc = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", env: childEnv, detached: true });
   for (let i = 0; i < 200; i++) {
     try {
       if ((await fetch(`http://localhost:${port}/`)).ok) return proc;
@@ -42,9 +46,17 @@ async function boot(port, env) {
   }
   // Never leak the child past a readiness timeout: kill and await before
   // throwing, or it holds the port for the rest of the CI job.
-  proc.kill("SIGKILL");
-  await new Promise((r) => proc.on("exit", r));
+  await killGroup(proc);
   throw new Error("no server");
+}
+
+async function killGroup(proc) {
+  try {
+    process.kill(-proc.pid, "SIGKILL");
+  } catch {
+    proc.kill("SIGKILL");
+  }
+  await new Promise((r) => proc.on("exit", r));
 }
 
 let failed = false;
@@ -65,8 +77,7 @@ try {
   // the endpoint is for local probes only.
   const xorigin = await fetch(`http://localhost:5464/@oj/debug/gc`, { headers: { origin: "http://evil.example" } });
   if (xorigin.status !== 403) throw new Error(`cross-origin: expected 403, got ${xorigin.status}`);
-  proc.kill("SIGKILL");
-  await new Promise((r) => proc.on("exit", r));
+  await killGroup(proc);
 
   // Disabled: the route does not exist.
   proc = await boot(5465, {});
@@ -77,10 +88,7 @@ try {
   failed = true;
   console.error("DEBUG GC E2E FAILED:", err.message);
 } finally {
-  if (proc) {
-    proc.kill("SIGKILL");
-    await new Promise((r) => proc.on("exit", r));
-  }
+  if (proc) await killGroup(proc);
   // The SIGKILL'd server can still be flushing code-cache writes: retry the
   // teardown instead of racing it (the known ENOTEMPTY class).
   fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
