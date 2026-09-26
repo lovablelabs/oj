@@ -11,7 +11,7 @@ deno_core = { version = "0.412", features = ["v8"] }
 # oj-maintained forks (napi finalizer-registry patch, see the workspace
 # manifest); the dependency keys keep `use deno_runtime::`/`use deno_napi::`
 # paths working unchanged.
-deno_runtime = { package = "oj_deno_runtime", version = "0.2.8", path = "../oj_deno_runtime" }
+deno_runtime = { package = "oj_deno_runtime", version = "0.2.9", path = "../oj_deno_runtime" }
 # "deno_ast" is required for the CJS-to-ESM translation used when an ES
 # module imports a CommonJS package from node_modules.
 deno_resolver = { version = "0.90", features = ["sync", "deno_ast"] }
@@ -20,8 +20,8 @@ node_resolver = { version = "0.97", features = ["sync"] }
 # OJ_SNAPSHOT_ARCHIVE pins a prebuilt per-target snapshot bundle, which
 # reproducible builds need (V8 snapshot creation is run-nondeterministic,
 # lovablelabs/oj#211). Vanilla deno_runtime stays its build-dependency.
-deno_snapshots = { package = "oj_deno_snapshots", version = "0.2.8", path = "../oj_deno_snapshots" }
-deno_napi = { package = "oj_deno_napi", version = "0.2.8", path = "../oj_deno_napi" }
+deno_snapshots = { package = "oj_deno_snapshots", version = "0.2.9", path = "../oj_deno_snapshots" }
+deno_napi = { package = "oj_deno_napi", version = "0.2.9", path = "../oj_deno_napi" }
 deno_config = "0.109"
 deno_error = "0.7"
 deno_media_type = "0.4"
