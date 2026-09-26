@@ -68,15 +68,57 @@ async function waitForServer(port, timeoutMs = 60000) {
 async function renderOnce(browser, port) {
   const page = await browser.newPage();
   const t0 = Date.now();
-  await page.goto(`http://localhost:${port}/`, { timeout: 120000 });
-  await page.waitForSelector("[data-done]", { timeout: 120000 });
+  await page.goto(`http://localhost:${port}/`, { timeout: 240000 });
+  await page.waitForSelector("[data-done]", { timeout: 240000 });
   const ms = Date.now() - t0;
   return { page, ms };
 }
 
-function rssMb(pid) {
+// Memory methodology (issue #202, thanks @hi-ogawa): sum the WHOLE process
+// tree (a tool that offloads work to children must not hide it), and report
+// darwin physical footprint next to RSS (footprint excludes clean and
+// reclaimable resident pages, so it bounds retained memory without runtime
+// cooperation). Forced-GC RSS is deliberately NOT a column: it can only be
+// produced for tools whose runtime exposes an external GC handle (Node's
+// inspector), not for embedded V8, and a benchmark table should only carry
+// metrics measured identically for every row.
+function processTree(root) {
+  const rows = execSync("ps -axo pid=,ppid=,rss=").toString().trim().split("\n").map((l) => {
+    const [pid, ppid, rss] = l.trim().split(/\s+/).map(Number);
+    return { pid, ppid, rss };
+  });
+  const kids = new Map();
+  for (const r of rows) kids.set(r.ppid, [...(kids.get(r.ppid) ?? []), r.pid]);
+  const byPid = new Map(rows.map((r) => [r.pid, r.rss]));
+  const pids = [];
+  const stack = [root];
+  while (stack.length) {
+    const p = stack.pop();
+    pids.push(p);
+    stack.push(...(kids.get(p) ?? []));
+  }
+  return { pids, byPid };
+}
+
+function treeRssMb(root) {
   try {
-    return Math.round(parseInt(execSync(`ps -o rss= -p ${pid}`).toString().trim(), 10) / 1024);
+    const { pids, byPid } = processTree(root);
+    return Math.round(pids.reduce((s, p) => s + (byPid.get(p) ?? 0), 0) / 1024);
+  } catch {
+    return NaN;
+  }
+}
+
+function treeFootprintMb(root) {
+  try {
+    const { pids } = processTree(root);
+    let total = 0;
+    for (const p of pids) {
+      const out = execSync(`vmmap --summary ${p} 2>/dev/null | grep -m1 "Physical footprint:"`).toString();
+      const m = out.match(/Physical footprint:\s+([\d.]+)([KMG])/);
+      if (m) total += parseFloat(m[1]) * (m[2] === "G" ? 1024 : m[2] === "K" ? 1 / 1024 : 1);
+    }
+    return Math.round(total);
   } catch {
     return NaN;
   }
@@ -97,6 +139,14 @@ async function measureHmr(page, marker) {
 
 async function session(tool, cold) {
   const { port, spawn: spawnTool, clearCache } = TOOLS[tool];
+  // A stale server from a crashed earlier run would answer the readiness
+  // probe and get benchmarked instead of the process spawned below.
+  try {
+    await fetch(`http://localhost:${port}/`);
+    throw new Error(`port ${port} already serving: kill the stale server first`);
+  } catch (e) {
+    if (!(e.cause || `${e.message}`.includes("fetch failed"))) throw e;
+  }
   if (cold) clearCache();
   const t0 = Date.now();
   const proc = spawnTool();
@@ -120,7 +170,8 @@ async function bench(tool) {
         result.hmr.push(await measureHmr(page, `leaf-${N - 1}-marker-H${i}x${e}x${Date.now()}`));
         await sleep(150); // clear the watcher debounce window between edits
       }
-      result.rssMb = rssMb(proc.pid);
+      result.rssMb = treeRssMb(proc.pid);
+      result.footMb = treeFootprintMb(proc.pid);
     }
     await page.close();
     proc.kill("SIGKILL");
@@ -132,7 +183,7 @@ async function bench(tool) {
     result.warm.push(ready + ms);
     const t = Date.now();
     await page.reload();
-    await page.waitForSelector("[data-done]", { timeout: 120000 });
+    await page.waitForSelector("[data-done]", { timeout: 240000 });
     result.reload.push(Date.now() - t);
     await page.close();
     proc.kill("SIGKILL");
@@ -162,10 +213,10 @@ for (const tool of Object.keys(TOOLS)) {
 
 // again, table??
 console.log(`\n${N} components (fanout-10 tree), ${ITERS} restarts, ${HMR_EDITS} hmr edits — p50/p95, macOS ${process.arch}, ${new Date().toISOString().slice(0, 10)}`);
-console.log("tool      | cold start   | warm start   | reload       | HMR         | RSS");
-console.log("----------|--------------|--------------|--------------|-------------|-----");
+console.log("tool      | cold start   | warm start   | reload       | HMR         | tree RSS | footprint");
+console.log("----------|--------------|--------------|--------------|-------------|----------|----------");
 for (const r of rows) {
   console.log(
-    `${r.tool.padEnd(9)} | ${fmt(r.cold).padEnd(12)} | ${fmt(r.warm).padEnd(12)} | ${fmt(r.reload).padEnd(12)} | ${fmt(r.hmr).padEnd(11)} | ${r.rssMb}MB`
+    `${r.tool.padEnd(9)} | ${fmt(r.cold).padEnd(12)} | ${fmt(r.warm).padEnd(12)} | ${fmt(r.reload).padEnd(12)} | ${fmt(r.hmr).padEnd(11)} | ${String(r.rssMb + "MB").padEnd(8)} | ${r.footMb}MB`
   );
 }
