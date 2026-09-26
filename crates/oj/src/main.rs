@@ -555,6 +555,19 @@ fn preview_options(config: &oj_config::OjConfig, out_dir: PathBuf) -> oj_server:
     }
 }
 
+/// `--config <file>`: use that vite.config instead of the one found in the root
+/// (Vite's `--config`). Relative paths resolve against the app root.
+fn set_config_override(root: &std::path::Path, config: Option<PathBuf>) {
+    if let Some(cfg) = config {
+        let cfg = if cfg.is_absolute() {
+            cfg
+        } else {
+            root.join(cfg)
+        };
+        oj_server::plugins::set_vite_config_override(cfg);
+    }
+}
+
 #[cfg(test)]
 mod preview_tests {
     use super::*;
@@ -574,8 +587,14 @@ mod preview_tests {
         assert_eq!(o.open.as_deref(), Some("/"));
         assert_eq!(o.host.as_deref(), Some("0.0.0.0"));
         assert!(matches!(o.cors, Some(oj_config::CorsConfig::Toggle(false))));
-        assert!(matches!(o.allowed_hosts, Some(oj_config::AllowedHosts::List(ref l)) if l == &["a.test"]));
-        assert_eq!(o.headers, vec![("x-b".to_string(), "2".to_string())], "preview.headers wins over server.headers");
+        assert!(
+            matches!(o.allowed_hosts, Some(oj_config::AllowedHosts::List(ref l)) if l == &["a.test"])
+        );
+        assert_eq!(
+            o.headers,
+            vec![("x-b".to_string(), "2".to_string())],
+            "preview.headers wins over server.headers"
+        );
         assert!(!o.spa_fallback, "appType mpa has no index.html fallback");
         assert_eq!(o.assets_dir, "static");
 
@@ -587,14 +606,5 @@ mod preview_tests {
         assert!(!o.strict_port, "an explicit preview.strictPort wins");
         assert!(o.spa_fallback);
         assert_eq!(o.base, "/");
-    }
-}
-
-/// `--config <file>`: use that vite.config instead of the one found in the root
-/// (Vite's `--config`). Relative paths resolve against the app root.
-fn set_config_override(root: &std::path::Path, config: Option<PathBuf>) {
-    if let Some(cfg) = config {
-        let cfg = if cfg.is_absolute() { cfg } else { root.join(cfg) };
-        oj_server::plugins::set_vite_config_override(cfg);
     }
 }

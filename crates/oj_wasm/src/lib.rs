@@ -27,12 +27,15 @@ impl Default for OjProject {
 impl OjProject {
     #[wasm_bindgen(constructor)]
     pub fn new() -> OjProject {
-        OjProject { files: BTreeMap::new() }
+        OjProject {
+            files: BTreeMap::new(),
+        }
     }
 
     #[wasm_bindgen(js_name = writeFile)]
     pub fn write_file(&mut self, path: &str, contents: &str) {
-        self.files.insert(project::normalize_abs(path), contents.to_string());
+        self.files
+            .insert(project::normalize_abs(path), contents.to_string());
     }
 
     #[wasm_bindgen(js_name = removeFile)]

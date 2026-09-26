@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-
 use std::fmt;
 use std::fs;
 use std::io;
@@ -56,7 +55,10 @@ impl fmt::Display for VerifyError {
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "atomic_write needs a parent dir")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "atomic_write needs a parent dir",
+        )
     })?;
     let name = path
         .file_name()
@@ -69,7 +71,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
-pub fn verify_file(path: &Path, expected: &ExpectedFile, mode: VerifyMode) -> Result<(), VerifyError> {
+pub fn verify_file(
+    path: &Path,
+    expected: &ExpectedFile,
+    mode: VerifyMode,
+) -> Result<(), VerifyError> {
     match mode {
         VerifyMode::Standard => {
             let meta = fs::metadata(path).map_err(VerifyError::Io)?;
@@ -119,8 +125,7 @@ pub fn write_self_verified(path: &Path, payload: &[u8]) -> io::Result<()> {
 
 pub fn read_self_verified(path: &Path) -> Result<Vec<u8>, VerifyError> {
     let bytes = fs::read(path).map_err(VerifyError::Io)?;
-    let Some((header, payload)) = bytes.split_at_checked(65).filter(|(h, _)| h[64] == b'\n')
-    else {
+    let Some((header, payload)) = bytes.split_at_checked(65).filter(|(h, _)| h[64] == b'\n') else {
         return Err(VerifyError::WrongSize {
             expected: 65,
             actual: bytes.len() as u64,
@@ -173,7 +178,10 @@ mod tests {
         let p = d.join("blob");
         fs::write(&p, b"hello").unwrap();
         let exp = expected_for(b"hello");
-        assert_eq!(verified_read(&p, &exp, VerifyMode::Standard).unwrap(), b"hello");
+        assert_eq!(
+            verified_read(&p, &exp, VerifyMode::Standard).unwrap(),
+            b"hello"
+        );
         assert_eq!(verified_read(&p, &exp, VerifyMode::Full).unwrap(), b"hello");
     }
 
@@ -185,7 +193,10 @@ mod tests {
         let exp = expected_for(b"hello");
         assert!(matches!(
             verified_read(&p, &exp, VerifyMode::Standard),
-            Err(VerifyError::WrongSize { expected: 5, actual: 6 })
+            Err(VerifyError::WrongSize {
+                expected: 5,
+                actual: 6
+            })
         ));
         assert!(verify_file(&p, &exp, VerifyMode::Standard).is_err());
     }

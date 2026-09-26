@@ -69,7 +69,7 @@ impl OptimizedDeps {
     }
 
     pub fn prepare(root: &Path, version: &str, input: OptimizeInput) -> Self {
-        let dir = oj_cache::cache_root(&root).join("deps");
+        let dir = oj_cache::cache_root(root).join("deps");
         let hash = lockfile_hash(root, version, &input);
         let short = hash[..8].to_string();
         let (tx, rx) = watch::channel(None);
@@ -238,7 +238,13 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     // The cache key must cover the EFFECTIVE decision: OJ_OPTIMIZE_SCAN is a
     // fallback input to it, and hashing the raw Option let an env toggle serve
     // the other mode's stale prebundle.
-    hasher.update(format!("\0discovery:{}", effective_auto_discover(input.no_discovery)).as_bytes());
+    hasher.update(
+        format!(
+            "\0discovery:{}",
+            effective_auto_discover(input.no_discovery)
+        )
+        .as_bytes(),
+    );
     if let Some(opts) = &input.bundler_options {
         hasher.update(b"\0o");
         hasher.update(opts.to_string().as_bytes());
@@ -317,7 +323,7 @@ async fn run_optimizer(
     hash: &str,
     input: &OptimizeInput,
 ) -> Option<DepMap> {
-    let cache = oj_cache::cache_root(&root);
+    let cache = oj_cache::cache_root(root);
     std::fs::create_dir_all(&cache).ok()?;
     // Atomic rename: an engine could import the script while a concurrent oj
     // process rewrites it.
@@ -403,7 +409,12 @@ async fn run_optimizer(
 mod tests {
     use super::*;
 
-    fn input(include: &[&str], exclude: &[&str], entries: &[&str], dedupe: &[&str]) -> OptimizeInput {
+    fn input(
+        include: &[&str],
+        exclude: &[&str],
+        entries: &[&str],
+        dedupe: &[&str],
+    ) -> OptimizeInput {
         OptimizeInput {
             include: include.iter().map(|s| s.to_string()).collect(),
             exclude: exclude.iter().map(|s| s.to_string()).collect(),
@@ -428,7 +439,9 @@ mod tests {
         );
         // A configured "main" is never duplicated or outranked.
         assert_eq!(
-            optimizer_main_fields(&from(r#"{ "resolve": { "mainFields": ["main", "module"] } }"#)),
+            optimizer_main_fields(&from(
+                r#"{ "resolve": { "mainFields": ["main", "module"] } }"#
+            )),
             ["main", "module"].map(String::from)
         );
         // No user list: the dev resolver's defaults (already main-terminated).
@@ -455,9 +468,21 @@ mod tests {
         // The same package in a different list must not reuse a prebundle: an
         // excluded dep is not a prebundled one.
         let base = key(&input(&["react"], &[], &[], &[]));
-        assert_ne!(base, key(&input(&[], &["react"], &[], &[])), "include vs exclude");
-        assert_ne!(base, key(&input(&[], &[], &["react"], &[])), "include vs entries");
-        assert_ne!(base, key(&input(&[], &[], &[], &["react"])), "include vs dedupe");
+        assert_ne!(
+            base,
+            key(&input(&[], &["react"], &[], &[])),
+            "include vs exclude"
+        );
+        assert_ne!(
+            base,
+            key(&input(&[], &[], &["react"], &[])),
+            "include vs entries"
+        );
+        assert_ne!(
+            base,
+            key(&input(&[], &[], &[], &["react"])),
+            "include vs dedupe"
+        );
         let forced = OptimizeInput {
             include: vec!["react".into()],
             needs_interop: vec!["react".into()],
@@ -480,7 +505,10 @@ mod tests {
     #[test]
     fn the_key_covers_the_lockfiles_the_version_and_the_aliases() {
         let dir = project(&[
-            ("package.json", r#"{"name":"app","dependencies":{"react":"18"}}"#),
+            (
+                "package.json",
+                r#"{"name":"app","dependencies":{"react":"18"}}"#,
+            ),
             ("package-lock.json", r#"{"lockfileVersion":3}"#),
         ]);
         let root = dir.path();
@@ -502,7 +530,11 @@ mod tests {
             mode: "production".into(),
             ..OptimizeInput::default()
         };
-        assert_ne!(lockfile_hash(root, "0.0.1", &dev), lockfile_hash(root, "0.0.1", &prod), "mode");
+        assert_ne!(
+            lockfile_hash(root, "0.0.1", &dev),
+            lockfile_hash(root, "0.0.1", &prod),
+            "mode"
+        );
 
         let aliased = OptimizeInput {
             alias: vec![("~".into(), "./src".into())],
@@ -567,7 +599,11 @@ mod tests {
         let after = lockfile_hash(&app, "v", &empty);
         assert_ne!(before, after, "ancestor lockfile is keyed");
         std::fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 10").unwrap();
-        assert_ne!(after, lockfile_hash(&app, "v", &empty), "and its content matters");
+        assert_ne!(
+            after,
+            lockfile_hash(&app, "v", &empty),
+            "and its content matters"
+        );
     }
 
     #[test]
@@ -623,15 +659,16 @@ mod tests {
             r#"{"hash":"abc","metadata":{}}"#,
         )
         .unwrap();
-        assert!(load_manifest(&deps, "abc").expect("empty is valid").is_empty());
+        assert!(load_manifest(&deps, "abc")
+            .expect("empty is valid")
+            .is_empty());
     }
 
     #[test]
     fn needs_interop_defaults_to_true_when_the_optimizer_does_not_say() {
         // Interop is the safe default: assuming an ESM dep needs none would
         // break `import x from "cjs-dep"` at runtime.
-        let v: serde_json::Value =
-            serde_json::from_str(r#"{"dep":{"file":"dep.js"}}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(r#"{"dep":{"file":"dep.js"}}"#).unwrap();
         let map = parse_metadata(&v, "0123456789abcdef").unwrap();
         assert!(map["dep"].needs_interop);
     }
@@ -645,7 +682,11 @@ mod tests {
         let map = parse_metadata(&v, "0123456789abcdef0123").unwrap();
         assert_eq!(map["react"].url, "/@oj-deps/react.js?v=01234567");
         assert_eq!(map["react"].file, "react.js");
-        assert_eq!(dep_url("x.js", ""), "/@oj-deps/x.js", "no version, no query");
+        assert_eq!(
+            dep_url("x.js", ""),
+            "/@oj-deps/x.js",
+            "no version, no query"
+        );
         // A different prebundle hash is a different URL.
         let other = parse_metadata(&v, "fedcba9876543210").unwrap();
         assert_ne!(other["react"].url, map["react"].url);

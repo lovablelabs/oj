@@ -57,10 +57,9 @@ fn js_str(s: &str) -> String {
 fn is_valid_ident(name: &str) -> bool {
     !name.is_empty()
         && name != "default"
-        && name
-            .chars()
-            .enumerate()
-            .all(|(i, c)| c == '_' || c == '$' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+        && name.chars().enumerate().all(|(i, c)| {
+            c == '_' || c == '$' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+        })
 }
 
 /// Emit the self-contained ESM bundle for one package.
@@ -81,7 +80,10 @@ pub fn emit_package_bundle(
     //    `__oj_extns[url]` is the namespace; an ESM importer sees it directly, a
     //    CJS importer sees its unwrapped CommonJS value via `__oj_extcjs`.
     for (i, ext) in externals.iter().enumerate() {
-        out.push_str(&format!("import * as __oj_extns{i} from {};\n", js_str(ext)));
+        out.push_str(&format!(
+            "import * as __oj_extns{i} from {};\n",
+            js_str(ext)
+        ));
     }
     out.push_str("function __oj_extcjs(ns) {\n");
     out.push_str("  return ns && ns.__cjs_exports !== undefined ? ns.__cjs_exports : (ns && ns.default !== undefined ? ns.default : ns);\n");
@@ -109,7 +111,9 @@ pub fn emit_package_bundle(
     out.push_str("  const raw = () => rec.exports;\n");
     out.push_str("  Object.defineProperty(ns, \"default\", { enumerable: true, get: () => (raw() && raw().__esModule ? raw().default : raw()) });\n");
     out.push_str("  for (const k of Object.keys(rec.exports)) if (k !== \"default\") Object.defineProperty(ns, k, { enumerable: true, get: () => raw()[k] });\n");
-    out.push_str("  Object.defineProperty(ns, \"__cjs_exports\", { enumerable: true, get: raw });\n");
+    out.push_str(
+        "  Object.defineProperty(ns, \"__cjs_exports\", { enumerable: true, get: raw });\n",
+    );
     out.push_str("  return ns;\n");
     out.push_str("}\n");
 
@@ -206,8 +210,14 @@ pub fn emit_package_bundle(
     // 6. Instantiate the entry and re-export it as ESM. `__oj_entry_ns` is the
     //    namespace view (getters for named + default); `__oj_entry_cjs` is the
     //    raw value other bundles' CJS requires should see.
-    out.push_str(&format!("const __oj_entry_ns = __oj_ns_of({});\n", js_str(entry_id)));
-    out.push_str(&format!("const __oj_entry_cjs = __oj_get({}).exports;\n", js_str(entry_id)));
+    out.push_str(&format!(
+        "const __oj_entry_ns = __oj_ns_of({});\n",
+        js_str(entry_id)
+    ));
+    out.push_str(&format!(
+        "const __oj_entry_cjs = __oj_get({}).exports;\n",
+        js_str(entry_id)
+    ));
     out.push_str(
         "export default (__oj_entry_ns && __oj_entry_ns.default !== undefined) ? __oj_entry_ns.default : __oj_entry_cjs;\n",
     );
@@ -244,10 +254,20 @@ mod tests {
         let f = dir.join(format!("b-{}.mjs", fastrand_like(src)));
         std::fs::write(&f, src).unwrap();
         let lit = format!("{:?}", f.to_string_lossy());
-        let probe = dir.join(format!("probe-{}.mjs", fastrand_like(&(src.to_string() + probe_tpl))));
+        let probe = dir.join(format!(
+            "probe-{}.mjs",
+            fastrand_like(&(src.to_string() + probe_tpl))
+        ));
         std::fs::write(&probe, probe_tpl.replace("BUNDLE", &lit)).unwrap();
-        let out = std::process::Command::new("node").arg(&probe).output().unwrap();
-        assert!(out.status.success(), "node failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = std::process::Command::new("node")
+            .arg(&probe)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "node failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
@@ -270,7 +290,12 @@ mod tests {
         }
     }
     fn esm(id: &str, body: &str) -> PkgModule {
-        PkgModule { id: id.into(), kind: ModuleKind::Esm, body: body.into(), deps: vec![] }
+        PkgModule {
+            id: id.into(),
+            kind: ModuleKind::Esm,
+            body: body.into(),
+            deps: vec![],
+        }
     }
 
     #[test]
@@ -290,7 +315,11 @@ mod tests {
             &src,
             "import { greet } from BUNDLE;\nprocess.stdout.write(JSON.stringify({ g: greet(\"x\") }));\n",
         );
-        assert_eq!(v["g"], serde_json::json!("hi x"), "cross-file cjs require works: {v}");
+        assert_eq!(
+            v["g"],
+            serde_json::json!("hi x"),
+            "cross-file cjs require works: {v}"
+        );
     }
 
     #[test]
@@ -298,7 +327,11 @@ mod tests {
         let modules = vec![cjs("index.js", "module.exports = 41 + 1;", vec![])];
         let src = emit_package_bundle(&modules, "index.js", &[], &[]);
         let v = run(&src);
-        assert_eq!(v["def"], serde_json::json!(42), "module.exports becomes default: {v}");
+        assert_eq!(
+            v["def"],
+            serde_json::json!(42),
+            "module.exports becomes default: {v}"
+        );
     }
 
     #[test]
@@ -310,7 +343,11 @@ mod tests {
         )];
         let src = emit_package_bundle(&modules, "index.js", &[], &[]);
         let v = run(&src);
-        assert_eq!(v["def"], serde_json::json!(7), "__esModule default unwrapped: {v}");
+        assert_eq!(
+            v["def"],
+            serde_json::json!(7),
+            "__esModule default unwrapped: {v}"
+        );
     }
 
     #[test]
@@ -323,9 +360,18 @@ mod tests {
             vec![("react", DepTarget::External("react".into()))],
         )];
         let src = emit_package_bundle(&modules, "index.js", &["/@oj-pkg/react.mjs".into()], &[]);
-        assert!(src.contains("import * as __oj_extns0 from \"/@oj-pkg/react.mjs\""), "{src}");
-        assert!(src.contains("__oj_extns0,"), "external namespace mapped: {src}");
-        assert!(src.contains(r#""react": "@react""#), "external dep mapped: {src}");
+        assert!(
+            src.contains("import * as __oj_extns0 from \"/@oj-pkg/react.mjs\""),
+            "{src}"
+        );
+        assert!(
+            src.contains("__oj_extns0,"),
+            "external namespace mapped: {src}"
+        );
+        assert!(
+            src.contains(r#""react": "@react""#),
+            "external dep mapped: {src}"
+        );
     }
 
     // --- ESM-inside-the-package coverage ---------------------------------------
@@ -363,8 +409,16 @@ mod tests {
             "import { n, who } from BUNDLE;\nprocess.stdout.write(JSON.stringify({ n, who }));\n",
         );
         // Named keys of the internal CJS module read through the interop namespace.
-        assert_eq!(v["n"], serde_json::json!(5), "cjs named via interop ns: {v}");
-        assert_eq!(v["who"], serde_json::json!("ada"), "cjs named via interop ns: {v}");
+        assert_eq!(
+            v["n"],
+            serde_json::json!(5),
+            "cjs named via interop ns: {v}"
+        );
+        assert_eq!(
+            v["who"],
+            serde_json::json!("ada"),
+            "cjs named via interop ns: {v}"
+        );
     }
 
     #[test]
@@ -376,14 +430,21 @@ mod tests {
                 "const m = require(\"./m\");\nmodule.exports.v = m.val * 2;",
                 vec![("./m", DepTarget::Internal("m.js".into()))],
             ),
-            esm("m.js", "__oj_esm(__oj_exports, { \"val\": () => val });\nconst val = 21;"),
+            esm(
+                "m.js",
+                "__oj_esm(__oj_exports, { \"val\": () => val });\nconst val = 21;",
+            ),
         ];
         let src = emit_package_bundle(&modules, "index.js", &[], &["v".into()]);
         let v = run_probe(
             &src,
             "import { v } from BUNDLE;\nprocess.stdout.write(JSON.stringify({ v }));\n",
         );
-        assert_eq!(v["v"], serde_json::json!(42), "cjs reads named export of internal esm: {v}");
+        assert_eq!(
+            v["v"],
+            serde_json::json!(42),
+            "cjs reads named export of internal esm: {v}"
+        );
     }
 
     #[test]
@@ -402,7 +463,11 @@ mod tests {
             &src,
             "import { load } from BUNDLE;\nload().then((g) => process.stdout.write(JSON.stringify({ g })));\n",
         );
-        assert_eq!(v["g"], serde_json::json!(7), "dynamic import of internal works: {v}");
+        assert_eq!(
+            v["g"],
+            serde_json::json!(7),
+            "dynamic import of internal works: {v}"
+        );
     }
 
     #[test]
@@ -422,6 +487,10 @@ mod tests {
             &src,
             "import { deep } from BUNDLE;\nimport * as ns from BUNDLE;\nprocess.stdout.write(JSON.stringify({ deep, nsHasDeep: \"deep\" in ns }));\n",
         );
-        assert_eq!(v["deep"], serde_json::json!(99), "star-barrel name re-exported: {v}");
+        assert_eq!(
+            v["deep"],
+            serde_json::json!(99),
+            "star-barrel name re-exported: {v}"
+        );
     }
 }

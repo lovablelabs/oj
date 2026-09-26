@@ -18,7 +18,10 @@ use oj_cache::PersistentCache;
 /// Big enough that a write is several syscalls, so a torn read is reachable if
 /// publication is not atomic.
 fn big_module(tag: &str) -> oj_cache::CachedModule {
-    let mut m = module(&format!("/*{tag}*/ export const big = \"{}\";", "x".repeat(400_000)));
+    let mut m = module(&format!(
+        "/*{tag}*/ export const big = \"{}\";",
+        "x".repeat(400_000)
+    ));
     m.imports = (0..2_000).map(|i| format!("/src/dep{i}.tsx")).collect();
     m
 }

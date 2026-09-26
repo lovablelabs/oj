@@ -58,7 +58,10 @@ impl ChunkEmit {
             ref_id: m.get("referenceId")?.as_str()?.to_string(),
             id: m.get("id")?.as_str()?.to_string(),
             name: m.get("name").and_then(|x| x.as_str()).map(str::to_string),
-            file_name: m.get("fileName").and_then(|x| x.as_str()).map(str::to_string),
+            file_name: m
+                .get("fileName")
+                .and_then(|x| x.as_str())
+                .map(str::to_string),
         })
     }
 }
@@ -282,9 +285,14 @@ pub fn engine_job_envelope(
     }
 }
 
-fn engine_job_outcome(envelope: serde_json::Value) -> Result<serde_json::Value, oj_js::EngineError> {
+fn engine_job_outcome(
+    envelope: serde_json::Value,
+) -> Result<serde_json::Value, oj_js::EngineError> {
     if envelope.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-        return Ok(envelope.get("value").cloned().unwrap_or(serde_json::Value::Null));
+        return Ok(envelope
+            .get("value")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null));
     }
     let message = envelope
         .get("message")
@@ -339,7 +347,12 @@ fn run_engine_job_subprocess(
         .env(PARENT_PID_ENV, std::process::id().to_string())
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| boot(format!("could not run the engine job child (cwd {}): {e}", job_cwd.display())))?;
+        .map_err(|e| {
+            boot(format!(
+                "could not run the engine job child (cwd {}): {e}",
+                job_cwd.display()
+            ))
+        })?;
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -373,7 +386,9 @@ fn run_engine_job_subprocess(
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
             Err(e) => {
                 let _ = std::fs::remove_file(&result_file);
-                return Err(boot(format!("could not wait for the engine job child: {e}")));
+                return Err(boot(format!(
+                    "could not wait for the engine job child: {e}"
+                )));
             }
         }
     };
@@ -437,7 +452,10 @@ fn extract_vite_values_with(
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let script = cache.join("oj-vite-extract.mjs");
     if std::fs::read(&script).ok().as_deref() != Some(VITE_EXTRACT_JS.as_bytes()) {
-        let tmp = cache.join(format!("oj-vite-extract-{}-{seq}.tmp.mjs", std::process::id()));
+        let tmp = cache.join(format!(
+            "oj-vite-extract-{}-{seq}.tmp.mjs",
+            std::process::id()
+        ));
         std::fs::write(&tmp, VITE_EXTRACT_JS).ok()?;
         std::fs::rename(&tmp, &script).ok()?;
     }
@@ -514,7 +532,14 @@ fn extract_vite_values_with(
         if let Some(obj) = stored.as_object_mut() {
             obj.remove("__stderr");
         }
-        store.store(&vite, command, mode_key, &deps, &stored.to_string(), &stderr);
+        store.store(
+            &vite,
+            command,
+            mode_key,
+            &deps,
+            &stored.to_string(),
+            &stderr,
+        );
     }
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");
@@ -551,7 +576,8 @@ fn print_extraction_stderr(stderr: &str) {
 }
 
 fn unseen_extraction_lines(stderr: &str) -> String {
-    static SEEN: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+    static SEEN: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+        std::sync::Mutex::new(None);
     let mut guard = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     let seen = guard.get_or_insert_with(std::collections::HashSet::new);
     let mut out = String::new();
@@ -593,7 +619,7 @@ pub fn extraction_env_hash(vars: impl Iterator<Item = (String, String)>) -> Stri
     let mut hasher = blake3::Hasher::new();
     for (k, v) in relevant {
         hasher.update(k.as_bytes());
-        hasher.update(&[b'=']);
+        hasher.update(b"=");
         hasher.update(v.as_bytes());
         hasher.update(&[0]);
     }
@@ -648,7 +674,10 @@ fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         oxc: json.get("oxc").filter(|v| !v.is_null()).cloned(),
         esbuild: json.get("esbuild").filter(|v| !v.is_null()).cloned(),
         ssr: json.get("ssr").filter(|v| !v.is_null()).cloned(),
-        mode: json.get("mode").and_then(|v| v.as_str()).map(str::to_string),
+        mode: json
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         resolve: json.get("resolve").filter(|v| !v.is_null()).cloned(),
         raw_resolve: json.get("rawResolve").filter(|v| !v.is_null()).cloned(),
         server_flags: json.get("serverFlags").filter(|v| !v.is_null()).cloned(),
@@ -658,11 +687,17 @@ fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
                 .filter_map(|x| x.as_str().map(str::to_string))
                 .collect()
         }),
-        env_dir: json.get("envDir").and_then(|v| v.as_str()).map(str::to_string),
+        env_dir: json
+            .get("envDir")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         cors: json.get("cors").filter(|v| !v.is_null()).cloned(),
         allowed_hosts: json.get("allowedHosts").filter(|v| !v.is_null()).cloned(),
         preview: json.get("preview").filter(|v| !v.is_null()).cloned(),
-        app_type: json.get("appType").and_then(|v| v.as_str()).map(str::to_string),
+        app_type: json
+            .get("appType")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         html: json.get("html").filter(|v| !v.is_null()).cloned(),
     }
 }
@@ -858,7 +893,9 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
             build.target = match vb.get("target") {
                 Some(serde_json::Value::String(s)) => Some(oj_config::StringOrList::One(s.clone())),
                 Some(serde_json::Value::Array(a)) => Some(oj_config::StringOrList::Many(
-                    a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect(),
                 )),
                 _ => None,
             };
@@ -891,7 +928,8 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
             build.report_compressed_size = bool_of("reportCompressedSize");
         }
         if build.chunk_size_warning_limit.is_none() {
-            build.chunk_size_warning_limit = vb.get("chunkSizeWarningLimit").and_then(|v| v.as_f64());
+            build.chunk_size_warning_limit =
+                vb.get("chunkSizeWarningLimit").and_then(|v| v.as_f64());
         }
         if build.write.is_none() {
             build.write = bool_of("write");
@@ -909,7 +947,9 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
             build.css_target = match vb.get("cssTarget") {
                 Some(serde_json::Value::String(s)) => Some(oj_config::StringOrList::One(s.clone())),
                 Some(serde_json::Value::Array(a)) => Some(oj_config::StringOrList::Many(
-                    a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect(),
                 )),
                 _ => None,
             };
@@ -978,7 +1018,9 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
                     if k == "runnerBacked" || !obj.contains_key(k) {
                         obj.insert(k.clone(), val.clone());
                     } else if k == "resolve" {
-                        let Some(vsub) = val.as_object() else { continue };
+                        let Some(vsub) = val.as_object() else {
+                            continue;
+                        };
                         if obj.get(k).is_some_and(serde_json::Value::is_object) {
                             let eobj = obj
                                 .get_mut(k)
@@ -1039,7 +1081,10 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     }
     if let Some(sf) = v.server_flags.as_ref().and_then(|s| s.as_object()) {
         if config.app_type.is_none() {
-            config.app_type = sf.get("appType").and_then(|a| a.as_str()).map(str::to_string);
+            config.app_type = sf
+                .get("appType")
+                .and_then(|a| a.as_str())
+                .map(str::to_string);
         }
         let sc = config.server.get_or_insert_with(Default::default);
         if sc.strict_port.is_none() {
@@ -1090,21 +1135,24 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
         }
     }
     if let Some(css) = v.css.as_ref() {
-        if config.css.is_none() {
-            // The whole block (preprocessorOptions, devSourcemap, modules).
-            config.css = serde_json::from_value::<oj_config::CssConfig>(css.clone()).ok();
-        } else if let Some(po) = css.get("preprocessorOptions").and_then(|p| p.as_object()) {
-            let cfg = config.css.as_mut().unwrap();
-            let map = cfg.preprocessor_options.get_or_insert_with(Default::default);
-            for (lang, opts) in po {
-                let Some(data) = opts.get("additionalData").and_then(|d| d.as_str()) else {
-                    continue;
-                };
-                let entry = map.entry(lang.clone()).or_default();
-                if entry.additional_data.is_none() {
-                    entry.additional_data = Some(data.to_string());
+        if let Some(cfg) = config.css.as_mut() {
+            if let Some(po) = css.get("preprocessorOptions").and_then(|p| p.as_object()) {
+                let map = cfg
+                    .preprocessor_options
+                    .get_or_insert_with(Default::default);
+                for (lang, opts) in po {
+                    let Some(data) = opts.get("additionalData").and_then(|d| d.as_str()) else {
+                        continue;
+                    };
+                    let entry = map.entry(lang.clone()).or_default();
+                    if entry.additional_data.is_none() {
+                        entry.additional_data = Some(data.to_string());
+                    }
                 }
             }
+        } else {
+            // The whole block (preprocessorOptions, devSourcemap, modules).
+            config.css = serde_json::from_value::<oj_config::CssConfig>(css.clone()).ok();
         }
     }
     if config.env_prefix.is_none() {
@@ -1525,8 +1573,9 @@ async fn keep_addons_alive(root: &Path, addons: &[PathBuf]) -> Result<(), String
     // re-registration. The dying host's own addons stay live through this
     // (its taken engine's open channel keeps its env alive until the abandon
     // that follows), so they always survive the filter.
-    let live: std::collections::HashSet<PathBuf> =
-        oj_js::addons_with_live_registrations().into_iter().collect();
+    let live: std::collections::HashSet<PathBuf> = oj_js::addons_with_live_registrations()
+        .into_iter()
+        .collect();
     let paths = serde_json::to_string(
         &addons
             .iter()
@@ -1548,7 +1597,10 @@ for (const p of {paths}) {{
 "#
     );
     engine
-        .eval_with_deadline(oj_js::EvalInput::Source(script), Some(ADDON_KEEPER_DEADLINE))
+        .eval_with_deadline(
+            oj_js::EvalInput::Source(script),
+            Some(ADDON_KEEPER_DEADLINE),
+        )
         .await
         .map(|_| ())
         .map_err(|e| format!("keeper load failed: {e}"))
@@ -1754,8 +1806,14 @@ impl PluginHost {
         plugins_file: &Path,
         config_json: &str,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_with_policy(root, plugins_file, config_json, false, SpawnTimeouts::default())
-            .await
+        Self::spawn_with_policy(
+            root,
+            plugins_file,
+            config_json,
+            false,
+            SpawnTimeouts::default(),
+        )
+        .await
     }
 
     /// Spawn a lazily created host (the SSR environment host, created on the
@@ -1767,8 +1825,14 @@ impl PluginHost {
         plugins_file: &Path,
         config_json: &str,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_with_policy(root, plugins_file, config_json, true, SpawnTimeouts::default())
-            .await
+        Self::spawn_with_policy(
+            root,
+            plugins_file,
+            config_json,
+            true,
+            SpawnTimeouts::default(),
+        )
+        .await
     }
 
     /// Test-only lazy spawn with an explicit init wait, so the latch semantics
@@ -1864,7 +1928,10 @@ impl PluginHost {
             self_ref: std::sync::OnceLock::new(),
         });
         let _ = host.self_ref.set(std::sync::Arc::downgrade(&host));
-        LIVE_HOSTS.lock().unwrap().push(std::sync::Arc::downgrade(&host));
+        LIVE_HOSTS
+            .lock()
+            .unwrap()
+            .push(std::sync::Arc::downgrade(&host));
         Self::ignite(&host, 0).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(host)
     }
@@ -1949,8 +2016,7 @@ impl PluginHost {
                 .eval_with_deadline(oj_js::EvalInput::Source(prelude), None)
                 .await
             {
-                boot_ref
-                    .declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
+                boot_ref.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
                 return;
             }
             match boot_engine
@@ -2181,7 +2247,10 @@ impl PluginHost {
         // orphan this host never loaded. No attempt is consumed, and the
         // spacing clock throttles the re-check and the message.
         let orphaned = oj_js::addons_pending_unsafe_reregistration();
-        if let Some(addon) = orphaned.iter().find(|p| !revive.pending_before.contains(*p)) {
+        if let Some(addon) = orphaned
+            .iter()
+            .find(|p| !revive.pending_before.contains(*p))
+        {
             revive.last = Some(std::time::Instant::now());
             eprintln!(
                 "oj: not respawning the plugin host: native addon {} was torn down with it and re-registering can crash (napi-rs before 3.10); restart the dev server to recover",
@@ -2781,7 +2850,11 @@ impl PluginHost {
 
     #[inline]
     pub fn hook_wants_transform(&self, id: &str, code: &str) -> bool {
-        self.hook_plan.read().unwrap().transform.wants(id, Some(code))
+        self.hook_plan
+            .read()
+            .unwrap()
+            .transform
+            .wants(id, Some(code))
     }
 
     #[inline]
@@ -3011,7 +3084,8 @@ impl PluginHost {
         // install guard runs (the fresh engine is abandoned there) or after
         // the install (the take below reaches that engine) — so a shutdown
         // racing a revive can never leave a live engine behind.
-        self.shut_down.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.shut_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let _revive = self.revive.lock().unwrap();
         if let Some(engine) = self.engine.lock().unwrap().take() {
             engine.abandon();
@@ -3071,7 +3145,11 @@ impl PluginHost {
                     a.iter()
                         .filter_map(|e| {
                             let css = e.get("css")?.as_str()?.to_string();
-                            let id = e.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let id = e
+                                .get("id")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             Some((id, css))
                         })
                         .collect()
@@ -3080,7 +3158,6 @@ impl PluginHost {
             .unwrap_or_default()
     }
 }
-
 
 #[cfg(test)]
 mod vite_values_tests {
@@ -3152,10 +3229,21 @@ mod vite_values_tests {
         // A call 40 s after spawn, with the 20 s window long since elapsed.
         let now = spawned + std::time::Duration::from_secs(40);
         let lazy = call_init_deadline(true, spawned, wait, now);
-        assert_eq!(lazy, now + wait, "the lazy window anchors to the call's own start");
+        assert_eq!(
+            lazy,
+            now + wait,
+            "the lazy window anchors to the call's own start"
+        );
         let boot = call_init_deadline(false, spawned, wait, now);
-        assert_eq!(boot, spawned + wait, "the boot deadline stays shared and spawn-anchored");
-        assert!(boot <= now, "sanity: the boot deadline has elapsed for this call");
+        assert_eq!(
+            boot,
+            spawned + wait,
+            "the boot deadline stays shared and spawn-anchored"
+        );
+        assert!(
+            boot <= now,
+            "sanity: the boot deadline has elapsed for this call"
+        );
     }
 
     // One wedge fires every in-flight call's belt at once, and each reports
@@ -3172,13 +3260,25 @@ mod vite_values_tests {
             reported: false,
         };
         assert!(first_death_report(&mut revive, 3), "the first report wins");
-        assert!(!first_death_report(&mut revive, 3), "a concurrent belt's duplicate is dropped");
-        assert!(!first_death_report(&mut revive, 2), "a stale generation's report is dropped");
+        assert!(
+            !first_death_report(&mut revive, 3),
+            "a concurrent belt's duplicate is dropped"
+        );
+        assert!(
+            !first_death_report(&mut revive, 2),
+            "a stale generation's report is dropped"
+        );
         // A revive bumps the generation and re-arms reporting (try_revive).
         revive.generation += 1;
         revive.reported = false;
-        assert!(!first_death_report(&mut revive, 3), "the dead generation stays declared");
-        assert!(first_death_report(&mut revive, 4), "the fresh generation reports its own death");
+        assert!(
+            !first_death_report(&mut revive, 3),
+            "the dead generation stays declared"
+        );
+        assert!(
+            first_death_report(&mut revive, 4),
+            "the fresh generation reports its own death"
+        );
         assert!(!first_death_report(&mut revive, 4), "once");
     }
 
@@ -3187,8 +3287,10 @@ mod vite_values_tests {
     // which only extraction produces — is always adopted.
     #[test]
     fn merge_fills_ssr_per_key_and_always_adopts_runner_backed() {
-        let mut config = oj_config::OjConfig::default();
-        config.ssr = Some(serde_json::json!({ "noExternal": true }));
+        let mut config = oj_config::OjConfig {
+            ssr: Some(serde_json::json!({ "noExternal": true })),
+            ..Default::default()
+        };
         let v = ViteValues {
             ssr: Some(serde_json::json!({
                 "noExternal": ["from-vite"],
@@ -3200,15 +3302,27 @@ mod vite_values_tests {
         };
         merge_vite_values(&mut config, v);
         let ssr = config.ssr.as_ref().unwrap();
-        assert_eq!(ssr["noExternal"], serde_json::json!(true), "the oj config's key wins");
-        assert_eq!(ssr["target"], "webworker", "extractor keys fill where oj lacks them");
+        assert_eq!(
+            ssr["noExternal"],
+            serde_json::json!(true),
+            "the oj config's key wins"
+        );
+        assert_eq!(
+            ssr["target"], "webworker",
+            "extractor keys fill where oj lacks them"
+        );
         assert_eq!(ssr["resolve"]["conditions"][0], "workerd");
-        assert!(oj_config::ssr_runner_backed(&config), "the verdict survives an oj-side ssr key");
+        assert!(
+            oj_config::ssr_runner_backed(&config),
+            "the verdict survives an oj-side ssr key"
+        );
 
         // runnerBacked is always the extractor's, even against a (stale)
         // oj-side value: only extraction produces it.
-        let mut config = oj_config::OjConfig::default();
-        config.ssr = Some(serde_json::json!({ "runnerBacked": false }));
+        let mut config = oj_config::OjConfig {
+            ssr: Some(serde_json::json!({ "runnerBacked": false })),
+            ..Default::default()
+        };
         let v = ViteValues {
             ssr: Some(serde_json::json!({ "runnerBacked": true })),
             ..Default::default()
@@ -3222,8 +3336,10 @@ mod vite_values_tests {
     // resolve sub-keys (the workerd sugar's `conditions` above all).
     #[test]
     fn merge_recurses_one_level_into_ssr_resolve() {
-        let mut config = oj_config::OjConfig::default();
-        config.ssr = Some(serde_json::json!({ "resolve": { "externalConditions": ["oj-ext"] } }));
+        let mut config = oj_config::OjConfig {
+            ssr: Some(serde_json::json!({ "resolve": { "externalConditions": ["oj-ext"] } })),
+            ..Default::default()
+        };
         let v = ViteValues {
             ssr: Some(serde_json::json!({
                 "runnerBacked": true,
@@ -3251,8 +3367,10 @@ mod vite_values_tests {
     // "runnerBacked is always adopted" contract holds.
     #[test]
     fn merge_adopts_extractor_ssr_when_the_oj_side_is_not_an_object() {
-        let mut config = oj_config::OjConfig::default();
-        config.ssr = Some(serde_json::json!("bogus"));
+        let mut config = oj_config::OjConfig {
+            ssr: Some(serde_json::json!("bogus")),
+            ..Default::default()
+        };
         let v = ViteValues {
             ssr: Some(serde_json::json!({ "runnerBacked": true, "target": "webworker" })),
             ..Default::default()
@@ -3266,8 +3384,10 @@ mod vite_values_tests {
 
         // Same one level down: a non-object ssr.resolve adopts the
         // extractor's resolve block instead of silently dropping the sugar.
-        let mut config = oj_config::OjConfig::default();
-        config.ssr = Some(serde_json::json!({ "resolve": "bogus" }));
+        let mut config = oj_config::OjConfig {
+            ssr: Some(serde_json::json!({ "resolve": "bogus" })),
+            ..Default::default()
+        };
         let v = ViteValues {
             ssr: Some(serde_json::json!({
                 "runnerBacked": true,
@@ -3325,7 +3445,7 @@ mod vite_values_tests {
     // fresh engine generation through the same boot path, and serves.
     #[tokio::test]
     async fn a_gone_host_is_revived_by_the_next_call() {
-        let (root, host) = spawn_live_host("basic").await;
+        let (_root, host) = spawn_live_host("basic").await;
         let generation = host.revive.lock().unwrap().generation;
         host.declare_gone("test wedge", generation);
         clear_respawn_spacing(&host);
@@ -3335,7 +3455,11 @@ mod vite_values_tests {
             .await
             .expect("the next call revives the host and serves");
         let revive = host.revive.lock().unwrap();
-        assert_eq!(revive.generation, generation + 1, "a fresh engine generation");
+        assert_eq!(
+            revive.generation,
+            generation + 1,
+            "a fresh engine generation"
+        );
         assert_eq!(revive.attempts, 1, "one respawn consumed");
         drop(revive);
         assert!(!*host.host_gone.borrow(), "the host is live again");
@@ -3345,7 +3469,7 @@ mod vite_values_tests {
     // firing after a revive) is stale and must not kill the new generation.
     #[tokio::test]
     async fn a_stale_death_report_does_not_kill_a_revived_host() {
-        let (root, host) = spawn_live_host("stale").await;
+        let (_root, host) = spawn_live_host("stale").await;
         let generation = host.revive.lock().unwrap().generation;
         host.declare_gone("test wedge", generation);
         clear_respawn_spacing(&host);
@@ -3362,7 +3486,7 @@ mod vite_values_tests {
     // shutdown() retires the host on purpose: never revived.
     #[tokio::test]
     async fn a_shutdown_host_is_never_revived() {
-        let (root, host) = spawn_live_host("shutdown").await;
+        let (_root, host) = spawn_live_host("shutdown").await;
         host.shutdown();
         host.host_gone_wait().await;
         let err = host.resolve_id("x", "").await.expect_err("stays dead");
@@ -3476,7 +3600,11 @@ export default [{
         host.load("after")
             .await
             .expect("the next call revives the host on a fresh heap");
-        assert_eq!(host.revive.lock().unwrap().attempts, 1, "one respawn consumed");
+        assert_eq!(
+            host.revive.lock().unwrap().attempts,
+            1,
+            "one respawn consumed"
+        );
     }
 
     // The budget is a LIFETIME cap: past it the host stays gone (the outer
@@ -3484,7 +3612,7 @@ export default [{
     // against a recurring wedge cannot stack engines.
     #[tokio::test]
     async fn the_respawn_budget_is_finite_and_spaced() {
-        let (root, host) = spawn_live_host("budget").await;
+        let (_root, host) = spawn_live_host("budget").await;
         for round in 0..PLUGIN_HOST_RESPAWN_LIMIT {
             let generation = host.revive.lock().unwrap().generation;
             host.declare_gone("recurring test wedge", generation);
@@ -3499,7 +3627,9 @@ export default [{
                 host.revive.lock().unwrap().last =
                     Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
             }
-            host.resolve_id("x", "").await.expect("revives within budget");
+            host.resolve_id("x", "")
+                .await
+                .expect("revives within budget");
         }
         let generation = host.revive.lock().unwrap().generation;
         host.declare_gone("one wedge too many", generation);
@@ -3539,7 +3669,10 @@ export default [{
             Err(e) => panic!("the embedded engine spawns: {e}"),
         };
         let mut evidence = host.init_failure_updates();
-        assert!(!*evidence.borrow_and_update(), "no evidence before a window expires");
+        assert!(
+            !*evidence.borrow_and_update(),
+            "no evidence before a window expires"
+        );
 
         // First call: waits its full per-call window (init is live), then
         // fails on the window — flipping the evidence watch.
@@ -3552,7 +3685,10 @@ export default [{
             "the first call waits its full window, got {:?}",
             t0.elapsed()
         );
-        assert!(*evidence.borrow_and_update(), "the expired window is wedge evidence");
+        assert!(
+            *evidence.borrow_and_update(),
+            "the expired window is wedge evidence"
+        );
 
         // Later calls: each keeps its OWN full window (never the removed
         // fail-fast), so one of them is served the moment init lands. Every
@@ -3565,7 +3701,10 @@ export default [{
             match host.resolve_id("x", "").await {
                 Ok(_) => break,
                 Err(e) => {
-                    assert!(e.contains("still initializing"), "never a latched fail-fast: {e}");
+                    assert!(
+                        e.contains("still initializing"),
+                        "never a latched fail-fast: {e}"
+                    );
                     assert!(
                         t.elapsed() >= std::time::Duration::from_millis(900),
                         "a pre-init call after an expired window still gets its own window, got {:?}",
@@ -3736,12 +3875,11 @@ export default [{
             "init progress clears stall evidence"
         );
         let mut init = host.initialized_updates();
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            init.wait_for(|v| *v),
-        )
-        .await
-        .is_ok_and(|r| r.is_ok()));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(20), init.wait_for(|v| *v),)
+                .await
+                .is_ok_and(|r| r.is_ok())
+        );
         host.shutdown();
     }
 
@@ -3885,7 +4023,11 @@ export default [{
         host.load("after")
             .await
             .expect("the next call revives the host and serves");
-        assert_eq!(host.revive.lock().unwrap().attempts, 1, "one respawn consumed");
+        assert_eq!(
+            host.revive.lock().unwrap().attempts,
+            1,
+            "one respawn consumed"
+        );
         // A second death inside the respawn spacing fails fast without a
         // window: attempts are spaced so a burst of calls against a
         // recurring wedge cannot stack engines.
@@ -4022,7 +4164,8 @@ export default [{
             "a plugin's chdir moves the host's SHADOW cwd"
         );
         assert!(
-            std::env::var("OJ_HOST_CWD_BEFORE").is_err() && std::env::var("OJ_HOST_CWD_AFTER").is_err(),
+            std::env::var("OJ_HOST_CWD_BEFORE").is_err()
+                && std::env::var("OJ_HOST_CWD_AFTER").is_err(),
             "a plugin's env write must never reach oj's real environment"
         );
         assert_ne!(
@@ -4152,7 +4295,10 @@ export default [{
             .await
             .expect("the ws push arrives")
             .expect("broadcast alive");
-        assert!(payload.contains("oj:probe") && payload.contains("custom"), "{payload}");
+        assert!(
+            payload.contains("oj:probe") && payload.contains("custom"),
+            "{payload}"
+        );
         let ev = tokio::time::timeout(std::time::Duration::from_secs(10), ev_rx.recv())
             .await
             .expect("the server event arrives")
@@ -4165,7 +4311,9 @@ export default [{
     fn extraction_deps_truncated_gates_only_on_the_flag() {
         let t = serde_json::json!({ "__ok": true, "__depsTruncated": true });
         assert!(extraction_deps_truncated(&t));
-        assert!(!extraction_deps_truncated(&serde_json::json!({ "__ok": true })));
+        assert!(!extraction_deps_truncated(
+            &serde_json::json!({ "__ok": true })
+        ));
         assert!(!extraction_deps_truncated(
             &serde_json::json!({ "__depsTruncated": "yes" })
         ));
@@ -4202,12 +4350,17 @@ export default [{
     // both a .ts and a .js present, Vite loads the .js.
     #[test]
     fn config_discovery_precedence_matches_vite() {
-        let root = std::env::temp_dir().join(format!("oj-config-precedence-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("oj-config-precedence-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let order = ["js", "mjs", "ts", "cjs", "mts", "cts"];
         for ext in order.iter().rev() {
-            std::fs::write(root.join(format!("vite.config.{ext}")), "export default {};").unwrap();
+            std::fs::write(
+                root.join(format!("vite.config.{ext}")),
+                "export default {};",
+            )
+            .unwrap();
         }
         for ext in order {
             assert_eq!(
@@ -4295,8 +4448,10 @@ export default [{
 
     #[test]
     fn merge_never_overrides_config() {
-        let mut config = oj_config::OjConfig::default();
-        config.base = Some("/oj-base/".into());
+        let mut config = oj_config::OjConfig {
+            base: Some("/oj-base/".into()),
+            ..Default::default()
+        };
         config.public_dir = Some("my-public".into());
         let v = ViteValues {
             base: Some("/vite-base/".into()),
@@ -4383,7 +4538,8 @@ export default [{
         assert!(fs.allow.is_none());
 
         // Alongside an allow list both land; an oj-side fs config still wins.
-        let v = parse_vite_values(&serde_json::json!({ "fsStrict": true, "fsAllow": ["../shared"] }));
+        let v =
+            parse_vite_values(&serde_json::json!({ "fsStrict": true, "fsAllow": ["../shared"] }));
         let mut config = oj_config::OjConfig::default();
         merge_vite_values(&mut config, v);
         let fs = config.server.unwrap().fs.unwrap();
@@ -4438,16 +4594,20 @@ export default [{
         assert_eq!(b["outDir"], "out");
         assert_eq!(b["sourcemap"], true);
         assert_eq!(b["ssr"], "src/entry-server.ts");
-        assert!(parse_vite_values(&serde_json::json!({ "build": null })).build.is_none());
+        assert!(parse_vite_values(&serde_json::json!({ "build": null }))
+            .build
+            .is_none());
     }
 
     #[test]
     fn merge_adopts_build_fields_only_when_unset() {
-        let mut config = oj_config::OjConfig::default();
-        config.build = Some(oj_config::BuildConfig {
-            out_dir: Some("oj-out".into()),
+        let mut config = oj_config::OjConfig {
+            build: Some(oj_config::BuildConfig {
+                out_dir: Some("oj-out".into()),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         let v = ViteValues {
             build: Some(serde_json::json!({
                 "outDir": "vite-out", "sourcemap": true, "minify": false,
@@ -4461,8 +4621,14 @@ export default [{
         assert_eq!(b.sourcemap, Some(oj_config::BoolOrString::Bool(true)));
         assert_eq!(b.minify, Some(oj_config::BoolOrString::Bool(false)));
         assert_eq!(b.css_code_split, Some(false));
-        assert_eq!(b.target.as_ref().map(|t| t.to_vec()), Some(vec!["es2020".to_string()]));
-        assert_eq!(b.ssr, Some(oj_config::BoolOrString::Str("src/server.ts".into())));
+        assert_eq!(
+            b.target.as_ref().map(|t| t.to_vec()),
+            Some(vec!["es2020".to_string()])
+        );
+        assert_eq!(
+            b.ssr,
+            Some(oj_config::BoolOrString::Str("src/server.ts".into()))
+        );
     }
 
     #[test]
@@ -4474,7 +4640,10 @@ export default [{
             ..Default::default()
         };
         merge_vite_values(&mut config, v);
-        assert_eq!(oj_config::ssr_manifest_name(&config).as_deref(), Some(".vite/ssr-manifest.json"));
+        assert_eq!(
+            oj_config::ssr_manifest_name(&config).as_deref(),
+            Some(".vite/ssr-manifest.json")
+        );
         let e = oj_config::ssr_externals(&config);
         assert!(e.webworker() && !e.is_external_pkg("ui-kit"));
     }
@@ -4490,9 +4659,15 @@ export default [{
             ..Default::default()
         };
         merge_vite_values(&mut config, v);
-        assert_eq!(oj_config::build_sourcemap(&config), oj_config::Sourcemap::Hidden);
+        assert_eq!(
+            oj_config::build_sourcemap(&config),
+            oj_config::Sourcemap::Hidden
+        );
         assert!(oj_config::build_minify(&config));
-        assert_eq!(oj_config::build_targets(&config), vec!["es2020", "safari14"]);
+        assert_eq!(
+            oj_config::build_targets(&config),
+            vec!["es2020", "safari14"]
+        );
         assert_eq!(config.build.unwrap().empty_out_dir, Some(false));
     }
 
@@ -4523,21 +4698,29 @@ export default [{
         assert_eq!(s.import_source.as_deref(), Some("@emotion/react"));
         assert_eq!(s.pragma.as_deref(), Some("h"));
 
-        let mut config = oj_config::OjConfig::default();
-        config.oxc = Some(serde_json::json!({ "jsx": { "importSource": "preact" } }));
+        let mut config = oj_config::OjConfig {
+            oxc: Some(serde_json::json!({ "jsx": { "importSource": "preact" } })),
+            ..Default::default()
+        };
         let v = ViteValues {
             oxc: Some(serde_json::json!({ "jsx": { "importSource": "@emotion/react" } })),
             ..Default::default()
         };
         merge_vite_values(&mut config, v);
-        assert_eq!(oj_config::jsx_settings(&config).import_source.as_deref(), Some("preact"), "oj.config wins");
+        assert_eq!(
+            oj_config::jsx_settings(&config).import_source.as_deref(),
+            Some("preact"),
+            "oj.config wins"
+        );
     }
 
     #[test]
     fn merge_adopts_ssr_block_when_unset() {
         let mut config = oj_config::OjConfig::default();
         let v = ViteValues {
-            ssr: Some(serde_json::json!({ "noExternal": ["lodash-es", { "regex": "^@acme/" }], "external": ["sharp"] })),
+            ssr: Some(
+                serde_json::json!({ "noExternal": ["lodash-es", { "regex": "^@acme/" }], "external": ["sharp"] }),
+            ),
             ..Default::default()
         };
         merge_vite_values(&mut config, v);
@@ -4558,7 +4741,9 @@ export default [{
                 "preserveSymlinks": true
             })),
             server_flags: Some(serde_json::json!({ "strictPort": true, "open": true })),
-            css: Some(serde_json::json!({ "preprocessorOptions": { "scss": { "additionalData": "@use 'x';" } } })),
+            css: Some(
+                serde_json::json!({ "preprocessorOptions": { "scss": { "additionalData": "@use 'x';" } } }),
+            ),
             env_prefix: Some(vec!["VITE_".into(), "APP_".into()]),
             env_dir: Some("env".into()),
             ..Default::default()
@@ -4566,24 +4751,48 @@ export default [{
         merge_vite_values(&mut config, v);
         assert_eq!(config.mode.as_deref(), Some("staging"));
         let rc = config.resolve.as_ref().unwrap();
-        assert_eq!(rc.extensions.as_deref(), Some(&[".ts".to_string(), ".js".to_string()][..]));
+        assert_eq!(
+            rc.extensions.as_deref(),
+            Some(&[".ts".to_string(), ".js".to_string()][..])
+        );
         assert_eq!(rc.main_fields.as_deref(), Some(&["module".to_string()][..]));
         assert_eq!(rc.conditions.as_deref(), Some(&["custom".to_string()][..]));
-        assert_eq!(rc.external_conditions.as_deref(), Some(&["custom-ext".to_string()][..]));
+        assert_eq!(
+            rc.external_conditions.as_deref(),
+            Some(&["custom-ext".to_string()][..])
+        );
         assert_eq!(rc.preserve_symlinks, Some(true));
         let sc = config.server.as_ref().unwrap();
         assert_eq!(sc.strict_port, Some(true));
         assert_eq!(sc.open, Some(true));
-        let scss = &config.css.as_ref().unwrap().preprocessor_options.as_ref().unwrap()["scss"];
+        let scss = &config
+            .css
+            .as_ref()
+            .unwrap()
+            .preprocessor_options
+            .as_ref()
+            .unwrap()["scss"];
         assert_eq!(scss.additional_data.as_deref(), Some("@use 'x';"));
-        assert_eq!(oj_config::env_prefixes(&config), vec!["VITE_".to_string(), "APP_".to_string()]);
+        assert_eq!(
+            oj_config::env_prefixes(&config),
+            vec!["VITE_".to_string(), "APP_".to_string()]
+        );
         assert_eq!(config.env_dir.as_deref(), Some("env"));
 
         // oj.config values win.
-        let mut config = oj_config::OjConfig::default();
-        config.mode = Some("qa".into());
+        let mut config = oj_config::OjConfig {
+            mode: Some("qa".into()),
+            ..Default::default()
+        };
         config.env_dir = Some("cfg".into());
-        merge_vite_values(&mut config, ViteValues { mode: Some("staging".into()), env_dir: Some("env".into()), ..Default::default() });
+        merge_vite_values(
+            &mut config,
+            ViteValues {
+                mode: Some("staging".into()),
+                env_dir: Some("env".into()),
+                ..Default::default()
+            },
+        );
         assert_eq!(config.mode.as_deref(), Some("qa"));
         assert_eq!(config.env_dir.as_deref(), Some("cfg"));
     }
@@ -4598,33 +4807,68 @@ export default [{
         };
         merge_vite_values(&mut config, v);
         let sc = config.server.unwrap();
-        assert!(matches!(sc.cors, Some(oj_config::CorsConfig::Options(ref o)) if o.credentials == Some(true)));
-        assert!(matches!(sc.allowed_hosts, Some(oj_config::AllowedHosts::List(ref l)) if l == &vec![".corp.example".to_string()]));
+        assert!(
+            matches!(sc.cors, Some(oj_config::CorsConfig::Options(ref o)) if o.credentials == Some(true))
+        );
+        assert!(
+            matches!(sc.allowed_hosts, Some(oj_config::AllowedHosts::List(ref l)) if l == &vec![".corp.example".to_string()])
+        );
         let mut config = oj_config::OjConfig::default();
-        merge_vite_values(&mut config, ViteValues { cors: Some(serde_json::json!(false)), allowed_hosts: Some(serde_json::json!(true)), ..Default::default() });
+        merge_vite_values(
+            &mut config,
+            ViteValues {
+                cors: Some(serde_json::json!(false)),
+                allowed_hosts: Some(serde_json::json!(true)),
+                ..Default::default()
+            },
+        );
         let sc = config.server.unwrap();
-        assert!(matches!(sc.cors, Some(oj_config::CorsConfig::Toggle(false))));
-        assert!(matches!(sc.allowed_hosts, Some(oj_config::AllowedHosts::All(true))));
+        assert!(matches!(
+            sc.cors,
+            Some(oj_config::CorsConfig::Toggle(false))
+        ));
+        assert!(matches!(
+            sc.allowed_hosts,
+            Some(oj_config::AllowedHosts::All(true))
+        ));
     }
 
     #[test]
     fn merge_adopts_css_preprocessor_options() {
         let mut config = oj_config::OjConfig::default();
         let v = ViteValues {
-            css: Some(serde_json::json!({ "preprocessorOptions": { "scss": { "additionalData": "$b: red;", "loadPaths": ["styles"] } } })),
+            css: Some(
+                serde_json::json!({ "preprocessorOptions": { "scss": { "additionalData": "$b: red;", "loadPaths": ["styles"] } } }),
+            ),
             ..Default::default()
         };
         merge_vite_values(&mut config, v);
-        assert_eq!(oj_config::css_additional_data(&config, "scss").as_deref(), Some("$b: red;"));
-        assert_eq!(oj_config::css_load_paths(&config, "scss"), vec!["styles".to_string()]);
+        assert_eq!(
+            oj_config::css_additional_data(&config, "scss").as_deref(),
+            Some("$b: red;")
+        );
+        assert_eq!(
+            oj_config::css_load_paths(&config, "scss"),
+            vec!["styles".to_string()]
+        );
     }
 
     #[test]
     fn extraction_stderr_lines_print_once_per_process() {
-        let first = unseen_extraction_lines("oj: vite.config: worker config is not applied\nsome plugin notice\n");
-        assert_eq!(first, "oj: vite.config: worker config is not applied\nsome plugin notice\n");
-        let again = unseen_extraction_lines("oj: vite.config: worker config is not applied\nsome plugin notice\nnew line\n");
-        assert_eq!(again, "new line\n", "only lines not printed before in this process come back");
+        let first = unseen_extraction_lines(
+            "oj: vite.config: worker config is not applied\nsome plugin notice\n",
+        );
+        assert_eq!(
+            first,
+            "oj: vite.config: worker config is not applied\nsome plugin notice\n"
+        );
+        let again = unseen_extraction_lines(
+            "oj: vite.config: worker config is not applied\nsome plugin notice\nnew line\n",
+        );
+        assert_eq!(
+            again, "new line\n",
+            "only lines not printed before in this process come back"
+        );
         assert_eq!(unseen_extraction_lines(""), "");
     }
 }
@@ -4639,7 +4883,9 @@ mod engine_extraction_tests {
     static ENGINE_LOCK: Mutex<()> = Mutex::new(());
 
     fn lock() -> std::sync::MutexGuard<'static, ()> {
-        ENGINE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        ENGINE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn app(config: &str) -> tempfile::TempDir {
@@ -4708,12 +4954,14 @@ mod engine_extraction_tests {
     #[test]
     fn config_imports_are_recorded_as_deps() {
         let _g = lock();
-        let dir = app(
-            r#"import { base } from "./base.config.mjs";
-export default { base };"#,
-        );
+        let dir = app(r#"import { base } from "./base.config.mjs";
+export default { base };"#);
         let root = dir.path();
-        std::fs::write(root.join("base.config.mjs"), "export const base = \"/dep/\";\n").unwrap();
+        std::fs::write(
+            root.join("base.config.mjs"),
+            "export const base = \"/dep/\";\n",
+        )
+        .unwrap();
         let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/dep/"));
         let hit = extraction_store(root)
@@ -4733,12 +4981,10 @@ export default { base };"#,
         // (through the fs default object, the surface the recorder wraps), so
         // the dep stamp is incomplete and the result must not be cached.
         std::env::set_var("OJ_OBSERVED_READS_MAX", "1");
-        let dir = app(
-            r#"import fs from "node:fs";
+        let dir = app(r#"import fs from "node:fs";
 const a = JSON.parse(fs.readFileSync(new URL("./a.json", import.meta.url), "utf8"));
 const b = JSON.parse(fs.readFileSync(new URL("./b.json", import.meta.url), "utf8"));
-export default { base: a.base + b.base };"#,
-        );
+export default { base: a.base + b.base };"#);
         let root = dir.path();
         std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
         std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
@@ -4791,12 +5037,10 @@ export default { base: a.base + b.base };"#,
     #[test]
     fn stderr_prints_from_config_code_travel_in_the_transcript() {
         let _g = lock();
-        let dir = app(
-            r#"console.error("plugin says hi");
+        let dir = app(r#"console.error("plugin says hi");
 process.stderr.write("direct stderr write\n");
 console.log("stdout is swallowed");
-export default { base: "/loud/" };"#,
-        );
+export default { base: "/loud/" };"#);
         let root = dir.path();
         let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/loud/"));
@@ -4818,10 +5062,8 @@ export default { base: "/loud/" };"#,
         // The old subprocess kept env mutations to itself; the in-process
         // engine must shadow process.env the same way (Vite's own NODE_ENV
         // dance runs on every extraction).
-        let dir = app(
-            r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
-export default { base: "/env/" };"#,
-        );
+        let dir = app(r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
+export default { base: "/env/" };"#);
         let root = dir.path();
         let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/env/"));
@@ -4857,7 +5099,11 @@ export default { base: "/env/" };"#,
         if scoped.exists() {
             std::os::unix::fs::symlink(&scoped, root.join("node_modules/@esbuild")).unwrap();
         }
-        std::fs::write(root.join("shared.ts"), "export const port: number = 5321;\n").unwrap();
+        std::fs::write(
+            root.join("shared.ts"),
+            "export const port: number = 5321;\n",
+        )
+        .unwrap();
         std::fs::write(
             root.join("vite.config.ts"),
             "import { port } from \"./shared\";\nexport default { base: \"/ts/\" as const, server: { port } };\n",
@@ -4967,7 +5213,8 @@ mod hook_plan_tests {
 
     #[test]
     fn id_filter_gates_by_module_id() {
-        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["\\.tsx$"],"code":[]}]}"#);
+        let p =
+            plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["\\.tsx$"],"code":[]}]}"#);
         assert!(p.wants("/app/src/App.tsx", None));
         assert!(!p.wants("/app/node_modules/react/index.js", None));
     }
@@ -4996,7 +5243,9 @@ mod hook_plan_tests {
 
     #[test]
     fn case_insensitive_js_regex_carries_over() {
-        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["(?i)\\.SVG$"],"code":[]}]}"#);
+        let p = plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":["(?i)\\.SVG$"],"code":[]}]}"#,
+        );
         assert!(p.wants("/icon.svg", None));
     }
 
@@ -5006,13 +5255,16 @@ mod hook_plan_tests {
             r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":["(?m)^import\\s"]}]}"#,
         );
         assert!(p.wants("/a.js", Some("// banner\nimport x from \"y\";")));
-        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":["(?s)a.b"]}]}"#);
+        let p =
+            plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":["(?s)a.b"]}]}"#);
         assert!(p.wants("/a.js", Some("a\nb")));
     }
 
     #[test]
     fn windows_ids_match_slash_normalized_like_the_host() {
-        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["/src/.*\\.tsx$"],"code":[]}]}"#);
+        let p = plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":["/src/.*\\.tsx$"],"code":[]}]}"#,
+        );
         assert!(p.wants(r"C:\app\src\App.tsx", None));
         assert!(!p.wants(r"C:\app\node_modules\x\index.js", None));
     }
@@ -5021,7 +5273,9 @@ mod hook_plan_tests {
     fn uncompilable_regex_fails_open_to_unfiltered() {
         // JS lookahead does not compile in the regex crate; the plan must then
         // treat that plugin as unfiltered rather than never offering it modules.
-        let p = plan(r#"{"present":true,"unfiltered":false,"plugins":[{"id":["(?!never)x"],"code":[]}]}"#);
+        let p = plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":["(?!never)x"],"code":[]}]}"#,
+        );
         assert!(p.wants("/anything/at/all", None));
     }
 

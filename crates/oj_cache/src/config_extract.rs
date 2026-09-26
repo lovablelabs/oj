@@ -116,7 +116,8 @@ impl ConfigExtractStore {
             stderr: stderr.to_string(),
         };
         let path = self.entry_path(config, command, mode);
-        let _ = integrity::write_self_verified(&path, &serde_json::to_vec(&entry).unwrap_or_default());
+        let _ =
+            integrity::write_self_verified(&path, &serde_json::to_vec(&entry).unwrap_or_default());
     }
 
     fn entry_path(&self, config: &Path, command: &str, mode: &str) -> PathBuf {
@@ -216,7 +217,7 @@ mod tests {
             &config,
             "serve",
             "development",
-            &[dep.clone()],
+            std::slice::from_ref(&dep),
             r#"{"base":"/"}"#,
             "warn\n",
         );
@@ -274,7 +275,11 @@ mod tests {
         store.store(&config, "serve", "development", &[], "{}", "");
         assert!(store.lookup(&config, "serve", "development").is_some());
         // Content change (the broken-wrangler-then-fixed shape).
-        fs::write(root.join("wrangler.jsonc"), r#"{ "name": "app", "main": "w.ts" }"#).unwrap();
+        fs::write(
+            root.join("wrangler.jsonc"),
+            r#"{ "name": "app", "main": "w.ts" }"#,
+        )
+        .unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
         store.store(&config, "serve", "development", &[], "{}", "");
         // Present -> absent.
@@ -294,7 +299,14 @@ mod tests {
         fs::write(&config, "a").unwrap();
         fs::write(&dep, "b").unwrap();
         let store = ConfigExtractStore::new(&root, "s1");
-        store.store(&config, "serve", "development", &[dep.clone()], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            std::slice::from_ref(&dep),
+            "{}",
+            "",
+        );
         assert!(store.lookup(&config, "serve", "development").is_some());
         fs::remove_file(&dep).unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());

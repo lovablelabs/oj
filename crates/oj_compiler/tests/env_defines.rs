@@ -187,9 +187,13 @@ fn a_factory_dep_with_only_plain_key_defines_gets_them_replaced() {
     set_import_meta_env(defines);
     let src = r#"export const dev = process.env.NODE_ENV !== "production";"#;
     let mut resolve = |_: &str| None;
-    let factory =
-        oj_compiler::bundle::compile_factory(Path::new("/app/node_modules/d/index.mjs"), "/u.mjs", src, &mut resolve)
-            .expect("factory compiles");
+    let factory = oj_compiler::bundle::compile_factory(
+        Path::new("/app/node_modules/d/index.mjs"),
+        "/u.mjs",
+        src,
+        &mut resolve,
+    )
+    .expect("factory compiles");
     assert!(
         !factory.code.contains("process.env.NODE_ENV"),
         "plain-key define must be replaced in the factory:\n{}",

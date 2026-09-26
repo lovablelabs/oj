@@ -65,8 +65,7 @@ pub(crate) fn install(worker: &mut MainWorker, hooks: EngineHooks) {
 }
 
 fn throw(scope: &mut v8::PinScope<'_, '_>, message: &str) {
-    let message = v8::String::new(scope, message)
-        .unwrap_or_else(|| v8::String::empty(scope));
+    let message = v8::String::new(scope, message).unwrap_or_else(|| v8::String::empty(scope));
     let exception = v8::Exception::error(scope, message);
     scope.throw_exception(exception);
 }
@@ -106,10 +105,9 @@ fn rpc_callback(
         Ok(_) | Err(_) => Vec::new(),
     };
     // A handler panic must not unwind across the V8 callback boundary.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        handler(&method, &parsed)
-    }))
-    .unwrap_or_else(|_| Err(format!("__oj_rpc handler panicked running {method}")));
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&method, &parsed)))
+            .unwrap_or_else(|_| Err(format!("__oj_rpc handler panicked running {method}")));
     match result {
         Ok(serde_json::Value::Null) => rv.set_null(),
         Ok(value) => match serde_json::to_string(&value)

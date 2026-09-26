@@ -160,7 +160,10 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/plugin-adapters.ts"),
     ),
     ("manifest.ts", include_str!("assets/start/manifest.ts")),
-    ("manifest-dev.ts", include_str!("assets/start/manifest-dev.ts")),
+    (
+        "manifest-dev.ts",
+        include_str!("assets/start/manifest-dev.ts"),
+    ),
 ];
 
 pub fn boot_phase(label: &str) {
@@ -460,7 +463,8 @@ impl PluginServe {
                 hook();
             }
         }
-        self.state.store(packed, std::sync::atomic::Ordering::SeqCst);
+        self.state
+            .store(packed, std::sync::atomic::Ordering::SeqCst);
     }
     /// Register the activation handler (see `on_activate`). At most one; a
     /// registration after activation is never called, so callers registering
@@ -475,7 +479,8 @@ impl PluginServe {
     /// Whether a late (post-boot) activation already happened — the check for
     /// a caller whose `set_on_activate` may have lost the race with it.
     pub fn activated_late(&self) -> bool {
-        self.late_activated.load(std::sync::atomic::Ordering::SeqCst)
+        self.late_activated
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
     /// The configureServer middleware's loopback port, when it is up.
     pub fn mw_port(&self) -> Option<u16> {
@@ -789,8 +794,11 @@ impl DevServer {
             // Vite defines process.env.NODE_ENV in dev too (nodeEnv = NODE_ENV || mode);
             // without it, library code that reads it throws a ReferenceError in dev.
             // DEV/PROD follow it as well: `NODE_ENV=production vite dev` is PROD.
-            let node_env =
-                oj_env::resolve_node_env(std::env::var("NODE_ENV").ok().as_deref(), &env, "development");
+            let node_env = oj_env::resolve_node_env(
+                std::env::var("NODE_ENV").ok().as_deref(),
+                &env,
+                "development",
+            );
             let mut defines = oj_env::import_meta_env_defines(
                 &merged,
                 &dev_mode,
@@ -855,8 +863,10 @@ impl DevServer {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let proxy_regex: Vec<Option<regex::Regex>> =
-            proxy.iter().map(|(ctx, _)| proxy_context_regex(ctx)).collect();
+        let proxy_regex: Vec<Option<regex::Regex>> = proxy
+            .iter()
+            .map(|(ctx, _)| proxy_context_regex(ctx))
+            .collect();
 
         // TanStack Start owns its module graph and SSR; oj runs the plugin host
         // only to host configureServer middleware (the editor dev-server bridge),
@@ -910,8 +920,7 @@ impl DevServer {
             // degraded or stale verdict can then never silently disable the
             // worker path the host itself can see declared. Omitted for oj
             // plugin files, where no extraction ran.
-            plugin_cfg["runnerBacked"] =
-                serde_json::json!(oj_config::ssr_runner_backed(&config));
+            plugin_cfg["runnerBacked"] = serde_json::json!(oj_config::ssr_runner_backed(&config));
         }
         let plugin_config = plugin_cfg.to_string();
         plugin_cfg["environment"]["name"] = serde_json::json!("ssr");
@@ -952,7 +961,9 @@ impl DevServer {
                         // Kept only to host the single `server.proxy` (no plugins
                         // to build): the middleware stack runs the proxy so a
                         // function rewrite / configure / bypass has a Node home.
-                        println!("  plugins: {plugins_label} (none active; host kept for server.proxy)");
+                        println!(
+                            "  plugins: {plugins_label} (none active; host kept for server.proxy)"
+                        );
                         Some(host)
                     } else {
                         println!("  plugins: {plugins_label}");
@@ -1078,7 +1089,8 @@ impl DevServer {
         };
 
         let hmr_gate = {
-            let env_on = |name: &str| matches!(std::env::var(name).as_deref(), Ok("1") | Ok("true"));
+            let env_on =
+                |name: &str| matches!(std::env::var(name).as_deref(), Ok("1") | Ok("true"));
             let enabled = server_cfg.hmr_gate == Some(true)
                 || env_on("OJ_HMR_GATE")
                 || env_on("LOVABLE_DEV_SERVER");
@@ -1118,7 +1130,10 @@ impl DevServer {
             Some(oj_config::HmrConfig::Options(o)) => Some(o.clone()),
             _ => None,
         };
-        if hmr_options.as_ref().is_some_and(|o| o.port.is_some() && o.client_port.is_none()) {
+        if hmr_options
+            .as_ref()
+            .is_some_and(|o| o.port.is_some() && o.client_port.is_none())
+        {
             println!(
                 "  hmr.port is not applied (the socket shares the dev server port); set hmr.clientPort for the port the browser dials"
             );
@@ -1459,7 +1474,9 @@ impl DevServer {
             ));
         }
         let proxy_prefixes: Vec<String> = state.proxy.iter().map(|(p, _)| p.clone()).collect();
-        let hmr_gate = state.hmr_gate.as_ref().map(|_| HmrGateHandle { state: Arc::clone(&state) });
+        let hmr_gate = state.hmr_gate.as_ref().map(|_| HmrGateHandle {
+            state: Arc::clone(&state),
+        });
         let ssr = SsrBridge {
             state: Arc::clone(&state),
         };
@@ -1502,7 +1519,11 @@ fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
                 excluded.push(pattern);
             }
         } else {
-            let walk = format!("{}/{}", glob::Pattern::escape(&root.to_string_lossy()), pattern);
+            let walk = format!(
+                "{}/{}",
+                glob::Pattern::escape(&root.to_string_lossy()),
+                pattern
+            );
             if let Ok(matches) = glob::glob(&walk) {
                 files.extend(matches.flatten().filter(|file| file.is_file()));
             }
@@ -1560,7 +1581,9 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
 /// listener is bound. `BROWSER=none` disables it and any other `BROWSER` value
 /// names the command to run (the `open` package's convention Vite follows).
 pub fn open_browser(url: &str) {
-    let browser = std::env::var("BROWSER").ok().filter(|b| !b.trim().is_empty());
+    let browser = std::env::var("BROWSER")
+        .ok()
+        .filter(|b| !b.trim().is_empty());
     if browser.as_deref() == Some("none") {
         return;
     }
@@ -1642,13 +1665,14 @@ fn js(body: impl IntoResponse) -> Response {
     ([(header::CONTENT_TYPE, "text/javascript")], body).into_response()
 }
 
-async fn serve_client_js(
-    State(state): State<Arc<ServerState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn serve_client_js(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
     // Browsers refetch /@oj/client.js on every reload; the body is fixed for
     // the server's lifetime, so a matching validator saves the transfer.
-    cached_js_response(&headers, state.client_js_etag.clone(), state.client_js.clone())
+    cached_js_response(
+        &headers,
+        state.client_js_etag.clone(),
+        state.client_js.clone(),
+    )
 }
 
 /// A cached, immutable-for-this-process JS body: 304 on a matching validator,
@@ -1683,7 +1707,11 @@ fn cached_js_response(headers: &HeaderMap, etag: String, body: Bytes) -> Respons
 /// The path the HMR socket is served at: `server.hmr.path` (made absolute) or
 /// oj's `/__ws`.
 fn hmr_socket_path(hmr: Option<&oj_config::HmrOptions>) -> String {
-    match hmr.and_then(|h| h.path.as_deref()).map(str::trim).filter(|p| !p.is_empty()) {
+    match hmr
+        .and_then(|h| h.path.as_deref())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
         Some(p) if p.starts_with('/') => p.to_string(),
         Some(p) => format!("/{p}"),
         None => "/__ws".to_string(),
@@ -1744,7 +1772,10 @@ fn ws_token_rejected(check: bool, token: &str, headers: &HeaderMap, query: Optio
     if !check || !headers.contains_key(header::ORIGIN) {
         return false;
     }
-    !query.is_some_and(|q| q.split('&').any(|kv| kv.strip_prefix("token=") == Some(token)))
+    !query.is_some_and(|q| {
+        q.split('&')
+            .any(|kv| kv.strip_prefix("token=") == Some(token))
+    })
 }
 
 // An SSR module carries its source map inline: the runner maps stack frames
@@ -2247,7 +2278,11 @@ fn sass_load_paths_for(state: &ServerState, url: &str) -> Vec<PathBuf> {
         css: Some(css.clone()),
         ..Default::default()
     };
-    let lang = if url.split('?').next().unwrap_or(url).ends_with(".sass") { "sass" } else { "scss" };
+    let lang = if url.split('?').next().unwrap_or(url).ends_with(".sass") {
+        "sass"
+    } else {
+        "scss"
+    };
     oj_config::css_load_paths(&cfg, lang)
         .into_iter()
         .map(|p| state.root.join(p))
@@ -2324,7 +2359,11 @@ async fn preview_host_check(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if let Some(raw) = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()) {
+    if let Some(raw) = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+    {
         let host = HostPolicy::host_header_name(raw);
         if !policy.hostname_allowed(host) {
             return (StatusCode::FORBIDDEN, HostPolicy::reject_message(host)).into_response();
@@ -2332,7 +2371,6 @@ async fn preview_host_check(
     }
     next.run(req).await
 }
-
 
 pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
     let dir = opts.dir.canonicalize().with_context(|| {
@@ -2381,8 +2419,12 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
             preview_host_check,
         ));
     }
-    let (listener, port) =
-        bind_dev_listener(resolve_host(opts.host.as_deref()), opts.port, opts.strict_port).await?;
+    let (listener, port) = bind_dev_listener(
+        resolve_host(opts.host.as_deref()),
+        opts.port,
+        opts.strict_port,
+    )
+    .await?;
     println!("  {} preview", oj_brand());
     println!("  serving: {}", dir.display());
     let url = format!("http://localhost:{port}{}", opts.base);
@@ -2391,7 +2433,15 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
         let target = if path.starts_with("http://") || path.starts_with("https://") {
             path.clone()
         } else {
-            format!("{}{}", url.trim_end_matches('/'), if path.starts_with('/') { path.clone() } else { format!("/{path}") })
+            format!(
+                "{}{}",
+                url.trim_end_matches('/'),
+                if path.starts_with('/') {
+                    path.clone()
+                } else {
+                    format!("/{path}")
+                }
+            )
         };
         open_browser(&target);
     }
@@ -2458,7 +2508,9 @@ async fn preview_serve(State(state): State<Arc<PreviewState>>, uri: Uri) -> Resp
         // only `appType: "spa"` then falls back to the root index.html.
         match preview_html_fallback(dir, &rel, *spa_fallback) {
             Some(target) => (target, "text/html; charset=utf-8"),
-            None => return (StatusCode::NOT_FOUND, format!("oj: not found: {rel}")).into_response(),
+            None => {
+                return (StatusCode::NOT_FOUND, format!("oj: not found: {rel}")).into_response()
+            }
         }
     } else {
         return (StatusCode::NOT_FOUND, format!("oj: not found: {rel}")).into_response();
@@ -2552,7 +2604,11 @@ async fn ws_upgrade(
         return resp;
     }
     if ws_token_rejected(state.ws_token_check, &state.ws_token, &headers, uri.query()) {
-        return (StatusCode::UNAUTHORIZED, "oj: websocket token missing or invalid").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "oj: websocket token missing or invalid",
+        )
+            .into_response();
     }
     hmr_socket(upgrade, state, false)
 }
@@ -2586,19 +2642,33 @@ async fn vite_hmr_upgrade(
         return resp;
     }
     if proto != "vite-ping"
-        && ws_token_rejected(state.ws_token_check, &state.ws_token, req.headers(), req.uri().query())
+        && ws_token_rejected(
+            state.ws_token_check,
+            &state.ws_token,
+            req.headers(),
+            req.uri().query(),
+        )
     {
-        return (StatusCode::UNAUTHORIZED, "oj: websocket token missing or invalid").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "oj: websocket token missing or invalid",
+        )
+            .into_response();
     }
     let (mut parts, body) = req.into_parts();
     match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
-        Ok(upgrade) if proto == "vite-ping" => upgrade
-            .protocols(["vite-ping"])
-            .on_upgrade(|mut socket| async move {
-                let _ = socket.send(Message::Close(None)).await;
-            }),
+        Ok(upgrade) if proto == "vite-ping" => {
+            upgrade
+                .protocols(["vite-ping"])
+                .on_upgrade(|mut socket| async move {
+                    let _ = socket.send(Message::Close(None)).await;
+                })
+        }
         Ok(upgrade) => hmr_socket(upgrade, state, true),
-        Err(_) => next.run(axum::extract::Request::from_parts(parts, body)).await,
+        Err(_) => {
+            next.run(axum::extract::Request::from_parts(parts, body))
+                .await
+        }
     }
 }
 
@@ -2672,7 +2742,12 @@ impl HostPolicy {
     fn from_config(server: &oj_config::ServerConfig, cli_host: Option<&str>) -> Self {
         let mut allowed = Vec::new();
         match &server.allowed_hosts {
-            Some(oj_config::AllowedHosts::All(true)) => return Self { allow_all: true, allowed },
+            Some(oj_config::AllowedHosts::All(true)) => {
+                return Self {
+                    allow_all: true,
+                    allowed,
+                }
+            }
             Some(oj_config::AllowedHosts::List(list)) => {
                 allowed.extend(list.iter().map(|h| h.to_ascii_lowercase()))
             }
@@ -2686,14 +2761,21 @@ impl HostPolicy {
                 allowed.push(h.to_ascii_lowercase());
             }
         }
-        Self { allow_all: false, allowed }
+        Self {
+            allow_all: false,
+            allowed,
+        }
     }
 
     fn hostname_allowed(&self, hostname: &str) -> bool {
         if self.allow_all {
             return true;
         }
-        let host = hostname.trim().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+        let host = hostname
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_ascii_lowercase();
         if host.is_empty()
             || host == "localhost"
             || host.ends_with(".localhost")
@@ -2745,7 +2827,11 @@ async fn host_check_middleware(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if let Some(raw) = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()) {
+    if let Some(raw) = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+    {
         let host = HostPolicy::host_header_name(raw);
         if !state.host_policy.hostname_allowed(host) {
             return (StatusCode::FORBIDDEN, HostPolicy::reject_message(host)).into_response();
@@ -2809,13 +2895,19 @@ impl CorsPolicy {
                     Some(serde_json::Value::Bool(false)) => return None,
                     Some(serde_json::Value::String(s)) => CorsOrigin::List(vec![s.clone()]),
                     Some(serde_json::Value::Array(a)) => CorsOrigin::List(
-                        a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect(),
                     ),
                     _ => CorsOrigin::LocalhostDefault,
                 };
                 Some(Self {
                     origin,
-                    methods: o.methods.as_ref().and_then(list_or_str).unwrap_or(default_methods),
+                    methods: o
+                        .methods
+                        .as_ref()
+                        .and_then(list_or_str)
+                        .unwrap_or(default_methods),
                     allowed_headers: o.allowed_headers.as_ref().and_then(list_or_str),
                     credentials: o.credentials.unwrap_or(false),
                     max_age: o.max_age,
@@ -2843,7 +2935,10 @@ impl CorsPolicy {
 /// Vite's `defaultAllowedOrigins`:
 /// `/^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/`.
 fn is_localhost_origin(origin: &str) -> bool {
-    let rest = match origin.strip_prefix("https://").or_else(|| origin.strip_prefix("http://")) {
+    let rest = match origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    {
         Some(r) => r,
         None => return false,
     };
@@ -2880,7 +2975,9 @@ async fn cors_middleware(
         .map(str::to_string);
     let allowed = origin.as_deref().is_some_and(|o| policy.allows(o));
     let preflight = req.method() == axum::http::Method::OPTIONS
-        && req.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+        && req
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
     let mut resp = if preflight && allowed {
         let mut r = StatusCode::NO_CONTENT.into_response();
         let h = r.headers_mut();
@@ -2899,7 +2996,10 @@ async fn cors_middleware(
             }
             (None, Some(v)) => {
                 h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, v);
-                h.append(header::VARY, header::HeaderValue::from_static("Access-Control-Request-Headers"));
+                h.append(
+                    header::VARY,
+                    header::HeaderValue::from_static("Access-Control-Request-Headers"),
+                );
             }
             (None, None) => {}
         }
@@ -2908,7 +3008,10 @@ async fn cors_middleware(
                 h.insert(header::ACCESS_CONTROL_MAX_AGE, v);
             }
         }
-        h.insert(header::CONTENT_LENGTH, header::HeaderValue::from_static("0"));
+        h.insert(
+            header::CONTENT_LENGTH,
+            header::HeaderValue::from_static("0"),
+        );
         r
     } else {
         next.run(req).await
@@ -3008,7 +3111,12 @@ fn proxy_target(entry: &oj_config::ProxyEntry, path: &str, query: Option<&str>) 
         }
     }
     let query = query.map(|q| format!("?{q}")).unwrap_or_default();
-    format!("{}{}{}", entry.target().trim_end_matches('/'), fwd_path, query)
+    format!(
+        "{}{}{}",
+        entry.target().trim_end_matches('/'),
+        fwd_path,
+        query
+    )
 }
 
 async fn proxy_middleware(
@@ -3088,7 +3196,8 @@ async fn proxy_middleware(
         match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
             Ok(b) => reqwest::Body::from(b),
             Err(e) => {
-                return (StatusCode::BAD_GATEWAY, format!("oj proxy: body read: {e}")).into_response()
+                return (StatusCode::BAD_GATEWAY, format!("oj proxy: body read: {e}"))
+                    .into_response()
             }
         }
     };
@@ -3244,7 +3353,10 @@ impl ServerState {
     /// trust store (what reqwest verifies with for the HTTP side), or no
     /// certificate check at all when the proxy entry says `secure: false`
     /// (http-proxy's `secure`), for self-signed dev backends.
-    fn proxy_tls_config(&self, secure: bool) -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    fn proxy_tls_config(
+        &self,
+        secure: bool,
+    ) -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
         self.proxy_tls[usize::from(!secure)]
             .get_or_init(|| proxy_tls_config(secure).map(std::sync::Arc::new))
             .clone()
@@ -3291,7 +3403,12 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCertificate {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
     }
     fn verify_tls13_signature(
         &self,
@@ -3299,7 +3416,12 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCertificate {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
     }
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         self.0.signature_verification_algorithms.supported_schemes()
@@ -3347,7 +3469,10 @@ async fn proxy_websocket(
     let target_uri: axum::http::Uri = match url.parse() {
         Ok(u) => u,
         Err(e) => {
-            return (StatusCode::BAD_GATEWAY, format!("oj proxy: bad websocket target {url}: {e}"))
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("oj proxy: bad websocket target {url}: {e}"),
+            )
                 .into_response()
         }
     };
@@ -3392,7 +3517,11 @@ async fn proxy_websocket(
     let upstream_req = match builder.body(()) {
         Ok(r) => r,
         Err(e) => {
-            return (StatusCode::BAD_GATEWAY, format!("oj proxy: ws request: {e}")).into_response()
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("oj proxy: ws request: {e}"),
+            )
+                .into_response()
         }
     };
     // `wss://` targets: tungstenite dials TCP and TLS itself, given a rustls
@@ -3402,13 +3531,18 @@ async fn proxy_websocket(
         match state.proxy_tls_config(entry.is_none_or(|e| e.secure())) {
             Ok(cfg) => Some(tokio_tungstenite::Connector::Rustls(cfg)),
             Err(e) => {
-                return (StatusCode::BAD_GATEWAY, format!("oj proxy: tls config: {e}")).into_response()
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("oj proxy: tls config: {e}"),
+                )
+                    .into_response()
             }
         }
     } else {
         Some(tokio_tungstenite::Connector::Plain)
     };
-    let connect = tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector);
+    let connect =
+        tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector);
     // No oj-side deadline, matching Vite: its plugin `upgrade` listeners
     // share the http server, so an upgrade nobody claims simply dangles until
     // the CLIENT gives up — the client owns the patience. Here the dangle is
@@ -3547,8 +3681,12 @@ pub fn inject_csp_nonce(html: &str, nonce: &str) -> String {
         let wants = match name.as_str() {
             "script" | "style" => true,
             "link" => html_tag_attr(tag, "rel").is_some_and(|rel| {
-                rel.split_whitespace()
-                    .any(|r| matches!(r.to_ascii_lowercase().as_str(), "stylesheet" | "modulepreload" | "preload"))
+                rel.split_whitespace().any(|r| {
+                    matches!(
+                        r.to_ascii_lowercase().as_str(),
+                        "stylesheet" | "modulepreload" | "preload"
+                    )
+                })
             }),
             _ => false,
         };
@@ -3850,7 +3988,9 @@ pub async fn proxy_to_loopback(
 /// `Host`; sending it as `x-forwarded-host` too made Node join the two into
 /// `proxy-host, localhost:port`, which no URL parser accepts. An incoming
 /// `x-oj-host` is dropped so a client cannot spoof it.
-pub fn loopback_request_headers(headers: &HeaderMap) -> Vec<(header::HeaderName, header::HeaderValue)> {
+pub fn loopback_request_headers(
+    headers: &HeaderMap,
+) -> Vec<(header::HeaderName, header::HeaderValue)> {
     let mut out = Vec::with_capacity(headers.len() + 1);
     if let Some(host) = headers.get(header::HOST) {
         out.push((header::HeaderName::from_static("x-oj-host"), host.clone()));
@@ -4172,7 +4312,9 @@ async fn serve_path(
     }
 
     match tokio::fs::read(&file).await {
-        Ok(bytes) if ext == "html" => serve_html(&state, bytes, &url_of(&state.root, &file), &file).await,
+        Ok(bytes) if ext == "html" => {
+            serve_html(&state, bytes, &url_of(&state.root, &file), &file).await
+        }
         Ok(bytes) if ext == "css" => {
             let source = String::from_utf8_lossy(&bytes).into_owned();
             if is_tailwind_css(&source) {
@@ -4303,7 +4445,12 @@ async fn serve_compiled(
             };
             body = format!("{}{}", svelte_hot_glue(&strip_hmr_timestamp(&full)), body);
         }
-        body.push_str(&hot_glue(base_url, query, module.is_boundary, ctx_predefined));
+        body.push_str(&hot_glue(
+            base_url,
+            query,
+            module.is_boundary,
+            ctx_predefined,
+        ));
     }
     if let Some(map_url) = &module.map_data_url {
         body.push_str(&format!("\n//# sourceMappingURL={map_url}\n"));
@@ -4473,7 +4620,11 @@ async fn ensure_module(
     // Fold the newest HMR stamp among this module's imports into the key: after a
     // dependency updates, the (unchanged) importer must recompile so its import of
     // that dependency carries the new `?t=`, or the browser keeps the stale one.
-    let imports_stamp = state.graph.lock().unwrap().imports_timestamp(Path::new(url));
+    let imports_stamp = state
+        .graph
+        .lock()
+        .unwrap()
+        .imports_timestamp(Path::new(url));
     let mode_key = if imports_stamp > 0 {
         format!("{mode}@{imports_stamp}")
     } else {
@@ -4514,7 +4665,11 @@ async fn ensure_module(
     // those. Modules whose imports are all real files (svgr on disk, plain
     // source, deps) keep the fast persistent cache (Vite has no cross-restart
     // transform cache at all; this preserves oj's where it is sound).
-    if let Some(module) = state.persistent_cache.then(|| state.cache.get(&key)).flatten() {
+    if let Some(module) = state
+        .persistent_cache
+        .then(|| state.cache.get(&key))
+        .flatten()
+    {
         let module = Arc::new(module);
         let needs_retransform = state.plugins_have_transform
             && !is_dep_early
@@ -4556,7 +4711,10 @@ async fn ensure_module(
     let mut plugin_maps: Vec<String> = Vec::new();
     let dep_wants_transform = is_dep
         && (pkg_bundle::is_excluded(file)
-            || state.dep_transform_res.iter().any(|re| re.is_match(&source)));
+            || state
+                .dep_transform_res
+                .iter()
+                .any(|re| re.is_match(&source)));
     let source = match &state.plugins {
         Some(host) if state.plugins_have_transform && (!is_dep || dep_wants_transform) => {
             // Pass the id WITH its query (e.g. `?tsr-shared=1`), like Vite: the router
@@ -4596,7 +4754,11 @@ async fn ensure_module(
     let source = if is_preprocessor(url) {
         // css.preprocessorOptions.<less|stylus>: `additionalData` is prepended,
         // everything else goes to the preprocessor as its options (Vite parity).
-        let lang = if sidecar::is_less(url) { "less" } else { "stylus" };
+        let lang = if sidecar::is_less(url) {
+            "less"
+        } else {
+            "stylus"
+        };
         let cfg = state.css_config.clone().map(|c| oj_config::OjConfig {
             css: Some(c),
             ..Default::default()
@@ -4735,7 +4897,11 @@ async fn ensure_module(
     let hmr_state = Arc::clone(state);
     let plugin_fallback = state.plugins.is_some();
     let svgr_active = state.plugins_have_transform;
-    let resolve_id_res = if plugin_fallback { state.resolve_id_res.clone() } else { Vec::new() };
+    let resolve_id_res = if plugin_fallback {
+        state.resolve_id_res.clone()
+    } else {
+        Vec::new()
+    };
     let importer_abs = file.to_string_lossy().into_owned();
     let ext = file.extension().and_then(|e| e.to_str());
     let is_css = ext.is_some_and(is_style_ext);
@@ -4784,7 +4950,8 @@ async fn ensure_module(
             } else {
                 oj_css::inline_imports_with(&css_src, &file_owned, &resolve)?
             };
-            let output = oj_css::compile_css_dev(&url_owned, &css_src, css_dev_sourcemap, &resolve)?;
+            let output =
+                oj_css::compile_css_dev(&url_owned, &css_src, css_dev_sourcemap, &resolve)?;
             // A CSS module exports its class map, which changes on edit, so it
             // cannot self-accept (Vite's css-analysis): the update climbs to the
             // importing component, whose re-import fetches the new exports.
@@ -4873,7 +5040,9 @@ async fn ensure_module(
                 && (relative_import_missing(&dir, resolver, spec)
                     || bare_import_unresolved(&dir, resolver, spec))
             {
-                unresolved.borrow_mut().get_or_insert_with(|| spec.to_string());
+                unresolved
+                    .borrow_mut()
+                    .get_or_insert_with(|| spec.to_string());
             }
             None
         };
@@ -5536,10 +5705,7 @@ fn path_is_denied(file: &Path, root: &Path, deny: &[(glob::Pattern, bool)]) -> b
 /// Vite's static middleware serves them.
 fn wants_module_import(headers: &HeaderMap, query: Option<&str>) -> bool {
     query.is_some_and(|q| q.split('&').any(|kv| kv == "import"))
-        || headers
-            .get("sec-fetch-dest")
-            .and_then(|v| v.to_str().ok())
-            == Some("script")
+        || headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) == Some("script")
 }
 
 fn wants_raw_resource(headers: &HeaderMap) -> bool {
@@ -5576,12 +5742,48 @@ pub fn is_node_builtin(spec: &str) -> bool {
     }
     matches!(
         base,
-        "assert" | "async_hooks" | "buffer" | "child_process" | "cluster" | "console"
-            | "constants" | "crypto" | "dgram" | "diagnostics_channel" | "dns" | "domain" | "events"
-            | "fs" | "http" | "http2" | "https" | "inspector" | "module" | "net" | "os"
-            | "path" | "perf_hooks" | "process" | "punycode" | "querystring" | "readline"
-            | "repl" | "stream" | "string_decoder" | "sys" | "timers" | "tls" | "trace_events"
-            | "tty" | "url" | "util" | "v8" | "vm" | "wasi" | "worker_threads" | "zlib"
+        "assert"
+            | "async_hooks"
+            | "buffer"
+            | "child_process"
+            | "cluster"
+            | "console"
+            | "constants"
+            | "crypto"
+            | "dgram"
+            | "diagnostics_channel"
+            | "dns"
+            | "domain"
+            | "events"
+            | "fs"
+            | "http"
+            | "http2"
+            | "https"
+            | "inspector"
+            | "module"
+            | "net"
+            | "os"
+            | "path"
+            | "perf_hooks"
+            | "process"
+            | "punycode"
+            | "querystring"
+            | "readline"
+            | "repl"
+            | "stream"
+            | "string_decoder"
+            | "sys"
+            | "timers"
+            | "tls"
+            | "trace_events"
+            | "tty"
+            | "url"
+            | "util"
+            | "v8"
+            | "vm"
+            | "wasi"
+            | "worker_threads"
+            | "zlib"
     )
 }
 
@@ -5804,7 +6006,9 @@ fn handle_client_message(state: &Arc<ServerState>, text: &str) {
                 // 'circular import invalidate').
                 Ok(targets)
                     if first_invalidated_by.is_some_and(|first| {
-                        targets.iter().any(|t| t.accepted.display().to_string() == first)
+                        targets
+                            .iter()
+                            .any(|t| t.accepted.display().to_string() == first)
                     }) =>
                 {
                     let reason = "circular import invalidate";
@@ -5812,7 +6016,8 @@ fn handle_client_message(state: &Arc<ServerState>, text: &str) {
                     full_reload_frame(reason, None, None)
                 }
                 Ok(targets) => {
-                    let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
+                    let boundaries: Vec<&Path> =
+                        targets.iter().map(|t| t.boundary.as_path()).collect();
                     println!("oj: invalidate {path} -> update {boundaries:?}");
                     let first = first_invalidated_by.unwrap_or(path);
                     let updates: Vec<_> = targets
@@ -5828,23 +6033,21 @@ fn handle_client_message(state: &Arc<ServerState>, text: &str) {
             }
         };
         let _ = state.reload_tx.send(reply);
-    } else if msg["type"] == "custom" {
-        if msg["event"].is_string() {
-            let _ = state.reload_tx.send(
-                serde_json::json!({
-                    "type": "custom",
-                    "event": msg["event"],
-                    "data": msg["data"],
-                })
-                .to_string(),
-            );
-            if let Some(host) = state.plugins.clone() {
-                let event = msg["event"].as_str().unwrap_or_default().to_string();
-                let data = msg["data"].to_string();
-                tokio::spawn(async move {
-                    let _ = host.ws_message(&event, &data).await;
-                });
-            }
+    } else if msg["type"] == "custom" && msg["event"].is_string() {
+        let _ = state.reload_tx.send(
+            serde_json::json!({
+                "type": "custom",
+                "event": msg["event"],
+                "data": msg["data"],
+            })
+            .to_string(),
+        );
+        if let Some(host) = state.plugins.clone() {
+            let event = msg["event"].as_str().unwrap_or_default().to_string();
+            let data = msg["data"].to_string();
+            tokio::spawn(async move {
+                let _ = host.ws_message(&event, &data).await;
+            });
         }
     }
 }
@@ -5886,7 +6089,10 @@ fn stamp_import_url(url: &str, timestamp: u64) -> String {
         return url.to_string();
     }
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
-    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
     if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) {
         return url.to_string();
     }
@@ -5976,7 +6182,10 @@ fn error_frame(message: &str) -> String {
     if let Some(c) = re.captures(message) {
         err["id"] = serde_json::Value::String(c[1].to_string());
         let line = c[2].parse::<u64>().unwrap_or(0);
-        let column = c.get(3).and_then(|m| m.as_str().parse::<u64>().ok()).unwrap_or(0);
+        let column = c
+            .get(3)
+            .and_then(|m| m.as_str().parse::<u64>().ok())
+            .unwrap_or(0);
         err["loc"] = serde_json::json!({ "file": &c[1], "line": line, "column": column });
     }
     if let Some((_, frame)) = message.split_once('\n') {
@@ -6151,10 +6360,7 @@ fn dep_response(headers: &HeaderMap, versioned: bool, bytes: Vec<u8>) -> Respons
     {
         return (
             StatusCode::NOT_MODIFIED,
-            [
-                (header::ETAG, etag),
-                (header::CACHE_CONTROL, cache_control),
-            ],
+            [(header::ETAG, etag), (header::CACHE_CONTROL, cache_control)],
         )
             .into_response();
     }
@@ -6348,7 +6554,11 @@ fn rewrite_specifier(
         // sits under the app root (the common layout), so partial bundling can
         // collapse it. `dep_serve_url` returns the plain per-file URL when partial
         // bundling is off or the file isn't bundleable, so this is a no-op then.
-        Ok(resolved) if resolved.components().any(|c| c.as_os_str() == "node_modules") => {
+        Ok(resolved)
+            if resolved
+                .components()
+                .any(|c| c.as_os_str() == "node_modules") =>
+        {
             fs_allow.lock().unwrap().insert(package_root(&resolved));
             Some(dep_serve_url(&resolved, root))
         }
@@ -6449,7 +6659,11 @@ fn is_unresolved_import_error(err: &str) -> bool {
 /// message\nframe` shape so the overlay lifts the location out of it. The
 /// position is where the specifier is quoted in the (plugin-transformed) source.
 fn unresolved_import_error(root: &Path, file: &Path, source: &str, spec: &str) -> String {
-    let rel = file.strip_prefix(root).unwrap_or(file).display().to_string();
+    let rel = file
+        .strip_prefix(root)
+        .unwrap_or(file)
+        .display()
+        .to_string();
     let quoted = ['"', '\'', '`']
         .iter()
         .find_map(|q| source.find(&format!("{q}{spec}{q}")).map(|p| p + 1));
@@ -6572,7 +6786,11 @@ async fn asset_module(file: &Path, url: &str, kind: &str) -> Result<String, Stri
 /// transforms, Sass/Less/Stylus with additionalData and loadPaths, PostCSS or
 /// Tailwind, @import inlining, url() rebasing), as Vite's `?inline` is the css
 /// of the same transform; a CSS module inlines its css, not its class map.
-async fn inline_css_module(state: &Arc<ServerState>, file: &Path, url: &str) -> Result<String, String> {
+async fn inline_css_module(
+    state: &Arc<ServerState>,
+    file: &Path,
+    url: &str,
+) -> Result<String, String> {
     let clean = url.split('?').next().unwrap_or(url);
     let (_, module) = Box::pin(ensure_module(state, file, clean)).await?;
     Ok(format!(
@@ -6678,14 +6896,9 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
         let dir = root.clone();
         let mut rewrite =
             |s: &str| rewrite_specifier(&root, &dir, &resolver, &fs_allow, &dir_cache, s, true);
-        oj_compiler::compile_module(
-            &synthetic,
-            OJ_ROUTES_JS,
-            &compile_opts,
-            Some(&mut rewrite),
-        )
-        .map(|o| o.code_with_inline_map())
-        .map_err(|e| format!("{e}"))
+        oj_compiler::compile_module(&synthetic, OJ_ROUTES_JS, &compile_opts, Some(&mut rewrite))
+            .map(|o| o.code_with_inline_map())
+            .map_err(|e| format!("{e}"))
     })
     .await;
     match compiled {
@@ -6794,7 +7007,7 @@ async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
         state.virtual_modules.keys().cloned().collect();
     let plugin_fallback = state.plugins.is_some();
     let importer_abs = format!("\0{id}");
-    let compile_opts = dev_compile_opts(&state);
+    let compile_opts = dev_compile_opts(state);
     let compiled = tokio::task::spawn_blocking(move || {
         let mut rewrite = |spec: &str| {
             if virtual_ids.contains(spec) {
@@ -6952,7 +7165,7 @@ async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
     let importer_id = id.clone();
-    let compile_opts = dev_compile_opts(&state);
+    let compile_opts = dev_compile_opts(state);
     let compiled = tokio::task::spawn_blocking(move || {
         let mut rewrite = |s: &str| {
             if let Some(u) =
@@ -7129,7 +7342,7 @@ async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Opti
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
     let importer_id = id.clone();
-    let compile_opts = dev_compile_opts(&state);
+    let compile_opts = dev_compile_opts(state);
     let compiled = tokio::task::spawn_blocking(move || {
         let mut rewrite = |s: &str| {
             if let Some(u) =
@@ -7251,7 +7464,7 @@ fn hex_encode(s: &str) -> String {
 
 fn hex_decode(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);
@@ -7351,7 +7564,12 @@ fn inject_module_preloads(html: String, state: &ServerState) -> String {
     let version = state.optimized.version();
     let links: String = paths
         .iter()
-        .map(|p| format!("<link rel=\"modulepreload\" href=\"{}\" />\n", preload_href(p, version)))
+        .map(|p| {
+            format!(
+                "<link rel=\"modulepreload\" href=\"{}\" />\n",
+                preload_href(p, version)
+            )
+        })
         .collect();
     match html.find("</head>") {
         Some(idx) => format!("{}{links}{}", &html[..idx], &html[idx..]),
@@ -7466,7 +7684,11 @@ fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
             i += 1;
         }
         let start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'/' {
+        while i < bytes.len()
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'='
+            && bytes[i] != b'/'
+        {
             i += 1;
         }
         if i == start {
@@ -7535,13 +7757,13 @@ fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::Sender<bool
                     f
                 } else {
                     let rel = url.trim_start_matches('/').to_string();
-                    match locate(&state.root, state.public_dir.as_deref(),&rel) {
+                    match locate(&state.root, state.public_dir.as_deref(), &rel) {
                         Some(f) => f,
                         None => continue,
                     }
                 };
                 let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if !COMPILABLE.contains(&ext) && !(is_style_ext(ext) || ext == "json") {
+                if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
                     continue;
                 }
                 let state = Arc::clone(&state);
@@ -7584,7 +7806,7 @@ fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::Sender<bool
 }
 
 fn snapshot_path(root: &Path) -> PathBuf {
-    oj_cache::cache_root(&root).join("graph-snapshot.json")
+    oj_cache::cache_root(root).join("graph-snapshot.json")
 }
 
 fn load_graph_snapshot(root: &Path) -> Vec<String> {
@@ -7674,16 +7896,18 @@ impl HmrGate {
             .map(|(p, _)| p.display().to_string())
             .collect();
         let count = entries.len();
-        let held_reload = self.held_reload.swap(false, std::sync::atomic::Ordering::SeqCst);
+        let held_reload = self
+            .held_reload
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
         if held_reload || !entries.is_empty() {
             let _ = state.gate_flush_tx.send(());
         }
         if !entries.is_empty() {
             state.dir_cache.lock().unwrap().clear();
             if self.full_reload {
-                let _ = state.reload_tx.send(
-                    full_reload_frame("hmr-flush", None, None),
-                );
+                let _ = state
+                    .reload_tx
+                    .send(full_reload_frame("hmr-flush", None, None));
             } else {
                 let paths: Vec<PathBuf> = entries.into_iter().map(|(p, _)| p).collect();
                 let sref: &ServerState = state;
@@ -7744,7 +7968,8 @@ impl HmrGateHandle {
         if !gate.hold(&self.state, paths) {
             return false;
         }
-        gate.held_reload.store(true, std::sync::atomic::Ordering::SeqCst);
+        gate.held_reload
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         true
     }
 
@@ -7762,7 +7987,9 @@ async fn hmr_flush(State(state): State<Arc<ServerState>>) -> Response {
     };
     let held_reload = gate.held_reload.load(std::sync::atomic::Ordering::SeqCst);
     let (files, count) = gate.flush(&state).await;
-    js_response_json(serde_json::json!({ "flushed": files, "count": count, "mode": gate.mode(), "reload": held_reload || count > 0 }))
+    js_response_json(
+        serde_json::json!({ "flushed": files, "count": count, "mode": gate.mode(), "reload": held_reload || count > 0 }),
+    )
 }
 
 async fn hmr_gate_status(State(state): State<Arc<ServerState>>) -> Response {
@@ -7792,15 +8019,20 @@ impl Default for ContentChanges {
 
 impl ContentChanges {
     pub fn new() -> Self {
-        Self { mtimes: std::collections::HashMap::new() }
+        Self {
+            mtimes: std::collections::HashMap::new(),
+        }
     }
 
     pub fn changed_paths(&mut self, ev: &notify::Event) -> Vec<PathBuf> {
         match &ev.kind {
             notify::EventKind::Access(_) => Vec::new(),
-            notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_)) => {
-                ev.paths.iter().filter(|p| self.mtime_moved(p)).cloned().collect()
-            }
+            notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_)) => ev
+                .paths
+                .iter()
+                .filter(|p| self.mtime_moved(p))
+                .cloned()
+                .collect(),
             _ => {
                 for p in &ev.paths {
                     if let Ok(mtime) = std::fs::metadata(p).and_then(|m| m.modified()) {
@@ -7975,8 +8207,7 @@ fn spawn_watcher(state: Arc<ServerState>) {
             // Which of the debounced paths the watcher saw come into existence:
             // Vite's watcher tells plugins "create" for those (hotUpdate /
             // watchChange type), "update" for edits and "delete" for removals.
-            let mut created: std::collections::HashSet<PathBuf> =
-                std::collections::HashSet::new();
+            let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
             if matches!(first.kind, notify::EventKind::Create(_)) {
                 created.extend(first_paths.iter().cloned());
             }
@@ -8006,7 +8237,10 @@ fn spawn_watcher(state: Arc<ServerState>) {
             seen_paths.extend(paths.iter().cloned());
             // A config or .env change can't be hot-applied (config is read once at
             // startup), so restart the process to pick it up — matching Vite.
-            if paths.iter().any(|p| is_restart_trigger(p) || is_config_dependency(p)) {
+            if paths
+                .iter()
+                .any(|p| is_restart_trigger(p) || is_config_dependency(p))
+            {
                 restart_process();
             }
             if !state.hmr_enabled {
@@ -8280,9 +8514,7 @@ async fn decide(
                     }
                     Ok(Some(d)) if d == "full-reload" => {
                         println!("oj: change {file} -> full-reload (plugin)");
-                        messages.push(
-                            full_reload_frame("plugin", None, Some(path)),
-                        );
+                        messages.push(full_reload_frame("plugin", None, Some(path)));
                         return messages;
                     }
                     Ok(Some(d)) => {
@@ -8308,9 +8540,7 @@ async fn decide(
                                 }
                                 HmrDecision::FullReload { reason } => {
                                     println!("oj: change {file} -> full-reload ({reason})");
-                                    messages.push(
-                                        full_reload_frame(&reason, None, Some(path)),
-                                    );
+                                    messages.push(full_reload_frame(&reason, None, Some(path)));
                                     return messages;
                                 }
                             }
@@ -8328,9 +8558,7 @@ async fn decide(
                     "oj: change {} -> full-reload (plugin watch)",
                     path.display()
                 );
-                messages.push(
-                    full_reload_frame("plugin-watch", None, Some(path)),
-                );
+                messages.push(full_reload_frame("plugin-watch", None, Some(path)));
                 return messages;
             }
         }
@@ -8360,10 +8588,14 @@ async fn decide(
             // tooling reads.
             let page = url_of(&state.root, path);
             println!("oj: change {} -> full-reload", path.display());
-            messages.push(full_reload_frame(&path.display().to_string(), Some(&page), Some(path)));
+            messages.push(full_reload_frame(
+                &path.display().to_string(),
+                Some(&page),
+                Some(path),
+            ));
             return messages;
         }
-        if !COMPILABLE.contains(&ext) && !(is_style_ext(ext) || ext == "json") {
+        if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
             continue;
         }
 
@@ -8593,12 +8825,11 @@ export default [{{
         // is (very likely) mid-replay — the order lock, not luck, is what
         // guarantees the outcome under every interleaving.
         let mut init = host.initialized_updates();
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            init.wait_for(|v| *v),
-        )
-        .await
-        .is_ok_and(|r| r.is_ok()));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(20), init.wait_for(|v| *v),)
+                .await
+                .is_ok_and(|r| r.is_ok())
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         // What decide() does for a live post-init event: flush, then send.
         replay_ssr_watch_backlog(&host, &queue).await;
@@ -8700,8 +8931,7 @@ export default [{{
         // of logging success off the enqueue ack.
         let baseline = *rx.borrow_and_update();
         assert!(
-            !await_resync_completion(&mut rx, baseline, std::time::Duration::from_millis(50))
-                .await,
+            !await_resync_completion(&mut rx, baseline, std::time::Duration::from_millis(50)).await,
             "a stuck queue must not be reported as resynced"
         );
     }
@@ -8726,8 +8956,7 @@ export default [{{
             let inner = Arc::clone(&serve);
             let sink = Arc::clone(&seen);
             serve.set_on_activate(Box::new(move || {
-                *sink.lock().unwrap() =
-                    Some((inner.mw_port(), inner.runner_environments()));
+                *sink.lock().unwrap() = Some((inner.mw_port(), inner.runner_environments()));
             }));
             assert!(!serve.activated_late());
             serve.set(&info(Some(4001), true));
@@ -8761,16 +8990,23 @@ export default [{{
     #[test]
     fn dep_transform_gate_matches_only_marker_sources() {
         // The plugins' own transform code-filter patterns (getDepTransformFilters).
-        let res: Vec<regex::Regex> = [r"\bcreateServerFn\b|\.\s*handler\s*\(", "createIsomorphicFn"]
-            .iter()
-            .map(|s| regex::Regex::new(s).unwrap())
-            .collect();
+        let res: Vec<regex::Regex> = [
+            r"\bcreateServerFn\b|\.\s*handler\s*\(",
+            "createIsomorphicFn",
+        ]
+        .iter()
+        .map(|s| regex::Regex::new(s).unwrap())
+        .collect();
         let wants = |src: &str| res.iter().any(|re| re.is_match(src));
-        assert!(wants("export const f = createIsomorphicFn().client(() => 1)"));
+        assert!(wants(
+            "export const f = createIsomorphicFn().client(() => 1)"
+        ));
         assert!(wants("const x = createServerFn()"));
         assert!(wants("route.handler ( () => {} )"));
         assert!(!wants("export const x = 1;"));
-        assert!(!wants("import { getStartContext } from '@tanstack/start-storage-context'"));
+        assert!(!wants(
+            "import { getStartContext } from '@tanstack/start-storage-context'"
+        ));
     }
 
     #[test]
@@ -8786,7 +9022,8 @@ export default [{{
     #[test]
     fn parse_hmr_filter_reads_filter_module_urls() {
         let seeds =
-            parse_hmr_filter(r#"{"action":"filter","modules":["/src/a.tsx","/src/b.tsx"]}"#).unwrap();
+            parse_hmr_filter(r#"{"action":"filter","modules":["/src/a.tsx","/src/b.tsx"]}"#)
+                .unwrap();
         assert_eq!(
             seeds,
             vec![PathBuf::from("/src/a.tsx"), PathBuf::from("/src/b.tsx")]
@@ -8834,7 +9071,10 @@ export default [{{
         let out = asset_module(&png, "/pixel.png?inline", "inline")
             .await
             .unwrap();
-        assert!(out.contains("data:"), "binary asset stays a data URI: {out}");
+        assert!(
+            out.contains("data:"),
+            "binary asset stays a data URI: {out}"
+        );
     }
 
     #[test]
@@ -8849,17 +9089,30 @@ export default [{{
         assert!(find_postcss_config(&app).is_none());
         // A config at the workspace root applies to the package.
         std::fs::write(base.join(".postcssrc.json"), r#"{"plugins":{}}"#).unwrap();
-        assert_eq!(find_postcss_config(&app), Some(base.join(".postcssrc.json")));
+        assert_eq!(
+            find_postcss_config(&app),
+            Some(base.join(".postcssrc.json"))
+        );
         // package.json#postcss in the package itself wins (nearest first).
-        std::fs::write(app.join("package.json"), r#"{"name":"web","postcss":{"plugins":{}}}"#).unwrap();
+        std::fs::write(
+            app.join("package.json"),
+            r#"{"name":"web","postcss":{"plugins":{}}}"#,
+        )
+        .unwrap();
         assert_eq!(find_postcss_config(&app), Some(app.join("package.json")));
         // ...and a config file in the package beats its package.json key.
         std::fs::write(app.join("postcss.config.ts"), "export default {}").unwrap();
-        assert_eq!(find_postcss_config(&app), Some(app.join("postcss.config.ts")));
+        assert_eq!(
+            find_postcss_config(&app),
+            Some(app.join("postcss.config.ts"))
+        );
         // A package.json without the key does not count.
         std::fs::remove_file(app.join("postcss.config.ts")).unwrap();
         std::fs::write(app.join("package.json"), r#"{"name":"web"}"#).unwrap();
-        assert_eq!(find_postcss_config(&app), Some(base.join(".postcssrc.json")));
+        assert_eq!(
+            find_postcss_config(&app),
+            Some(base.join(".postcssrc.json"))
+        );
         // Nothing above the workspace root is consulted.
         std::fs::remove_file(base.join(".postcssrc.json")).unwrap();
         assert!(find_postcss_config(&app).is_none());
@@ -8875,7 +9128,11 @@ export default [{{
         assert!(path_is_denied(&root.join(".env.local"), root, &deny));
         assert!(path_is_denied(&root.join("certs/server.pem"), root, &deny));
         assert!(path_is_denied(&root.join(".git/config"), root, &deny));
-        assert!(path_is_denied(&root.join("packages/app/.git/HEAD"), root, &deny));
+        assert!(path_is_denied(
+            &root.join("packages/app/.git/HEAD"),
+            root,
+            &deny
+        ));
         // Ordinary source is served.
         assert!(!path_is_denied(&root.join("src/main.tsx"), root, &deny));
         assert!(!path_is_denied(&root.join("src/env.ts"), root, &deny));
@@ -8911,7 +9168,10 @@ export default [{{
         // the glob crate has no brace support, so without expansion those
         // patterns match nothing and denied files get served.
         let root = Path::new("/proj");
-        let deny = compile_fs_deny(&["*.{key,p12,pfx}".to_string(), "secrets/{a,b}/**".to_string()]);
+        let deny = compile_fs_deny(&[
+            "*.{key,p12,pfx}".to_string(),
+            "secrets/{a,b}/**".to_string(),
+        ]);
         assert!(path_is_denied(&root.join("server.key"), root, &deny));
         assert!(path_is_denied(&root.join("bundle.p12"), root, &deny));
         assert!(path_is_denied(&root.join("cert.pfx"), root, &deny));
@@ -8933,7 +9193,10 @@ export default [{{
         std::fs::write(dir.join("src/generated/b.js"), "b").unwrap();
         let picked = warmup_paths(
             &dir,
-            &["src/**/*.js".to_string(), "!./src/generated/*.js".to_string()],
+            &[
+                "src/**/*.js".to_string(),
+                "!./src/generated/*.js".to_string(),
+            ],
         );
         assert_eq!(picked.len(), 1, "exclusion must apply: {picked:?}");
         assert!(picked[0].ends_with("src/a.js"));
@@ -8987,23 +9250,42 @@ export default [{{
         let r = root.as_path();
 
         // All-real imports -> keep cache.
-        assert!(!imports_a_plugin_virtual(&["/src/real.ts".to_string()], r, &dc));
+        assert!(!imports_a_plugin_virtual(
+            &["/src/real.ts".to_string()],
+            r,
+            &dc
+        ));
         // oj-internal routes and external urls are never plugin-state virtuals.
         assert!(!imports_a_plugin_virtual(
-            &["/@id/abc".to_string(), "/@virtual/x".to_string(), "https://cdn/x.js".to_string()],
+            &[
+                "/@id/abc".to_string(),
+                "/@virtual/x".to_string(),
+                "https://cdn/x.js".to_string()
+            ],
             r,
             &dc,
         ));
         // A missing absolute path (wyw's .wyw-in-js.css) -> re-transform.
         assert!(imports_a_plugin_virtual(
-            &["/src/real.ts".to_string(), "/Users/nope/x.wyw-in-js.css".to_string()],
+            &[
+                "/src/real.ts".to_string(),
+                "/Users/nope/x.wyw-in-js.css".to_string()
+            ],
             r,
             &dc,
         ));
         // A missing root-relative path -> re-transform.
-        assert!(imports_a_plugin_virtual(&["/src/gone.css".to_string()], r, &dc));
+        assert!(imports_a_plugin_virtual(
+            &["/src/gone.css".to_string()],
+            r,
+            &dc
+        ));
         // Query strings are stripped before the on-disk check.
-        assert!(!imports_a_plugin_virtual(&["/src/real.ts?import".to_string()], r, &dc));
+        assert!(!imports_a_plugin_virtual(
+            &["/src/real.ts?import".to_string()],
+            r,
+            &dc
+        ));
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -9053,7 +9335,11 @@ export default [{{
         let app = repo.join("apps/web");
         std::fs::create_dir_all(&app).unwrap();
         std::fs::write(app.join("package.json"), r#"{"name":"web"}"#).unwrap();
-        assert_eq!(workspace_root(&app), app, "nearest package.json, not the repo");
+        assert_eq!(
+            workspace_root(&app),
+            app,
+            "nearest package.json, not the repo"
+        );
 
         // A pnpm workspace marker above it widens the root to the workspace.
         std::fs::write(repo.join("pnpm-workspace.yaml"), "packages: ['apps/*']").unwrap();
@@ -9068,7 +9354,11 @@ export default [{{
         let bare = repo.join("bare");
         std::fs::create_dir_all(&bare).unwrap();
         std::fs::write(repo.join("package.json"), "{}").unwrap();
-        assert_eq!(workspace_root(&bare), repo, "nearest ancestor with a package.json");
+        assert_eq!(
+            workspace_root(&bare),
+            repo,
+            "nearest ancestor with a package.json"
+        );
     }
 
     #[test]
@@ -9120,9 +9410,15 @@ export default [{{
         // not a dep: plugins and the source compile path apply (Vite treats
         // linked packages the same way).
         let fs_js = Path::new("/repo/packages/ui/dist/index.mjs");
-        assert!(!is_dep_module("/@fs/repo/packages/ui/dist/index.mjs", fs_js));
+        assert!(!is_dep_module(
+            "/@fs/repo/packages/ui/dist/index.mjs",
+            fs_js
+        ));
         let fs_dep = Path::new("/repo/node_modules/.pnpm/x@1/node_modules/x/index.js");
-        assert!(is_dep_module("/@fs/repo/node_modules/.pnpm/x@1/node_modules/x/index.js", fs_dep));
+        assert!(is_dep_module(
+            "/@fs/repo/node_modules/.pnpm/x@1/node_modules/x/index.js",
+            fs_dep
+        ));
         // App-local source (not node_modules, not /@fs/) is never a dep.
         let local = Path::new("/app/src/App.tsx");
         assert!(!is_dep_module("/src/App.tsx", local));
@@ -9141,7 +9437,10 @@ export default [{{
         assert!(hot_glue("/src/util.ts", None, false, false).is_empty());
         let glue = hot_glue("/src/App.tsx", Some("t=1700000000000"), true, false);
         assert!(glue.contains(r#"createHotContext("/src/App.tsx")"#));
-        assert!(glue.contains(r#"from "/src/App.tsx?t=1700000000000""#), "{glue}");
+        assert!(
+            glue.contains(r#"from "/src/App.tsx?t=1700000000000""#),
+            "{glue}"
+        );
         assert!(glue.contains("validateRefreshBoundaryAndEnqueueUpdate"));
         assert!(glue.contains("function $RefreshReg$"));
     }
@@ -9160,7 +9459,9 @@ export default [{{
         assert!(glue.contains("registerExportsForReactRefresh"), "{glue}");
         let combined = format!("{banner}{glue}");
         assert_eq!(
-            combined.matches("createHotContext as __oj_createHotContext").count(),
+            combined
+                .matches("createHotContext as __oj_createHotContext")
+                .count(),
             1,
             "exactly one declaration per module scope: {combined}"
         );
@@ -9172,11 +9473,25 @@ export default [{{
         // that already has its query AND the same query again. The self-import
         // must not grow (`?t=X?t=X` grew per edit until hyper answered 414) and
         // the hot-context id must stay the clean path the server sends updates for.
-        let glue = hot_glue("/src/App.tsx?t=1700000000000", Some("t=1700000000000"), true, false);
-        assert!(glue.contains(r#"createHotContext("/src/App.tsx")"#), "{glue}");
-        assert!(glue.contains(r#"from "/src/App.tsx?t=1700000000000""#), "{glue}");
+        let glue = hot_glue(
+            "/src/App.tsx?t=1700000000000",
+            Some("t=1700000000000"),
+            true,
+            false,
+        );
+        assert!(
+            glue.contains(r#"createHotContext("/src/App.tsx")"#),
+            "{glue}"
+        );
+        assert!(
+            glue.contains(r#"from "/src/App.tsx?t=1700000000000""#),
+            "{glue}"
+        );
         assert!(!glue.contains("?t=1700000000000?t=1700000000000"), "{glue}");
-        assert!(glue.contains(r#"registerExportsForReactRefresh("/src/App.tsx","#), "{glue}");
+        assert!(
+            glue.contains(r#"registerExportsForReactRefresh("/src/App.tsx","#),
+            "{glue}"
+        );
         // Only the hmr timestamp is stripped from the id; a semantic query that
         // makes a distinct module (router `?tsr-shared=1`) is kept in both.
         let v = hot_glue(
@@ -9185,13 +9500,26 @@ export default [{{
             true,
             false,
         );
-        assert!(v.contains(r#"createHotContext("/src/r.tsx?tsr-shared=1")"#), "{v}");
-        assert!(v.contains(r#"from "/src/r.tsx?tsr-shared=1&t=1700000000000""#), "{v}");
+        assert!(
+            v.contains(r#"createHotContext("/src/r.tsx?tsr-shared=1")"#),
+            "{v}"
+        );
+        assert!(
+            v.contains(r#"from "/src/r.tsx?tsr-shared=1&t=1700000000000""#),
+            "{v}"
+        );
     }
 
     #[test]
     fn restart_triggers_include_every_config_flavor() {
-        for f in ["oj.config.ts", "oj.config.json", "vite.config.mts", ".env", ".env.staging", "postcss.config.cjs"] {
+        for f in [
+            "oj.config.ts",
+            "oj.config.json",
+            "vite.config.mts",
+            ".env",
+            ".env.staging",
+            "postcss.config.cjs",
+        ] {
             assert!(is_restart_trigger(Path::new(f)), "{f}");
         }
         for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
@@ -9201,14 +9529,22 @@ export default [{{
 
     #[test]
     fn error_frame_is_a_vite_error_payload() {
-        let f: serde_json::Value =
-            serde_json::from_str(&error_frame("compile error:\nsrc/App.tsx:3:7 Unexpected token\n  | <div>")).unwrap();
+        let f: serde_json::Value = serde_json::from_str(&error_frame(
+            "compile error:\nsrc/App.tsx:3:7 Unexpected token\n  | <div>",
+        ))
+        .unwrap();
         assert_eq!(f["type"], "error");
-        assert_eq!(f["err"]["message"], "compile error:\nsrc/App.tsx:3:7 Unexpected token\n  | <div>");
+        assert_eq!(
+            f["err"]["message"],
+            "compile error:\nsrc/App.tsx:3:7 Unexpected token\n  | <div>"
+        );
         assert_eq!(f["err"]["id"], "src/App.tsx");
         assert_eq!(f["err"]["loc"]["line"], 3);
         assert_eq!(f["err"]["loc"]["column"], 7);
-        assert!(f["err"]["frame"].as_str().unwrap().contains("Unexpected token"));
+        assert!(f["err"]["frame"]
+            .as_str()
+            .unwrap()
+            .contains("Unexpected token"));
         let plain: serde_json::Value = serde_json::from_str(&error_frame("boom")).unwrap();
         assert!(plain["err"]["id"].is_null() && plain["err"]["frame"].is_null());
         let u = update_entry("css-update", "/a.css", 5);
@@ -9218,15 +9554,31 @@ export default [{{
 
     #[test]
     fn ws_proxy_target_and_header_rules() {
-        assert_eq!(ws_target_url("http://localhost:4000"), "ws://localhost:4000");
+        assert_eq!(
+            ws_target_url("http://localhost:4000"),
+            "ws://localhost:4000"
+        );
         assert_eq!(ws_target_url("https://api.test"), "wss://api.test");
-        assert_eq!(ws_target_origin("wss://api.test:8443/socket?x=1"), "https://api.test:8443");
-        assert_eq!(ws_target_origin("ws://localhost:3000"), "http://localhost:3000");
+        assert_eq!(
+            ws_target_origin("wss://api.test:8443/socket?x=1"),
+            "https://api.test:8443"
+        );
+        assert_eq!(
+            ws_target_origin("ws://localhost:3000"),
+            "http://localhost:3000"
+        );
         assert_eq!(ws_target_url("ws://x:1"), "ws://x:1");
         assert!(ws_forwardable_header(&header::COOKIE));
         assert!(ws_forwardable_header(&header::SEC_WEBSOCKET_PROTOCOL));
         assert!(ws_forwardable_header(&header::ORIGIN));
-        for h in [header::HOST, header::CONNECTION, header::UPGRADE, header::SEC_WEBSOCKET_KEY, header::SEC_WEBSOCKET_VERSION, header::SEC_WEBSOCKET_EXTENSIONS] {
+        for h in [
+            header::HOST,
+            header::CONNECTION,
+            header::UPGRADE,
+            header::SEC_WEBSOCKET_KEY,
+            header::SEC_WEBSOCKET_VERSION,
+            header::SEC_WEBSOCKET_EXTENSIONS,
+        ] {
             assert!(!ws_forwardable_header(&h), "{h}");
         }
         let mut h = HeaderMap::new();
@@ -9240,7 +9592,6 @@ export default [{{
         assert!(proxy_tls_config(false).is_ok(), "accept-any config");
         assert!(proxy_tls_config(true).is_ok(), "platform verifier config");
     }
-
 
     #[test]
     fn localhost_origin_default_matches_vite_regex() {
@@ -9266,19 +9617,35 @@ export default [{{
 
     #[test]
     fn host_policy_allows_localhost_ips_and_configured_hosts_only() {
-        let mut server = oj_config::ServerConfig::default();
-        server.allowed_hosts = Some(oj_config::AllowedHosts::List(vec![
-            "app.test".into(),
-            ".corp.example".into(),
-        ]));
+        let server = oj_config::ServerConfig {
+            allowed_hosts: Some(oj_config::AllowedHosts::List(vec![
+                "app.test".into(),
+                ".corp.example".into(),
+            ])),
+            ..Default::default()
+        };
         let p = HostPolicy::from_config(&server, Some("dev.local"));
-        for ok in ["localhost", "sub.localhost", "127.0.0.1", "[::1]", "10.0.0.5", "app.test", "APP.TEST", "corp.example", "x.corp.example", "dev.local"] {
+        for ok in [
+            "localhost",
+            "sub.localhost",
+            "127.0.0.1",
+            "[::1]",
+            "10.0.0.5",
+            "app.test",
+            "APP.TEST",
+            "corp.example",
+            "x.corp.example",
+            "dev.local",
+        ] {
             assert!(p.hostname_allowed(ok), "{ok}");
         }
         for bad in ["evil.com", "notcorp.example", "app.test.evil", ""] {
             assert_eq!(p.hostname_allowed(bad), bad.is_empty(), "{bad}");
         }
-        assert_eq!(HostPolicy::host_header_name("example.com:5173"), "example.com");
+        assert_eq!(
+            HostPolicy::host_header_name("example.com:5173"),
+            "example.com"
+        );
         assert_eq!(HostPolicy::host_header_name("[::1]:5173"), "::1");
         assert_eq!(HostPolicy::host_header_name("example.com"), "example.com");
         let all = HostPolicy::from_config(
@@ -9302,7 +9669,8 @@ export default [{{
             "origin": ["http://a.test", "http://b.test"], "credentials": true, "methods": ["GET", "POST"], "maxAge": 60
         }))
         .unwrap();
-        let list = CorsPolicy::from_config(Some(&oj_config::CorsConfig::Options(opts))).unwrap();
+        let list =
+            CorsPolicy::from_config(Some(&oj_config::CorsConfig::Options(Box::new(opts)))).unwrap();
         assert!(list.allows("http://a.test") && !list.allows("http://localhost:5173"));
         assert!(list.credentials && list.methods == "GET,POST" && list.max_age == Some(60));
     }
@@ -9326,31 +9694,75 @@ export default [{{
         let root = Path::new("/app");
         let pats = watch_ignored_patterns(
             root,
-            &["**/generated/**".to_string(), "docs/*.md".to_string(), "/tmp/out/**".to_string()],
+            &[
+                "**/generated/**".to_string(),
+                "docs/*.md".to_string(),
+                "/tmp/out/**".to_string(),
+            ],
         );
-        assert!(is_watch_ignored(&pats, root, Path::new("/app/src/generated/x.ts")));
-        assert!(is_watch_ignored(&pats, root, Path::new("/app/docs/intro.md")), "root-relative pattern");
-        assert!(!is_watch_ignored(&pats, root, Path::new("/app/docs/deep/intro.md")), "* stops at /");
-        assert!(is_watch_ignored(&pats, root, Path::new("/tmp/out/a/b.js")), "absolute pattern");
-        assert!(!is_watch_ignored(&pats, root, Path::new("/app/src/main.ts")));
-        assert!(!is_watch_ignored(&[], root, Path::new("/app/src/generated/x.ts")));
+        assert!(is_watch_ignored(
+            &pats,
+            root,
+            Path::new("/app/src/generated/x.ts")
+        ));
+        assert!(
+            is_watch_ignored(&pats, root, Path::new("/app/docs/intro.md")),
+            "root-relative pattern"
+        );
+        assert!(
+            !is_watch_ignored(&pats, root, Path::new("/app/docs/deep/intro.md")),
+            "* stops at /"
+        );
+        assert!(
+            is_watch_ignored(&pats, root, Path::new("/tmp/out/a/b.js")),
+            "absolute pattern"
+        );
+        assert!(!is_watch_ignored(
+            &pats,
+            root,
+            Path::new("/app/src/main.ts")
+        ));
+        assert!(!is_watch_ignored(
+            &[],
+            root,
+            Path::new("/app/src/generated/x.ts")
+        ));
     }
 
     #[test]
     fn html_fallback_rewrites_like_vite() {
-        assert_eq!(html_fallback_candidate("nested/").as_deref(), Some("nested/index.html"));
-        assert_eq!(html_fallback_candidate("about").as_deref(), Some("about.html"));
-        assert_eq!(html_fallback_candidate("docs/intro").as_deref(), Some("docs/intro.html"));
-        assert_eq!(html_fallback_candidate("about.html"), None, "an explicit html request is not rewritten");
+        assert_eq!(
+            html_fallback_candidate("nested/").as_deref(),
+            Some("nested/index.html")
+        );
+        assert_eq!(
+            html_fallback_candidate("about").as_deref(),
+            Some("about.html")
+        );
+        assert_eq!(
+            html_fallback_candidate("docs/intro").as_deref(),
+            Some("docs/intro.html")
+        );
+        assert_eq!(
+            html_fallback_candidate("about.html"),
+            None,
+            "an explicit html request is not rewritten"
+        );
         assert_eq!(html_fallback_candidate(""), None);
         let mut h = HeaderMap::new();
         assert!(accepts_html_fallback(&h), "no Accept is */*");
-        h.insert(header::ACCEPT, "text/html,application/xhtml+xml".parse().unwrap());
+        h.insert(
+            header::ACCEPT,
+            "text/html,application/xhtml+xml".parse().unwrap(),
+        );
         assert!(accepts_html_fallback(&h));
         h.insert(header::ACCEPT, "*/*".parse().unwrap());
         assert!(accepts_html_fallback(&h));
         h.insert(header::ACCEPT, "application/json".parse().unwrap());
-        assert!(!accepts_html_fallback(&h), "an API-style request never gets html");
+        assert!(
+            !accepts_html_fallback(&h),
+            "an API-style request never gets html"
+        );
     }
 
     #[test]
@@ -9378,19 +9790,28 @@ export default [{{
             "clientPort, not port, is what the browser dials"
         );
         let real = render_client_js(CLIENT_JS, None, "/__ws", "tok");
-        assert!(!real.contains("__HMR_") && !real.contains("__WS_TOKEN__"), "no placeholder left");
+        assert!(
+            !real.contains("__HMR_") && !real.contains("__WS_TOKEN__"),
+            "no placeholder left"
+        );
     }
 
     #[test]
     fn ws_token_is_demanded_only_from_browser_upgrades() {
         let mut h = HeaderMap::new();
-        assert!(!ws_token_rejected(true, "t0k", &h, None), "no Origin: not a browser");
+        assert!(
+            !ws_token_rejected(true, "t0k", &h, None),
+            "no Origin: not a browser"
+        );
         h.insert(header::ORIGIN, "http://localhost:5199".parse().unwrap());
         assert!(ws_token_rejected(true, "t0k", &h, None));
         assert!(ws_token_rejected(true, "t0k", &h, Some("token=nope")));
         assert!(!ws_token_rejected(true, "t0k", &h, Some("token=t0k")));
         assert!(!ws_token_rejected(true, "t0k", &h, Some("a=1&token=t0k")));
-        assert!(!ws_token_rejected(false, "t0k", &h, None), "legacy.skipWebSocketTokenCheck");
+        assert!(
+            !ws_token_rejected(false, "t0k", &h, None),
+            "legacy.skipWebSocketTokenCheck"
+        );
         let token = new_ws_token();
         assert_eq!(token.len(), 32);
         assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
@@ -9400,19 +9821,43 @@ export default [{{
     #[test]
     fn stamp_import_url_marks_only_compilable_module_urls() {
         assert_eq!(stamp_import_url("/src/utils.ts", 5), "/src/utils.ts?t=5");
-        assert_eq!(stamp_import_url("/src/r.tsx?tsr-shared=1", 5), "/src/r.tsx?tsr-shared=1&t=5");
-        assert_eq!(stamp_import_url("/src/utils.ts", 0), "/src/utils.ts", "unstamped module");
-        assert_eq!(stamp_import_url("/src/utils.ts?t=3", 5), "/src/utils.ts?t=3", "never doubled");
-        assert_eq!(stamp_import_url("/src/data.json", 5), "/src/data.json?t=5", "json is a module");
+        assert_eq!(
+            stamp_import_url("/src/r.tsx?tsr-shared=1", 5),
+            "/src/r.tsx?tsr-shared=1&t=5"
+        );
+        assert_eq!(
+            stamp_import_url("/src/utils.ts", 0),
+            "/src/utils.ts",
+            "unstamped module"
+        );
+        assert_eq!(
+            stamp_import_url("/src/utils.ts?t=3", 5),
+            "/src/utils.ts?t=3",
+            "never doubled"
+        );
+        assert_eq!(
+            stamp_import_url("/src/data.json", 5),
+            "/src/data.json?t=5",
+            "json is a module"
+        );
         assert_eq!(
             stamp_import_url("/src/a.css?import", 5),
             "/src/a.css?import&t=5",
             "a CSS module's importer must fetch its new class exports"
         );
-        assert_eq!(stamp_import_url("/src/a.css?inline", 5), "/src/a.css?inline&t=5");
+        assert_eq!(
+            stamp_import_url("/src/a.css?inline", 5),
+            "/src/a.css?inline&t=5"
+        );
         assert_eq!(stamp_import_url("/logo.svg?url", 5), "/logo.svg?url");
-        assert_eq!(stamp_import_url("/@oj-deps/react.js", 5), "/@oj-deps/react.js");
-        assert_eq!(stamp_import_url("/@fs/x/node_modules/a/index.js", 5), "/@fs/x/node_modules/a/index.js");
+        assert_eq!(
+            stamp_import_url("/@oj-deps/react.js", 5),
+            "/@oj-deps/react.js"
+        );
+        assert_eq!(
+            stamp_import_url("/@fs/x/node_modules/a/index.js", 5),
+            "/@fs/x/node_modules/a/index.js"
+        );
     }
 
     #[test]
@@ -9427,19 +9872,36 @@ export default [{{
         .iter()
         .map(|(c, t)| (c.to_string(), oj_config::ProxyEntry::Target(t.to_string())))
         .collect();
-        let regexes: Vec<Option<regex::Regex>> =
-            entries.iter().map(|(c, _)| proxy_context_regex(c)).collect();
+        let regexes: Vec<Option<regex::Regex>> = entries
+            .iter()
+            .map(|(c, _)| proxy_context_regex(c))
+            .collect();
         assert!(regexes[0].is_none() && regexes[2].is_some());
-        assert!(regexes[4].is_none(), "an invalid pattern degrades to a never-matching prefix");
-        let pick = |url: &str| select_proxy(&entries, &regexes, url).map(|(_, e)| e.target().to_string());
+        assert!(
+            regexes[4].is_none(),
+            "an invalid pattern degrades to a never-matching prefix"
+        );
+        let pick =
+            |url: &str| select_proxy(&entries, &regexes, url).map(|(_, e)| e.target().to_string());
         assert_eq!(pick("/api/x"), Some("http://a".into()));
-        assert_eq!(pick("/api/v2/x"), Some("http://a2".into()), "longest prefix wins");
+        assert_eq!(
+            pick("/api/v2/x"),
+            Some("http://a2".into()),
+            "longest prefix wins"
+        );
         assert_eq!(pick("/re/anything?x=1"), Some("http://re".into()));
-        assert_eq!(pick("/search?q=oj"), Some("http://q".into()), "regex sees the query");
+        assert_eq!(
+            pick("/search?q=oj"),
+            Some("http://q".into()),
+            "regex sees the query"
+        );
         assert_eq!(pick("/search"), None);
         assert_eq!(pick("/other"), None);
         assert!(proxy_context_matches("^/re/.*", "/re/x"));
-        assert!(!proxy_context_matches("^/re/.*", "/api/re/x"), "anchored, not a substring");
+        assert!(
+            !proxy_context_matches("^/re/.*", "/api/re/x"),
+            "anchored, not a substring"
+        );
         assert!(proxy_context_matches("/api", "/api/x?y=1"));
     }
 
@@ -9454,7 +9916,10 @@ export default [{{
             err.contains("src/App.tsx:2:24 Failed to resolve import \"./Later\" from \"src/App.tsx\". Does the file exist?"),
             "{err}"
         );
-        assert!(err.contains("   2 | import { Later } from './Later';"), "{err}");
+        assert!(
+            err.contains("   2 | import { Later } from './Later';"),
+            "{err}"
+        );
         // The overlay's ErrorPayload lifts the location out of the message.
         let frame: serde_json::Value = serde_json::from_str(&error_frame(&err)).unwrap();
         assert_eq!(frame["err"]["id"], "src/App.tsx");
@@ -9462,8 +9927,13 @@ export default [{{
         assert_eq!(frame["err"]["loc"]["column"], 24);
         // A specifier not found verbatim (plugin-rewritten source) still errors.
         let err = unresolved_import_error(root, file, "export {};\n", "./gone");
-        assert!(err.contains("src/App.tsx:1:1 Failed to resolve import \"./gone\""), "{err}");
-        assert!(!is_unresolved_import_error("compile error:\nparse error in x.tsx"));
+        assert!(
+            err.contains("src/App.tsx:1:1 Failed to resolve import \"./gone\""),
+            "{err}"
+        );
+        assert!(!is_unresolved_import_error(
+            "compile error:\nparse error in x.tsx"
+        ));
     }
 
     #[test]
@@ -9472,10 +9942,24 @@ export default [{{
         assert_eq!(preload_href("/src/a.css", "abcd1234"), "/src/a.css?import");
         // Optimized deps and package bundles preload under their versioned URL,
         // so the preload and the later import hit one immutable cache entry.
-        assert_eq!(preload_href("/@oj-deps/react.mjs", "abcd1234"), "/@oj-deps/react.mjs?v=abcd1234");
-        assert_eq!(preload_href("/@oj-pkg/00ff", "abcd1234"), "/@oj-pkg/00ff?v=abcd1234");
-        assert_eq!(preload_href("/@oj-deps/react.mjs", ""), "/@oj-deps/react.mjs", "no version, no query");
-        assert_eq!(preload_href("/@id/6e6f6465", "abcd1234"), "/@id/6e6f6465", "stubs are unversioned");
+        assert_eq!(
+            preload_href("/@oj-deps/react.mjs", "abcd1234"),
+            "/@oj-deps/react.mjs?v=abcd1234"
+        );
+        assert_eq!(
+            preload_href("/@oj-pkg/00ff", "abcd1234"),
+            "/@oj-pkg/00ff?v=abcd1234"
+        );
+        assert_eq!(
+            preload_href("/@oj-deps/react.mjs", ""),
+            "/@oj-deps/react.mjs",
+            "no version, no query"
+        );
+        assert_eq!(
+            preload_href("/@id/6e6f6465", "abcd1234"),
+            "/@id/6e6f6465",
+            "stubs are unversioned"
+        );
     }
 
     #[test]
@@ -9496,16 +9980,28 @@ export default [{{
         assert!(url.starts_with(OPTIONAL_PEER_PREFIX), "{url}");
         let stub = optional_peer_dep_stub(url.strip_prefix(OPTIONAL_PEER_PREFIX).unwrap()).unwrap();
         assert!(stub.contains("Could not resolve \"${\"@scope/opt/sub\"}\" imported by \"${\"devtools-hook\"}\". Is it installed?"), "{stub}");
-        assert!(stub.contains("throw new Error("), "errors when evaluated: {stub}");
+        assert!(
+            stub.contains("throw new Error("),
+            "errors when evaluated: {stub}"
+        );
         // A declared but non-optional peer, an undeclared package, a builtin, and
         // an import from the app root itself all fall through to the normal error.
-        assert!(optional_peer_dep_url(&root, &from, "react").is_none(), "optional: false");
-        assert!(optional_peer_dep_url(&root, &from, "required-peer").is_none(), "no meta");
+        assert!(
+            optional_peer_dep_url(&root, &from, "react").is_none(),
+            "optional: false"
+        );
+        assert!(
+            optional_peer_dep_url(&root, &from, "required-peer").is_none(),
+            "no meta"
+        );
         assert!(optional_peer_dep_url(&root, &from, "unknown-pkg").is_none());
         assert!(optional_peer_dep_url(&root, &from, "node:fs").is_none());
         assert!(optional_peer_dep_url(&root, &from, "./local").is_none());
         std::fs::write(root.join("package.json"), r#"{"name":"app","peerDependencies":{"x":"*"},"peerDependenciesMeta":{"x":{"optional":true}}}"#).unwrap();
-        assert!(optional_peer_dep_url(&root, &root, "x").is_none(), "root has no peer deps (Vite: basedir !== root)");
+        assert!(
+            optional_peer_dep_url(&root, &root, "x").is_none(),
+            "root has no peer deps (Vite: basedir !== root)"
+        );
         assert!(optional_peer_dep_stub("zz").is_none(), "malformed id");
     }
 
@@ -9514,26 +10010,75 @@ export default [{{
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("node_modules/real")).unwrap();
-        std::fs::write(root.join("node_modules/real/package.json"), r#"{"name":"real","main":"index.js"}"#).unwrap();
-        std::fs::write(root.join("node_modules/real/index.js"), "module.exports = 1;\n").unwrap();
-        std::fs::write(root.join("package.json"), r#"{"name":"app","browser":{"mapped-off":false}}"#).unwrap();
+        std::fs::write(
+            root.join("node_modules/real/package.json"),
+            r#"{"name":"real","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/real/index.js"),
+            "module.exports = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"app","browser":{"mapped-off":false}}"#,
+        )
+        .unwrap();
         let resolver = OjResolver::new(root);
         // Vite's importAnalysis fails the importer for a package that is not
         // installed (typo, missing install), subpaths included.
         assert!(bare_import_unresolved(root, &resolver, "not-installed-pkg"));
-        assert!(bare_import_unresolved(root, &resolver, "@scope/not-installed/sub"));
-        assert!(bare_import_unresolved(root, &resolver, "not-installed-pkg?url"), "query dropped");
+        assert!(bare_import_unresolved(
+            root,
+            &resolver,
+            "@scope/not-installed/sub"
+        ));
+        assert!(
+            bare_import_unresolved(root, &resolver, "not-installed-pkg?url"),
+            "query dropped"
+        );
         // Everything something else answers is not an error here.
-        assert!(!bare_import_unresolved(root, &resolver, "real"), "installed");
-        assert!(!bare_import_unresolved(root, &resolver, "node:fs"), "builtin stub");
-        assert!(!bare_import_unresolved(root, &resolver, "fs"), "builtin stub");
-        assert!(!bare_import_unresolved(root, &resolver, "virtual:thing"), "plugin virtual");
-        assert!(!bare_import_unresolved(root, &resolver, "\0resolved"), "plugin resolved id");
-        assert!(!bare_import_unresolved(root, &resolver, "data:text/javascript,export{}"), "data url");
-        assert!(!bare_import_unresolved(root, &resolver, "https://cdn.example/x.js"), "external url");
-        assert!(!bare_import_unresolved(root, &resolver, "./nope"), "relative is the other check");
-        assert!(!bare_import_unresolved(root, &resolver, "/src/nope.ts"), "root-absolute");
-        assert!(!bare_import_unresolved(root, &resolver, "@lingui/macro"), "shimmed macro entry");
+        assert!(
+            !bare_import_unresolved(root, &resolver, "real"),
+            "installed"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "node:fs"),
+            "builtin stub"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "fs"),
+            "builtin stub"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "virtual:thing"),
+            "plugin virtual"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "\0resolved"),
+            "plugin resolved id"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "data:text/javascript,export{}"),
+            "data url"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "https://cdn.example/x.js"),
+            "external url"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "./nope"),
+            "relative is the other check"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "/src/nope.ts"),
+            "root-absolute"
+        );
+        assert!(
+            !bare_import_unresolved(root, &resolver, "@lingui/macro"),
+            "shimmed macro entry"
+        );
     }
 
     #[test]
@@ -9547,12 +10092,27 @@ export default [{{
         let src = root.join("src");
         assert!(relative_import_missing(&src, &resolver, "./nope"));
         assert!(relative_import_missing(&src, &resolver, "../nope.js"));
-        assert!(!relative_import_missing(&src, &resolver, "./util"), "extension probing");
+        assert!(
+            !relative_import_missing(&src, &resolver, "./util"),
+            "extension probing"
+        );
         assert!(!relative_import_missing(&src, &resolver, "./util.ts"));
-        assert!(!relative_import_missing(&src, &resolver, "./widgets"), "directory index");
-        assert!(!relative_import_missing(&src, &resolver, "./util.ts?worker&inline"), "query dropped");
-        assert!(!relative_import_missing(&src, &resolver, "react"), "bare specifiers are not ours");
-        assert!(!relative_import_missing(&src, &resolver, "/src/nope.ts"), "root-absolute is not ours");
+        assert!(
+            !relative_import_missing(&src, &resolver, "./widgets"),
+            "directory index"
+        );
+        assert!(
+            !relative_import_missing(&src, &resolver, "./util.ts?worker&inline"),
+            "query dropped"
+        );
+        assert!(
+            !relative_import_missing(&src, &resolver, "react"),
+            "bare specifiers are not ours"
+        );
+        assert!(
+            !relative_import_missing(&src, &resolver, "/src/nope.ts"),
+            "root-absolute is not ours"
+        );
         // A miss cached by the resolver clears once the file exists.
         assert!(relative_import_missing(&src, &resolver, "./later"));
         std::fs::write(root.join("src/later.ts"), "export {};\n").unwrap();
@@ -9563,7 +10123,10 @@ export default [{{
     #[test]
     fn strip_hmr_timestamp_removes_only_the_t_param() {
         assert_eq!(strip_hmr_timestamp("/src/App.tsx"), "/src/App.tsx");
-        assert_eq!(strip_hmr_timestamp("/src/App.tsx?t=1700000000000"), "/src/App.tsx");
+        assert_eq!(
+            strip_hmr_timestamp("/src/App.tsx?t=1700000000000"),
+            "/src/App.tsx"
+        );
         assert_eq!(
             strip_hmr_timestamp("/a.tsx?tsr-shared=1&t=1700000000000"),
             "/a.tsx?tsr-shared=1"
@@ -9612,16 +10175,40 @@ export default [{{
         std::fs::write(dir.join("index.html"), "root").unwrap();
         std::fs::write(dir.join("nested/index.html"), "nested").unwrap();
         std::fs::write(dir.join("about.html"), "about").unwrap();
-        assert_eq!(preview_html_fallback(&dir, "nested/", true), Some(dir.join("nested/index.html")));
-        assert_eq!(preview_html_fallback(&dir, "nested", true), Some(dir.join("nested/index.html")));
-        assert_eq!(preview_html_fallback(&dir, "about", true), Some(dir.join("about.html")));
-        assert_eq!(preview_html_fallback(&dir, "missing/route", true), Some(dir.join("index.html")));
-        assert_eq!(preview_html_fallback(&dir, "", true), Some(dir.join("index.html")));
+        assert_eq!(
+            preview_html_fallback(&dir, "nested/", true),
+            Some(dir.join("nested/index.html"))
+        );
+        assert_eq!(
+            preview_html_fallback(&dir, "nested", true),
+            Some(dir.join("nested/index.html"))
+        );
+        assert_eq!(
+            preview_html_fallback(&dir, "about", true),
+            Some(dir.join("about.html"))
+        );
+        assert_eq!(
+            preview_html_fallback(&dir, "missing/route", true),
+            Some(dir.join("index.html"))
+        );
+        assert_eq!(
+            preview_html_fallback(&dir, "", true),
+            Some(dir.join("index.html"))
+        );
         // appType mpa: `/x.html` and `/x/index.html` still resolve, nothing falls back to the root page.
-        assert_eq!(preview_html_fallback(&dir, "about", false), Some(dir.join("about.html")));
-        assert_eq!(preview_html_fallback(&dir, "nested", false), Some(dir.join("nested/index.html")));
+        assert_eq!(
+            preview_html_fallback(&dir, "about", false),
+            Some(dir.join("about.html"))
+        );
+        assert_eq!(
+            preview_html_fallback(&dir, "nested", false),
+            Some(dir.join("nested/index.html"))
+        );
         assert_eq!(preview_html_fallback(&dir, "missing/route", false), None);
-        assert_eq!(preview_html_fallback(&dir, "", false), Some(dir.join("index.html")));
+        assert_eq!(
+            preview_html_fallback(&dir, "", false),
+            Some(dir.join("index.html"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -9669,13 +10256,34 @@ export default [{{
             <script nonce=\"keep\">if (1 < 2) {}</script>\
             </head><body><script type='module' src='/main.js'></script><p>a < b</p></body></html>";
         let out = inject_csp_nonce(html, "n0nce");
-        assert!(out.contains("<link rel=\"stylesheet\" href=\"/a.css\" nonce=\"n0nce\">"), "{out}");
-        assert!(out.contains("<link rel=\"icon\" href=\"/i.png\">"), "non-preload links untouched: {out}");
-        assert!(out.contains("<link rel=\"modulepreload\" href=\"/m.js\" nonce=\"n0nce\" />"), "{out}");
-        assert!(out.contains("<style nonce=\"n0nce\">.a{color:red}</style>"), "{out}");
-        assert!(out.contains("<script nonce=\"keep\">if (1 < 2) {}</script>"), "existing nonce kept: {out}");
-        assert!(out.contains("<script type='module' src='/main.js' nonce=\"n0nce\">"), "{out}");
-        assert!(out.contains("<head>\n<meta property=\"csp-nonce\" nonce=\"n0nce\">"), "{out}");
+        assert!(
+            out.contains("<link rel=\"stylesheet\" href=\"/a.css\" nonce=\"n0nce\">"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<link rel=\"icon\" href=\"/i.png\">"),
+            "non-preload links untouched: {out}"
+        );
+        assert!(
+            out.contains("<link rel=\"modulepreload\" href=\"/m.js\" nonce=\"n0nce\" />"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<style nonce=\"n0nce\">.a{color:red}</style>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<script nonce=\"keep\">if (1 < 2) {}</script>"),
+            "existing nonce kept: {out}"
+        );
+        assert!(
+            out.contains("<script type='module' src='/main.js' nonce=\"n0nce\">"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<head>\n<meta property=\"csp-nonce\" nonce=\"n0nce\">"),
+            "{out}"
+        );
         assert!(out.contains("<p>a < b</p>"), "{out}");
         assert_eq!(out.matches("csp-nonce").count(), 1);
         // Idempotent: a second pass adds nothing.
@@ -9684,7 +10292,8 @@ export default [{{
 
     #[test]
     fn html_entries_read_module_scripts_with_any_quoting() {
-        let root = std::env::temp_dir().join(format!("oj-html-entries-quoting-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("oj-html-entries-quoting-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("index.html"),
@@ -9699,7 +10308,11 @@ export default [{{
         .unwrap();
         assert_eq!(
             html_entries(&root),
-            vec!["/src/a.ts".to_string(), "/src/b.ts".to_string(), "/src/c.ts".to_string()]
+            vec![
+                "/src/a.ts".to_string(),
+                "/src/b.ts".to_string(),
+                "/src/c.ts".to_string()
+            ]
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -9870,7 +10483,10 @@ mod adapter_tests {
         assert_eq!(locate(&root, Some(&public), "../secret"), None);
         // `publicDir: false`: only the root is searched.
         assert_eq!(locate(&root, None, "img/logo.webp"), None);
-        assert_eq!(locate(&root, None, "src/App"), Some(root.join("src/App.tsx")));
+        assert_eq!(
+            locate(&root, None, "src/App"),
+            Some(root.join("src/App.tsx"))
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -9964,10 +10580,7 @@ mod adapter_tests {
         assert_eq!(preview_rel("/a/%2e%2e/%2e%2e/etc/passwd", "/"), None);
         assert_eq!(preview_rel("/%2E%2E/etc/passwd", "/"), None);
         // Not traversal: `..` inside a segment.
-        assert_eq!(
-            preview_rel("/a..b/x.js", "/").as_deref(),
-            Some("a..b/x.js")
-        );
+        assert_eq!(preview_rel("/a..b/x.js", "/").as_deref(), Some("a..b/x.js"));
     }
 
     #[test]
@@ -9982,10 +10595,22 @@ mod adapter_tests {
         ] {
             assert_eq!(html_entry_src(external), None, "{external:?}");
         }
-        assert_eq!(html_entry_src("./src/main.tsx").as_deref(), Some("/src/main.tsx"));
-        assert_eq!(html_entry_src("src/main.tsx").as_deref(), Some("/src/main.tsx"));
-        assert_eq!(html_entry_src("/src/main.tsx").as_deref(), Some("/src/main.tsx"));
-        assert_eq!(html_entry_src("  src/main.tsx  ").as_deref(), Some("/src/main.tsx"));
+        assert_eq!(
+            html_entry_src("./src/main.tsx").as_deref(),
+            Some("/src/main.tsx")
+        );
+        assert_eq!(
+            html_entry_src("src/main.tsx").as_deref(),
+            Some("/src/main.tsx")
+        );
+        assert_eq!(
+            html_entry_src("/src/main.tsx").as_deref(),
+            Some("/src/main.tsx")
+        );
+        assert_eq!(
+            html_entry_src("  src/main.tsx  ").as_deref(),
+            Some("/src/main.tsx")
+        );
         // A traversal in an entry src stays a path; `locate` is what refuses it.
         assert_eq!(
             html_entry_src("../../etc/passwd").as_deref(),
@@ -9996,12 +10621,16 @@ mod adapter_tests {
     #[test]
     fn gate_relevance_ignores_generated_directories() {
         assert!(gate_relevant(Path::new("/app/src/App.tsx")));
-        assert!(!gate_relevant(Path::new("/app/node_modules/react/index.js")));
+        assert!(!gate_relevant(Path::new(
+            "/app/node_modules/react/index.js"
+        )));
         assert!(!gate_relevant(Path::new("/app/.oj-cache/ab/cd.json")));
         assert!(!gate_relevant(Path::new("/app/dist/assets/x.js")));
         // Only a whole path component counts.
         assert!(gate_relevant(Path::new("/app/src/dist-helper.ts")));
-        assert!(gate_relevant(Path::new("/app/src/my-node_modules-thing.ts")));
+        assert!(gate_relevant(Path::new(
+            "/app/src/my-node_modules-thing.ts"
+        )));
     }
 
     #[test]
@@ -10019,7 +10648,10 @@ mod adapter_tests {
         // ?worker&inline must classify as a worker (inline is a modifier), not as
         // a generic inline asset that would 404 as a base64 data URI of the file.
         assert_eq!(query_asset_kind(Some("worker&inline")), Some("worker"));
-        assert_eq!(query_asset_kind(Some("sharedworker&inline")), Some("sharedworker"));
+        assert_eq!(
+            query_asset_kind(Some("sharedworker&inline")),
+            Some("sharedworker")
+        );
         assert_eq!(query_asset_kind(Some("inline")), Some("inline"));
         assert_eq!(query_asset_kind(Some("worker")), Some("worker"));
     }
@@ -10054,8 +10686,14 @@ mod adapter_tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(get("x-oj-host"), ["localhost:8080"]);
-        assert_eq!(get("x-forwarded-host"), ["app.example.com", "edge.example.com"]);
-        assert!(get("host").is_empty(), "hyper writes the loopback Host itself");
+        assert_eq!(
+            get("x-forwarded-host"),
+            ["app.example.com", "edge.example.com"]
+        );
+        assert!(
+            get("host").is_empty(),
+            "hyper writes the loopback Host itself"
+        );
         assert_eq!(get("accept"), ["text/html"]);
         assert!(loopback_request_headers(&HeaderMap::new()).is_empty());
     }
@@ -10068,32 +10706,93 @@ mod adapter_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.ts");
         std::fs::write(&file, "export const a = 1;").unwrap();
-        let meta = || notify::Event::new(notify::EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))).add_path(file.clone());
-        let data = || notify::Event::new(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(file.clone());
-        let access = || notify::Event::new(notify::EventKind::Access(AccessKind::Read)).add_path(file.clone());
+        let meta = || {
+            notify::Event::new(notify::EventKind::Modify(ModifyKind::Metadata(
+                MetadataKind::Any,
+            )))
+            .add_path(file.clone())
+        };
+        let data = || {
+            notify::Event::new(notify::EventKind::Modify(ModifyKind::Data(
+                DataChange::Content,
+            )))
+            .add_path(file.clone())
+        };
+        let access = || {
+            notify::Event::new(notify::EventKind::Access(AccessKind::Read)).add_path(file.clone())
+        };
         // A never-seen file with an OLD mtime: the relatime atime storm shape.
         let old_mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        std::fs::File::options().write(true).open(&file).unwrap().set_modified(old_mtime).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(old_mtime)
+            .unwrap();
         let mut changes = ContentChanges::new();
-        assert!(changes.changed_paths(&meta()).is_empty(), "an atime update on a never-seen old file is not a change");
-        assert!(changes.changed_paths(&meta()).is_empty(), "nor is a repeat with the same mtime");
+        assert!(
+            changes.changed_paths(&meta()).is_empty(),
+            "an atime update on a never-seen old file is not a change"
+        );
+        assert!(
+            changes.changed_paths(&meta()).is_empty(),
+            "nor is a repeat with the same mtime"
+        );
         assert!(changes.changed_paths(&access()).is_empty());
         // A never-seen file whose mtime is fresh: a touch, which must count once.
         let touched = dir.join("touched.ts");
         std::fs::write(&touched, "export const t = 1;").unwrap();
-        let meta_touched = notify::Event::new(notify::EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))).add_path(touched.clone());
-        assert_eq!(changes.changed_paths(&meta_touched), vec![touched.clone()], "a touch on a never-seen file is a change");
-        let meta_touched = notify::Event::new(notify::EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))).add_path(touched.clone());
-        assert!(changes.changed_paths(&meta_touched).is_empty(), "and is then the baseline");
-        assert_eq!(changes.changed_paths(&data()), vec![file.clone()], "a data change always counts");
-        assert!(changes.changed_paths(&meta()).is_empty(), "the mtime the data change recorded has not moved");
+        let meta_touched = notify::Event::new(notify::EventKind::Modify(ModifyKind::Metadata(
+            MetadataKind::Any,
+        )))
+        .add_path(touched.clone());
+        assert_eq!(
+            changes.changed_paths(&meta_touched),
+            vec![touched.clone()],
+            "a touch on a never-seen file is a change"
+        );
+        let meta_touched = notify::Event::new(notify::EventKind::Modify(ModifyKind::Metadata(
+            MetadataKind::Any,
+        )))
+        .add_path(touched.clone());
+        assert!(
+            changes.changed_paths(&meta_touched).is_empty(),
+            "and is then the baseline"
+        );
+        assert_eq!(
+            changes.changed_paths(&data()),
+            vec![file.clone()],
+            "a data change always counts"
+        );
+        assert!(
+            changes.changed_paths(&meta()).is_empty(),
+            "the mtime the data change recorded has not moved"
+        );
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
-        std::fs::File::options().write(true).open(&file).unwrap().set_modified(later).unwrap();
-        assert_eq!(changes.changed_paths(&meta()), vec![file.clone()], "a moved mtime (touch) is a change, as in chokidar");
-        assert!(changes.changed_paths(&meta()).is_empty(), "and is then the new baseline");
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(
+            changes.changed_paths(&meta()),
+            vec![file.clone()],
+            "a moved mtime (touch) is a change, as in chokidar"
+        );
+        assert!(
+            changes.changed_paths(&meta()).is_empty(),
+            "and is then the new baseline"
+        );
         std::fs::remove_file(&file).unwrap();
-        assert_eq!(changes.changed_paths(&meta()), vec![file.clone()], "a vanished file is a change");
-        let removed = notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::File)).add_path(file.clone());
+        assert_eq!(
+            changes.changed_paths(&meta()),
+            vec![file.clone()],
+            "a vanished file is a change"
+        );
+        let removed =
+            notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::File))
+                .add_path(file.clone());
         assert_eq!(changes.changed_paths(&removed), vec![file.clone()]);
         let _ = std::fs::remove_dir_all(&dir);
     }

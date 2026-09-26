@@ -4,13 +4,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingPattern, Declaration, Expression, ExportDefaultDeclarationKind, ExportSpecifier,
+    BindingPattern, Declaration, ExportDefaultDeclarationKind, ExportSpecifier, Expression,
     ImportDeclarationSpecifier, ImportExpression, ImportMeta, ModuleExportName, ObjectProperty,
     PropertyKey, Statement,
 };
 use oxc_ast_visit::{walk, Visit};
-use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_semantic::{ReferenceId, Scoping, SemanticBuilder, SymbolId};
 use oxc_span::{GetSpan, SourceType};
@@ -146,7 +146,10 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
         return source.to_string();
     }
     let program = parsed.program;
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = SemanticBuilder::new()
+        .build(&program)
+        .semantic
+        .into_scoping();
 
     let mut imports: HashMap<SymbolId, String> = HashMap::new();
     let mut edits: Vec<Edit> = Vec::new();
@@ -159,7 +162,11 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
         } else {
             format!(
                 ", {{\"importedNames\":[{}]}}",
-                names.iter().map(|n| json_str(n)).collect::<Vec<_>>().join(",")
+                names
+                    .iter()
+                    .map(|n| json_str(n))
+                    .collect::<Vec<_>>()
+                    .join(",")
             )
         };
         format!(
@@ -172,7 +179,11 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
         match stmt {
             Statement::ImportDeclaration(imp) => {
                 if imp.import_kind.is_type() {
-                    edits.push(Edit { start: imp.span.start, end: imp.span.end, text: String::new() });
+                    edits.push(Edit {
+                        start: imp.span.start,
+                        end: imp.span.end,
+                        text: String::new(),
+                    });
                     continue;
                 }
                 let src = imp.source.value.as_str();
@@ -180,7 +191,8 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
                 if let Some(specs) = &imp.specifiers {
                     for spec in specs {
                         match spec {
-                            ImportDeclarationSpecifier::ImportSpecifier(s) if s.import_kind.is_type() => {}
+                            ImportDeclarationSpecifier::ImportSpecifier(s)
+                                if s.import_kind.is_type() => {}
                             ImportDeclarationSpecifier::ImportSpecifier(s) => {
                                 let name = men_name(&s.imported);
                                 names.push(name.clone());
@@ -203,7 +215,11 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
                     }
                 }
                 hoisted.push(import_const(uid, src, &names));
-                edits.push(Edit { start: imp.span.start, end: imp.span.end, text: String::new() });
+                edits.push(Edit {
+                    start: imp.span.start,
+                    end: imp.span.end,
+                    text: String::new(),
+                });
                 uid += 1;
             }
             Statement::ExportDeclaration(exp) => {
@@ -211,13 +227,24 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
                     hoisted.push(export_name(&name, &name));
                 }
                 let decl_start = exp.declaration.span().start;
-                edits.push(Edit { start: exp.span.start, end: decl_start, text: String::new() });
+                edits.push(Edit {
+                    start: exp.span.start,
+                    end: decl_start,
+                    text: String::new(),
+                });
             }
             Statement::ExportFromDeclaration(exp) => {
-                let value_specs: Vec<&ExportSpecifier> =
-                    exp.specifiers.iter().filter(|s| !s.export_kind.is_type()).collect();
+                let value_specs: Vec<&ExportSpecifier> = exp
+                    .specifiers
+                    .iter()
+                    .filter(|s| !s.export_kind.is_type())
+                    .collect();
                 if exp.export_kind.is_type() || value_specs.is_empty() {
-                    edits.push(Edit { start: exp.span.start, end: exp.span.end, text: String::new() });
+                    edits.push(Edit {
+                        start: exp.span.start,
+                        end: exp.span.end,
+                        text: String::new(),
+                    });
                     continue;
                 }
                 let names: Vec<String> = value_specs.iter().map(|s| men_name(&s.local)).collect();
@@ -229,7 +256,11 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
                     let exported = men_name(&s.exported);
                     hoisted.push(export_name(&exported, &member(cur, &local)));
                 }
-                edits.push(Edit { start: exp.span.start, end: exp.span.end, text: String::new() });
+                edits.push(Edit {
+                    start: exp.span.start,
+                    end: exp.span.end,
+                    text: String::new(),
+                });
             }
             Statement::ExportNamedDeclaration(exp) => {
                 if !exp.export_kind.is_type() {
@@ -241,18 +272,30 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
                         hoisted.push(export_name(&exported, &local_expr));
                     }
                 }
-                edits.push(Edit { start: exp.span.start, end: exp.span.end, text: String::new() });
+                edits.push(Edit {
+                    start: exp.span.start,
+                    end: exp.span.end,
+                    text: String::new(),
+                });
             }
             Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
                 ExportDefaultDeclarationKind::FunctionDeclaration(f) if f.id.is_some() => {
                     let name = f.id.as_ref().unwrap().name.to_string();
                     hoisted.push(export_name("default", &name));
-                    edits.push(Edit { start: exp.span.start, end: f.span.start, text: String::new() });
+                    edits.push(Edit {
+                        start: exp.span.start,
+                        end: f.span.start,
+                        text: String::new(),
+                    });
                 }
                 ExportDefaultDeclarationKind::ClassDeclaration(c) if c.id.is_some() => {
                     let name = c.id.as_ref().unwrap().name.to_string();
                     hoisted.push(export_name("default", &name));
-                    edits.push(Edit { start: exp.span.start, end: c.span.start, text: String::new() });
+                    edits.push(Edit {
+                        start: exp.span.start,
+                        end: c.span.start,
+                        text: String::new(),
+                    });
                 }
                 _ => {
                     hoisted.push(export_name("default", "__vite_ssr_export_default__"));
@@ -266,18 +309,31 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
             },
             Statement::ExportAllDeclaration(exp) => {
                 if exp.export_kind.is_type() {
-                    edits.push(Edit { start: exp.span.start, end: exp.span.end, text: String::new() });
+                    edits.push(Edit {
+                        start: exp.span.start,
+                        end: exp.span.end,
+                        text: String::new(),
+                    });
                     continue;
                 }
                 let cur = uid;
                 hoisted.push(import_const(cur, exp.source.value.as_str(), &[]));
                 uid += 1;
                 if let Some(exported) = &exp.exported {
-                    hoisted.push(export_name(&men_name(exported), &format!("__vite_ssr_import_{cur}__")));
+                    hoisted.push(export_name(
+                        &men_name(exported),
+                        &format!("__vite_ssr_import_{cur}__"),
+                    ));
                 } else {
-                    hoisted.push(format!("__vite_ssr_exportAll__(__vite_ssr_import_{cur}__);"));
+                    hoisted.push(format!(
+                        "__vite_ssr_exportAll__(__vite_ssr_import_{cur}__);"
+                    ));
                 }
-                edits.push(Edit { start: exp.span.start, end: exp.span.end, text: String::new() });
+                edits.push(Edit {
+                    start: exp.span.start,
+                    end: exp.span.end,
+                    text: String::new(),
+                });
             }
             _ => {}
         }
@@ -381,7 +437,8 @@ fn apply(source: &str, mut edits: Vec<Edit>, hoisted: &[String]) -> String {
     if source.starts_with("#!") {
         prefix_end = source.find('\n').map(|i| i + 1).unwrap_or(source.len());
     }
-    let mut out = String::with_capacity(source.len() + hoisted.iter().map(|h| h.len() + 1).sum::<usize>());
+    let mut out =
+        String::with_capacity(source.len() + hoisted.iter().map(|h| h.len() + 1).sum::<usize>());
     out.push_str(&source[..prefix_end]);
     for line in hoisted {
         out.push_str(line);
@@ -394,7 +451,9 @@ fn apply(source: &str, mut edits: Vec<Edit>, hoisted: &[String]) -> String {
         }
         out.push_str(&source[pos as usize..e.start as usize]);
         out.push_str(&e.text);
-        let removed = source[e.start as usize..e.end as usize].matches('\n').count();
+        let removed = source[e.start as usize..e.end as usize]
+            .matches('\n')
+            .count();
         let kept = e.text.matches('\n').count();
         for _ in kept..removed {
             out.push('\n');
@@ -421,7 +480,10 @@ mod tests {
     #[test]
     fn default_import() {
         let o = t("import foo from 'vue';console.log(foo.bar)");
-        assert!(o.contains(r#"await __vite_ssr_import__("vue", {"importedNames":["default"]})"#), "{o}");
+        assert!(
+            o.contains(r#"await __vite_ssr_import__("vue", {"importedNames":["default"]})"#),
+            "{o}"
+        );
         assert!(o.contains("__vite_ssr_import_0__.default"), "{o}");
         assert!(!o.contains("import foo from"), "{o}");
     }
@@ -444,7 +506,10 @@ mod tests {
     #[test]
     fn export_function_decl() {
         let o = t("export function foo() {}");
-        assert!(o.contains(r#"__vite_ssr_exportName__("foo", () => { try { return foo } catch {} });"#), "{o}");
+        assert!(
+            o.contains(r#"__vite_ssr_exportName__("foo", () => { try { return foo } catch {} });"#),
+            "{o}"
+        );
         assert!(o.contains("function foo() {}"), "{o}");
         assert!(!o.contains("export function"), "{o}");
     }
@@ -460,8 +525,14 @@ mod tests {
     #[test]
     fn specifier_export() {
         let o = t("const a = 1, b = 2; export { a, b as c }");
-        assert!(o.contains(r#"__vite_ssr_exportName__("a", () => { try { return a } catch {} });"#), "{o}");
-        assert!(o.contains(r#"__vite_ssr_exportName__("c", () => { try { return b } catch {} });"#), "{o}");
+        assert!(
+            o.contains(r#"__vite_ssr_exportName__("a", () => { try { return a } catch {} });"#),
+            "{o}"
+        );
+        assert!(
+            o.contains(r#"__vite_ssr_exportName__("c", () => { try { return b } catch {} });"#),
+            "{o}"
+        );
     }
 
     #[test]
@@ -469,20 +540,31 @@ mod tests {
         let o = t("export { ref, computed as c } from 'vue'");
         assert!(o.contains(r#"{"importedNames":["ref","computed"]}"#), "{o}");
         assert!(o.contains(r#"return __vite_ssr_import_0__.ref"#), "{o}");
-        assert!(o.contains(r#"return __vite_ssr_import_0__.computed"#), "{o}");
+        assert!(
+            o.contains(r#"return __vite_ssr_import_0__.computed"#),
+            "{o}"
+        );
     }
 
     #[test]
     fn export_all() {
         let o = t("export * from 'vue'");
         assert!(o.contains(r#"await __vite_ssr_import__("vue")"#), "{o}");
-        assert!(o.contains("__vite_ssr_exportAll__(__vite_ssr_import_0__);"), "{o}");
+        assert!(
+            o.contains("__vite_ssr_exportAll__(__vite_ssr_import_0__);"),
+            "{o}"
+        );
     }
 
     #[test]
     fn export_all_as_ns() {
         let o = t("export * as foo from 'vue'");
-        assert!(o.contains(r#"__vite_ssr_exportName__("foo", () => { try { return __vite_ssr_import_0__ }"#), "{o}");
+        assert!(
+            o.contains(
+                r#"__vite_ssr_exportName__("foo", () => { try { return __vite_ssr_import_0__ }"#
+            ),
+            "{o}"
+        );
     }
 
     #[test]
@@ -495,7 +577,10 @@ mod tests {
     #[test]
     fn export_default_named_function() {
         let o = t("export default function foo() {}\nfoo.prototype = {};");
-        assert!(o.contains(r#"__vite_ssr_exportName__("default", () => { try { return foo }"#), "{o}");
+        assert!(
+            o.contains(r#"__vite_ssr_exportName__("default", () => { try { return foo }"#),
+            "{o}"
+        );
         assert!(o.contains("function foo() {}"), "{o}");
         assert!(!o.contains("export default"), "{o}");
     }
@@ -519,53 +604,80 @@ mod tests {
         let import_at = o.find("__vite_ssr_import__").unwrap();
         let use_at = o.find(".resolve").unwrap();
         assert!(import_at < use_at, "{o}");
-        assert!(o.contains("(0, __vite_ssr_import_0__.default).resolve"), "{o}");
+        assert!(
+            o.contains("(0, __vite_ssr_import_0__.default).resolve"),
+            "{o}"
+        );
     }
 
     #[test]
     fn shadowed_local_not_rewritten() {
         let o = t("import { fn } from 'vue';function A(){ const fn = () => {}; return fn; }");
-        assert!(o.contains("const fn = () => {}; return fn;"), "shadowed fn rewritten: {o}");
+        assert!(
+            o.contains("const fn = () => {}; return fn;"),
+            "shadowed fn rewritten: {o}"
+        );
     }
 
     #[test]
     fn shorthand_property_expanded() {
         let o = t("import { inject } from 'vue';const a = { inject }");
-        assert!(o.contains("{ inject: (0, __vite_ssr_import_0__.inject) }"), "{o}");
+        assert!(
+            o.contains("{ inject: (0, __vite_ssr_import_0__.inject) }"),
+            "{o}"
+        );
     }
 
     #[test]
     fn method_key_not_rewritten_call_is() {
         let o = t("import { fn } from 'vue';class A { fn() { fn() } }");
-        assert!(o.contains("fn() { (0, __vite_ssr_import_0__.fn)() }"), "{o}");
+        assert!(
+            o.contains("fn() { (0, __vite_ssr_import_0__.fn)() }"),
+            "{o}"
+        );
     }
 
     #[test]
     fn type_only_import_is_dropped() {
         let o = tts("import type { X } from './t';\nconst y = 1;");
-        assert!(!o.contains("__vite_ssr_import__"), "type import emitted a runtime import: {o}");
+        assert!(
+            !o.contains("__vite_ssr_import__"),
+            "type import emitted a runtime import: {o}"
+        );
         assert!(!o.contains("import type"), "{o}");
     }
 
     #[test]
     fn inline_type_specifier_is_skipped() {
         let o = tts("import { a, type B } from './m';\nconsole.log(a)");
-        assert!(o.contains(r#"{"importedNames":["a"]}"#), "type spec leaked into importedNames: {o}");
+        assert!(
+            o.contains(r#"{"importedNames":["a"]}"#),
+            "type spec leaked into importedNames: {o}"
+        );
         assert!(o.contains("(0, __vite_ssr_import_0__.a)"), "{o}");
-        assert!(!o.contains("__vite_ssr_import_0__.B"), "type spec was referenced: {o}");
+        assert!(
+            !o.contains("__vite_ssr_import_0__.B"),
+            "type spec was referenced: {o}"
+        );
     }
 
     #[test]
     fn type_only_export_from_is_dropped() {
         let o = tts("export type { T } from './t';\nexport const v = 1;");
-        assert!(!o.contains("__vite_ssr_import__"), "type re-export emitted a runtime import: {o}");
+        assert!(
+            !o.contains("__vite_ssr_import__"),
+            "type re-export emitted a runtime import: {o}"
+        );
         assert!(o.contains(r#"__vite_ssr_exportName__("v""#), "{o}");
     }
 
     #[test]
     fn type_only_export_star_is_dropped() {
         let o = tts("export type * from './t';\nexport const v = 1;");
-        assert!(!o.contains("__vite_ssr_import__"), "type export* emitted a runtime import: {o}");
+        assert!(
+            !o.contains("__vite_ssr_import__"),
+            "type export* emitted a runtime import: {o}"
+        );
         assert!(!o.contains("__vite_ssr_exportAll__"), "{o}");
         assert!(o.contains(r#"__vite_ssr_exportName__("v""#), "{o}");
     }
@@ -574,14 +686,18 @@ mod tests {
     fn inline_type_export_specifier_is_skipped() {
         let o = tts("const a = 1; export { a, type T }");
         assert!(o.contains(r#"__vite_ssr_exportName__("a""#), "{o}");
-        assert!(!o.contains(r#"__vite_ssr_exportName__("T""#), "type export spec leaked: {o}");
+        assert!(
+            !o.contains(r#"__vite_ssr_exportName__("T""#),
+            "type export spec leaked: {o}"
+        );
     }
 
     #[test]
     fn composes_ts_strip_then_ssr_transform() {
         use super::ssr_transform_module;
         use crate::CompileOptions;
-        let src = "import { helper } from './u';\nexport const x: number = helper(1);\nexport default 2;";
+        let src =
+            "import { helper } from './u';\nexport const x: number = helper(1);\nexport default 2;";
         let o = ssr_transform_module(Path::new("c.ts"), src, &CompileOptions::prod()).unwrap();
         assert!(!o.contains("import { helper"), "import survived: {o}");
         assert!(o.contains(r#"await __vite_ssr_import__("./u""#), "{o}");
@@ -598,12 +714,24 @@ mod tests {
         assert_eq!(o.lines().count(), src.lines().count(), "{o}");
         let out_lines: Vec<&str> = o.lines().collect();
         let src_lines: Vec<&str> = src.lines().collect();
-        assert!(out_lines[0].contains("__vite_ssr_import__(\"./u\""), "hoisted on line 1: {o}");
-        assert!(out_lines[0].contains("__vite_ssr_exportName__(\"x\""), "{o}");
+        assert!(
+            out_lines[0].contains("__vite_ssr_import__(\"./u\""),
+            "hoisted on line 1: {o}"
+        );
+        assert!(
+            out_lines[0].contains("__vite_ssr_exportName__(\"x\""),
+            "{o}"
+        );
         assert!(out_lines[5].contains("const x = "), "line 6 keeps `x`: {o}");
         assert_eq!(src_lines[5], "export const x = a(b);");
-        assert!(out_lines[6].starts_with("function f() {"), "line 7 keeps `f`: {o}");
-        assert_eq!(out_lines[7], "  return (0, __vite_ssr_import_1__.default) + x;");
+        assert!(
+            out_lines[6].starts_with("function f() {"),
+            "line 7 keeps `f`: {o}"
+        );
+        assert_eq!(
+            out_lines[7],
+            "  return (0, __vite_ssr_import_1__.default) + x;"
+        );
     }
 
     #[test]
@@ -611,10 +739,14 @@ mod tests {
         use super::ssr_transform_module_with_map;
         use crate::CompileOptions;
         let src = "import { helper } from './u';\nexport const x: number = helper(1);";
-        let (code, map) = ssr_transform_module_with_map(Path::new("c.ts"), src, &CompileOptions::dev()).unwrap();
+        let (code, map) =
+            ssr_transform_module_with_map(Path::new("c.ts"), src, &CompileOptions::dev()).unwrap();
         assert!(code.contains("__vite_ssr_import__"), "{code}");
         let map = map.expect("dev compile carries a source map");
-        assert!(map.starts_with("data:application/json;charset=utf-8;base64,"), "{map}");
+        assert!(
+            map.starts_with("data:application/json;charset=utf-8;base64,"),
+            "{map}"
+        );
     }
 
     #[test]
@@ -624,9 +756,15 @@ mod tests {
         let src = "import { wrap } from './ui';\nexport const C = () => wrap(<div className=\"x\">hi</div>);";
         let o = ssr_transform_module(Path::new("c.tsx"), src, &CompileOptions::prod()).unwrap();
         assert!(!o.contains("<div"), "JSX survived: {o}");
-        assert!(o.contains(r#"await __vite_ssr_import__("./ui""#), "user import transformed: {o}");
+        assert!(
+            o.contains(r#"await __vite_ssr_import__("./ui""#),
+            "user import transformed: {o}"
+        );
         assert!(o.contains(".wrap)("), "user import ref rewritten: {o}");
         assert!(o.contains(r#"__vite_ssr_exportName__("C""#), "{o}");
-        assert!(!o.contains("\nimport "), "an import statement survived: {o}");
+        assert!(
+            !o.contains("\nimport "),
+            "an import statement survived: {o}"
+        );
     }
 }

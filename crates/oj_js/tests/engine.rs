@@ -253,7 +253,9 @@ async fn deadline_times_out_a_parked_never_settling_call() {
     let mut config = EngineConfig::new(root.path());
     config.default_deadline = Some(Duration::from_millis(500));
     let engine = JsEngine::spawn(config).unwrap();
-    let err = within(engine.call("hang.mjs", "hang", vec![])).await.unwrap_err();
+    let err = within(engine.call("hang.mjs", "hang", vec![]))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, EngineError::Deadline),
         "expected Deadline, got {err:?}"
@@ -277,7 +279,9 @@ async fn deadline_terminates_an_infinite_loop_call() {
     let mut config = EngineConfig::new(root.path());
     config.default_deadline = Some(Duration::from_millis(500));
     let engine = JsEngine::spawn(config).unwrap();
-    let err = within(engine.call("spin.mjs", "spin", vec![])).await.unwrap_err();
+    let err = within(engine.call("spin.mjs", "spin", vec![]))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, EngineError::Deadline),
         "expected Deadline, got {err:?}"

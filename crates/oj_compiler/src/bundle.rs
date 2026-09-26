@@ -96,7 +96,15 @@ pub fn compile_factory(
             message,
         });
     }
-    compile_esm_factory_from_parsed(&allocator, parsed.program, path, url, source_text, resolve, false)
+    compile_esm_factory_from_parsed(
+        &allocator,
+        parsed.program,
+        path,
+        url,
+        source_text,
+        resolve,
+        false,
+    )
 }
 
 fn compile_cjs_factory(
@@ -154,7 +162,15 @@ fn compile_esm_factory(
             message,
         });
     }
-    compile_esm_factory_from_parsed(&allocator, parsed.program, path, url, source_text, resolve, refresh)
+    compile_esm_factory_from_parsed(
+        &allocator,
+        parsed.program,
+        path,
+        url,
+        source_text,
+        resolve,
+        refresh,
+    )
 }
 
 /// The ESM factory pipeline over an already-parsed program. Splitting the parse
@@ -347,7 +363,7 @@ fn compile_esm_factory_from_parsed<'a>(
     drop(semantic);
 
     let mut rewriter = RefRewriter {
-        allocator: allocator,
+        allocator,
         replacements: &replacements,
         url,
     };

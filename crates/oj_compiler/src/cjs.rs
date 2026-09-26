@@ -65,7 +65,12 @@ pub fn analyze_for_factory(
     requires.extend(analysis.reexport_requires);
     let mut seen = std::collections::HashSet::new();
     requires.retain(|s| seen.insert(s.clone()));
-    Ok(CjsFactoryAnalysis { body, requires, named_exports, reexport_requires })
+    Ok(CjsFactoryAnalysis {
+        body,
+        requires,
+        named_exports,
+        reexport_requires,
+    })
 }
 
 fn has_module_syntax(_path: &Path, source_text: &str) -> bool {
@@ -376,7 +381,10 @@ __exportStar(require("./guards/primitives"), exports);
 (0, tslib_1.__exportStar)(require("./guards/convenience"), exports);
 "#;
         let mut resolve = |spec: &str| -> Option<String> {
-            Some(format!("/node_modules/@sniptt/guards/build/{}.js", spec.trim_start_matches("./")))
+            Some(format!(
+                "/node_modules/@sniptt/guards/build/{}.js",
+                spec.trim_start_matches("./")
+            ))
         };
         let out = wrap_cjs(
             Path::new("index.js"),
@@ -386,12 +394,16 @@ __exportStar(require("./guards/primitives"), exports);
         )
         .unwrap();
         assert!(
-            out.code.contains(r#"export * from "/node_modules/@sniptt/guards/build/guards/primitives.js""#),
+            out.code.contains(
+                r#"export * from "/node_modules/@sniptt/guards/build/guards/primitives.js""#
+            ),
             "plain __exportStar(require()) must re-export:\n{}",
             out.code
         );
         assert!(
-            out.code.contains(r#"export * from "/node_modules/@sniptt/guards/build/guards/convenience.js""#),
+            out.code.contains(
+                r#"export * from "/node_modules/@sniptt/guards/build/guards/convenience.js""#
+            ),
             "tslib (0, tslib_1.__exportStar)(require()) must re-export:\n{}",
             out.code
         );
@@ -408,11 +420,19 @@ __exportStar(require("./guards/primitives"), exports);
 var path = require("path");
 module.exports = { join: path.join };
 "#;
-        let mut resolve =
-            |_spec: &str| -> Option<String> { Some("/node_modules/rpnp/polyfills/path.js".to_string()) };
-        let out = wrap_cjs(Path::new("m.js"), "/node_modules/pkg/m.js", src, &mut resolve).unwrap();
+        let mut resolve = |_spec: &str| -> Option<String> {
+            Some("/node_modules/rpnp/polyfills/path.js".to_string())
+        };
+        let out = wrap_cjs(
+            Path::new("m.js"),
+            "/node_modules/pkg/m.js",
+            src,
+            &mut resolve,
+        )
+        .unwrap();
         assert!(
-            out.code.contains(r#"import * as __oj_ns_0 from "/node_modules/rpnp/polyfills/path.js""#),
+            out.code
+                .contains(r#"import * as __oj_ns_0 from "/node_modules/rpnp/polyfills/path.js""#),
             "require target must be namespace-imported:\n{}",
             out.code
         );
@@ -500,10 +520,12 @@ exports.render = function () { return react && scheduler; };
 "#;
         let mut resolve = |spec: &str| Some(format!("/node_modules/{spec}/index.js"));
         let out = wrap_cjs(Path::new("x.js"), "/n/x.js", src, &mut resolve).unwrap();
-        assert!(out.code.contains(
-            r#"import * as __oj_ns_0 from "/node_modules/react/index.js""#
-        ));
-        assert!(out.code.contains(r#""scheduler": __oj_cjs_interop(__oj_ns_1)"#));
+        assert!(out
+            .code
+            .contains(r#"import * as __oj_ns_0 from "/node_modules/react/index.js""#));
+        assert!(out
+            .code
+            .contains(r#""scheduler": __oj_cjs_interop(__oj_ns_1)"#));
         assert_eq!(out.imports.len(), 2);
     }
 

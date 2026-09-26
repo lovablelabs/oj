@@ -258,8 +258,14 @@ mod tests {
     #[test]
     fn ssr_variant_flips_only_the_ssr_flag() {
         let loaded = vec![("VITE_X".to_string(), "1".to_string())];
-        let ssr = import_meta_env_defines_with(&loaded, "staging", false, "/app/", &["VITE_"], true);
-        let get = |k: &str| ssr.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap();
+        let ssr =
+            import_meta_env_defines_with(&loaded, "staging", false, "/app/", &["VITE_"], true);
+        let get = |k: &str| {
+            ssr.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
         assert_eq!(get("import.meta.env.SSR"), "true");
         assert_eq!(get("import.meta.env.PROD"), "true");
         assert_eq!(get("import.meta.env.MODE"), "\"staging\"");
@@ -267,18 +273,34 @@ mod tests {
         assert_eq!(get("import.meta.env.VITE_X"), "\"1\"");
         assert!(get("import.meta.env").contains("\"SSR\":true"));
         let client = import_meta_env_defines(&loaded, "staging", false, "/app/", &["VITE_"]);
-        assert!(client.iter().any(|(k, v)| k == "import.meta.env.SSR" && v == "false"));
+        assert!(client
+            .iter()
+            .any(|(k, v)| k == "import.meta.env.SSR" && v == "false"));
     }
 
     #[test]
     fn node_env_shell_wins_then_dotenv_development_then_default() {
         let dev_file = vec![("NODE_ENV".to_string(), "development".to_string())];
         let prod_file = vec![("NODE_ENV".to_string(), "production".to_string())];
-        assert_eq!(resolve_node_env(Some("production"), &dev_file, "production"), "production");
+        assert_eq!(
+            resolve_node_env(Some("production"), &dev_file, "production"),
+            "production"
+        );
         assert_eq!(resolve_node_env(Some("test"), &[], "production"), "test");
-        assert_eq!(resolve_node_env(Some(""), &dev_file, "production"), "development", "empty shell value is unset");
-        assert_eq!(resolve_node_env(None, &dev_file, "production"), "development");
-        assert_eq!(resolve_node_env(None, &prod_file, "development"), "development", "only development flips");
+        assert_eq!(
+            resolve_node_env(Some(""), &dev_file, "production"),
+            "development",
+            "empty shell value is unset"
+        );
+        assert_eq!(
+            resolve_node_env(None, &dev_file, "production"),
+            "development"
+        );
+        assert_eq!(
+            resolve_node_env(None, &prod_file, "development"),
+            "development",
+            "only development flips"
+        );
         assert_eq!(resolve_node_env(None, &[], "production"), "production");
         assert_eq!(resolve_node_env(None, &[], "development"), "development");
     }
@@ -391,8 +413,14 @@ mod tests {
         let map: std::collections::HashMap<_, _> = merged.into_iter().collect();
         assert_eq!(map["VITE_A"], "proc-a", "process env wins over file value");
         assert_eq!(map["VITE_B"], "file-b", "file-only var survives");
-        assert_eq!(map["VITE_C"], "proc-c", "process-only prefixed var is added");
-        assert!(!map.contains_key("SECRET"), "unprefixed process var excluded");
+        assert_eq!(
+            map["VITE_C"], "proc-c",
+            "process-only prefixed var is added"
+        );
+        assert!(
+            !map.contains_key("SECRET"),
+            "unprefixed process var excluded"
+        );
     }
 
     #[test]

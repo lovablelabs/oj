@@ -51,10 +51,7 @@ fn has_proto_key(value: &serde_json::Value) -> bool {
 fn js_expression(source: &str, value: &serde_json::Value) -> String {
     let raw = source.trim();
     if has_proto_key(value) {
-        return format!(
-            "JSON.parse({})",
-            serde_json::Value::String(raw.to_string())
-        );
+        return format!("JSON.parse({})", serde_json::Value::String(raw.to_string()));
     }
     raw.to_string()
 }

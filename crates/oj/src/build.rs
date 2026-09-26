@@ -66,7 +66,10 @@ fn ro_output(ro: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
 fn ro_output_str(ro: Option<&serde_json::Value>, key: &str) -> Option<String> {
     let v = ro_output(ro)?.get(key)?;
     if is_fn_marker(v) {
-        warn_fn_option(&format!("output.{key}"), "Use a pattern string such as \"assets/[name]-[hash].js\".");
+        warn_fn_option(
+            &format!("output.{key}"),
+            "Use a pattern string such as \"assets/[name]-[hash].js\".",
+        );
         return None;
     }
     v.as_str().map(String::from)
@@ -152,7 +155,10 @@ fn ro_output_overrides(ro: Option<&serde_json::Value>) -> OutputOverrides {
     let str_map = |key: &str| -> Option<std::collections::HashMap<String, String>> {
         let v = out.get(key)?;
         if is_fn_marker(v) {
-            warn_fn_option(&format!("output.{key}"), "Use an object of specifier -> value.");
+            warn_fn_option(
+                &format!("output.{key}"),
+                "Use an object of specifier -> value.",
+            );
             return None;
         }
         let obj = v.as_object()?;
@@ -166,9 +172,13 @@ fn ro_output_overrides(ro: Option<&serde_json::Value>) -> OutputOverrides {
     ov.paths = str_map("paths");
     ov.name = out.get("name").and_then(|v| v.as_str()).map(String::from);
     ov.extend = out.get("extend").and_then(|v| v.as_bool());
-    ov.inline_dynamic_imports = out.get("inlineDynamicImports").and_then(|v| v.as_bool()) == Some(true)
+    ov.inline_dynamic_imports = out.get("inlineDynamicImports").and_then(|v| v.as_bool())
+        == Some(true)
         || out.get("codeSplitting").and_then(|v| v.as_bool()) == Some(false)
-        || matches!(ov.format, Some(OutputFormat::Umd) | Some(OutputFormat::Iife));
+        || matches!(
+            ov.format,
+            Some(OutputFormat::Umd) | Some(OutputFormat::Iife)
+        );
     ov
 }
 
@@ -228,7 +238,11 @@ struct WorkerBundleOpts {
 /// What `@import`/`@use`/`url()` specifiers inside stylesheets resolve through,
 /// as Vite's CSS resolvers do: the environment's `resolve.alias`, the root and
 /// the public directory.
-fn css_resolve_of(root: &Path, config: &oj_config::OjConfig, env: &str) -> oj_css::CssResolveConfig {
+fn css_resolve_of(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+) -> oj_css::CssResolveConfig {
     oj_css::CssResolveConfig {
         root: root.to_path_buf(),
         public_dir: oj_config::public_dir(config, root).unwrap_or_default(),
@@ -361,7 +375,12 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
     let f64_of = |k: &str| obj.get(k).and_then(|v| v.as_f64());
     let u32_of = |k: &str| obj.get(k).and_then(|v| v.as_u64()).map(|n| n as u32);
     let mut groups = Vec::new();
-    for g in obj.get("groups").and_then(|g| g.as_array()).into_iter().flatten() {
+    for g in obj
+        .get("groups")
+        .and_then(|g| g.as_array())
+        .into_iter()
+        .flatten()
+    {
         let Some(g) = g.as_object() else { continue };
         let name = match g.get("name") {
             Some(serde_json::Value::String(s)) if s == FN_MARKER => {
@@ -374,11 +393,17 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
         let test = match g.get("test") {
             None | Some(serde_json::Value::Null) => None,
             Some(serde_json::Value::String(s)) if s == FN_MARKER => {
-                warn_fn_option("output.advancedChunks.groups[].test", "Use a RegExp or string.");
+                warn_fn_option(
+                    "output.advancedChunks.groups[].test",
+                    "Use a RegExp or string.",
+                );
                 continue;
             }
             Some(serde_json::Value::String(s)) => Some(s.clone()),
-            Some(serde_json::Value::Object(o)) => o.get("__oj_regex__").and_then(|v| v.as_str()).map(str::to_string),
+            Some(serde_json::Value::Object(o)) => o
+                .get("__oj_regex__")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             _ => None,
         };
         let test = match test {
@@ -402,7 +427,9 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
             min_share_count: gu("minShareCount"),
             min_module_size: gf("minModuleSize"),
             max_module_size: gf("maxModuleSize"),
-            include_dependencies_recursively: g.get("includeDependenciesRecursively").and_then(|v| v.as_bool()),
+            include_dependencies_recursively: g
+                .get("includeDependenciesRecursively")
+                .and_then(|v| v.as_bool()),
             ..Default::default()
         });
     }
@@ -417,7 +444,9 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
             max_size: f64_of("maxSize"),
             min_module_size: f64_of("minModuleSize"),
             max_module_size: f64_of("maxModuleSize"),
-            include_dependencies_recursively: obj.get("includeDependenciesRecursively").and_then(|v| v.as_bool()),
+            include_dependencies_recursively: obj
+                .get("includeDependenciesRecursively")
+                .and_then(|v| v.as_bool()),
         },
     ))
 }
@@ -433,19 +462,23 @@ fn transform_options(
     let jsx = oj_config::jsx_settings(config);
     let classic = jsx.runtime.as_deref() == Some("classic");
     Some(rolldown_common::BundlerTransformOptions {
-        target: Some(rolldown_common::Either::Right(oj_config::build_targets(config))),
+        target: Some(rolldown_common::Either::Right(oj_config::build_targets(
+            config,
+        ))),
         // `runtime` stays None unless configured: rolldown only merges the
         // tsconfig `compilerOptions.jsx`/`jsxFactory`/`jsxImportSource` into the
         // transform when no runtime is set, and a project configured that way
         // must keep building as before.
-        jsx: Some(rolldown_common::Either::Right(rolldown_common::JsxOptions {
-            runtime: jsx.runtime.clone(),
-            development: Some(!is_production),
-            import_source: if classic { None } else { jsx.import_source },
-            pragma: if classic { jsx.pragma } else { None },
-            pragma_frag: if classic { jsx.pragma_frag } else { None },
-            ..Default::default()
-        })),
+        jsx: Some(rolldown_common::Either::Right(
+            rolldown_common::JsxOptions {
+                runtime: jsx.runtime.clone(),
+                development: Some(!is_production),
+                import_source: if classic { None } else { jsx.import_source },
+                pragma: if classic { jsx.pragma } else { None },
+                pragma_frag: if classic { jsx.pragma_frag } else { None },
+                ..Default::default()
+            },
+        )),
         ..Default::default()
     })
 }
@@ -469,10 +502,14 @@ fn node_env_defines(node_env: &str) -> Vec<(String, String)> {
 /// `process.env.SOMETHING` evaluates to `undefined` instead of throwing a
 /// ReferenceError, and NODE_ENV to the resolved mode. A lib build gets neither.
 fn process_env_defines(node_env: &str) -> Vec<(String, String)> {
-    let mut pairs: Vec<(String, String)> = ["process.env", "global.process.env", "globalThis.process.env"]
-        .iter()
-        .map(|k| (k.to_string(), "{}".to_string()))
-        .collect();
+    let mut pairs: Vec<(String, String)> = [
+        "process.env",
+        "global.process.env",
+        "globalThis.process.env",
+    ]
+    .iter()
+    .map(|k| (k.to_string(), "{}".to_string()))
+    .collect();
     pairs.extend(node_env_defines(node_env));
     pairs
 }
@@ -763,6 +800,7 @@ fn is_stylesheet_path(path: &str) -> bool {
 /// Shared by plain CSS imports, `?url` (emitted as a compiled `.css` asset) and
 /// `?inline` (the compiled text), so every form of importing a stylesheet ships
 /// the same CSS, as in Vite.
+#[allow(clippy::too_many_arguments)]
 async fn compile_stylesheet(
     root: &Path,
     host: &Option<Arc<oj_server::plugins::PluginHost>>,
@@ -795,7 +833,11 @@ async fn compile_stylesheet(
         }
     }
     if oj_css::is_sass(path) {
-        let lang = if path.ends_with(".sass") { "sass" } else { "scss" };
+        let lang = if path.ends_with(".sass") {
+            "sass"
+        } else {
+            "scss"
+        };
         let data = oj_config::css_additional_data(&cfg, lang);
         let load_paths: Vec<PathBuf> = oj_config::css_load_paths(&cfg, lang)
             .into_iter()
@@ -828,8 +870,9 @@ async fn compile_stylesheet(
     // plugin does).
     let tailwind = oj_server::sidecar::is_tailwind_css(&source);
     if !tailwind {
-        source = oj_css::inline_imports_with(&source, std::path::Path::new(path), &resolve.as_ref())
-            .map_err(|e| anyhow::anyhow!(e))?;
+        source =
+            oj_css::inline_imports_with(&source, std::path::Path::new(path), &resolve.as_ref())
+                .map_err(|e| anyhow::anyhow!(e))?;
     }
     // PostCSS/Tailwind run on the preprocessor OUTPUT (Vite orders them the same
     // way), on the source as transformed so far rather than re-read from disk.
@@ -850,7 +893,7 @@ async fn compile_stylesheet(
 fn split_asset_query(spec: &str) -> Option<(String, String)> {
     let (base, query) = spec.split_once('?')?;
     let params: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
-    let has = |k: &str| params.iter().any(|p| *p == k);
+    let has = |k: &str| params.contains(&k);
     let worker_kind = if has("worker") {
         Some("worker")
     } else if has("sharedworker") {
@@ -886,7 +929,12 @@ fn worker_id_parts(id: &str) -> Option<(&str, &'static str, bool, bool)> {
     } else {
         return None;
     };
-    Some((file, ctor, params.contains(&"inline"), params.contains(&"url")))
+    Some((
+        file,
+        ctor,
+        params.contains(&"inline"),
+        params.contains(&"url"),
+    ))
 }
 
 /// Bundle a worker entry to a single ESM string (dynamic imports inlined) for
@@ -909,7 +957,6 @@ async fn bundle_worker_inline(
             input: Some(vec![InputItem {
                 name: Some("worker".to_string()),
                 import: file.to_string(),
-                ..Default::default()
             }]),
             cwd: Some(root.to_path_buf()),
             format: Some(OutputFormat::Esm),
@@ -1663,11 +1710,7 @@ fn forward_emitted_chunks(
     }
 }
 
-fn forward_emitted_html(
-    ctx: &PluginContext,
-    c: &oj_server::plugins::ChunkEmit,
-    emit: &EmitState,
-) {
+fn forward_emitted_html(ctx: &PluginContext, c: &oj_server::plugins::ChunkEmit, emit: &EmitState) {
     let abs = if Path::new(&c.id).is_absolute() {
         PathBuf::from(&c.id)
     } else {
@@ -1691,10 +1734,7 @@ fn forward_emitted_html(
             let sabs = resolve_html_ref(&src, &html_dir, &emit.root);
             let emitted = rolldown_common::EmittedChunk {
                 id: sabs.display().to_string(),
-                name: sabs
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(Into::into),
+                name: sabs.file_stem().and_then(|s| s.to_str()).map(Into::into),
                 ..Default::default()
             };
             let _ = ctx.emit_chunk(emitted);
@@ -1797,33 +1837,35 @@ impl Plugin for OjUserPlugin {
             host.load(&id)
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin load failed for {id}:\n{e}"))
-                .map(|loaded| loaded.map(|code| {
-                    let path = id.split(['?', '#']).next().unwrap_or(&id);
-                    if path.ends_with(".css") {
-                        // A plugin-served virtual CSS module (e.g. UnoCSS's layer
-                        // placeholder): its real CSS is routed through the
-                        // `vite:css-post` shim, so keep an empty side-effect stub
-                        // in the graph (so the plugin's build hook still sees the
-                        // module) rather than parsing CSS as JS.
-                        return HookLoadOutput {
-                            code: arcstr::ArcStr::from("export {};\n"),
-                            module_type: Some(rolldown_common::ModuleType::Js),
-                            side_effects: Some(
-                                rolldown_common::side_effects::HookSideEffects::NoTreeshake,
-                            ),
+                .map(|loaded| {
+                    loaded.map(|code| {
+                        let path = id.split(['?', '#']).next().unwrap_or(&id);
+                        if path.ends_with(".css") {
+                            // A plugin-served virtual CSS module (e.g. UnoCSS's layer
+                            // placeholder): its real CSS is routed through the
+                            // `vite:css-post` shim, so keep an empty side-effect stub
+                            // in the graph (so the plugin's build hook still sees the
+                            // module) rather than parsing CSS as JS.
+                            return HookLoadOutput {
+                                code: arcstr::ArcStr::from("export {};\n"),
+                                module_type: Some(rolldown_common::ModuleType::Js),
+                                side_effects: Some(
+                                    rolldown_common::side_effects::HookSideEffects::NoTreeshake,
+                                ),
+                                ..Default::default()
+                            };
+                        }
+                        HookLoadOutput {
+                            code: arcstr::ArcStr::from(code),
+                            // Infer the type from the id so a plugin-served virtual
+                            // module keeps its JSX/TS semantics (e.g. unplugin-icons'
+                            // `~icons/*.jsx`); a hardcoded Js made oxc parse the JSX
+                            // as plain JS and fail.
+                            module_type: Some(module_type_for_id(&id)),
                             ..Default::default()
-                        };
-                    }
-                    HookLoadOutput {
-                        code: arcstr::ArcStr::from(code),
-                        // Infer the type from the id so a plugin-served virtual
-                        // module keeps its JSX/TS semantics (e.g. unplugin-icons'
-                        // `~icons/*.jsx`); a hardcoded Js made oxc parse the JSX
-                        // as plain JS and fail.
-                        module_type: Some(module_type_for_id(&id)),
-                        ..Default::default()
-                    }
-                }))
+                        }
+                    })
+                })
         }
     }
 
@@ -2191,7 +2233,10 @@ async fn user_plugin_host(
 // runs them itself only when the scan fails; a failure past that (render,
 // write) would skip them, so the host is told directly. Its closeBundle is
 // idempotent, so the rolldown-driven call and this one do not double up.
-async fn fail_with_plugin_hooks(err: anyhow::Error, host: &Option<Arc<PluginHost>>) -> anyhow::Error {
+async fn fail_with_plugin_hooks(
+    err: anyhow::Error,
+    host: &Option<Arc<PluginHost>>,
+) -> anyhow::Error {
     if let Some(h) = host {
         let message = format!("{err:#}");
         if let Err(e) = h.build_end(Some(&message)).await {
@@ -2305,29 +2350,42 @@ fn apply_cli_options_from(config: &mut oj_config::OjConfig, cli: &CliOptions) {
 /// `build.*` options oj accepts for compatibility but cannot honor; each is
 /// named once so a config relying on it does not fail silently.
 fn warn_unsupported_build_options(config: &oj_config::OjConfig) {
-    let Some(b) = config.build.as_ref() else { return };
+    let Some(b) = config.build.as_ref() else {
+        return;
+    };
     let warn = |what: &str, hint: &str| {
         eprintln!("oj build: (!) build.{what} is not supported by oj and is ignored. {hint}");
     };
     if b.write == Some(false) {
         warn("write: false", "oj always writes the bundle to outDir.");
     }
-    if b.watch.as_ref().is_some_and(|w| !w.is_null() && *w != serde_json::Value::Bool(false)) {
-        warn("watch", "Run `oj build` again after changes, or use `oj dev`.");
+    if b.watch
+        .as_ref()
+        .is_some_and(|w| !w.is_null() && *w != serde_json::Value::Bool(false))
+    {
+        warn(
+            "watch",
+            "Run `oj build` again after changes, or use `oj dev`.",
+        );
     }
-    if b.license.as_ref().is_some_and(|l| *l != serde_json::Value::Bool(false)) {
-        warn("license", "No LICENSE file is emitted for the bundled dependencies.");
+    if b.license
+        .as_ref()
+        .is_some_and(|l| *l != serde_json::Value::Bool(false))
+    {
+        warn(
+            "license",
+            "No LICENSE file is emitted for the bundled dependencies.",
+        );
     }
     if b.commonjs_options.is_some() {
-        warn("commonjsOptions", "rolldown handles CommonJS dependencies natively without configuration.");
+        warn(
+            "commonjsOptions",
+            "rolldown handles CommonJS dependencies natively without configuration.",
+        );
     }
 }
 
-pub async fn build(
-    root: PathBuf,
-    cli_mode: Option<&str>,
-    cli: CliOptions,
-) -> anyhow::Result<()> {
+pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> anyhow::Result<()> {
     let root = root
         .canonicalize()
         .with_context(|| format!("app root not found: {}", root.display()))?;
@@ -2341,17 +2399,22 @@ pub async fn build(
     // config file itself names a mode and the CLI did not, the config is loaded
     // again under that mode (its function form and `.env.<mode>` depend on it).
     let mut mode_owned = cli_mode.unwrap_or("production").to_string();
-    let mut config = oj_config::load_with(&root, "build", &mode_owned)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut config =
+        oj_config::load_with(&root, "build", &mode_owned).map_err(|e| anyhow::anyhow!("{e}"))?;
     if cli_mode.is_none() {
-        oj_server::plugins::adopt_vite_config_values_default_mode(&mut config, &root, "build", &mode_owned)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        oj_server::plugins::adopt_vite_config_values_default_mode(
+            &mut config,
+            &root,
+            "build",
+            &mode_owned,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
         if let Some(m) = config.mode.clone().filter(|m| *m != mode_owned) {
             mode_owned = m;
             config = oj_config::load_with(&root, "build", &mode_owned)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             oj_server::plugins::adopt_vite_config_values(&mut config, &root, "build", &mode_owned)
-            .map_err(|e| anyhow::anyhow!(e))?;
+                .map_err(|e| anyhow::anyhow!(e))?;
         }
     } else {
         oj_server::plugins::adopt_vite_config_values(&mut config, &root, "build", &mode_owned)
@@ -2416,7 +2479,9 @@ pub async fn build(
     // where input is string | string[] | Record<name, path>. Each `.html`
     // entry is processed as a page (its `<script type=module>` become JS
     // inputs and the page is re-emitted); everything else is a direct entry.
-    let ro_input = ro_opts.and_then(|r| r.get("input")).filter(|v| !v.is_null());
+    let ro_input = ro_opts
+        .and_then(|r| r.get("input"))
+        .filter(|v| !v.is_null());
     let named_inputs: Vec<(String, String)> = match ro_input {
         Some(v) => normalize_input_entries(v),
         None => vec![("index".to_string(), "index.html".to_string())],
@@ -2441,7 +2506,6 @@ pub async fn build(
             inputs.push(InputItem {
                 name: Some(name),
                 import,
-                ..Default::default()
             });
         }
     };
@@ -2538,13 +2602,18 @@ pub async fn build(
             host.build_hook_plan().await,
         )));
     }
-    let client_minify = oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
+    let client_minify =
+        oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
     let client_define: Vec<(String, String)> = {
         let env = oj_env::with_process_env(loaded_env.clone(), std::env::vars(), &env_prefix_refs);
         let mut pairs: Vec<(String, String)> = process_env_defines(&node_env);
         pairs.push(import_meta_hot_define());
         pairs.extend(oj_env::import_meta_env_defines(
-            &env, mode, !is_production, &base, &env_prefix_refs,
+            &env,
+            mode,
+            !is_production,
+            &base,
+            &env_prefix_refs,
         ));
         pairs.extend(oj_config::config_defines(&config));
         pairs.extend(oj_config::environment_defines(&config, "client"));
@@ -2638,7 +2707,11 @@ pub async fn build(
                 .map(|e| e.to_diagnostic().to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
-            return Err(fail_with_plugin_hooks(anyhow::anyhow!("build failed:\n{detail}"), &plugin_host).await);
+            return Err(fail_with_plugin_hooks(
+                anyhow::anyhow!("build failed:\n{detail}"),
+                &plugin_host,
+            )
+            .await);
         }
     };
     bundler
@@ -2710,7 +2783,8 @@ pub async fn build(
     // each page before the plugin transformIndexHtml below.
     let html_env = {
         let env = oj_env::with_process_env(loaded_env.clone(), std::env::vars(), &env_prefix_refs);
-        let mut defines = oj_env::import_meta_env_defines(&env, mode, !is_production, &base, &env_prefix_refs);
+        let mut defines =
+            oj_env::import_meta_env_defines(&env, mode, !is_production, &base, &env_prefix_refs);
         defines.extend(oj_config::config_defines(&config));
         oj_env::html_env_map(&defines)
     };
@@ -2804,7 +2878,15 @@ pub async fn build(
                         .parent()
                         .map(Path::to_path_buf)
                         .unwrap_or_else(|| root.to_path_buf());
-                    rebase_css_urls(&css, &dir, &out_dir, &base, css_asset_opts, &mut emitted, &mut seen_assets)
+                    rebase_css_urls(
+                        &css,
+                        &dir,
+                        &out_dir,
+                        &base,
+                        css_asset_opts,
+                        &mut emitted,
+                        &mut seen_assets,
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -2848,7 +2930,14 @@ pub async fn build(
     };
     let mut all_sync_chunks: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(name) = oj_config::ssr_manifest_name(&config) {
-        let manifest = ssr_manifest(&output, &root, &base, &chunk_css, &combined_css_name, &imports_map);
+        let manifest = ssr_manifest(
+            &output,
+            &root,
+            &base,
+            &chunk_css,
+            &combined_css_name,
+            &imports_map,
+        );
         let dest = out_dir.join(&name);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
@@ -2945,7 +3034,10 @@ pub async fn build(
                 )
                 .await
                 .with_context(|| format!("stylesheet {href} linked from {}", doc.out_rel))?;
-                let dir = src.parent().map(Path::to_path_buf).unwrap_or_else(|| root.clone());
+                let dir = src
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| root.clone());
                 let css = rebase_css_urls(
                     &out.css,
                     &dir,
@@ -2957,7 +3049,12 @@ pub async fn build(
                 );
                 let hash = content_hash(css.as_bytes());
                 let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("style");
-                let name = render_asset_name(css_asset_opts.asset_names, &sanitize_asset_name(stem), &hash, "css");
+                let name = render_asset_name(
+                    css_asset_opts.asset_names,
+                    &sanitize_asset_name(stem),
+                    &hash,
+                    "css",
+                );
                 let dest = out_dir.join(&name);
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent)?;
@@ -2977,28 +3074,29 @@ pub async fn build(
         {
             let mut seen_html_assets: std::collections::HashMap<PathBuf, String> =
                 std::collections::HashMap::new();
-            rewritten_html = rewrite_html_asset_attrs(&rewritten_html, |tag, tag_name, _attr, value, srcset| {
-                let mut one = |url: &str| {
-                    html_asset_url(
-                        tag,
-                        tag_name,
-                        url,
-                        &doc.dir,
-                        &root,
-                        public_dir.as_deref(),
-                        &out_dir,
-                        &page_base,
-                        css_asset_opts,
-                        &mut emitted,
-                        &mut seen_html_assets,
-                    )
-                };
-                if srcset {
-                    rewrite_srcset(value, one)
-                } else {
-                    one(value)
-                }
-            });
+            rewritten_html =
+                rewrite_html_asset_attrs(&rewritten_html, |tag, tag_name, _attr, value, srcset| {
+                    let mut one = |url: &str| {
+                        html_asset_url(
+                            tag,
+                            tag_name,
+                            url,
+                            &doc.dir,
+                            &root,
+                            public_dir.as_deref(),
+                            &out_dir,
+                            &page_base,
+                            css_asset_opts,
+                            &mut emitted,
+                            &mut seen_html_assets,
+                        )
+                    };
+                    if srcset {
+                        rewrite_srcset(value, one)
+                    } else {
+                        one(value)
+                    }
+                });
         }
 
         if let Some(css_name) = &combined_css_name {
@@ -3017,11 +3115,9 @@ pub async fn build(
         if let Some(host) = plugin_host.as_ref().filter(|_| html_hook_on) {
             // Vite (html.ts): `{ path: "/" + relative path, filename: <source
             // html>, bundle, chunk }`, and a throwing hook fails the build.
-            let page_file = doc.dir.join(
-                Path::new(&doc.out_rel)
-                    .file_name()
-                    .unwrap_or_default(),
-            );
+            let page_file = doc
+                .dir
+                .join(Path::new(&doc.out_rel).file_name().unwrap_or_default());
             let chunk = html_bundle
                 .as_ref()
                 .zip(doc_entry_files.first())
@@ -3037,7 +3133,9 @@ pub async fn build(
             rewritten_html = host
                 .transform_index_html(&rewritten_html, &ctx)
                 .await
-                .map_err(|e| anyhow::anyhow!("plugin transformIndexHtml failed for {}:\n{e}", doc.out_rel))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("plugin transformIndexHtml failed for {}:\n{e}", doc.out_rel)
+                })?;
         }
         if let Some(nonce) = oj_config::html_csp_nonce(&config) {
             rewritten_html = oj_server::inject_csp_nonce(&rewritten_html, &nonce);
@@ -3115,8 +3213,8 @@ pub async fn build(
 /// The per-file report, largest first, with Vite's gzip column
 /// (`build.reportCompressedSize`, default on). Source maps are listed by size
 /// only, as in Vite.
-fn report_build_output(out_dir: &Path, emitted: &mut Vec<(String, usize)>, report_gzip: bool) {
-    emitted.sort_by(|a, b| b.1.cmp(&a.1));
+fn report_build_output(out_dir: &Path, emitted: &mut [(String, usize)], report_gzip: bool) {
+    emitted.sort_by_key(|e| std::cmp::Reverse(e.1));
     let width = emitted.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     for (name, bytes) in emitted.iter() {
         let gzip = if report_gzip && !name.ends_with(".map") {
@@ -3217,7 +3315,10 @@ fn inline_module_scripts(html: &str) -> Vec<(usize, usize, String)> {
 /// page's directory) and the tag is rewritten to a `src` placeholder that the
 /// post-bundle HTML rewrite replaces with the hashed chunk. Returns the rewritten
 /// html and `(placeholder src, virtual id, body)` per script.
-fn externalize_inline_scripts(html: &str, html_abs: &Path) -> (String, Vec<(String, String, String)>) {
+fn externalize_inline_scripts(
+    html: &str,
+    html_abs: &Path,
+) -> (String, Vec<(String, String, String)>) {
     let blocks = inline_module_scripts(html);
     if blocks.is_empty() {
         return (html.to_string(), Vec::new());
@@ -3227,7 +3328,10 @@ fn externalize_inline_scripts(html: &str, html_abs: &Path) -> (String, Vec<(Stri
     for (n, (start, end, body)) in blocks.iter().enumerate().rev() {
         let placeholder = format!("/@oj-inline/{n}.js");
         let id = format!("{}?html-proxy&index={n}.js", html_abs.display());
-        out.replace_range(*start..*end, &format!("<script type=\"module\" src=\"{placeholder}\"></script>"));
+        out.replace_range(
+            *start..*end,
+            &format!("<script type=\"module\" src=\"{placeholder}\"></script>"),
+        );
         entries.push((placeholder, id, body.clone()));
     }
     entries.reverse();
@@ -3317,11 +3421,14 @@ fn add_script_crossorigin(html: &str, src: &str) -> String {
     let mut out = String::with_capacity(html.len() + 16);
     let mut rest = html;
     while let Some(start) = rest.find("<script") {
-        let Some(end) = rest[start..].find('>') else { break };
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
         let tag = &rest[start..start + end];
         let has_src = html_attr(tag, "src") == Some(src);
         out.push_str(&rest[..start + end]);
-        if has_src && !has_bare_attr(tag, "crossorigin") && html_attr(tag, "crossorigin").is_none() {
+        if has_src && !has_bare_attr(tag, "crossorigin") && html_attr(tag, "crossorigin").is_none()
+        {
             out.push_str(" crossorigin");
         }
         rest = &rest[start + end..];
@@ -3336,7 +3443,6 @@ fn insert_before_head(html: &str, snippet: &str) -> String {
         None => format!("{snippet}\n{html}"),
     }
 }
-
 
 /// Rewrite the `href` of every `<link>` whose value is `from`, keeping the tag's
 /// own quoting (single, double or none), so a bundled stylesheet link is updated
@@ -3414,17 +3520,24 @@ fn meta_content_is_asset(tag: &str) -> bool {
 
 /// A bare (valueless) attribute such as `vite-ignore`.
 fn has_bare_attr(tag: &str, name: &str) -> bool {
-    tag.split_ascii_whitespace()
-        .skip(1)
-        .any(|tok| tok.eq_ignore_ascii_case(name) || tok.get(..name.len() + 1).is_some_and(|p| p.eq_ignore_ascii_case(&format!("{name}="))))
+    tag.split_ascii_whitespace().skip(1).any(|tok| {
+        tok.eq_ignore_ascii_case(name)
+            || tok
+                .get(..name.len() + 1)
+                .is_some_and(|p| p.eq_ignore_ascii_case(&format!("{name}=")))
+    })
 }
 
 /// The `<link rel>` values Vite never inlines as a data URL (html.ts
 /// `noInlineLinkRels`): a favicon or manifest must stay a real file.
 fn link_rel_forbids_inline(tag: &str) -> bool {
     html_attr(tag, "rel").is_some_and(|rel| {
-        rel.split_ascii_whitespace()
-            .any(|r| matches!(r.to_ascii_lowercase().as_str(), "icon" | "apple-touch-icon" | "apple-touch-startup-image" | "manifest"))
+        rel.split_ascii_whitespace().any(|r| {
+            matches!(
+                r.to_ascii_lowercase().as_str(),
+                "icon" | "apple-touch-icon" | "apple-touch-startup-image" | "manifest"
+            )
+        })
     })
 }
 
@@ -3432,7 +3545,10 @@ fn link_rel_forbids_inline(tag: &str) -> bool {
 fn is_css_request(url: &str) -> bool {
     let clean = url.split(['?', '#']).next().unwrap_or(url);
     let ext = clean.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    matches!(ext, "css" | "less" | "sass" | "scss" | "styl" | "stylus" | "pcss" | "postcss" | "sss")
+    matches!(
+        ext,
+        "css" | "less" | "sass" | "scss" | "styl" | "stylus" | "pcss" | "postcss" | "sss"
+    )
 }
 
 /// Rewrite the value of each srcset candidate (`url descriptor, ...`) with `f`;
@@ -3486,7 +3602,10 @@ fn rewrite_html_asset_attrs(
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == ':' || c == '-'))
             .map(|i| start + 1 + i)
             .unwrap_or(html.len());
-        if name_end == start + 1 || name_end >= bytes.len() || !matches!(bytes[name_end], b' ' | b'\t' | b'\n' | b'\r' | b'/' | b'>') {
+        if name_end == start + 1
+            || name_end >= bytes.len()
+            || !matches!(bytes[name_end], b' ' | b'\t' | b'\n' | b'\r' | b'/' | b'>')
+        {
             continue;
         }
         let tag_name = html[start + 1..name_end].to_ascii_lowercase();
@@ -3505,7 +3624,10 @@ fn rewrite_html_asset_attrs(
                 while cut_start > 0 && tag.as_bytes()[cut_start - 1].is_ascii_whitespace() {
                     cut_start -= 1;
                 }
-                let cut_end = tag[pos..].find(char::is_whitespace).map(|i| pos + i).unwrap_or(tag.len());
+                let cut_end = tag[pos..]
+                    .find(char::is_whitespace)
+                    .map(|i| pos + i)
+                    .unwrap_or(tag.len());
                 edits.push((cut_start, cut_end - cut_start, String::new()));
             }
         } else if tag_name != "meta" || meta_content_is_asset(tag) {
@@ -3546,12 +3668,15 @@ fn is_excluded_html_url(url: &str) -> bool {
         || url.starts_with('#')
         || url.starts_with("data:")
         || url.starts_with("//")
-        || url.split_once("://").is_some_and(|(scheme, _)| !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphabetic()))
+        || url.split_once("://").is_some_and(|(scheme, _)| {
+            !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphabetic())
+        })
 }
 
 /// Emit one html-referenced source asset (hashed under `assetFileNames`, or
 /// inlined as a data URL when small and inlining is allowed) and return its URL
 /// from the page. `seen` dedupes by resolved path across the page's references.
+#[allow(clippy::too_many_arguments)]
 fn emit_html_asset(
     abs: &Path,
     suffix: &str,
@@ -3570,7 +3695,11 @@ fn emit_html_asset(
     let ext = abs.extension().and_then(|s| s.to_str()).unwrap_or("");
     // Vite's shouldInline: never an .html, never a link icon/manifest, never an
     // svg addressed by fragment; otherwise anything under assetsInlineLimit.
-    if !no_inline && !ext.eq_ignore_ascii_case("html") && (data.len() as u64) < opts.inline_limit && !(ext.eq_ignore_ascii_case("svg") && suffix.starts_with('#')) {
+    if !(no_inline
+        || ext.eq_ignore_ascii_case("html")
+        || (data.len() as u64) >= opts.inline_limit
+        || (ext.eq_ignore_ascii_case("svg") && suffix.starts_with('#')))
+    {
         if ext.eq_ignore_ascii_case("svg") {
             return Some(svg_data_url(&String::from_utf8_lossy(&data)));
         }
@@ -3594,6 +3723,7 @@ fn emit_html_asset(
 /// a `publicDir` file keeps its path under the base; a bundle-relative source
 /// file is emitted hashed (or inlined); a stylesheet `<link>` is left to the
 /// stylesheet pass; anything else (external, data:, missing) stays as written.
+#[allow(clippy::too_many_arguments)]
 fn html_asset_url(
     tag: &str,
     tag_name: &str,
@@ -3633,7 +3763,9 @@ fn html_asset_url(
         return None;
     }
     let no_inline = tag_name == "link" && link_rel_forbids_inline(tag);
-    emit_html_asset(&abs, fragment, out_dir, page_base, opts, no_inline, emitted, seen)
+    emit_html_asset(
+        &abs, fragment, out_dir, page_base, opts, no_inline, emitted, seen,
+    )
 }
 
 use oj_compiler::html::html_attr;
@@ -3765,16 +3897,21 @@ pub(crate) async fn build_ssr(
             input: Some(vec![InputItem {
                 name: Some(stem.clone()),
                 import: entry_import,
-                ..Default::default()
             }]),
             cwd: Some(root.to_path_buf()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(root, &config, "ssr"),
             transform: transform_options(&config, is_production),
-            platform: Some(if externals.webworker() { Platform::Browser } else { Platform::Node }),
+            platform: Some(if externals.webworker() {
+                Platform::Browser
+            } else {
+                Platform::Node
+            }),
             external: Some(external),
             format: Some(OutputFormat::Esm),
-            preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::AllowExtension),
+            preserve_entry_signatures: Some(
+                rolldown_common::PreserveEntrySignatures::AllowExtension,
+            ),
             entry_filenames: Some(format!("{stem}.mjs").into()),
             chunk_filenames: Some(format!("{stem}-[hash].mjs").into()),
             minify: Some(rolldown_minify(
@@ -3782,7 +3919,11 @@ pub(crate) async fn build_ssr(
             )),
             sourcemap: env_sourcemap(&config, "ssr", sourcemap),
             define: Some({
-                let env = oj_env::with_process_env(loaded_env.clone(), std::env::vars(), &env_prefix_refs);
+                let env = oj_env::with_process_env(
+                    loaded_env.clone(),
+                    std::env::vars(),
+                    &env_prefix_refs,
+                );
                 // `keepProcessEnv` defaults to true for a server consumer, so only
                 // the webworker target gets Vite's `process.env` -> `{}` defines.
                 let mut pairs = if externals.webworker() {
@@ -3809,7 +3950,11 @@ pub(crate) async fn build_ssr(
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match bundler.write().await.map_err(rolldown_failure!("ssr build failed")) {
+    let output = match bundler
+        .write()
+        .await
+        .map_err(rolldown_failure!("ssr build failed"))
+    {
         Ok(output) => output,
         Err(err) => return Err(fail_with_plugin_hooks(err, &plugin_host).await),
     };
@@ -3835,7 +3980,7 @@ pub(crate) async fn build_ssr(
         out_dir.display(),
         started.elapsed()
     );
-    emitted.sort_by(|a, b| b.1.cmp(&a.1));
+    emitted.sort_by_key(|e| std::cmp::Reverse(e.1));
     for (name, bytes) in &emitted {
         println!("  {:>9}  {}", human_bytes(*bytes), name);
     }
@@ -3898,9 +4043,7 @@ async fn build_server_fns(root: &Path, out_dir: &Path, mode: &str) -> anyhow::Re
     let ext_rule = Arc::new(oj_config::ssr_externals(&config));
     let external = IsExternal::Fn(Some(Arc::new(move |spec: &str, _i, resolved: bool| {
         let in_node_modules = resolved && spec.contains("node_modules");
-        let ext = ext_rule
-            .is_external(spec, in_node_modules)
-            .unwrap_or(false);
+        let ext = ext_rule.is_external(spec, in_node_modules).unwrap_or(false);
         Box::pin(async move { Ok(ext) })
     })));
     let result = async {
@@ -3924,7 +4067,6 @@ async fn build_server_fns(root: &Path, out_dir: &Path, mode: &str) -> anyhow::Re
                 input: Some(vec![InputItem {
                     name: Some("_oj_server_fns".to_string()),
                     import: "./_oj_server_fns_entry.tsx".to_string(),
-                    ..Default::default()
                 }]),
                 cwd: Some(root.to_path_buf()),
                 dir: Some(out_dir.display().to_string()),
@@ -4171,6 +4313,7 @@ pub(crate) fn derive_client_entry(root: &Path, server_entry: &str) -> Option<Str
     root.join(&client_rel).is_file().then_some(client_rel)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_ssr_app(
     root: &Path,
     out_dir: &Path,
@@ -4189,7 +4332,8 @@ pub(crate) async fn build_ssr_app(
         println!("oj build (ssr): server bundle only (no *-client sibling to hydrate)");
         return Ok(());
     };
-    let (js, css) = build_client_entry(root, out_dir, &client_entry, mode, minify, sourcemap).await?;
+    let (js, css) =
+        build_client_entry(root, out_dir, &client_entry, mode, minify, sourcemap).await?;
 
     build_server_fns(root, out_dir, mode).await?;
     if has_server_modules(root) {
@@ -4316,20 +4460,27 @@ async fn build_client_entry(
             input: Some(vec![InputItem {
                 name: Some(stem),
                 import: entry_import,
-                ..Default::default()
             }]),
             cwd: Some(root.to_path_buf()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(root, &config, "client"),
             transform: transform_options(&config, is_production),
-            entry_filenames: Some(oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into()),
-            chunk_filenames: Some(oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into()),
+            entry_filenames: Some(
+                oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into(),
+            ),
+            chunk_filenames: Some(
+                oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into(),
+            ),
             minify: Some(rolldown_minify(
                 oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify),
             )),
             sourcemap: env_sourcemap(&config, "client", sourcemap),
             define: Some({
-                let env = oj_env::with_process_env(loaded_env.clone(), std::env::vars(), &env_prefix_refs);
+                let env = oj_env::with_process_env(
+                    loaded_env.clone(),
+                    std::env::vars(),
+                    &env_prefix_refs,
+                );
                 let mut pairs = process_env_defines(&node_env);
                 pairs.push(import_meta_hot_define());
                 pairs.extend(oj_env::import_meta_env_defines(
@@ -4349,7 +4500,11 @@ async fn build_client_entry(
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match bundler.write().await.map_err(rolldown_failure!("client build failed")) {
+    let output = match bundler
+        .write()
+        .await
+        .map_err(rolldown_failure!("client build failed"))
+    {
         Ok(output) => output,
         Err(err) => return Err(fail_with_plugin_hooks(err, &plugin_host).await),
     };
@@ -4414,7 +4569,13 @@ async fn build_library(
     let is_production = node_env == "production";
     let env_prefixes = env_prefixes_of(config);
     let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
-    let import_of = |p: &str| if p.starts_with('.') { p.to_string() } else { format!("./{p}") };
+    let import_of = |p: &str| {
+        if p.starts_with('.') {
+            p.to_string()
+        } else {
+            format!("./{p}")
+        }
+    };
     let stem_of = |p: &str| {
         Path::new(p)
             .file_stem()
@@ -4448,7 +4609,13 @@ async fn build_library(
         .as_ref()
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str())
-        .map(|n| n.strip_prefix('@').and_then(|s| s.split_once('/')).map(|(_, rest)| rest).unwrap_or(n).to_string());
+        .map(|n| {
+            n.strip_prefix('@')
+                .and_then(|s| s.split_once('/'))
+                .map(|(_, rest)| rest)
+                .unwrap_or(n)
+                .to_string()
+        });
     let single_string_entry = matches!(lib.entry, oj_config::LibEntry::One(_));
     let base_name: Option<String> = match (&lib.file_name, multiple) {
         (Some(f), false) => Some(f.clone()),
@@ -4466,7 +4633,11 @@ async fn build_library(
     };
     let js_ext = |fmt: &str| -> &'static str {
         if pkg_type_module {
-            if matches!(fmt, "cjs" | "umd") { "cjs" } else { "js" }
+            if matches!(fmt, "cjs" | "umd") {
+                "cjs"
+            } else {
+                "js"
+            }
         } else if matches!(fmt, "es" | "esm") {
             "mjs"
         } else {
@@ -4476,7 +4647,11 @@ async fn build_library(
     // Vite's `resolveBuildOutputs`: default formats are es+umd for one entry and
     // es+cjs for several; umd/iife need a single entry and `build.lib.name`.
     let formats = lib.formats.clone().unwrap_or_else(|| {
-        if multiple { vec!["es".into(), "cjs".into()] } else { vec!["es".into(), "umd".into()] }
+        if multiple {
+            vec!["es".into(), "cjs".into()]
+        } else {
+            vec!["es".into(), "umd".into()]
+        }
     });
     for fmt in &formats {
         if lib_format(fmt).is_none() {
@@ -4492,7 +4667,11 @@ async fn build_library(
         }
     }
 
-    prepare_out_dir(root, out_dir, config.build.as_ref().and_then(|b| b.empty_out_dir))?;
+    prepare_out_dir(
+        root,
+        out_dir,
+        config.build.as_ref().and_then(|b| b.empty_out_dir),
+    )?;
     let started = Instant::now();
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let mut emitted: Vec<(String, usize)> = Vec::new();
@@ -4533,7 +4712,7 @@ async fn build_library(
                 // Vite inlines every asset of a library build.
                 inline_limit: u64::MAX,
                 client: true,
-                resolve: css_resolve_of(root, &config, "client"),
+                resolve: css_resolve_of(root, config, "client"),
                 css_code_split: false,
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
@@ -4549,7 +4728,6 @@ async fn build_library(
                         .map(|(name, import)| InputItem {
                             name: Some(name.clone()),
                             import: import.clone(),
-                            ..Default::default()
                         })
                         .collect(),
                 ),
@@ -4571,8 +4749,18 @@ async fn build_library(
                 // (rolldown's own browser-platform NODE_ENV default still applies,
                 // as under Vite); import.meta.env and the user's `define` do.
                 define: Some({
-                    let env = oj_env::with_process_env(loaded_env.clone(), std::env::vars(), &env_prefix_refs);
-                    let mut pairs = oj_env::import_meta_env_defines(&env, mode, !is_production, "/", &env_prefix_refs);
+                    let env = oj_env::with_process_env(
+                        loaded_env.clone(),
+                        std::env::vars(),
+                        &env_prefix_refs,
+                    );
+                    let mut pairs = oj_env::import_meta_env_defines(
+                        &env,
+                        mode,
+                        !is_production,
+                        "/",
+                        &env_prefix_refs,
+                    );
                     pairs.push(import_meta_hot_define());
                     pairs.extend(oj_config::config_defines(config));
                     pairs.extend(oj_config::environment_defines(config, "client"));
@@ -4618,7 +4806,7 @@ async fn build_library(
         out_dir.display(),
         started.elapsed()
     );
-    emitted.sort_by(|a, b| b.1.cmp(&a.1));
+    emitted.sort_by_key(|e| std::cmp::Reverse(e.1));
     emitted.dedup();
     for (name, bytes) in &emitted {
         println!("  {:>9}  {}", human_bytes(*bytes), name);
@@ -4690,7 +4878,10 @@ fn css_asset_url(name: &str, base: &str, asset_names: Option<&str>) -> String {
 
 /// `to` relative to the directory of `from` (both outDir-relative, `/`-separated).
 fn relative_chunk_path(from: &str, to: &str) -> String {
-    let from_dir: Vec<&str> = from.rsplit_once('/').map(|(d, _)| d.split('/').collect()).unwrap_or_default();
+    let from_dir: Vec<&str> = from
+        .rsplit_once('/')
+        .map(|(d, _)| d.split('/').collect())
+        .unwrap_or_default();
     let to_parts: Vec<&str> = to.split('/').collect();
     let common = from_dir
         .iter()
@@ -4880,6 +5071,7 @@ fn rebase_css_urls(
 /// stylesheet render-blocking is decided per page by `split_css_links`; chunks
 /// only reached through dynamic imports get their CSS from `__vitePreload` (and
 /// a self-injecting fallback, see `apply_preload_helper`).
+#[allow(clippy::too_many_arguments)]
 fn emit_split_css_files(
     output: &rolldown::BundleOutput,
     collected_css: &Arc<Mutex<Vec<(String, String)>>>,
@@ -4931,7 +5123,12 @@ fn emit_split_css_files(
             continue;
         }
         let hash = content_hash(css.as_bytes());
-        let css_name = render_asset_name(opts.asset_names, &sanitize_asset_name(&chunk.name), &hash, "css");
+        let css_name = render_asset_name(
+            opts.asset_names,
+            &sanitize_asset_name(&chunk.name),
+            &hash,
+            "css",
+        );
         if let Some(parent) = out_dir.join(&css_name).parent() {
             fs::create_dir_all(parent)?;
         }
@@ -5024,7 +5221,14 @@ fn apply_preload_helper(
         for asset in &output.assets {
             if let rolldown_common::Output::Chunk(chunk) = asset {
                 let file = chunk.filename.to_string();
-                dynamic_map.insert(file.clone(), chunk.dynamic_imports.iter().map(|d| d.to_string()).collect());
+                dynamic_map.insert(
+                    file.clone(),
+                    chunk
+                        .dynamic_imports
+                        .iter()
+                        .map(|d| d.to_string())
+                        .collect(),
+                );
                 if chunk.is_entry {
                     let is_worker = chunk
                         .facade_module_id
@@ -5186,7 +5390,11 @@ fn worker_only_chunks(
     if workers.is_empty() {
         return std::collections::BTreeSet::new();
     }
-    let others: Vec<&String> = entries.iter().filter(|(_, w)| !*w).map(|(f, _)| f).collect();
+    let others: Vec<&String> = entries
+        .iter()
+        .filter(|(_, w)| !*w)
+        .map(|(f, _)| f)
+        .collect();
     let from_workers = closure(&workers);
     let from_others = closure(&others);
     from_workers.difference(&from_others).cloned().collect()
@@ -5306,7 +5514,10 @@ fn push_css_manifest_row(rows: &mut Vec<ManifestAsset>, root: &Path, src: &str, 
         Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
         Err(_) => format!(
             "_{}",
-            Path::new(css_name).file_name().and_then(|n| n.to_str()).unwrap_or(css_name)
+            Path::new(css_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(css_name)
         ),
     };
     if rows.iter().any(|r| r.key == key) {
@@ -5381,7 +5592,10 @@ fn manifest_asset_rows(
             Some(orig) => orig.clone(),
             None => format!(
                 "_{}",
-                Path::new(&file).file_name().and_then(|n| n.to_str()).unwrap_or(&file)
+                Path::new(&file)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&file)
             ),
         };
         // A JS chunk generated from the same source keeps the key (Vite).
@@ -5440,7 +5654,11 @@ fn manifest_entries_from_bundle(
             is_entry: chunk.is_entry,
             is_dynamic_entry: chunk.is_dynamic_entry,
             imports: chunk.imports.iter().map(|i| i.to_string()).collect(),
-            dynamic_imports: chunk.dynamic_imports.iter().map(|i| i.to_string()).collect(),
+            dynamic_imports: chunk
+                .dynamic_imports
+                .iter()
+                .map(|i| i.to_string())
+                .collect(),
             css: Vec::new(),
             assets: Vec::new(),
         });
@@ -5560,21 +5778,35 @@ mod tests {
             r#"{ "ssr": { "runnerBacked": true, "resolve": {
                 "conditions": ["workerd", "worker", "module", "browser", "development|production"] } } }"#,
         );
-        let conditions = rolldown_resolve(root, &runner_backed, "ssr").unwrap().condition_names.unwrap();
-        assert_eq!(conditions, oj_config::node_server_conditions(&runner_backed, false));
+        let conditions = rolldown_resolve(root, &runner_backed, "ssr")
+            .unwrap()
+            .condition_names
+            .unwrap();
+        assert_eq!(
+            conditions,
+            oj_config::node_server_conditions(&runner_backed, false)
+        );
         assert!(conditions.contains(&"node".to_string()));
         assert!(!conditions.contains(&"workerd".to_string()));
         assert!(!conditions.contains(&"browser".to_string()));
 
         // Not runner-backed: the user's ssr list passes verbatim (prod-mapped).
-        let plain = from(r#"{ "ssr": { "resolve": { "conditions": ["custom", "development|production"] } } }"#);
-        let conditions = rolldown_resolve(root, &plain, "ssr").unwrap().condition_names.unwrap();
+        let plain = from(
+            r#"{ "ssr": { "resolve": { "conditions": ["custom", "development|production"] } } }"#,
+        );
+        let conditions = rolldown_resolve(root, &plain, "ssr")
+            .unwrap()
+            .condition_names
+            .unwrap();
         assert!(conditions.contains(&"custom".to_string()));
         assert!(conditions.contains(&"production".to_string()));
         assert!(!conditions.contains(&"node".to_string()));
 
         // The client environment never takes the swap.
-        let conditions = rolldown_resolve(root, &runner_backed, "client").unwrap().condition_names.unwrap();
+        let conditions = rolldown_resolve(root, &runner_backed, "client")
+            .unwrap()
+            .condition_names
+            .unwrap();
         assert!(conditions.contains(&"browser".to_string()));
         assert!(!conditions.contains(&"node".to_string()));
 
@@ -5585,7 +5817,10 @@ mod tests {
             r#"{ "ssr": { "runnerBacked": true, "target": "webworker", "resolve": {
                 "conditions": ["workerd", "worker", "module", "browser", "development|production"] } } }"#,
         );
-        let conditions = rolldown_resolve(root, &worker_target, "ssr").unwrap().condition_names.unwrap();
+        let conditions = rolldown_resolve(root, &worker_target, "ssr")
+            .unwrap()
+            .condition_names
+            .unwrap();
         assert!(conditions.contains(&"workerd".to_string()));
         assert!(!conditions.contains(&"node".to_string()));
 
@@ -5594,8 +5829,14 @@ mod tests {
             r#"{ "ssr": { "runnerBacked": true, "target": "node", "resolve": {
                 "conditions": ["workerd", "development|production"] } } }"#,
         );
-        let conditions = rolldown_resolve(root, &node_target, "ssr").unwrap().condition_names.unwrap();
-        assert_eq!(conditions, oj_config::node_server_conditions(&node_target, false));
+        let conditions = rolldown_resolve(root, &node_target, "ssr")
+            .unwrap()
+            .condition_names
+            .unwrap();
+        assert_eq!(
+            conditions,
+            oj_config::node_server_conditions(&node_target, false)
+        );
         assert!(!conditions.contains(&"workerd".to_string()));
     }
 
@@ -5610,17 +5851,26 @@ mod tests {
         let vite_shaped = from(
             r#"{ "resolve": { "mainFields": ["browser", "module", "jsnext:main", "jsnext"] } }"#,
         );
-        let fields = rolldown_resolve(root, &vite_shaped, "client").unwrap().main_fields.unwrap();
+        let fields = rolldown_resolve(root, &vite_shaped, "client")
+            .unwrap()
+            .main_fields
+            .unwrap();
         assert_eq!(
             fields,
             ["browser", "module", "jsnext:main", "jsnext", "main"].map(String::from)
         );
         // A list already naming main is untouched (no duplicate, no reorder).
         let named = from(r#"{ "resolve": { "mainFields": ["main", "module"] } }"#);
-        let fields = rolldown_resolve(root, &named, "client").unwrap().main_fields.unwrap();
+        let fields = rolldown_resolve(root, &named, "client")
+            .unwrap()
+            .main_fields
+            .unwrap();
         assert_eq!(fields, ["main", "module"].map(String::from));
         // No user list: rolldown keeps its own defaults (None passes through).
-        assert!(rolldown_resolve(root, &from("{}"), "client").unwrap().main_fields.is_none());
+        assert!(rolldown_resolve(root, &from("{}"), "client")
+            .unwrap()
+            .main_fields
+            .is_none());
     }
 
     #[test]
@@ -5648,7 +5898,9 @@ mod tests {
 
         // outDir == root with an explicit emptyOutDir would delete the sources the
         // build reads; refuse instead of destroying the project.
-        let err = prepare_out_dir(&root, &root, Some(true)).unwrap_err().to_string();
+        let err = prepare_out_dir(&root, &root, Some(true))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("project root"), "{err}");
         assert!(root.join("index.html").exists() && root.join("main.js").exists());
 
@@ -5868,16 +6120,31 @@ mod tests {
         use rolldown_common::ModuleType;
         // Vite derives the transform lang from the id's extension (query
         // stripped); oj mirrors it for plugin-loaded/virtual modules.
-        assert!(matches!(module_type_for_id("~icons/ph/x.jsx"), ModuleType::Jsx));
-        assert!(matches!(module_type_for_id("/v/comp.tsx?used"), ModuleType::Tsx));
-        assert!(matches!(module_type_for_id("virtual:mod.ts"), ModuleType::Ts));
+        assert!(matches!(
+            module_type_for_id("~icons/ph/x.jsx"),
+            ModuleType::Jsx
+        ));
+        assert!(matches!(
+            module_type_for_id("/v/comp.tsx?used"),
+            ModuleType::Tsx
+        ));
+        assert!(matches!(
+            module_type_for_id("virtual:mod.ts"),
+            ModuleType::Ts
+        ));
         assert!(matches!(module_type_for_id("a.mts"), ModuleType::Ts));
         assert!(matches!(module_type_for_id("a.cts"), ModuleType::Ts));
-        assert!(matches!(module_type_for_id("data.json#x"), ModuleType::Json));
+        assert!(matches!(
+            module_type_for_id("data.json#x"),
+            ModuleType::Json
+        ));
         assert!(matches!(module_type_for_id("mod.mjs"), ModuleType::Js));
         assert!(matches!(module_type_for_id("plain.js"), ModuleType::Js));
         // Extensionless virtual ids default to JavaScript.
-        assert!(matches!(module_type_for_id("\0virtual:store"), ModuleType::Js));
+        assert!(matches!(
+            module_type_for_id("\0virtual:store"),
+            ModuleType::Js
+        ));
     }
 
     #[test]
@@ -5940,7 +6207,10 @@ mod tests {
             insert_before_head("<head></head><body></body>", "<x>"),
             "<head><x>\n</head><body></body>"
         );
-        assert_eq!(insert_before_head("<body></body>", "<x>"), "<x>\n<body></body>");
+        assert_eq!(
+            insert_before_head("<body></body>", "<x>"),
+            "<x>\n<body></body>"
+        );
     }
 
     #[tokio::test]
@@ -6013,7 +6283,11 @@ mod tests {
              window.probe = probe;\n",
         )
         .unwrap();
-        fs::write(root.join("server.js"), "export const flag = process.env.SOME_FLAG;\n").unwrap();
+        fs::write(
+            root.join("server.js"),
+            "export const flag = process.env.SOME_FLAG;\n",
+        )
+        .unwrap();
 
         build(root.clone(), Some("production"), CliOptions::default())
             .await
@@ -6025,14 +6299,26 @@ mod tests {
                 client.push_str(&fs::read_to_string(p).unwrap());
             }
         }
-        assert!(!client.contains("process.env"), "client bundle still reads process.env:\n{client}");
+        assert!(
+            !client.contains("process.env"),
+            "client bundle still reads process.env:\n{client}"
+        );
         assert!(client.contains("\"production\"") || client.contains("`production`"));
 
-        build_ssr(&root, &root.join("dist-ssr"), "server.js", "production", oj_config::Sourcemap::Off)
-            .await
-            .expect("ssr build");
+        build_ssr(
+            &root,
+            &root.join("dist-ssr"),
+            "server.js",
+            "production",
+            oj_config::Sourcemap::Off,
+        )
+        .await
+        .expect("ssr build");
         let server = fs::read_to_string(root.join("dist-ssr/server.mjs")).unwrap();
-        assert!(server.contains("process.env.SOME_FLAG"), "ssr bundle must keep process.env:\n{server}");
+        assert!(
+            server.contains("process.env.SOME_FLAG"),
+            "ssr bundle must keep process.env:\n{server}"
+        );
     }
 
     /// Vite's build-html asset pass: attribute references to source assets are
@@ -6046,11 +6332,19 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("public")).unwrap();
         fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
-        fs::write(root.join("vite.config.mjs"), "export default { base: '/app/' };").unwrap();
+        fs::write(
+            root.join("vite.config.mjs"),
+            "export default { base: '/app/' };",
+        )
+        .unwrap();
         fs::write(root.join("src/big.png"), vec![7u8; 9000]).unwrap();
         fs::write(root.join("src/big-2x.png"), vec![8u8; 9000]).unwrap();
         fs::write(root.join("src/tiny.png"), vec![9u8; 40]).unwrap();
-        fs::write(root.join("src/icon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect id=\"r\"/></svg>").unwrap();
+        fs::write(
+            root.join("src/icon.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect id=\"r\"/></svg>",
+        )
+        .unwrap();
         fs::write(root.join("public/logo.png"), vec![1u8; 100]).unwrap();
         fs::write(root.join("src/main.js"), "console.log(1);").unwrap();
         fs::write(
@@ -6084,21 +6378,52 @@ mod tests {
             .find(|n| n.starts_with("big-") && !n.starts_with("big-2x") && n.ends_with(".png"))
             .expect("big.png emitted hashed");
         let big_url = format!("/app/assets/{big}");
-        assert!(html.contains(&format!("<img src=\"{big_url}\" alt=\"a\">")), "{html}");
-        assert!(html.contains(&format!("<meta property=\"og:image\" content=\"{big_url}\">")), "{html}");
-        assert!(html.contains("<meta name=\"description\" content=\"/src/big.png\">"), "{html}");
-        assert!(html.contains(&format!("<video poster=\"{big_url}\" src=\"/missing.mp4\">")), "{html}");
-        assert!(html.contains(&format!("srcset=\"{big_url} 1x, /app/assets/big-2x-")), "{html}");
+        assert!(
+            html.contains(&format!("<img src=\"{big_url}\" alt=\"a\">")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<meta property=\"og:image\" content=\"{big_url}\">"
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains("<meta name=\"description\" content=\"/src/big.png\">"),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<video poster=\"{big_url}\" src=\"/missing.mp4\">"
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("srcset=\"{big_url} 1x, /app/assets/big-2x-")),
+            "{html}"
+        );
         // small: inlined, keeping the page's single quotes
         assert!(html.contains("<img src='data:image/png;base64,"), "{html}");
         // link icon is never inlined, and its fragment use shares the same file
-        assert!(html.contains("<link rel=\"icon\" href=\"/app/assets/icon-"), "{html}");
-        assert!(html.contains("<use href=\"/app/assets/icon-") && html.contains(".svg#r\">"), "{html}");
+        assert!(
+            html.contains("<link rel=\"icon\" href=\"/app/assets/icon-"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<use href=\"/app/assets/icon-") && html.contains(".svg#r\">"),
+            "{html}"
+        );
         // publicDir references get the base prefix
-        assert!(html.contains("<link rel=\"manifest\" href=\"/app/manifest.webmanifest\">"), "{html}");
+        assert!(
+            html.contains("<link rel=\"manifest\" href=\"/app/manifest.webmanifest\">"),
+            "{html}"
+        );
         assert!(html.contains("<img src=\"/app/logo.png\">"), "{html}");
         // left alone: external, vite-ignore (attribute dropped), missing file
-        assert!(html.contains("<img src=\"https://example.com/x.png\">"), "{html}");
+        assert!(
+            html.contains("<img src=\"https://example.com/x.png\">"),
+            "{html}"
+        );
         assert!(html.contains("<img src=\"./src/big.png\">"), "{html}");
         assert!(!html.contains("vite-ignore"), "{html}");
     }
@@ -6111,8 +6436,16 @@ mod tests {
         // One string entry in a `type: module` package named `@scope/my-lib`.
         let root = scratch("vite-lib-single");
         fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(root.join("package.json"), r#"{"name":"@scope/my-lib","type":"module"}"#).unwrap();
-        fs::write(root.join("src/index.ts"), "import './style.css';\nexport const add = (a: number, b: number) => a + b;\n").unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"@scope/my-lib","type":"module"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/index.ts"),
+            "import './style.css';\nexport const add = (a: number, b: number) => a + b;\n",
+        )
+        .unwrap();
         fs::write(root.join("src/style.css"), ".a{color:red}").unwrap();
         fs::write(
             root.join("vite.config.mjs"),
@@ -6122,8 +6455,14 @@ mod tests {
         build(root.clone(), Some("production"), CliOptions::default())
             .await
             .expect("vite.config build.lib should build");
-        assert!(root.join("dist/my-lib.js").is_file(), "es output named after the unscoped package");
-        assert!(root.join("dist/my-lib.umd.cjs").is_file(), "umd is a default format; .cjs under type module");
+        assert!(
+            root.join("dist/my-lib.js").is_file(),
+            "es output named after the unscoped package"
+        );
+        assert!(
+            root.join("dist/my-lib.umd.cjs").is_file(),
+            "umd is a default format; .cjs under type module"
+        );
         assert!(root.join("dist/my-lib.css").is_file());
         assert!(!root.join("dist/index.js").exists());
 
@@ -6144,7 +6483,10 @@ mod tests {
         for f in ["main.mjs", "extra.mjs", "main.js", "extra.js"] {
             assert!(root.join("dist").join(f).is_file(), "missing {f}");
         }
-        assert!(!root.join("dist/main.umd.js").exists(), "umd is not a default with several entries");
+        assert!(
+            !root.join("dist/main.umd.js").exists(),
+            "umd is not a default with several entries"
+        );
 
         // umd without a name is Vite's error, not a silent es-only build.
         let root = scratch("vite-lib-noname");
@@ -6176,7 +6518,11 @@ mod tests {
              export default { resolve: { alias: { '@': path.resolve(import.meta.dirname, 'src') } }, define: { __APP_VERSION__: '\"1.2.3\"' } };\n",
         )
         .unwrap();
-        fs::write(root.join("src/lib/util.js"), "export const greet = (n) => 'hi ' + n;\n").unwrap();
+        fs::write(
+            root.join("src/lib/util.js"),
+            "export const greet = (n) => 'hi ' + n;\n",
+        )
+        .unwrap();
         fs::write(
             root.join("src/w.js"),
             "import { greet } from '@/lib/util';\n\
@@ -6203,10 +6549,19 @@ mod tests {
                 code.push_str(&fs::read_to_string(p).unwrap());
             }
         }
-        assert!(!code.contains("@/lib"), "alias not resolved inside the inline worker:\n{code}");
-        assert!(!code.contains("__APP_VERSION__"), "define not applied inside the inline worker:\n{code}");
+        assert!(
+            !code.contains("@/lib"),
+            "alias not resolved inside the inline worker:\n{code}"
+        );
+        assert!(
+            !code.contains("__APP_VERSION__"),
+            "define not applied inside the inline worker:\n{code}"
+        );
         assert!(code.contains("1.2.3") && code.contains("hi "), "{code}");
-        assert!(!code.contains("process.env"), "process.env defines missing inside the inline worker:\n{code}");
+        assert!(
+            !code.contains("process.env"),
+            "process.env defines missing inside the inline worker:\n{code}"
+        );
     }
 
     /// The plugin host of an SSR (and client-entry) build is told the real mode,
@@ -6222,10 +6577,20 @@ mod tests {
              export default { plugins: [{ name: 'mode-probe', configResolved(c) { fs.writeFileSync(new URL('./mode.txt', import.meta.url), c.mode); } }] };\n",
         )
         .unwrap();
-        fs::write(root.join("server.js"), "export const render = () => 'ok';\n").unwrap();
-        build_ssr(&root, &root.join("dist-ssr"), "server.js", "staging", oj_config::Sourcemap::Off)
-            .await
-            .expect("ssr build");
+        fs::write(
+            root.join("server.js"),
+            "export const render = () => 'ok';\n",
+        )
+        .unwrap();
+        build_ssr(
+            &root,
+            &root.join("dist-ssr"),
+            "server.js",
+            "staging",
+            oj_config::Sourcemap::Off,
+        )
+        .await
+        .expect("ssr build");
         let seen = fs::read_to_string(root.join("mode.txt")).expect("plugin configResolved ran");
         assert_eq!(seen.trim(), "staging");
     }
@@ -6252,41 +6617,44 @@ mod tests {
             css: css.into_iter().map(str::to_string).collect(),
             assets: vec![],
         };
-        let m = build_manifest(&[
-            mk(
-                "src/main.tsx",
-                "main",
-                "assets/main-abc123.js",
-                Some("src/main.tsx"),
-                true,
-                false,
-                vec!["assets/vendor-def456.js"],
-                vec!["assets/lazy-xyz.js"],
-                vec!["assets/style-99.css"],
-            ),
-            mk(
-                "_vendor-def456.js",
-                "vendor",
-                "assets/vendor-def456.js",
-                None,
-                false,
-                false,
-                vec![],
-                vec![],
-                vec![],
-            ),
-            mk(
-                "_lazy-xyz.js",
-                "lazy",
-                "assets/lazy-xyz.js",
-                None,
-                false,
-                true,
-                vec![],
-                vec![],
-                vec![],
-            ),
-        ], &[]);
+        let m = build_manifest(
+            &[
+                mk(
+                    "src/main.tsx",
+                    "main",
+                    "assets/main-abc123.js",
+                    Some("src/main.tsx"),
+                    true,
+                    false,
+                    vec!["assets/vendor-def456.js"],
+                    vec!["assets/lazy-xyz.js"],
+                    vec!["assets/style-99.css"],
+                ),
+                mk(
+                    "_vendor-def456.js",
+                    "vendor",
+                    "assets/vendor-def456.js",
+                    None,
+                    false,
+                    false,
+                    vec![],
+                    vec![],
+                    vec![],
+                ),
+                mk(
+                    "_lazy-xyz.js",
+                    "lazy",
+                    "assets/lazy-xyz.js",
+                    None,
+                    false,
+                    true,
+                    vec![],
+                    vec![],
+                    vec![],
+                ),
+            ],
+            &[],
+        );
         let row = &m["src/main.tsx"];
         assert_eq!(row["file"], "assets/main-abc123.js");
         assert_eq!(row["name"], "main");
@@ -6310,9 +6678,19 @@ mod tests {
         let src = root.join("src/style.css").display().to_string();
         push_css_manifest_row(&mut rows, &root, &src, "assets/main-abc.css");
         // The same source twice (two chunks sharing a stylesheet) is one row.
-        push_css_manifest_row(&mut rows, &root, &format!("{src}?inline"), "assets/main-abc.css");
+        push_css_manifest_row(
+            &mut rows,
+            &root,
+            &format!("{src}?inline"),
+            "assets/main-abc.css",
+        );
         // CSS without a file under root falls back to `_<basename>`.
-        push_css_manifest_row(&mut rows, &root, "/elsewhere/__plugin_css__", "assets/gen-1.css");
+        push_css_manifest_row(
+            &mut rows,
+            &root,
+            "/elsewhere/__plugin_css__",
+            "assets/gen-1.css",
+        );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].key, "src/style.css");
         assert_eq!(rows[1].key, "_gen-1.css");
@@ -6343,9 +6721,17 @@ mod tests {
     fn cli_options_layer_over_the_loaded_config() {
         // Vite's cac: a bare `--manifest` is `true`, `--minify false` is `false`,
         // anything else stays a string (`--sourcemap inline`, `--manifest m.json`).
-        assert!(matches!(cli_bool_or_str("true"), oj_config::BoolOrString::Bool(true)));
-        assert!(matches!(cli_bool_or_str("false"), oj_config::BoolOrString::Bool(false)));
-        assert!(matches!(cli_bool_or_str("inline"), oj_config::BoolOrString::Str(s) if s == "inline"));
+        assert!(matches!(
+            cli_bool_or_str("true"),
+            oj_config::BoolOrString::Bool(true)
+        ));
+        assert!(matches!(
+            cli_bool_or_str("false"),
+            oj_config::BoolOrString::Bool(false)
+        ));
+        assert!(
+            matches!(cli_bool_or_str("inline"), oj_config::BoolOrString::Str(s) if s == "inline")
+        );
         let cli = CliOptions {
             out: Some(PathBuf::from("build-out")),
             base: Some("/app/".into()),
@@ -6373,12 +6759,27 @@ mod tests {
         assert_eq!(b.out_dir.as_deref(), Some("build-out"));
         assert_eq!(b.assets_inline_limit, Some(10));
         assert_eq!(b.empty_out_dir, Some(true));
-        assert!(!oj_config::build_minify(&config), "--minify false wins over the config's true");
-        assert!(!oj_config::build_css_minify(&config, false), "cssMinify follows minify");
-        assert_eq!(oj_config::build_sourcemap(&config), oj_config::Sourcemap::Hidden);
+        assert!(
+            !oj_config::build_minify(&config),
+            "--minify false wins over the config's true"
+        );
+        assert!(
+            !oj_config::build_css_minify(&config, false),
+            "cssMinify follows minify"
+        );
+        assert_eq!(
+            oj_config::build_sourcemap(&config),
+            oj_config::Sourcemap::Hidden
+        );
         assert_eq!(oj_config::build_assets_dir(&config), "static");
-        assert_eq!(oj_config::build_manifest_name(&config).as_deref(), Some(".vite/manifest.json"));
-        assert_eq!(oj_config::ssr_manifest_name(&config).as_deref(), Some("ssr.json"));
+        assert_eq!(
+            oj_config::build_manifest_name(&config).as_deref(),
+            Some(".vite/manifest.json")
+        );
+        assert_eq!(
+            oj_config::ssr_manifest_name(&config).as_deref(),
+            Some("ssr.json")
+        );
     }
 
     #[test]
@@ -6402,8 +6803,14 @@ mod tests {
         assert_eq!(ov.outro.as_deref(), Some("o;"));
         assert_eq!(ov.globals.as_ref().unwrap()["react"], "React");
         assert_eq!(ov.paths.as_ref().unwrap()["react"], "https://esm.sh/react");
-        assert!(ov.inline_dynamic_imports, "iife implies a single chunk (Vite: codeSplitting false)");
-        assert!(matches!(ro_treeshake(Some(&ro)), rolldown_common::TreeshakeOptions::Boolean(false)));
+        assert!(
+            ov.inline_dynamic_imports,
+            "iife implies a single chunk (Vite: codeSplitting false)"
+        );
+        assert!(matches!(
+            ro_treeshake(Some(&ro)),
+            rolldown_common::TreeshakeOptions::Boolean(false)
+        ));
 
         // es stays rolldown's default; `inlineDynamicImports` and `codeSplitting: false` both fold chunks.
         let es = serde_json::json!({ "output": [{ "format": "es", "inlineDynamicImports": true }, { "format": "cjs" }] });
@@ -6413,7 +6820,10 @@ mod tests {
         let cs = serde_json::json!({ "output": { "codeSplitting": false } });
         assert!(ro_output_overrides(Some(&cs)).inline_dynamic_imports);
         assert!(!ro_output_overrides(None).inline_dynamic_imports);
-        assert!(matches!(ro_treeshake(None), rolldown_common::TreeshakeOptions::Option(_)));
+        assert!(matches!(
+            ro_treeshake(None),
+            rolldown_common::TreeshakeOptions::Option(_)
+        ));
     }
 
     #[test]
@@ -6433,8 +6843,15 @@ mod tests {
         let out = scratch("reporter");
         let big = "x".repeat(20_000);
         fs::write(out.join("a.js"), &big).unwrap();
-        assert!(gzip_size(big.as_bytes()) < 200, "gzip of a repetitive file is small");
-        assert_eq!(gzip_size(b""), 20, "an empty gzip stream is the 20-byte header");
+        assert!(
+            gzip_size(big.as_bytes()) < 200,
+            "gzip of a repetitive file is small"
+        );
+        assert_eq!(
+            gzip_size(b""),
+            20,
+            "an empty gzip stream is the 20-byte header"
+        );
         let mut emitted = vec![("a.js".to_string(), 20_000), ("b.js".to_string(), 30)];
         report_build_output(&out, &mut emitted, true);
         assert_eq!(emitted[0].0, "a.js", "largest first");
@@ -6448,42 +6865,65 @@ mod tests {
         let entries = vec![("main.js".to_string(), false), ("w.js".to_string(), true)];
         let imports: std::collections::HashMap<String, Vec<String>> = [
             ("main.js".to_string(), vec!["shared.js".to_string()]),
-            ("w.js".to_string(), vec!["shared.js".to_string(), "wlib.js".to_string()]),
+            (
+                "w.js".to_string(),
+                vec!["shared.js".to_string(), "wlib.js".to_string()],
+            ),
         ]
         .into_iter()
         .collect();
         let dynamics: std::collections::HashMap<String, Vec<String>> =
-            [("w.js".to_string(), vec!["wlazy.js".to_string()])].into_iter().collect();
+            [("w.js".to_string(), vec!["wlazy.js".to_string()])]
+                .into_iter()
+                .collect();
         let only = worker_only_chunks(&entries, &imports, &dynamics);
         assert_eq!(
             only.into_iter().collect::<Vec<_>>(),
-            vec!["w.js".to_string(), "wlazy.js".to_string(), "wlib.js".to_string()],
+            vec![
+                "w.js".to_string(),
+                "wlazy.js".to_string(),
+                "wlib.js".to_string()
+            ],
             "shared.js is reachable from the page, so it keeps the document helpers"
         );
-        assert!(worker_only_chunks(&[("main.js".to_string(), false)], &imports, &dynamics).is_empty());
+        assert!(
+            worker_only_chunks(&[("main.js".to_string(), false)], &imports, &dynamics).is_empty()
+        );
     }
 
     #[test]
     fn minify_false_still_eliminates_dead_code() {
-        assert!(matches!(rolldown_minify(true), RawMinifyOptions::Bool(true)));
-        assert!(matches!(rolldown_minify(false), RawMinifyOptions::DeadCodeEliminationOnly));
-        assert_eq!(import_meta_hot_define(), ("import.meta.hot".to_string(), "undefined".to_string()));
+        assert!(matches!(
+            rolldown_minify(true),
+            RawMinifyOptions::Bool(true)
+        ));
+        assert!(matches!(
+            rolldown_minify(false),
+            RawMinifyOptions::DeadCodeEliminationOnly
+        ));
+        assert_eq!(
+            import_meta_hot_define(),
+            ("import.meta.hot".to_string(), "undefined".to_string())
+        );
     }
 
     #[test]
     fn non_entry_omits_isentry_and_empty_fields() {
-        let m = build_manifest(&[ManifestEntry {
-            key: "_chunk-1.js".into(),
-            name: "chunk".into(),
-            file: "assets/chunk-1.js".into(),
-            src: None,
-            is_entry: false,
-            is_dynamic_entry: false,
-            imports: vec![],
-            dynamic_imports: vec![],
-            css: vec![],
-            assets: vec![],
-        }], &[]);
+        let m = build_manifest(
+            &[ManifestEntry {
+                key: "_chunk-1.js".into(),
+                name: "chunk".into(),
+                file: "assets/chunk-1.js".into(),
+                src: None,
+                is_entry: false,
+                is_dynamic_entry: false,
+                imports: vec![],
+                dynamic_imports: vec![],
+                css: vec![],
+                assets: vec![],
+            }],
+            &[],
+        );
         let row = m["_chunk-1.js"].as_object().unwrap();
         assert!(!row.contains_key("assets"));
         assert!(!row.contains_key("isEntry"));
@@ -6524,12 +6964,34 @@ mod tests {
         assert_eq!(page_base("./", "nested/index.html"), "../");
         assert_eq!(page_base("./", "a/b/index.html"), "../../");
         assert_eq!(css_asset_url("assets/img-h.png", "./", None), "./img-h.png");
-        assert_eq!(css_asset_url("assets/img-h.png", "/app/", None), "/app/assets/img-h.png");
-        assert_eq!(css_asset_url("static/img-h.png", "./", Some("static/[name]-[hash][extname]")), "./img-h.png");
-        assert_eq!(css_asset_url("assets/img-h.png", "./", Some("css/[name][extname]")), "../assets/img-h.png");
-        assert_eq!(relative_chunk_path("assets/main-h.js", "assets/lazy-h.js"), "./lazy-h.js");
-        assert_eq!(relative_chunk_path("main-h.js", "assets/lazy-h.js"), "./assets/lazy-h.js");
-        assert_eq!(relative_chunk_path("assets/a/main-h.js", "assets/lazy-h.js"), "../lazy-h.js");
+        assert_eq!(
+            css_asset_url("assets/img-h.png", "/app/", None),
+            "/app/assets/img-h.png"
+        );
+        assert_eq!(
+            css_asset_url(
+                "static/img-h.png",
+                "./",
+                Some("static/[name]-[hash][extname]")
+            ),
+            "./img-h.png"
+        );
+        assert_eq!(
+            css_asset_url("assets/img-h.png", "./", Some("css/[name][extname]")),
+            "../assets/img-h.png"
+        );
+        assert_eq!(
+            relative_chunk_path("assets/main-h.js", "assets/lazy-h.js"),
+            "./lazy-h.js"
+        );
+        assert_eq!(
+            relative_chunk_path("main-h.js", "assets/lazy-h.js"),
+            "./assets/lazy-h.js"
+        );
+        assert_eq!(
+            relative_chunk_path("assets/a/main-h.js", "assets/lazy-h.js"),
+            "../lazy-h.js"
+        );
     }
 
     #[test]
@@ -6634,7 +7096,10 @@ mod tests {
             ("<svg fill=\"#fff\"/>", "%3csvg%20fill='%23fff'/%3e"),
             ("<svg>a\\b</svg>", "%3csvg%3ea%5Cb%3c/svg%3e"),
             // Vite: whitespace between tags is dropped, other runs become one %20.
-            ("  <svg>\n  <rect   x=\"1\"/>\n</svg>  ", "%3csvg%3e%3crect%20x='1'/%3e%3c/svg%3e"),
+            (
+                "  <svg>\n  <rect   x=\"1\"/>\n</svg>  ",
+                "%3csvg%3e%3crect%20x='1'/%3e%3c/svg%3e",
+            ),
         ];
         for (svg, expected_tail) in cases {
             let url = svg_data_url(svg);
@@ -6655,10 +7120,19 @@ mod tests {
             "<svg title='say \"hi\"'/>",
         ] {
             let url = svg_data_url(svg);
-            assert!(url.starts_with("data:image/svg+xml;base64,"), "{svg} -> {url}");
-            assert_eq!(url, format!("data:image/svg+xml;base64,{}", b64(svg.as_bytes())));
+            assert!(
+                url.starts_with("data:image/svg+xml;base64,"),
+                "{svg} -> {url}"
+            );
+            assert_eq!(
+                url,
+                format!("data:image/svg+xml;base64,{}", b64(svg.as_bytes()))
+            );
         }
-        assert!(!has_nested_quotes("<svg a=\"b\" c='d'/>"), "separate quote styles are fine");
+        assert!(
+            !has_nested_quotes("<svg a=\"b\" c='d'/>"),
+            "separate quote styles are fine"
+        );
     }
 
     #[test]
@@ -6689,7 +7163,10 @@ mod tests {
             "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "bmp", "svg", "woff", "woff2",
             "ttf", "otf", "eot", "mp4", "webm", "mov", "mp3", "wav", "ogg",
         ] {
-            assert!(is_build_asset(&format!("/src/a.{ext}")), "{ext} not an asset");
+            assert!(
+                is_build_asset(&format!("/src/a.{ext}")),
+                "{ext} not an asset"
+            );
             assert_ne!(
                 asset_mime(ext),
                 "application/octet-stream",
@@ -6733,24 +7210,68 @@ mod tests {
 
     #[test]
     fn asset_queries_split_in_any_combination() {
-        assert_eq!(split_asset_query("./w.ts?worker"), Some(("./w.ts".into(), "worker".into())));
-        assert_eq!(split_asset_query("./w.ts?worker&inline"), Some(("./w.ts".into(), "worker&inline".into())));
-        assert_eq!(split_asset_query("./w.ts?inline&worker"), Some(("./w.ts".into(), "worker&inline".into())));
-        assert_eq!(split_asset_query("./w.ts?url&sharedworker"), Some(("./w.ts".into(), "sharedworker&url".into())));
-        assert_eq!(split_asset_query("./a.png?url"), Some(("./a.png".into(), "url".into())));
-        assert_eq!(split_asset_query("./a.png?url&v=1"), None, "foreign params are not oj queries");
+        assert_eq!(
+            split_asset_query("./w.ts?worker"),
+            Some(("./w.ts".into(), "worker".into()))
+        );
+        assert_eq!(
+            split_asset_query("./w.ts?worker&inline"),
+            Some(("./w.ts".into(), "worker&inline".into()))
+        );
+        assert_eq!(
+            split_asset_query("./w.ts?inline&worker"),
+            Some(("./w.ts".into(), "worker&inline".into()))
+        );
+        assert_eq!(
+            split_asset_query("./w.ts?url&sharedworker"),
+            Some(("./w.ts".into(), "sharedworker&url".into()))
+        );
+        assert_eq!(
+            split_asset_query("./a.png?url"),
+            Some(("./a.png".into(), "url".into()))
+        );
+        assert_eq!(
+            split_asset_query("./a.png?url&v=1"),
+            None,
+            "foreign params are not oj queries"
+        );
         assert_eq!(split_asset_query("./a.png?v=1"), None);
         assert_eq!(split_asset_query("./a.png"), None);
-        assert_eq!(worker_id_parts("/x/w.ts?worker&inline"), Some(("/x/w.ts", "Worker", true, false)));
-        assert_eq!(worker_id_parts("/x/w.ts?sharedworker&url"), Some(("/x/w.ts", "SharedWorker", false, true)));
+        assert_eq!(
+            worker_id_parts("/x/w.ts?worker&inline"),
+            Some(("/x/w.ts", "Worker", true, false))
+        );
+        assert_eq!(
+            worker_id_parts("/x/w.ts?sharedworker&url"),
+            Some(("/x/w.ts", "SharedWorker", false, true))
+        );
         assert_eq!(worker_id_parts("/x/w.ts?url"), None);
     }
 
     #[test]
     fn asset_file_names_render_vite_placeholders() {
-        assert_eq!(render_asset_name(None, "bg", "0123456789abcdef", "png"), "assets/bg-01234567.png");
-        assert_eq!(render_asset_name(Some("static/[name].[hash][extname]"), "bg", "0123456789abcdef", "png"), "static/bg.01234567.png");
-        assert_eq!(render_asset_name(Some("[ext]/[name]-[hash].[ext]"), "app", "abcdef0123456789", "css"), "css/app-abcdef01.css");
+        assert_eq!(
+            render_asset_name(None, "bg", "0123456789abcdef", "png"),
+            "assets/bg-01234567.png"
+        );
+        assert_eq!(
+            render_asset_name(
+                Some("static/[name].[hash][extname]"),
+                "bg",
+                "0123456789abcdef",
+                "png"
+            ),
+            "static/bg.01234567.png"
+        );
+        assert_eq!(
+            render_asset_name(
+                Some("[ext]/[name]-[hash].[ext]"),
+                "app",
+                "abcdef0123456789",
+                "css"
+            ),
+            "css/app-abcdef01.css"
+        );
         assert_eq!(render_asset_name(None, "x", "abcd", ""), "assets/x-abcd");
     }
 
@@ -6784,7 +7305,9 @@ mod tests {
         let mut selfish = std::collections::HashMap::new();
         selfish.insert("a".to_string(), vec!["a".to_string()]);
         assert_eq!(
-            transitive_imports("a", &selfish).into_iter().collect::<Vec<_>>(),
+            transitive_imports("a", &selfish)
+                .into_iter()
+                .collect::<Vec<_>>(),
             vec!["a".to_string()]
         );
     }
@@ -6820,7 +7343,10 @@ mod tests {
             out,
             "<link rel='stylesheet' href='/assets/site-abc.css'><link rel=stylesheet href=/assets/site-abc.css><link rel=\"stylesheet\" href = \"/assets/site-abc.css\"><link href=\"/other.css\">"
         );
-        assert_eq!(rewrite_link_hrefs("<p>no links</p>", "/a", "/b"), "<p>no links</p>");
+        assert_eq!(
+            rewrite_link_hrefs("<p>no links</p>", "/a", "/b"),
+            "<p>no links</p>"
+        );
     }
 
     #[test]
@@ -6832,7 +7358,10 @@ mod tests {
           <link rel="icon" href="favicon.ico">
           <link rel="modulepreload" href="/assets/chunk.js">
         </head></html>"#;
-        assert_eq!(stylesheet_hrefs(html), vec!["/src/base.css".to_string(), "./src/theme.scss".to_string()]);
+        assert_eq!(
+            stylesheet_hrefs(html),
+            vec!["/src/base.css".to_string(), "./src/theme.scss".to_string()]
+        );
     }
 
     #[test]
@@ -6846,11 +7375,26 @@ mod tests {
         assert_eq!(entries[0].0, "/@oj-inline/0.js");
         assert_eq!(entries[0].1, "/app/index.html?html-proxy&index=0.js");
         assert_eq!(entries[1].1, "/app/index.html?html-proxy&index=1.js");
-        assert!(out.contains("<script type=\"module\" src=\"/@oj-inline/0.js\"></script>"), "{out}");
-        assert!(out.contains("<script type=\"module\" src=\"/@oj-inline/1.js\"></script>"), "{out}");
-        assert!(!out.contains("console.log(2)"), "inline body removed: {out}");
-        assert!(out.contains("var legacy = 1;"), "classic scripts untouched: {out}");
-        assert!(out.contains("src=\"/src/main.js\""), "external module kept: {out}");
+        assert!(
+            out.contains("<script type=\"module\" src=\"/@oj-inline/0.js\"></script>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<script type=\"module\" src=\"/@oj-inline/1.js\"></script>"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("console.log(2)"),
+            "inline body removed: {out}"
+        );
+        assert!(
+            out.contains("var legacy = 1;"),
+            "classic scripts untouched: {out}"
+        );
+        assert!(
+            out.contains("src=\"/src/main.js\""),
+            "external module kept: {out}"
+        );
         // The placeholder is picked up as a module entry src.
         assert!(module_script_srcs(&out).contains(&"/@oj-inline/0.js".to_string()));
     }
@@ -6870,8 +7414,13 @@ mod tests {
         let (out, entries) = externalize_inline_scripts(html, Path::new("/app/index.html"));
         assert_eq!(entries.len(), 3);
         assert!(!out.contains("./a.ts") && !out.contains("./c.ts"), "{out}");
-        assert!(out.contains("src='/src/main.ts'"), "external module kept: {out}");
-        assert!(out.contains("var d = 1;"), "classic scripts untouched: {out}");
+        assert!(
+            out.contains("src='/src/main.ts'"),
+            "external module kept: {out}"
+        );
+        assert!(
+            out.contains("var d = 1;"),
+            "classic scripts untouched: {out}"
+        );
     }
-
 }

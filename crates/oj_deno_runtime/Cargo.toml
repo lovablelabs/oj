@@ -308,3 +308,9 @@ features = [
 level = "warn"
 priority = 0
 check-cfg = ["cfg(tokio_unstable)"]
+
+# Upstream builds with `--cfg tokio_unstable`; without it the verbatim
+# tokio_util.rs leaves `metrics_enabled` unread.
+[lints.rust.unused_variables]
+level = "allow"
+priority = 0

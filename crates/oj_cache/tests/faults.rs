@@ -36,8 +36,14 @@ fn garbage_and_truncated_entries_are_misses() {
     corrupt_entry_is_a_miss("truncated json", &full[..full.len() / 2]);
     corrupt_entry_is_a_miss("json of the wrong type", b"[]");
     corrupt_entry_is_a_miss("json null", b"null");
-    corrupt_entry_is_a_miss("missing required field", br#"{"imports":[],"is_boundary":false}"#);
-    corrupt_entry_is_a_miss("wrong field type", br#"{"code":42,"imports":[],"is_boundary":false}"#);
+    corrupt_entry_is_a_miss(
+        "missing required field",
+        br#"{"imports":[],"is_boundary":false}"#,
+    );
+    corrupt_entry_is_a_miss(
+        "wrong field type",
+        br#"{"code":42,"imports":[],"is_boundary":false}"#,
+    );
     corrupt_entry_is_a_miss("nul bytes", b"\0\0\0\0");
     corrupt_entry_is_a_miss("utf16 bom", b"\xff\xfe{\0}\0");
 }
@@ -135,7 +141,10 @@ fn a_read_only_shard_directory_degrades_to_no_caching() {
     let f = fixture();
     let key = f.cache.key(b"source", "/src/App.tsx", "dev");
     f.cache.put(&key, &module("first"));
-    let shard = entry_path(f.dir.path(), &key).parent().unwrap().to_path_buf();
+    let shard = entry_path(f.dir.path(), &key)
+        .parent()
+        .unwrap()
+        .to_path_buf();
     std::fs::set_permissions(&shard, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     f.cache.put(&key, &module("second"));

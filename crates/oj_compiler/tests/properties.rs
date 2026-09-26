@@ -49,8 +49,7 @@ const FRAGMENTS: &[&str] = &[
 ];
 
 fn module_source() -> impl Strategy<Value = String> {
-    proptest::sample::subsequence(FRAGMENTS, 0..FRAGMENTS.len())
-        .prop_map(|parts| parts.join("\n"))
+    proptest::sample::subsequence(FRAGMENTS, 0..FRAGMENTS.len()).prop_map(|parts| parts.join("\n"))
 }
 
 fn extension() -> impl Strategy<Value = &'static str> {

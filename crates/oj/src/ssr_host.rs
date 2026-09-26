@@ -551,7 +551,11 @@ mod tests {
         assert!(dropped >= 2, "leaf + importer chain, got {dropped}");
         assert_eq!(graph.version_of(&leaf_id), 1);
         assert_eq!(graph.version_of(&mid_id), 1);
-        assert_eq!(graph.version_of(&other_id), 0, "untouched sibling keeps its version");
+        assert_eq!(
+            graph.version_of(&other_id),
+            0,
+            "untouched sibling keeps its version"
+        );
         assert!(graph.specifier_for(&leaf_id).ends_with("?v=1"));
 
         // A forced bump (the Start engine's entry reload) moves one id.

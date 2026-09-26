@@ -222,10 +222,15 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
         let env: Vec<(String, String)> = vec![
             ("OJ_APP_ROOT".into(), root.to_string_lossy().into_owned()),
             ("OJ_ENV_MODE".into(), env_mode.to_string()),
-            ("OJ_PRESEED_REPORT".into(), report.to_string_lossy().into_owned()),
+            (
+                "OJ_PRESEED_REPORT".into(),
+                report.to_string_lossy().into_owned(),
+            ),
         ];
         let mut stdin = child.stdin.take().expect("piped stdin");
-        stdin.write_all(serde_json::to_string(&env)?.as_bytes()).await?;
+        stdin
+            .write_all(serde_json::to_string(&env)?.as_bytes())
+            .await?;
         // Dropping closes the pipe; the child's read_to_string completes.
     }
     let status = match tokio::time::timeout(preseed_timeout(), child.wait()).await {
@@ -299,7 +304,10 @@ mod tests {
 
         write_stamp(
             root,
-            &[SeededEnv { name: "ssr".into(), metadata_path: meta.clone() }],
+            &[SeededEnv {
+                name: "ssr".into(),
+                metadata_path: meta.clone(),
+            }],
         );
         assert!(stamp_is_warm(root));
 

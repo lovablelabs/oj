@@ -420,10 +420,19 @@ mod tests {
             matches!(classify(&req, &prefixes), Route::Pass)
         };
         assert!(route("GET", "/@oj/client.js"), "internal urls pass through");
-        assert!(route("GET", "/__oj_fn"), "double-underscore urls pass through");
+        assert!(
+            route("GET", "/__oj_fn"),
+            "double-underscore urls pass through"
+        );
         assert!(route("GET", "/src/App.tsx"), "a file url passes through");
-        assert!(route("GET", "/api/users"), "a proxied prefix passes through");
-        assert!(route("PUT", "/dashboard"), "an unhandled method passes through");
+        assert!(
+            route("GET", "/api/users"),
+            "a proxied prefix passes through"
+        );
+        assert!(
+            route("PUT", "/dashboard"),
+            "an unhandled method passes through"
+        );
         assert!(!route("GET", "/dashboard"), "a route is a document");
         assert!(!route("POST", "/dashboard"), "a post is an action");
     }
