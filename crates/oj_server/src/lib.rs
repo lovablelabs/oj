@@ -4763,7 +4763,7 @@ async fn ensure_module(
         };
         let mut rewrite = |spec: &str| rewrite_with(spec, &resolver);
         // The import specifiers whose named imports must read off the CJS
-        // value (module.exports) instead of linking as ESM bindings — shared
+        // value (module.exports) instead of linking as ESM bindings, shared
         // by app source and served ESM deps (an ESM dep importing an
         // unbundled UMD sibling, the proj4 -> geographiclib-geodesic shape,
         // strict-links the same way app source does).
@@ -4815,15 +4815,22 @@ async fn ensure_module(
                 // Gated on a cheap bare-import scan: deps overwhelmingly
                 // import their own relative files, and the rewrite would
                 // otherwise add a second full parse to every served ESM dep.
-                let dep_interop = if oj_compiler::interop::may_import_bare(&source) {
+                // The scan finds the bare specifiers without a parse; the
+                // rewrite (a full parse) runs only when one of them actually
+                // maps to an interop URL, so a dep file whose bare imports
+                // are all ESM peers (react, tslib) skips it entirely.
+                let dep_interop = if oj_compiler::interop::bare_import_specifiers(&source)
+                    .iter()
+                    .any(|spec| cjs_interop_url(spec).is_some())
+                {
                     oj_compiler::interop::rewrite_cjs_interop_logged(
                         &source,
                         &file_owned,
                         &cjs_interop_url,
-                        &mut |w| eprintln!("oj: warning: {w}"),
+                        &mut warn_interop_once,
                     )
                 } else {
-                    interop_node_builtins(&source, &file_owned)
+                    None
                 };
                 let dep_src = dep_interop.as_deref().unwrap_or(&source);
                 oj_compiler::cjs::compile_dep(&file_owned, &url_owned, dep_src, &mut rewrite)
@@ -4846,7 +4853,7 @@ async fn ensure_module(
                 &source,
                 &file_owned,
                 &cjs_interop_url,
-                &mut |w| eprintln!("oj: warning: {w}"),
+                &mut warn_interop_once,
             );
             let mut opts = if is_svelte {
                 oj_compiler::CompileOptions {
@@ -5515,6 +5522,18 @@ fn resolved_imports_json(
         map.insert(spec, val);
     }
     serde_json::Value::Object(map).to_string()
+}
+
+/// A stable, per-file condition (the bare star re-export of a CJS dep) would
+/// otherwise re-warn on every recompile: HMR invalidations, cache misses,
+/// restarts. Once per distinct message, like Vite's deduping logger.
+fn warn_interop_once(msg: String) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    if seen.lock().unwrap().insert(msg.clone()) {
+        eprintln!("oj: warning: {msg}");
+    }
 }
 
 fn interop_node_builtins(source: &str, file: &Path) -> Option<String> {

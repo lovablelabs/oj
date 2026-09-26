@@ -8,44 +8,69 @@ use oxc_ast::ast::{ImportDeclarationSpecifier, ModuleExportName, Statement};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
 
-/// Cheap pre-gate for `rewrite_cjs_interop` on hot paths: can this source
-/// possibly import a bare specifier? Scans for a quote opening a non-relative
-/// specifier right after `from`, `import` or `import(`. A false positive just
-/// runs the parse; the patterns cover every syntactic position an interop
-/// candidate can occupy (static import, re-export, side-effect import,
-/// dynamic import), so `false` is safe to skip on.
-pub fn may_import_bare(source: &str) -> bool {
-    let bytes = source.as_bytes();
-    let bare_after = |mut i: usize| -> bool {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        // dynamic import: an optional opening paren before the specifier
-        if i < bytes.len() && bytes[i] == b'(' {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+/// Cheap pre-gate for `rewrite_cjs_interop` on hot paths: the bare specifiers
+/// this source may import, scanned without a parse (Vite's economy: its
+/// lexer finds the imports, the full statement parse runs only on the ones
+/// being rewritten). The caller probes each candidate against its interop
+/// mapping and skips the parse when none maps, so a dep file whose only bare
+/// imports are ESM peers (react, tslib) costs one scan plus resolver probes,
+/// not an extra parse. The skipper tolerates everything legal between the
+/// keyword and the specifier: Unicode whitespace, line and block comments,
+/// and nested parens on a dynamic import. Over-collection is harmless (the
+/// probe returns None); a string literal that merely looks like an import
+/// costs one probe.
+pub fn bare_import_specifiers(source: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    // Skip whitespace and comments (and, when `parens`, any '(' runs) from
+    // byte offset i; returns the offset of the next significant char.
+    let skip = |mut i: usize, parens: bool| -> usize {
+        let bytes = source.as_bytes();
+        loop {
+            let rest = &source[i..];
+            let Some(c) = rest.chars().next() else { return i };
+            if c.is_whitespace() {
+                i += c.len_utf8();
+            } else if rest.starts_with("//") {
+                i += rest.find('\n').unwrap_or(rest.len());
+            } else if rest.starts_with("/*") {
+                i += rest[2..].find("*/").map(|p| p + 4).unwrap_or(rest.len());
+            } else if parens && bytes[i] == b'(' {
                 i += 1;
+            } else {
+                return i;
             }
         }
-        if i + 1 >= bytes.len() || (bytes[i] != b'"' && bytes[i] != b'\'') {
-            return false;
-        }
-        !matches!(bytes[i + 1], b'.' | b'/')
     };
+    let bytes = source.as_bytes();
     for kw in ["from", "import"] {
         let mut at = 0;
         while let Some(pos) = source[at..].find(kw) {
             let i = at + pos;
+            at = i + kw.len();
             // a keyword, not the tail of an identifier
             let standalone = i == 0
                 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_' && bytes[i - 1] != b'$');
-            if standalone && bare_after(i + kw.len()) {
-                return true;
+            if !standalone {
+                continue;
             }
-            at = i + kw.len();
+            let s = skip(at, kw == "import");
+            if s >= source.len() || (bytes[s] != b'"' && bytes[s] != b'\'') {
+                continue;
+            }
+            let quote = bytes[s] as char;
+            let Some(end) = source[s + 1..].find(quote) else { continue };
+            let spec = &source[s + 1..s + 1 + end];
+            if !spec.is_empty()
+                && !spec.starts_with('.')
+                && !spec.starts_with('/')
+                && !spec.contains('\\')
+                && !out.iter().any(|o| o == spec)
+            {
+                out.push(spec.to_string());
+            }
         }
     }
-    false
+    out
 }
 
 pub fn rewrite_cjs_interop(
@@ -172,11 +197,11 @@ pub fn rewrite_cjs_interop_logged(
             // `export * as ns from "cjs"`: the namespace consumers see must be
             // the interop namespace (module.exports as `default` plus its
             // properties as members), the same shape the dynamic-import helper
-            // builds — so build it with that helper.
+            // builds, so build it with that helper.
             //
             // A bare `export * from "cjs"` is left alone on purpose: ESM has
             // no dynamic named exports, so a rewrite could only forward names
-            // known statically — exactly what the un-rewritten statement
+            // known statically, exactly what the un-rewritten statement
             // already re-exports from the compiled dep. Runtime-only names
             // (true UMD) through a star barrel need the dep pre-bundled
             // (optimizeDeps.include), which is also how Vite covers the shape.
@@ -190,7 +215,7 @@ pub fn rewrite_cjs_interop_logged(
                     // bare star re-export.
                     if interop(decl.source.value.as_str()).is_some() {
                         warn(format!(
-                            "cannot interop `export * from \"{}\"` in {}; runtime-assigned CommonJS exports are lost through a bare star re-export — use named exports, or pre-bundle the dep (optimizeDeps.include)",
+                            "cannot interop `export * from \"{}\"` in {}; runtime-assigned CommonJS exports are lost through a bare star re-export; use named exports, or pre-bundle the dep (optimizeDeps.include)",
                             decl.source.value,
                             path.display(),
                         ));
@@ -239,7 +264,20 @@ pub fn rewrite_cjs_interop_logged(
         result.replace_range(start..end, &text);
     }
     if has_dynamic {
-        result.insert_str(0, DYN_INTEROP_HELPER);
+        // After the hashbang, when there is one: a dep entry that doubles as
+        // a bin script must keep `#!` at byte 0.
+        let at = parsed
+            .program
+            .hashbang
+            .as_ref()
+            .map(|h| h.span.end as usize)
+            .unwrap_or(0);
+        if at > 0 {
+            // the hashbang span excludes its newline
+            result.insert_str(at, &format!("\n{DYN_INTEROP_HELPER}"));
+        } else {
+            result.insert_str(0, DYN_INTEROP_HELPER);
+        }
     }
     Some(result)
 }
@@ -473,26 +511,37 @@ mod tests {
     }
 
     #[test]
-    fn may_import_bare_finds_every_candidate_position() {
-        for src in [
-            r#"import { a } from "dep";"#,
-            "import x from 'dep';",
-            r#"export { a } from "dep";"#,
-            r#"export * from "dep";"#,
-            r#"export * as ns from "dep";"#,
-            r#"import "dep";"#,
-            r#"const m = await import("dep");"#,
-            "import(  'dep')",
+    fn bare_import_specifiers_finds_every_candidate_position() {
+        for (src, want) in [
+            (r#"import { a } from "dep";"#, "dep"),
+            ("import x from 'dep';", "dep"),
+            (r#"export { a } from "dep";"#, "dep"),
+            (r#"export * from "dep";"#, "dep"),
+            (r#"export * as ns from "dep";"#, "dep"),
+            (r#"import "dep";"#, "dep"),
+            (r#"const m = await import("dep");"#, "dep"),
+            ("import(  'dep')", "dep"),
             // minified: no space between keyword and quote
-            r#"import{a}from"dep";"#,
-            r#"import x from"node:path";"#,
+            (r#"import{a}from"dep";"#, "dep"),
+            (r#"import x from"node:path";"#, "node:path"),
+            // legal trivia between the keyword and the specifier
+            (r#"import(/* webpackChunkName: "geo" */ "geodesiclib")"#, "geodesiclib"),
+            ("import x from // eol\n 'dep';", "dep"),
+            (r#"import(("dep"))"#, "dep"),
+            ("import x from\u{00a0}'dep';", "dep"),
         ] {
-            assert!(may_import_bare(src), "expected candidate: {src}");
+            let specs = bare_import_specifiers(src);
+            assert!(specs.iter().any(|s| s == want), "expected {want} in {specs:?} for: {src}");
         }
+        // dedup across positions
+        assert_eq!(
+            bare_import_specifiers(r#"import a from "dep"; import b from "dep";"#),
+            vec!["dep".to_string()]
+        );
     }
 
     #[test]
-    fn may_import_bare_skips_relative_only_modules() {
+    fn bare_import_specifiers_skips_relative_only_modules() {
         for src in [
             r#"import { a } from "./sib.js";"#,
             r#"import x from "../up.js";"#,
@@ -503,8 +552,19 @@ mod tests {
             "export const a = 1;",
             "",
         ] {
-            assert!(!may_import_bare(src), "expected no candidate: {src}");
+            assert!(bare_import_specifiers(src).is_empty(), "expected none: {src}");
         }
+    }
+
+    #[test]
+    fn dyn_interop_helper_lands_after_a_hashbang() {
+        let out = rewrite_cjs_interop(
+            "#!/usr/bin/env node\nconst m = await import(\"cjs-dep\");\n",
+            Path::new("cli.js"),
+            &interop_all("/u"),
+        )
+        .unwrap();
+        assert!(out.starts_with("#!/usr/bin/env node\nconst __oj_dyn_interop"), "{out}");
     }
 
     #[test]
