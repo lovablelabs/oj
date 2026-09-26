@@ -25,3 +25,4 @@ result
 vendor/deno_napi/Cargo.lock
 oj-snapshot-pin-*.tar.gz
 result-vendor
+e2e/fixtures/start-gating-app/src/routeTree.gen.ts

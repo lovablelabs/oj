@@ -2017,7 +2017,7 @@ async fn ssr_module(
 }
 
 async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<PluginHost>> {
-    state
+    let host = state
         .plugins_ssr
         .get_or_init(|| async {
             let file = match plugins::plugin_source(&state.root)? {
@@ -2029,14 +2029,6 @@ async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<Plug
             match PluginHost::spawn_lazy(&state.root, &file, &state.ssr_plugin_config).await {
                 Ok(host) => {
                     eprintln!("oj ssr: plugins (ssr environment) from {}", file.display());
-                    // Prime the hook filter plan so the SSR gates run on real
-                    // filters from the first request, not the fail-open default.
-                    {
-                        let host = std::sync::Arc::clone(&host);
-                        tokio::spawn(async move {
-                            let _ = host.build_hook_plan().await;
-                        });
-                    }
                     // The catch-up half of the watcher's pre-init fast-skip:
                     // events skipped while this host initializes replay at
                     // its init (see SsrWatchQueue).
@@ -2061,7 +2053,14 @@ async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<Plug
             }
         })
         .await
-        .clone()
+        .clone();
+    // Every consumer acquires the host here (the SSR gates and the Start
+    // bridge alike), so this is the one seam where the plan can be primed
+    // before any gated dispatch; a no-op once the plan is live.
+    if let Some(h) = &host {
+        h.prime_hook_plan().await;
+    }
+    host
 }
 
 /// Watcher events (file, change type) the lazily spawned SSR host could not

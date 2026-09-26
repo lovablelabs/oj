@@ -1240,6 +1240,7 @@ pub struct PluginHost {
     /// gating only until the next fetch attempt.
     hook_plan: std::sync::RwLock<BuildHookPlan>,
     hook_plan_fetched: std::sync::atomic::AtomicBool,
+    hook_plan_prime_started: std::sync::atomic::AtomicBool,
     ws_out: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart().
@@ -1810,6 +1811,7 @@ impl PluginHost {
             host_module: script.to_string_lossy().into_owned(),
             hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
             hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
+            hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
             ws_out: Mutex::new(None),
             server_events: Mutex::new(None),
             serve_info_push: tokio::sync::watch::channel(None).0,
@@ -2189,6 +2191,8 @@ impl PluginHost {
         // below once the engine is up) restores precise gating.
         *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
         self.hook_plan_fetched
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.hook_plan_prime_started
             .store(false, std::sync::atomic::Ordering::Release);
         *self.spawned.lock().unwrap() = tokio::time::Instant::now();
         let generation = revive.generation;
@@ -2702,6 +2706,34 @@ impl PluginHost {
     /// Ensures the plan was fetched from the live engine and returns a
     /// snapshot. Gates should prefer the `hook_wants_*` accessors, which read
     /// the live plan and so see a respawn's fail-open reset immediately.
+    /// One bounded plan fetch at host handout, so the gates run on real
+    /// filters from the first dispatch. Vite has no unfiltered window (its
+    /// filters compile synchronously before every dispatch); the isolate
+    /// boundary would otherwise open one between spawn and the async fetch.
+    /// The first acquirer waits, capped by the deadline; later acquirers
+    /// return immediately (the fetched flag short-circuits once the plan is
+    /// live), and a slow or wedged host degrades to the fail-open default,
+    /// today's behavior, rather than stalling requests.
+    pub async fn prime_hook_plan(self: &std::sync::Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.hook_plan_fetched.load(Ordering::Acquire) {
+            return;
+        }
+        if self.hook_plan_prime_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let fetch = self.ensure_hook_plan();
+        if tokio::time::timeout(std::time::Duration::from_millis(500), fetch)
+            .await
+            .is_err()
+        {
+            // Keep trying off the request path; gates stay fail-open until
+            // the plan lands.
+            let host = std::sync::Arc::clone(self);
+            tokio::spawn(async move { host.ensure_hook_plan().await });
+        }
+    }
+
     pub async fn build_hook_plan(&self) -> BuildHookPlan {
         self.ensure_hook_plan().await;
         self.hook_plan.read().unwrap().clone()
