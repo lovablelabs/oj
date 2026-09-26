@@ -326,9 +326,11 @@ impl OjResolver {
     /// allow_package_exports_in_directory_resolve, enabled in
     /// with_settings, which runs exports after mainFields and index — the
     /// last-resort half of the same Vite behavior.) The path-containment gate
-    /// keeps the hot path free: a file-shaped hit (`./x` -> `x.js`) never
-    /// lands inside its own specifier's directory, so only real directory
-    /// hits — rare — pay the manifest read. (`Resolution::package_json` is
+    /// keeps the hot path free: an extensionless hit (`./x` -> `x.js`) never
+    /// lands inside its own specifier's directory, and an exact hit
+    /// (`./x.js` -> `x.js`, the commonest relative shape) is the equality
+    /// case, skipped before the read — so only real directory hits — rare —
+    /// pay the manifest read. (`Resolution::package_json` is
     /// not usable here: oxc attaches it on package-boundary requests, not
     /// relative ones.) A symlinked directory hands back realpaths that miss
     /// the lexical gate and keeps today's Node behavior rather than taxing
@@ -347,7 +349,9 @@ impl OjResolver {
         }
         let clean = &specifier[..specifier.find(['?', '#']).unwrap_or(specifier.len())];
         let joined = lexical_join(base, clean);
-        if !resolved.starts_with(&joined) {
+        // Equality is the exact-file hit (`./x.js` -> `x.js`): never a
+        // directory, so it skips the manifest read below.
+        if resolved == joined || !resolved.starts_with(&joined) {
             return DirectoryEntry::NotApplicable;
         }
         let Ok(bytes) = std::fs::read(joined.join("package.json")) else {
@@ -919,6 +923,38 @@ mod tests {
         assert!(
             err.reason.contains("exports name a missing file"),
             "expected the package-entry failure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_subpath_only_exports_falls_to_index_not_main_fields() {
+        // resolve.exports' OTHER throw family: an exports map with only
+        // subpath keys and no "." at all ('Missing "." specifier') is still a
+        // truthy exports field, so mainFields never run — index probing does.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./subpath-only").unwrap();
+        assert!(
+            hit.ends_with("subpath-only/index.js"),
+            "expected the index fallback, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_exact_extension_hit_stays_a_file_resolution() {
+        // The equality gate: `./greet.js` resolves to the file it names even
+        // with a same-named sibling story around it — the exact hit must never
+        // be treated as a directory candidate (and skips the manifest read).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./greet.js").unwrap();
+        assert!(
+            hit.ends_with("dist/greet.js"),
+            "expected the exact file, got {hit:?}"
         );
     }
 
