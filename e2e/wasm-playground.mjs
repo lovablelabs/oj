@@ -66,9 +66,18 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const server = spawn(oj, ["dev", www, "--port", String(PORT)], { stdio: "ignore" });
+// The server log is kept so a startup failure carries its own explanation:
+// a loaded CI runner is exactly where startup misbehaves, and a silent kill
+// leaves nothing to diagnose from. Ready = the port answers, within a
+// wall-clock deadline; a dead server fails immediately instead of waiting
+// out the clock.
+let serverLog = "";
+const server = spawn(oj, ["dev", www, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+server.stdout.on("data", (d) => { serverLog += d; });
+server.stderr.on("data", (d) => { serverLog += d; });
 let up = false;
-for (let i = 0; i < 120 && !up; i++) {
+const deadline = Date.now() + 60_000;
+while (!up && Date.now() < deadline && server.exitCode === null) {
   try {
     up = (await fetch(`http://localhost:${PORT}/`)).ok;
   } catch {}
@@ -76,7 +85,7 @@ for (let i = 0; i < 120 && !up; i++) {
 }
 if (!up) {
   server.kill("SIGKILL");
-  throw new Error("dev server did not start");
+  throw new Error(`dev server did not start:\n${serverLog}`);
 }
 
 const bad = [];
