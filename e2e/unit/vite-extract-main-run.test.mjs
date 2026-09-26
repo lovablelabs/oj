@@ -15,7 +15,7 @@ import fs from "node:fs";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { asset, repo } from "./harness.mjs";
+import { asset, repo, tmpProject } from "./harness.mjs";
 
 // extract() wraps process.stdout/stderr.write and console (its output
 // capture), so the wrapper saves raw write fds first. writeSync keeps the
@@ -391,6 +391,23 @@ test("real vite: hooks see isSsrBuild false while the file's build.ssr is preser
   }
 });
 
+// resolveConfig fills defaults the user never wrote (optimizeDeps.noDiscovery:
+// false, empty server.warmup arrays): adopting them as explicit settings would
+// force-enable dep auto-discovery for every app and ship empty warmup blobs.
+// Only values visible in the RAW user config may cross.
+test("real vite: resolved-config defaults are not adopted as user settings", { skip: skipNoVite }, () => {
+  const base = realViteDir("oj-vite-extract-defaults-");
+  try {
+    writeFileSync(join(base, "vite.config.mjs"), "export default { base: '/app/' };\n");
+    const out = JSON.parse(runExtractor(base, "vite.config.mjs"));
+    assert.equal(out.__ok, true);
+    assert.equal(out.optimizeDeps?.noDiscovery, undefined, "Vite's default noDiscovery:false must not cross");
+    assert.equal(out.serverFlags?.warmup, undefined, "Vite's default empty warmup must not cross");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 // resolveConfig can throw AFTER the plugin config hooks ran (a throwing
 // configResolved): the sentinel's partial verdict must survive the throw, and
 // the hooks must NOT re-run out of band on the same instances (double side
@@ -757,6 +774,32 @@ test("real vite: a config-module NODE_ENV assignment survives into resolveConfig
       { isProduction: false, nodeEnv: "test" },
       "the module-scope NODE_ENV=test assignment survives the pre-set unset and steers isProduction",
     );
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+
+test("Vite server and optimizer settings survive actual config loading", () => {
+  const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-adopt-"));
+  try {
+    copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
+    writeFileSync(join(base, "vite.config.mjs"), `export default {
+      server: { fs: { allow: ["../shared"], deny: ["**/*.private"] },
+        warmup: { clientFiles: ["./src/*.tsx"], ssrFiles: ["./server.ts"] } },
+      optimizeDeps: { noDiscovery: true, rolldownOptions: {
+        transform: { define: { __FEATURE__: '"enabled"' }, target: "es2015" },
+        resolve: { conditionNames: ["custom"] }
+      } }
+    }`);
+    const config = JSON.parse(runExtractor(base, "vite.config.mjs"));
+    assert.equal(config.__ok, true);
+    assert.deepEqual(config.serverFlags.fsDeny, ["**/*.private"]);
+    assert.deepEqual(config.serverFlags.warmup, { clientFiles: ["./src/*.tsx"], ssrFiles: ["./server.ts"] });
+    assert.equal(config.optimizeDeps.noDiscovery, true);
+    assert.equal(config.optimizeDeps.rolldownOptions.transform.target, "es2015");
+    assert.deepEqual(config.optimizeDeps.rolldownOptions.resolve.conditionNames, ["custom"]);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

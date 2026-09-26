@@ -132,6 +132,7 @@ pub struct PreprocessorEntry {
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct OptimizeDepsConfig {
+    pub no_discovery: Option<bool>,
     pub include: Option<Vec<String>>,
     pub exclude: Option<Vec<String>>,
     pub entries: Option<Vec<String>>,

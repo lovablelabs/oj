@@ -1310,6 +1310,7 @@ impl DevServer {
                     &root,
                     env!("CARGO_PKG_VERSION"),
                     optimize::OptimizeInput {
+                        no_discovery: config.optimize_deps.as_ref().and_then(|o| o.no_discovery),
                         include,
                         exclude,
                         entries,
@@ -1349,6 +1350,28 @@ impl DevServer {
             });
         }
         spawn_watcher(Arc::clone(&state));
+        let (client_files, ssr_files) = oj_config::server_warmup_files(&config);
+        if !client_files.is_empty() || !ssr_files.is_empty() {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move {
+                for file in warmup_paths(&state.root, &client_files) {
+                    let url = url_of(&state.root, &file);
+                    if let Err(error) = ensure_module(&state, &file, &url).await {
+                        eprintln!("oj: warmup {url}: {error}");
+                    }
+                }
+                // SSR dev compiles are not cached anywhere (each /@ssr-module
+                // request re-transforms), so per-file warmup requests would be
+                // thrown away. The durable warm-up is the SSR plugin host
+                // itself: spawning it (and priming its hook plan) here moves
+                // the multi-second sidecar boot off the first real request.
+                if !ssr_files.is_empty() {
+                    if let Some(host) = ssr_plugin_host(&state).await {
+                        let _ = host.build_hook_plan().await;
+                    }
+                }
+            });
+        }
         if self.lazy {
             // Lazy mode (Vite's default): no eager graph crawl. Modules are
             // compiled on demand as the browser requests them, so the first
@@ -1452,6 +1475,40 @@ impl DevServer {
             ssr,
         })
     }
+}
+
+fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    // Patterns are root-relative (Vite's warmup semantics). Exclusions match
+    // against the ROOT-RELATIVE path of each walked file, so a './' spelled in
+    // either side (or a root containing glob metacharacters) can never make a
+    // positive and a negative pattern disagree about the same file.
+    let normalize = |p: &str| p.trim_start_matches("./").to_string();
+    let mut files = std::collections::BTreeSet::new();
+    let mut excluded = Vec::new();
+    for pattern in patterns {
+        let (negative, pattern) = pattern
+            .strip_prefix('!')
+            .map(|p| (true, p))
+            .unwrap_or((false, pattern.as_str()));
+        let pattern = normalize(pattern);
+        if negative {
+            if let Ok(pattern) = glob::Pattern::new(&pattern) {
+                excluded.push(pattern);
+            }
+        } else {
+            let walk = format!("{}/{}", glob::Pattern::escape(&root.to_string_lossy()), pattern);
+            if let Ok(matches) = glob::glob(&walk) {
+                files.extend(matches.flatten().filter(|file| file.is_file()));
+            }
+        }
+    }
+    files
+        .into_iter()
+        .filter(|file| {
+            let rel = file.strip_prefix(root).unwrap_or(file);
+            !excluded.iter().any(|p| p.matches_path(rel))
+        })
+        .collect()
 }
 
 /// Vite's dev server close runs the plugin container's `buildEnd` then
@@ -5403,10 +5460,28 @@ fn compile_fs_deny(user: &[String]) -> Vec<(glob::Pattern, bool)> {
         .iter()
         .map(|s| s.to_string())
         .chain(user.iter().cloned())
+        .flat_map(|p| expand_braces(&p))
         .filter_map(|p| {
             let base_only = !p.contains('/');
             glob::Pattern::new(&p).ok().map(|pat| (pat, base_only))
         })
+        .collect()
+}
+
+/// Expands `{a,b}` groups the way picomatch/Vite treat them; the `glob` crate
+/// has no brace support, so `*.{key,pem}` (Vite's own default deny shape)
+/// would otherwise compile to a literal that matches nothing.
+fn expand_braces(pattern: &str) -> Vec<String> {
+    let Some(open) = pattern.find('{') else {
+        return vec![pattern.to_string()];
+    };
+    let Some(close) = pattern[open..].find('}').map(|i| open + i) else {
+        return vec![pattern.to_string()];
+    };
+    let (head, rest) = (&pattern[..open], &pattern[close + 1..]);
+    pattern[open + 1..close]
+        .split(',')
+        .flat_map(|alt| expand_braces(&format!("{head}{alt}{rest}")))
         .collect()
 }
 
@@ -8789,6 +8864,40 @@ export default [{{
         assert!(path_is_denied(&root.join(".GIT/config"), root, &deny));
         assert!(path_is_denied(&root.join("Secrets/token.txt"), root, &deny));
         assert!(path_is_denied(&root.join("id_rsa.KEY"), root, &deny));
+    }
+
+    #[test]
+    fn fs_deny_expands_brace_groups() {
+        // Vite's own default deny list is brace-form (*.{crt,pem,key,...});
+        // the glob crate has no brace support, so without expansion those
+        // patterns match nothing and denied files get served.
+        let root = Path::new("/proj");
+        let deny = compile_fs_deny(&["*.{key,p12,pfx}".to_string(), "secrets/{a,b}/**".to_string()]);
+        assert!(path_is_denied(&root.join("server.key"), root, &deny));
+        assert!(path_is_denied(&root.join("bundle.p12"), root, &deny));
+        assert!(path_is_denied(&root.join("cert.pfx"), root, &deny));
+        assert!(path_is_denied(&root.join("secrets/a/token"), root, &deny));
+        assert!(path_is_denied(&root.join("secrets/b/token"), root, &deny));
+        assert!(!path_is_denied(&root.join("secrets/c/token"), root, &deny));
+        assert!(!path_is_denied(&root.join("server.kee"), root, &deny));
+    }
+
+    #[test]
+    fn warmup_paths_matches_exclusions_root_relative() {
+        // A './'-spelled exclusion and a bare positive pattern must agree
+        // about the same file, and a root containing glob metacharacters must
+        // not break the walk (the root is escaped, patterns are relative).
+        let dir = std::env::temp_dir().join(format!("oj-warmup-[x]-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/generated")).unwrap();
+        std::fs::write(dir.join("src/a.js"), "a").unwrap();
+        std::fs::write(dir.join("src/generated/b.js"), "b").unwrap();
+        let picked = warmup_paths(
+            &dir,
+            &["src/**/*.js".to_string(), "!./src/generated/*.js".to_string()],
+        );
+        assert_eq!(picked.len(), 1, "exclusion must apply: {picked:?}");
+        assert!(picked[0].ends_with("src/a.js"));
     }
 
     #[test]

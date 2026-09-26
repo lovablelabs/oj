@@ -763,14 +763,10 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
         if sc.host.is_none() {
             sc.host = v.host;
         }
-        if sc.fs.is_none() {
-            if v.fs_allow.is_some() || v.fs_strict.is_some() {
-                sc.fs = Some(oj_config::FsConfig {
-                    allow: v.fs_allow,
-                    strict: v.fs_strict,
-                    deny: None,
-                });
-            }
+        if v.fs_allow.is_some() || v.fs_strict.is_some() {
+            let fs = sc.fs.get_or_insert_with(Default::default);
+            fs.allow = fs.allow.take().or(v.fs_allow);
+            fs.strict = fs.strict.or(v.fs_strict);
         }
         if sc.headers.is_none() {
             if let Some(vheaders) = v.headers {
@@ -825,10 +821,16 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
         }
     }
     if let Some(od) = v.optimize_deps {
-        if config.optimize_deps.is_none() {
-            if let Ok(parsed) = serde_json::from_value::<oj_config::OptimizeDepsConfig>(od) {
-                config.optimize_deps = Some(parsed);
-            }
+        if let Ok(parsed) = serde_json::from_value::<oj_config::OptimizeDepsConfig>(od) {
+            let o = config.optimize_deps.get_or_insert_with(Default::default);
+            o.include = o.include.take().or(parsed.include);
+            o.exclude = o.exclude.take().or(parsed.exclude);
+            o.entries = o.entries.take().or(parsed.entries);
+            o.needs_interop = o.needs_interop.take().or(parsed.needs_interop);
+            o.force = o.force.or(parsed.force);
+            o.no_discovery = o.no_discovery.or(parsed.no_discovery);
+            o.esbuild_options = o.esbuild_options.take().or(parsed.esbuild_options);
+            o.rolldown_options = o.rolldown_options.take().or(parsed.rolldown_options);
         }
     }
     if let Some(vb) = v.build.as_ref().and_then(|b| b.as_object()) {
@@ -1056,6 +1058,23 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
             sc.watch = sf
                 .get("watch")
                 .and_then(|w| serde_json::from_value::<oj_config::WatchConfig>(w.clone()).ok());
+        }
+        if let Some(w) = sf
+            .get("warmup")
+            .and_then(|w| serde_json::from_value::<oj_config::WarmupConfig>(w.clone()).ok())
+        {
+            let warmup = sc.warmup.get_or_insert_with(Default::default);
+            warmup.client_files = warmup.client_files.take().or(w.client_files);
+            warmup.ssr_files = warmup.ssr_files.take().or(w.ssr_files);
+        }
+        if let Some(deny) = sf
+            .get("fsDeny")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        {
+            sc.fs
+                .get_or_insert_with(Default::default)
+                .deny
+                .get_or_insert(deny);
         }
         if let Some(strict) = sf.get("fsStrict").and_then(|b| b.as_bool()) {
             let fs = sc.fs.get_or_insert_with(Default::default);
@@ -4315,6 +4334,40 @@ export default [{
         merge_vite_values(&mut config, v);
         assert_eq!(config.base.as_deref(), Some("/oj-base/"));
         assert_eq!(config.public_dir, Some("my-public".into()));
+    }
+
+    #[test]
+    fn merge_fills_partial_server_and_optimizer_configuration() {
+        let mut config: oj_config::OjConfig = serde_json::from_value(serde_json::json!({
+            "server": { "fs": { "strict": false }, "warmup": { "clientFiles": ["own.ts"] } },
+            "optimizeDeps": { "exclude": ["own-dep"] }
+        }))
+        .unwrap();
+        merge_vite_values(
+            &mut config,
+            parse_vite_values(&serde_json::json!({
+                "fsAllow": ["../shared"], "fsStrict": true,
+                "serverFlags": { "fsDeny": ["**/*.private"], "warmup": {
+                    "clientFiles": ["other.ts"], "ssrFiles": ["server.ts"] } },
+                "optimizeDeps": { "include": ["dep"], "exclude": ["other-dep"], "noDiscovery": true,
+                    "rolldownOptions": { "transform": { "define": { "FLAG": "true" }, "target": "es2015" } } }
+            })),
+        );
+        let fs = config.server.as_ref().unwrap().fs.as_ref().unwrap();
+        assert_eq!(fs.strict, Some(false));
+        assert_eq!(fs.allow.as_ref().unwrap(), &["../shared"]);
+        assert_eq!(fs.deny.as_ref().unwrap(), &["**/*.private"]);
+        assert_eq!(
+            oj_config::server_warmup_files(&config),
+            (vec!["own.ts".into()], vec!["server.ts".into()])
+        );
+        let od = config.optimize_deps.as_ref().unwrap();
+        assert_eq!(od.exclude.as_ref().unwrap(), &["own-dep"]);
+        assert_eq!(od.include.as_ref().unwrap(), &["dep"]);
+        assert_eq!(od.no_discovery, Some(true));
+        let opts = oj_config::optimize_deps_bundler_options(&config).unwrap();
+        assert_eq!(opts["define"]["FLAG"], "true");
+        assert_eq!(opts["target"], "es2015");
     }
 
     #[test]

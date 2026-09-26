@@ -14,7 +14,7 @@ test("optimizeDeps carries needsInterop and force alongside the lists", () => {
     force: true,
     esbuildOptions: { target: "es2020" },
   });
-  assert.deepEqual(out, { include: ["a", "pkg/*"], exclude: ["b"], needsInterop: ["cjs-ish"], force: true });
+  assert.deepEqual(out, { include: ["a", "pkg/*"], exclude: ["b"], needsInterop: ["cjs-ish"], force: true, esbuildOptions: { target: "es2020" } });
   assert.equal(extractOptimizeDeps({ force: "yes" }), null, "non-boolean force is ignored");
   assert.equal(extractOptimizeDeps(undefined), null);
 });

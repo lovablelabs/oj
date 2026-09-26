@@ -154,6 +154,9 @@ jobs:
         run: node e2e/plugin-close-hooks.mjs
       - name: relative imports claimed by a resolveId filter go to the plugins first
         run: node e2e/plugin-resolve-relative.mjs
+      - name: Vite config adoption and lazy warmup
+        if: matrix.mode == 'unbundled'
+        run: node e2e/vite-config-adoption.mjs
       - name: server.fs allow list, strict:false, workspace-root default
         run: node e2e/server-fs-allow.mjs
       - name: optimized deps are versioned and served immutable with an ETag

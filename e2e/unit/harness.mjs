@@ -78,7 +78,9 @@ export function tmpProject({ prefix = "oj-fx-", pkgJson = { name: "fx" }, linkEs
       fs.writeFileSync(p, content);
     },
     cleanup() {
-      fs.rmSync(root, { recursive: true, force: true });
+      // A just-killed child can still flush writes into the tree while rm
+      // walks it (ENOTEMPTY); maxRetries makes node retry those races.
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }
