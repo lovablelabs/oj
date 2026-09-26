@@ -105,18 +105,29 @@
       # Fixed-output on purpose, not hygiene: consumers' cache pipelines
       # (lovable's fill-darwin-publish) require every staged non-root path to
       # be upstream-corroborated UNLESS it is content-addressed (hash-pinned
-      # in a reviewed file, like the rusty_v8 archive above). The NAR hash
-      # below pins the unpacked tree; recompute it on a rolldownVersion bump
-      # by clearing the hash and rebuilding: nix prints the right one on
-      # the mismatch (a plain `nix hash path` of the output does NOT match
-      # the FOD canonicalization).
-      rolldownVendorHash = "sha256-NzMJ0hT0fFeF5oF0+gcQtrun0GGbAJ4Ou8TkfxZ3QZ4=";
+      # in a reviewed file, like the rusty_v8 archive above). PER SYSTEM: the
+      # vendor tree carries the platform's own @rolldown/binding-*, so each
+      # system has its own NAR hash. Recompute on a rolldownVersion bump by
+      # clearing a hash and rebuilding: nix prints the right one on the
+      # mismatch (a plain `nix hash path` of the output does NOT match the
+      # FOD canonicalization). A system with no entry builds the plain
+      # (non-fixed-output) derivation: correct, just not exempt from
+      # corroboration gates, which only darwin+linux pipelines run today.
+      rolldownVendorHashes = {
+        aarch64-darwin = "sha256-NzMJ0hT0fFeF5oF0+gcQtrun0GGbAJ4Ou8TkfxZ3QZ4=";
+        x86_64-linux = "sha256-Lh/fwf36ehl/z/YcoYwij3T+2ApIx1F7gNAL/WfIe/Y=";
+        aarch64-linux = "sha256-bwsJB6r9xQzDtdQ+NB4URtZ+DdQkFLsgP/b4nJ0XCSg=";
+      };
       rolldownVendor = pkgs:
-        pkgs.runCommand "oj-rolldown-vendor-${rolldownVersion}" {
-          outputHashMode = "recursive";
-          outputHashAlgo = "sha256";
-          outputHash = rolldownVendorHash;
-        } (
+        pkgs.runCommand "oj-rolldown-vendor-${rolldownVersion}" (
+          nixpkgs.lib.optionalAttrs
+            ((rolldownVendorHashes.${pkgs.stdenv.hostPlatform.system} or "") != "")
+            {
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+              outputHash = rolldownVendorHashes.${pkgs.stdenv.hostPlatform.system};
+            }
+        ) (
           nixpkgs.lib.concatMapStrings (part: ''
             mkdir -p "$out/node_modules/${part.dir}"
             tar -xzf ${pkgs.fetchurl { url = part.url; hash = part.hash; }} \
