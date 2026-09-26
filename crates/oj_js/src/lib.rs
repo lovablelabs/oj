@@ -200,7 +200,7 @@ impl JsEngine {
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
         let (tx, rx) = mpsc::unbounded_channel();
-        ENGINES.lock().unwrap().push(tx.clone());
+        ENGINES.lock().unwrap().push(tx.downgrade());
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("oj-js-engine".into())
@@ -349,21 +349,25 @@ impl Drop for JsEngine {
     }
 }
 
-/// Every live engine's job sender, registered at spawn: the process-wide
+/// Every live engine's job sender, registered WEAK at spawn: the process-wide
 /// fan-out for the memory-probing GC reaches Start, CSS, addon-keeper and
 /// plugin-host engines alike, including engines added later, instead of a
-/// hand-enumerated field list somewhere above. Closed channels are pruned on
-/// each fan-out; the entries are senders, so registration never extends an
-/// engine's life.
-static ENGINES: Mutex<Vec<mpsc::UnboundedSender<Job>>> = Mutex::new(Vec::new());
+/// hand-enumerated field list somewhere above. Weak is load-bearing, not
+/// hygiene: an engine thread exits when its job channel closes, and
+/// `JsEngine::drop` JOINS that thread — a strong sender here would keep every
+/// dropped engine's channel open and deadlock the drop (a one-shot config
+/// extraction hangs its whole build). Dead entries are pruned on each
+/// fan-out.
+static ENGINES: Mutex<Vec<mpsc::WeakUnboundedSender<Job>>> = Mutex::new(Vec::new());
 
 /// Force a full V8 collection in every live engine and return how many
 /// acknowledged having RUN it within `wait` (shared across engines). Blocking:
 /// async callers go through spawn_blocking.
 pub fn collect_all_garbage(wait: Duration) -> usize {
-    let senders: Vec<mpsc::UnboundedSender<Job>> = ENGINES.lock().unwrap().clone();
+    let senders: Vec<mpsc::WeakUnboundedSender<Job>> = ENGINES.lock().unwrap().clone();
     let mut acks = Vec::new();
-    for tx in &senders {
+    for weak in &senders {
+        let Some(tx) = weak.upgrade() else { continue };
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         if tx.send(Job::Gc { reply: ack_tx }).is_ok() {
             acks.push(ack_rx);
@@ -379,7 +383,10 @@ pub fn collect_all_garbage(wait: Duration) -> usize {
             collected += 1;
         }
     }
-    ENGINES.lock().unwrap().retain(|tx| !tx.is_closed());
+    ENGINES
+        .lock()
+        .unwrap()
+        .retain(|weak| weak.upgrade().is_some_and(|tx| !tx.is_closed()));
     collected
 }
 
