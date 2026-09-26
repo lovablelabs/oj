@@ -61,31 +61,33 @@ Windows MSVC x64/arm64.
 
 Generated fanout-10 React component trees, measured save-to-paint with Playwright against Vite 8.2.1 (Rolldown-based) on an M-series Mac, in both its default dev mode (vite) and its experimental bundled dev mode (vite-fbm). p50/p95 over 5 cold+warm restart cycles and 10 HMR edits.
 
+Memory is measured over the whole process tree, and reported two ways: resident set (tree RSS) and macOS physical footprint, which excludes clean and reclaimable resident pages and so bounds retained memory. Forced-GC RSS is not a column because it cannot be measured symmetrically (Node exposes an external GC handle through its inspector; embedded V8 does not) — for reference, forcing GC before measuring lowered vite's tree RSS by roughly a third in our runs, still well above its footprint. Methodology corrections owe to [#202](https://github.com/lovablelabs/oj/issues/202).
+
 **1,000 components (p50/p95):**
 
-| tool | cold start | warm start | reload | HMR | server RSS |
-|---|---|---|---|---|---|
-| **oj** | **434/582ms** | **352/354ms** | **170/173ms** | **56/59ms** | **43MB** |
-| vite | 701/734ms | 653/659ms | 172/176ms | 55/73ms | 434MB |
-| vite-fbm | 326/344ms | 334/338ms | 49/52ms | 55/58ms | 361MB |
+| tool | cold start | warm start | reload | HMR | tree RSS | footprint |
+|---|---|---|---|---|---|---|
+| **oj** | **661/756ms** | **433/460ms** | **232/238ms** | **55/59ms** | **139MB** | **96MB** |
+| vite | 769/780ms | 724/728ms | 229/232ms | 54/92ms | 405MB | 325MB |
+| vite-fbm | 341/344ms | 340/342ms | 54/56ms | 55/59ms | 357MB | 288MB |
 
 **5,000 components (p50/p95):**
 
-| tool | cold start | warm start | reload | HMR | server RSS |
-|---|---|---|---|---|---|
-| **oj** | **1281/1402ms** | **1058/1080ms** | **744/839ms** | **60/63ms** | **65MB** |
-| vite | 2649/2656ms | 2424/2532ms | 758/807ms | 56/147ms | 949MB |
-| vite-fbm | 927/970ms | 965/973ms | 174/177ms | 59/80ms | 976MB |
+| tool | cold start | warm start | reload | HMR | tree RSS | footprint |
+|---|---|---|---|---|---|---|
+| **oj** | **1711/1744ms** | **1477/1509ms** | **1037/1056ms** | **59/62ms** | **187MB** | **145MB** |
+| vite | 2966/3396ms | 2793/3020ms | 1002/1099ms | 55/60ms | 903MB | 699MB |
+| vite-fbm | 959/973ms | 954/969ms | 167/172ms | 57/61ms | 974MB | 770MB |
 
 **10,000 components (p50/p95):**
 
-| tool | cold start | warm start | reload | HMR | server RSS |
-|---|---|---|---|---|---|
-| **oj** | **2492/2543ms** | **2068/2303ms** | **1523/1687ms** | **67/176ms** | **94MB** |
-| vite | 5693/6085ms | 5304/6289ms | 1781/1820ms | 59/64ms | 1552MB |
-| vite-fbm | 1528/2225ms | 1482/2176ms | 302/414ms | 59/65ms | 1751MB |
+| tool | cold start | warm start | reload | HMR | tree RSS | footprint |
+|---|---|---|---|---|---|---|
+| **oj** | **4168/4487ms** | **3898/4075ms** | **2934/3115ms** | **59/184ms** | **231MB** | **190MB** |
+| vite | 6983/7413ms | 6479/7037ms | 2400/2454ms | 83/266ms | 1465MB | 1126MB |
+| vite-fbm | 1593/2130ms | 1585/1705ms | 307/329ms | 60/69ms | 1761MB | 1229MB |
 
-oj wins cold start and warm start against Vite's default dev at every size (~2x at 10k). HMR is a wash across all three (within ~10ms). oj's decisive, consistent win is memory: 43-94MB against Vite's 361MB-1.75GB, an 8-15x gap that widens with app size.
+oj wins cold and warm start against Vite's default dev at every size (~1.7x at 10k). HMR is a wash across all three. oj's decisive, consistent win is memory: 96-190MB footprint against Vite's 288MB-1.2GB, roughly 3x at 1k growing to 6x at 10k, measured over whole process trees.
 
 Production builds (`oj build` vs `vite build`) land at parity: same engine (Rolldown), byte-identical output sizes.
 
