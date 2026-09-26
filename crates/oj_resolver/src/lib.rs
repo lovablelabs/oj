@@ -13,6 +13,64 @@ pub struct OjResolver {
     dedupe: Vec<String>,
 }
 
+/// `base` + `spec` with `.`/`..` folded lexically (no fs), so the result
+/// compares against resolver-returned paths.
+fn lexical_join(base: &Path, spec: &str) -> PathBuf {
+    let mut out = base.to_path_buf();
+    for component in Path::new(spec).components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Node's PACKAGE_EXPORTS_RESOLVE narrowed to the "." subpath: the root
+/// target under `conditions` (plus the always-matching "default" —
+/// resolve.exports seeds it even under Vite's `unsafe: true`), walking
+/// condition maps in source order and arrays first-hit, as Vite's
+/// resolveExportsOrImports does for resolvePackageEntry. Source order holds
+/// because oxc_resolver already turns on serde_json's preserve_order for the
+/// whole build. A bare string target ("lib.js") is kept: resolve.exports
+/// accepts any string and Vite path.joins it onto the directory, so it
+/// normalizes to "./lib.js" rather than being read as a package name.
+fn exports_dot_target(exports: &serde_json::Value, conditions: &[String]) -> Option<String> {
+    match exports {
+        serde_json::Value::String(target) => {
+            if target.is_empty() {
+                None
+            } else if target.starts_with("./") || target.starts_with("../") {
+                Some(target.clone())
+            } else {
+                Some(format!("./{target}"))
+            }
+        }
+        serde_json::Value::Array(entries) => entries
+            .iter()
+            .find_map(|entry| exports_dot_target(entry, conditions)),
+        serde_json::Value::Object(map) => {
+            // A map is either subpaths (keys start with ".") or conditions;
+            // Node forbids mixing, so any dotted key decides.
+            if map.keys().any(|key| key.starts_with('.')) {
+                exports_dot_target(map.get(".")?, conditions)
+            } else {
+                map.iter().find_map(|(key, value)| {
+                    if key == "default" || conditions.iter().any(|c| c == key) {
+                        exports_dot_target(value, conditions)
+                    } else {
+                        None
+                    }
+                })
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The package id of a bare specifier: `react-dom/client` -> `react-dom`,
 /// `@radix-ui/react-slot/x` -> `@radix-ui/react-slot`.
 fn package_name(spec: &str) -> String {
@@ -194,6 +252,12 @@ impl OjResolver {
             condition_names: settings.conditions,
             alias,
             extension_alias: default_extension_alias(),
+            // oxc's exports-in-directory support (added for rolldown-vite;
+            // vitejs/vite#20252 tried to drop the behavior and was rejected)
+            // runs exports AFTER mainFields and index, so it only rescues a
+            // manifest nothing else can enter; directory_exports_entry owns
+            // Vite's exports-FIRST precedence on top.
+            allow_package_exports_in_directory_resolve: true,
             symlinks: !settings.preserve_symlinks,
             tsconfig: tsconfig.is_file().then_some({
                 TsconfigDiscovery::Manual(TsconfigOptions {
@@ -247,6 +311,82 @@ impl OjResolver {
         self.inner.clear_cache();
     }
 
+    /// Vite resolves a path-reached directory through its manifest's
+    /// `exports["."]` before the mainFields walk (resolvePackageEntry), where
+    /// Node binds `exports` only at the package-name boundary — the underlying
+    /// resolver follows Node, so a directory import of a manifest carrying
+    /// both `exports` and entry fields lands on the wrong file. When the
+    /// resolution came out of a directory the specifier named, re-enter
+    /// through the exports root target. Once `exports` names an
+    /// entry, Vite never falls back to mainFields: a target missing on disk
+    /// throws in resolvePackageEntry, tryCleanFsResolve catches it and
+    /// probes `index.*` — so a broken target here goes to the index and
+    /// then fails, never to the mainFields pick. (A manifest with exports
+    /// and no other way in resolves via oxc's own
+    /// allow_package_exports_in_directory_resolve, enabled in
+    /// with_settings, which runs exports after mainFields and index — the
+    /// last-resort half of the same Vite behavior.) The path-containment gate
+    /// keeps the hot path free: an extensionless hit (`./x` -> `x.js`) never
+    /// lands inside its own specifier's directory, and an exact hit
+    /// (`./x.js` -> `x.js`, the commonest relative shape) is the equality
+    /// case, skipped before the read — so only real directory hits — rare —
+    /// pay the manifest read. (`Resolution::package_json` is
+    /// not usable here: oxc attaches it on package-boundary requests, not
+    /// relative ones.) A symlinked directory hands back realpaths that miss
+    /// the lexical gate and keeps today's Node behavior rather than taxing
+    /// every miss with a canonicalize.
+    fn directory_exports_entry(
+        &self,
+        base: &Path,
+        specifier: &str,
+        resolved: &Path,
+    ) -> DirectoryEntry {
+        if !(specifier.starts_with("./")
+            || specifier.starts_with("../")
+            || specifier.starts_with('/'))
+        {
+            return DirectoryEntry::NotApplicable;
+        }
+        let clean = &specifier[..specifier.find(['?', '#']).unwrap_or(specifier.len())];
+        let joined = lexical_join(base, clean);
+        // Equality is the exact-file hit (`./x.js` -> `x.js`): never a
+        // directory, so it skips the manifest read below.
+        if resolved == joined || !resolved.starts_with(&joined) {
+            return DirectoryEntry::NotApplicable;
+        }
+        let Ok(bytes) = std::fs::read(joined.join("package.json")) else {
+            return DirectoryEntry::NotApplicable;
+        };
+        let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return DirectoryEntry::NotApplicable;
+        };
+        // Vite gates on JS truthiness (`if (data.exports)`), so a false/null/
+        // empty exports field falls to the mainFields walk like an absent one.
+        let exports = match manifest.get("exports") {
+            None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => {
+                return DirectoryEntry::NotApplicable
+            }
+            Some(serde_json::Value::String(s)) if s.is_empty() => {
+                return DirectoryEntry::NotApplicable;
+            }
+            Some(exports) => exports,
+        };
+        // With a truthy exports field, resolve.exports THROWS when "." has no
+        // derivable target ('No known conditions'/'Missing "." specifier'),
+        // and resolvePackageEntry converts any throw to packageEntryFailure —
+        // so mainFields never run: a no-target map lands on index probing
+        // exactly like a target missing on disk.
+        if let Some(target) = exports_dot_target(exports, &self.inner.options().condition_names) {
+            if let Ok(resolution) = self.inner.resolve(&joined, &target) {
+                return DirectoryEntry::Resolved(resolution.full_path());
+            }
+        }
+        if let Ok(resolution) = self.inner.resolve(&joined, "./index") {
+            return DirectoryEntry::Resolved(resolution.full_path());
+        }
+        DirectoryEntry::Unresolvable(joined)
+    }
+
     pub fn resolve(&self, importer_dir: &Path, specifier: &str) -> Result<PathBuf, ResolveFailure> {
         let deduped = self.should_dedupe(specifier);
         let base = if deduped {
@@ -255,7 +395,21 @@ impl OjResolver {
             importer_dir
         };
         match self.inner.resolve(base, specifier) {
-            Ok(resolution) => Ok(resolution.full_path()),
+            Ok(resolution) => {
+                match self.directory_exports_entry(base, specifier, resolution.path()) {
+                    DirectoryEntry::Resolved(entry) => Ok(entry),
+                    DirectoryEntry::NotApplicable => Ok(resolution.full_path()),
+                    DirectoryEntry::Unresolvable(dir) => Err(ResolveFailure {
+                        specifier: specifier.to_string(),
+                        importer: importer_dir.to_path_buf(),
+                        reason: format!(
+                            "failed to resolve entry for package '{}': its exports name a missing file and no index exists",
+                            dir.display()
+                        ),
+                        ignored: false,
+                    }),
+                }
+            }
             Err(err) => {
                 // Dedupe from root can miss a package only installed nested;
                 // fall back to the importer's dir before failing.
@@ -273,6 +427,18 @@ impl OjResolver {
             }
         }
     }
+}
+
+/// How the Vite directory-entry override landed for a specifier.
+enum DirectoryEntry {
+    /// Not a directory hit, or its manifest names no exports root target.
+    NotApplicable,
+    /// The exports root target (or, when it is missing on disk, the
+    /// directory's index) resolved.
+    Resolved(PathBuf),
+    /// The manifest names a root target but neither it nor an index exists;
+    /// Vite fails this resolution rather than using an entry field.
+    Unresolvable(PathBuf),
 }
 
 #[cfg(test)]
@@ -555,6 +721,271 @@ mod tests {
         assert_eq!(
             default_extensions(),
             [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn dep_relative_extensionless_prefers_js_over_stray_ts() {
+        // The Start host finishes a dependency's extensionless relative import
+        // through this resolver (crates/oj/src/start_host.rs, node_modules
+        // branch): a published .js build must outrank a stray .ts source
+        // shipped next to it, per the default extension order.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./greet").unwrap();
+        assert!(
+            hit.ends_with("greet.js"),
+            "expected the .js build, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_resolves_nested_package_entry() {
+        // Same seam: a relative directory import inside a dependency whose
+        // subdir carries its own package.json (no index.*) resolves through
+        // that manifest, module over main — Vite's tryCleanFsResolve consults
+        // the directory package before probing index files.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./helpers").unwrap();
+        assert!(
+            hit.ends_with("helpers/m.js"),
+            "expected the module entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_map_beats_main_fields() {
+        // Vite's resolvePackageEntry consults `exports["."]` before the
+        // mainFields walk even for a path-reached directory, where Node binds
+        // `exports` only at the package-name boundary; directory_exports_entry
+        // carries the Vite rule over the inner resolver's Node behavior.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./exports-dir").unwrap();
+        assert!(
+            hit.ends_with("exports-dir/e.js"),
+            "expected the exports entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_without_entry_fields_falls_back_to_index() {
+        // Vite's resolvePackageEntry defaults to index.js/json/node when the
+        // manifest names no entry; Node rejects the directory import outright.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./bare-dir").unwrap();
+        assert!(
+            hit.ends_with("bare-dir/index.js"),
+            "expected index fallback, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_under_server_settings() {
+        // Same exports-beats-mainFields contract, but through the exact
+        // settings shape the SSR server builds (server list, symlinks
+        // followed), so a server-only regression cannot hide behind the
+        // default-constructor test above.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::with_settings(
+            &root,
+            ResolveSettings {
+                conditions: ["module", "node", "development", "import", "default"]
+                    .map(String::from)
+                    .to_vec(),
+                server: true,
+                ..ResolveSettings::default()
+            },
+        );
+        let hit = resolver.resolve(&dir, "./exports-dir").unwrap();
+        assert!(
+            hit.ends_with("exports-dir/e.js"),
+            "expected the exports entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_broken_exports_falls_to_index_not_main_fields() {
+        // Vite: once exports names an entry, mainFields never run — a target
+        // missing on disk throws in resolvePackageEntry and tryCleanFsResolve
+        // falls to index probing.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./broken-exports-idx").unwrap();
+        assert!(
+            hit.ends_with("broken-exports-idx/index.js"),
+            "expected the index fallback, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_broken_exports_without_index_fails() {
+        // ... and with no index either, the resolution fails as under Vite,
+        // instead of quietly using the module/main pick exports superseded.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let err = resolver
+            .resolve(&dir, "./broken-exports-noidx")
+            .unwrap_err();
+        assert!(
+            err.reason.contains("exports name a missing file"),
+            "expected the package-entry failure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_only_manifest_resolves() {
+        // A manifest with exports and neither entry fields nor an index fails
+        // the inner resolver's Node algorithm outright; Vite still enters it
+        // through exports["."].
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./exports-only").unwrap();
+        assert!(
+            hit.ends_with("exports-only/e.js"),
+            "expected the exports entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_string_sugar() {
+        // Node's exports sugar: a bare string is the "." target
+        // ("exports": "./s.js"), the commonest shape in small packages; it
+        // outranks the module field like any exports entry.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./sugar-string").unwrap();
+        assert!(
+            hit.ends_with("sugar-string/s.js"),
+            "expected the string-sugar entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_conditions_sugar() {
+        // The other sugar: a top-level conditions object with no "." key is
+        // itself the "." target; source order picks "import" before "default".
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./sugar-conditions").unwrap();
+        assert!(
+            hit.ends_with("sugar-conditions/i.js"),
+            "expected the import-condition entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_without_matching_condition_falls_to_index() {
+        // resolve.exports THROWS on a truthy exports field with no derivable
+        // "." target ('No known conditions'), and resolvePackageEntry turns
+        // any throw into packageEntryFailure — mainFields never run, index
+        // probing does. "require" is absent from the import-side conditions.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./nomatch-idx").unwrap();
+        assert!(
+            hit.ends_with("nomatch-idx/index.js"),
+            "expected the index fallback, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_exports_without_matching_condition_or_index_fails() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let err = resolver.resolve(&dir, "./nomatch-noidx").unwrap_err();
+        assert!(
+            err.reason.contains("exports name a missing file"),
+            "expected the package-entry failure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_subpath_only_exports_falls_to_index_not_main_fields() {
+        // resolve.exports' OTHER throw family: an exports map with only
+        // subpath keys and no "." at all ('Missing "." specifier') is still a
+        // truthy exports field, so mainFields never run — index probing does.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./subpath-only").unwrap();
+        assert!(
+            hit.ends_with("subpath-only/index.js"),
+            "expected the index fallback, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_exact_extension_hit_stays_a_file_resolution() {
+        // The equality gate: `./greet.js` resolves to the file it names even
+        // with a same-named sibling story around it — the exact hit must never
+        // be treated as a directory candidate (and skips the manifest read).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./greet.js").unwrap();
+        assert!(
+            hit.ends_with("dist/greet.js"),
+            "expected the exact file, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_falsy_exports_uses_main_fields() {
+        // Vite gates on JS truthiness (`if (data.exports)`): exports: false
+        // behaves like no exports field at all.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./falsy-exports").unwrap();
+        assert!(
+            hit.ends_with("falsy-exports/m.js"),
+            "expected the module entry, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn dep_relative_directory_bare_string_export_target_resolves() {
+        // resolve.exports accepts any string target and Vite path.joins it,
+        // so a sloppy '"exports": "lib.js"' resolves the file — it must not
+        // be read as a bare package name.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/deprelative/node_modules/dep/dist");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
+        let resolver = OjResolver::new(&root);
+        let hit = resolver.resolve(&dir, "./bare-target").unwrap();
+        assert!(
+            hit.ends_with("bare-target/lib.js"),
+            "expected the bare-string entry, got {hit:?}"
         );
     }
 

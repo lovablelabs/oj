@@ -129,7 +129,7 @@ fn server_fn_module(root: &Path, module_url: &str) -> Option<PathBuf> {
     Some(candidate)
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
