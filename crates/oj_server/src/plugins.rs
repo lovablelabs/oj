@@ -2734,6 +2734,15 @@ impl PluginHost {
         }
     }
 
+    /// Full V8 collection in the host's isolate (see `JsEngine::request_gc`):
+    /// the memory-probing instrument behind OJ_DEBUG_MEM, never a runtime
+    /// lever. No-op when the engine is gone.
+    pub fn request_gc(&self) {
+        if let Some(engine) = self.engine.lock().unwrap().as_ref() {
+            engine.request_gc();
+        }
+    }
+
     pub async fn build_hook_plan(&self) -> BuildHookPlan {
         self.ensure_hook_plan().await;
         self.hook_plan.read().unwrap().clone()

@@ -1372,6 +1372,12 @@ impl DevServer {
                 get(|| async { js(REFRESH_PREAMBLE_JS) }),
             )
             .route("/@oj/routes.js", get(serve_oj_routes))
+            // OJ_DEBUG_MEM=1: force a full V8 collection in every live
+            // engine, so memory probes measure retained heap instead of
+            // whatever V8 has not bothered to collect yet (issue #202's
+            // GC-before-measuring point, symmetric with probing a Node
+            // server through its inspector). 404 unless enabled.
+            .route("/@oj/debug/gc", get(debug_gc))
             .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
             .route(
                 "/@oj/lingui-macro-shim.js",
@@ -6551,6 +6557,36 @@ fn server_fn_stub(exports: &[String], url: &str) -> String {
         }
     }
     out
+}
+
+fn debug_mem() -> bool {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("OJ_DEBUG_MEM").is_ok_and(|v| v == "1"));
+    *ON
+}
+
+async fn debug_gc(State(state): State<Arc<ServerState>>) -> Response {
+    if !debug_mem() {
+        return (axum::http::StatusCode::NOT_FOUND, "").into_response();
+    }
+    let mut requested = 0usize;
+    if let Some(host) = &state.plugins {
+        host.request_gc();
+        requested += 1;
+    }
+    if let Some(Some(host)) = state.plugins_ssr.get() {
+        host.request_gc();
+        requested += 1;
+    }
+    // The interrupts run at each isolate's next check point; give them a
+    // beat so a probe reading RSS right after this response sees the
+    // post-collection numbers.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        format!("{{\"requested\":{requested}}}"),
+    )
+        .into_response()
 }
 
 async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {

@@ -147,6 +147,27 @@ impl JsEngine {
         Self::spawn_inner(config, None, None)
     }
 
+    /// Ask the isolate for a full garbage collection at its next interrupt
+    /// point (`low_memory_notification`: collect everything collectable and
+    /// compact). A memory-probing instrument (the `/@oj/debug/gc` endpoint
+    /// behind OJ_DEBUG_MEM=1), never a runtime lever: V8 schedules its own
+    /// collections better than callers can. Safe from any thread; a no-op if
+    /// the isolate is mid-teardown.
+    pub fn request_gc(&self) {
+        unsafe extern "C" fn collect(
+            isolate: v8::UnsafeRawIsolatePtr,
+            _data: *mut std::ffi::c_void,
+        ) {
+            // SAFETY: V8 invokes interrupt callbacks on the isolate's own
+            // thread while it is entered; reconstructing the borrow-style
+            // wrapper (no Drop, unlike OwnedIsolate) is the API's intended
+            // use, the same shape as deno_core's inspector interrupt.
+            let mut isolate = unsafe { v8::Isolate::from_raw_isolate_ptr(isolate) };
+            isolate.low_memory_notification();
+        }
+        self.isolate.request_interrupt(collect, std::ptr::null_mut());
+    }
+
     /// Spawns an engine whose module loading is governed by `host` (see
     /// [`ModuleHost`]). Must be called from inside a tokio runtime: host
     /// futures run on that runtime, never on the isolate thread.
