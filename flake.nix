@@ -102,8 +102,21 @@
           { dir = "@rolldown/pluginutils"; url = "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz"; hash = "sha256-E/yzQj03+VqOhhwXLkti/STyJBK+TpQghzZyQkduNAA="; }
           { dir = "@rolldown/${binding.name}"; url = "https://registry.npmjs.org/@rolldown/${binding.name}/-/${binding.name}-${rolldownVersion}.tgz"; hash = binding.hash; }
         ];
+      # Fixed-output on purpose, not hygiene: consumers' cache pipelines
+      # (lovable's fill-darwin-publish) require every staged non-root path to
+      # be upstream-corroborated UNLESS it is content-addressed (hash-pinned
+      # in a reviewed file, like the rusty_v8 archive above). The NAR hash
+      # below pins the unpacked tree; recompute it on a rolldownVersion bump
+      # by clearing the hash and rebuilding: nix prints the right one on
+      # the mismatch (a plain `nix hash path` of the output does NOT match
+      # the FOD canonicalization).
+      rolldownVendorHash = "sha256-NzMJ0hT0fFeF5oF0+gcQtrun0GGbAJ4Ou8TkfxZ3QZ4=";
       rolldownVendor = pkgs:
-        pkgs.runCommand "oj-rolldown-vendor-${rolldownVersion}" { } (
+        pkgs.runCommand "oj-rolldown-vendor-${rolldownVersion}" {
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          outputHash = rolldownVendorHash;
+        } (
           nixpkgs.lib.concatMapStrings (part: ''
             mkdir -p "$out/node_modules/${part.dir}"
             tar -xzf ${pkgs.fetchurl { url = part.url; hash = part.hash; }} \
