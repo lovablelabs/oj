@@ -35,6 +35,7 @@ use oj_js::ModuleHost;
 use oj_server::SsrBridge;
 use oj_server::StartResolution;
 
+use crate::ssr_dev::normalize_path;
 use crate::ssr_host::{importer_id, versioned_id, VersionGraph};
 
 const START_BOOTSTRAP_JS: &str = include_str!("assets/start-bootstrap.mjs");
@@ -806,10 +807,17 @@ impl StartHost {
         // against a sibling dependency's CJS `main` — a UMD wrapper there
         // defeats the CJS named-export lexer (drei's ESM
         // `import { getGPUTier } from "detect-gpu"` resolved to the UMD and
-        // died at link). Relative paths, `#` imports, and Node builtins keep
-        // Node semantics — a builtin outranks an installed polyfill package of
-        // the same name here, as under Node and Vite SSR — and an unresolvable
-        // bare name falls back to them too.
+        // died at link). `#` imports and Node builtins keep Node semantics —
+        // a builtin outranks an installed polyfill package of the same name
+        // here, as under Node and Vite SSR — and an unresolvable bare name
+        // falls back to them too. A relative path keeps Node semantics while
+        // its exact target exists; when it does not, the importer is a
+        // bundler-only ESM build the Vite-style resolver picked
+        // (functions-js's `module` entry re-exports from the extensionless
+        // './FunctionsClient'), so the same resolver finishes the edge —
+        // extension inference, and a directory's package.json entry under
+        // the server mainFields — where plain Node 500s with
+        // ERR_MODULE_NOT_FOUND on every request before first render.
         if importer_id.contains("/node_modules/") && !is_plugin_shaped {
             let bare = !spec.starts_with('.')
                 && !spec.starts_with('/')
@@ -821,6 +829,19 @@ impl StartHost {
                 {
                     if let Ok(u) = url::Url::from_file_path(&p) {
                         return Ok(Some(HostResolved::External(u.to_string())));
+                    }
+                }
+            }
+            if spec.starts_with("./") || spec.starts_with("../") {
+                if let Some(dir) = Path::new(&importer_id).parent() {
+                    if !normalize_path(&dir.join(spec)).is_file() {
+                        if let Ok(StartResolution::Dependency(p)) =
+                            self.bridge.resolve_start(&importer_id, spec).await
+                        {
+                            if let Ok(u) = url::Url::from_file_path(&p) {
+                                return Ok(Some(HostResolved::External(u.to_string())));
+                            }
+                        }
                     }
                 }
             }

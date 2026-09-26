@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Start SSR: an ESM dependency entered through its `module` entry no longer 500s when that build uses extensionless relative imports (the @supabase/functions-js shape — no `exports` map, bundler-only ESM). A relative specifier from inside node_modules keeps Node semantics while its exact target exists; when it does not, the host finishes it through the same Vite-style resolver that picked the entry: extension inference, and a directory's own package.json entry (module over main, before index probing), as Vite's tryCleanFsResolve does. Regressed in 0.2.4 (#209), which routed dependency graphs into `module` entries plain Node never chose; measured at ~30% of TanStack Start projects on 0.2.4–0.2.8.
+
 ## [0.2.8] - 2026-09-26
 
 ### Added

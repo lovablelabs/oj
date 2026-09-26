@@ -85,6 +85,8 @@ jobs:
         run: node e2e/dep-esm-bare-import.mjs
       - name: ESM dependency's named import of an unbundled UMD sibling (proj4 shape)
         run: node e2e/dep-esm-umd-interop.mjs
+      - name: ESM dependency's extensionless relative imports (functions-js shape)
+        run: node e2e/dep-esm-relative-import.mjs
       - name: OJ_DEBUG_MEM gc endpoint (issue 202 memory probing)
         run: node e2e/debug-gc.mjs
       - name: ssr streaming prod build + hydration
