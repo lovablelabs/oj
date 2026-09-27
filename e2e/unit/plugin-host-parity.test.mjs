@@ -11,6 +11,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { rpcSidecar, tmpProject } from "./harness.mjs";
 
@@ -526,6 +527,61 @@ test("user cacheDir resolves from root and configEnvironment isBundled is re-cle
       false,
       "a configEnvironment-set isBundled is coerced off with bundledDev",
     );
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// The monorepo shape: the app root has no package.json of its own (or one
+// that does not parse), so Vite's findNearestPackageData walks up to the
+// workspace's and cacheDir lands in the WORKSPACE node_modules/.vite.
+test("default cacheDir walks up past a missing or unparsable package.json", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-mono-" });
+  fx.write("apps/web/package.json", "{ not json");
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-mono-probe",
+       configResolved(config) { seen.cacheDir = config.cacheDir; },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, {
+    config: { root: path.join(fx.root, "apps/web") },
+    env: { command: "serve", mode: "development" },
+  });
+  try {
+    const seen = await probe(host, fx);
+    assert.equal(seen.cacheDir, path.join(fx.root, "node_modules/.vite"));
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// Vite resolves root before deriving cacheDir, so a relative root a config
+// hook returns still yields an absolute cacheDir.
+test("a relative root from a config hook still yields an absolute cacheDir", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-relroot-" });
+  fx.write("apps/web/package.json", JSON.stringify({ name: "web" }));
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-relroot-probe",
+       config() { return { root: "apps/web" }; },
+       configResolved(config) { seen.cacheDir = config.cacheDir; },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const seen = await probe(host, fx);
+    // The host resolves the relative root against its cwd, which the OS
+    // reports realpath'd (macOS /var -> /private/var).
+    assert.equal(seen.cacheDir, path.join(fs.realpathSync(fx.root), "apps/web/node_modules/.vite"));
   } finally {
     host.close();
     fx.cleanup();
