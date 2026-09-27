@@ -7,7 +7,7 @@
 //! spawned engine per kind, so a plain app pays for nothing and a Tailwind
 //! scan never queues behind a Svelte compile.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use oj_js::{EngineConfig, EngineError, JsEngine};
@@ -31,12 +31,35 @@ const MISSING_PACKAGE_MARKER: &str = "OJ_MISSING_PACKAGE ";
 /// One CSS compile kind (tailwind/postcss, less/stylus, or svelte) backed by
 /// its own engine. Spawn lazily: the engine thread and V8 isolate exist only
 /// once a request of that kind arrives.
+///
+/// The isolate carries the same heap cap as the plugin host (the toolchains
+/// it runs are app-controlled JS, and Tailwind's config loader is a known
+/// per-compile module leak), and the cap degrades the same way: the running
+/// compile fails with the memory-limit error while the engine is replaced
+/// with a fresh one, so the NEXT compile runs on a clean heap instead of the
+/// doubled-cap heap the unwind left behind. Callers hold this struct in
+/// once-cells; the swap lives inside so every one of them heals.
 pub struct CssEngine {
-    engine: JsEngine,
+    /// Generation-stamped so concurrent memory-limit failures revive once.
+    /// Compiles hold the read guard across the whole engine call on purpose:
+    /// the alternative (clone an Arc<JsEngine> under a short lock and call
+    /// outside it) lets a replaced engine's isolate be dropped from an async
+    /// context by whichever compile finishes last. The cost is that a
+    /// straggler compile can hold revive's write lock out until its own
+    /// deadline; acceptable for compiles that are normally sub-second.
+    engine: tokio::sync::RwLock<(u64, JsEngine)>,
+    root: PathBuf,
     script: String,
     base: String,
     kind: &'static str,
     deadline: Duration,
+    memory_limit_bytes: usize,
+    /// Plugin-host parity for the replacement engine too: bounded attempts
+    /// with spacing, so an app that legitimately needs more heap than the cap
+    /// degrades to failing compiles instead of booting a fresh V8 isolate per
+    /// keystroke forever.
+    revive_attempts: std::sync::atomic::AtomicU32,
+    last_revive: std::sync::Mutex<Option<std::time::Instant>>,
     /// The PostCSS config path `find_postcss_config` located, handed to the
     /// tailwind module per request (the old sidecar carried it as an env var).
     postcss_config: Option<String>,
@@ -53,6 +76,7 @@ impl CssEngine {
             "tailwind",
             deadline,
             postcss_config,
+            shared_memory_limit(),
         )
         .await
     }
@@ -68,6 +92,7 @@ impl CssEngine {
             "css preprocessor",
             deadline,
             None,
+            shared_memory_limit(),
         )
         .await
     }
@@ -80,10 +105,15 @@ impl CssEngine {
             "svelte compiler",
             deadline,
             None,
+            shared_memory_limit(),
         )
         .await
     }
 
+    /// `memory_limit_bytes` is a plain usize on purpose: `EngineConfig`'s
+    /// own field is an Option whose None means uncapped, and an uncapped CSS
+    /// engine is the bug this struct exists to prevent — the type makes it
+    /// unwritable here. Production callers pass [`shared_memory_limit`].
     async fn spawn(
         root: &Path,
         name: &str,
@@ -91,6 +121,7 @@ impl CssEngine {
         kind: &'static str,
         deadline: Duration,
         postcss_config: Option<String>,
+        memory_limit_bytes: usize,
     ) -> anyhow::Result<std::sync::Arc<Self>> {
         let script = oj_cache::cache_root(root).join(name);
         if let Some(parent) = script.parent() {
@@ -98,26 +129,86 @@ impl CssEngine {
         }
         std::fs::write(&script, js)?;
 
+        let engine = Self::spawn_engine(root, deadline, memory_limit_bytes)
+            .await
+            .map_err(|e| anyhow::anyhow!("cannot start the {kind} engine: {e}"))?;
+        Ok(std::sync::Arc::new(CssEngine {
+            engine: tokio::sync::RwLock::new((0, engine)),
+            root: root.to_path_buf(),
+            script: script.to_string_lossy().into_owned(),
+            base: root.display().to_string(),
+            kind,
+            deadline,
+            memory_limit_bytes,
+            revive_attempts: std::sync::atomic::AtomicU32::new(0),
+            last_revive: std::sync::Mutex::new(None),
+            postcss_config,
+        }))
+    }
+
+    async fn spawn_engine(
+        root: &Path,
+        deadline: Duration,
+        memory_limit_bytes: usize,
+    ) -> Result<JsEngine, EngineError> {
         let config = EngineConfig {
             root: root.to_path_buf(),
-            memory_limit_bytes: None,
+            memory_limit_bytes: Some(memory_limit_bytes),
             default_deadline: Some(deadline),
             code_cache_dir: Some(crate::engine_code_cache_dir(root)),
         };
         // JsEngine::spawn blocks until the isolate is up; keep it off the
         // async workers.
-        let engine = tokio::task::spawn_blocking(move || JsEngine::spawn(config))
+        tokio::task::spawn_blocking(move || JsEngine::spawn(config))
             .await
-            .map_err(|e| anyhow::anyhow!("cannot start the {kind} engine: {e}"))?
-            .map_err(|e| anyhow::anyhow!("cannot start the {kind} engine: {e}"))?;
-        Ok(std::sync::Arc::new(CssEngine {
-            engine,
-            script: script.to_string_lossy().into_owned(),
-            base: root.display().to_string(),
-            kind,
-            deadline,
-            postcss_config,
-        }))
+            .map_err(|e| EngineError::Boot(e.to_string()))?
+    }
+
+    /// Replaces the engine after a memory-limit (or closed-engine) failure,
+    /// unless another failing call already did: the generation stamp makes
+    /// concurrent losers no-ops. The failing call still reports its error;
+    /// only the NEXT compile runs on the fresh heap — plugin-host semantics,
+    /// including its attempt limit and spacing (an app whose compile
+    /// legitimately outgrows the cap fails its compiles instead of respawning
+    /// isolates per keystroke forever).
+    async fn revive(&self, seen_generation: u64, trigger: &EngineError) {
+        use std::sync::atomic::Ordering;
+        let attempts = self.revive_attempts.load(Ordering::SeqCst);
+        if attempts >= crate::plugins::PLUGIN_HOST_RESPAWN_LIMIT {
+            return;
+        }
+        if let Ok(last) = self.last_revive.lock() {
+            if last.is_some_and(|at| at.elapsed() < crate::plugins::PLUGIN_HOST_RESPAWN_SPACING) {
+                return;
+            }
+        }
+        let mut slot = self.engine.write().await;
+        if slot.0 != seen_generation {
+            return;
+        }
+        if let Ok(mut last) = self.last_revive.lock() {
+            *last = Some(std::time::Instant::now());
+        }
+        match Self::spawn_engine(&self.root, self.deadline, self.memory_limit_bytes).await {
+            Ok(fresh) => {
+                slot.0 += 1;
+                slot.1 = fresh;
+                let attempts = self.revive_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let cause = match trigger {
+                    EngineError::MemoryLimit => format!(
+                        "hit its JS memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB)",
+                        self.memory_limit_bytes / (1024 * 1024)
+                    ),
+                    _ => "shut down".to_string(),
+                };
+                eprintln!(
+                    "oj: the {} engine {cause} and was replaced ({attempts}/{})",
+                    self.kind,
+                    crate::plugins::PLUGIN_HOST_RESPAWN_LIMIT
+                );
+            }
+            Err(e) => eprintln!("oj: the {} engine could not be replaced: {e}", self.kind),
+        }
     }
 
     /// Compiles a stylesheet requested by its dev-server url (`/src/a.css`,
@@ -167,19 +258,38 @@ impl CssEngine {
             "dev": dev,
             "postcssConfig": self.postcss_config,
         });
-        match self
-            .engine
-            .call(self.script.clone(), "compile", vec![request])
-            .await
-        {
+        let (generation, result) = {
+            let slot = self.engine.read().await;
+            (
+                slot.0,
+                slot.1
+                    .call(self.script.clone(), "compile", vec![request])
+                    .await,
+            )
+        };
+        match result {
             Ok(serde_json::Value::String(css)) => Ok(css),
             Ok(other) => Err(format!(
                 "{} compile produced no output ({other})",
                 self.kind
             )),
-            Err(e) => Err(map_engine_error(self.kind, self.deadline, e)),
+            Err(e) => {
+                // A blown or dead isolate never comes back on its own; swap in
+                // a fresh one so the next compile works, and fail this one.
+                if matches!(e, EngineError::MemoryLimit | EngineError::Closed) {
+                    self.revive(generation, &e).await;
+                }
+                Err(map_engine_error(self.kind, self.deadline, e))
+            }
         }
     }
+}
+
+/// The one heap cap for every embedded engine: the plugin host's Node-parity
+/// resolution (OJ_PLUGIN_MEMORY_MB, then NODE_OPTIONS --max-old-space-size,
+/// then 4096MB).
+fn shared_memory_limit() -> usize {
+    crate::plugins::plugin_host_memory_mb() * 1024 * 1024
 }
 
 fn map_engine_error(kind: &str, deadline: Duration, e: EngineError) -> String {
@@ -353,5 +463,38 @@ mod tests {
         // The isolate is un-poisoned: the next request compiles.
         let out = engine.compile(".fine {}", "/src/a.less").await.unwrap();
         assert_eq!(out, ".fine {}/*ok*/");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_blown_heap_fails_the_compile_and_the_next_one_runs_fresh() {
+        // The engine carries the plugin host's heap cap; a toolchain that
+        // eats the whole heap (Tailwind's per-compile config-module leak is
+        // the production shape) must fail THAT compile with the memory-limit
+        // error and leave a fresh engine behind, not a wedged doubled-cap
+        // isolate that grows to the node's ceiling.
+        let root = app_root();
+        stub_less(
+            root.path(),
+            "const hog = []; module.exports = { FileManager: class {}, render(css) { \
+             if (css.includes('boom')) { for (;;) hog.push(new Array(1024 * 1024).fill(Math.random())); } \
+             return Promise.resolve({ css: css + '/*ok*/' }); } };",
+        );
+        let engine = CssEngine::spawn(
+            root.path(),
+            "css-preprocess.mjs",
+            PREPROCESS_JS,
+            "css preprocessor",
+            DEV_DEADLINE,
+            None,
+            128 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+        let err = engine.compile(".boom {}", "/src/a.less").await.unwrap_err();
+        assert_eq!(err, "css preprocessor compile exceeded the JS memory limit");
+        // revive() ran inside the failing call: the replacement compiles.
+        let out = engine.compile(".fine {}", "/src/a.less").await.unwrap();
+        assert_eq!(out, ".fine {}/*ok*/");
+        assert_eq!(engine.engine.read().await.0, 1, "one revive, stamped");
     }
 }
