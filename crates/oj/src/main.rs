@@ -22,7 +22,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "oj",
     version,
-    about = "A Rust-native build tool for React apps"
+    about = "Experimental next generation frontend tooling"
 )]
 struct Cli {
     #[command(subcommand)]

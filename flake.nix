@@ -1,5 +1,5 @@
 {
-  description = "An experimental Rust-native build tool for React apps";
+  description = "Experimental next generation frontend tooling";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -291,7 +291,7 @@ PYUUID
           # runs in CI, not inside the sandboxed nix build.
           doCheck = false;
           meta = {
-            description = "An experimental Rust-native build tool for React apps";
+            description = "Experimental next generation frontend tooling";
             homepage = "https://github.com/lovablelabs/oj";
             license = nixpkgs.lib.licenses.mit;
             mainProgram = "oj";
