@@ -175,8 +175,41 @@ it("shims node builtins for the browser bundle", async () => {
       "export { stream };",
     ].join("\n"),
   };
-  const { text } = await bundle(files, () => [nodeBuiltinShims]);
+  const { text } = await bundle(files, () => [nodeBuiltinShims({ production: true })]);
   assert.match(text, /AsyncLocalStorage/, "async_hooks should be shimmed");
   assert.match(text, /getStore\(\)/, "the ALS shim should expose getStore");
   assert.match(text, /PassThrough/, "bare node builtins should resolve to the stream shim");
+});
+
+it("named imports from a shimmed builtin bundle instead of link-failing", async () => {
+  const files = {
+    "entry.js": [
+      'import { createHmac } from "node:crypto";',
+      'import { setTimeout as sleep } from "timers/promises";',
+      "export const probes = [typeof createHmac, typeof sleep];",
+    ].join("\n"),
+  };
+  // The CJS stub interops the named import into a property read; before the
+  // shims were CommonJS this was a rolldown MISSING_EXPORT build failure,
+  // and the bare subpath spelling was not shimmed at all.
+  const { text } = await bundle(files, () => [nodeBuiltinShims({ production: true })]);
+  assert.match(text, /probes/, "the client bundle should link");
+});
+
+it("an installed package sharing a builtin's name wins over the shim", async () => {
+  const files = {
+    "entry.js": ['import { ucs2decode } from "punycode";', "export const out = ucs2decode('a');"].join("\n"),
+    "node_modules/punycode/package.json": JSON.stringify({
+      name: "punycode",
+      version: "2.3.1",
+      main: "index.js",
+      type: "module",
+    }),
+    "node_modules/punycode/index.js": "export const ucs2decode = (s) => 'REAL_PUNYCODE:' + s;",
+  };
+  // Vite's resolution order: the browser-external stub only exists for
+  // builtins node resolution cannot find, so the userland punycode package
+  // (widely depended on) must not be shadowed by the identity shim.
+  const { text } = await bundle(files, () => [nodeBuiltinShims({ production: true })]);
+  assert.match(text, /REAL_PUNYCODE/, "the installed package should win over the builtin shim");
 });

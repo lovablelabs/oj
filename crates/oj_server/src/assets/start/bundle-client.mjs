@@ -164,7 +164,7 @@ const result = await build({
     makeVitePlugins({ container, appRoot: APP, mode: "dev" }),
     assetsPlugin({ mode: "dev", cssUrls }),
     serverFnClient,
-    nodeBuiltinShims,
+    nodeBuiltinShims({ production: false }),
   ],
   output: {
     format: "esm",

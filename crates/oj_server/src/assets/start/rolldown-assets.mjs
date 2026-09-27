@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { join, dirname, extname, basename, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { emptyVirtualStub } from "./resolve-pkg.mjs";
@@ -174,52 +175,104 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
   };
 }
 
+// Every shim is CommonJS, matching Vite's browser-external stubs: named ESM
+// imports from a CJS module interop into property reads, so a name the shim
+// does not carry is undefined at runtime instead of a rolldown MISSING_EXPORT
+// at link time (`import { createHmac } from "crypto"` in code shared with the
+// server was failing whole client builds; rolldown-vite moved its own build
+// stubs to CJS for exactly this). Production is Vite's bare
+// `module.exports = {}`. Dev uses the warning Proxy from Vite's dep OPTIMIZER
+// stub rather than the throwing vite:resolve stub, on purpose: oj bundles the
+// dev client graph, and the throwing variant turns a mere feature probe
+// (`typeof createHmac === "function"`) into a page-breaking module-eval
+// error. The Proxy sits on the prototype (Object.create) because CJS-to-ESM
+// interop copies own properties and would flatten a bare Proxy to `{}`.
 const ALS =
-  "export class AsyncLocalStorage{getStore(){return this._s}" +
+  "class AsyncLocalStorage{getStore(){return this._s}" +
   "run(s,cb,...a){const p=this._s;this._s=s;try{return cb(...a)}finally{this._s=p}}" +
   "enterWith(s){this._s=s}exit(cb,...a){const p=this._s;this._s=undefined;try{return cb(...a)}finally{this._s=p}}" +
-  "disable(){this._s=undefined}}export default {AsyncLocalStorage};";
+  "disable(){this._s=undefined}}module.exports={AsyncLocalStorage};";
 const SHIM_STREAM_WEB =
-  "export const ReadableStream=globalThis.ReadableStream;export const WritableStream=globalThis.WritableStream;" +
-  "export const TransformStream=globalThis.TransformStream;export const ByteLengthQueuingStrategy=globalThis.ByteLengthQueuingStrategy;" +
-  "export const CountQueuingStrategy=globalThis.CountQueuingStrategy;" +
-  "export default {ReadableStream,WritableStream,TransformStream,ByteLengthQueuingStrategy,CountQueuingStrategy};";
+  "module.exports={ReadableStream:globalThis.ReadableStream,WritableStream:globalThis.WritableStream," +
+  "TransformStream:globalThis.TransformStream,ByteLengthQueuingStrategy:globalThis.ByteLengthQueuingStrategy," +
+  "CountQueuingStrategy:globalThis.CountQueuingStrategy};";
 const SHIM_STREAM =
   "class S{on(){return this}once(){return this}emit(){return false}pipe(t){return t}end(){}write(){return true}" +
-  "removeListener(){return this}destroy(){}}export class Readable extends S{static from(){return new Readable()}}" +
-  "export class Writable extends S{}export class Duplex extends S{}export class Transform extends S{}" +
-  "export class PassThrough extends S{}export class Stream extends S{}" +
-  "export default {Readable,Writable,Duplex,Transform,PassThrough,Stream};";
+  "removeListener(){return this}destroy(){}}class Readable extends S{static from(){return new Readable()}}" +
+  "class Writable extends S{}class Duplex extends S{}class Transform extends S{}" +
+  "class PassThrough extends S{}class Stream extends S{}" +
+  "module.exports={Readable,Writable,Duplex,Transform,PassThrough,Stream};";
 const SHIM_PUNYCODE =
-  "export const toUnicode=(s)=>s;export const toASCII=(s)=>s;export const encode=(s)=>s;export const decode=(s)=>s;" +
-  "export const ucs2={decode:()=>[],encode:()=>\"\"};export default {toUnicode,toASCII,encode,decode,ucs2};";
-const BARE_BUILTINS =
-  /^(assert|buffer|child_process|cluster|console|constants|crypto|dgram|dns|domain|events|fs|http|http2|https|module|net|os|path|perf_hooks|process|punycode|querystring|readline|repl|stream|stream\/web|string_decoder|sys|timers|tls|tty|url|util|v8|vm|worker_threads|zlib|async_hooks)$/;
-function shimSource(spec) {
+  "const id=(s)=>s;" +
+  "module.exports={toUnicode:id,toASCII:id,encode:id,decode:id,ucs2:{decode:()=>[],encode:()=>\"\"}};";
+// Vite's builtin set is node's `builtinModules`, which carries the bare
+// subpaths (`fs/promises`, `timers/promises`, `path/posix`, ...): a shared
+// module spelling one of those without the `node:` prefix is the same failure
+// family as the crypto shape. The union with the legacy hand list keeps
+// deprecated aliases a runtime's `builtinModules` may not report.
+const LEGACY_BUILTINS =
+  ("assert buffer child_process cluster console constants crypto dgram dns domain events fs http http2 " +
+    "https module net os path perf_hooks process punycode querystring readline repl stream stream/web " +
+    "string_decoder sys timers tls tty url util v8 vm worker_threads zlib async_hooks").split(" ");
+const BARE_BUILTIN_NAMES = new Set([
+  ...builtinModules.filter((n) => !n.includes(":")),
+  ...LEGACY_BUILTINS,
+]);
+export const BARE_BUILTINS = new RegExp(`^(${[...BARE_BUILTIN_NAMES].join("|")})$`);
+export function shimSource(spec, production) {
   const name = spec.replace(/^node:/, "");
   if (name === "async_hooks") return ALS;
   if (name === "stream/web") return SHIM_STREAM_WEB;
   if (name === "stream") return SHIM_STREAM;
   if (name === "punycode") return SHIM_PUNYCODE;
-  return "export default {};";
+  if (production) return "module.exports = {};";
+  // The specifier reaches this generated source only as a JSON string
+  // literal: a hostile or malformed `node:` tail must not be able to break
+  // out of (or into) the shim code.
+  return (
+    `const name = ${JSON.stringify(name)};\n` +
+    "module.exports = Object.create(new Proxy({}, {\n" +
+    "  get(_, key) {\n" +
+    "    if (key !== '__esModule' && key !== '__proto__' && key !== 'constructor' && key !== 'splice') {\n" +
+    '      console.warn(`Module "${name}" has been externalized for browser compatibility. ' +
+    'Cannot access "${name}.${String(key)}" in client code.`);\n' +
+    "    }\n" +
+    "  }\n" +
+    "}));"
+  );
 }
-export const nodeBuiltinShims = {
-  name: "node-builtin-shims",
-  resolveId: {
-    filter: { id: { include: [/^node:/, BARE_BUILTINS] } },
-    handler(source) {
-      if (/^node:/.test(source) || BARE_BUILTINS.test(source)) return V("node-shim", source);
-      return null;
+export function nodeBuiltinShims({ production = false } = {}) {
+  return {
+    name: "node-builtin-shims",
+    resolveId: {
+      filter: { id: { include: [/^node:/, BARE_BUILTINS] } },
+      async handler(source, importer) {
+        if (!/^node:/.test(source)) {
+          if (!BARE_BUILTINS.test(source)) return null;
+          // Vite stubs a builtin only after node resolution fails, so an
+          // installed package sharing a builtin's name (npm `events`,
+          // `punycode`) wins over the shim. `node:` ids skip the probe:
+          // npm cannot own that scheme.
+          const found = await this.resolve(source, importer, { skipSelf: true });
+          if (found) return found;
+        }
+        // Normalize the spelling so `crypto` and `node:crypto` are ONE
+        // module: the async_hooks and stream shims are stateful, and split
+        // identities would give two ALS stores or instanceof mismatches.
+        return V("node-shim", source.replace(/^node:/, ""));
+      },
     },
-  },
-  load: {
-    filter: { id: /^\0oj-node-shim:/ },
-    handler(id) {
-      const v = parseV(id);
-      return v && v.tag === "node-shim" ? { code: shimSource(v.path), moduleType: "js" } : null;
+    load: {
+      filter: { id: /^\0oj-node-shim:/ },
+      handler(id) {
+        const v = parseV(id);
+        return v && v.tag === "node-shim"
+          ? { code: shimSource(v.path, production), moduleType: "js" }
+          : null;
+      },
     },
-  },
-};
+  };
+}
 
 export function pnpmStorePaths(workspaceRoot) {
   const paths = [];
