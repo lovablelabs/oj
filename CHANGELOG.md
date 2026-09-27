@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Apps whose documents are rendered by a plugin's worker environments (the Cloudflare dev shape) no longer leave the first request to pay the whole cold module graph: at boot oj fires every route module's transform through the environments' own `warmupRequest` — all at once, Vite's warmup shape — while one real render through the serving path chases the warm transforms and fills the runner's module cache. First request after boot serves warm.
+
 ### Fixed
 
 - `oj dev`/`oj build` no longer print rolldown-vite's `configLoader: 'native'` migration warning as a wall (one line per incompatibility in the vite.config graph, 200+ on big monorepos, repeated by every one-shot child). Vite gates the compat scan on `VITE_CONFIG_NATIVE_IGNORE_WARNING`; oj now sets it once at the spawn root, so every engine and child inherits the suppression, a user-set value always wins, and an explicitly empty value re-enables the warning.

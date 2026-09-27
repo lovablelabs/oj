@@ -232,9 +232,14 @@ pub async fn start_dev(
         init_deadline: h.init_deadline_at(),
         confirm: oj_server::plugins::plugin_rpc_timeout(),
     });
+    // Filled after the dev listener binds; the runner-environment warm below
+    // needs the real port to drive one render through the full serving path.
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     {
         let engine = Arc::clone(&engine);
         let reload_tx = reload_tx.clone();
+        let warm_host = built.plugin_host.clone();
+        let warm_root = root.clone();
         tokio::spawn(async move {
             if cf_hint {
                 if let Some(mut hold) = prewarm_hold {
@@ -243,7 +248,40 @@ pub async fn start_dev(
                     // own init deadline) — see hold_prewarm_for_serve_info.
                     if let Some(known) = hold_prewarm_for_serve_info(&mut hold).await {
                         if known.middleware_port.is_some() && known.runner_environments {
-                            oj_server::boot_phase("prewarm skipped (worker environments)");
+                            // Warming oj's OWN engine is wasted here (the
+                            // worker environments render the documents), but
+                            // skipping entirely left the first request to pay
+                            // the whole cold graph. Two warms instead, like
+                            // Vite's warmup but fed from the route tree:
+                            // every route module's transform fires at once in
+                            // the host (parallel across cores), while one
+                            // real render through the serving path chases the
+                            // warm transforms and fills the runner's module
+                            // cache. transformRequest dedups the overlap.
+                            oj_server::boot_phase("prewarm: engine skipped (worker environments)");
+                            let transforms = async {
+                                let urls = runner_warm_urls(&warm_root);
+                                if urls.is_empty() {
+                                    return;
+                                }
+                                if let Some(host) = warm_host.as_deref() {
+                                    match host.warm_environments(&urls).await {
+                                        Ok(Some(_)) => {
+                                            oj_server::boot_phase("runner transform warm complete")
+                                        }
+                                        _ => oj_server::boot_phase(
+                                            "runner transform warm unavailable",
+                                        ),
+                                    }
+                                }
+                            };
+                            let render = async {
+                                if let Ok(port) = port_rx.await {
+                                    runner_render_warm(port).await;
+                                    oj_server::boot_phase("runner render warm complete");
+                                }
+                            };
+                            tokio::join!(transforms, render);
                             return;
                         }
                     }
@@ -353,6 +391,7 @@ pub async fn start_dev(
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
     oj_server::boot_phase("listening");
+    let _ = port_tx.send(port);
     tokio::spawn(async move {
         std::process::exit(shutdown_signal().await);
     });
@@ -395,6 +434,47 @@ async fn ensure_runner_fresh(state: &StartState) {
     {
         state.engine.reload().await;
     }
+}
+
+/// The urls the runner-environment transform warm fires: every route module
+/// plus the router entry, as root-relative urls (Vite's warmup.ts fileToUrl
+/// shape). The route tree is what the first render will walk, so warming it
+/// is the whole graph minus dependencies the optimizer already bundled.
+fn runner_warm_urls(root: &Path) -> Vec<String> {
+    let mut files: Vec<PathBuf> = list_route_files(root).into_iter().collect();
+    for entry in ["src/router.tsx", "src/router.ts"] {
+        let p = root.join(entry);
+        if p.is_file() {
+            files.push(p);
+        }
+    }
+    files
+        .iter()
+        .filter_map(|f| f.strip_prefix(root).ok())
+        .map(|rel| format!("/{}", rel.to_string_lossy().replace('\\', "/")))
+        .collect()
+}
+
+/// One real GET / through oj's own listener: the serving path a user request
+/// takes (middleware forward, worker-environment render), so the runner's
+/// module cache and the document pipeline warm end to end. Best effort with a
+/// generous bound; a cold monorepo render is minutes on a contended sandbox.
+async fn runner_render_warm(port: u16) {
+    let warm = async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
+            return;
+        };
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: localhost:{port}\r\nAccept: text/html\r\nConnection: close\r\n\r\n"
+        );
+        if stream.write_all(request.as_bytes()).await.is_err() {
+            return;
+        }
+        let mut sink = [0u8; 16384];
+        while matches!(stream.read(&mut sink).await, Ok(n) if n > 0) {}
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(600), warm).await;
 }
 
 fn list_route_files(root: &Path) -> std::collections::BTreeSet<PathBuf> {

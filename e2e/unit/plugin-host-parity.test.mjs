@@ -587,3 +587,43 @@ test("a relative root from a config hook still yields an absolute cacheDir", asy
     fx.cleanup();
   }
 });
+
+// The runner-environment transform warm: `warmEnvironments` fires
+// environment.warmupRequest for every url on every non-client environment
+// that has one, all concurrently (Vite's warmup.ts shape). oj's stand-in
+// environments carry no warmupRequest, so a non-runner app warms nothing —
+// its warm path is the engine prewarm.
+test("warmEnvironments drives warmupRequest per url and skips stand-ins", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-warm-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `export default [{
+       name: "warm-probe",
+       configureServer(server) {
+         globalThis.__warmed = [];
+         server.environments.ssr = {
+           name: "ssr",
+           warmupRequest(url) { globalThis.__warmed.push(url); return Promise.resolve(); },
+         };
+         // the client stand-in stays without warmupRequest
+       },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(globalThis.__warmed) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const res = await host.send({
+      id: 41,
+      hook: "warmEnvironments",
+      args: [JSON.stringify(["/src/routes/index.tsx", "/src/router.tsx"])],
+    });
+    assert.equal(res.error, undefined);
+    const summary = JSON.parse(res.result);
+    assert.deepEqual(summary, { environments: ["ssr"], warmed: 2 });
+    const seen = await probe(host, fx);
+    assert.deepEqual(seen, ["/src/routes/index.tsx", "/src/router.tsx"]);
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});

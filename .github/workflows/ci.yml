@@ -91,6 +91,9 @@ jobs:
         run: node e2e/client-node-shim.mjs
       - name: build plugin spawns node:worker_threads (vite-plugin-pwa shape)
         run: node e2e/plugin-worker-threads.mjs
+      - name: runner environments prewarm unprompted (transform + render warm)
+        if: matrix.mode == 'unbundled'
+        run: node e2e/runner-env-prewarm.mjs
       - name: OJ_DEBUG_MEM gc endpoint (issue 202 memory probing)
         run: node e2e/debug-gc.mjs
       - name: ssr streaming prod build + hydration

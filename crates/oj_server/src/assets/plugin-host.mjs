@@ -3518,6 +3518,36 @@ async function run(hook, args) {
     return JSON.stringify(emitted.map(({ fileName, source }) => ({ fileName, source })));
   }
   if (hook === "getPluginCss") return JSON.stringify(ojPluginCss);
+  if (hook === "warmEnvironments") {
+    // Vite's warmup shape (server/warmup.ts): every file's warmupRequest
+    // starts at once — transformRequest dedups concurrent requests and
+    // warmupRequest swallows outdated-dep/closed-server errors — so a route
+    // list saturates the transform pipeline in parallel instead of trickling
+    // one module at a time behind the runner's serial import chain
+    // (ssrTransform awaits imports sequentially; module-runner directRequest).
+    // Only real runner environments carry warmupRequest; oj's stand-ins do
+    // not, so a non-runner app warms nothing here (its warm path is the
+    // engine prewarm).
+    let urls = [];
+    try {
+      const parsed = JSON.parse(args[0] ?? "[]");
+      if (Array.isArray(parsed)) urls = parsed.filter((u) => typeof u === "string");
+    } catch {}
+    const envs = devServer?.environments ?? {};
+    const names = Object.keys(envs).filter(
+      (n) => n !== "client" && typeof envs[n]?.warmupRequest === "function",
+    );
+    // Vite's warmupRequest never rejects (unexpected errors go to the
+    // environment logger); the async wrapper also contains a CUSTOM
+    // environment's synchronously-throwing warmupRequest, which would
+    // otherwise escape during array construction and fail the whole call.
+    await Promise.all(
+      names.flatMap((n) =>
+        urls.map((u) => (async () => envs[n].warmupRequest(u))().catch(() => {})),
+      ),
+    );
+    return JSON.stringify({ environments: names, warmed: names.length * urls.length });
+  }
   if (hook === "getWatchFiles") return JSON.stringify([...watchedFiles]);
   if (hook === "hasModuleParsed") return String(anyModuleParsed());
   if (hook === "replayModuleParsed") return replayModuleParsed(args[0]);
