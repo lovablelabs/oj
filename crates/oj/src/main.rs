@@ -275,9 +275,11 @@ fn main() -> anyhow::Result<()> {
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
     // rolldown-vite's native loader inherits this: the migration warning it
-    // suppresses (one line per extensionless import in the config graph, 200+
-    // on big monorepos) is advice for a Vite the app is not running — oj IS
-    // the native-loader world. Set while single-threaded; user overrides win.
+    // suppresses (one line per incompatibility in the config graph, 200+ on
+    // big monorepos) is advice for a Vite the app is not running: oj IS the
+    // native-loader world. Set while single-threaded; user overrides win, and
+    // an explicitly EMPTY value re-enables the warning (empty is falsy under
+    // Vite's gate but survives this is_none check and the JS-side ??= belts).
     if std::env::var_os("VITE_CONFIG_NATIVE_IGNORE_WARNING").is_none() {
         std::env::set_var("VITE_CONFIG_NATIVE_IGNORE_WARNING", "true");
     }

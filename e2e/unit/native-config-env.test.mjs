@@ -10,15 +10,15 @@ import { fileURLToPath } from "node:url";
 import { tmpProject } from "./harness.mjs";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const oj = path.join(repo, "target", "debug", "oj");
-if (!fs.existsSync(oj)) {
+const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
+if (!process.env.OJ_BIN && !fs.existsSync(oj)) {
   execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 }
 
 // rolldown-vite's native config loader prints a migration-advice warning wall
-// (one line per extensionless import in the config graph; 200+ on big
-// monorepos) unless VITE_CONFIG_NATIVE_IGNORE_WARNING is set — Vite gates the
-// whole compat plugin on `!process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING`
+// (one line per incompatibility in the config graph; 200+ on big monorepos)
+// unless VITE_CONFIG_NATIVE_IGNORE_WARNING is set: Vite gates the whole
+// compat plugin on `!process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING`
 // (config.ts). oj IS the native-loader world, so main() pre-sets the variable
 // once and every engine and one-shot child inherits it; a user-set value is
 // never overridden.
