@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Raphael Amorim
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { execSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { tmpProject } from "./harness.mjs";
+
+const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const oj = path.join(repo, "target", "debug", "oj");
+if (!fs.existsSync(oj)) {
+  execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+}
+
+// rolldown-vite's native config loader prints a migration-advice warning wall
+// (one line per extensionless import in the config graph; 200+ on big
+// monorepos) unless VITE_CONFIG_NATIVE_IGNORE_WARNING is set — Vite gates the
+// whole compat plugin on `!process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING`
+// (config.ts). oj IS the native-loader world, so main() pre-sets the variable
+// once and every engine and one-shot child inherits it; a user-set value is
+// never overridden.
+function envSeenByPlugins(extraEnv) {
+  const fx = tmpProject({ prefix: "oj-native-env-" });
+  try {
+    fx.write("index.html", '<html><body><script type="module" src="/src/main.js"></script></body></html>');
+    fx.write("src/main.js", "export const ok = 1;\n");
+    const out = path.join(fx.root, "seen.json");
+    fx.write(
+      "oj.plugins.mjs",
+      `import { writeFileSync } from "node:fs";
+       export default [{
+         name: "env-probe",
+         config() {
+           writeFileSync(${JSON.stringify(out)}, JSON.stringify({
+             ignoreWarning: process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ?? null,
+           }));
+         },
+       }];\n`,
+    );
+    const r = spawnSync(oj, ["build", fx.root], {
+      encoding: "utf8",
+      env: { ...process.env, ...extraEnv },
+      timeout: 120_000,
+    });
+    assert.equal(r.status, 0, `oj build failed:\n${(r.stdout ?? "") + (r.stderr ?? "")}`);
+    return JSON.parse(fs.readFileSync(out, "utf8"));
+  } finally {
+    fx.cleanup();
+  }
+}
+
+test("children inherit the native config-loader warning suppression", () => {
+  const seen = envSeenByPlugins({ VITE_CONFIG_NATIVE_IGNORE_WARNING: undefined });
+  assert.equal(seen.ignoreWarning, "true", "main() pre-sets the variable for every child");
+});
+
+test("a user-set suppression value is never overridden", () => {
+  const seen = envSeenByPlugins({ VITE_CONFIG_NATIVE_IGNORE_WARNING: "0" });
+  assert.equal(seen.ignoreWarning, "0", "an explicit value wins over the default");
+});
