@@ -491,3 +491,43 @@ test("configResolved sees an absolute cacheDir and re-coerced bundledDev", async
     fx.cleanup();
   }
 });
+
+// The other halves of the same two contracts: a USER cacheDir is resolved
+// from root like Vite's `path.resolve(root, config.cacheDir)`, and an
+// `isBundled` a configEnvironment hook sets is re-cleared alongside
+// experimental.bundledDev (Vite derives the flag in resolveConfig; oj's
+// unsupported-bundledDev policy must catch both spellings).
+test("user cacheDir resolves from root and configEnvironment isBundled is re-cleared", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-user-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-user-probe",
+       config() { return { cacheDir: "custom-cache" }; },
+       configEnvironment(name) { if (name === "client") return { isBundled: true }; },
+       configResolved(config) {
+         seen.cacheDir = config.cacheDir;
+         seen.clientIsBundled = config.environments?.client?.isBundled;
+       },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const seen = await probe(host, fx);
+    assert.equal(
+      seen.cacheDir,
+      path.resolve(fx.root, "custom-cache"),
+      "a user cacheDir resolves from root like Vite",
+    );
+    assert.equal(
+      seen.clientIsBundled,
+      false,
+      "a configEnvironment-set isBundled is coerced off with bundledDev",
+    );
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
