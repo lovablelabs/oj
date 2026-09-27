@@ -11,6 +11,8 @@ use std::sync::Arc;
 use deno_config::deno_json::NodeModulesDirMode;
 use deno_core::url::Url;
 use deno_core::v8;
+use deno_core::CompiledWasmModuleStore;
+use deno_core::SharedArrayBufferStore;
 use deno_resolver::cjs::IsCjsResolutionMode;
 use deno_resolver::factory::ResolverFactory;
 use deno_resolver::factory::ResolverFactoryOptions;
@@ -103,6 +105,13 @@ pub(crate) fn build_worker(
         Permissions::allow_all(),
     );
 
+    // One store pair shared by the engine and every worker it spawns (Deno
+    // CLI does the same): without them a SharedArrayBuffer or compiled wasm
+    // module cannot cross threads, which Node's worker_threads supports —
+    // Atomics-based worker pools (piscina's sync mode) depend on it.
+    let shared_array_buffer_store = SharedArrayBufferStore::default();
+    let compiled_wasm_module_store = CompiledWasmModuleStore::default();
+
     let services = WorkerServiceOptions::<DenoInNpmPackageChecker, NpmResolver<Sys>, Sys> {
         blob_store: Arc::new(BlobStore::default()),
         broadcast_channel: Default::default(),
@@ -120,8 +129,8 @@ pub(crate) fn build_worker(
         permissions,
         root_cert_store_provider: None,
         fetch_dns_resolver: Default::default(),
-        shared_array_buffer_store: None,
-        compiled_wasm_module_store: None,
+        shared_array_buffer_store: Some(shared_array_buffer_store.clone()),
+        compiled_wasm_module_store: Some(compiled_wasm_module_store.clone()),
         // Covers the CJS path: deno_runtime wires this into the eval-context
         // compile callbacks `require` goes through. The ESM and ext-script
         // paths ride the module loader (see loader.rs).
@@ -147,6 +156,8 @@ pub(crate) fn build_worker(
         create_web_worker_cb: create_web_worker_cb(
             config.root.clone(),
             config.code_cache_dir.clone(),
+            shared_array_buffer_store,
+            compiled_wasm_module_store,
         ),
         ..Default::default()
     };
@@ -174,6 +185,8 @@ pub(crate) fn build_worker(
 fn create_web_worker_cb(
     root: std::path::PathBuf,
     code_cache_dir: Option<std::path::PathBuf>,
+    shared_array_buffer_store: SharedArrayBufferStore,
+    compiled_wasm_module_store: CompiledWasmModuleStore,
 ) -> Arc<deno_runtime::ops::worker_host::CreateWebWorkerCb> {
     use deno_runtime::web_worker::WebWorker;
     use deno_runtime::web_worker::WebWorkerOptions;
@@ -203,8 +216,11 @@ fn create_web_worker_cb(
             },
         );
         // The factory getters only fail on an unreadable workspace, which the
-        // parent engine already booted from; a worker hitting it anyway must
-        // not panic the process, so surface it as the worker's boot error.
+        // parent engine already booted from. The callback type is infallible,
+        // so a failure here PANICS BY DESIGN — the panic unwinds only this
+        // worker thread (the workspace does not set panic=abort), the handle
+        // channel drops unsent, and worker_host's recv error surfaces it to
+        // JS as the worker's boot error, never a process kill.
         let node_resolver = resolver_factory
             .node_resolver()
             .expect("worker node resolver (parent booted from this workspace)")
@@ -237,7 +253,7 @@ fn create_web_worker_cb(
             blob_store: Arc::new(BlobStore::default()),
             broadcast_channel: Default::default(),
             deno_rt_native_addon_loader: None,
-            compiled_wasm_module_store: None,
+            compiled_wasm_module_store: Some(compiled_wasm_module_store.clone()),
             feature_checker: Default::default(),
             fs: Arc::new(RealFs),
             main_inspector_session_tx: Default::default(),
@@ -251,7 +267,7 @@ fn create_web_worker_cb(
             npm_process_state_provider: None,
             permissions: args.permissions,
             root_cert_store_provider: None,
-            shared_array_buffer_store: None,
+            shared_array_buffer_store: Some(shared_array_buffer_store.clone()),
             bundle_provider: None,
         };
 
@@ -276,7 +292,12 @@ fn create_web_worker_cb(
             unsafely_ignore_certificate_errors: None,
             create_params: None,
             seed: None,
-            create_web_worker_cb: create_web_worker_cb(root.clone(), code_cache_dir.clone()),
+            create_web_worker_cb: create_web_worker_cb(
+                root.clone(),
+                code_cache_dir.clone(),
+                shared_array_buffer_store.clone(),
+                compiled_wasm_module_store.clone(),
+            ),
             format_js_error_fn: None,
             worker_type: args.worker_type,
             cache_storage_dir: None,

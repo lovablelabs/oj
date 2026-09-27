@@ -39,6 +39,13 @@ fs.writeFileSync(
   path.join(app, "worker-probe.mjs"),
   `import { parentPort, workerData } from "node:worker_threads";\nparentPort.postMessage(workerData * 2);\n`,
 );
+// SharedArrayBuffer across threads: Node supports it natively; the engine
+// needs the shared store pair wired between the parent and every worker
+// (piscina's Atomics-based sync mode is the production shape).
+fs.writeFileSync(
+  path.join(app, "worker-sab.mjs"),
+  `import { parentPort, workerData } from "node:worker_threads";\nconst view = new Int32Array(workerData);\nAtomics.store(view, 0, 42);\nparentPort.postMessage("stored");\n`,
+);
 fs.writeFileSync(
   path.join(app, "vite.config.mjs"),
   `export default {
@@ -55,6 +62,17 @@ fs.writeFileSync(
         await worker.terminate();
         if (answer !== 42) throw new Error("worker answered " + answer);
         console.error("WORKER_ROUNDTRIP_OK");
+
+        const sab = new SharedArrayBuffer(4);
+        const sabWorker = new Worker(new URL("./worker-sab.mjs", import.meta.url), { workerData: sab });
+        await new Promise((resolve, reject) => {
+          sabWorker.once("message", resolve);
+          sabWorker.once("error", reject);
+        });
+        await sabWorker.terminate();
+        const seen = new Int32Array(sab)[0];
+        if (seen !== 42) throw new Error("SharedArrayBuffer write not visible to the parent: " + seen);
+        console.error("WORKER_SAB_OK");
       },
     },
   ],
@@ -65,12 +83,15 @@ fs.writeFileSync(
 try {
   const r = spawnSync(oj, ["build", app], { encoding: "utf8" });
   const log = (r.stdout ?? "") + (r.stderr ?? "");
-  if (r.status !== 0 || !log.includes("WORKER_ROUNDTRIP_OK")) {
+  if (r.status !== 0 || !log.includes("WORKER_ROUNDTRIP_OK") || !log.includes("WORKER_SAB_OK")) {
     console.error(log.slice(-4000));
     throw new Error(
       `worker_threads round-trip in a build plugin failed: status ${r.status}` +
         (log.includes("not implemented: web workers") ? " (worker callback panicked)" : "") +
-        (log.includes("Invalid URL: 'null'") ? " (worker bootstrap has no location)" : ""),
+        (log.includes("Invalid URL: 'null'") ? " (worker bootstrap has no location)" : "") +
+        (!log.includes("WORKER_SAB_OK") && log.includes("WORKER_ROUNDTRIP_OK")
+          ? " (SharedArrayBuffer did not cross the thread: shared stores unwired?)"
+          : ""),
     );
   }
 } finally {
