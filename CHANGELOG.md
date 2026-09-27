@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Client bundles that name a node builtin's exports — `import { createHmac } from "crypto"` in code shared with the server — build and serve again: the node-builtin shims are CommonJS now, like Vite's browser-external stubs, so a named import interops into an undefined property read instead of failing the bundle with a rolldown MISSING_EXPORT at link time. Production shims are Vite's bare exports object; dev shims wrap Vite's warning Proxy so an exercised access names itself. Measured at 38 of 5,247 projects (fingerprint family 9322bab6) in the 2026-09-27 validation campaign.
+- Client bundles that name a node builtin's exports (`import { createHmac } from "crypto"` in code shared with the server, the webhook/session-auth shape) build and serve again: the node-builtin shims are CommonJS now, like Vite's browser-external stubs, so a named import interops into an undefined property read instead of failing the bundle with a rolldown MISSING_EXPORT at link time. Production shims are Vite's bare exports object; dev shims use the warning Proxy from Vite's dep optimizer stub, so an exercised access names itself without breaking the page. Bare builtin subpaths (`fs/promises`, `timers/promises`, ...) are shimmed too, and, matching Vite's resolution order, an installed package that shares a builtin's name (`events`, `punycode`) now wins over the shim.
 
 ## [0.2.9] - 2026-09-26
 

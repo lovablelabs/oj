@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 //
-// Client code that names a node builtin's export — `import { createHmac }
+// Client code that names a node builtin's export, `import { createHmac }
 // from "node:crypto"` in a module shared with the server (webhook/session
-// auth is the common shape) — must bundle and serve like under Vite: the
+// auth is the common shape), must bundle and serve like under Vite: the
 // browser-external stub is CommonJS, so the named import interops to an
 // undefined property read instead of a rolldown MISSING_EXPORT that fails
-// the build (fingerprint family 9322bab6, 38 projects in the 2026-09-27 5k
-// campaign). Runs dev against the start-app fixture and `oj build` on it.
+// the build. Runs dev against the start-app fixture and `oj build` on it.
 
 import { execSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,7 +20,9 @@ const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 const fixture = path.join(repo, "e2e", "fixtures", "start-app");
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-client-node-shim-"));
-const cleanup = () => fs.rmSync(app, { recursive: true, force: true });
+// The dev server's engine children can outlive a plain parent kill and write
+// to .oj-cache during teardown; group-kill plus retried rm keeps this stable.
+const cleanup = () => fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 fs.cpSync(fixture, app, {
   recursive: true,
   filter: (src) => !/\/(node_modules|\.oj-cache|dist)(\/|$)/.test(src),
@@ -72,7 +73,17 @@ const port = 5221;
 const server = spawn(oj, ["dev", ".", "--port", String(port), "--host=127.0.0.1"], {
   cwd: app,
   stdio: ["ignore", "pipe", "pipe"],
+  detached: true,
 });
+const killServer = () => {
+  try {
+    process.kill(-server.pid, "SIGKILL");
+  } catch {
+    try {
+      server.kill("SIGKILL");
+    } catch {}
+  }
+};
 let log = "";
 server.stdout.on("data", (d) => (log += d));
 server.stderr.on("data", (d) => (log += d));
@@ -98,19 +109,18 @@ try {
         (log.includes("MISSING_EXPORT") ? " (shim link error is back)" : ""),
     );
   }
-} finally {
-  server.kill("SIGKILL");
-}
 
-const built = spawnSync(oj, ["build", "."], { cwd: app, encoding: "utf8" });
-const blog = (built.stdout ?? "") + (built.stderr ?? "");
-if (built.status !== 0) {
-  console.error(blog.slice(-4000));
+  const built = spawnSync(oj, ["build", "."], { cwd: app, encoding: "utf8" });
+  const blog = (built.stdout ?? "") + (built.stderr ?? "");
+  if (built.status !== 0) {
+    console.error(blog.slice(-4000));
+    throw new Error(
+      `building a client graph that names node:crypto exports failed` +
+        (blog.includes("MISSING_EXPORT") ? " (shim link error is back)" : ""),
+    );
+  }
+} finally {
+  killServer();
   cleanup();
-  throw new Error(
-    `building a client graph that names node:crypto exports failed` +
-      (blog.includes("MISSING_EXPORT") ? " (shim link error is back)" : ""),
-  );
 }
-cleanup();
 console.log("client-node-shim: ok");
