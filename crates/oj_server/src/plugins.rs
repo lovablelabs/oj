@@ -1486,9 +1486,10 @@ fn first_death_report(revive: &mut ReviveState, generation: u64) -> bool {
 }
 
 /// Respawns per host lifetime (see `ReviveState::attempts`).
-const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
+pub(crate) const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
 /// Minimum spacing between respawns (see `ReviveState::last`).
-const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration =
+    std::time::Duration::from_secs(5);
 
 /// The plugin-host engine's heap cap: Node parity. The process host was a
 /// `node` child, so a deployment's `NODE_OPTIONS --max-old-space-size` capped
@@ -1501,7 +1502,7 @@ const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration = std::time::Duration::fr
 /// behavior), a heap blow-up ends in a GC storm the transport belt can only
 /// read as a native wedge — or in V8's fatal OOM, which aborts the whole
 /// dev-server process.
-fn plugin_host_memory_mb() -> usize {
+pub(crate) fn plugin_host_memory_mb() -> usize {
     if let Some(mb) = std::env::var("OJ_PLUGIN_MEMORY_MB")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())

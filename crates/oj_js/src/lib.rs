@@ -485,6 +485,17 @@ fn engine_thread(
             /// The event loop failed (an uncaught error) with calls still
             /// pending: nothing can settle them anymore.
             Broken(deno_core::error::CoreError),
+            /// The near-heap-limit callback fired during event-loop progress
+            /// (an async continuation allocated past the cap). The termination
+            /// it requested can land mid-microtask and leave every parked
+            /// promise permanently unsettled with the loop idle — no Broken,
+            /// no Settled — so the flag is a tick of its own. Node parity:
+            /// heap exhaustion there aborts the process and every in-flight
+            /// request with it; here every parked call fails as MemoryLimit
+            /// now instead of riding its full deadline on the unwind-doubled
+            /// heap, and the isolate is condemned: later jobs fail fast until
+            /// the owner replaces the engine.
+            MemoryExhausted,
             Closed,
         }
         let mut pending: Vec<PendingCall> = Vec::new();
@@ -497,6 +508,13 @@ fn engine_thread(
         // work must keep serving between hook calls.
         let mut event_loop_idle = false;
         let mut eval_counter: u64 = 0;
+        // Set once the heap-limit callback has fired: the isolate ran on and
+        // may have lost arbitrary state, so every later job fails fast as
+        // MemoryLimit until the owner (CSS revive, plugin-host respawn)
+        // replaces the engine. Without it, a background-work OOM with nothing
+        // parked is a printed line, nobody replaces anything, and each fire
+        // permanently doubles the limit — the ratchet this exists to stop.
+        let mut condemned = false;
         loop {
             // The earliest parked-call deadline, re-derived per iteration: the
             // pending set only changes between iterations.
@@ -531,12 +549,34 @@ fn engine_thread(
                         }
                         std::task::Poll::Pending => {}
                     }
+                    // The heap-limit callback runs inside the poll above, so
+                    // a mid-pump exhaustion is visible right here — the tick
+                    // never depends on a waker the terminated JS can't fire.
+                    if oom.load(Ordering::SeqCst) {
+                        return std::task::Poll::Ready(Tick::MemoryExhausted);
+                    }
                 }
                 std::task::Poll::Pending
             })
             .await;
             if matches!(tick, Tick::Job(_)) {
                 event_loop_idle = false;
+            }
+            if condemned {
+                if let Tick::Job(job) = tick {
+                    match job {
+                        Job::Eval { reply, .. } => {
+                            let _ = reply.send(Err(EngineError::MemoryLimit));
+                        }
+                        Job::Call { reply, .. } => {
+                            let _ = reply.send(Err(EngineError::MemoryLimit));
+                        }
+                        Job::Gc { reply } => {
+                            let _ = reply.send(());
+                        }
+                    }
+                    continue;
+                }
             }
             match tick {
                 Tick::Closed => {
@@ -572,8 +612,12 @@ fn engine_thread(
                     let guard = deadline.map(|d| DeadlineGuard::arm(&watchdog, d));
                     let result =
                         run_eval(&mut worker, &config, &root_url, eval_counter, input).await;
-                    let result = classify(&mut worker, result, guard, &oom);
+                    let (result, oomed) = classify(&mut worker, result, guard, &oom);
                     let _ = reply.send(result);
+                    if oomed {
+                        drain_pending_as_memory_limit(&mut worker, &mut pending);
+                        condemned = true;
+                    }
                 }
                 Tick::Job(Job::Gc { reply }) => {
                     worker.js_runtime.v8_isolate().low_memory_notification();
@@ -604,9 +648,17 @@ fn engine_thread(
                                 // Setup outlived the deadline but completed
                                 // anyway (the termination raced completion):
                                 // the call is expired, not broken.
-                                let _ =
+                                let (_, oomed) =
                                     classify(&mut worker, Ok(serde_json::Value::Null), guard, &oom);
-                                let _ = reply.send(Err(EngineError::Deadline));
+                                let _ = reply.send(Err(if oomed {
+                                    EngineError::MemoryLimit
+                                } else {
+                                    EngineError::Deadline
+                                }));
+                                if oomed {
+                                    drain_pending_as_memory_limit(&mut worker, &mut pending);
+                                    condemned = true;
+                                }
                             } else {
                                 pending.push(PendingCall {
                                     fut: Box::pin(fut),
@@ -617,16 +669,24 @@ fn engine_thread(
                             }
                         }
                         Err(e) => {
-                            let result = classify(&mut worker, Err(e), guard, &oom);
+                            let (result, oomed) = classify(&mut worker, Err(e), guard, &oom);
                             let _ = reply.send(result);
+                            if oomed {
+                                drain_pending_as_memory_limit(&mut worker, &mut pending);
+                                condemned = true;
+                            }
                         }
                     }
                 }
                 Tick::Settled(i, result) => {
                     let call = pending.swap_remove(i);
                     let result = settled_to_json(&mut worker, result);
-                    let result = classify(&mut worker, result, call.guard, &oom);
+                    let (result, oomed) = classify(&mut worker, result, call.guard, &oom);
                     let _ = call.reply.send(result);
+                    if oomed {
+                        drain_pending_as_memory_limit(&mut worker, &mut pending);
+                        condemned = true;
+                    }
                 }
                 Tick::Expired => {
                     // Every parked call at or past its deadline fails now; the
@@ -638,17 +698,36 @@ fn engine_thread(
                     while i < pending.len() {
                         if pending[i].deadline.is_some_and(|d| d <= now) {
                             let call = pending.swap_remove(i);
-                            let _ = classify(
+                            let (_, oomed) = classify(
                                 &mut worker,
                                 Ok(serde_json::Value::Null),
                                 call.guard,
                                 &oom,
                             );
-                            let _ = call.reply.send(Err(EngineError::Deadline));
+                            let _ = call.reply.send(Err(if oomed {
+                                EngineError::MemoryLimit
+                            } else {
+                                EngineError::Deadline
+                            }));
+                            if oomed {
+                                drain_pending_as_memory_limit(&mut worker, &mut pending);
+                                condemned = true;
+                                break;
+                            }
                         } else {
                             i += 1;
                         }
                     }
+                }
+                Tick::MemoryExhausted => {
+                    oom.store(false, Ordering::SeqCst);
+                    if pending.is_empty() {
+                        eprintln!(
+                            "oj_js: background work exceeded the engine heap limit; the isolate is condemned"
+                        );
+                    }
+                    drain_pending_as_memory_limit(&mut worker, &mut pending);
+                    condemned = true;
                 }
                 Tick::Broken(e) => {
                     // An uncaught error broke the event loop (the process
@@ -659,19 +738,31 @@ fn engine_thread(
                     if pending.is_empty() {
                         eprintln!("oj_js: uncaught error on the engine event loop: {error}");
                     }
+                    // The flag is read ONCE for the whole batch: per-call
+                    // classify would hand MemoryLimit to whichever call came
+                    // first and Js("execution terminated") to the rest.
+                    let oom_fired = oom.swap(false, Ordering::SeqCst);
+                    condemned |= oom_fired;
                     let noop = std::task::Waker::noop();
                     let mut cx = std::task::Context::from_waker(noop);
                     for mut call in std::mem::take(&mut pending) {
+                        // A call whose watchdog terminated the wedged loop is
+                        // the one that expired; its disarm verdict maps it to
+                        // Deadline. All guards are disarmed BEFORE the one
+                        // cancel below, so a watchdog firing mid-drain cannot
+                        // leave a termination pending for the next job.
+                        let deadline_fired = call.guard.map(|g| g.disarm()).unwrap_or(false);
                         let result = match call.fut.as_mut().poll(&mut cx) {
                             std::task::Poll::Ready(r) => settled_to_json(&mut worker, r),
+                            std::task::Poll::Pending if oom_fired => Err(EngineError::MemoryLimit),
+                            std::task::Poll::Pending if deadline_fired => {
+                                Err(EngineError::Deadline)
+                            }
                             std::task::Poll::Pending => Err(EngineError::Js(error.clone())),
                         };
-                        // A call whose watchdog terminated the wedged loop is
-                        // the one that expired; classify maps it to Deadline
-                        // and un-poisons the isolate for the survivors.
-                        let result = classify(&mut worker, result, call.guard, &oom);
                         let _ = call.reply.send(result);
                     }
+                    worker.js_runtime.v8_isolate().cancel_terminate_execution();
                 }
             }
         }
@@ -716,17 +807,35 @@ fn classify(
     result: Result<serde_json::Value, EngineError>,
     guard: Option<DeadlineGuard>,
     oom: &AtomicBool,
-) -> Result<serde_json::Value, EngineError> {
+) -> (Result<serde_json::Value, EngineError>, bool) {
     let deadline_fired = guard.map(|g| g.disarm()).unwrap_or(false);
     let oom_fired = oom.swap(false, Ordering::SeqCst);
     if deadline_fired || oom_fired {
         worker.js_runtime.v8_isolate().cancel_terminate_execution();
     }
-    match result {
+    let result = match result {
         Err(_) if oom_fired => Err(EngineError::MemoryLimit),
         Err(_) if deadline_fired => Err(EngineError::Deadline),
         other => other,
+    };
+    // The second value tells the scheduler the heap-limit callback fired
+    // during THIS job: parked calls may have died with it (their promises can
+    // never settle) and must be swept as MemoryLimit, not left to ride out
+    // their deadlines — the caller owns `pending`, so it does the sweep.
+    (result, oom_fired)
+}
+
+/// Fails every parked call as MemoryLimit and cancels the heap-limit
+/// callback's termination — AFTER all guards are disarmed, so a watchdog
+/// firing mid-drain cannot leave a termination pending for the next job.
+fn drain_pending_as_memory_limit(worker: &mut MainWorker, pending: &mut Vec<PendingCall>) {
+    for call in std::mem::take(pending) {
+        if let Some(guard) = call.guard {
+            let _ = guard.disarm();
+        }
+        let _ = call.reply.send(Err(EngineError::MemoryLimit));
     }
+    worker.js_runtime.v8_isolate().cancel_terminate_execution();
 }
 
 /// One long-lived watchdog thread per engine, terminating JS execution when

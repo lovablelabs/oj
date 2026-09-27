@@ -217,6 +217,93 @@ async fn memory_cap_terminates_cleanly() {
 }
 
 #[tokio::test]
+async fn memory_cap_fails_a_parked_call_as_memory_limit_not_deadline() {
+    // An async export that allocates AFTER an await blows the heap during
+    // event-loop progress, where the termination can leave the promise
+    // permanently unsettled: the call must fail as MemoryLimit promptly, not
+    // ride out its deadline as a bogus timeout.
+    let root = app_root();
+    std::fs::write(
+        root.path().join("hog.mjs"),
+        r#"
+        const hog = [];
+        export async function run() {
+          await new Promise((r) => setTimeout(r, 1));
+          for (;;) hog.push(new Array(1024 * 1024).fill(Math.random()));
+        }
+        "#,
+    )
+    .unwrap();
+    let mut config = EngineConfig::new(root.path());
+    config.memory_limit_bytes = Some(128 * 1024 * 1024);
+    config.default_deadline = Some(Duration::from_secs(30));
+    let engine = JsEngine::spawn(config).unwrap();
+    let started = std::time::Instant::now();
+    let err = engine
+        .call(
+            root.path().join("hog.mjs").to_string_lossy().into_owned(),
+            "run",
+            vec![],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::MemoryLimit),
+        "expected MemoryLimit, got {err:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the failure must not wait out the 30s call deadline"
+    );
+}
+
+#[tokio::test]
+async fn background_oom_condemns_the_isolate_for_the_next_job() {
+    // Background work (a timer an eval left behind) blows the cap with
+    // nothing parked: the flag stays SET, so the next job fails as
+    // MemoryLimit and its owner replaces the condemned isolate — instead of
+    // the doubled limit compounding silently with no one told.
+    let root = app_root();
+    let mut config = EngineConfig::new(root.path());
+    config.memory_limit_bytes = Some(128 * 1024 * 1024);
+    let engine = JsEngine::spawn(config).unwrap();
+    // Armed through `call`, which settles on its returned value and leaves
+    // the timer as background work (an eval would wait out the event loop
+    // and take the blast itself).
+    std::fs::write(
+        root.path().join("bomb.mjs"),
+        r#"
+        export function arm() {
+          globalThis.hog = [];
+          setTimeout(() => { for (;;) globalThis.hog.push(new Array(1024 * 1024).fill(1)); }, 10);
+          return "armed";
+        }
+        "#,
+    )
+    .unwrap();
+    let armed = engine
+        .call(
+            root.path().join("bomb.mjs").to_string_lossy().into_owned(),
+            "arm",
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(armed, serde_json::json!("armed"));
+    // Let the timer fire and exhaust the heap during background event-loop
+    // progress (the scheduler keeps polling: a live timer is not idle).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let err = engine
+        .eval(EvalInput::Source("export default 1;".into()))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::MemoryLimit),
+        "the job after a background OOM must fail as MemoryLimit, got {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn deadline_terminates_infinite_loop() {
     let root = app_root();
     let engine = engine(root.path());
