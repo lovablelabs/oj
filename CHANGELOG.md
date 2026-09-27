@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Apps whose documents are rendered by a plugin's worker environments (the Cloudflare dev shape) no longer leave the first request to pay the whole cold module graph: at boot oj fires every route module's transform through the environments' own `warmupRequest` — all at once, Vite's warmup shape — while one real render through the serving path chases the warm transforms and fills the runner's module cache. First request after boot serves warm.
+- Apps whose documents are rendered by a plugin's worker environments (the Cloudflare dev shape) no longer leave the first request to pay the whole cold module graph: at boot oj dispatches every route module's transform through the environments' own `warmupRequest` (fire-and-forget, Vite's warmup shape, client environment included) while one real render through the serving path chases the warm transforms and fills the runner's module cache, the same self-issued request Vite's `server.open` uses to start the import crawl. The route list honors tsr.config.json's `routesDirectory` and joins the app's own `server.warmup` globs. First request after boot serves warm.
 
 ### Fixed
 

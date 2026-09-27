@@ -588,12 +588,11 @@ test("a relative root from a config hook still yields an absolute cacheDir", asy
   }
 });
 
-// The runner-environment transform warm: `warmEnvironments` fires
-// environment.warmupRequest for every url on every non-client environment
-// that has one, all concurrently (Vite's warmup.ts shape). oj's stand-in
-// environments carry no warmupRequest, so a non-runner app warms nothing —
-// its warm path is the engine prewarm.
-test("warmEnvironments drives warmupRequest per url and skips stand-ins", async () => {
+// The runner-environment transform warm: `warmEnvironments` DISPATCHES
+// environment.warmupRequest for every url on every environment that has one
+// (client included: Vite's clientFiles warm exactly it) and replies with what
+// started, fire-and-forget like Vite's warmup.ts.
+test("warmEnvironments dispatches warmupRequest per url and skips stand-ins", async () => {
   const fx = tmpProject({ prefix: "oj-parity-warm-" });
   fx.write(
     "oj.plugins.mjs",
@@ -603,9 +602,12 @@ test("warmEnvironments drives warmupRequest per url and skips stand-ins", async 
          globalThis.__warmed = [];
          server.environments.ssr = {
            name: "ssr",
-           warmupRequest(url) { globalThis.__warmed.push(url); return Promise.resolve(); },
+           warmupRequest(url) { globalThis.__warmed.push("ssr:" + url); return Promise.resolve(); },
          };
-         // the client stand-in stays without warmupRequest
+         server.environments.client = {
+           name: "client",
+           warmupRequest(url) { globalThis.__warmed.push("client:" + url); return Promise.resolve(); },
+         };
        },
        transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(globalThis.__warmed) : null; },
      }];\n`,
@@ -619,9 +621,38 @@ test("warmEnvironments drives warmupRequest per url and skips stand-ins", async 
     });
     assert.equal(res.error, undefined);
     const summary = JSON.parse(res.result);
-    assert.deepEqual(summary, { environments: ["ssr"], warmed: 2 });
+    assert.deepEqual(summary.environments.sort(), ["client", "ssr"]);
+    assert.equal(summary.started, 4);
     const seen = await probe(host, fx);
-    assert.deepEqual(seen, ["/src/routes/index.tsx", "/src/router.tsx"]);
+    assert.deepEqual(seen.sort(), [
+      "client:/src/router.tsx",
+      "client:/src/routes/index.tsx",
+      "ssr:/src/router.tsx",
+      "ssr:/src/routes/index.tsx",
+    ]);
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// Nothing to dispatch (an empty url list, or a host without a dev server)
+// means a null reply (Ok(None) on the Rust side), never a fabricated
+// zero-work summary. NOTE the host's default client/ssr environments are real
+// Vite DevEnvironments and DO carry warmupRequest, so an empty environment
+// set is not reachable through a plugin fixture; the url-less case is.
+test("warmEnvironments replies null when there is nothing to warm", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-warm-none-" });
+  fx.write("oj.plugins.mjs", `export default [{ name: "noop" }];\n`);
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const res = await host.send({
+      id: 42,
+      hook: "warmEnvironments",
+      args: [JSON.stringify([])],
+    });
+    assert.equal(res.error, undefined);
+    assert.equal(res.result, null);
   } finally {
     host.close();
     fx.cleanup();

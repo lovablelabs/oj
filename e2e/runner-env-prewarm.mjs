@@ -102,6 +102,10 @@ try {
     env: { ...process.env, OJ_BOOT_PHASES: "1" },
   });
   child.stderr.on("data", (d) => (stderr += d.toString()));
+  // A missing/non-executable binary emits an async 'error' event; unhandled,
+  // it would crash past the finally (leaked tmpdir, raw stack).
+  let spawnErr = null;
+  child.on("error", (e) => (spawnErr = e));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // No client request is ever made: both records must appear on their own.
   const t0 = Date.now();
@@ -111,6 +115,7 @@ try {
     warmed = fs.existsSync(warmLog) ? fs.readFileSync(warmLog, "utf8") : "";
     hits = fs.existsSync(hitLog) ? fs.readFileSync(hitLog, "utf8") : "";
     if (warmed.includes("/src/routes/index.tsx") && /^\/(\?|$)/m.test(hits)) break;
+    if (spawnErr) throw spawnErr;
     if (child.exitCode !== null) throw new Error(`oj exited early\n${stderr.slice(-4000)}`);
     if (Date.now() - t0 > 180_000) {
       throw new Error(
