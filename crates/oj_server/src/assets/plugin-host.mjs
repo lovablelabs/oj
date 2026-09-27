@@ -446,6 +446,40 @@ function withResolvedDefaults(config) {
     c,
   );
   if (typeof merged.createResolver !== "function") merged.createResolver = makeCreateResolver(merged);
+  // Vite's resolved config ALWAYS carries an absolute `cacheDir`
+  // (config.ts: user value resolved from root, else `node_modules/.vite`
+  // beside the nearest package.json, else `<root>/node_modules/.vite` when
+  // that dir exists, else `<root>/.vite`); plugins path.join() it directly
+  // and an undefined here throws in their configResolved.
+  // Vite resolves root first (`path.resolve(config.root)`), so a relative
+  // root from a config hook still yields an absolute cacheDir.
+  const cacheRoot = pathResolve(merged.root);
+  if (typeof merged.cacheDir !== "string" || merged.cacheDir.length === 0) {
+    // findNearestPackageData: a package.json that does not parse is skipped
+    // and the walk continues upward.
+    const nearestPkgDir = (() => {
+      let dir = cacheRoot;
+      for (;;) {
+        const pkg = join(dir, "package.json");
+        try {
+          if (statSync(pkg).isFile()) {
+            JSON.parse(readFileSync(pkg, "utf8"));
+            return dir;
+          }
+        } catch {}
+        const parent = dirname(dir);
+        if (parent === dir) return null;
+        dir = parent;
+      }
+    })();
+    merged.cacheDir = nearestPkgDir
+      ? join(nearestPkgDir, "node_modules/.vite")
+      : existsSync(join(cacheRoot, "node_modules"))
+        ? join(cacheRoot, "node_modules/.vite")
+        : join(cacheRoot, ".vite");
+  } else if (!isAbsolute(merged.cacheDir)) {
+    merged.cacheDir = pathResolve(cacheRoot, merged.cacheDir);
+  }
   // Vite resolves `publicDir` to an absolute path (default `<root>/public`);
   // plugins like @crxjs read it directly to locate manifest assets (icons,
   // locales). `false` disables it, matching Vite.
@@ -1381,6 +1415,10 @@ async function runConfigHooks() {
       }
     }
   }
+  // A plugin's config hook can switch bundledDev back on (a dev plugin may do
+  // so behind a flag); re-coerce so configResolved sees the truth oj serves, or
+  // gated plugins run their bundled-dev-only setup.
+  coerceBundledDevOff(config);
   resolvedConfig = withResolvedDefaults(config);
   resolvedConfig.plugins = configPlugins;
   for (const { p, fn } of pluginsWithHook("configResolved")) {

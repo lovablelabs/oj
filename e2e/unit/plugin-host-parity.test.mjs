@@ -11,6 +11,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { rpcSidecar, tmpProject } from "./harness.mjs";
 
@@ -450,6 +451,137 @@ test("config-hook merges skip null overrides and apply the ssr noExternal true-w
     assert.equal(seen.noExternal, true, "true wins over the list (Vite's ssr noExternal special case)");
     assert.equal(seen.resolvedNoExternal, true, "and a later hook's list does not demote it");
     assert.deepEqual(seen.dedupe, ["react"], "ordinary keys still merge");
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// Vite's resolved config ALWAYS carries an absolute cacheDir (default
+// `node_modules/.vite` beside the nearest package.json); plugins path.join()
+// it in configResolved. And a config hook that flips experimental.bundledDev
+// back on is re-coerced before configResolved, so bundled-dev-gated plugin
+// setup never runs against oj's unbundled serving.
+test("configResolved sees an absolute cacheDir and re-coerced bundledDev", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-probe",
+       config() { return { experimental: { bundledDev: true } }; },
+       configResolved(config) {
+         seen.cacheDir = config.cacheDir;
+         seen.bundledDev = config.experimental?.bundledDev;
+       },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const seen = await probe(host, fx);
+    assert.equal(
+      seen.cacheDir,
+      path.join(fx.root, "node_modules/.vite"),
+      "cacheDir defaults beside the project package.json like Vite",
+    );
+    assert.equal(path.isAbsolute(seen.cacheDir), true);
+    assert.equal(seen.bundledDev, false, "a config hook cannot re-enable bundledDev past the coercion");
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// The other halves of the same two contracts: a USER cacheDir is resolved
+// from root like Vite's `path.resolve(root, config.cacheDir)`, and an
+// `isBundled` a configEnvironment hook sets is re-cleared alongside
+// experimental.bundledDev (Vite derives the flag in resolveConfig; oj's
+// unsupported-bundledDev policy must catch both spellings).
+test("user cacheDir resolves from root and configEnvironment isBundled is re-cleared", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-user-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-user-probe",
+       config() { return { cacheDir: "custom-cache" }; },
+       configEnvironment(name) { if (name === "client") return { isBundled: true }; },
+       configResolved(config) {
+         seen.cacheDir = config.cacheDir;
+         seen.clientIsBundled = config.environments?.client?.isBundled;
+       },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const seen = await probe(host, fx);
+    assert.equal(
+      seen.cacheDir,
+      path.resolve(fx.root, "custom-cache"),
+      "a user cacheDir resolves from root like Vite",
+    );
+    assert.equal(
+      seen.clientIsBundled,
+      false,
+      "a configEnvironment-set isBundled is coerced off with bundledDev",
+    );
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// The monorepo shape: the app root has no package.json of its own (or one
+// that does not parse), so Vite's findNearestPackageData walks up to the
+// workspace's and cacheDir lands in the WORKSPACE node_modules/.vite.
+test("default cacheDir walks up past a missing or unparsable package.json", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-mono-" });
+  fx.write("apps/web/package.json", "{ not json");
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-mono-probe",
+       configResolved(config) { seen.cacheDir = config.cacheDir; },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, {
+    config: { root: path.join(fx.root, "apps/web") },
+    env: { command: "serve", mode: "development" },
+  });
+  try {
+    const seen = await probe(host, fx);
+    assert.equal(seen.cacheDir, path.join(fx.root, "node_modules/.vite"));
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// Vite resolves root before deriving cacheDir, so a relative root a config
+// hook returns still yields an absolute cacheDir.
+test("a relative root from a config hook still yields an absolute cacheDir", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-relroot-" });
+  fx.write("apps/web/package.json", JSON.stringify({ name: "web" }));
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-relroot-probe",
+       config() { return { root: "apps/web" }; },
+       configResolved(config) { seen.cacheDir = config.cacheDir; },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const seen = await probe(host, fx);
+    // The host resolves the relative root against its cwd, which the OS
+    // reports realpath'd (macOS /var -> /private/var).
+    assert.equal(seen.cacheDir, path.join(fs.realpathSync(fx.root), "apps/web/node_modules/.vite"));
   } finally {
     host.close();
     fx.cleanup();
