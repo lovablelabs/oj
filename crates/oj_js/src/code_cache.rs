@@ -126,9 +126,15 @@ impl FsCodeCache {
         if std::fs::create_dir_all(&self.dir).is_err() {
             return;
         }
-        // Atomic publish: a concurrent child reads either the old entry or
-        // the new one, never a torn half-write.
-        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        // Atomic publish: a concurrent reader sees either the old entry or
+        // the new one, never a torn half-write. The tmp name carries a
+        // process-wide sequence beside the pid: worker threads share this
+        // cache within one process (a pool compiling the same hot module
+        // races), so a pid-only suffix would let two threads write the same
+        // tmp path and rename a torn file into place.
+        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("tmp{}-{seq}", std::process::id()));
         let mut bytes = Vec::with_capacity(8 + data.len());
         bytes.extend_from_slice(&source_hash.to_le_bytes());
         bytes.extend_from_slice(data);
@@ -366,6 +372,43 @@ mod hygiene_tests {
                 .as_deref(),
             Some(b"as-url".as_ref())
         );
+    }
+
+    // Worker threads share one cache within a process (a pool compiling the
+    // same hot module races): every writer must publish a whole entry and
+    // strand nothing. A pid-only tmp suffix let two threads write the same
+    // tmp path and rename a torn file into place.
+    #[test]
+    fn concurrent_same_module_puts_from_threads_publish_whole_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = std::sync::Arc::new(FsCodeCache::new(dir.path().to_path_buf()));
+        let spec = url("file:///app/node_modules/terser/main.js");
+        let payload = vec![7u8; 64 * 1024];
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let cache = std::sync::Arc::clone(&cache);
+            let spec = spec.clone();
+            let payload = payload.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..50 {
+                    cache.put(&spec, CodeCacheType::EsModule, 1, &payload);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            cache.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
+            Some(payload.as_slice()),
+            "the published entry must be whole"
+        );
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "no stranded tmp files");
     }
 
     // Boot hygiene mirrors Vite's deps-cache cleanup: only torn-write tmp
