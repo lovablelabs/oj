@@ -6,12 +6,19 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::integrity::{self, ExpectedFile, VerifyMode};
 
 pub const START_BUNDLE_FORMAT: u32 = 3;
 pub const DEFAULT_PRUNE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+/// Generations kept per store, enforced on every persist. Vite's dep cache
+/// keeps exactly ONE generation (commit = atomic dir swap, the old one is
+/// deleted); the store keeps `current` plus a small recency window so a
+/// revert to a just-seen closure restores warm, but a long editing session
+/// must not accumulate one generation per save — unpruned, a day of agent
+/// edits writes GBs the sandbox working set never gets back.
+pub const KEEP_GENERATIONS: usize = 8;
 
 const ARTIFACTS: [&str; 2] = ["client-entry.modules", "manifest.ts"];
 const CLOSURE_FILE: &str = "closure.json";
@@ -27,10 +34,28 @@ const CSS_URLS_FILE: &str = "css-urls.json";
 
 const MEMO_FRESHNESS_SLACK_NS: u64 = 2_000_000_000;
 
+/// A `.tmp-` entry younger than this is presumed live (a persist mid-copy,
+/// an eviction thread's aside dir) and the boot sweep leaves it alone; Vite
+/// age-gates its stale `_temp_` cleanup the same way (at 24h). Older is a
+/// stranded crash leftover.
+const TMP_SWEEP_MIN_AGE: Duration = Duration::from_secs(600);
+
+fn tmp_is_stale(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|m| m.elapsed().ok())
+        .is_none_or(|age| age >= TMP_SWEEP_MIN_AGE)
+}
+
 pub struct StartBundleStore {
     dir: PathBuf,
     salt: String,
     verify: VerifyMode,
+    /// The newest detached eviction thread. Each new sweep first joins its
+    /// predecessor (inside the thread, so the save path never waits), which
+    /// serializes sweeps; joining this handle therefore joins them all.
+    sweeper: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -190,6 +215,7 @@ impl StartBundleStore {
                 epoch(root, mode, vendored_rolldown().epoch_input().as_deref())
             ),
             verify,
+            sweeper: std::sync::Mutex::new(None),
         }
     }
 
@@ -322,10 +348,147 @@ impl StartBundleStore {
         write_memo(&entry, &build_memo(&files, &digests));
         touch(&entry);
         self.write_current(&key);
+        // Enforce the window at write time the way Vite commits its dep
+        // cache: constant work on the save path (one readdir, at most a
+        // rename), with the actual deletion and blob accounting in the
+        // background. The full budget prune stays a boot-only pass.
+        self.enforce_window(KEEP_GENERATIONS);
+        // Cross-process belt: a SECOND instance's prune can sweep a blob this
+        // persist dedup-skipped, in the window between the existence check
+        // and the generation rename (its scan saw no generation referencing
+        // it yet). The chunk sources are still in the build dir, so re-copy
+        // whatever is missing; a sweep that starts after the rename sees this
+        // generation's manifest and keeps its blobs.
+        for (name, f) in &manifest.files {
+            let blob = blobs.join(&f.hash);
+            if blob.is_file() {
+                continue;
+            }
+            let tmp = blobs.join(format!(
+                ".tmp-{}-{}",
+                f.hash.get(..16).unwrap_or(&f.hash),
+                std::process::id()
+            ));
+            if fs::copy(chunk_dir.join(name), &tmp).is_err() || fs::rename(&tmp, &blob).is_err() {
+                let _ = fs::remove_file(&tmp);
+                if !blob.is_file() {
+                    return None;
+                }
+            }
+        }
         Some((key, self.pin(&manifest)))
     }
 
     pub fn prune(&self, budget_bytes: u64) {
+        self.prune_with(budget_bytes, KEEP_GENERATIONS)
+    }
+
+    /// The save-path half of eviction, Vite-shaped (its dep-cache commit is
+    /// rename + background rm, never a synchronous scan-and-delete), pushed
+    /// one step further: persist runs inside the spawn_blocking the
+    /// save-to-reload path joins on, so the WHOLE pass — listing, the
+    /// renames-aside, the blob sweep — runs on a detached thread and the save
+    /// path pays one thread spawn. Nothing here touches `current` (the walk
+    /// skips it), a mid-sweep crash strands only `.tmp-` dirs the boot prune
+    /// age-gates away, and a sweep racing the next persist is covered by
+    /// persist's post-commit blob re-check. Each thread joins its predecessor
+    /// first, so sweeps never stack and [`Self::join_eviction`] joins the lot.
+    fn enforce_window(&self, max_generations: usize) {
+        let prev = self.sweeper.lock().ok().and_then(|mut s| s.take());
+        let dir = self.dir.clone();
+        let handle = std::thread::spawn(move || {
+            if let Some(prev) = prev {
+                let _ = prev.join();
+            }
+            enforce_window_blocking(&dir, max_generations);
+        });
+        if let Ok(mut slot) = self.sweeper.lock() {
+            *slot = Some(handle);
+        }
+    }
+
+    /// Blocks until every eviction thread this store spawned has finished.
+    /// Tests use it for determinism; production callers never need to.
+    pub fn join_eviction(&self) {
+        if let Some(handle) = self.sweeper.lock().ok().and_then(|mut s| s.take()) {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn enforce_window_blocking(dir: &Path, max_generations: usize) {
+    let keep = fs::read_to_string(dir.join(CURRENT_FILE))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let mut gens: Vec<(SystemTime, PathBuf)> = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = e.path();
+        if name == BLOBS_DIR || name == keep || name.starts_with(".tmp-") || !path.is_dir() {
+            continue;
+        }
+        let stamp = fs::metadata(path.join(TOUCH_FILE))
+            .or_else(|_| fs::metadata(&path))
+            .and_then(|m| m.modified())
+            .unwrap_or(UNIX_EPOCH);
+        gens.push((stamp, path));
+    }
+    // `keep` was skipped above, so the window is current + max-1 others.
+    let overflow = (gens.len() + 1).saturating_sub(max_generations);
+    if overflow == 0 {
+        return;
+    }
+    gens.sort_by_key(|(stamp, _)| *stamp);
+    let mut evicted = Vec::new();
+    for (_, path) in gens.into_iter().take(overflow) {
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let aside = dir.join(format!(
+            ".tmp-evict-{}-{}",
+            name.get(..16).unwrap_or(&name),
+            std::process::id()
+        ));
+        if fs::rename(&path, &aside).is_ok() {
+            evicted.push(aside);
+        }
+    }
+    if evicted.is_empty() {
+        return;
+    }
+    // Blobs still referenced by a surviving generation (or current)
+    // stay; everything the evicted generations uniquely owned goes.
+    let mut live: HashSet<String> = HashSet::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let path = e.path();
+            if name == BLOBS_DIR || name.starts_with(".tmp-") || !path.is_dir() {
+                continue;
+            }
+            if let Some(m) = read_manifest(&path) {
+                live.extend(m.files.into_values().map(|f| f.hash));
+            }
+        }
+    }
+    let blobs = dir.join(BLOBS_DIR);
+    for aside in evicted {
+        if let Some(m) = read_manifest(&aside) {
+            for f in m.files.into_values() {
+                if !live.contains(&f.hash) {
+                    let _ = fs::remove_file(blobs.join(&f.hash));
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&aside);
+    }
+}
+
+impl StartBundleStore {
+    fn prune_with(&self, budget_bytes: u64, max_generations: usize) {
         let _ = fs::remove_file(self.dir.join(LEGACY_POINTER_FILE));
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
@@ -348,7 +511,9 @@ impl StartBundleStore {
                 continue;
             }
             if name.starts_with(".tmp-") {
-                let _ = fs::remove_dir_all(&path);
+                if tmp_is_stale(&path) {
+                    let _ = fs::remove_dir_all(&path);
+                }
                 continue;
             }
             let refs = read_manifest(&path)
@@ -372,7 +537,9 @@ impl StartBundleStore {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if name.starts_with(".tmp-") {
-                    let _ = fs::remove_file(e.path());
+                    if tmp_is_stale(&e.path()) {
+                        let _ = fs::remove_file(e.path());
+                    }
                     continue;
                 }
                 if let Ok(meta) = e.metadata() {
@@ -393,16 +560,22 @@ impl StartBundleStore {
             }
         }
         gens.sort_by_key(|g| g.stamp);
+        let mut kept = gens.len();
         for g in &gens {
-            if total <= budget_bytes {
+            if total <= budget_bytes && kept <= max_generations {
                 break;
             }
             if g.is_current {
                 continue;
             }
-            if fs::remove_dir_all(&g.path).is_err() {
-                continue;
+            // A dir already gone (another process's prune won the race) is an
+            // eviction all the same; only a real failure keeps the entry.
+            if let Err(e) = fs::remove_dir_all(&g.path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    continue;
+                }
             }
+            kept -= 1;
             total = total.saturating_sub(g.own_size);
             for h in &g.refs {
                 if let Some(c) = refcount.get_mut(h.as_str()) {
@@ -1273,6 +1446,63 @@ mod tests {
         assert!(
             fx.store().restore(&fx.start).is_ok(),
             "survivor still restores"
+        );
+    }
+
+    #[test]
+    fn persist_enforces_the_generation_window() {
+        // Vite keeps ONE dep-cache generation (commit replaces the old dir);
+        // the store keeps a small recency window, enforced per persist, so a
+        // long editing session cannot accumulate one generation per save.
+        let fx = Fixture::new("window");
+        let store = fx.store();
+        let mut keys = Vec::new();
+        for i in 0..(KEEP_GENERATIONS + 4) {
+            fx.write_module("a.tsx", &format!("export const a = {i};"));
+            fx.write_build(&format!("bundle-w{i}"));
+            let (key, _) = store.persist(&fx.start).unwrap();
+            keys.push(key);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let dir = crate::cache_root(&fx.root).join("start-bundle");
+        let count_gens = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.path().is_dir()
+                        && e.file_name() != "blobs"
+                        && !e.file_name().to_string_lossy().starts_with(".tmp-")
+                })
+                .count()
+        };
+        // The eviction pass is detached and each thread joins its
+        // predecessor, so joining the newest joins them all: the assertions
+        // below see the settled store, no polling.
+        store.join_eviction();
+        let swept = || {
+            !std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        };
+        let generations = count_gens();
+        assert!(
+            generations <= KEEP_GENERATIONS,
+            "a save session must not keep a generation per save, kept {generations}"
+        );
+        assert!(swept(), "the background sweeper removes the renamed dirs");
+        assert!(
+            dir.join(keys.last().unwrap()).is_dir(),
+            "the just-persisted generation survives its own prune"
+        );
+        assert!(
+            !dir.join(&keys[0]).is_dir(),
+            "the oldest generation was evicted at write time"
+        );
+        assert!(
+            fx.store().restore(&fx.start).is_ok(),
+            "current still restores after the window prune"
         );
     }
 
