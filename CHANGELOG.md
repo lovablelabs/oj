@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `oj dev`/`oj build` no longer print rolldown-vite's `configLoader: 'native'` migration warning as a wall (one line per incompatibility in the vite.config graph, 200+ on big monorepos, repeated by every one-shot child). Vite gates the compat scan on `VITE_CONFIG_NATIVE_IGNORE_WARNING`; oj now sets it once at the spawn root, so every engine and child inherits the suppression, a user-set value always wins, and an explicitly empty value re-enables the warning.
+
 ## [0.2.10] - 2026-09-27
 
 ### Fixed
