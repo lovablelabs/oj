@@ -5,8 +5,7 @@
 // all go through node:worker_threads, which deno_runtime implements on web
 // workers. The engine used to ship the deno_runtime default worker callback —
 // a panic ("not implemented: web workers are not supported") that took the
-// whole build down for every PWA-enabled project (fingerprint 40bc9db0, 54
-// projects in the 2026-09-27 5k campaign). The worker must also get a
+// whole build down for every PWA-enabled project. The worker must also get a
 // `location` at bootstrap or the worker_threads polyfill dies with
 // "Invalid URL: 'null'" before user code runs. This drives a config plugin
 // through a spawn + message round-trip + terminate during `oj build`.
