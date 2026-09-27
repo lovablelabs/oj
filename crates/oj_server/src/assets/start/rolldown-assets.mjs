@@ -174,52 +174,71 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
   };
 }
 
+// Every shim is CommonJS, matching Vite's browser-external stubs: named ESM
+// imports from a CJS module interop into property reads, so a name the shim
+// does not carry is undefined at runtime instead of a rolldown MISSING_EXPORT
+// at link time (`import { createHmac } from "crypto"` in code shared with the
+// server was failing whole client builds). Production is a bare object like
+// Vite's `module.exports = {}`; dev wraps it in Vite's warning Proxy so an
+// actually-exercised access names itself in the console.
 const ALS =
-  "export class AsyncLocalStorage{getStore(){return this._s}" +
+  "class AsyncLocalStorage{getStore(){return this._s}" +
   "run(s,cb,...a){const p=this._s;this._s=s;try{return cb(...a)}finally{this._s=p}}" +
   "enterWith(s){this._s=s}exit(cb,...a){const p=this._s;this._s=undefined;try{return cb(...a)}finally{this._s=p}}" +
-  "disable(){this._s=undefined}}export default {AsyncLocalStorage};";
+  "disable(){this._s=undefined}}module.exports={AsyncLocalStorage};";
 const SHIM_STREAM_WEB =
-  "export const ReadableStream=globalThis.ReadableStream;export const WritableStream=globalThis.WritableStream;" +
-  "export const TransformStream=globalThis.TransformStream;export const ByteLengthQueuingStrategy=globalThis.ByteLengthQueuingStrategy;" +
-  "export const CountQueuingStrategy=globalThis.CountQueuingStrategy;" +
-  "export default {ReadableStream,WritableStream,TransformStream,ByteLengthQueuingStrategy,CountQueuingStrategy};";
+  "module.exports={ReadableStream:globalThis.ReadableStream,WritableStream:globalThis.WritableStream," +
+  "TransformStream:globalThis.TransformStream,ByteLengthQueuingStrategy:globalThis.ByteLengthQueuingStrategy," +
+  "CountQueuingStrategy:globalThis.CountQueuingStrategy};";
 const SHIM_STREAM =
   "class S{on(){return this}once(){return this}emit(){return false}pipe(t){return t}end(){}write(){return true}" +
-  "removeListener(){return this}destroy(){}}export class Readable extends S{static from(){return new Readable()}}" +
-  "export class Writable extends S{}export class Duplex extends S{}export class Transform extends S{}" +
-  "export class PassThrough extends S{}export class Stream extends S{}" +
-  "export default {Readable,Writable,Duplex,Transform,PassThrough,Stream};";
+  "removeListener(){return this}destroy(){}}class Readable extends S{static from(){return new Readable()}}" +
+  "class Writable extends S{}class Duplex extends S{}class Transform extends S{}" +
+  "class PassThrough extends S{}class Stream extends S{}" +
+  "module.exports={Readable,Writable,Duplex,Transform,PassThrough,Stream};";
 const SHIM_PUNYCODE =
-  "export const toUnicode=(s)=>s;export const toASCII=(s)=>s;export const encode=(s)=>s;export const decode=(s)=>s;" +
-  "export const ucs2={decode:()=>[],encode:()=>\"\"};export default {toUnicode,toASCII,encode,decode,ucs2};";
+  "const id=(s)=>s;" +
+  "module.exports={toUnicode:id,toASCII:id,encode:id,decode:id,ucs2:{decode:()=>[],encode:()=>\"\"}};";
 const BARE_BUILTINS =
   /^(assert|buffer|child_process|cluster|console|constants|crypto|dgram|dns|domain|events|fs|http|http2|https|module|net|os|path|perf_hooks|process|punycode|querystring|readline|repl|stream|stream\/web|string_decoder|sys|timers|tls|tty|url|util|v8|vm|worker_threads|zlib|async_hooks)$/;
-function shimSource(spec) {
+export function shimSource(spec, production) {
   const name = spec.replace(/^node:/, "");
   if (name === "async_hooks") return ALS;
   if (name === "stream/web") return SHIM_STREAM_WEB;
   if (name === "stream") return SHIM_STREAM;
   if (name === "punycode") return SHIM_PUNYCODE;
-  return "export default {};";
+  if (production) return "module.exports = {};";
+  return (
+    "module.exports = Object.create(new Proxy({}, {\n" +
+    "  get(_, key) {\n" +
+    "    if (key !== '__esModule' && key !== '__proto__' && key !== 'constructor' && key !== 'splice') {\n" +
+    `      console.warn(\`Module "${name}" has been externalized for browser compatibility. Cannot access "${name}.\${key}" in client code.\`);\n` +
+    "    }\n" +
+    "  }\n" +
+    "}));"
+  );
 }
-export const nodeBuiltinShims = {
-  name: "node-builtin-shims",
-  resolveId: {
-    filter: { id: { include: [/^node:/, BARE_BUILTINS] } },
-    handler(source) {
-      if (/^node:/.test(source) || BARE_BUILTINS.test(source)) return V("node-shim", source);
-      return null;
+export function nodeBuiltinShims({ production = false } = {}) {
+  return {
+    name: "node-builtin-shims",
+    resolveId: {
+      filter: { id: { include: [/^node:/, BARE_BUILTINS] } },
+      handler(source) {
+        if (/^node:/.test(source) || BARE_BUILTINS.test(source)) return V("node-shim", source);
+        return null;
+      },
     },
-  },
-  load: {
-    filter: { id: /^\0oj-node-shim:/ },
-    handler(id) {
-      const v = parseV(id);
-      return v && v.tag === "node-shim" ? { code: shimSource(v.path), moduleType: "js" } : null;
+    load: {
+      filter: { id: /^\0oj-node-shim:/ },
+      handler(id) {
+        const v = parseV(id);
+        return v && v.tag === "node-shim"
+          ? { code: shimSource(v.path, production), moduleType: "js" }
+          : null;
+      },
     },
-  },
-};
+  };
+}
 
 export function pnpmStorePaths(workspaceRoot) {
   const paths = [];

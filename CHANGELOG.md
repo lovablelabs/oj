@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Client bundles that name a node builtin's exports — `import { createHmac } from "crypto"` in code shared with the server — build and serve again: the node-builtin shims are CommonJS now, like Vite's browser-external stubs, so a named import interops into an undefined property read instead of failing the bundle with a rolldown MISSING_EXPORT at link time. Production shims are Vite's bare exports object; dev shims wrap Vite's warning Proxy so an exercised access names itself. Measured at 38 of 5,247 projects (fingerprint family 9322bab6) in the 2026-09-27 validation campaign.
+
 ## [0.2.9] - 2026-09-26
 
 ### Fixed

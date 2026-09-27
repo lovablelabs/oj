@@ -266,7 +266,7 @@ const client = await build({
     },
     clientFnPlugin,
     assetsPlugin({ mode: "prod", server: false, emit }),
-    nodeBuiltinShims,
+    nodeBuiltinShims({ production: true }),
   ],
   output: {
     dir: CLIENT,
