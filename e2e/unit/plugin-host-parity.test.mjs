@@ -455,3 +455,39 @@ test("config-hook merges skip null overrides and apply the ssr noExternal true-w
     fx.cleanup();
   }
 });
+
+// Vite's resolved config ALWAYS carries an absolute cacheDir (default
+// `node_modules/.vite` beside the nearest package.json); plugins path.join()
+// it in configResolved. And a config hook that flips experimental.bundledDev
+// back on is re-coerced before configResolved, so bundled-dev-gated plugin
+// setup never runs against oj's unbundled serving.
+test("configResolved sees an absolute cacheDir and re-coerced bundledDev", async () => {
+  const fx = tmpProject({ prefix: "oj-parity-cachedir-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "cachedir-probe",
+       config() { return { experimental: { bundledDev: true } }; },
+       configResolved(config) {
+         seen.cacheDir = config.cacheDir;
+         seen.bundledDev = config.experimental?.bundledDev;
+       },
+       transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
+     }];\n`,
+  );
+  const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
+  try {
+    const seen = await probe(host, fx);
+    assert.equal(
+      seen.cacheDir,
+      path.join(fx.root, "node_modules/.vite"),
+      "cacheDir defaults beside the project package.json like Vite",
+    );
+    assert.equal(path.isAbsolute(seen.cacheDir), true);
+    assert.equal(seen.bundledDev, false, "a config hook cannot re-enable bundledDev past the coercion");
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});

@@ -446,6 +446,31 @@ function withResolvedDefaults(config) {
     c,
   );
   if (typeof merged.createResolver !== "function") merged.createResolver = makeCreateResolver(merged);
+  // Vite's resolved config ALWAYS carries an absolute `cacheDir`
+  // (config.ts: user value resolved from root, else `node_modules/.vite`
+  // beside the nearest package.json, else `<root>/node_modules/.vite` when
+  // that dir exists, else `<root>/.vite`); plugins path.join() it directly
+  // and an undefined here throws in their configResolved.
+  if (typeof merged.cacheDir !== "string" || merged.cacheDir.length === 0) {
+    const nearestPkgDir = (() => {
+      let dir = merged.root;
+      for (;;) {
+        try {
+          if (statSync(join(dir, "package.json")).isFile()) return dir;
+        } catch {}
+        const parent = dirname(dir);
+        if (parent === dir) return null;
+        dir = parent;
+      }
+    })();
+    merged.cacheDir = nearestPkgDir
+      ? join(nearestPkgDir, "node_modules/.vite")
+      : existsSync(join(merged.root, "node_modules"))
+        ? join(merged.root, "node_modules/.vite")
+        : join(merged.root, ".vite");
+  } else if (!isAbsolute(merged.cacheDir)) {
+    merged.cacheDir = pathResolve(merged.root, merged.cacheDir);
+  }
   // Vite resolves `publicDir` to an absolute path (default `<root>/public`);
   // plugins like @crxjs read it directly to locate manifest assets (icons,
   // locales). `false` disables it, matching Vite.
@@ -1381,6 +1406,10 @@ async function runConfigHooks() {
       }
     }
   }
+  // A plugin's config hook can switch bundledDev back on (lovable's dev
+  // plugin does under its remote flag); re-coerce so configResolved sees the
+  // truth oj serves, or gated plugins run their bundled-dev-only setup.
+  coerceBundledDevOff(config);
   resolvedConfig = withResolvedDefaults(config);
   resolvedConfig.plugins = configPlugins;
   for (const { p, fn } of pluginsWithHook("configResolved")) {
