@@ -8,11 +8,11 @@ export const rootRoute = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "oj: Rust-native builds for React" },
+      { title: "oj: experimental next generation frontend tooling" },
       {
         name: "description",
         content:
-          "oj is a Rust-native build tool for React apps. This playground is oj itself compiled to WebAssembly, building a live-editable site in your browser tab.",
+          "oj is experimental next generation frontend tooling. This playground is oj itself compiled to WebAssembly, building a live-editable site in your browser tab.",
       },
       { name: "theme-color", content: "#191918" },
     ],

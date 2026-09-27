@@ -6,7 +6,7 @@
 </p>
 </h1>
 
-OJ is a Rust-native build tool for React apps.
+Experimental next generation frontend tooling.
 
 It optimizes for memory and cold start, where running many builds (CI, agents, multi-tenant) under Vite gets expensive. OJ is meant to run real production React apps without changes to their source.
 
