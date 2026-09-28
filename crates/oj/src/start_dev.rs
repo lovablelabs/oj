@@ -499,10 +499,15 @@ fn runner_warm_urls(root: &Path, warmup_patterns: &[String]) -> Vec<String> {
 /// came back so the caller can log honestly. Best effort with a generous
 /// bound; a cold monorepo render is minutes on a contended sandbox.
 async fn runner_render_warm(app: axum::Router) -> bool {
+    use futures_util::StreamExt;
     use tower::util::ServiceExt;
     let warm = async {
         let Ok(request) = axum::http::Request::builder()
             .uri("/")
+            // Pre-bind there is no port to put in the origin: an app
+            // middleware building absolute URLs from Host sees a portless
+            // localhost during the warm (the render's output is discarded, so
+            // only the module caches it fills matter).
             .header(axum::http::header::HOST, "localhost")
             .header(axum::http::header::ACCEPT, "text/html")
             .body(axum::body::Body::empty())
@@ -511,7 +516,15 @@ async fn runner_render_warm(app: axum::Router) -> bool {
         };
         let Ok(response) = app.oneshot(request).await;
         let ok = response.status().is_success();
-        let _ = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+        // Drain the stream chunk by chunk and discard: the render only
+        // completes when its document does, without buffering a whole
+        // streamed SSR body just to throw it away.
+        let mut body = response.into_body().into_data_stream();
+        while let Some(chunk) = body.next().await {
+            if chunk.is_err() {
+                break;
+            }
+        }
         ok
     };
     matches!(
