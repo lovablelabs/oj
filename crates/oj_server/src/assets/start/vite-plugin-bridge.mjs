@@ -495,21 +495,38 @@ export function createPluginContainer(vite, allPlugins, {
   }
 
   // The full resolveId answer ({ id, external }); resolveId keeps the id-only form.
+  // The resolveId hooks a call may run, per phase and bundler-driven-ness:
+  // fixed once the plugins are initialized, so computed once rather than
+  // re-filtered on every resolve (this runs for every routed import).
+  const resolveCandidatesMemo = new Map();
+  function resolveCandidates(phase, bundlerDriven) {
+    const key = `${phase ?? ""}|${bundlerDriven ? 1 : 0}`;
+    let list = resolveCandidatesMemo.get(key);
+    if (!list) {
+      list = [];
+      for (const p of byHook(plugins, "resolveId")) {
+        if (!inResolvePhase(p, phase)) continue;
+        // Driven by the bundler (a phase, or a nested this.resolve inside one),
+        // a plugin oj reimplements natively stays out, as resolveIdPlan leaves
+        // it out: oj's own pass already covers it (e.g. import-protection), and
+        // its resolveId re-resolving every import would duplicate the core resolver.
+        if (bundlerDriven && ojReimplemented(p.name)) continue;
+        if (!envAllows(p, environment)) continue;
+        const h = hookHandler(p.resolveId);
+        if (h) list.push({ p, h, filter: hookFilter(p.resolveId) });
+      }
+      resolveCandidatesMemo.set(key, list);
+    }
+    return list;
+  }
+
   async function resolveIdResult(id, importer, skipCalls, phase, bundlerResolve = null) {
     await initializePlugins();
-    for (const p of byHook(plugins, "resolveId")) {
-      if (!inResolvePhase(p, phase)) continue;
-      // Driven by the bundler (a phase, or a nested this.resolve inside one), a
-      // plugin oj reimplements natively stays out, as resolveIdPlan leaves it out: oj's own pass
-      // already covers it (e.g. import-protection), and its resolveId
-      // re-resolving every import would duplicate the core resolver.
-      if ((phase || bundlerResolve) && ojReimplemented(p.name)) continue;
+    for (const { p, h, filter } of resolveCandidates(phase, !!(phase || bundlerResolve))) {
       // Vite merges skipCalls into the skip set: skipped on the same
       // id + importer, or outright once re-entered (`called`).
       if (skipCalls && skipCalls.some((c) => c.plugin === p && (c.called || (c.id === id && c.importer === importer)))) continue;
-      if (!envAllows(p, environment)) continue;
-      const h = hookHandler(p.resolveId);
-      if (!h || !idAllowed(hookFilter(p.resolveId), id)) continue;
+      if (!idAllowed(filter, id)) continue;
       let r;
       try { r = await h.call(pluginContext(p, ctx, skipCalls, bundlerResolve), id, importer, { isEntry: false, ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
       if (r != null) return typeof r === "string" ? { id: r } : { id: r.id, external: r.external };
