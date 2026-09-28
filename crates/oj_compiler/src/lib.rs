@@ -10,6 +10,7 @@ pub mod interop;
 pub mod json;
 pub mod pkgbundle;
 pub mod ssr;
+pub mod tsconfig;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -456,6 +457,15 @@ pub fn compile_module_with_maps(
     let scoping = semantic_ret.semantic.into_scoping();
 
     let mut transform_options = TransformOptions::default();
+    // Vite honors the nearest tsconfig's class-field semantics (vite:oxc hands
+    // tsconfig discovery to the transform); oxc's documented recipe for
+    // `useDefineForClassFields: false` is exactly these two flags.
+    if tsconfig::class_field_set_semantics(path) {
+        transform_options.assumptions.set_public_class_fields = true;
+        transform_options
+            .typescript
+            .remove_class_fields_without_initializer = true;
+    }
     transform_options.jsx.jsx_plugin = true;
     if opts.jsx.is_classic() {
         transform_options.jsx.runtime = JsxRuntime::Classic;

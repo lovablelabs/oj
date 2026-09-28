@@ -4626,11 +4626,18 @@ async fn ensure_module(
         .lock()
         .unwrap()
         .imports_timestamp(Path::new(url));
-    let mode_key = if imports_stamp > 0 {
+    let mut mode_key = if imports_stamp > 0 {
         format!("{mode}@{imports_stamp}")
     } else {
         mode.to_string()
     };
+    // The tsconfig's class-field semantics change the transform output for the
+    // same source, so they are part of the key: a tsconfig edit (which clears
+    // the discovery cache) then misses both the memory and persistent caches
+    // instead of resurrecting stale code.
+    if oj_compiler::tsconfig::class_field_set_semantics(file) {
+        mode_key.push_str("+setcf");
+    }
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
@@ -8088,6 +8095,16 @@ fn is_restart_trigger(path: &Path) -> bool {
     )
 }
 
+/// True for tsconfig files whose change must re-run the tsconfig-aware
+/// transform (Vite: any `/tsconfig.json` plus every .json its resolution
+/// cache loaded; the name pattern covers the `extends` bases like
+/// tsconfig.base.json without tracking cache membership).
+fn is_tsconfig_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json")))
+}
+
 /// Re-exec the current binary with the same arguments so a fresh process
 /// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
 /// dev port is released as the image is replaced. Does not return on success.
@@ -8243,6 +8260,19 @@ fn spawn_watcher(state: Arc<ServerState>) {
                 .any(|p| is_restart_trigger(p) || is_config_dependency(p))
             {
                 restart_process();
+            }
+            // Vite's reloadOnTsconfigChange: a tsconfig change clears the
+            // tsconfig cache, invalidates every module graph and forces a full
+            // reload ("the nuclear option"). The compile key folds the
+            // class-field semantics in, so cleared discovery alone makes stale
+            // persistent-cache entries unreachable.
+            if paths.iter().any(|p| is_tsconfig_file(p)) {
+                oj_compiler::tsconfig::clear_cache();
+                state.mtime_keys.lock().unwrap().clear();
+                state.memory.lock().unwrap().clear();
+                let _ = state
+                    .reload_tx
+                    .send(full_reload_frame("tsconfig change", None, None));
             }
             if !state.hmr_enabled {
                 continue;
@@ -9525,6 +9555,16 @@ export default [{{
         }
         for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
             assert!(!is_restart_trigger(Path::new(f)), "{f}");
+        }
+    }
+
+    #[test]
+    fn tsconfig_files_trigger_the_reload_path() {
+        for f in ["tsconfig.json", "app/tsconfig.json", "tsconfig.base.json"] {
+            assert!(is_tsconfig_file(Path::new(f)), "{f}");
+        }
+        for f in ["package.json", "src/tsconfig.ts", "not-tsconfig.json"] {
+            assert!(!is_tsconfig_file(Path::new(f)), "{f}");
         }
     }
 
