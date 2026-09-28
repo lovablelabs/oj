@@ -5,10 +5,15 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.12] - 2026-09-28
+
+### Changed
+
+- The runner-environment render warm calls oj's own router service directly (tower oneshot) instead of dialing the bound socket, so it overlaps the listener bind and the client bundle, Vite's work-before-listen ordering; the bound-interface question disappears with the socket, and the streamed document is drained chunk by chunk.
 
 ### Fixed
 
+- Vite worker queries in the Start SSR loader, client bundle and build: `?worker&url` and `?sharedworker&url` export the worker's URL, `?worker` a constructor, `?worker&inline` in a build ships the bundled worker inline with Vite's Blob-URL starter, and the full combinable grammar (`?url&no-inline`, `?url&inline`, any order) parses with Vite's precedence. App plugins' `resolveId` runs in Vite's order around the core resolver in the Start client bundle and build (pre first, everything else only for what the core leaves, unfiltered hooks gated to bare specifiers), the worker bundler runs the app plugin pipeline, TS/JSX is stripped at `vite:oxc`'s slot so normal and post plugins receive JS they can `this.parse` (honoring `oxc.include`/`exclude` and evaluating code filters on the stripped output), and `server.bindCLIShortcuts` exists as Vite's no-TTY no-op.
 - Switching between `vite dev` and `oj dev` on the same app no longer re-bundles `node_modules/.vite` on every launcher change (a full re-optimize measured at 27s on a large monorepo). Vite sorts its lockfile-format preference by `npm_config_user_agent`, which package-manager launches set and a bare binary launch does not; agentless, the preference list reverses and a pnpm app with a stray `node_modules/.package-lock.json` lands on npm's mtime-bearing lockfile hash, which oj's embedded engine computes differently than Node (integer-millisecond stat). oj now presents the app's own package manager (the `packageManager` field's real version, or the nearest lockfile's manager with a representative version, stopping at the repo boundary); a real package manager's agent always wins.
 
 ## [0.2.11] - 2026-09-28
