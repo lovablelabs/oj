@@ -6252,6 +6252,7 @@ dependencies = [
  "deno_media_type",
  "deno_path_util",
  "deno_resolver",
+ "libc",
  "node_resolver",
  "oj_deno_napi",
  "oj_deno_runtime",

@@ -62,6 +62,23 @@ pub struct EngineConfig {
     /// Default wall-clock deadline applied to every job that does not carry
     /// its own.
     pub default_deadline: Option<Duration>,
+    /// After this long with no jobs, the engine returns memory once: a V8
+    /// `low_memory_notification` (full GC plus aggressive heap shrink — the
+    /// same path V8 takes under critical memory pressure) and, on Linux, a
+    /// process-wide `malloc_trim(0)`. Node gets the equivalent for free —
+    /// its platform runs V8's MemoryReducer as libuv-timed delayed tasks —
+    /// but deno_core never pumps the V8 platform's task queue, so under an
+    /// embedded engine the reducer NEVER runs and every isolate holds its
+    /// high-water pages forever. Deno's own answer is structural (short-lived
+    /// processes; `malloc_trim` after worker teardown, denoland/deno#26058);
+    /// a dev server's engines live for days, so the shrink is explicit here.
+    ///
+    /// Idle means NO JOBS: an engine serving background work inside its event
+    /// loop (the plugin host's configureServer middleware) still shrinks once
+    /// per job-quiet period, taking one full-GC pause on that traffic. That
+    /// is Node parity — its MemoryReducer full-GCs live servers whenever
+    /// allocation goes quiet — and it is bounded to once until the next job.
+    pub idle_shrink_after: Option<Duration>,
     /// Persistent V8 code-cache directory. When set, compiled bytecode for
     /// the modules an engine loads from disk (ESM, `require`d CJS, residual
     /// ext scripts) is stored here and reused by later engines, cutting the
@@ -77,6 +94,7 @@ impl EngineConfig {
         Self {
             root: root.into(),
             memory_limit_bytes: None,
+            idle_shrink_after: Some(Duration::from_secs(60)),
             default_deadline: None,
             code_cache_dir: None,
         }
@@ -147,6 +165,15 @@ pub struct JsEngine {
     /// outside the engine thread (see [`JsEngine::abandon`]).
     isolate: v8::IsolateHandle,
     default_deadline: Option<Duration>,
+    /// Times the idle shrink ran (see [`EngineConfig::idle_shrink_after`]);
+    /// observability for tests and memory probes.
+    idle_shrinks: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl JsEngine {
+    pub fn idle_shrinks(&self) -> u64 {
+        self.idle_shrinks.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl JsEngine {
@@ -203,6 +230,8 @@ impl JsEngine {
     ) -> Result<JsEngine, EngineError> {
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
+        let idle_shrinks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let idle_shrinks_thread = Arc::clone(&idle_shrinks);
         let (tx, rx) = mpsc::unbounded_channel();
         ENGINES.lock().unwrap().push(tx.downgrade());
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -211,7 +240,16 @@ impl JsEngine {
             // V8 + deeply recursive module instantiation want more than the
             // 2MB default, especially in debug builds.
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || engine_thread(config, module_host, hooks, rx, ready_tx))
+            .spawn(move || {
+                engine_thread(
+                    config,
+                    module_host,
+                    hooks,
+                    rx,
+                    ready_tx,
+                    idle_shrinks_thread,
+                )
+            })
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(isolate)) => Ok(JsEngine {
@@ -219,6 +257,7 @@ impl JsEngine {
                 thread: Mutex::new(Some(thread)),
                 isolate,
                 default_deadline,
+                idle_shrinks,
             }),
             Ok(Err(e)) => {
                 let _ = thread.join();
@@ -407,6 +446,7 @@ fn engine_thread(
     hooks: Option<EngineHooks>,
     mut rx: mpsc::UnboundedReceiver<Job>,
     ready: std::sync::mpsc::Sender<Result<v8::IsolateHandle, EngineError>>,
+    idle_shrinks: Arc<std::sync::atomic::AtomicU64>,
 ) {
     // Current-thread runtime: the JsRuntime is !Send and every part of the
     // worker must stay on this thread.
@@ -496,9 +536,18 @@ fn engine_thread(
             /// heap, and the isolate is condemned: later jobs fail fast until
             /// the owner replaces the engine.
             MemoryExhausted,
+            /// No jobs for `idle_shrink_after`: return memory once. Explicit
+            /// because no embedded-engine path ever runs V8's MemoryReducer
+            /// (deno_core never pumps the platform task queue where its
+            /// delayed GC tasks live; Node's platform runs them off libuv
+            /// timers, which is why Node heaps shrink on idle and these do
+            /// not without this tick).
+            IdleShrink,
             Closed,
         }
         let mut pending: Vec<PendingCall> = Vec::new();
+        let mut last_activity = tokio::time::Instant::now();
+        let mut idle_shrunk = false;
         // The event loop drained completely (no ops, no live timers): only a
         // new job can create work, so skip event-loop polling until one
         // arrives and the scheduler parks instead of spinning. While the loop
@@ -520,6 +569,10 @@ fn engine_thread(
             // pending set only changes between iterations.
             let next_deadline = pending.iter().filter_map(|p| p.deadline).min();
             let mut expiry = next_deadline.map(|d| Box::pin(tokio::time::sleep_until(d)));
+            let mut idle = config
+                .idle_shrink_after
+                .filter(|_| pending.is_empty() && !idle_shrunk && !condemned)
+                .map(|after| Box::pin(tokio::time::sleep_until(last_activity + after)));
             let tick = std::future::poll_fn(|cx| {
                 match rx.poll_recv(cx) {
                     std::task::Poll::Ready(Some(job)) => {
@@ -536,6 +589,11 @@ fn engine_thread(
                 if let Some(expiry) = expiry.as_mut() {
                     if expiry.as_mut().poll(cx).is_ready() {
                         return std::task::Poll::Ready(Tick::Expired);
+                    }
+                }
+                if let Some(idle) = idle.as_mut() {
+                    if idle.as_mut().poll(cx).is_ready() {
+                        return std::task::Poll::Ready(Tick::IdleShrink);
                     }
                 }
                 if !event_loop_idle {
@@ -561,6 +619,16 @@ fn engine_thread(
             .await;
             if matches!(tick, Tick::Job(_)) {
                 event_loop_idle = false;
+            }
+            // Real work re-arms the idle shrink; the shrink itself, a Gc
+            // probe (a memory measurement must not count as activity), and
+            // shutdown do not.
+            match &tick {
+                Tick::IdleShrink | Tick::Job(Job::Gc { .. }) | Tick::Closed => {}
+                _ => {
+                    last_activity = tokio::time::Instant::now();
+                    idle_shrunk = false;
+                }
             }
             if condemned {
                 if let Tick::Job(job) = tick {
@@ -718,6 +786,20 @@ fn engine_thread(
                             i += 1;
                         }
                     }
+                }
+                Tick::IdleShrink => {
+                    // V8's low-memory path: full GC plus aggressive heap
+                    // shrink and page decommit — what the MemoryReducer would
+                    // have done had the platform's delayed tasks ever run.
+                    worker.js_runtime.v8_isolate().low_memory_notification();
+                    // Give freed arena pages back too; vendored deno does the
+                    // same after worker teardown (denoland/deno#26058).
+                    #[cfg(target_os = "linux")]
+                    unsafe {
+                        libc::malloc_trim(0);
+                    }
+                    idle_shrinks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    idle_shrunk = true;
                 }
                 Tick::MemoryExhausted => {
                     oom.store(false, Ordering::SeqCst);
