@@ -6052,6 +6052,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
+ "tower",
  "url",
 ]
 
