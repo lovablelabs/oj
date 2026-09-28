@@ -73,11 +73,21 @@ write("src/lib/sub/mod.ts", 'export const sub: string = "subpath-ok";\n');
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 }
 write("src/lib/redirected.ts", 'export const redirected: string = "redirected-ok";\n');
+// A real (tiny) PNG: `?url&no-inline` must resolve as `?url` through the SSR
+// loader AND the client bundle (Vite's combinable grammar: noInlineRE only
+// suppresses inlining, never the URL).
+fs.writeFileSync(
+  path.join(app, "src/lib/hero.png"),
+  Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"),
+);
 write(
   "src/lib/resolve-probe.ts",
   [
     'import { redirected } from "@probe/redirect";',
     'import fallback from "probe-fallback";',
+    // An UNFILTERED enforce:"pre" resolveId: the bare-specifier fallback must
+    // reach it in the bundle exactly as the SSR dev server's gate does.
+    'import barePre from "bare-pre-probe";',
     'import { n } from "./wk/helper";',
     // With an unfiltered normal resolveId every import is routed through the
     // core resolver first; an asset query must still reach oj's asset plugin.
@@ -87,7 +97,10 @@ write(
     'import { sub } from "#probe/mod";',
     // `?url&inline`: Vite inlines (inline beats url), on SSR and client alike.
     'import heroInline from "../hero.png?url&inline";',
-    "export const resolved: string = `${redirected}|${fallback}|${n}|${typeof cssUrl}|${typeof subCssUrl}|${sub}|${heroInline.slice(0, 5)}`;",
+    // `?url&no-inline`: resolves as ?url (no-inline only suppresses inlining).
+    'import heroUrl from "./hero.png?url&no-inline";',
+    "export const resolved: string = `${redirected}|${fallback}|${n}|${typeof cssUrl}|${typeof subCssUrl}|${sub}|${heroInline.slice(0, 5)}|${barePre}`;",
+    "export const hero: string = heroUrl;",
     "",
   ].join("\n"),
 );
@@ -108,7 +121,7 @@ const aboutPath = path.join(app, "src/routes/about.tsx");
 let about = fs.readFileSync(aboutPath, "utf8");
 about = about.replace(
   'import { rootRoute } from "./__root";',
-  'import { rootRoute } from "./__root";\nimport { useEffect, useState } from "react";\nimport { wurl, wtype, WorkerCtor, InlineCtor } from "../lib/wk";\nimport { resolved } from "../lib/resolve-probe";\n' +
+  'import { rootRoute } from "./__root";\nimport { useEffect, useState } from "react";\nimport { wurl, wtype, WorkerCtor, InlineCtor } from "../lib/wk";\nimport { resolved, hero } from "../lib/resolve-probe";\n' +
     // After hydration, start all three workers and render their replies.
     "function WorkerRun() {\n" +
     "  const [out, setOut] = useState<string[]>([]);\n" +
@@ -125,7 +138,7 @@ about = about.replace(
 );
 about = about.replace(
   '<h1 className="fixture-heading">about-page-marker</h1>',
-  '<h1 className="fixture-heading">about-page-marker</h1>\n      <p id="wk">{`${wurl}|${wtype}`}</p>\n      <p id="rid">{resolved}</p>\n      <WorkerRun />',
+  '<h1 className="fixture-heading">about-page-marker</h1>\n      <p id="wk">{`${wurl}|${wtype}`}</p>\n      <p id="rid">{resolved}</p>\n      <p id="hero">{hero}</p>\n      <WorkerRun />',
 );
 fs.writeFileSync(aboutPath, about);
 
@@ -158,6 +171,11 @@ config = config.replace(
     name: "e2e-pre-redirect",
     enforce: "pre",
     resolveId: { filter: { id: /^@probe\\/redirect$/ }, handler() { return ${redirected}; } },
+  }, {
+    name: "e2e-pre-unfiltered",
+    enforce: "pre",
+    resolveId(id) { if (id === "bare-pre-probe") return "\\0bare-pre-probe"; },
+    load(id) { if (id === "\\0bare-pre-probe") return 'export default "pre-bare-ok";'; },
   }, {
     name: "e2e-post-fallback",
     resolveId(id) { if (id === "probe-fallback") return "\\0probe-fallback"; },
@@ -245,14 +263,16 @@ const rendered = async () => {
     status: res.status,
     shown: html.match(/<p id="wk">([^<]*)<\/p>/)?.[1],
     rid: html.match(/<p id="rid">([^<]*)<\/p>/)?.[1],
+    hero: html.match(/<p id="hero">([^<]*)<\/p>/)?.[1],
   };
 };
-const RESOLVED = "redirected-ok|fallback-ok|41|string|string|subpath-ok|data:";
+const RESOLVED = "redirected-ok|fallback-ok|41|string|string|subpath-ok|data:|pre-bare-ok";
 // The client bundle resolved like the server: both plugin answers are in it,
 // the hijack of a core-resolvable import is not.
 const clientResolvedLikeVite = (js, label) => {
   must(js.includes("redirected-ok"), `${label}: the client bundle missed the enforce:pre resolveId redirect`);
   must(js.includes("fallback-ok"), `${label}: the client bundle missed the post-core resolveId fallback`);
+  must(js.includes("pre-bare-ok"), `${label}: an UNFILTERED enforce:pre resolveId never saw a bare specifier`);
   must(!js.includes("hijacked"), `${label}: a normal resolveId overrode an import the core resolver resolves`);
 };
 
@@ -275,7 +295,14 @@ try {
     must(js.includes('"/src/lib/wk/worker.ts"'), "the dev client bundle does not carry the worker URL");
     must(/new Worker\(/.test(js), "the dev client bundle has no ?worker constructor");
     clientResolvedLikeVite(js, "start-dev");
-    must(rendered && (await rendered()).rid === RESOLVED, "start-dev: SSR resolved the plugin specifiers differently");
+    const devPage = await rendered();
+    must(devPage.rid === RESOLVED, "start-dev: SSR resolved the plugin specifiers differently");
+    // oj's dev asset URLs are fsBase-shaped (/@oj-start/fs<abs>), the same
+    // value the client bundle renders; the fix's contract is that the import
+    // resolves as ?url (a served URL) instead of loading the PNG as a module.
+    must((devPage.hero ?? "").endsWith("/src/lib/hero.png") && devPage.hero.startsWith("/"), `start-dev: ?url&no-inline rendered ${JSON.stringify(devPage.hero)}, want a served asset URL`);
+    const heroRes = await fetch(`http://localhost:${PORT}${devPage.hero}`);
+    must(heroRes.status === 200, `the ?url&no-inline URL returned ${heroRes.status}`);
     console.log("start-dev: app resolveId runs in Vite's order in the client bundle (pre before core, normal only after it)");
     console.log("start-dev: ?worker&url is the worker's dev URL, ?worker a constructor, on SSR and in the client bundle");
 
@@ -302,6 +329,9 @@ try {
     const { status, shown } = await rendered();
     must(status === 200, `built /about returned ${status}\n${stderr().slice(-2000)}`);
     must(shown === `/assets/${workerFile}|functionfunction`, `built SSR worker imports rendered ${JSON.stringify(shown)}`);
+    const { hero } = await rendered();
+    must(/^\/assets\/hero-[\w-]+\.png$/.test(hero ?? ""), `built ?url&no-inline rendered ${JSON.stringify(hero)}, want an emitted asset URL`);
+    must(fs.existsSync(path.join(out, "client", hero)), "the no-inline asset the render references was not emitted");
     const served = await fetch(`http://localhost:${PORT}/assets/${workerFile}`);
     must(served.status === 200, `the emitted worker URL returned ${served.status}`);
     await workersRunInBrowser("start build");
