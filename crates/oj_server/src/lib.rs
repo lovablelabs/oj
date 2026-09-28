@@ -24,6 +24,7 @@ pub mod pkg_bundle;
 pub mod pkg_rolldown;
 pub mod plugins;
 mod preseed;
+pub use preseed::PACKAGE_MANAGER_LOCKFILES;
 pub mod sidecar;
 pub mod svgr;
 use css_engine::CssEngine;

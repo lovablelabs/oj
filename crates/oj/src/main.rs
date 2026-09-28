@@ -271,38 +271,37 @@ fn raise_fd_limit() {
     }
 }
 
+/// The app root the agent detection should walk from, per subcommand: the
+/// user-facing commands' parsed root (clap's own semantics, so flags can
+/// never be misread as a root), and None for internal one-shot children
+/// (`engine-job`, `start-script`, `js-eval`, `compile`), which always inherit
+/// the parent oj's environment and must not pay a filesystem walk before the
+/// orphan-reap gate.
+fn agent_detection_root(command: &Command) -> Option<Option<&PathBuf>> {
+    match command {
+        Command::Dev { root, .. } | Command::Build { root, .. } | Command::Preview { root, .. } => {
+            Some(root.as_ref())
+        }
+        _ => None,
+    }
+}
+
 /// The app's package manager, as `npm_config_user_agent` would present it.
 /// Vite prefix-matches the manager NAME, but the VERSION matters too:
 /// ecosystem tools version-gate on the agent (yarn classic vs berry is
 /// `version.startsWith('1.')`), so the `packageManager` field's real version
-/// wins and lockfile-shape detection picks a representative one. The tail is
-/// a parseable `tool/version` field (`oj/<version>`), never prose, because
-/// consumers split the agent on spaces. Detection walks up from the
-/// invocation's app-root argument and STOPS at a `.git` boundary: this value
-/// is pinned into every child's environment, so a stray lockfile in an
-/// unrelated ancestor (an accidental `npm i` in $HOME) must never win. Best
-/// effort by design: returning None leaves the environment untouched.
-fn detect_package_manager_agent() -> Option<String> {
-    let mut raw = std::env::args_os()
-        .skip(1)
-        .map(|a| a.to_string_lossy().into_owned());
-    let _subcommand = raw.next()?;
-    // The first non-flag token that does not directly follow a value-taking
-    // flag: `--port 3000` must never be read as a root named 3000. A boolean
-    // flag before the root only costs the cwd fallback, the safe direction.
-    let mut root_arg: Option<String> = None;
-    let mut prev_was_bare_flag = false;
-    for a in raw {
-        if a.starts_with('-') {
-            prev_was_bare_flag = !a.contains('=');
-            continue;
-        }
-        if !prev_was_bare_flag {
-            root_arg = Some(a);
-            break;
-        }
-        prev_was_bare_flag = false;
-    }
+/// wins and lockfile-shape detection picks a representative one, sniffing the
+/// lockfile where the major is knowable (Berry keeps a yarn.lock; pnpm 8
+/// writes lockfileVersion 6). The tail is a parseable `tool/version` field
+/// (`oj/<version>`), never prose, because consumers split the agent on
+/// spaces. Detection walks up from the parsed app root and stops at a `.git`
+/// DIRECTORY (a `.git` file is a submodule or worktree whose workspace
+/// lockfile legitimately lives above) or at $HOME when the walk started below
+/// it: this value is pinned into every child's environment, so a stray
+/// lockfile in an unrelated ancestor (an accidental `npm i` in $HOME) must
+/// never win. Best effort by design: returning None leaves the environment
+/// untouched.
+fn detect_package_manager_agent(root_arg: Option<&PathBuf>) -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let mut dir = match root_arg {
         Some(arg) => {
@@ -323,7 +322,16 @@ fn detect_package_manager_agent() -> Option<String> {
             }
         }
     };
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let started_below_home = home
+        .as_deref()
+        .is_some_and(|h| dir.starts_with(h) && dir != h);
     loop {
+        // $HOME itself is never scanned when the walk started below it: its
+        // stray lockfiles are another project's (or nobody's).
+        if started_below_home && home.as_deref() == Some(dir.as_path()) {
+            return None;
+        }
         if let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg) {
                 if let Some(pm) = v.get("packageManager").and_then(|p| p.as_str()) {
@@ -342,25 +350,14 @@ fn detect_package_manager_agent() -> Option<String> {
                 }
             }
         }
-        // Vite's own lockfileFormats mapping (optimizer/index.ts), most
-        // specific first: bun before yarn because a bun install can be
-        // configured to ALSO emit a yarn.lock, never the reverse; rush is
-        // pnpm under the hood; the yarn version split is classic (yarn.lock)
-        // vs berry (its node_modules state file). The versions are
-        // representative, not tracked: only the MAJOR gates anything
-        // downstream (yarn 1 vs 4), so staleness is cosmetic.
-        for (file, manager, version) in [
-            ("node_modules/.pnpm/lock.yaml", "pnpm", "9.0.0"),
-            ("pnpm-lock.yaml", "pnpm", "9.0.0"),
-            (".rush/temp/shrinkwrap-deps.json", "pnpm", "9.0.0"),
-            ("bun.lock", "bun", "1.2.0"),
-            ("bun.lockb", "bun", "1.2.0"),
-            ("node_modules/.yarn-state.yml", "yarn", "4.0.0"),
-            ("yarn.lock", "yarn", "1.22.22"),
-            ("node_modules/.package-lock.json", "npm", "10.0.0"),
-            ("package-lock.json", "npm", "10.0.0"),
-        ] {
-            if dir.join(file).exists() {
+        // One shared manager mapping (oj_server::preseed keeps the
+        // change-stamp superset next to it); the versions are representative,
+        // not tracked: only the MAJOR gates anything downstream, and the two
+        // knowable majors are sniffed from the lockfile itself.
+        for (file, manager, version) in oj_server::PACKAGE_MANAGER_LOCKFILES {
+            let path = dir.join(file);
+            if path.exists() {
+                let version = sniffed_manager_version(&path, manager, version);
                 return Some(format!(
                     "{manager}/{version} oj/{}",
                     env!("CARGO_PKG_VERSION")
@@ -368,10 +365,45 @@ fn detect_package_manager_agent() -> Option<String> {
             }
         }
         // A repo boundary ends the walk: this dir was the app's repo and it
-        // answered nothing; an ancestor's lockfile is another project's.
-        if dir.join(".git").exists() || !dir.pop() {
+        // answered nothing; an ancestor's lockfile is another project's. A
+        // `.git` FILE is a submodule or worktree, whose workspace lockfile
+        // legitimately lives above -- only a `.git` directory stops.
+        if dir.join(".git").is_dir() || !dir.pop() {
             return None;
         }
+    }
+}
+
+/// The representative version, upgraded where the lockfile states its major:
+/// Berry never dropped yarn.lock (its `__metadata:` header disambiguates
+/// classic 1.x from 4.x, the split `version.startsWith('1.')` gates care
+/// about), and pnpm 8 writes `lockfileVersion: '6`.
+fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_version: &str) -> String {
+    let head = || -> Option<String> {
+        use std::io::Read;
+        let mut buf = vec![0u8; 4096];
+        let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+        buf.truncate(n);
+        Some(String::from_utf8_lossy(&buf).into_owned())
+    };
+    match (manager, path.file_name().and_then(|n| n.to_str())) {
+        ("yarn", Some("yarn.lock")) => {
+            if head().is_some_and(|h| h.contains("__metadata:")) {
+                "4.0.0".to_string()
+            } else {
+                default_version.to_string()
+            }
+        }
+        ("pnpm", Some("pnpm-lock.yaml" | "lock.yaml")) => {
+            if head().is_some_and(|h| {
+                h.contains("lockfileVersion: '6") || h.contains("lockfileVersion: 6")
+            }) {
+                "8.0.0".to_string()
+            } else {
+                default_version.to_string()
+            }
+        }
+        _ => default_version.to_string(),
     }
 }
 
@@ -398,9 +430,22 @@ fn main() -> anyhow::Result<()> {
     // pnpm-launched Vite's and node_modules/.vite is re-bundled on every
     // launcher switch. Present the app's own package manager instead, the
     // way its `pnpm dev` would; a set agent (any PM wrapper) always wins.
-    if std::env::var_os("npm_config_user_agent").is_none() {
-        if let Some(agent) = detect_package_manager_agent() {
-            std::env::set_var("npm_config_user_agent", agent);
+    // Parsed before the runtime exists (still single-threaded, so set_var
+    // below stays safe; --help/--version now exit without spinning it up).
+    // The parsed CLI is the single source for the app root: a second argv
+    // parser would drift from clap the moment a flag is added.
+    let cli = Cli::parse();
+    // An EMPTY agent counts as unset: Vite's lockfile-preference sort treats
+    // "" exactly like a missing agent (falsy), so leaving it would keep the
+    // reversal this preset exists to fix.
+    let agent_unset = std::env::var_os("npm_config_user_agent")
+        .map(|v| v.is_empty())
+        .unwrap_or(true);
+    if agent_unset {
+        if let Some(root) = agent_detection_root(&cli.command) {
+            if let Some(agent) = detect_package_manager_agent(root) {
+                std::env::set_var("npm_config_user_agent", agent);
+            }
         }
     }
     // Before any in-process engine boots (each really chdirs to its app root):
@@ -424,17 +469,17 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
-        .block_on(run())
+        .block_on(run(cli))
 }
 
-async fn run() -> anyhow::Result<()> {
+async fn run(cli: Cli) -> anyhow::Result<()> {
     // One-shot engine jobs (config extraction) run in `oj engine-job`
     // children: a native addon a job loads can crash the process when it is
     // re-initialized after an earlier engine died (napi-rs before 3.10).
     if let Ok(exe) = std::env::current_exe() {
         oj_server::plugins::engine_jobs_via_subprocess(exe);
     }
-    match Cli::parse().command {
+    match cli.command {
         Command::Dev {
             root,
             port,

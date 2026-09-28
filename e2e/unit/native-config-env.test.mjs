@@ -94,6 +94,22 @@ test("a bun app that also emits a yarn.lock presents bun", () => {
   assert.match(seen.userAgent ?? "", /^bun\//, "bun installs can emit a yarn.lock; the reverse never happens");
 });
 
+test("an empty agent counts as unset (Vite treats it as missing)", () => {
+  const seen = envSeenByPlugins({ npm_config_user_agent: "" }, (fx) =>
+    fx.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+  );
+  assert.match(seen.userAgent ?? "", /^pnpm\//, "empty must not suppress detection");
+});
+
+test("a Berry yarn.lock presents yarn 4, not classic", () => {
+  // Berry never dropped yarn.lock; its __metadata: header disambiguates the
+  // classic-vs-berry split that version gates care about.
+  const seen = envSeenByPlugins({ npm_config_user_agent: undefined }, (fx) =>
+    fx.write("yarn.lock", "__metadata:\n  version: 8\n"),
+  );
+  assert.match(seen.userAgent ?? "", /^yarn\/4\./);
+});
+
 test("a real package manager's agent is never overridden", () => {
   const seen = envSeenByPlugins(
     { npm_config_user_agent: "pnpm/9.12.0 npm/? node/v24.17.0 darwin arm64" },
