@@ -2,11 +2,18 @@
 
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
-import { join, dirname, extname, basename, resolve } from "node:path";
+import { join, dirname, extname, basename, resolve, relative, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { emptyVirtualStub } from "./resolve-pkg.mjs";
 
-const SUFFIX = /\?(raw|url|inline)$/;
+// Vite's import-query regexes (utils.ts urlRE/rawRE, asset.ts inlineRE,
+// worker.ts workerOrSharedWorkerRE): a query matches in any position and
+// combination, e.g. `?worker&url`, `?url&no-inline`.
+const URL_RE = /(\?|&)url(?:&|$)/;
+const RAW_RE = /(\?|&)raw(?:&|$)/;
+const INLINE_RE = /[?&]inline\b/;
+const NO_INLINE_RE = /(\?|&)no-inline(?:&|$)/;
+const WORKER_RE = /(?:\?|&)(worker|sharedworker)(?:&|$)/;
 const ASSET_EXT = /\.(png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|mp4|webm|wasm)(\?|$)/;
 
 // esbuild "namespaces" become \0-prefixed virtual ids; the tag routes load().
@@ -30,29 +37,117 @@ const dataUri = (abs) => {
 
 const makeUrlFor = ({ mode, fsBase, emit }) => async (abs) => (mode === "dev" ? fsBase + abs : emit(abs));
 
-export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-start/fs", emit, cssUrls } = {}) {
+// A worker's URL, Vite's worker plugin load. Unbundled dev: the file's URL on
+// the dev pipeline (fileToUrl: root-relative, `/@fs` outside the root), which
+// serves the compiled module worker and is what the SSR host renders. Vite
+// additionally tags this URL `?worker_file&type=module` for its own serving
+// pipeline; oj's pipeline serves the compiled module without the marker
+// (verified in-browser by e2e/start-ssr-worker-url.mjs). A build: the worker
+// entry bundled on its own (bundleWorkerEntry) and emitted once.
+const makeWorkerUrlFor = ({ mode, root, emit }) => async (abs) => {
+  if (mode !== "dev") return emit.worker(abs);
+  const rel = root ? relative(root, abs) : null;
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? "/" + rel.split(sep).join("/") : "/@fs" + abs;
+};
+
+// Vite's `?worker&inline` in a bundled environment (worker.ts load): the
+// bundled worker ships inside the importer as a string and starts from a Blob
+// URL, falling back to a data: URL; a SharedWorker always uses the data: URL
+// (a blob URL would make separate instances). Module workers (format es).
+function inlineWorkerModule(ctor, entryCode) {
+  const jsContent = `const jsContent = ${JSON.stringify(entryCode)};`;
+  const typeOption = `{ type: "module", name: options?.name }`;
+  if (ctor === "Worker") {
+    return `${jsContent}
+const blob = typeof self !== "undefined" && self.Blob && new Blob(['URL.revokeObjectURL(import.meta.url);', jsContent], { type: "text/javascript;charset=utf-8" });
+export default function WorkerWrapper(options) {
+  let objURL;
+  try {
+    objURL = blob && (self.URL || self.webkitURL).createObjectURL(blob);
+    if (!objURL) throw '';
+    const worker = new Worker(objURL, ${typeOption});
+    worker.addEventListener("error", () => {
+      (self.URL || self.webkitURL).revokeObjectURL(objURL);
+    });
+    return worker;
+  } catch (e) {
+    return new Worker('data:text/javascript;charset=utf-8,' + encodeURIComponent(jsContent), ${typeOption});
+  }
+}
+`;
+  }
+  return `${jsContent}
+export default function WorkerWrapper(options) {
+  return new ${ctor}('data:text/javascript;charset=utf-8,' + encodeURIComponent(jsContent), ${typeOption});
+}
+`;
+}
+
+// oj's asset plugin resolving the file behind an asset import (`x.css` for
+// `x.css?url`): in flight, keyed by specifier and importer, so the app-plugin
+// routing can leave it alone. RESIDUAL RACE, accepted: a real `./x.css`
+// import from the same importer resolving concurrently with the sibling
+// `./x.css?url`'s inner resolve is indistinguishable by value (rolldown does
+// not reliably deliver `custom` across plugins, so causality is invisible)
+// and skips the app-plugin routing for that one resolution -- which is
+// exactly the pre-routing behavior, never worse; the asset still serves.
+const assetInnerResolves = new Map();
+const assetInnerKey = (source, importer) => `${source}\0${importer ?? ""}`;
+
+// The oj asset module a specifier (or a resolved `/abs/x.css?url`) maps to, by
+// its query and extension; null when it is not an asset import.
+function assetTagFor(source, mode) {
+  const worker = WORKER_RE.exec(source);
+  // Vite's worker load: a bundled environment checks `&inline` before `&url`;
+  // unbundled dev ignores `&inline`.
+  if (worker) return worker[1] + (mode !== "dev" && INLINE_RE.test(source) ? "-inline" : URL_RE.test(source) ? "-url" : "");
+  if (RAW_RE.test(source)) return "raw";
+  // Vite's shouldInline: `no-inline` wins, then `inline` (even with `url`),
+  // the order the SSR host's split_asset_query uses, so both sides agree.
+  if (NO_INLINE_RE.test(source)) return "url";
+  if (INLINE_RE.test(source)) return "inline";
+  if (URL_RE.test(source)) return "url";
+  if (ASSET_EXT.test(source)) return "url";
+  if (/\.css(\?|$)/.test(source)) return "css";
+  return null;
+}
+
+export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-start/fs", emit, cssUrls, root } = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
+  const workerUrlFor = makeWorkerUrlFor({ mode, root, emit });
   return {
     name: "oj-assets",
     resolveId: {
-      filter: { id: { include: [SUFFIX, ASSET_EXT, /\.css(\?|$)/] } },
+      filter: { id: { include: [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, /\.css(\?|$)/] } },
       async handler(source, importer, options) {
         if (options?.custom?.ojAsset) return null;
-        let tag = null;
-        if (/\?raw$/.test(source)) tag = "raw";
-        else if (/\?url$/.test(source)) tag = "url";
-        else if (/\?inline$/.test(source)) tag = "inline";
-        else if (ASSET_EXT.test(source)) tag = "url";
-        else if (/\.css(\?|$)/.test(source)) tag = "css";
+        const tag = assetTagFor(source, mode);
         if (!tag) return null;
-        const clean = source.replace(SUFFIX, "").replace(/\?.*$/, "");
-        const r = await this.resolve(clean, importer, { skipSelf: true, custom: { ojAsset: true } });
+        const clean = source.replace(/\?.*$/, "");
+        // Marked in-flight rather than only by `custom`: rolldown does not
+        // reliably hand `custom` to the hooks this resolve reaches (observed:
+        // the routing plugin saw it without), and the app plugins must stay out.
+        const key = assetInnerKey(clean, importer);
+        assetInnerResolves.set(key, (assetInnerResolves.get(key) ?? 0) + 1);
+        let r;
+        try {
+          r = await this.resolve(clean, importer, { skipSelf: true, custom: { ojAsset: true } });
+        } finally {
+          const left = assetInnerResolves.get(key) - 1;
+          if (left > 0) assetInnerResolves.set(key, left);
+          else assetInnerResolves.delete(key);
+        }
         if (!r) return null;
-        return V(tag, r.id);
+        // The file may come back as an oj module id: a concurrent resolution of
+        // the same file (`import "./x.css"` next to this `./x.css?url`) can
+        // answer this one. Its file is what this import's tag wraps.
+        const v = parseV(r.id);
+        const file = v ? v.path.replace(/\?.*$/, "") : r.id;
+        return V(tag, file);
       },
     },
     load: {
-      filter: { id: /^\0oj-(raw|url|inline|css):/ },
+      filter: { id: /^\0oj-(raw|url|inline|css|(?:shared)?worker(?:-url|-inline)?):/ },
       async handler(id) {
         const v = parseV(id);
         if (!v) return null;
@@ -60,6 +155,19 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
         if (v.tag === "raw") return js(`export default ${JSON.stringify(readFileSync(v.path, "utf8"))};`);
         if (v.tag === "url") return js(`export default ${JSON.stringify(await urlFor(v.path))};`);
         if (v.tag === "inline") return js(`export default ${JSON.stringify(dataUri(v.path))};`);
+        if (v.tag === "worker-url" || v.tag === "sharedworker-url") {
+          return js(`export default ${JSON.stringify(await workerUrlFor(v.path))};`);
+        }
+        if (v.tag === "worker-inline" || v.tag === "sharedworker-inline") {
+          return js(inlineWorkerModule(v.tag === "sharedworker-inline" ? "SharedWorker" : "Worker", await emit.workerCode(v.path)));
+        }
+        if (v.tag === "worker" || v.tag === "sharedworker") {
+          const ctor = v.tag === "sharedworker" ? "SharedWorker" : "Worker";
+          const url = JSON.stringify(await workerUrlFor(v.path));
+          return js(
+            `export default function WorkerWrapper(options) { return new ${ctor}(${url}, { type: "module", name: options?.name }); }`,
+          );
+        }
         if (v.tag === "css") {
           if (!server) {
             const href = await urlFor(v.path);
@@ -73,9 +181,66 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
   };
 }
 
-export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fsBase = "/@oj-start/fs", emit } = {}) {
+// A plugin resolveId answer as a bundler id, Rollup's contract: external
+// stays external, an absolute path is that file, loaded like any other (a
+// missing one fails loudly, as in Vite). A path with a query (`/a/x.css?url`)
+// is what Vite's load hooks key on (vite:asset, vite:worker), as is a
+// stylesheet or asset path (vite:css); oj answers those with its asset module
+// for the same id (the path is already resolved, so no second resolve). Any
+// other id with a query, and a virtual id, is served by the plugins' load.
+function bundlerIdFor(r, mode) {
+  if (r.external) return { id: r.id, external: true };
+  // oj's own module ids (an asset or worker module the bundler resolved and a
+  // plugin handed back from its this.resolve) are already bundler ids.
+  if (parseV(r.id)) return r.id;
+  const file = r.id.replace(/\?.*$/, "");
+  if (!r.id.startsWith("\0") && isAbsolute(file)) {
+    const tag = assetTagFor(r.id, mode);
+    if (tag) return V(tag, file);
+    if (!r.id.includes("?")) return r.id;
+    // A real source file with a foreign query (`/abs/route.ts?tsr-split=x`)
+    // stays a PIPELINE id: transform and load filters key on it (Vite's
+    // contract), and the load below serves it (the plugin's load on the full
+    // id, then the clean file from disk). Only ids the pipeline's load filter
+    // cannot reach (node_modules, exotic extensions) go through vite-virtual.
+    if (!file.includes("/node_modules/") && /\.(jsx?|mjs|tsx?)$/.test(file)) return r.id;
+  }
+  return V("vite-virtual", r.id);
+}
+// Specifiers oj's asset plugin owns. Vite's core resolver answers them (the
+// file exists), so a normal plugin's resolveId never sees them; the post
+// phase leaves them to the asset plugin, which also keeps its own nested
+// this.resolve out of the core-resolve round trip below.
+const ASSET_OWNED = [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, /\.css(\?|$)/];
+// A bare specifier: not relative, absolute, a \0 id or a `scheme:` URL.
+const BARE_RE = /^(?![./\\\0]|[a-zA-Z]:[\\/]|[a-zA-Z][\w+.-]*:)/;
+const matchesAny = (res, id) =>
+  res.some((re) => {
+    const hit = re.test(id);
+    re.lastIndex = 0;
+    return hit;
+  });
+
+// `lifecycle: false` for a nested build (a worker bundle): the container's
+// buildStart/buildEnd/renderStart belong to the build that owns it, not to a
+// bundle it triggers mid-build (Vite's bundleWorkerEntry runs its own worker
+// plugin instances, never the importer's lifecycle).
+export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fsBase = "/@oj-start/fs", emit, lifecycle = true } = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
   const warnedVirtual = new Set();
+  // The app plugins' resolveId, in Vite's order around its core resolver: a
+  // pre-phase hook first, the core resolver next, every other hook only for
+  // an id the core resolver left. Routed on declared filters, the dev
+  // server's gate (resolve_id_res): a hook with no filter is not offered
+  // every import (it still answers `virtual:` / `\0` ids above), except that
+  // a bare specifier is offered to it, in its own phase, as the dev server's
+  // plugin fallback does. The rolldown filter widens by exactly that.
+  const plan = container?.resolveIdPlan?.() ?? { pre: { all: false, filters: [] }, post: { all: false, filters: [] } };
+  // An unfiltered hook in EITHER phase gets the bare-specifier fallback (the
+  // dev server's bounded-cost gate): most ecosystem plugins declare no
+  // filter, and an unfiltered enforce:"pre" plugin must not silently resolve
+  // in the SSR dev server but never in this bundle.
+  const userIncludes = [...plan.pre.filters, ...plan.post.filters, ...(plan.pre.all || plan.post.all ? [BARE_RE] : [])];
   const svgModule = async (path, id) => {
     if (container) {
       const code = await container.load(id);
@@ -86,21 +251,22 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
   return {
     name: "oj-vite-plugins",
     async buildStart() {
+      if (!lifecycle) return;
       // Run user plugins' buildStart before any module loads, so compile-on-
       // startup plugins (e.g. i18n) have populated the state their load() serves.
       if (container?.buildStart) await container.buildStart();
       if (fallback?.buildStart && fallback !== container) await fallback.buildStart();
     },
     async buildEnd(error) {
-      if (container?.buildEnd) await container.buildEnd(error);
+      if (lifecycle && container?.buildEnd) await container.buildEnd(error);
     },
     async renderStart(outputOptions, inputOptions) {
-      if (container?.renderStart) await container.renderStart(outputOptions, inputOptions);
+      if (lifecycle && container?.renderStart) await container.renderStart(outputOptions, inputOptions);
     },
     resolveId: {
-      filter: { id: { include: [/\.svg\?react$/, /^virtual:/, /^\0/] } },
+      filter: { id: { include: [/\.svg\?react$/, /^virtual:/, /^\0/, ...userIncludes] } },
       async handler(source, importer, options) {
-        if (options?.custom?.ojSvg) return null;
+        if (options?.custom?.ojSvg || options?.custom?.ojCoreResolve) return null;
         if (/\.svg\?react$/.test(source)) {
           const r = await this.resolve(source.slice(0, -"?react".length), importer, {
             skipSelf: true,
@@ -114,6 +280,32 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
           const rid = await container.resolveId(source, importer);
           return rid ? V("vite-virtual", rid) : null;
         }
+        // oj's asset plugin resolving the file behind `x.css?url` is not an
+        // import: Vite never resolves the bare file separately, so the app
+        // plugins (which saw the full specifier) stay out of it.
+        if (options?.custom?.ojAsset || assetInnerResolves.has(assetInnerKey(source, importer))) return null;
+        // A plugin's own this.resolve ends in this bundler's resolution.
+        const bundlerResolve = async (s, i) => {
+          const r = await this.resolve(s, i, { skipSelf: true, custom: { ojCoreResolve: true } });
+          return r ? { id: r.id, external: r.external } : null;
+        };
+        if (matchesAny(plan.pre.filters, source) || (plan.pre.all && BARE_RE.test(source))) {
+          const r = await container.resolveIdResult(source, importer, null, "pre", bundlerResolve);
+          if (r) return bundlerIdFor(r, mode);
+        }
+        if (
+          !matchesAny(ASSET_OWNED, source) &&
+          (matchesAny(plan.post.filters, source) || (plan.post.all && BARE_RE.test(source)))
+        ) {
+          const core = await this.resolve(source, importer, {
+            ...options,
+            skipSelf: true,
+            custom: { ...options?.custom, ojCoreResolve: true },
+          });
+          if (core) return core;
+          const r = await container.resolveIdResult(source, importer, null, "post", bundlerResolve);
+          if (r) return bundlerIdFor(r, mode);
+        }
         return null;
       },
     },
@@ -125,6 +317,19 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
         if (v && v.tag === "vite-virtual") {
           let code = await container.load(v.path);
           if (code == null && fallback) code = await fallback.load(v.path);
+          // Rollup's contract: a resolved id no load() claims is read from
+          // disk (`/abs/x.ts?q` from a plugin's resolveId).
+          const file = v.path.startsWith("\0") ? null : v.path.replace(/\?.*$/, "");
+          const ext = file ? extname(file).slice(1) : "";
+          // Disk fallback parses as the FILE's own language (.mts/.cts are
+          // TS, never JSX); plugin-loaded code keeps a tolerant superset --
+          // tsx when the id is TS-family (types AND jsx parse), jsx otherwise
+          // (the pre-existing default: a load() may return JSX for any id).
+          const diskType = { mts: "ts", cts: "ts", ts: "ts", tsx: "tsx", jsx: "jsx", mjs: "js", cjs: "js", js: "js" }[ext] ?? "js";
+          const typed = ["ts", "mts", "cts", "tsx"].includes(ext) ? "tsx" : "jsx";
+          if (code == null && file && isAbsolute(file) && existsSync(file)) {
+            return { code: readFileSync(file, "utf8"), moduleType: diskType };
+          }
           if (code == null) {
             if (!warnedVirtual.has(v.path)) {
               warnedVirtual.add(v.path);
@@ -135,7 +340,7 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
             }
             return { code: emptyVirtualStub(appRoot, v.path), moduleType: "js" };
           }
-          return { code, moduleType: "jsx" };
+          return { code, moduleType: typed };
         }
         if (/\.svg$/.test(id) && !id.startsWith("\0")) return svgModule(id, id);
         // A user plugin's load() may override a real on-disk source file (Vite:
@@ -144,8 +349,20 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
         if (container && !id.startsWith("\0") && !id.includes("/node_modules/")) {
           const cleanId = id.replace(/\?.*$/, "");
           if (/\.(jsx?|mjs|tsx?)$/.test(cleanId)) {
-            let code = await container.load(cleanId);
-            if (code == null && fallback) code = await fallback.load(cleanId);
+            // The FULL id first: a plugin's load keys on its own query
+            // (`?tsr-split=...`), Vite's contract; then the clean file.
+            let code = null;
+            for (const c of [container, fallback]) {
+              if (!c) continue;
+              if (id !== cleanId) code = await c.load(id);
+              if (code == null) code = await c.load(cleanId);
+              if (code != null) break;
+            }
+            if (code == null && id !== cleanId && existsSync(cleanId)) {
+              // Rollup's contract: a resolved id no load() claims reads the
+              // file behind the query from disk.
+              code = readFileSync(cleanId, "utf8");
+            }
             if (code != null) {
               const moduleType = cleanId.endsWith(".tsx")
                 ? "tsx"
@@ -347,6 +564,41 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
     }
     return out + css.slice(last);
   }
+
+  // A worker entry is bundled on its own (Vite's bundleWorkerEntry) by the
+  // builder the caller installs, once per file, so the client and server
+  // builds share one emitted URL.
+  // `workerCode` is the bundle (inlined by `?worker&inline`), `worker` the
+  // emitted file's URL.
+  const workerCodes = new Map();
+  const workerUrls = new Map();
+  let bundleWorker = null;
+  emit.setWorkerBundler = (fn) => {
+    bundleWorker = fn;
+  };
+  emit.workerCode = (absPath) => {
+    if (!workerCodes.has(absPath)) {
+      workerCodes.set(
+        absPath,
+        (async () => {
+          if (!bundleWorker) throw new Error(`oj: no worker bundler for ${absPath}`);
+          return bundleWorker(absPath);
+        })(),
+      );
+    }
+    return workerCodes.get(absPath);
+  };
+  emit.worker = (absPath) => {
+    if (!workerUrls.has(absPath)) {
+      workerUrls.set(
+        absPath,
+        emit
+          .workerCode(absPath)
+          .then((code) => write(absPath.replace(/\.[^./\\]+$/, "") + ".js", Buffer.from(code, "utf8"))),
+      );
+    }
+    return workerUrls.get(absPath);
+  };
 
   emit.cssUrls = () => cssUrls.slice();
   return emit;

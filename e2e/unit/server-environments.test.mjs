@@ -101,3 +101,51 @@ test("configureServer sees client/ssr environments, an addressable httpServer an
     fx.cleanup();
   }
 });
+
+// @cloudflare/vite-plugin's shortcuts plugin wraps the dev server's CLI
+// shortcuts (`server.bindCLIShortcuts.bind(server)`) in configureServer. Vite's
+// bindCLIShortcuts is a no-op without a TTY (shortcuts.ts), which the host's
+// stdin never is; it was missing, so the whole configureServer threw
+// "Cannot read properties of undefined (reading 'bind')" and was skipped.
+test("configureServer can wrap server.bindCLIShortcuts like the Cloudflare shortcuts plugin", async () => {
+  const fx = tmpProject({ prefix: "oj-srvshortcuts-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = {};
+     export default [{
+       name: "shortcuts-wrapper",
+       configureServer(server) {
+         const bindCLIShortcuts = server.bindCLIShortcuts.bind(server);
+         server.bindCLIShortcuts = (options) => bindCLIShortcuts({ ...options, customShortcuts: [{ key: "x", description: "x", action() {} }] });
+         server.bindCLIShortcuts({ print: true });
+         seen.wrapped = true;
+       },
+       transform(code, id) {
+         if (id.endsWith("probe.js")) return "export default " + JSON.stringify(seen) + ";";
+         return null;
+       },
+     }];\n`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [
+      path.join(fx.root, "oj.plugins.mjs"),
+      JSON.stringify({
+        config: { root: fx.root },
+        env: { command: "serve", mode: "development" },
+        environment: { name: "client", mode: "dev" },
+      }),
+    ],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  try {
+    const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js"), ""] });
+    assert.equal(res.error, undefined, `${res.error}\n${host.stderr()}`);
+    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    assert.equal(seen.wrapped, true, `configureServer ran to completion\n${host.stderr()}`);
+    assert.doesNotMatch(host.stderr(), /configureServer\(shortcuts-wrapper\) skipped/);
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
