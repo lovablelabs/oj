@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Switching between `vite dev` and `oj dev` on the same app no longer re-bundles `node_modules/.vite` on every launcher change (a full re-optimize measured at 27s on a large monorepo). Vite sorts its lockfile-format preference by `npm_config_user_agent`, which package-manager launches set and a bare binary launch does not; agentless, the preference list reverses and a pnpm app with a stray `node_modules/.package-lock.json` lands on npm's mtime-bearing lockfile hash, which oj's embedded engine computes differently than Node (integer-millisecond stat). oj now presents the app's own package manager (the `packageManager` field's real version, or the nearest lockfile's manager with a representative version, stopping at the repo boundary); a real package manager's agent always wins.
+
 ## [0.2.11] - 2026-09-28
 
 ### Changed

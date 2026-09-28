@@ -346,7 +346,9 @@ fn detect_package_manager_agent() -> Option<String> {
         // specific first: bun before yarn because a bun install can be
         // configured to ALSO emit a yarn.lock, never the reverse; rush is
         // pnpm under the hood; the yarn version split is classic (yarn.lock)
-        // vs berry (its node_modules state file).
+        // vs berry (its node_modules state file). The versions are
+        // representative, not tracked: only the MAJOR gates anything
+        // downstream (yarn 1 vs 4), so staleness is cosmetic.
         for (file, manager, version) in [
             ("node_modules/.pnpm/lock.yaml", "pnpm", "9.0.0"),
             ("pnpm-lock.yaml", "pnpm", "9.0.0"),
