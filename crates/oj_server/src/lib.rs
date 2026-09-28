@@ -1500,7 +1500,7 @@ impl DevServer {
     }
 }
 
-fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
+pub fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
     // Patterns are root-relative (Vite's warmup semantics). Exclusions match
     // against the ROOT-RELATIVE path of each walked file, so a './' spelled in
     // either side (or a root containing glob metacharacters) can never make a

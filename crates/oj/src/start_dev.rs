@@ -188,10 +188,18 @@ pub async fn start_dev(
     // The in-process Start runner: an embedded engine whose module host runs
     // the dev server's SSR pipeline (StartHost); it needs the built app's
     // SsrBridge, so it comes up once the server build joins.
+    // The app's own server.warmup lists (Vite semantics, globs included), from
+    // the adopted config; they join the route tree in the runner transform
+    // warm below.
+    let warm_patterns;
     let engine = {
         let mut config = oj_config::load(&root).unwrap_or_default();
         oj_server::plugins::adopt_vite_config_values(&mut config, &root, "serve", &mode)
             .map_err(|e| anyhow::anyhow!(e))?;
+        warm_patterns = {
+            let (client, ssr) = oj_config::server_warmup_files(&config);
+            [client, ssr].concat()
+        };
         let entry = configured_start_server_entry(&config, &root)
             .unwrap_or_else(|| cache.join("server-entry.tsx"));
         let mut init_env = vec![
@@ -232,9 +240,16 @@ pub async fn start_dev(
         init_deadline: h.init_deadline_at(),
         confirm: oj_server::plugins::plugin_rpc_timeout(),
     });
+    // Filled after the dev listener binds; the runner-environment warm below
+    // needs the real bound address to drive one render through the full
+    // serving path (the configured host may be ::1 or a specific interface,
+    // where a hardcoded 127.0.0.1 would silently connect to nothing).
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
     {
         let engine = Arc::clone(&engine);
         let reload_tx = reload_tx.clone();
+        let warm_host = built.plugin_host.clone();
+        let warm_root = root.clone();
         tokio::spawn(async move {
             if cf_hint {
                 if let Some(mut hold) = prewarm_hold {
@@ -243,7 +258,53 @@ pub async fn start_dev(
                     // own init deadline) — see hold_prewarm_for_serve_info.
                     if let Some(known) = hold_prewarm_for_serve_info(&mut hold).await {
                         if known.middleware_port.is_some() && known.runner_environments {
-                            oj_server::boot_phase("prewarm skipped (worker environments)");
+                            // Warming oj's OWN engine is wasted here (the
+                            // worker environments render the documents), but
+                            // skipping entirely left the first request to pay
+                            // the whole cold graph. Two warms instead, like
+                            // Vite's warmup but fed from the route tree:
+                            // every route module's transform fires at once in
+                            // the host (parallel across cores), while one
+                            // real render through the serving path chases the
+                            // warm transforms and fills the runner's module
+                            // cache. transformRequest dedups the overlap.
+                            oj_server::boot_phase("prewarm: engine skipped (worker environments)");
+                            let transforms = async {
+                                let urls = runner_warm_urls(&warm_root, &warm_patterns);
+                                if urls.is_empty() {
+                                    return;
+                                }
+                                if let Some(host) = warm_host.as_deref() {
+                                    // The host DISPATCHES the warms and replies
+                                    // immediately (Vite's warmup is equally
+                                    // fire-and-forget); awaiting completion
+                                    // would park a cold-graph warm behind one
+                                    // RPC window.
+                                    match host.warm_environments(&urls).await {
+                                        Ok(Some(summary)) => oj_server::boot_phase(&format!(
+                                            "runner transform warm dispatched ({summary})"
+                                        )),
+                                        Ok(None) => oj_server::boot_phase(
+                                            "runner transform warm unavailable (nothing warmable)",
+                                        ),
+                                        Err(_) => oj_server::boot_phase(
+                                            "runner transform warm unavailable",
+                                        ),
+                                    }
+                                }
+                            };
+                            let render = async {
+                                if let Ok(addr) = addr_rx.await {
+                                    if runner_render_warm(addr).await {
+                                        oj_server::boot_phase("runner render warm complete");
+                                    } else {
+                                        oj_server::boot_phase(
+                                            "runner render warm failed (best effort)",
+                                        );
+                                    }
+                                }
+                            };
+                            tokio::join!(transforms, render);
                             return;
                         }
                     }
@@ -353,6 +414,18 @@ pub async fn start_dev(
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
     oj_server::boot_phase("listening");
+    // The render warm dials the bound interface; an unspecified bind
+    // (0.0.0.0/::) maps to its family's loopback, which such a listener
+    // always answers.
+    let warm_ip = if built.host.is_unspecified() {
+        match built.host {
+            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        }
+    } else {
+        built.host
+    };
+    let _ = addr_tx.send(std::net::SocketAddr::new(warm_ip, port));
     tokio::spawn(async move {
         std::process::exit(shutdown_signal().await);
     });
@@ -397,6 +470,84 @@ async fn ensure_runner_fresh(state: &StartState) {
     }
 }
 
+/// The urls the runner-environment transform warm fires: every route module
+/// plus the router entry, as root-relative urls (Vite's warmup.ts fileToUrl
+/// shape), joined by the app's own `server.warmup` lists expanded with Vite's
+/// glob semantics. The route tree is what the first render will walk, so
+/// warming it is the whole graph minus dependencies the optimizer already
+/// bundled.
+fn runner_warm_urls(root: &Path, warmup_patterns: &[String]) -> Vec<String> {
+    let mut files: std::collections::BTreeSet<PathBuf> = list_route_files(root);
+    for entry in ["src/router.tsx", "src/router.ts"] {
+        let p = root.join(entry);
+        if p.is_file() {
+            files.insert(p);
+        }
+    }
+    files.extend(oj_server::warmup_paths(root, warmup_patterns));
+    files
+        .iter()
+        .filter_map(|f| f.strip_prefix(root).ok())
+        .map(|rel| format!("/{}", rel.to_string_lossy().replace('\\', "/")))
+        .collect()
+}
+
+/// One real GET / through oj's own listener: the serving path a user request
+/// takes (middleware forward, worker-environment render), so the runner's
+/// module cache and the document pipeline warm end to end. This executes app
+/// server code with no request in sight, deliberately: Vite's `server.open`
+/// does the same (its own GET of the entry with `Accept: text/html`, "start
+/// the crawling of static imports ~500ms before the browser"), and a sandbox
+/// boot has exactly one app to serve. Best effort with a generous bound (a
+/// cold monorepo render is minutes on a contended sandbox); returns whether a
+/// response actually came back so the caller can log honestly.
+async fn runner_render_warm(addr: std::net::SocketAddr) -> bool {
+    let warm = async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Ok(mut stream) = tokio::net::TcpStream::connect(addr).await else {
+            return false;
+        };
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: localhost:{}\r\nAccept: text/html\r\nConnection: close\r\n\r\n",
+            addr.port()
+        );
+        if stream.write_all(request.as_bytes()).await.is_err() {
+            return false;
+        }
+        let mut got = 0usize;
+        let mut sink = [0u8; 16384];
+        while let Ok(n) = stream.read(&mut sink).await {
+            if n == 0 {
+                break;
+            }
+            got += n;
+        }
+        got > 0
+    };
+    matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(600), warm).await,
+        Ok(true)
+    )
+}
+
+/// The routes directory the app configured (tsr.config.json's
+/// `routesDirectory`, the same file the route-tree generator merges its
+/// defaults under) or the generator's default. Rust-side walkers must agree
+/// with generate.mjs: a custom layout otherwise regenerates trees the watcher
+/// never notices and warms nothing.
+fn resolved_routes_dir(root: &Path) -> PathBuf {
+    let configured = std::fs::read_to_string(root.join("tsr.config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("routesDirectory")
+                .and_then(|d| d.as_str())
+                .map(String::from)
+        });
+    let rel = configured.unwrap_or_else(|| "./src/routes".to_string());
+    root.join(rel.trim_start_matches("./"))
+}
+
 fn list_route_files(root: &Path) -> std::collections::BTreeSet<PathBuf> {
     let mut out = std::collections::BTreeSet::new();
     fn walk(dir: &Path, out: &mut std::collections::BTreeSet<PathBuf>) {
@@ -412,7 +563,7 @@ fn list_route_files(root: &Path) -> std::collections::BTreeSet<PathBuf> {
             }
         }
     }
-    walk(&root.join("src").join("routes"), &mut out);
+    walk(&resolved_routes_dir(root), &mut out);
     out
 }
 

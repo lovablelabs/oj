@@ -770,6 +770,9 @@ test("initial.runnerBacked=false falls through to the host's own declaration che
   try {
     const info = await host.serveInfo();
     assert.equal(info.runnerEnvironments, true, "the host's own check overrides extraction's false");
+    // stderr is a separate pipe from the serve-info push: wait for the line
+    // instead of assuming it flushed first (the sibling tests do the same).
+    await host.waitStderr(/decided by host declaration check \(extraction said no\)/);
     assert.match(
       host.stderr(),
       /decided by host declaration check \(extraction said no\)/,

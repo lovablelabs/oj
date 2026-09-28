@@ -2828,6 +2828,19 @@ impl PluginHost {
         self.hook_plan.read().unwrap().clone()
     }
 
+    /// Dispatches the app-Vite-side transform warm: every url's
+    /// `environment.warmupRequest` STARTS in the host (Vite's warmup.ts is
+    /// equally fire-and-forget; transformRequest dedups), filling the
+    /// in-memory transform cache the module runner's serial import walk then
+    /// hits. The reply arrives as soon as the warms are dispatched, so a
+    /// cold-graph warm never parks behind this call's RPC window. Returns the
+    /// host's `{environments, started}` summary; None when nothing was
+    /// warmable (no environment carries a warmupRequest, or no urls).
+    pub async fn warm_environments(&self, urls: &[String]) -> Result<Option<String>, String> {
+        let payload = serde_json::to_string(urls).map_err(|e| e.to_string())?;
+        self.call("warmEnvironments", &[&payload]).await
+    }
+
     async fn ensure_hook_plan(&self) {
         use std::sync::atomic::Ordering;
         if self.hook_plan_fetched.load(Ordering::Acquire) {
