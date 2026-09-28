@@ -47,6 +47,39 @@ const makeWorkerUrlFor = ({ mode, root, emit }) => async (abs) => {
   return rel && !rel.startsWith("..") && !isAbsolute(rel) ? "/" + rel.split(sep).join("/") : "/@fs" + abs;
 };
 
+// Vite's `?worker&inline` in a bundled environment (worker.ts load): the
+// bundled worker ships inside the importer as a string and starts from a Blob
+// URL, falling back to a data: URL; a SharedWorker always uses the data: URL
+// (a blob URL would make separate instances). Module workers (format es).
+function inlineWorkerModule(ctor, entryCode) {
+  const jsContent = `const jsContent = ${JSON.stringify(entryCode)};`;
+  const typeOption = `{ type: "module", name: options?.name }`;
+  if (ctor === "Worker") {
+    return `${jsContent}
+const blob = typeof self !== "undefined" && self.Blob && new Blob(['URL.revokeObjectURL(import.meta.url);', jsContent], { type: "text/javascript;charset=utf-8" });
+export default function WorkerWrapper(options) {
+  let objURL;
+  try {
+    objURL = blob && (self.URL || self.webkitURL).createObjectURL(blob);
+    if (!objURL) throw '';
+    const worker = new Worker(objURL, ${typeOption});
+    worker.addEventListener("error", () => {
+      (self.URL || self.webkitURL).revokeObjectURL(objURL);
+    });
+    return worker;
+  } catch (e) {
+    return new Worker('data:text/javascript;charset=utf-8,' + encodeURIComponent(jsContent), ${typeOption});
+  }
+}
+`;
+  }
+  return `${jsContent}
+export default function WorkerWrapper(options) {
+  return new ${ctor}('data:text/javascript;charset=utf-8,' + encodeURIComponent(jsContent), ${typeOption});
+}
+`;
+}
+
 export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-start/fs", emit, cssUrls, root } = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
   const workerUrlFor = makeWorkerUrlFor({ mode, root, emit });
@@ -58,9 +91,11 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
         if (options?.custom?.ojAsset) return null;
         let tag = null;
         const worker = WORKER_RE.exec(source);
-        // `&inline` on a worker is ignored unbundled; the build inlines nothing
-        // here yet and emits the worker as a file, which still works.
-        if (worker) tag = worker[1] + (URL_RE.test(source) ? "-url" : "");
+        // Vite's worker load: a bundled environment checks `&inline` before
+        // `&url`; unbundled dev ignores `&inline`.
+        if (worker) {
+          tag = worker[1] + (mode !== "dev" && INLINE_RE.test(source) ? "-inline" : URL_RE.test(source) ? "-url" : "");
+        }
         else if (RAW_RE.test(source)) tag = "raw";
         else if (URL_RE.test(source) || NO_INLINE_RE.test(source)) tag = "url";
         else if (INLINE_RE.test(source)) tag = "inline";
@@ -74,7 +109,7 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
       },
     },
     load: {
-      filter: { id: /^\0oj-(raw|url|inline|css|worker|worker-url|sharedworker|sharedworker-url):/ },
+      filter: { id: /^\0oj-(raw|url|inline|css|(?:shared)?worker(?:-url|-inline)?):/ },
       async handler(id) {
         const v = parseV(id);
         if (!v) return null;
@@ -84,6 +119,9 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
         if (v.tag === "inline") return js(`export default ${JSON.stringify(dataUri(v.path))};`);
         if (v.tag === "worker-url" || v.tag === "sharedworker-url") {
           return js(`export default ${JSON.stringify(await workerUrlFor(v.path))};`);
+        }
+        if (v.tag === "worker-inline" || v.tag === "sharedworker-inline") {
+          return js(inlineWorkerModule(v.tag === "sharedworker-inline" ? "SharedWorker" : "Worker", await emit.workerCode(v.path)));
         }
         if (v.tag === "worker" || v.tag === "sharedworker") {
           const ctor = v.tag === "sharedworker" ? "SharedWorker" : "Worker";
@@ -383,23 +421,36 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
   // A worker entry is bundled on its own (Vite's bundleWorkerEntry) by the
   // builder the caller installs, once per file, so the client and server
   // builds share one emitted URL.
-  const workers = new Map();
+  // `workerCode` is the bundle (inlined by `?worker&inline`), `worker` the
+  // emitted file's URL.
+  const workerCodes = new Map();
+  const workerUrls = new Map();
   let bundleWorker = null;
   emit.setWorkerBundler = (fn) => {
     bundleWorker = fn;
   };
-  emit.worker = (absPath) => {
-    if (!workers.has(absPath)) {
-      workers.set(
+  emit.workerCode = (absPath) => {
+    if (!workerCodes.has(absPath)) {
+      workerCodes.set(
         absPath,
         (async () => {
           if (!bundleWorker) throw new Error(`oj: no worker bundler for ${absPath}`);
-          const code = await bundleWorker(absPath);
-          return write(absPath.replace(/\.[^./\\]+$/, "") + ".js", Buffer.from(code, "utf8"));
+          return bundleWorker(absPath);
         })(),
       );
     }
-    return workers.get(absPath);
+    return workerCodes.get(absPath);
+  };
+  emit.worker = (absPath) => {
+    if (!workerUrls.has(absPath)) {
+      workerUrls.set(
+        absPath,
+        emit
+          .workerCode(absPath)
+          .then((code) => write(absPath.replace(/\.[^./\\]+$/, "") + ".js", Buffer.from(code, "utf8"))),
+      );
+    }
+    return workerUrls.get(absPath);
   };
 
   emit.cssUrls = () => cssUrls.slice();

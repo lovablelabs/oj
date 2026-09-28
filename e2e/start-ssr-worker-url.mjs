@@ -56,13 +56,16 @@ write(
   "src/lib/wk/worker.ts",
   'import { n } from "./helper";\nconst m: number = n + 1;\nself.onmessage = () => self.postMessage(m);\n',
 );
+write("src/lib/wk/inline-worker.ts", 'import { n } from "./helper";\nself.onmessage = () => self.postMessage(`inline-${n}`);\n');
 write(
   "src/lib/wk/index.ts",
   [
     'import workerUrl from "./worker.ts?worker&url";',
     'import WorkerCtor from "./worker.ts?worker";',
+    'import InlineCtor from "./inline-worker.ts?worker&inline";',
     "export const wurl: string = workerUrl;",
-    "export const wtype: string = typeof WorkerCtor;",
+    "export const wtype: string = typeof WorkerCtor + typeof InlineCtor;",
+    "export { WorkerCtor, InlineCtor };",
     "",
   ].join("\n"),
 );
@@ -70,11 +73,24 @@ const aboutPath = path.join(app, "src/routes/about.tsx");
 let about = fs.readFileSync(aboutPath, "utf8");
 about = about.replace(
   'import { rootRoute } from "./__root";',
-  'import { rootRoute } from "./__root";\nimport { wurl, wtype } from "../lib/wk";',
+  'import { rootRoute } from "./__root";\nimport { useEffect, useState } from "react";\nimport { wurl, wtype, WorkerCtor, InlineCtor } from "../lib/wk";\n' +
+    // After hydration, start all three workers and render their replies.
+    "function WorkerRun() {\n" +
+    "  const [out, setOut] = useState<string[]>([]);\n" +
+    "  useEffect(() => {\n" +
+    '    const ws = [new WorkerCtor(), new InlineCtor(), new Worker(wurl, { type: "module" })];\n' +
+    "    for (const w of ws) {\n" +
+    "      w.onmessage = (e) => setOut((o) => [...o, String(e.data)].sort());\n" +
+    "      w.postMessage(0);\n" +
+    "    }\n" +
+    "    return () => ws.forEach((w) => w.terminate());\n" +
+    "  }, []);\n" +
+    '  return <p id="wkrun">{out.join(",")}</p>;\n' +
+    "}",
 );
 about = about.replace(
   '<h1 className="fixture-heading">about-page-marker</h1>',
-  '<h1 className="fixture-heading">about-page-marker</h1>\n      <p id="wk">{`${wurl}|${wtype}`}</p>',
+  '<h1 className="fixture-heading">about-page-marker</h1>\n      <p id="wk">{`${wurl}|${wtype}`}</p>\n      <WorkerRun />',
 );
 fs.writeFileSync(aboutPath, about);
 
@@ -125,6 +141,36 @@ async function served(cmd, args, opts, check) {
   }
 }
 
+// Load /about in Chromium and wait for all three workers to answer: the
+// ?worker constructor, the ?worker&inline one (a Blob URL in a build) and
+// `new Worker(?worker&url)`.
+async function workersRunInBrowser(label) {
+  let pw = null;
+  try {
+    pw = await import("playwright");
+  } catch {}
+  if (!pw) {
+    console.log(`${label}: SKIP browser worker run (playwright not installed)`);
+    return;
+  }
+  const browser = await pw.chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto(`http://localhost:${PORT}/about`);
+    const want = "42,42,inline-41";
+    const got = await page
+      .waitForFunction((w) => document.querySelector("#wkrun")?.textContent === w, want, { timeout: 20000 })
+      .then(() => want)
+      .catch(async () => page.locator("#wkrun").textContent().catch(() => null));
+    must(got === want, `${label}: workers answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}`);
+    console.log(`${label}: ?worker, ?worker&inline and ?worker&url all run in the browser`);
+  } finally {
+    await browser.close();
+  }
+}
+
 const rendered = async () => {
   const res = await fetch(`http://localhost:${PORT}/about`);
   const html = await res.text();
@@ -136,7 +182,7 @@ try {
 
     const { status, shown } = await rendered();
     must(status === 200, `dev /about returned ${status}\n${stderr().slice(-2000)}`);
-    must(shown === "/src/lib/wk/worker.ts|function", `dev SSR worker imports rendered ${JSON.stringify(shown)}`);
+    must(shown === "/src/lib/wk/worker.ts|functionfunction", `dev SSR worker imports rendered ${JSON.stringify(shown)}`);
     const worker = await fetch(`http://localhost:${PORT}/src/lib/wk/worker.ts`);
     must(worker.status === 200, `the worker URL the SSR render emitted returned ${worker.status}`);
     must(!(await worker.text()).includes(": number"), "the worker URL serves uncompiled TypeScript");
@@ -150,6 +196,8 @@ try {
     must(js.includes('"/src/lib/wk/worker.ts"'), "the dev client bundle does not carry the worker URL");
     must(/new Worker\(/.test(js), "the dev client bundle has no ?worker constructor");
     console.log("start-dev: ?worker&url is the worker's dev URL, ?worker a constructor, on SSR and in the client bundle");
+
+    await workersRunInBrowser("start-dev");
 
     const failures = fs.existsSync(parseLog) ? fs.readFileSync(parseLog, "utf8").trim() : "";
     must(failures === "", `a post plugin could not this.parse:\n${failures}`);
@@ -170,13 +218,25 @@ try {
   await served("node", [path.join(out, "server.mjs")], { cwd: out, env: { ...process.env, PORT: String(PORT) } }, async (stderr) => {
     const { status, shown } = await rendered();
     must(status === 200, `built /about returned ${status}\n${stderr().slice(-2000)}`);
-    must(shown === `/assets/${workerFile}|function`, `built SSR worker imports rendered ${JSON.stringify(shown)}`);
+    must(shown === `/assets/${workerFile}|functionfunction`, `built SSR worker imports rendered ${JSON.stringify(shown)}`);
     const served = await fetch(`http://localhost:${PORT}/assets/${workerFile}`);
     must(served.status === 200, `the emitted worker URL returned ${served.status}`);
+    await workersRunInBrowser("start build");
   });
   const clientJs = fs.readdirSync(assets).filter((f) => f.endsWith(".js") && f !== workerFile).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("");
   must(clientJs.includes(`/assets/${workerFile}`), "the client build does not reference the emitted worker");
   console.log("start build: the worker is bundled once and emitted; client and server render the same URL");
+  // ?worker&inline: the bundled worker ships inside the client as a string
+  // (its helper inlined) and starts from a Blob URL, as Vite's build does;
+  // no separate file is emitted for it.
+  must(fs.readdirSync(assets).every((f) => !f.startsWith("inline-worker")), "?worker&inline emitted a separate worker file");
+  // The bundled worker source is a string literal in the client (the
+  // minifier renames the `jsContent` binding, so match the content).
+  const inlineSource = clientJs.match(/"[^"]*onmessage[^"]*"/g)?.find((t) => t.includes("inline-"));
+  must(inlineSource, "the client build has no inlined worker source");
+  must(inlineSource.includes("inline-41") && !/\bimport\b/.test(inlineSource), `the inlined worker is not the bundled entry:\n${inlineSource}`);
+  must(clientJs.includes("URL.revokeObjectURL(import.meta.url)") && clientJs.includes("createObjectURL"), "the inline worker does not start from a Blob URL");
+  console.log("start build: ?worker&inline ships the bundled worker inline and starts it from a Blob URL");
   console.log("\nSTART SSR WORKER URL PASSED");
 } catch (e) {
   console.error("\nSTART SSR WORKER URL FAILED:", e.message);
