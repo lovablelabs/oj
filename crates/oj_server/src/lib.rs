@@ -4505,6 +4505,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+                import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4610,6 +4611,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+                import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4703,6 +4705,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+                import_bindings: Vec::new(),
         });
         if state.persistent_cache {
             let _ = state
@@ -4877,6 +4880,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+                import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4947,6 +4951,7 @@ async fn ensure_module(
                 css_exports: Vec::new(),
                 fs_allow: Vec::new(),
                 watch_files: Vec::new(),
+                import_bindings: Vec::new(),
             });
         }
         if is_css {
@@ -5001,6 +5006,7 @@ async fn ensure_module(
                 css_exports: output.exports.unwrap_or_default(),
                 fs_allow: Vec::new(),
                 watch_files: Vec::new(),
+                import_bindings: Vec::new(),
             });
         }
         // The first relative import nothing on disk satisfies. Vite's import
@@ -5203,11 +5209,13 @@ async fn ensure_module(
             hot: output.hot_accept.map(|h| oj_cache::HotMeta {
                 self_accept: h.self_accepting,
                 deps: h.deps,
+                accepted_exports: h.accepted_exports,
             }),
             code: output.code,
             map_data_url: output.map_data_url,
             fs_allow: fs_allow_from(&output.imports),
             watch_files: Vec::new(),
+            import_bindings: output.import_bindings,
             imports: output.imports,
             kind: if is_svelte {
                 "svelte".into()
@@ -5505,6 +5513,22 @@ fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
         })
         .unwrap_or_default();
     graph.set_accepted_deps(Path::new(url), &accepted);
+    graph.set_accepted_exports(
+        Path::new(url),
+        hot.and_then(|h| h.accepted_exports.clone()),
+    );
+    let bindings: Vec<(PathBuf, Vec<String>)> = module
+        .import_bindings
+        .iter()
+        .filter(|(s, _)| s.starts_with('/') && !s.starts_with("/@oj/") && !is_worker_query(s))
+        .map(|(s, names)| {
+            (
+                PathBuf::from(s.split('?').next().unwrap_or(s)),
+                names.clone(),
+            )
+        })
+        .collect();
+    graph.set_imported_bindings(Path::new(url), &bindings);
 }
 
 /// The compiled stylesheet as `text/css` (Vite's `?direct` / raw `<link>` request).

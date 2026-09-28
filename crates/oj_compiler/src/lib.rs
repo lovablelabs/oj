@@ -301,6 +301,10 @@ pub struct CompileOutput {
     pub map_data_url: Option<String>,
     pub imports: Vec<String>,
     pub dynamic_imports: Vec<String>,
+    /// Per import (rewritten specifier), the binding names this module uses
+    /// from it: named/default imports and re-exports by name, `*` for
+    /// namespace and dynamic imports (Vite's `importedBindings`).
+    pub import_bindings: Vec<(String, Vec<String>)>,
     pub is_refresh_boundary: bool,
     /// `Some` when the module references `import.meta.hot` (it needs a hot
     /// context injected); what its `accept` calls declared.
@@ -315,6 +319,11 @@ pub struct CompileOutput {
 pub struct HotAccept {
     pub self_accepting: bool,
     pub deps: Vec<String>,
+    /// `acceptExports([...names], cb)`: the module is a boundary only for
+    /// updates its importers reach through these exports (Vite's
+    /// `acceptedHmrExports`); an importer using any other export propagates
+    /// past it.
+    pub accepted_exports: Option<Vec<String>>,
 }
 
 impl CompileOutput {
@@ -532,7 +541,7 @@ pub fn compile_module_with_maps(
         synthesized |= glob::expand_new_url_asset(&allocator, dir, &mut program, source_text);
     }
 
-    let (imports, dynamic_imports) =
+    let (imports, dynamic_imports, import_bindings) =
         rewrite_module_specifiers(&allocator, &mut program, &mut rewriter);
     let hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
 
@@ -561,6 +570,7 @@ pub fn compile_module_with_maps(
         map_data_url,
         imports,
         dynamic_imports,
+        import_bindings,
         is_refresh_boundary,
         hot_accept,
     })
@@ -624,6 +634,24 @@ fn lex_hot_accept<'a>(
                 let is_exports = matches!(&call.callee, Expression::StaticMemberExpression(m) if m.property.name == "acceptExports");
                 match call.arguments.first_mut() {
                     None => self.accept.self_accepting = true,
+                    // acceptExports("name" | [names], cb): a PARTIAL accept
+                    // (Vite's acceptedHmrExports), not a self-accept — an
+                    // importer using an unlisted export propagates past it.
+                    Some(Argument::StringLiteral(lit)) if is_exports => {
+                        let name = lit.value.to_string();
+                        self.accept
+                            .accepted_exports
+                            .get_or_insert_with(Vec::new)
+                            .push(name);
+                    }
+                    Some(Argument::ArrayExpression(arr)) if is_exports => {
+                        let names = self.accept.accepted_exports.get_or_insert_with(Vec::new);
+                        for el in arr.elements.iter() {
+                            if let ArrayExpressionElement::StringLiteral(lit) = el {
+                                names.push(lit.value.to_string());
+                            }
+                        }
+                    }
                     Some(Argument::StringLiteral(lit)) if !is_exports => {
                         let dep = self.rewrite(lit);
                         self.accept.deps.push(dep);
@@ -636,7 +664,7 @@ fn lex_hot_accept<'a>(
                             }
                         }
                     }
-                    // accept(cb), acceptExports(names, cb), or anything dynamic
+                    // accept(cb) or anything dynamic
                     Some(_) => self.accept.self_accepting = true,
                 }
             }
@@ -731,17 +759,45 @@ pub(crate) fn rewrite_module_specifiers_pub<'a>(
     rewriter: &mut ImportRewriter,
 ) -> (Vec<String>, Vec<String>) {
     let mut opt: Option<&mut ImportRewriter> = Some(rewriter);
-    rewrite_module_specifiers(allocator, program, &mut opt)
+    let (imports, dynamic_imports, _) = rewrite_module_specifiers(allocator, program, &mut opt);
+    (imports, dynamic_imports)
 }
 
 fn rewrite_module_specifiers<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     rewriter: &mut Option<&mut ImportRewriter>,
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, Vec<(String, Vec<String>)>) {
     let mut imports = Vec::new();
     let mut dynamic_imports = Vec::new();
+    let mut bindings: Vec<(String, Vec<String>)> = Vec::new();
     for stmt in program.body.iter_mut() {
+        // The names each statement pulls from its source, for partial-accept
+        // gating (Vite's importedBindings): a side-effect import records an
+        // empty list (nothing used, always within any accepted set) and a
+        // namespace or star re-export records `*` (never within one).
+        let names: Vec<String> = match stmt {
+            Statement::ImportDeclaration(decl) => decl
+                .specifiers
+                .iter()
+                .flatten()
+                .map(|s| {
+                    use oxc_ast::ast::ImportDeclarationSpecifier as S;
+                    match s {
+                        S::ImportSpecifier(s) => s.imported.name().to_string(),
+                        S::ImportDefaultSpecifier(_) => "default".to_string(),
+                        S::ImportNamespaceSpecifier(_) => "*".to_string(),
+                    }
+                })
+                .collect(),
+            Statement::ExportFromDeclaration(decl) => decl
+                .specifiers
+                .iter()
+                .map(|s| bundle::export_name(&s.local))
+                .collect(),
+            Statement::ExportAllDeclaration(_) => vec!["*".to_string()],
+            _ => Vec::new(),
+        };
         let source: Option<&mut StringLiteral> = match stmt {
             Statement::ImportDeclaration(decl) => Some(&mut decl.source),
             Statement::ExportFromDeclaration(decl) => Some(&mut decl.source),
@@ -756,7 +812,12 @@ fn rewrite_module_specifiers<'a>(
                 lit.raw = None;
             }
         }
-        imports.push(lit.value.to_string());
+        let spec = lit.value.to_string();
+        match bindings.iter_mut().find(|(s, _)| *s == spec) {
+            Some((_, existing)) => existing.extend(names),
+            None => bindings.push((spec.clone(), names)),
+        }
+        imports.push(spec);
     }
     if let Some(rewriter) = rewriter.as_deref_mut() {
         let mut dyn_rewriter = DynamicImportRewriter {
@@ -767,7 +828,13 @@ fn rewrite_module_specifiers<'a>(
         use oxc_ast_visit::VisitMut;
         dyn_rewriter.visit_program(program);
     }
-    (imports, dynamic_imports)
+    for spec in &dynamic_imports {
+        match bindings.iter_mut().find(|(s, _)| s == spec) {
+            Some((_, existing)) => existing.push("*".to_string()),
+            None => bindings.push((spec.clone(), vec!["*".to_string()])),
+        }
+    }
+    (imports, dynamic_imports, bindings)
 }
 
 struct DynamicImportRewriter<'a, 'b> {
@@ -1273,7 +1340,8 @@ export const used: A extends B ? number : number = c + d;
             self_accept.hot_accept,
             Some(HotAccept {
                 self_accepting: true,
-                deps: vec![]
+                deps: vec![],
+                accepted_exports: None
             })
         );
 
@@ -1319,6 +1387,51 @@ export const used: A extends B ? number : number = c + d;
             Some(HotAccept::default()),
             "referencing import.meta.hot needs a context even without accept"
         );
+
+        // acceptExports is a PARTIAL accept (Vite's acceptedHmrExports), not a
+        // self-accept: the graph gates propagation on the importers' bindings.
+        let partial = compile_module(
+            Path::new("a.ts"),
+            "export const a = 1, b = 2;\nimport.meta.hot.acceptExports([\"a\"], (m) => m);\nimport.meta.hot.acceptExports(\"c\");",
+            &CompileOptions::dev(),
+            Some(&mut rw),
+        )
+        .unwrap();
+        let hot = partial.hot_accept.unwrap();
+        assert!(!hot.self_accepting);
+        assert_eq!(hot.accepted_exports, Some(vec!["a".into(), "c".into()]));
+    }
+
+    #[test]
+    fn import_bindings_name_what_each_importer_uses() {
+        let mut rw = |spec: &str| Some(spec.replace("./", "/src/"));
+        let out = compile_module(
+            Path::new("a.ts"),
+            concat!(
+                "import { a, b as c } from './mod.js';\n",
+                "import def from './mod.js';\n",
+                "import * as ns from './star.js';\n",
+                "import './side.js';\n",
+                "export { x } from './re.js';\n",
+                "const d = await import('./dyn.js');\n",
+                "console.log(a, c, def, ns, d);\n",
+            ),
+            &CompileOptions::dev(),
+            Some(&mut rw),
+        )
+        .unwrap();
+        let get = |spec: &str| {
+            out.import_bindings
+                .iter()
+                .find(|(s, _)| s == spec)
+                .map(|(_, names)| names.clone())
+                .unwrap_or_else(|| panic!("{spec} missing from {:?}", out.import_bindings))
+        };
+        assert_eq!(get("/src/mod.js"), vec!["a", "b", "default"]);
+        assert_eq!(get("/src/star.js"), vec!["*"]);
+        assert_eq!(get("/src/side.js"), Vec::<String>::new());
+        assert_eq!(get("/src/re.js"), vec!["x"]);
+        assert_eq!(get("/src/dyn.js"), vec!["*"]);
     }
 
     #[test]

@@ -220,6 +220,7 @@ export default (module.exports && module.exports.__esModule) ? module.exports["d
         map_data_url: None,
         imports: resolved_imports,
         dynamic_imports: Vec::new(),
+        import_bindings: Vec::new(),
         is_refresh_boundary: false,
         hot_accept: None,
     })

@@ -109,6 +109,11 @@ pub struct CachedModule {
     pub fs_allow: Vec<String>,
     #[serde(default)]
     pub watch_files: Vec<String>,
+    /// Per import (served url), the binding names this module uses from it
+    /// (Vite's `importedBindings`), for partial-accept (`acceptExports`)
+    /// propagation decisions.
+    #[serde(default)]
+    pub import_bindings: Vec<(String, Vec<String>)>,
     /// `Some` when the module references `import.meta.hot`: it gets a hot
     /// context, and these are the `accept` declarations for the module graph.
     #[serde(default)]
@@ -120,6 +125,10 @@ pub struct HotMeta {
     pub self_accept: bool,
     /// Served urls of the dependencies this module accepts updates for.
     pub deps: Vec<String>,
+    /// `acceptExports(names)`: the module is a boundary only for changes its
+    /// importers reach through these exports (Vite's `acceptedHmrExports`).
+    #[serde(default)]
+    pub accepted_exports: Option<Vec<String>>,
 }
 
 pub struct PersistentCache {
