@@ -240,11 +240,16 @@ pub async fn start_dev(
         init_deadline: h.init_deadline_at(),
         confirm: oj_server::plugins::plugin_rpc_timeout(),
     });
-    // Filled after the dev listener binds; the runner-environment warm below
-    // needs the real bound address to drive one render through the full
-    // serving path (the configured host may be ::1 or a specific interface,
-    // where a hardcoded 127.0.0.1 would silently connect to nothing).
-    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
+    // Filled once the router exists (BEFORE the listener binds): the
+    // runner-environment warm below drives one render by calling the service
+    // directly, Vite's work-before-listen shape — its monkey-patched
+    // httpServer.listen runs every environment.listen (dep-optimizer init +
+    // fire-and-forget warmupFiles) before the socket binds, so warming never
+    // queues behind bind. oj's bind additionally waits on the client bundle,
+    // which is exactly the wait this overlap removes. Calling the service
+    // also sidesteps the bound-interface question a TCP self-request had
+    // (::1 vs 127.0.0.1 vs a specific host): there is no socket to dial.
+    let (app_tx, app_rx) = tokio::sync::oneshot::channel::<axum::Router>();
     {
         let engine = Arc::clone(&engine);
         let reload_tx = reload_tx.clone();
@@ -294,8 +299,8 @@ pub async fn start_dev(
                                 }
                             };
                             let render = async {
-                                if let Ok(addr) = addr_rx.await {
-                                    if runner_render_warm(addr).await {
+                                if let Ok(app) = app_rx.await {
+                                    if runner_render_warm(app).await {
                                         oj_server::boot_phase("runner render warm complete");
                                     } else {
                                         oj_server::boot_phase(
@@ -411,21 +416,10 @@ pub async fn start_dev(
         start_route,
     ));
 
+    let _ = app_tx.send(app.clone());
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
     oj_server::boot_phase("listening");
-    // The render warm dials the bound interface; an unspecified bind
-    // (0.0.0.0/::) maps to its family's loopback, which such a listener
-    // always answers.
-    let warm_ip = if built.host.is_unspecified() {
-        match built.host {
-            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-        }
-    } else {
-        built.host
-    };
-    let _ = addr_tx.send(std::net::SocketAddr::new(warm_ip, port));
     tokio::spawn(async move {
         std::process::exit(shutdown_signal().await);
     });
@@ -492,37 +486,46 @@ fn runner_warm_urls(root: &Path, warmup_patterns: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// One real GET / through oj's own listener: the serving path a user request
-/// takes (middleware forward, worker-environment render), so the runner's
-/// module cache and the document pipeline warm end to end. This executes app
-/// server code with no request in sight, deliberately: Vite's `server.open`
-/// does the same (its own GET of the entry with `Accept: text/html`, "start
-/// the crawling of static imports ~500ms before the browser"), and a sandbox
-/// boot has exactly one app to serve. Best effort with a generous bound (a
-/// cold monorepo render is minutes on a contended sandbox); returns whether a
-/// response actually came back so the caller can log honestly.
-async fn runner_render_warm(addr: std::net::SocketAddr) -> bool {
+/// One real GET / through oj's own router service — the serving path a user
+/// request takes (middleware forward, worker-environment render) minus the
+/// socket, so the warm needs no bound listener and overlaps bind and the
+/// client bundle (Vite's work-before-listen ordering: its patched
+/// httpServer.listen runs environment.listen, and with it warmupFiles,
+/// before the socket binds). Executing app server code with no request in
+/// sight is deliberate: Vite's `server.open` does the same (its own GET of
+/// the entry with `Accept: text/html`), and a sandbox boot has exactly one
+/// app to serve. The streamed body is drained — the render only completes
+/// when its document does — and the result says whether a response actually
+/// came back so the caller can log honestly. Best effort with a generous
+/// bound; a cold monorepo render is minutes on a contended sandbox.
+async fn runner_render_warm(app: axum::Router) -> bool {
+    use futures_util::StreamExt;
+    use tower::util::ServiceExt;
     let warm = async {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let Ok(mut stream) = tokio::net::TcpStream::connect(addr).await else {
+        let Ok(request) = axum::http::Request::builder()
+            .uri("/")
+            // Pre-bind there is no port to put in the origin: an app
+            // middleware building absolute URLs from Host sees a portless
+            // localhost during the warm (the render's output is discarded, so
+            // only the module caches it fills matter).
+            .header(axum::http::header::HOST, "localhost")
+            .header(axum::http::header::ACCEPT, "text/html")
+            .body(axum::body::Body::empty())
+        else {
             return false;
         };
-        let request = format!(
-            "GET / HTTP/1.1\r\nHost: localhost:{}\r\nAccept: text/html\r\nConnection: close\r\n\r\n",
-            addr.port()
-        );
-        if stream.write_all(request.as_bytes()).await.is_err() {
-            return false;
-        }
-        let mut got = 0usize;
-        let mut sink = [0u8; 16384];
-        while let Ok(n) = stream.read(&mut sink).await {
-            if n == 0 {
+        let Ok(response) = app.oneshot(request).await;
+        let ok = response.status().is_success();
+        // Drain the stream chunk by chunk and discard: the render only
+        // completes when its document does, without buffering a whole
+        // streamed SSR body just to throw it away.
+        let mut body = response.into_body().into_data_stream();
+        while let Some(chunk) = body.next().await {
+            if chunk.is_err() {
                 break;
             }
-            got += n;
         }
-        got > 0
+        ok
     };
     matches!(
         tokio::time::timeout(std::time::Duration::from_secs(600), warm).await,
