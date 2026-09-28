@@ -2,11 +2,18 @@
 
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
-import { join, dirname, extname, basename, resolve } from "node:path";
+import { join, dirname, extname, basename, resolve, relative, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { emptyVirtualStub } from "./resolve-pkg.mjs";
 
-const SUFFIX = /\?(raw|url|inline)$/;
+// Vite's import-query regexes (utils.ts urlRE/rawRE, asset.ts inlineRE,
+// worker.ts workerOrSharedWorkerRE): a query matches in any position and
+// combination, e.g. `?worker&url`, `?url&no-inline`.
+const URL_RE = /(\?|&)url(?:&|$)/;
+const RAW_RE = /(\?|&)raw(?:&|$)/;
+const INLINE_RE = /[?&]inline\b/;
+const NO_INLINE_RE = /(\?|&)no-inline(?:&|$)/;
+const WORKER_RE = /(?:\?|&)(worker|sharedworker)(?:&|$)/;
 const ASSET_EXT = /\.(png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|mp4|webm|wasm)(\?|$)/;
 
 // esbuild "namespaces" become \0-prefixed virtual ids; the tag routes load().
@@ -30,29 +37,44 @@ const dataUri = (abs) => {
 
 const makeUrlFor = ({ mode, fsBase, emit }) => async (abs) => (mode === "dev" ? fsBase + abs : emit(abs));
 
-export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-start/fs", emit, cssUrls } = {}) {
+// A worker's URL, Vite's worker plugin load. Unbundled dev: the file's URL on
+// the dev pipeline (fileToUrl: root-relative, `/@fs` outside the root), which
+// serves the compiled module worker and is what the SSR host renders. A build:
+// the worker entry bundled on its own (bundleWorkerEntry) and emitted once.
+const makeWorkerUrlFor = ({ mode, root, emit }) => async (abs) => {
+  if (mode !== "dev") return emit.worker(abs);
+  const rel = root ? relative(root, abs) : null;
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? "/" + rel.split(sep).join("/") : "/@fs" + abs;
+};
+
+export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-start/fs", emit, cssUrls, root } = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
+  const workerUrlFor = makeWorkerUrlFor({ mode, root, emit });
   return {
     name: "oj-assets",
     resolveId: {
-      filter: { id: { include: [SUFFIX, ASSET_EXT, /\.css(\?|$)/] } },
+      filter: { id: { include: [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, /\.css(\?|$)/] } },
       async handler(source, importer, options) {
         if (options?.custom?.ojAsset) return null;
         let tag = null;
-        if (/\?raw$/.test(source)) tag = "raw";
-        else if (/\?url$/.test(source)) tag = "url";
-        else if (/\?inline$/.test(source)) tag = "inline";
+        const worker = WORKER_RE.exec(source);
+        // `&inline` on a worker is ignored unbundled; the build inlines nothing
+        // here yet and emits the worker as a file, which still works.
+        if (worker) tag = worker[1] + (URL_RE.test(source) ? "-url" : "");
+        else if (RAW_RE.test(source)) tag = "raw";
+        else if (URL_RE.test(source) || NO_INLINE_RE.test(source)) tag = "url";
+        else if (INLINE_RE.test(source)) tag = "inline";
         else if (ASSET_EXT.test(source)) tag = "url";
         else if (/\.css(\?|$)/.test(source)) tag = "css";
         if (!tag) return null;
-        const clean = source.replace(SUFFIX, "").replace(/\?.*$/, "");
+        const clean = source.replace(/\?.*$/, "");
         const r = await this.resolve(clean, importer, { skipSelf: true, custom: { ojAsset: true } });
         if (!r) return null;
         return V(tag, r.id);
       },
     },
     load: {
-      filter: { id: /^\0oj-(raw|url|inline|css):/ },
+      filter: { id: /^\0oj-(raw|url|inline|css|worker|worker-url|sharedworker|sharedworker-url):/ },
       async handler(id) {
         const v = parseV(id);
         if (!v) return null;
@@ -60,6 +82,16 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
         if (v.tag === "raw") return js(`export default ${JSON.stringify(readFileSync(v.path, "utf8"))};`);
         if (v.tag === "url") return js(`export default ${JSON.stringify(await urlFor(v.path))};`);
         if (v.tag === "inline") return js(`export default ${JSON.stringify(dataUri(v.path))};`);
+        if (v.tag === "worker-url" || v.tag === "sharedworker-url") {
+          return js(`export default ${JSON.stringify(await workerUrlFor(v.path))};`);
+        }
+        if (v.tag === "worker" || v.tag === "sharedworker") {
+          const ctor = v.tag === "sharedworker" ? "SharedWorker" : "Worker";
+          const url = JSON.stringify(await workerUrlFor(v.path));
+          return js(
+            `export default function WorkerWrapper(options) { return new ${ctor}(${url}, { type: "module", name: options?.name }); }`,
+          );
+        }
         if (v.tag === "css") {
           if (!server) {
             const href = await urlFor(v.path);
@@ -347,6 +379,28 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
     }
     return out + css.slice(last);
   }
+
+  // A worker entry is bundled on its own (Vite's bundleWorkerEntry) by the
+  // builder the caller installs, once per file, so the client and server
+  // builds share one emitted URL.
+  const workers = new Map();
+  let bundleWorker = null;
+  emit.setWorkerBundler = (fn) => {
+    bundleWorker = fn;
+  };
+  emit.worker = (absPath) => {
+    if (!workers.has(absPath)) {
+      workers.set(
+        absPath,
+        (async () => {
+          if (!bundleWorker) throw new Error(`oj: no worker bundler for ${absPath}`);
+          const code = await bundleWorker(absPath);
+          return write(absPath.replace(/\.[^./\\]+$/, "") + ".js", Buffer.from(code, "utf8"));
+        })(),
+      );
+    }
+    return workers.get(absPath);
+  };
 
   emit.cssUrls = () => cssUrls.slice();
   return emit;

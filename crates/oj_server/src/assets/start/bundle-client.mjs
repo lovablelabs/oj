@@ -162,7 +162,7 @@ const result = await build({
   plugins: [
     closureRecorder,
     makeVitePlugins({ container, appRoot: APP, mode: "dev" }),
-    assetsPlugin({ mode: "dev", cssUrls }),
+    assetsPlugin({ mode: "dev", cssUrls, root: APP }),
     serverFnClient,
     nodeBuiltinShims({ production: false }),
   ],

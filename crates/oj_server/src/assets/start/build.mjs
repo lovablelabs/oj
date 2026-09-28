@@ -244,18 +244,36 @@ const clientAlias = {
   "@tanstack/start-fn-stubs": join(HERE, "fn-stubs.mjs"),
 };
 
+const clientDefine = {
+  ...USER_DEFINE,
+  ...environmentDefines("client"),
+  ...(clientContainer?.defines?.() ?? {}),
+  "process.env": PROCESS_ENV_JSON,
+  global: "globalThis", ...viteEnvDefine({ ssr: false, mode: MODE, base: BASE }),
+};
+
+// `?worker` / `?worker&url` in a build: Vite's bundleWorkerEntry bundles the
+// worker entry on its own (one ES file, the client's transform and define)
+// and emits it as an asset.
+emit.setWorkerBundler(async (file) => {
+  const out = await build({
+    input: file,
+    platform: "browser",
+    transform: { jsx: jsxTransformOptions(NODE_ENV !== "production"), define: clientDefine },
+    resolve: { conditionNames: CLIENT_CONDITIONS },
+    plugins: [assetsPlugin({ mode: "prod", server: false, emit }), nodeBuiltinShims({ production: true })],
+    output: { format: "esm", minify: MINIFY, codeSplitting: false },
+    write: false,
+  });
+  return out.output.find((o) => o.type === "chunk" && o.isEntry).code;
+});
+
 const client = await build({
   input: { client: join(HERE, "client-entry.tsx") },
   platform: "browser",
   transform: {
     jsx: jsxTransformOptions(NODE_ENV !== "production"),
-    define: {
-      ...USER_DEFINE,
-      ...environmentDefines("client"),
-      ...(clientContainer?.defines?.() ?? {}),
-      "process.env": PROCESS_ENV_JSON,
-      global: "globalThis", ...viteEnvDefine({ ssr: false, mode: MODE, base: BASE }),
-    },
+    define: clientDefine,
   },
   resolve: { conditionNames: CLIENT_CONDITIONS, alias: clientAlias },
   plugins: [
