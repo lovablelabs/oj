@@ -271,6 +271,56 @@ fn raise_fd_limit() {
     }
 }
 
+/// The app's package manager, as `npm_config_user_agent` would present it
+/// (Vite only prefix-matches the manager name). Detection: the nearest
+/// `packageManager` field or lockfile, walking up from the invocation's
+/// app-root argument (the first non-flag argument after the subcommand,
+/// resolved against the cwd), falling back to the cwd itself. Best effort by
+/// design: returning None leaves the environment untouched.
+fn detect_package_manager_agent() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    let _subcommand = args.next()?;
+    let root_arg = args
+        .filter(|a| !a.starts_with('-'))
+        .next()
+        .unwrap_or_else(|| ".".into());
+    let start = std::env::current_dir().ok()?.join(root_arg);
+    let mut dir = if start.is_dir() {
+        start
+    } else {
+        std::env::current_dir().ok()?
+    };
+    loop {
+        if let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg) {
+                if let Some(pm) = v.get("packageManager").and_then(|p| p.as_str()) {
+                    let name = pm.split('@').next().unwrap_or(pm);
+                    if !name.is_empty() {
+                        return Some(format!("{name}/0.0.0 (set by oj)"));
+                    }
+                }
+            }
+        }
+        for (file, manager) in [
+            ("node_modules/.pnpm/lock.yaml", "pnpm"),
+            ("pnpm-lock.yaml", "pnpm"),
+            ("node_modules/.yarn-state.yml", "yarn"),
+            ("yarn.lock", "yarn"),
+            ("bun.lock", "bun"),
+            ("bun.lockb", "bun"),
+            ("node_modules/.package-lock.json", "npm"),
+            ("package-lock.json", "npm"),
+        ] {
+            if dir.join(file).exists() {
+                return Some(format!("{manager}/0.0.0 (set by oj)"));
+            }
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
@@ -282,6 +332,22 @@ fn main() -> anyhow::Result<()> {
     // Vite's gate but survives this is_none check and the JS-side ??= belts).
     if std::env::var_os("VITE_CONFIG_NATIVE_IGNORE_WARNING").is_none() {
         std::env::set_var("VITE_CONFIG_NATIVE_IGNORE_WARNING", "true");
+    }
+    // Vite sorts its lockfile-format preference by `npm_config_user_agent`
+    // (optimizer/index.ts), which every package-manager launch sets and a
+    // bare binary launch does not. Agentless, the list REVERSES: a pnpm app
+    // with both node_modules/.pnpm/lock.yaml (content-only hash) and a stray
+    // node_modules/.package-lock.json gets the npm entry, whose hash appends
+    // the patches-dir MTIME — and oj's embedded engine truncates mtimeMs to
+    // whole milliseconds (deno_io::FsStat carries i64 ms) where Node keeps
+    // the fraction, so the optimizer's lockfileHash never matches a
+    // pnpm-launched Vite's and node_modules/.vite is re-bundled on every
+    // launcher switch. Present the app's own package manager instead, the
+    // way its `pnpm dev` would; a set agent (any PM wrapper) always wins.
+    if std::env::var_os("npm_config_user_agent").is_none() {
+        if let Some(agent) = detect_package_manager_agent() {
+            std::env::set_var("npm_config_user_agent", agent);
+        }
     }
     // Before any in-process engine boots (each really chdirs to its app root):
     // a restart must re-resolve relative CLI args against the directory oj was

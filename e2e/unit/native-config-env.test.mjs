@@ -22,11 +22,12 @@ if (!process.env.OJ_BIN && !fs.existsSync(oj)) {
 // (config.ts). oj IS the native-loader world, so main() pre-sets the variable
 // once and every engine and one-shot child inherits it; a user-set value is
 // never overridden.
-function envSeenByPlugins(extraEnv) {
+function envSeenByPlugins(extraEnv, prepare) {
   const fx = tmpProject({ prefix: "oj-native-env-" });
   try {
     fx.write("index.html", '<html><body><script type="module" src="/src/main.js"></script></body></html>');
     fx.write("src/main.js", "export const ok = 1;\n");
+    prepare?.(fx);
     const out = path.join(fx.root, "seen.json");
     fx.write(
       "oj.plugins.mjs",
@@ -36,6 +37,7 @@ function envSeenByPlugins(extraEnv) {
          config() {
            writeFileSync(${JSON.stringify(out)}, JSON.stringify({
              ignoreWarning: process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ?? null,
+             userAgent: process.env.npm_config_user_agent ?? null,
            }));
          },
        }];\n`,
@@ -60,4 +62,24 @@ test("children inherit the native config-loader warning suppression", () => {
 test("a user-set suppression value is never overridden", () => {
   const seen = envSeenByPlugins({ VITE_CONFIG_NATIVE_IGNORE_WARNING: "0" });
   assert.equal(seen.ignoreWarning, "0", "an explicit value wins over the default");
+});
+
+// Vite sorts its lockfile-format preference by npm_config_user_agent; every
+// package-manager launch sets it and a bare binary launch does not, which
+// reverses the list and lands pnpm apps on the npm entry's mtime-bearing
+// hash — one oj's engine computes differently (integer-ms stat). oj presents
+// the app's own package manager instead; an already-set agent always wins.
+test("oj presents the app's package manager as npm_config_user_agent", () => {
+  const seen = envSeenByPlugins({ npm_config_user_agent: undefined }, (fx) =>
+    fx.write("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+  );
+  assert.match(seen.userAgent ?? "", /^pnpm\//, "detected from the app's lockfile");
+});
+
+test("a real package manager's agent is never overridden", () => {
+  const seen = envSeenByPlugins(
+    { npm_config_user_agent: "pnpm/9.12.0 npm/? node/v24.17.0 darwin arm64" },
+    (fx) => fx.write("package-lock.json", "{}"),
+  );
+  assert.equal(seen.userAgent, "pnpm/9.12.0 npm/? node/v24.17.0 darwin arm64");
 });
