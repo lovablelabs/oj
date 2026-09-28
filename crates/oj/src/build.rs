@@ -902,15 +902,37 @@ pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
         None
     };
     if let Some(kind) = worker_kind {
+        // Both flags survive canonicalization: the BUILD inlines when
+        // `&inline` is present (Vite's bundled precedence), while unbundled
+        // dev ignores it and serves `&url` -- each consumer picks.
         let mut q = kind.to_string();
         if has("inline") {
             q.push_str("&inline");
-        } else if has("url") {
+        }
+        if has("url") {
             q.push_str("&url");
         }
         return Some((base.to_string(), q));
     }
-    for kind in ["url", "init", "raw", "inline", "react", "no-inline"] {
+    // Vite's combinable asset queries (urlRE/inlineRE/noInlineRE match in any
+    // position): `no-inline` always wins (the asset is emitted, never
+    // data-URI'd -- asset.ts shouldInline checks it first), `inline` beats
+    // `url` otherwise. `init`/`raw`/`react` never combine in Vite's grammar.
+    if !params.is_empty()
+        && params
+            .iter()
+            .all(|p| ["url", "inline", "no-inline"].contains(p))
+    {
+        let q = if has("no-inline") {
+            "no-inline"
+        } else if has("inline") {
+            "inline"
+        } else {
+            "url"
+        };
+        return Some((base.to_string(), q.to_string()));
+    }
+    for kind in ["init", "raw", "react"] {
         if params.len() == 1 && has(kind) {
             return Some((base.to_string(), kind.to_string()));
         }

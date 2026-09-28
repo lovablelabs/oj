@@ -39,8 +39,11 @@ const makeUrlFor = ({ mode, fsBase, emit }) => async (abs) => (mode === "dev" ? 
 
 // A worker's URL, Vite's worker plugin load. Unbundled dev: the file's URL on
 // the dev pipeline (fileToUrl: root-relative, `/@fs` outside the root), which
-// serves the compiled module worker and is what the SSR host renders. A build:
-// the worker entry bundled on its own (bundleWorkerEntry) and emitted once.
+// serves the compiled module worker and is what the SSR host renders. Vite
+// additionally tags this URL `?worker_file&type=module` for its own serving
+// pipeline; oj's pipeline serves the compiled module without the marker
+// (verified in-browser by e2e/start-ssr-worker-url.mjs). A build: the worker
+// entry bundled on its own (bundleWorkerEntry) and emitted once.
 const makeWorkerUrlFor = ({ mode, root, emit }) => async (abs) => {
   if (mode !== "dev") return emit.worker(abs);
   const rel = root ? relative(root, abs) : null;
@@ -82,7 +85,12 @@ export default function WorkerWrapper(options) {
 
 // oj's asset plugin resolving the file behind an asset import (`x.css` for
 // `x.css?url`): in flight, keyed by specifier and importer, so the app-plugin
-// routing can leave it alone.
+// routing can leave it alone. RESIDUAL RACE, accepted: a real `./x.css`
+// import from the same importer resolving concurrently with the sibling
+// `./x.css?url`'s inner resolve is indistinguishable by value (rolldown does
+// not reliably deliver `custom` across plugins, so causality is invisible)
+// and skips the app-plugin routing for that one resolution -- which is
+// exactly the pre-routing behavior, never worse; the asset still serves.
 const assetInnerResolves = new Map();
 const assetInnerKey = (source, importer) => `${source}\0${importer ?? ""}`;
 
@@ -187,6 +195,12 @@ function bundlerIdFor(r, mode) {
     const tag = assetTagFor(r.id, mode);
     if (tag) return V(tag, file);
     if (!r.id.includes("?")) return r.id;
+    // A real source file with a foreign query (`/abs/route.ts?tsr-split=x`)
+    // stays a PIPELINE id: transform and load filters key on it (Vite's
+    // contract), and the load below serves it (the plugin's load on the full
+    // id, then the clean file from disk). Only ids the pipeline's load filter
+    // cannot reach (node_modules, exotic extensions) go through vite-virtual.
+    if (!file.includes("/node_modules/") && /\.(jsx?|mjs|tsx?)$/.test(file)) return r.id;
   }
   return V("vite-virtual", r.id);
 }
@@ -215,7 +229,11 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
   // a bare specifier falls back to the normal-phase hooks, as the dev
   // server's plugin fallback does. The rolldown filter widens by exactly that.
   const plan = container?.resolveIdPlan?.() ?? { pre: { all: false, filters: [] }, post: { all: false, filters: [] } };
-  const userIncludes = [...plan.pre.filters, ...plan.post.filters, ...(plan.post.all ? [BARE_RE] : [])];
+  // An unfiltered hook in EITHER phase gets the bare-specifier fallback (the
+  // dev server's bounded-cost gate): most ecosystem plugins declare no
+  // filter, and an unfiltered enforce:"pre" plugin must not silently resolve
+  // in the SSR dev server but never in this bundle.
+  const userIncludes = [...plan.pre.filters, ...plan.post.filters, ...(plan.pre.all || plan.post.all ? [BARE_RE] : [])];
   const svgModule = async (path, id) => {
     if (container) {
       const code = await container.load(id);
@@ -263,7 +281,7 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
           const r = await this.resolve(s, i, { skipSelf: true, custom: { ojCoreResolve: true } });
           return r ? { id: r.id, external: r.external } : null;
         };
-        if (matchesAny(plan.pre.filters, source)) {
+        if (matchesAny(plan.pre.filters, source) || (plan.pre.all && BARE_RE.test(source))) {
           const r = await container.resolveIdResult(source, importer, null, "pre", bundlerResolve);
           if (r) return bundlerIdFor(r, mode);
         }
@@ -294,9 +312,15 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
           // Rollup's contract: a resolved id no load() claims is read from
           // disk (`/abs/x.ts?q` from a plugin's resolveId).
           const file = v.path.startsWith("\0") ? null : v.path.replace(/\?.*$/, "");
-          const typed = file && /\.(tsx?|jsx?|mjs)$/.test(file) ? (/\.mjs$/.test(file) ? "js" : extname(file).slice(1)) : "jsx";
+          const ext = file ? extname(file).slice(1) : "";
+          // Disk fallback parses as the FILE's own language (.mts/.cts are
+          // TS, never JSX); plugin-loaded code keeps a tolerant superset --
+          // tsx when the id is TS-family (types AND jsx parse), jsx otherwise
+          // (the pre-existing default: a load() may return JSX for any id).
+          const diskType = { mts: "ts", cts: "ts", ts: "ts", tsx: "tsx", jsx: "jsx", mjs: "js", cjs: "js", js: "js" }[ext] ?? "js";
+          const typed = ["ts", "mts", "cts", "tsx"].includes(ext) ? "tsx" : "jsx";
           if (code == null && file && isAbsolute(file) && existsSync(file)) {
-            return { code: readFileSync(file, "utf8"), moduleType: typed };
+            return { code: readFileSync(file, "utf8"), moduleType: diskType };
           }
           if (code == null) {
             if (!warnedVirtual.has(v.path)) {
@@ -317,8 +341,20 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
         if (container && !id.startsWith("\0") && !id.includes("/node_modules/")) {
           const cleanId = id.replace(/\?.*$/, "");
           if (/\.(jsx?|mjs|tsx?)$/.test(cleanId)) {
-            let code = await container.load(cleanId);
-            if (code == null && fallback) code = await fallback.load(cleanId);
+            // The FULL id first: a plugin's load keys on its own query
+            // (`?tsr-split=...`), Vite's contract; then the clean file.
+            let code = null;
+            for (const c of [container, fallback]) {
+              if (!c) continue;
+              if (id !== cleanId) code = await c.load(id);
+              if (code == null) code = await c.load(cleanId);
+              if (code != null) break;
+            }
+            if (code == null && id !== cleanId && existsSync(cleanId)) {
+              // Rollup's contract: a resolved id no load() claims reads the
+              // file behind the query from disk.
+              code = readFileSync(cleanId, "utf8");
+            }
             if (code != null) {
               const moduleType = cleanId.endsWith(".tsx")
                 ? "tsx"

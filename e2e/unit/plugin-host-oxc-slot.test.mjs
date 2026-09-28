@@ -84,3 +84,62 @@ viteTest("oxc: false keeps the raw source for every plugin, as in Vite", async (
   assert.equal(seen.post.hasTs, true, "with oxc disabled Vite runs no strip");
   assert.equal(seen.post.parses, false);
 });
+
+viteTest("oxc.exclude keeps the excluded module raw for normal/post plugins", async () => {
+  // Vite's vite:oxc filter is createFilter(include || ts-default, exclude ||
+  // /\.js$/): an excluded module reaches every later plugin untransformed.
+  // (a glob string: the config crosses the RPC as JSON, where a RegExp cannot)
+  const seen = await observe({ oxc: { exclude: ["**/src/a.tsx"] } });
+  assert.equal(seen.post.hasTs, true, "the excluded module is not stripped");
+  assert.equal(seen.post.parses, false);
+});
+
+viteTest("a filter.code matching only compiled output still claims the module", async () => {
+  // Vite evaluates a hook's filter against the code the hook receives, which
+  // for a normal/post plugin is the post-oxc output: a code filter matching
+  // the automatic-runtime import must fire although the raw source never
+  // contains it (dev emits react/jsx-dev-runtime, prod react/jsx-runtime).
+  const fx = tmpProject({ prefix: "oj-oxc-codefilter-" });
+  fs.symlinkSync(viteSrc, path.join(fx.root, "node_modules", "vite"), "dir");
+  fx.write(
+    "oj.plugins.mjs",
+    `const seen = { claimed: false };
+export default [
+  {
+    name: "jsx-runtime-probe",
+    enforce: "post",
+    transform: {
+      filter: { code: "react/jsx" }, // matches jsx-runtime AND jsx-dev-runtime, never the raw source
+      handler(code, id) {
+        if (id.endsWith(".tsx")) seen.claimed = true;
+        return null;
+      },
+    },
+  },
+  { name: "probe", transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; } },
+];
+`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [
+      path.join(fx.root, "oj.plugins.mjs"),
+      JSON.stringify({
+        config: { root: fx.root },
+        env: { command: "serve", mode: "development" },
+        environment: { name: "ssr", mode: "dev" },
+      }),
+    ],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  try {
+    const res = await host.send({ id: 1, hook: "transform", args: [SOURCE, path.join(fx.root, "src/a.tsx"), ""] });
+    assert.equal(res.error, undefined, `transform must not throw: ${res.error}\n${host.stderr()}`);
+    const probe = await host.send({ id: 2, hook: "transform", args: ["", path.join(fx.root, "probe.js"), ""] });
+    const seen = JSON.parse(JSON.parse(probe.result).code);
+    assert.equal(seen.claimed, true, "the post plugin's code filter fires on the stripped output");
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});

@@ -1132,6 +1132,7 @@ const seenIds = new Set();
 let viteParseAst = null;
 // Vite's own `transformWithOxc`, what its `vite:oxc` plugin strips TS/JSX with.
 let viteTransformWithOxc = null;
+let viteCreateFilter = null;
 // Vite's plugin context meta carries `viteVersion` (pluginContainer's
 // basePluginContextMeta); plugins feature-detect on it. The app's own Vite
 // reports its version; without one, the Vite line oj tracks.
@@ -1141,7 +1142,17 @@ try {
   const _vite = await import(createRequire(_root + "/package.json").resolve("vite"));
   if (typeof _vite.parseAst === "function") viteParseAst = _vite.parseAst;
   if (typeof _vite.transformWithOxc === "function") viteTransformWithOxc = _vite.transformWithOxc;
+  if (typeof _vite.createFilter === "function") viteCreateFilter = _vite.createFilter;
   if (typeof _vite.version === "string") viteVersion = _vite.version;
+  if (!viteTransformWithOxc) {
+    // An app Vite too old to export transformWithOxc: the vite:oxc-slot strip
+    // cannot run, so normal/post plugins will see raw TS/JSX, exactly as
+    // before the strip existed. Say so once instead of silently degrading.
+    process.stderr.write(
+      `oj plugin host: the app's vite (${viteVersion ?? "unknown"}) does not export transformWithOxc; ` +
+        `normal/post transform plugins will receive raw TS/JSX.\n`,
+    );
+  }
 } catch {}
 
 // Vite logs a hook's this.warn through the logger with the plugin's name
@@ -2969,6 +2980,22 @@ const OXC_STRIP_RE = /\.(m?ts|[jt]sx)$/;
 function runsBeforeOxcStrip(p, rank) {
   return rank < 0 || (rank === 0 && enforceRank(p) < 0);
 }
+// vite:oxc's own filter: createFilter(include || ts-jsx-default, exclude ||
+// /\.js$/), so an app's oxc.include/exclude decide which modules the strip
+// touches (an excluded module reaches normal/post plugins raw, as in Vite).
+let oxcStripFilter;
+function oxcStripMatches(id) {
+  const clean = id.split("?")[0];
+  if (oxcStripFilter === undefined && resolvedConfig) {
+    const oxc = resolvedConfig.oxc;
+    if (oxc === false) oxcStripFilter = () => false;
+    else if (viteCreateFilter) {
+      const { include, exclude } = oxc && typeof oxc === "object" ? oxc : {};
+      oxcStripFilter = viteCreateFilter(include || OXC_STRIP_RE, exclude || /\.js$/);
+    } else oxcStripFilter = (i) => OXC_STRIP_RE.test(i);
+  }
+  return oxcStripFilter ? oxcStripFilter(clean) : OXC_STRIP_RE.test(clean);
+}
 function oxcStripOptions() {
   const oxc = resolvedConfig && resolvedConfig.oxc;
   if (oxc === false) return null;
@@ -2994,14 +3021,22 @@ async function transform(code, id, resolvedJson) {
     let current = code;
     const maps = [];
     const transformOptions = { ssr: environment && environment.name === "ssr" };
-    let stripped =
-      !viteTransformWithOxc || !id || id.startsWith("\0") || !(OXC_STRIP_RE.test(id) || OXC_STRIP_RE.test(id.split("?")[0]));
+    let stripped = !viteTransformWithOxc || !id || id.startsWith("\0") || !oxcStripMatches(id);
     // Vite sorts a hook's plugins by the hook's own `order` (pre, normal, post)
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
     for (const { p, fn: handler, rank } of pluginsWithHook("transform")) {
-      if (!hookTransformMatches(p.transform, id, current)) continue;
-      if (!stripped && !runsBeforeOxcStrip(p, rank)) {
+      // The strip runs BEFORE this plugin's filter is evaluated: Vite
+      // evaluates a hook's filter against the code the hook would receive
+      // (post-oxc for normal/post plugins), so a `filter.code` that matches
+      // only compiled output must see the stripped source. The id-only
+      // pre-check keeps the strip lazy for plugins whose id filter can never
+      // match this module.
+      if (
+        !stripped &&
+        !runsBeforeOxcStrip(p, rank) &&
+        hookTransformMatches(p.transform, id, null, true)
+      ) {
         stripped = true;
         const opts = oxcStripOptions();
         if (opts) {
@@ -3015,6 +3050,7 @@ async function transform(code, id, resolvedJson) {
           if (r.map != null) maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
         }
       }
+      if (!hookTransformMatches(p.transform, id, current)) continue;
       let r;
       try {
         r = await handler.call(ctxFor(p), current, id, transformOptions);
@@ -3205,11 +3241,11 @@ function hookIdMatches(hook, id) {
   return !f || filterMatches(f.id, id, matchId);
 }
 
-function hookTransformMatches(hook, id, code) {
+function hookTransformMatches(hook, id, code, idOnly = false) {
   const f = hook && typeof hook === "object" ? hook.filter : null;
   if (!f) return true;
   if (!filterMatches(f.id, id, matchId)) return false;
-  if (f.code != null && !filterMatches(f.code, code, matchCode)) return false;
+  if (!idOnly && f.code != null && !filterMatches(f.code, code, matchCode)) return false;
   if (f.moduleType != null && !filterMatches(f.moduleType, moduleTypeOf(id), (p, v) => p === v)) return false;
   return true;
 }

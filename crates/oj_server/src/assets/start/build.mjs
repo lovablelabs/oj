@@ -260,8 +260,17 @@ emit.setWorkerBundler(async (file) => {
     input: file,
     platform: "browser",
     transform: { jsx: jsxTransformOptions(NODE_ENV !== "production"), define: clientDefine },
-    resolve: { conditionNames: CLIENT_CONDITIONS },
-    plugins: [assetsPlugin({ mode: "prod", server: false, emit }), nodeBuiltinShims({ production: true })],
+    resolve: { conditionNames: CLIENT_CONDITIONS, alias: clientAlias },
+    // Vite's bundleWorkerEntry runs the worker plugin pipeline, so imports
+    // inside a worker entry resolve exactly as in its importer: the app's
+    // plugins (a Cloudflare-shaped `#subpath` rule, `virtual:` modules) and
+    // the Start aliases included. Module workers are always ES here, as in
+    // oj's dev serving; a `worker.format: "iife"` config has no oj analog.
+    plugins: [
+      makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit }),
+      assetsPlugin({ mode: "prod", server: false, emit }),
+      nodeBuiltinShims({ production: true }),
+    ],
     output: { format: "esm", minify: MINIFY, codeSplitting: false },
     write: false,
   });

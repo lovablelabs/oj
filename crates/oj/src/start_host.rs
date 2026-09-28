@@ -629,11 +629,12 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
         "url" | "no-inline" => "url",
         "inline" => "inline",
         // Unbundled dev ignores `&inline` on a worker (Vite's worker load only
-        // inlines when the environment is bundled).
+        // inlines when the environment is bundled), so `&url` wins whenever it
+        // appears -- the build's precedence is the reverse (inline first).
         "worker" | "worker&inline" => "worker",
-        "worker&url" => "worker-url",
+        "worker&url" | "worker&inline&url" => "worker-url",
         "sharedworker" | "sharedworker&inline" => "sharedworker",
-        "sharedworker&url" => "sharedworker-url",
+        "sharedworker&url" | "sharedworker&inline&url" => "sharedworker-url",
         _ => return (spec.to_string(), None, false),
     };
     (clean, Some(tag), false)
@@ -1113,7 +1114,10 @@ impl StartHost {
         Ok(js(code))
     }
 
-    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev.
+    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev. Vite
+    /// additionally tags worker URLs `?worker_file&type=module` for its own
+    /// serving pipeline; oj's pipeline serves the compiled module without the
+    /// marker (verified in-browser by e2e/start-ssr-worker-url.mjs).
     fn dev_url(&self, path: &str) -> String {
         match Path::new(path).strip_prefix(&self.root) {
             Ok(rel) => format!("/{}", rel.to_string_lossy()),
@@ -1687,6 +1691,25 @@ mod tests {
         assert_eq!(
             split_intent("./hero.png?no-inline"),
             ("./hero.png".into(), Some("url"), false)
+        );
+        // Vite's combinable asset grammar: no-inline always wins, inline
+        // beats url, and dev serves `worker&inline&url` as the URL export
+        // (inline is a bundled-only concern).
+        assert_eq!(
+            split_intent("./hero.png?url&no-inline"),
+            ("./hero.png".into(), Some("url"), false)
+        );
+        assert_eq!(
+            split_intent("./hero.png?inline&no-inline"),
+            ("./hero.png".into(), Some("url"), false)
+        );
+        assert_eq!(
+            split_intent("./hero.png?url&inline"),
+            ("./hero.png".into(), Some("inline"), false)
+        );
+        assert_eq!(
+            split_intent("./w.ts?worker&inline&url"),
+            ("./w.ts".into(), Some("worker-url"), false)
         );
         // A query oj does not own passes through untouched.
         assert_eq!(
