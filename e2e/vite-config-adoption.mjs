@@ -32,7 +32,10 @@ try {
       } }]
     };
   `);
-  child = spawn(join(repo, 'target/debug/oj'), ['dev', fx.root, '--port', '15391', '--lazy'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  // detached: the dev server's engine children share its process group, so
+  // teardown can group-kill whatever outlives the graceful exit (they write
+  // .oj-cache and race the rm otherwise -- the ENOTEMPTY class).
+  child = spawn(join(repo, 'target/debug/oj'), ['dev', fx.root, '--port', '15391', '--lazy'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   child.stdout.on('data', d => { log += d; });
   child.stderr.on('data', d => { log += d; });
   await waitFor(async () => { try { return (await fetch('http://127.0.0.1:15391/')).ok; } catch { return false; } });
@@ -44,5 +47,8 @@ try {
   console.log('Vite config: deny rules and lazy warmup honored');
 } finally {
   if (child && child.exitCode === null) { const exited = once(child, 'exit'); child.kill('SIGTERM'); await exited; }
+  // The parent exited; engine children may still be flushing. Group-kill the
+  // stragglers before rm walks the tree.
+  try { process.kill(-child.pid, 'SIGKILL'); } catch {}
   fx.cleanup();
 }

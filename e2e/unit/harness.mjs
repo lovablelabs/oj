@@ -80,7 +80,7 @@ export function tmpProject({ prefix = "oj-fx-", pkgJson = { name: "fx" }, linkEs
     cleanup() {
       // A just-killed child can still flush writes into the tree while rm
       // walks it (ENOTEMPTY); maxRetries makes node retry those races.
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
