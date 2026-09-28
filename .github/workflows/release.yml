@@ -108,15 +108,16 @@ jobs:
           cp "target/${{ matrix.target }}/release/oj" "dist/$name/oj"
           cp LICENSE README.md "dist/$name/"
           bin="dist/$name/oj"
-          # Strip debug info and local symbols but keep the global ones:
-          # native npm addons (rolldown's napi binding) resolve napi_* from
-          # this executable at load time. A plain macOS `strip` removes all
-          # of them (it takes the 145 napi exports to 0), so check they survive.
+          # Strip everything native npm addons do not need: they (rolldown's
+          # napi binding) resolve napi_* from this executable at load time.
+          # On Linux those live in .dynsym, which `strip` keeps; on macOS a
+          # plain `strip` removes all of them (145 napi exports to 0), so it
+          # strips only local and debug symbols. Either way, check they survive.
           if [ "$RUNNER_OS" = macOS ]; then
             strip -x -S "$bin"
             exports=$(nm -gU "$bin" | grep -c ' _napi_' || true)
           else
-            strip --strip-debug "$bin"
+            strip "$bin"
             exports=$(nm -D --defined-only "$bin" | grep -c ' napi_' || true)
             glibc=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
             echo "newest glibc symbol required: $glibc"
