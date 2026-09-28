@@ -271,51 +271,103 @@ fn raise_fd_limit() {
     }
 }
 
-/// The app's package manager, as `npm_config_user_agent` would present it
-/// (Vite only prefix-matches the manager name). Detection: the nearest
-/// `packageManager` field or lockfile, walking up from the invocation's
-/// app-root argument (the first non-flag argument after the subcommand,
-/// resolved against the cwd), falling back to the cwd itself. Best effort by
-/// design: returning None leaves the environment untouched.
+/// The app's package manager, as `npm_config_user_agent` would present it.
+/// Vite prefix-matches the manager NAME, but the VERSION matters too:
+/// ecosystem tools version-gate on the agent (yarn classic vs berry is
+/// `version.startsWith('1.')`), so the `packageManager` field's real version
+/// wins and lockfile-shape detection picks a representative one. The tail is
+/// a parseable `tool/version` field (`oj/<version>`), never prose, because
+/// consumers split the agent on spaces. Detection walks up from the
+/// invocation's app-root argument and STOPS at a `.git` boundary: this value
+/// is pinned into every child's environment, so a stray lockfile in an
+/// unrelated ancestor (an accidental `npm i` in $HOME) must never win. Best
+/// effort by design: returning None leaves the environment untouched.
 fn detect_package_manager_agent() -> Option<String> {
-    let mut args = std::env::args().skip(1);
-    let _subcommand = args.next()?;
-    let root_arg = args
-        .filter(|a| !a.starts_with('-'))
-        .next()
-        .unwrap_or_else(|| ".".into());
-    let start = std::env::current_dir().ok()?.join(root_arg);
-    let mut dir = if start.is_dir() {
-        start
-    } else {
-        std::env::current_dir().ok()?
+    let mut raw = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned());
+    let _subcommand = raw.next()?;
+    // The first non-flag token that does not directly follow a value-taking
+    // flag: `--port 3000` must never be read as a root named 3000. A boolean
+    // flag before the root only costs the cwd fallback, the safe direction.
+    let mut root_arg: Option<String> = None;
+    let mut prev_was_bare_flag = false;
+    for a in raw {
+        if a.starts_with('-') {
+            prev_was_bare_flag = !a.contains('=');
+            continue;
+        }
+        if !prev_was_bare_flag {
+            root_arg = Some(a);
+            break;
+        }
+        prev_was_bare_flag = false;
+    }
+    let cwd = std::env::current_dir().ok()?;
+    let mut dir = match root_arg {
+        Some(arg) => {
+            let p = cwd.join(arg);
+            if p.is_dir() {
+                p
+            } else {
+                cwd.clone()
+            }
+        }
+        // Mirror the CLI's default root: playground/ when it serves one.
+        None => {
+            let playground = cwd.join("playground");
+            if playground.join("index.html").is_file() {
+                playground
+            } else {
+                cwd.clone()
+            }
+        }
     };
     loop {
         if let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg) {
                 if let Some(pm) = v.get("packageManager").and_then(|p| p.as_str()) {
-                    let name = pm.split('@').next().unwrap_or(pm);
+                    let mut parts = pm.splitn(2, '@');
+                    let name = parts.next().unwrap_or_default();
+                    // `pnpm@9.0.0+sha512...`: the hash suffix is not part of
+                    // the version tools parse.
+                    let version = parts
+                        .next()
+                        .map(|v| v.split('+').next().unwrap_or(v))
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or("0.0.0");
                     if !name.is_empty() {
-                        return Some(format!("{name}/0.0.0 (set by oj)"));
+                        return Some(format!("{name}/{version} oj/{}", env!("CARGO_PKG_VERSION")));
                     }
                 }
             }
         }
-        for (file, manager) in [
-            ("node_modules/.pnpm/lock.yaml", "pnpm"),
-            ("pnpm-lock.yaml", "pnpm"),
-            ("node_modules/.yarn-state.yml", "yarn"),
-            ("yarn.lock", "yarn"),
-            ("bun.lock", "bun"),
-            ("bun.lockb", "bun"),
-            ("node_modules/.package-lock.json", "npm"),
-            ("package-lock.json", "npm"),
+        // Vite's own lockfileFormats mapping (optimizer/index.ts), most
+        // specific first: bun before yarn because a bun install can be
+        // configured to ALSO emit a yarn.lock, never the reverse; rush is
+        // pnpm under the hood; the yarn version split is classic (yarn.lock)
+        // vs berry (its node_modules state file).
+        for (file, manager, version) in [
+            ("node_modules/.pnpm/lock.yaml", "pnpm", "9.0.0"),
+            ("pnpm-lock.yaml", "pnpm", "9.0.0"),
+            (".rush/temp/shrinkwrap-deps.json", "pnpm", "9.0.0"),
+            ("bun.lock", "bun", "1.2.0"),
+            ("bun.lockb", "bun", "1.2.0"),
+            ("node_modules/.yarn-state.yml", "yarn", "4.0.0"),
+            ("yarn.lock", "yarn", "1.22.22"),
+            ("node_modules/.package-lock.json", "npm", "10.0.0"),
+            ("package-lock.json", "npm", "10.0.0"),
         ] {
             if dir.join(file).exists() {
-                return Some(format!("{manager}/0.0.0 (set by oj)"));
+                return Some(format!(
+                    "{manager}/{version} oj/{}",
+                    env!("CARGO_PKG_VERSION")
+                ));
             }
         }
-        if !dir.pop() {
+        // A repo boundary ends the walk: this dir was the app's repo and it
+        // answered nothing; an ancestor's lockfile is another project's.
+        if dir.join(".git").exists() || !dir.pop() {
             return None;
         }
     }

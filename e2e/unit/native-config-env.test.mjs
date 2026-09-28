@@ -76,6 +76,24 @@ test("oj presents the app's package manager as npm_config_user_agent", () => {
   assert.match(seen.userAgent ?? "", /^pnpm\//, "detected from the app's lockfile");
 });
 
+test("the packageManager field's real version is presented", () => {
+  // Ecosystem tools version-gate on the agent (yarn classic vs berry is
+  // version.startsWith('1.')); the field's version must survive, minus any
+  // +sha integrity suffix, and the tail stays a parseable tool/version field.
+  const seen = envSeenByPlugins({ npm_config_user_agent: undefined }, (fx) =>
+    fx.write("package.json", JSON.stringify({ name: "fx", packageManager: "yarn@1.22.22+sha512.abc" })),
+  );
+  assert.match(seen.userAgent ?? "", /^yarn\/1\.22\.22 oj\//);
+});
+
+test("a bun app that also emits a yarn.lock presents bun", () => {
+  const seen = envSeenByPlugins({ npm_config_user_agent: undefined }, (fx) => {
+    fx.write("bun.lock", "{}");
+    fx.write("yarn.lock", "");
+  });
+  assert.match(seen.userAgent ?? "", /^bun\//, "bun installs can emit a yarn.lock; the reverse never happens");
+});
+
 test("a real package manager's agent is never overridden", () => {
   const seen = envSeenByPlugins(
     { npm_config_user_agent: "pnpm/9.12.0 npm/? node/v24.17.0 darwin arm64" },
