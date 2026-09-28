@@ -61,15 +61,16 @@ jobs:
             runner: macos-14
           - target: x86_64-apple-darwin
             runner: macos-15-intel
-          # Linux builds run in Debian bullseye (glibc 2.31), so the binary
-          # runs on any distro with glibc >= 2.31, not just the runner's; the
-          # smoke test below runs inside that same old userland.
+          # Linux builds run in Ubuntu 22.04 (glibc 2.35), so the binary runs
+          # on any distro with glibc >= 2.35, not just the runner's newer one;
+          # the smoke test below runs inside that same userland. (A supported
+          # release: Debian bullseye's archive went away at its end of life.)
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest-m-public
-            container: debian:bullseye
+            container: ubuntu:22.04
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            container: debian:bullseye
+            container: ubuntu:22.04
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container || null }}
     timeout-minutes: 180
@@ -77,8 +78,10 @@ jobs:
       # oj's minimum macOS; ignored on Linux.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - name: build dependencies (debian)
+      - name: build dependencies (ubuntu)
         if: matrix.container
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
