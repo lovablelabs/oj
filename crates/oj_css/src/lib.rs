@@ -497,6 +497,36 @@ fn probe_target(p: &Path) -> Option<PathBuf> {
     index_target(p).or_else(|| package_entry(p))
 }
 
+/// A grass Fs that records every stylesheet it reads: sass's `includedFiles`,
+/// which Vite registers as the compiled sheet's HMR dependencies.
+#[derive(Debug)]
+struct RecordingFs<'a> {
+    inner: &'a DottedFs,
+    seen: std::sync::Mutex<Vec<PathBuf>>,
+}
+
+impl grass::Fs for RecordingFs<'_> {
+    fn is_dir(&self, p: &Path) -> bool {
+        self.inner.is_dir(p)
+    }
+    fn is_file(&self, p: &Path) -> bool {
+        self.inner.is_file(p)
+    }
+    fn read(&self, p: &Path) -> io::Result<Vec<u8>> {
+        let out = self.inner.read(p);
+        if out.is_ok() {
+            // Record the real file (a probe may name a partial's phantom path).
+            let real = if p.is_file() {
+                p.to_path_buf()
+            } else {
+                probe_target(p).unwrap_or_else(|| p.to_path_buf())
+            };
+            self.seen.lock().unwrap().push(real);
+        }
+        out
+    }
+}
+
 impl grass::Fs for DottedFs {
     fn is_dir(&self, p: &Path) -> bool {
         p.is_dir() || dotted_stylesheet(p).is_some()
@@ -672,6 +702,17 @@ pub fn node_modules_load_paths(dir: &Path) -> Vec<PathBuf> {
 }
 
 pub fn compile_sass_opts(source: &str, opts: &SassOptions<'_>) -> Result<String, String> {
+    compile_sass_collecting(source, opts, &mut Vec::new())
+}
+
+/// `compile_sass_opts`, also appending every stylesheet the compile loaded
+/// (`@use`/`@forward`/`@import` targets, partials included) to `deps`: sass's
+/// `includedFiles`, which Vite registers as the sheet's HMR dependencies.
+pub fn compile_sass_collecting(
+    source: &str,
+    opts: &SassOptions<'_>,
+    deps: &mut Vec<PathBuf>,
+) -> Result<String, String> {
     let fs = DottedFs {
         resolve: CssResolveConfig {
             root: opts.resolve.root.map(Path::to_path_buf).unwrap_or_default(),
@@ -686,7 +727,11 @@ pub fn compile_sass_opts(source: &str, opts: &SassOptions<'_>) -> Result<String,
             modules: opts.resolve.modules.clone(),
         },
     };
-    let mut options = grass::Options::default().fs(&fs);
+    let recording = RecordingFs {
+        inner: &fs,
+        seen: std::sync::Mutex::new(Vec::new()),
+    };
+    let mut options = grass::Options::default().fs(&recording);
     if let Some(dir) = opts.load_dir {
         options = options.load_path(dir);
     }
@@ -704,7 +749,9 @@ pub fn compile_sass_opts(source: &str, opts: &SassOptions<'_>) -> Result<String,
         Some(data) if !data.is_empty() => format!("{data}\n{stripped}"),
         _ => stripped,
     };
-    grass::from_string(source, &options).map_err(|e| format!("sass error: {e}"))
+    let out = grass::from_string(source, &options).map_err(|e| format!("sass error: {e}"));
+    deps.append(&mut recording.seen.lock().unwrap());
+    out
 }
 
 /// Vite 8's `baseline-widely-available` target list (its `build.target` and
@@ -1220,8 +1267,19 @@ pub fn inline_imports_with(
     file: &Path,
     resolve: &CssResolve<'_>,
 ) -> Result<String, String> {
+    inline_imports_collecting(source, file, resolve, &mut Vec::new())
+}
+
+/// `inline_imports_with`, also appending every stylesheet it inlined to
+/// `deps`: the @import graph Vite registers as the sheet's HMR dependencies.
+pub fn inline_imports_collecting(
+    source: &str,
+    file: &Path,
+    resolve: &CssResolve<'_>,
+    deps: &mut Vec<PathBuf>,
+) -> Result<String, String> {
     let mut stack = vec![file.to_path_buf()];
-    let out = inline_imports_depth(source, file, &mut stack, resolve)?;
+    let out = inline_imports_depth(source, file, &mut stack, resolve, deps)?;
     Ok(if out.contains("@import") {
         hoist_imports(&out)
     } else {
@@ -1282,6 +1340,7 @@ fn inline_imports_depth(
     file: &Path,
     stack: &mut Vec<PathBuf>,
     resolve: &CssResolve<'_>,
+    deps: &mut Vec<PathBuf>,
 ) -> Result<String, String> {
     if !source.contains("@import") || stack.len() > 32 {
         return Ok(source.to_string());
@@ -1319,8 +1378,9 @@ fn inline_imports_depth(
         };
         let child = std::fs::read_to_string(&target)
             .map_err(|e| format!("cannot read @import {spec} ({}): {e}", target.display()))?;
+        deps.push(target.clone());
         stack.push(target.clone());
-        let child = inline_imports_depth(&child, &target, stack, resolve)?;
+        let child = inline_imports_depth(&child, &target, stack, resolve, deps)?;
         stack.pop();
         let child_dir = target.parent().unwrap_or(Path::new("."));
         let rebased = rebase_to_dir(&child, &target, child_dir, dir, resolve)?;
@@ -2316,6 +2376,47 @@ mod tests {
             compiled.css.contains("/src/base/dot.png"),
             "{}",
             compiled.css
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // The collecting variants report every file the compile pulled in — the
+    // HMR watch edges Vite gets from postcss-import deps / sass includedFiles.
+    #[test]
+    fn collecting_variants_report_dependency_files() {
+        let base = std::env::temp_dir().join(format!("oj-css-deps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("part.css"), ".p { color: red; }").unwrap();
+        std::fs::write(base.join("nested.css"), ".n {}").unwrap();
+        std::fs::write(base.join("mid.css"), "@import \"./nested.css\";\n.m {}").unwrap();
+        let mut deps = Vec::new();
+        inline_imports_collecting(
+            "@import \"./part.css\";\n@import \"./mid.css\";\n.a {}",
+            &base.join("a.css"),
+            &CssResolve::default(),
+            &mut deps,
+        )
+        .unwrap();
+        for f in ["part.css", "mid.css", "nested.css"] {
+            assert!(deps.contains(&base.join(f)), "{f} missing from {deps:?}");
+        }
+
+        std::fs::write(base.join("_dep.scss"), "$c: blue;").unwrap();
+        let mut sass_deps = Vec::new();
+        let out = compile_sass_collecting(
+            "@use \"./dep\" as d;\n.s { color: d.$c; }",
+            &SassOptions {
+                load_dir: Some(&base),
+                ..SassOptions::default()
+            },
+            &mut sass_deps,
+        )
+        .unwrap();
+        assert!(out.contains("blue"), "{out}");
+        assert!(
+            sass_deps.contains(&base.join("_dep.scss")),
+            "the partial is the dep: {sass_deps:?}"
         );
         let _ = std::fs::remove_dir_all(&base);
     }
