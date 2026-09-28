@@ -44,17 +44,26 @@ const ojReimplemented = (name = "") =>
 function envConsumer(environment) {
   return environment === "client" ? "client" : "server";
 }
+// Vite evaluates applyToEnvironment once per environment when it builds the
+// environment's plugin list; the answer is fixed, so it is memoized per
+// plugin and environment rather than re-run on every hook call.
+const envAllowsMemo = new WeakMap();
 function envAllows(plugin, environment) {
   const f = plugin.applyToEnvironment;
   if (typeof f !== "function") return true;
+  let byEnv = envAllowsMemo.get(plugin);
+  if (!byEnv) envAllowsMemo.set(plugin, (byEnv = new Map()));
+  if (byEnv.has(environment)) return byEnv.get(environment);
   const env = { name: environment, config: { consumer: envConsumer(environment) } };
+  let allowed = true;
   try {
     const r = f(env);
-    if (r && typeof r.then === "function") return true;
-    return r !== false;
+    allowed = r && typeof r.then === "function" ? true : r !== false;
   } catch {
-    return true;
+    allowed = true;
   }
+  byEnv.set(environment, allowed);
+  return allowed;
 }
 
 // Vite's pluginFilter: a string id filter is a picomatch glob joined to cwd (unless
@@ -128,9 +137,19 @@ function codeAllowed(filter, code) {
 
 // Vite's getSortedPluginHooks: a hook's own `order` ("pre" | "post") ranks it
 // before or after the normal band, stable within a band (so `enforce` order holds).
+// The sorted list per plugin list and hook, computed once (the list is fixed
+// once the container is built; Vite caches getSortedPlugins the same way).
+const byHookMemo = new WeakMap();
 function byHook(plugins, name) {
-  const rank = (p) => { const h = p[name]; return h?.order === "pre" ? -1 : h?.order === "post" ? 1 : 0; };
-  return [...plugins].sort((a, b) => rank(a) - rank(b));
+  let byName = byHookMemo.get(plugins);
+  if (!byName) byHookMemo.set(plugins, (byName = new Map()));
+  let sorted = byName.get(name);
+  if (!sorted) {
+    const rank = (p) => { const h = p[name]; return h?.order === "pre" ? -1 : h?.order === "post" ? 1 : 0; };
+    sorted = [...plugins].sort((a, b) => rank(a) - rank(b));
+    byName.set(name, sorted);
+  }
+  return sorted;
 }
 
 function applyMatches(plugin, command, mode) {
