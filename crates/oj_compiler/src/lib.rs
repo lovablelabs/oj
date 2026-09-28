@@ -763,14 +763,17 @@ pub(crate) fn rewrite_module_specifiers_pub<'a>(
     (imports, dynamic_imports)
 }
 
+/// Per import specifier, the binding names the module uses from it.
+type ImportBindings = Vec<(String, Vec<String>)>;
+
 fn rewrite_module_specifiers<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     rewriter: &mut Option<&mut ImportRewriter>,
-) -> (Vec<String>, Vec<String>, Vec<(String, Vec<String>)>) {
+) -> (Vec<String>, Vec<String>, ImportBindings) {
     let mut imports = Vec::new();
     let mut dynamic_imports = Vec::new();
-    let mut bindings: Vec<(String, Vec<String>)> = Vec::new();
+    let mut bindings: ImportBindings = Vec::new();
     for stmt in program.body.iter_mut() {
         // The names each statement pulls from its source, for partial-accept
         // gating (Vite's importedBindings): a side-effect import records an

@@ -604,7 +604,10 @@ mod tests {
             assert!(g.update_targets(mod_).is_err(), "must propagate past mod");
         }
         g.set_imported_bindings(main, &[]);
-        assert!(g.update_targets(mod_).is_err(), "unknown bindings propagate");
+        assert!(
+            g.update_targets(mod_).is_err(),
+            "unknown bindings propagate"
+        );
 
         // A side-effect import (analyzed, zero names) is within any accepted set.
         g.set_imported_bindings(main, &[(mod_.to_path_buf(), Vec::new())]);

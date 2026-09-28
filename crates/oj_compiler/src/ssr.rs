@@ -779,13 +779,19 @@ mod tests {
     #[test]
     fn scope_label_collision_not_rewritten() {
         let o = t("import { query } from 'vue';function foo() { query: while (true) { continue query; break query } }");
-        assert!(o.contains("query: while (true) { continue query; break query }"), "{o}");
+        assert!(
+            o.contains("query: while (true) { continue query; break query }"),
+            "{o}"
+        );
     }
 
     #[test]
     fn scope_shadow_object_destructuring() {
         let o = t("import { fn } from 'vue';function A(){ let {fn, test} = {fn: 'foo', test: 'bar'}; return { fn }; }");
-        assert!(o.contains("return { fn };"), "shorthand of a destructured shadow was rewritten: {o}");
+        assert!(
+            o.contains("return { fn };"),
+            "shorthand of a destructured shadow was rewritten: {o}"
+        );
         assert!(!o.contains("fn: (0,"), "{o}");
     }
 
@@ -816,7 +822,10 @@ mod tests {
     #[test]
     fn scope_shadow_function_expression_name() {
         let o = t("import {fn} from './vue';var a = function() { return function fn() { console.log(fn) } }");
-        assert!(o.contains("console.log(fn)"), "a function expression's own name was rewritten: {o}");
+        assert!(
+            o.contains("console.log(fn)"),
+            "a function expression's own name was rewritten: {o}"
+        );
     }
 
     #[test]
@@ -839,14 +848,18 @@ mod tests {
 
     #[test]
     fn scope_shadow_class_expression_name_in_global_scope() {
-        let o = t("import { cls } from './vue';foo(class cls { constructor() { console.log(cls) } })");
+        let o =
+            t("import { cls } from './vue';foo(class cls { constructor() { console.log(cls) } })");
         assert!(o.contains("console.log(cls)"), "{o}");
     }
 
     #[test]
     fn scope_shadow_catch_clause() {
         let o = t("import {error} from './dependency';try {} catch(error) {}");
-        assert!(o.contains("catch(error) {}") || o.contains("catch (error) {}"), "{o}");
+        assert!(
+            o.contains("catch(error) {}") || o.contains("catch (error) {}"),
+            "{o}"
+        );
         assert!(!o.contains("catch(__vite"), "{o}");
     }
 
@@ -865,7 +878,8 @@ mod tests {
     #[test]
     fn scope_computed_destructure_key_rewritten_value_shadowed() {
         // #23232: the computed KEY reads the import; the bound VALUE shadows.
-        let o = t("import { key } from 'foo';function declaration({ [key]: value = null } = {}) {}");
+        let o =
+            t("import { key } from 'foo';function declaration({ [key]: value = null } = {}) {}");
         assert!(o.contains("__vite_ssr_import_0__.key"), "{o}");
         assert!(o.contains("]: value"), "{o}");
         let o = t("import { key } from 'foo';class Foo { method({ [key]: value } = {}) {} }");
@@ -886,13 +900,20 @@ mod tests {
         ));
         // Five shadowed returns stay bare; only the global read rewrites.
         assert_eq!(o.matches("return key").count(), 5, "{o}");
-        assert!(o.contains("console.log((0, __vite_ssr_import_0__.key))") || o.contains("console.log(__vite_ssr_import_0__.key)"), "{o}");
+        assert!(
+            o.contains("console.log((0, __vite_ssr_import_0__.key))")
+                || o.contains("console.log(__vite_ssr_import_0__.key)"),
+            "{o}"
+        );
     }
 
     #[test]
     fn scope_object_destructure_alias_shadows() {
         let o = t("import { n } from 'foo';const a = () => { const { type: n = 'bar' } = {}; console.log(n) }");
-        assert!(o.contains("console.log(n)"), "aliased destructure shadow was rewritten: {o}");
+        assert!(
+            o.contains("console.log(n)"),
+            "aliased destructure shadow was rewritten: {o}"
+        );
     }
 
     #[test]
@@ -917,7 +938,10 @@ mod tests {
         // Three import reads (computed key, its default, the array default);
         // every shadowed assignment target inside `shadowed` stays bare.
         assert!(o.matches("__vite_ssr_import_0__.key").count() >= 3, "{o}");
-        assert!(o.contains("({ key } = object)"), "a shadowed assignment target was rewritten: {o}");
+        assert!(
+            o.contains("({ key } = object)"),
+            "a shadowed assignment target was rewritten: {o}"
+        );
         assert!(o.contains("({ alias: key } = object)"), "{o}");
         assert!(o.contains("return key }"), "{o}");
     }
@@ -933,7 +957,10 @@ mod tests {
             "remove(); add(); get(); set(); rest(); objRest();\n",
         ));
         // Inside a(): every name is a destructured local, no rewrites.
-        assert!(o.contains("remove(); add(); get(); set(); rest(); objRest();"), "{o}");
+        assert!(
+            o.contains("remove(); add(); get(); set(); rest(); objRest();"),
+            "{o}"
+        );
         // Outside: every call rewrites.
         for name in ["remove", "add", "get", "set", "rest", "objRest"] {
             assert!(
@@ -950,7 +977,10 @@ mod tests {
             "class A { remove = 1\n add = null\n update = update\n del = () => del()\n call = call(4) }\n",
             "remove(2); add(4);\n",
         ));
-        assert!(o.contains("remove = 1"), "a class prop KEY was rewritten: {o}");
+        assert!(
+            o.contains("remove = 1"),
+            "a class prop KEY was rewritten: {o}"
+        );
         assert!(o.contains("__vite_ssr_import_0__.update"), "{o}");
         assert!(!o.contains("__vite_ssr_import_0__.remove = 1"), "{o}");
         assert!(o.contains("(0, __vite_ssr_import_0__.del)()"), "{o}");
@@ -966,10 +996,16 @@ mod tests {
             "class A { foo() {}\n [foo]() {}\n [bar]() {}\n #foo() {}\n bar(foo) {} }\n",
         ));
         assert!(o.contains("foo() {}"), "a method NAME was rewritten: {o}");
-        assert!(o.contains("__vite_ssr_import_0__.default"), "the computed method key was not rewritten: {o}");
+        assert!(
+            o.contains("__vite_ssr_import_0__.default"),
+            "the computed method key was not rewritten: {o}"
+        );
         assert!(o.contains("[bar]() {}"), "{o}");
         assert!(o.contains("#foo() {}"), "{o}");
-        assert!(o.contains("bar(foo) {}"), "a method PARAM was rewritten: {o}");
+        assert!(
+            o.contains("bar(foo) {}"),
+            "a method PARAM was rewritten: {o}"
+        );
     }
 
     #[test]
@@ -988,8 +1024,14 @@ mod tests {
             "}\n",
             "aaa(); bbb();\n",
         ));
-        assert!(o.contains("function foobar() { ddd();"), "hoisted fn shadow missed: {o}");
-        assert!(o.contains("bbb(ccc); ddd()"), "TDZ-positioned shadows rewritten: {o}");
+        assert!(
+            o.contains("function foobar() { ddd();"),
+            "hoisted fn shadow missed: {o}"
+        );
+        assert!(
+            o.contains("bbb(ccc); ddd()"),
+            "TDZ-positioned shadows rewritten: {o}"
+        );
         assert!(o.contains("(0, __vite_ssr_import_0__.aaa)()"), "{o}");
         assert!(o.contains("(0, __vite_ssr_import_0__.bbb)()"), "{o}");
     }
@@ -1004,7 +1046,11 @@ mod tests {
         ));
         assert!(o.contains("const foo = 'foo'; console.log(foo)"), "{o}");
         assert!(o.contains("const [bar] = ['bar']; console.log(bar)"), "{o}");
-        assert!(o.contains("console.log(__vite_ssr_import_0__.foo)") || o.contains("console.log((0, __vite_ssr_import_0__.foo))"), "{o}");
+        assert!(
+            o.contains("console.log(__vite_ssr_import_0__.foo)")
+                || o.contains("console.log((0, __vite_ssr_import_0__.foo))"),
+            "{o}"
+        );
     }
 
     #[test]
@@ -1015,6 +1061,9 @@ mod tests {
             "import { foo, bar } from 'foobar';\n",
             "function test() { if (true) { var foo = () => { var why = 'would' }, bar = 'someone' } return [foo, bar] }\n",
         ));
-        assert!(o.contains("return [foo, bar]"), "var-hoisted shadows were rewritten: {o}");
+        assert!(
+            o.contains("return [foo, bar]"),
+            "var-hoisted shadows were rewritten: {o}"
+        );
     }
 }

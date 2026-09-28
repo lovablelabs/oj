@@ -4505,7 +4505,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
-                import_bindings: Vec::new(),
+            import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4611,7 +4611,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
-                import_bindings: Vec::new(),
+            import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4705,7 +4705,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
-                import_bindings: Vec::new(),
+            import_bindings: Vec::new(),
         });
         if state.persistent_cache {
             let _ = state
@@ -4880,7 +4880,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
-                import_bindings: Vec::new(),
+            import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -5513,10 +5513,7 @@ fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
         })
         .unwrap_or_default();
     graph.set_accepted_deps(Path::new(url), &accepted);
-    graph.set_accepted_exports(
-        Path::new(url),
-        hot.and_then(|h| h.accepted_exports.clone()),
-    );
+    graph.set_accepted_exports(Path::new(url), hot.and_then(|h| h.accepted_exports.clone()));
     let bindings: Vec<(PathBuf, Vec<String>)> = module
         .import_bindings
         .iter()
@@ -8150,9 +8147,9 @@ fn is_restart_trigger(path: &Path) -> bool {
 /// cache loaded; the name pattern covers the `extends` bases like
 /// tsconfig.base.json without tracking cache membership).
 fn is_tsconfig_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json")))
+    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+        n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json"))
+    })
 }
 
 /// Re-exec the current binary with the same arguments so a fresh process
