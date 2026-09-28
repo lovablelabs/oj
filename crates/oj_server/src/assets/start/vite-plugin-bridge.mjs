@@ -84,16 +84,19 @@ function globToRegExpSource(glob) {
   return re;
 }
 const idGlobCache = new Map();
-function matchOne(pat, id) {
-  if (pat instanceof RegExp) { const r = pat.test(slash(id)); pat.lastIndex = 0; return r; }
-  if (typeof pat !== "string") return false;
+function globRegExp(pat) {
   let re = idGlobCache.get(pat);
   if (!re) {
     const glob = pat.startsWith("**") || pat.startsWith("/") ? slash(pat) : slash(join(process.env.OJ_APP_ROOT ?? process.cwd(), pat));
     re = new RegExp("^" + globToRegExpSource(glob) + "$");
     idGlobCache.set(pat, re);
   }
-  return re.test(slash(id));
+  return re;
+}
+function matchOne(pat, id) {
+  if (pat instanceof RegExp) { const r = pat.test(slash(id)); pat.lastIndex = 0; return r; }
+  if (typeof pat !== "string") return false;
+  return globRegExp(pat).test(slash(id));
 }
 function idAllowed(filter, id) {
   if (!filter) return true;
@@ -404,7 +407,12 @@ export function createPluginContainer(vite, allPlugins, {
   // polyfill, the worker entry) needs that tail. The dev loader resolves files
   // itself, so it keeps the plugins-only answer.
   const fileResolver = command === "build" ? resolvedConfig.createResolver() : null;
-  function pluginContext(plugin, base = ctx, ambientSkipCalls = null) {
+  // `bundlerResolve`, when a bundler hook drives the call: the bundler's own
+  // resolution (its this.resolve), the tail Vite's this.resolve ends in, so a
+  // plugin that re-resolves an import (Cloudflare's subpath-import rule,
+  // import-protection) gets what the build would resolve, extensions and
+  // tsconfig paths included, not the plugins-only or side-resolver answer.
+  function pluginContext(plugin, base = ctx, ambientSkipCalls = null, bundlerResolve = null) {
     return Object.assign(Object.create(base), {
       async resolve(source, importer, options = {}) {
         // Vite's cumulative `skipCalls` (see plugin-host.mjs ctx.resolve): a
@@ -420,8 +428,9 @@ export function createPluginContainer(vite, allPlugins, {
             skipCalls = ambientSkipCalls ? [...ambientSkipCalls, { id: source, importer, plugin }] : [{ id: source, importer, plugin }];
           }
         }
-        const resolved = await resolveIdResult(source, importer, skipCalls);
+        const resolved = await resolveIdResult(source, importer, skipCalls, undefined, bundlerResolve);
         if (resolved) return resolved;
+        if (bundlerResolve) return bundlerResolve(source, importer);
         if (!fileResolver || source.startsWith("\0") || /^[a-z]+:/i.test(source) && !isAbsolute(source)) return null;
         try {
           const file = await fileResolver(source, importer);
@@ -433,10 +442,49 @@ export function createPluginContainer(vite, allPlugins, {
     });
   }
 
+  // Vite's resolve order around its core resolver (`vite:resolve` sits right
+  // after the enforce:"pre" plugins): the "pre" phase is the hooks that run
+  // before it (`order: "pre"`, or an enforce:"pre" plugin with no hook order),
+  // "post" every other hook, which only sees an id the core resolver left.
+  const inResolvePhase = (p, phase) => {
+    if (!phase) return true;
+    const order = p.resolveId?.order;
+    const pre = order === "pre" || (order == null && p.enforce === "pre");
+    return phase === "pre" ? pre : !pre;
+  };
+
+  // Per phase, what a bundler must route to resolveIdResult: the RegExps of
+  // every declared `filter.id` include, or `all` when some hook has no filter.
+  function resolveIdPlan() {
+    const plan = { pre: { all: false, filters: [] }, post: { all: false, filters: [] } };
+    for (const p of plugins) {
+      if (!hookHandler(p.resolveId) || !envAllows(p, environment) || ojReimplemented(p.name)) continue;
+      const phase = plan[inResolvePhase(p, "pre") ? "pre" : "post"];
+      const f = hookFilter(p.resolveId);
+      const ids = f && (f.id ?? f);
+      const include = ids && typeof ids === "object" && !(ids instanceof RegExp) && !Array.isArray(ids) ? ids.include : ids;
+      if (include == null) {
+        phase.all = true;
+        continue;
+      }
+      for (const pat of [].concat(include)) {
+        if (pat instanceof RegExp) phase.filters.push(pat);
+        else if (typeof pat === "string") phase.filters.push(globRegExp(pat));
+      }
+    }
+    return plan;
+  }
+
   // The full resolveId answer ({ id, external }); resolveId keeps the id-only form.
-  async function resolveIdResult(id, importer, skipCalls) {
+  async function resolveIdResult(id, importer, skipCalls, phase, bundlerResolve = null) {
     await initializePlugins();
     for (const p of byHook(plugins, "resolveId")) {
+      if (!inResolvePhase(p, phase)) continue;
+      // Driven by the bundler (a phase, or a nested this.resolve inside one), a
+      // plugin oj reimplements natively stays out, as resolveIdPlan leaves it out: oj's own pass
+      // already covers it (e.g. import-protection), and its resolveId
+      // re-resolving every import would duplicate the core resolver.
+      if ((phase || bundlerResolve) && ojReimplemented(p.name)) continue;
       // Vite merges skipCalls into the skip set: skipped on the same
       // id + importer, or outright once re-entered (`called`).
       if (skipCalls && skipCalls.some((c) => c.plugin === p && (c.called || (c.id === id && c.importer === importer)))) continue;
@@ -444,7 +492,7 @@ export function createPluginContainer(vite, allPlugins, {
       const h = hookHandler(p.resolveId);
       if (!h || !idAllowed(hookFilter(p.resolveId), id)) continue;
       let r;
-      try { r = await h.call(pluginContext(p, ctx, skipCalls), id, importer, { isEntry: false, ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
+      try { r = await h.call(pluginContext(p, ctx, skipCalls, bundlerResolve), id, importer, { isEntry: false, ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
       if (r != null) return typeof r === "string" ? { id: r } : { id: r.id, external: r.external };
     }
     return null;
@@ -615,7 +663,7 @@ export function createPluginContainer(vite, allPlugins, {
   }
 
   return {
-    resolveId, resolveIdResult, load, transform, transformUserCode, buildStart, renderChunk, generateBundle, pluginCount: plugins.length, watchFiles, writeBundle, closeBundle, buildEnd, renderStart,
+    resolveId, resolveIdResult, resolveIdPlan, load, transform, transformUserCode, buildStart, renderChunk, generateBundle, pluginCount: plugins.length, watchFiles, writeBundle, closeBundle, buildEnd, renderStart,
   };
 }
 

@@ -56,6 +56,39 @@ write(
   "src/lib/wk/worker.ts",
   'import { n } from "./helper";\nconst m: number = n + 1;\nself.onmessage = () => self.postMessage(m);\n',
 );
+// App plugins' resolveId in Vite's order around the core resolver: an
+// enforce:"pre" hook (filtered) claims a specifier no package provides; an
+// unfiltered normal hook answers one the core resolver cannot; a normal hook
+// never overrides what the core resolver resolves (`./helper`).
+write("src/lib/probe.css", ".probe { color: red; }\n");
+write("src/lib/sub/sub.css", ".sub { color: blue; }\n");
+write("src/lib/sub/mod.ts", 'export const sub: string = "subpath-ok";\n');
+// Subpath imports (`#probe/*`), claimed by a pre plugin shaped like
+// @cloudflare/vite-plugin's additional-modules rule: filter `^#`, and a
+// resolveId that returns its own this.resolve.
+{
+  const pkgPath = path.join(app, "package.json");
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  pkg.imports = { ...(pkg.imports ?? {}), "#probe/*": "./src/lib/sub/*" };
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+}
+write("src/lib/redirected.ts", 'export const redirected: string = "redirected-ok";\n');
+write(
+  "src/lib/resolve-probe.ts",
+  [
+    'import { redirected } from "@probe/redirect";',
+    'import fallback from "probe-fallback";',
+    'import { n } from "./wk/helper";',
+    // With an unfiltered normal resolveId every import is routed through the
+    // core resolver first; an asset query must still reach oj's asset plugin.
+    'import cssUrl from "./probe.css?url";',
+    'import subCssUrl from "#probe/sub.css?url";',
+    'import "#probe/sub.css";',
+    'import { sub } from "#probe/mod";',
+    "export const resolved: string = `${redirected}|${fallback}|${n}|${typeof cssUrl}|${typeof subCssUrl}|${sub}`;",
+    "",
+  ].join("\n"),
+);
 write("src/lib/wk/inline-worker.ts", 'import { n } from "./helper";\nself.onmessage = () => self.postMessage(`inline-${n}`);\n');
 write(
   "src/lib/wk/index.ts",
@@ -73,7 +106,7 @@ const aboutPath = path.join(app, "src/routes/about.tsx");
 let about = fs.readFileSync(aboutPath, "utf8");
 about = about.replace(
   'import { rootRoute } from "./__root";',
-  'import { rootRoute } from "./__root";\nimport { useEffect, useState } from "react";\nimport { wurl, wtype, WorkerCtor, InlineCtor } from "../lib/wk";\n' +
+  'import { rootRoute } from "./__root";\nimport { useEffect, useState } from "react";\nimport { wurl, wtype, WorkerCtor, InlineCtor } from "../lib/wk";\nimport { resolved } from "../lib/resolve-probe";\n' +
     // After hydration, start all three workers and render their replies.
     "function WorkerRun() {\n" +
     "  const [out, setOut] = useState<string[]>([]);\n" +
@@ -90,7 +123,7 @@ about = about.replace(
 );
 about = about.replace(
   '<h1 className="fixture-heading">about-page-marker</h1>',
-  '<h1 className="fixture-heading">about-page-marker</h1>\n      <p id="wk">{`${wurl}|${wtype}`}</p>\n      <WorkerRun />',
+  '<h1 className="fixture-heading">about-page-marker</h1>\n      <p id="wk">{`${wurl}|${wtype}`}</p>\n      <p id="rid">{resolved}</p>\n      <WorkerRun />',
 );
 fs.writeFileSync(aboutPath, about);
 
@@ -99,9 +132,26 @@ fs.writeFileSync(aboutPath, about);
 const parseLog = path.join(app, "parse-failures.log");
 const configPath = path.join(app, "vite.config.ts");
 let config = fs.readFileSync(configPath, "utf8");
+const redirected = JSON.stringify(path.join(app, "src/lib/redirected.ts"));
 config = config.replace(
   "plugins: [",
   `plugins: [{
+    name: "e2e-pre-subpath",
+    enforce: "pre",
+    resolveId: { filter: { id: [/^#/] }, async handler(source, importer, options) { return await this.resolve(source, importer, options); } },
+  }, {
+    name: "e2e-pre-redirect",
+    enforce: "pre",
+    resolveId: { filter: { id: /^@probe\\/redirect$/ }, handler() { return ${redirected}; } },
+  }, {
+    name: "e2e-post-fallback",
+    resolveId(id) { if (id === "probe-fallback") return "\\0probe-fallback"; },
+    load(id) { if (id === "\\0probe-fallback") return 'export default "fallback-ok";'; },
+  }, {
+    name: "e2e-post-hijack",
+    resolveId(id) { if (id === "./wk/helper") return "\\0hijacked"; },
+    load(id) { if (id === "\\0hijacked") return 'export const n = "hijacked";'; },
+  }, {
     name: "e2e-post-parse",
     enforce: "post",
     applyToEnvironment: (environment) => environment.name === "ssr",
@@ -159,6 +209,8 @@ async function workersRunInBrowser(label) {
     const errors = [];
     page.on("pageerror", (e) => errors.push(String(e)));
     await page.goto(`http://localhost:${PORT}/about`);
+    const hydrated = await page.locator("#rid").textContent();
+    must(hydrated === RESOLVED, `${label}: the hydrated page resolved differently: ${JSON.stringify(hydrated)} (errors: ${errors.join(" | ")})`);
     const want = "42,42,inline-41";
     const got = await page
       .waitForFunction((w) => document.querySelector("#wkrun")?.textContent === w, want, { timeout: 20000 })
@@ -174,7 +226,19 @@ async function workersRunInBrowser(label) {
 const rendered = async () => {
   const res = await fetch(`http://localhost:${PORT}/about`);
   const html = await res.text();
-  return { status: res.status, shown: html.match(/<p id="wk">([^<]*)<\/p>/)?.[1] };
+  return {
+    status: res.status,
+    shown: html.match(/<p id="wk">([^<]*)<\/p>/)?.[1],
+    rid: html.match(/<p id="rid">([^<]*)<\/p>/)?.[1],
+  };
+};
+const RESOLVED = "redirected-ok|fallback-ok|41|string|string|subpath-ok";
+// The client bundle resolved like the server: both plugin answers are in it,
+// the hijack of a core-resolvable import is not.
+const clientResolvedLikeVite = (js, label) => {
+  must(js.includes("redirected-ok"), `${label}: the client bundle missed the enforce:pre resolveId redirect`);
+  must(js.includes("fallback-ok"), `${label}: the client bundle missed the post-core resolveId fallback`);
+  must(!js.includes("hijacked"), `${label}: a normal resolveId overrode an import the core resolver resolves`);
 };
 
 try {
@@ -195,6 +259,9 @@ try {
     for (const f of index.files) if (f.name.endsWith(".js")) js += await (await fetch(`http://localhost:${PORT}/@oj-start/${f.name}`)).text();
     must(js.includes('"/src/lib/wk/worker.ts"'), "the dev client bundle does not carry the worker URL");
     must(/new Worker\(/.test(js), "the dev client bundle has no ?worker constructor");
+    clientResolvedLikeVite(js, "start-dev");
+    must(rendered && (await rendered()).rid === RESOLVED, "start-dev: SSR resolved the plugin specifiers differently");
+    console.log("start-dev: app resolveId runs in Vite's order in the client bundle (pre before core, normal only after it)");
     console.log("start-dev: ?worker&url is the worker's dev URL, ?worker a constructor, on SSR and in the client bundle");
 
     await workersRunInBrowser("start-dev");
@@ -225,6 +292,7 @@ try {
   });
   const clientJs = fs.readdirSync(assets).filter((f) => f.endsWith(".js") && f !== workerFile).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("");
   must(clientJs.includes(`/assets/${workerFile}`), "the client build does not reference the emitted worker");
+  clientResolvedLikeVite(clientJs, "start build");
   console.log("start build: the worker is bundled once and emitted; client and server render the same URL");
   // ?worker&inline: the bundled worker ships inside the client as a string
   // (its helper inlined) and starts from a Blob URL, as Vite's build does;
