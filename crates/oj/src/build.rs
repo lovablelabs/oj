@@ -890,7 +890,7 @@ async fn compile_stylesheet(
 /// import queries in any combination/order: `?worker`, `?worker&inline`,
 /// `?worker&url`, `?sharedworker...`, and the single `?url`/`?raw`/`?inline`/
 /// `?init`/`?react`. Other queries (`?v=1`, `?tsr-split=x`) are not oj's.
-fn split_asset_query(spec: &str) -> Option<(String, String)> {
+pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
     let (base, query) = spec.split_once('?')?;
     let params: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
     let has = |k: &str| params.contains(&k);

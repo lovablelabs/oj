@@ -1130,6 +1130,8 @@ const seenIds = new Set();
 // this.parse is synchronous in Rollup, so resolve Vite's parseAst (re-exported
 // from Rollup) once at startup; AST-aware plugins call it inside transform.
 let viteParseAst = null;
+// Vite's own `transformWithOxc`, what its `vite:oxc` plugin strips TS/JSX with.
+let viteTransformWithOxc = null;
 // Vite's plugin context meta carries `viteVersion` (pluginContainer's
 // basePluginContextMeta); plugins feature-detect on it. The app's own Vite
 // reports its version; without one, the Vite line oj tracks.
@@ -1138,6 +1140,7 @@ try {
   const _root = initial.config?.root ?? process.cwd();
   const _vite = await import(createRequire(_root + "/package.json").resolve("vite"));
   if (typeof _vite.parseAst === "function") viteParseAst = _vite.parseAst;
+  if (typeof _vite.transformWithOxc === "function") viteTransformWithOxc = _vite.transformWithOxc;
   if (typeof _vite.version === "string") viteVersion = _vite.version;
 } catch {}
 
@@ -2682,6 +2685,11 @@ async function setupConfigureServer() {
         info("  ➜  Network: use --host to expose");
       }
     },
+    // Vite's bindCLIShortcuts returns early unless stdin is a TTY
+    // (shortcuts.ts); the host's stdin is oj's RPC channel, never a TTY, and
+    // oj owns the terminal. Plugins wrap it (`server.bindCLIShortcuts.bind`)
+    // to add their own shortcuts, so it must exist.
+    bindCLIShortcuts() {},
     // Vite restarts the dev server (re-reading the config); oj re-execs itself,
     // which is how it already handles a config-file change.
     restart: async () => ojServerEvent("restart"),
@@ -2949,6 +2957,29 @@ if (env.command !== "build") {
 }
 
 
+// Vite's plugin order puts `vite:oxc` (the TS/JSX strip) after the user's
+// enforce:"pre" plugins and before the normal and post ones, so only a pre
+// plugin (or a hook with `order: "pre"`) ever sees TypeScript or JSX; every
+// later transform receives JS it can `this.parse`. oj compiles natively after
+// the whole chain, so the strip runs here, at the same slot, and only when a
+// later plugin actually claims the module. The options are the resolved
+// config's `oxc` as vite:oxc passes them, with refresh off: oj's compile adds
+// Fast Refresh itself.
+const OXC_STRIP_RE = /\.(m?ts|[jt]sx)$/;
+function runsBeforeOxcStrip(p, rank) {
+  return rank < 0 || (rank === 0 && enforceRank(p) < 0);
+}
+function oxcStripOptions() {
+  const oxc = resolvedConfig && resolvedConfig.oxc;
+  if (oxc === false) return null;
+  const { jsxInject: _i, include: _in, exclude: _ex, jsxRefreshInclude: _ri, jsxRefreshExclude: _re, ...opts } =
+    oxc && typeof oxc === "object" ? oxc : {};
+  const isProduction = resolvedConfig?.isProduction ?? process.env.NODE_ENV === "production";
+  const jsx =
+    typeof opts.jsx === "string" ? opts.jsx : { development: !isProduction, ...opts.jsx, refresh: false };
+  return { ...opts, jsx, sourcemap: true };
+}
+
 async function transform(code, id, resolvedJson) {
   const bucket = new Set();
   const chunkBucket = [];
@@ -2963,11 +2994,27 @@ async function transform(code, id, resolvedJson) {
     let current = code;
     const maps = [];
     const transformOptions = { ssr: environment && environment.name === "ssr" };
+    let stripped =
+      !viteTransformWithOxc || !id || id.startsWith("\0") || !(OXC_STRIP_RE.test(id) || OXC_STRIP_RE.test(id.split("?")[0]));
     // Vite sorts a hook's plugins by the hook's own `order` (pre, normal, post)
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
-    for (const { p, fn: handler } of pluginsWithHook("transform")) {
+    for (const { p, fn: handler, rank } of pluginsWithHook("transform")) {
       if (!hookTransformMatches(p.transform, id, current)) continue;
+      if (!stripped && !runsBeforeOxcStrip(p, rank)) {
+        stripped = true;
+        const opts = oxcStripOptions();
+        if (opts) {
+          let r;
+          try {
+            r = await viteTransformWithOxc(current, id, opts);
+          } catch (e) {
+            throw decoratePluginError(e, { name: "vite:oxc" }, id);
+          }
+          current = r.code;
+          if (r.map != null) maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
+        }
+      }
       let r;
       try {
         r = await handler.call(ctxFor(p), current, id, transformOptions);

@@ -617,24 +617,26 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
     abs.to_string()
 }
 
-/// The intent query the loader recognized on a specifier.
+/// The intent query the loader recognized on a specifier, parsed like the
+/// build (Vite's query grammar: `?worker&url`, `?url&no-inline`, ...).
 fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
-    if let Some(clean) = spec.strip_suffix("?react") {
-        if clean.ends_with(".svg") {
-            return (clean.to_string(), None, true);
-        }
-    }
-    for intent in ["raw", "url", "inline"] {
-        if let Some(clean) = spec.strip_suffix(&format!("?{intent}")) {
-            let tag: &'static str = match intent {
-                "raw" => "raw",
-                "url" => "url",
-                _ => "inline",
-            };
-            return (clean.to_string(), Some(tag), false);
-        }
-    }
-    (spec.to_string(), None, false)
+    let Some((clean, query)) = crate::build::split_asset_query(spec) else {
+        return (spec.to_string(), None, false);
+    };
+    let tag: &'static str = match query.as_str() {
+        "react" if clean.ends_with(".svg") => return (clean, None, true),
+        "raw" => "raw",
+        "url" | "no-inline" => "url",
+        "inline" => "inline",
+        // Unbundled dev ignores `&inline` on a worker (Vite's worker load only
+        // inlines when the environment is bundled).
+        "worker" | "worker&inline" => "worker",
+        "worker&url" => "worker-url",
+        "sharedworker" | "sharedworker&inline" => "sharedworker",
+        "sharedworker&url" => "sharedworker-url",
+        _ => return (spec.to_string(), None, false),
+    };
+    (clean, Some(tag), false)
 }
 
 /// The Start framework-seam aliases (the retired node loader's ALIASES map):
@@ -1111,6 +1113,14 @@ impl StartHost {
         Ok(js(code))
     }
 
+    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev.
+    fn dev_url(&self, path: &str) -> String {
+        match Path::new(path).strip_prefix(&self.root) {
+            Ok(rel) => format!("/{}", rel.to_string_lossy()),
+            Err(_) => format!("/@fs{path}"),
+        }
+    }
+
     async fn asset_module(&self, path: &str, kind: &str) -> Result<String, String> {
         match kind {
             "raw" => {
@@ -1141,6 +1151,24 @@ impl StartHost {
                     .load_module(path)
                     .await
                     .map_err(|e| e.to_string())
+            }
+            // Vite's unbundled worker load: the worker file's dev URL, bare
+            // for `&url`, else wrapped in a constructor. It is the URL the
+            // client pipeline serves the compiled worker at (root-relative,
+            // `/@fs` outside the root), so a rendered value hydrates as is.
+            "worker-url" | "sharedworker-url" => {
+                Ok(format!("export default {};", json_str(&self.dev_url(path))))
+            }
+            "worker" | "sharedworker" => {
+                let ctor = if kind == "sharedworker" {
+                    "SharedWorker"
+                } else {
+                    "Worker"
+                };
+                Ok(format!(
+                    "export default function WorkerWrapper(options) {{ return new {ctor}({}, {{ type: \"module\", name: options?.name }}); }}",
+                    json_str(&self.dev_url(path))
+                ))
             }
             // "url" and anything unrecognized: the served-URL module.
             _ => Ok(format!(
@@ -1632,6 +1660,38 @@ mod tests {
         assert_eq!(
             split_intent("./x.ts?react"),
             ("./x.ts?react".into(), None, false)
+        );
+    }
+
+    // Vite's worker queries in any order (workerOrSharedWorkerRE + urlRE):
+    // `&url` is the bare URL, `&inline` is ignored unbundled, and `?url` takes
+    // `&no-inline` too. Before this, `?worker&url` loaded the worker as a plain
+    // module and its importer failed with "does not provide an export named
+    // 'default'".
+    #[test]
+    fn worker_queries_split_like_vite() {
+        for (spec, tag) in [
+            ("./w.ts?worker&url", "worker-url"),
+            ("./w.ts?url&worker", "worker-url"),
+            ("./w.ts?worker", "worker"),
+            ("./w.ts?worker&inline", "worker"),
+            ("./w.ts?sharedworker", "sharedworker"),
+            ("./w.ts?sharedworker&url", "sharedworker-url"),
+        ] {
+            assert_eq!(
+                split_intent(spec),
+                ("./w.ts".into(), Some(tag), false),
+                "{spec}"
+            );
+        }
+        assert_eq!(
+            split_intent("./hero.png?no-inline"),
+            ("./hero.png".into(), Some("url"), false)
+        );
+        // A query oj does not own passes through untouched.
+        assert_eq!(
+            split_intent("./r.tsx?tsr-split=component"),
+            ("./r.tsx?tsr-split=component".into(), None, false)
         );
     }
 
