@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: tag matches the workspace version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -50,10 +50,10 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: authenticate with crates.io (trusted publishing)
-        uses: rust-lang/crates-io-auth-action@v1
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
       - name: publish the workspace
         env:
@@ -85,7 +85,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: is the committed pin stale for this release?
         id: stale
         run: |
@@ -109,7 +109,7 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"stale={str(stale).lower()}\n")
           EOF
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.stale.outputs.stale == 'true'
       - name: harvest the pin bundle
         if: steps.stale.outputs.stale == 'true'
@@ -117,7 +117,7 @@ jobs:
         run: ./tools/gen-snapshot-pin.sh
       - name: attest build provenance
         if: steps.stale.outputs.stale == 'true'
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.harvest.outputs.pin_file }}
       - name: upload to this release
