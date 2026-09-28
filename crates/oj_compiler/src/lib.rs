@@ -271,6 +271,11 @@ pub struct CompileOptions {
     pub sourcemap: bool,
     pub ssr: bool,
     pub jsx: JsxConfig,
+    /// Class-field semantics decided by the caller ([[Set]] when true), so a
+    /// cache key computed from the ORIGINAL path and a compile running on a
+    /// synthetic one (`x.svg` -> `x.svg.tsx`) can never disagree; `None` asks
+    /// the compiler to consult the nearest tsconfig itself.
+    pub class_field_set_semantics: Option<bool>,
 }
 
 impl CompileOptions {
@@ -281,6 +286,7 @@ impl CompileOptions {
             sourcemap: true,
             ssr: false,
             jsx: JsxConfig::default(),
+            class_field_set_semantics: None,
         }
     }
 
@@ -291,6 +297,7 @@ impl CompileOptions {
             sourcemap: true,
             ssr: false,
             jsx: JsxConfig::default(),
+            class_field_set_semantics: None,
         }
     }
 }
@@ -366,8 +373,12 @@ pub fn exports(source_text: &str, path: &Path) -> Vec<String> {
     if parsed.panicked {
         return Vec::new();
     }
+    export_names(&parsed.program)
+}
+
+fn export_names(program: &Program<'_>) -> Vec<String> {
     let mut names = Vec::new();
-    for stmt in &parsed.program.body {
+    for stmt in &program.body {
         match stmt {
             Statement::ExportDeclaration(decl) => {
                 names.extend(bundle::binding_names(&decl.declaration));
@@ -469,7 +480,10 @@ pub fn compile_module_with_maps(
     // Vite honors the nearest tsconfig's class-field semantics (vite:oxc hands
     // tsconfig discovery to the transform); oxc's documented recipe for
     // `useDefineForClassFields: false` is exactly these two flags.
-    if tsconfig::class_field_set_semantics(path) {
+    if opts
+        .class_field_set_semantics
+        .unwrap_or_else(|| tsconfig::class_field_set_semantics(path))
+    {
         transform_options.assumptions.set_public_class_fields = true;
         transform_options
             .typescript
@@ -543,7 +557,19 @@ pub fn compile_module_with_maps(
 
     let (imports, dynamic_imports, import_bindings) =
         rewrite_module_specifiers(&allocator, &mut program, &mut rewriter);
-    let hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
+    let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
+    // Vite's promotion (importAnalysis): a module whose acceptExports list
+    // covers every export it actually has is fully self-accepting, so even a
+    // namespace or dynamic importer hot-swaps through it.
+    if let Some(h) = hot_accept.as_mut() {
+        if let Some(accepted) = &h.accepted_exports {
+            // Vacuously true with no detectable exports, as in Vite (its
+            // es-module-lexer list is empty for `export *` too).
+            if export_names(&program).iter().all(|n| accepted.contains(n)) {
+                h.self_accepting = true;
+            }
+        }
+    }
 
     let is_refresh_boundary = opts.refresh && detect_refresh_registrations(&program);
 
@@ -1300,6 +1326,7 @@ export const used: A extends B ? number : number = c + d;
                 sourcemap: false,
                 ssr: false,
                 jsx: JsxConfig::default(),
+                class_field_set_semantics: None,
             },
             None,
         )
@@ -1403,6 +1430,26 @@ export const used: A extends B ? number : number = c + d;
         let hot = partial.hot_accept.unwrap();
         assert!(!hot.self_accepting);
         assert_eq!(hot.accepted_exports, Some(vec!["a".into(), "c".into()]));
+
+        // Vite's promotion (importAnalysis): a list covering EVERY export the
+        // module has makes it fully self-accepting, so even a namespace or
+        // dynamic importer hot-swaps through it.
+        let all = compile_module(
+            Path::new("a.ts"),
+            "export const a = 1;\nexport default 2;\nimport.meta.hot.acceptExports([\"a\", \"default\"], (m) => m);",
+            &CompileOptions::dev(),
+            Some(&mut rw),
+        )
+        .unwrap();
+        let hot = all.hot_accept.unwrap();
+        assert!(
+            hot.self_accepting,
+            "acceptExports covering all exports self-accepts"
+        );
+        assert_eq!(
+            hot.accepted_exports,
+            Some(vec!["a".into(), "default".into()])
+        );
     }
 
     #[test]
@@ -1503,6 +1550,7 @@ export const used: A extends B ? number : number = c + d;
                 sourcemap: false,
                 ssr: false,
                 jsx: JsxConfig::default(),
+                class_field_set_semantics: None,
             },
             None,
         )

@@ -451,11 +451,8 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
         }
 
         let opts = CompileOptions {
-            dev: true,
             refresh: false,
-            sourcemap: true,
-            ssr: false,
-            jsx: Default::default(),
+            ..CompileOptions::dev()
         };
         // import.meta.glob expands over the real filesystem inside the
         // compiler, which is empty on wasm32: it would silently become `({})`.

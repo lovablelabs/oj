@@ -4636,8 +4636,10 @@ async fn ensure_module(
     // The tsconfig's class-field semantics change the transform output for the
     // same source, so they are part of the key: a tsconfig edit (which clears
     // the discovery cache) then misses both the memory and persistent caches
-    // instead of resurrecting stale code.
-    if oj_compiler::tsconfig::class_field_set_semantics(file) {
+    // instead of resurrecting stale code. Decided ONCE here and handed to the
+    // compile, which may run on a synthetic path (`x.svg` -> `x.svg.tsx`).
+    let class_field_semantics = oj_compiler::tsconfig::class_field_set_semantics(file);
+    if class_field_semantics {
         mode_key.push_str("+setcf");
     }
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
@@ -4984,9 +4986,11 @@ async fn ensure_module(
             // file-only entries via addWatchFile): an edit to one hot-updates
             // this sheet, and its stamp folds into the compile key so the sheet
             // recompiles instead of serving the cached css.
+            // Sass sometimes registers the sheet itself as a dep (Vite filters
+            // it too, css.ts); a self-edge would be a bogus import cycle.
             let mut dep_imports: Vec<String> = css_deps
                 .iter()
-                .filter(|p| p.starts_with(&root))
+                .filter(|p| p.starts_with(&root) && **p != file_owned)
                 .map(|p| url_of(&root, p))
                 .collect();
             dep_imports.sort();
@@ -5182,16 +5186,16 @@ async fn ensure_module(
             );
             let mut opts = if is_svelte {
                 oj_compiler::CompileOptions {
-                    dev: true,
                     refresh: false,
-                    sourcemap: true,
-                    ssr: false,
-                    jsx: oj_compiler::JsxConfig::default(),
+                    ..oj_compiler::CompileOptions::dev()
                 }
             } else {
                 oj_compiler::CompileOptions::dev()
             };
             opts.jsx = jsx_config;
+            // The cache key already folded this decision (from the original
+            // path); the compile must never re-derive it from a synthetic one.
+            opts.class_field_set_semantics = Some(class_field_semantics);
             oj_compiler::compile_module_with_maps(
                 &file_owned,
                 interopped.as_deref().unwrap_or(&source),
@@ -7821,6 +7825,17 @@ fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::Sender<bool
                 if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
                     continue;
                 }
+                // A sass partial is not an entry by sass's own convention: it
+                // reaches the graph as its importer's dep edge, and compiling
+                // it standalone (importer-provided mixins missing) only logs.
+                if matches!(ext, "scss" | "sass")
+                    && file
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('_'))
+                {
+                    continue;
+                }
                 let state = Arc::clone(&state);
                 tasks.spawn(async move {
                     match ensure_module(&state, &file, &url).await {
@@ -8688,7 +8703,7 @@ async fn decide(
         // dep entry exists next to the real module; oj keeps one node per path
         // (self-accepting when the sheet is also served directly), so the walk
         // stops there and the css importers are seeded explicitly.
-        let targets = targets.map(|mut targets| {
+        let targets = targets.and_then(|mut targets| {
             if is_style_ext(ext) {
                 let css_importers: Vec<PathBuf> = {
                     let g = state.graph.lock().unwrap();
@@ -8703,14 +8718,15 @@ async fn decide(
                         .unwrap_or_default()
                 };
                 for importer in css_importers {
-                    if let Ok(more) = state.graph.lock().unwrap().update_targets(&importer) {
-                        targets.extend(more);
-                    }
+                    // A css importer that cannot reach a boundary (a css
+                    // module whose component importer does not accept) needs
+                    // the same full reload the direct walk would force.
+                    targets.extend(state.graph.lock().unwrap().update_targets(&importer)?);
                 }
                 targets.sort();
                 targets.dedup();
             }
-            targets
+            Ok(targets)
         });
         match targets {
             Ok(targets) => {
