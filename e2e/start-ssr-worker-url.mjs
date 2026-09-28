@@ -85,7 +85,9 @@ write(
     'import subCssUrl from "#probe/sub.css?url";',
     'import "#probe/sub.css";',
     'import { sub } from "#probe/mod";',
-    "export const resolved: string = `${redirected}|${fallback}|${n}|${typeof cssUrl}|${typeof subCssUrl}|${sub}`;",
+    // `?url&inline`: Vite inlines (inline beats url), on SSR and client alike.
+    'import heroInline from "../hero.png?url&inline";',
+    "export const resolved: string = `${redirected}|${fallback}|${n}|${typeof cssUrl}|${typeof subCssUrl}|${sub}|${heroInline.slice(0, 5)}`;",
     "",
   ].join("\n"),
 );
@@ -133,9 +135,22 @@ const parseLog = path.join(app, "parse-failures.log");
 const configPath = path.join(app, "vite.config.ts");
 let config = fs.readFileSync(configPath, "utf8");
 const redirected = JSON.stringify(path.join(app, "src/lib/redirected.ts"));
+// Each container's lifecycle, one plugin instance per container (the config is
+// evaluated per environment): a worker bundle must not re-run it mid-build.
+const lifecycleLog = path.join(app, "lifecycle.log");
 config = config.replace(
   "plugins: [",
-  `plugins: [{
+  `plugins: [(() => {
+    let env = "?";
+    const log = (ev) => require("node:fs").appendFileSync(${JSON.stringify(lifecycleLog)}, env + " " + ev + "\\n");
+    return {
+      name: "e2e-lifecycle",
+      applyToEnvironment(e) { env = e.name; return true; },
+      buildStart() { log("buildStart"); },
+      buildEnd() { log("buildEnd"); },
+      generateBundle() { log("generateBundle"); },
+    };
+  })(), {
     name: "e2e-pre-subpath",
     enforce: "pre",
     resolveId: { filter: { id: [/^#/] }, async handler(source, importer, options) { return await this.resolve(source, importer, options); } },
@@ -232,7 +247,7 @@ const rendered = async () => {
     rid: html.match(/<p id="rid">([^<]*)<\/p>/)?.[1],
   };
 };
-const RESOLVED = "redirected-ok|fallback-ok|41|string|string|subpath-ok";
+const RESOLVED = "redirected-ok|fallback-ok|41|string|string|subpath-ok|data:";
 // The client bundle resolved like the server: both plugin answers are in it,
 // the hijack of a core-resolvable import is not.
 const clientResolvedLikeVite = (js, label) => {
@@ -274,6 +289,7 @@ try {
   // A build bundles the worker entry on its own and emits it once; the client
   // and the server render share the emitted URL.
   const out = path.join(app, "dist-e2e");
+  fs.rmSync(lifecycleLog, { force: true });
   execSync(`${JSON.stringify(oj)} build ${JSON.stringify(app)} --out ${JSON.stringify(out)}`, { stdio: ["ignore", "ignore", "inherit"] });
   const assets = path.join(out, "client", "assets");
   const workerFile = fs.readdirSync(assets).find((f) => /^worker-[\w-]+\.js$/.test(f));
@@ -293,6 +309,15 @@ try {
   const clientJs = fs.readdirSync(assets).filter((f) => f.endsWith(".js") && f !== workerFile).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("");
   must(clientJs.includes(`/assets/${workerFile}`), "the client build does not reference the emitted worker");
   clientResolvedLikeVite(clientJs, "start build");
+  // The worker bundles run while the client build loads modules; the client
+  // container's own lifecycle must stay one buildStart and one buildEnd
+  // before its generateBundle (Vite's worker build never runs the importer's).
+  const events = fs.readFileSync(lifecycleLog, "utf8").trim().split("\n");
+  const clientBefore = events.slice(0, events.indexOf("client generateBundle"));
+  must(events.includes("client generateBundle"), `no client generateBundle in the lifecycle log:\n${events.join("\n")}`);
+  const count = (ev) => clientBefore.filter((l) => l === `client ${ev}`).length;
+  must(count("buildStart") === 1 && count("buildEnd") === 1, `a worker bundle re-ran the client container's lifecycle:\n${events.join("\n")}`);
+  console.log("start build: worker bundles leave the client container's lifecycle alone");
   console.log("start build: the worker is bundled once and emitted; client and server render the same URL");
   // ?worker&inline: the bundled worker ships inside the client as a string
   // (its helper inlined) and starts from a Blob URL, as Vite's build does;

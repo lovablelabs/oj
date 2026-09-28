@@ -102,8 +102,11 @@ function assetTagFor(source, mode) {
   // unbundled dev ignores `&inline`.
   if (worker) return worker[1] + (mode !== "dev" && INLINE_RE.test(source) ? "-inline" : URL_RE.test(source) ? "-url" : "");
   if (RAW_RE.test(source)) return "raw";
-  if (URL_RE.test(source) || NO_INLINE_RE.test(source)) return "url";
+  // Vite's shouldInline: `no-inline` wins, then `inline` (even with `url`),
+  // the order the SSR host's split_asset_query uses, so both sides agree.
+  if (NO_INLINE_RE.test(source)) return "url";
   if (INLINE_RE.test(source)) return "inline";
+  if (URL_RE.test(source)) return "url";
   if (ASSET_EXT.test(source)) return "url";
   if (/\.css(\?|$)/.test(source)) return "css";
   return null;
@@ -218,7 +221,11 @@ const matchesAny = (res, id) =>
     return hit;
   });
 
-export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fsBase = "/@oj-start/fs", emit } = {}) {
+// `lifecycle: false` for a nested build (a worker bundle): the container's
+// buildStart/buildEnd/renderStart belong to the build that owns it, not to a
+// bundle it triggers mid-build (Vite's bundleWorkerEntry runs its own worker
+// plugin instances, never the importer's lifecycle).
+export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fsBase = "/@oj-start/fs", emit, lifecycle = true } = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
   const warnedVirtual = new Set();
   // The app plugins' resolveId, in Vite's order around its core resolver: a
@@ -226,8 +233,8 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
   // an id the core resolver left. Routed on declared filters, the dev
   // server's gate (resolve_id_res): a hook with no filter is not offered
   // every import (it still answers `virtual:` / `\0` ids above), except that
-  // a bare specifier falls back to the normal-phase hooks, as the dev
-  // server's plugin fallback does. The rolldown filter widens by exactly that.
+  // a bare specifier is offered to it, in its own phase, as the dev server's
+  // plugin fallback does. The rolldown filter widens by exactly that.
   const plan = container?.resolveIdPlan?.() ?? { pre: { all: false, filters: [] }, post: { all: false, filters: [] } };
   // An unfiltered hook in EITHER phase gets the bare-specifier fallback (the
   // dev server's bounded-cost gate): most ecosystem plugins declare no
@@ -244,16 +251,17 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
   return {
     name: "oj-vite-plugins",
     async buildStart() {
+      if (!lifecycle) return;
       // Run user plugins' buildStart before any module loads, so compile-on-
       // startup plugins (e.g. i18n) have populated the state their load() serves.
       if (container?.buildStart) await container.buildStart();
       if (fallback?.buildStart && fallback !== container) await fallback.buildStart();
     },
     async buildEnd(error) {
-      if (container?.buildEnd) await container.buildEnd(error);
+      if (lifecycle && container?.buildEnd) await container.buildEnd(error);
     },
     async renderStart(outputOptions, inputOptions) {
-      if (container?.renderStart) await container.renderStart(outputOptions, inputOptions);
+      if (lifecycle && container?.renderStart) await container.renderStart(outputOptions, inputOptions);
     },
     resolveId: {
       filter: { id: { include: [/\.svg\?react$/, /^virtual:/, /^\0/, ...userIncludes] } },

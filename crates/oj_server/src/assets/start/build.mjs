@@ -267,7 +267,7 @@ emit.setWorkerBundler(async (file) => {
     // the Start aliases included. Module workers are always ES here, as in
     // oj's dev serving; a `worker.format: "iife"` config has no oj analog.
     plugins: [
-      makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit }),
+      makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit, lifecycle: false }),
       assetsPlugin({ mode: "prod", server: false, emit }),
       nodeBuiltinShims({ production: true }),
     ],

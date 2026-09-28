@@ -47,8 +47,11 @@ function envConsumer(environment) {
 // Vite evaluates applyToEnvironment once per environment when it builds the
 // environment's plugin list; the answer is fixed, so it is memoized per
 // plugin and environment rather than re-run on every hook call.
+// `memo: false` for a caller that runs before the plugins' configResolved
+// (resolveIdPlan, at bundler setup): Vite only evaluates applyToEnvironment
+// after config resolution, so an earlier answer must not stick.
 const envAllowsMemo = new WeakMap();
-function envAllows(plugin, environment) {
+function envAllows(plugin, environment, memo = true) {
   const f = plugin.applyToEnvironment;
   if (typeof f !== "function") return true;
   let byEnv = envAllowsMemo.get(plugin);
@@ -62,7 +65,7 @@ function envAllows(plugin, environment) {
   } catch {
     allowed = true;
   }
-  byEnv.set(environment, allowed);
+  if (memo) byEnv.set(environment, allowed);
   return allowed;
 }
 
@@ -477,7 +480,7 @@ export function createPluginContainer(vite, allPlugins, {
   function resolveIdPlan() {
     const plan = { pre: { all: false, filters: [] }, post: { all: false, filters: [] } };
     for (const p of plugins) {
-      if (!hookHandler(p.resolveId) || !envAllows(p, environment) || ojReimplemented(p.name)) continue;
+      if (!hookHandler(p.resolveId) || !envAllows(p, environment, false) || ojReimplemented(p.name)) continue;
       const phase = plan[inResolvePhase(p, "pre") ? "pre" : "post"];
       const f = hookFilter(p.resolveId);
       const ids = f && (f.id ?? f);
