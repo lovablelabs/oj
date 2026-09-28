@@ -23,6 +23,13 @@ pub struct ModuleNode {
     /// `import.meta.hot.accept(deps, cb)` (Vite's `acceptedHmrDeps`): an update
     /// of one of them stops here with this module as the boundary.
     pub accepted_hmr_deps: HashSet<PathBuf>,
+    /// `import.meta.hot.acceptExports(names)` (Vite's `acceptedHmrExports`):
+    /// the module is a boundary only for importers whose used bindings all
+    /// fall inside this set; any other importer propagates past it.
+    pub accepted_exports: Option<HashSet<String>>,
+    /// Per imported module, the binding names this module uses from it
+    /// (Vite's `importedBindings`); `*` marks namespace/dynamic use.
+    pub imported_bindings: HashMap<PathBuf, HashSet<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -79,6 +86,32 @@ impl ModuleGraph {
 
     pub fn set_accepted_deps(&mut self, path: &Path, deps: &[PathBuf]) {
         self.ensure_module(path).accepted_hmr_deps = deps.iter().cloned().collect();
+    }
+
+    pub fn set_accepted_exports(&mut self, path: &Path, names: Option<Vec<String>>) {
+        self.ensure_module(path).accepted_exports = names.map(|n| n.into_iter().collect());
+    }
+
+    pub fn set_imported_bindings(&mut self, path: &Path, bindings: &[(PathBuf, Vec<String>)]) {
+        self.ensure_module(path).imported_bindings = bindings
+            .iter()
+            .map(|(p, names)| (p.clone(), names.iter().cloned().collect()))
+            .collect();
+    }
+
+    /// Whether every binding `importer` uses from `dep` falls inside `dep`'s
+    /// accepted exports (Vite's `areAllImportsAccepted`): the update then
+    /// never climbs through this importer.
+    fn all_imports_accepted(
+        &self,
+        importer: &Path,
+        dep: &Path,
+        accepted: &HashSet<String>,
+    ) -> bool {
+        self.modules
+            .get(importer)
+            .and_then(|n| n.imported_bindings.get(dep))
+            .is_some_and(|bindings| bindings.iter().all(|b| accepted.contains(b)))
     }
 
     fn accepts_dep(&self, importer: &Path, dep: &Path) -> bool {
@@ -427,7 +460,19 @@ impl ModuleGraph {
                 colors.insert(current, Color::Black);
                 continue;
             }
-            if node.importers.is_empty() {
+            // A partially accepting module (`acceptExports`) is itself a
+            // boundary — its callback receives the new module — and the walk
+            // then gates each importer on the bindings it actually uses
+            // (Vite's propagateUpdate: acceptedHmrExports + importedBindings).
+            // With no importers it counts as self-accepting, never a dead end.
+            let accepted_exports = node.accepted_exports.as_ref();
+            if accepted_exports.is_some() {
+                boundaries.push(UpdateTarget {
+                    boundary: current.to_path_buf(),
+                    accepted: current.to_path_buf(),
+                    within_circular_import: self.is_within_circular_imports(current, colors),
+                });
+            } else if node.importers.is_empty() {
                 return Err(format!(
                     "update reached entry {} with no accepting boundary",
                     current.display()
@@ -447,6 +492,13 @@ impl ModuleGraph {
                         within_circular_import: self.is_within_circular_imports(importer, colors),
                     });
                     continue;
+                }
+                // An importer using only accepted exports is already covered by
+                // the partial boundary above (Vite's areAllImportsAccepted).
+                if let Some(accepted) = accepted_exports {
+                    if self.all_imports_accepted(importer, current, accepted) {
+                        continue;
+                    }
                 }
                 stack.push(Step::Enter(importer));
             }
@@ -527,6 +579,49 @@ mod tests {
         g.stamp_update(a, 12);
         assert_eq!(g.imports_timestamp(app), 12);
         assert_eq!(g.imports_timestamp(a), 0, "leaf has no imports");
+    }
+
+    // Vite's partial accept (acceptExports + importedBindings): the module is
+    // its own boundary, an importer whose used bindings are all listed is
+    // gated, and any other importer propagates (to a reload at an entry).
+    #[test]
+    fn accept_exports_gates_on_the_importers_used_bindings() {
+        let (main, mod_) = (Path::new("/main.js"), Path::new("/mod.js"));
+        let mut g = ModuleGraph::new();
+        g.add_import(main, mod_);
+        g.set_accepted_exports(mod_, Some(vec!["a".into()]));
+
+        // Importer uses only the accepted export: the partial boundary covers it.
+        g.set_imported_bindings(main, &[(mod_.to_path_buf(), vec!["a".into()])]);
+        let targets = g.update_targets(mod_).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].boundary, mod_);
+
+        // An unlisted binding, a namespace import and a missing bindings record
+        // all climb past the boundary; main is an entry, so: full reload.
+        for used in [vec!["a".into(), "b".into()], vec!["*".to_string()]] {
+            g.set_imported_bindings(main, &[(mod_.to_path_buf(), used)]);
+            assert!(g.update_targets(mod_).is_err(), "must propagate past mod");
+        }
+        g.set_imported_bindings(main, &[]);
+        assert!(
+            g.update_targets(mod_).is_err(),
+            "unknown bindings propagate"
+        );
+
+        // A side-effect import (analyzed, zero names) is within any accepted set.
+        g.set_imported_bindings(main, &[(mod_.to_path_buf(), Vec::new())]);
+        let targets = g.update_targets(mod_).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].boundary, mod_);
+
+        // A partially accepting module with no importers is not a dead end.
+        let lone = Path::new("/lone.js");
+        g.ensure_module(lone);
+        g.set_accepted_exports(lone, Some(vec!["x".into()]));
+        let targets = g.update_targets(lone).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].boundary, lone);
     }
 
     fn p(s: &str) -> PathBuf {

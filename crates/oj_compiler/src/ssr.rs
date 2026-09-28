@@ -767,4 +767,303 @@ mod tests {
             "an import statement survived: {o}"
         );
     }
+
+    // ---- Vite's ssrTransform scope-tracking suite (ssrTransform.spec.ts),
+    // ported case for case: a shadowed binding is NEVER rewritten while the
+    // same name outside the shadow IS. oj rewrites from oxc semantic
+    // reference_ids, which should get these right structurally; this suite
+    // pins each shape Vite regression-tested (#5472 #5727 #6520 #16452 #2221
+    // #9585 #10386 #23232 and friends) so a rewrite-strategy change cannot
+    // silently regress one.
+
+    #[test]
+    fn scope_label_collision_not_rewritten() {
+        let o = t("import { query } from 'vue';function foo() { query: while (true) { continue query; break query } }");
+        assert!(
+            o.contains("query: while (true) { continue query; break query }"),
+            "{o}"
+        );
+    }
+
+    #[test]
+    fn scope_shadow_object_destructuring() {
+        let o = t("import { fn } from 'vue';function A(){ let {fn, test} = {fn: 'foo', test: 'bar'}; return { fn }; }");
+        assert!(
+            o.contains("return { fn };"),
+            "shorthand of a destructured shadow was rewritten: {o}"
+        );
+        assert!(!o.contains("fn: (0,"), "{o}");
+    }
+
+    #[test]
+    fn scope_shadow_array_destructuring() {
+        let o = t("import { fn } from 'vue';function A(){ let [fn, test] = ['foo', 'bar']; return { fn }; }");
+        assert!(o.contains("return { fn };"), "{o}");
+    }
+
+    #[test]
+    fn scope_default_value_in_nested_template_arg_rewritten() {
+        let o = t("import { fn } from 'vue';function A({foo = `test${fn}`} = {}){ return {}; }");
+        assert!(o.contains("__vite_ssr_import_0__.fn"), "{o}");
+    }
+
+    #[test]
+    fn scope_default_value_of_destructuring_param_rewritten() {
+        let o = t("import { fn } from 'vue';function A({foo = fn}){ return {}; }");
+        assert!(o.contains("__vite_ssr_import_0__.fn"), "{o}");
+    }
+
+    #[test]
+    fn scope_shadow_function_declaration() {
+        let o = t("import { fn } from 'vue';function A(){ function fn() {}; return { fn }; }");
+        assert!(o.contains("return { fn };"), "{o}");
+    }
+
+    #[test]
+    fn scope_shadow_function_expression_name() {
+        let o = t("import {fn} from './vue';var a = function() { return function fn() { console.log(fn) } }");
+        assert!(
+            o.contains("console.log(fn)"),
+            "a function expression's own name was rewritten: {o}"
+        );
+    }
+
+    #[test]
+    fn scope_shadow_function_expression_name_in_global_scope() {
+        let o = t("import {fn} from './vue';foo(function fn(a = fn) { console.log(fn) })");
+        assert!(o.contains("function fn(a = fn) { console.log(fn) }"), "{o}");
+    }
+
+    #[test]
+    fn scope_shadow_class_declaration() {
+        let o = t("import { cls } from 'vue';function A(){ class cls {} return { cls }; }");
+        assert!(o.contains("return { cls };"), "{o}");
+    }
+
+    #[test]
+    fn scope_shadow_class_expression_name() {
+        let o = t("import { cls } from './vue';var a = function() { return class cls { constructor() { console.log(cls) } } }");
+        assert!(o.contains("console.log(cls)"), "{o}");
+    }
+
+    #[test]
+    fn scope_shadow_class_expression_name_in_global_scope() {
+        let o =
+            t("import { cls } from './vue';foo(class cls { constructor() { console.log(cls) } })");
+        assert!(o.contains("console.log(cls)"), "{o}");
+    }
+
+    #[test]
+    fn scope_shadow_catch_clause() {
+        let o = t("import {error} from './dependency';try {} catch(error) {}");
+        assert!(
+            o.contains("catch(error) {}") || o.contains("catch (error) {}"),
+            "{o}"
+        );
+        assert!(!o.contains("catch(__vite"), "{o}");
+    }
+
+    #[test]
+    fn scope_imported_super_class_usable_in_extends() {
+        // #2221: `class A extends Foo` needs the import usable in extends
+        // position (Vite declares a local; a direct member expression is an
+        // equally valid rewrite; loading the module must work either way).
+        let o = t("import { Foo } from './dependency';class A extends Foo {}");
+        // oj rewrites the extends position directly (wrapped member read);
+        // Vite declares a local first. Both load correctly.
+        assert!(o.contains("__vite_ssr_import_0__.Foo"), "{o}");
+        assert!(!o.contains("extends Foo {}"), "{o}");
+    }
+
+    #[test]
+    fn scope_computed_destructure_key_rewritten_value_shadowed() {
+        // #23232: the computed KEY reads the import; the bound VALUE shadows.
+        let o =
+            t("import { key } from 'foo';function declaration({ [key]: value = null } = {}) {}");
+        assert!(o.contains("__vite_ssr_import_0__.key"), "{o}");
+        assert!(o.contains("]: value"), "{o}");
+        let o = t("import { key } from 'foo';class Foo { method({ [key]: value } = {}) {} }");
+        assert!(o.contains("__vite_ssr_import_0__.key"), "{o}");
+        assert!(o.contains("]: value"), "{o}");
+    }
+
+    #[test]
+    fn scope_destructured_params_preserve_shadowing() {
+        let o = t(concat!(
+            "import { key } from 'foo';\n",
+            "function shorthand({ key } = {}) { return key }\n",
+            "function aliased({ prop: key } = {}) { return key }\n",
+            "function defaulted({ key = 'default' } = {}) { return key }\n",
+            "function array([key] = []) { return key }\n",
+            "function plain(key) { return key }\n",
+            "console.log(key)\n",
+        ));
+        // Five shadowed returns stay bare; only the global read rewrites.
+        assert_eq!(o.matches("return key").count(), 5, "{o}");
+        assert!(
+            o.contains("console.log((0, __vite_ssr_import_0__.key))")
+                || o.contains("console.log(__vite_ssr_import_0__.key)"),
+            "{o}"
+        );
+    }
+
+    #[test]
+    fn scope_object_destructure_alias_shadows() {
+        let o = t("import { n } from 'foo';const a = () => { const { type: n = 'bar' } = {}; console.log(n) }");
+        assert!(
+            o.contains("console.log(n)"),
+            "aliased destructure shadow was rewritten: {o}"
+        );
+    }
+
+    #[test]
+    fn scope_computed_key_reads_import_in_block() {
+        // #9585: the computed key uses the import; the bound name shadows in
+        // its block only.
+        let o = t("import { n, m } from 'foo';const foo = {};{ const { [n]: m } = foo }");
+        assert!(o.contains("__vite_ssr_import_0__.n"), "{o}");
+        assert!(o.contains("]: m }"), "the bound name was rewritten: {o}");
+    }
+
+    #[test]
+    fn scope_destructuring_assignments() {
+        let o = t(concat!(
+            "import { key } from 'foo';\n",
+            "let value;\n",
+            "const object = {};\n",
+            "({ [key]: value = key } = object);\n",
+            "[value = key] = [];\n",
+            "function shadowed(key) { ({ key } = object); ({ alias: key } = object); [key] = []; return key }\n",
+        ));
+        // Three import reads (computed key, its default, the array default);
+        // every shadowed assignment target inside `shadowed` stays bare.
+        assert!(o.matches("__vite_ssr_import_0__.key").count() >= 3, "{o}");
+        assert!(
+            o.contains("({ key } = object)"),
+            "a shadowed assignment target was rewritten: {o}"
+        );
+        assert!(o.contains("({ alias: key } = object)"), "{o}");
+        assert!(o.contains("return key }"), "{o}");
+    }
+
+    #[test]
+    fn scope_nested_object_destructure_alias() {
+        let o = t(concat!(
+            "import { remove, add, get, set, rest, objRest } from 'vue';\n",
+            "function a() {\n",
+            "  const { o: { remove }, a: { b: { c: [ add ] }}, d: [{ get }, set, ...rest], ...objRest } = foo;\n",
+            "  remove(); add(); get(); set(); rest(); objRest();\n",
+            "}\n",
+            "remove(); add(); get(); set(); rest(); objRest();\n",
+        ));
+        // Inside a(): every name is a destructured local, no rewrites.
+        assert!(
+            o.contains("remove(); add(); get(); set(); rest(); objRest();"),
+            "{o}"
+        );
+        // Outside: every call rewrites.
+        for name in ["remove", "add", "get", "set", "rest", "objRest"] {
+            assert!(
+                o.contains(&format!("__vite_ssr_import_0__.{name})()")),
+                "global {name} not rewritten: {o}"
+            );
+        }
+    }
+
+    #[test]
+    fn scope_class_props() {
+        let o = t(concat!(
+            "import { remove, add, update, del, call } from 'vue';\n",
+            "class A { remove = 1\n add = null\n update = update\n del = () => del()\n call = call(4) }\n",
+            "remove(2); add(4);\n",
+        ));
+        assert!(
+            o.contains("remove = 1"),
+            "a class prop KEY was rewritten: {o}"
+        );
+        assert!(o.contains("__vite_ssr_import_0__.update"), "{o}");
+        assert!(!o.contains("__vite_ssr_import_0__.remove = 1"), "{o}");
+        assert!(o.contains("(0, __vite_ssr_import_0__.del)()"), "{o}");
+        assert!(o.contains("(0, __vite_ssr_import_0__.call)(4)"), "{o}");
+        assert!(o.contains("(0, __vite_ssr_import_0__.remove)(2)"), "{o}");
+    }
+
+    #[test]
+    fn scope_class_methods() {
+        let o = t(concat!(
+            "import foo from 'foo';\n",
+            "const bar = 'bar';\n",
+            "class A { foo() {}\n [foo]() {}\n [bar]() {}\n #foo() {}\n bar(foo) {} }\n",
+        ));
+        assert!(o.contains("foo() {}"), "a method NAME was rewritten: {o}");
+        assert!(
+            o.contains("__vite_ssr_import_0__.default"),
+            "the computed method key was not rewritten: {o}"
+        );
+        assert!(o.contains("[bar]() {}"), "{o}");
+        assert!(o.contains("#foo() {}"), "{o}");
+        assert!(
+            o.contains("bar(foo) {}"),
+            "a method PARAM was rewritten: {o}"
+        );
+    }
+
+    #[test]
+    fn scope_function_scope_declarations_shadow_before_their_line() {
+        // Vite's 'declare scope': consts and function declarations shadow the
+        // import across the WHOLE function scope, including reads above the
+        // declaration line.
+        let o = t(concat!(
+            "import { aaa, bbb, ccc, ddd } from 'vue';\n",
+            "function foobar() { ddd();\n",
+            "  const aaa = () => { bbb(ccc); ddd() };\n",
+            "  const bbb = () => {};\n",
+            "  const ccc = 1;\n",
+            "  function ddd() {}\n",
+            "  aaa(); bbb(); ccc();\n",
+            "}\n",
+            "aaa(); bbb();\n",
+        ));
+        assert!(
+            o.contains("function foobar() { ddd();"),
+            "hoisted fn shadow missed: {o}"
+        );
+        assert!(
+            o.contains("bbb(ccc); ddd()"),
+            "TDZ-positioned shadows rewritten: {o}"
+        );
+        assert!(o.contains("(0, __vite_ssr_import_0__.aaa)()"), "{o}");
+        assert!(o.contains("(0, __vite_ssr_import_0__.bbb)()"), "{o}");
+    }
+
+    #[test]
+    fn scope_condition_blocks_and_class_constructor() {
+        let o = t(concat!(
+            "import { foo, bar } from 'foobar';\n",
+            "if (false) { const foo = 'foo'; console.log(foo) }\n",
+            "else if (false) { const [bar] = ['bar']; console.log(bar) }\n",
+            "else { console.log(foo); console.log(bar) }\n",
+        ));
+        assert!(o.contains("const foo = 'foo'; console.log(foo)"), "{o}");
+        assert!(o.contains("const [bar] = ['bar']; console.log(bar)"), "{o}");
+        assert!(
+            o.contains("console.log(__vite_ssr_import_0__.foo)")
+                || o.contains("console.log((0, __vite_ssr_import_0__.foo))"),
+            "{o}"
+        );
+    }
+
+    #[test]
+    fn scope_var_hoists_to_function_scope() {
+        // #10386: `var` inside a block shadows for the whole enclosing
+        // function, so the return below the block is NOT the import.
+        let o = t(concat!(
+            "import { foo, bar } from 'foobar';\n",
+            "function test() { if (true) { var foo = () => { var why = 'would' }, bar = 'someone' } return [foo, bar] }\n",
+        ));
+        assert!(
+            o.contains("return [foo, bar]"),
+            "var-hoisted shadows were rewritten: {o}"
+        );
+    }
 }

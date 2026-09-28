@@ -4505,6 +4505,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+            import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4610,6 +4611,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+            import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4626,11 +4628,18 @@ async fn ensure_module(
         .lock()
         .unwrap()
         .imports_timestamp(Path::new(url));
-    let mode_key = if imports_stamp > 0 {
+    let mut mode_key = if imports_stamp > 0 {
         format!("{mode}@{imports_stamp}")
     } else {
         mode.to_string()
     };
+    // The tsconfig's class-field semantics change the transform output for the
+    // same source, so they are part of the key: a tsconfig edit (which clears
+    // the discovery cache) then misses both the memory and persistent caches
+    // instead of resurrecting stale code.
+    if oj_compiler::tsconfig::class_field_set_semantics(file) {
+        mode_key.push_str("+setcf");
+    }
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
@@ -4696,6 +4705,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+            import_bindings: Vec::new(),
         });
         if state.persistent_cache {
             let _ = state
@@ -4785,6 +4795,10 @@ async fn ensure_module(
     // PostCSS runs on the preprocessor OUTPUT (Vite orders Sass before PostCSS),
     // so a Sass file is compiled here first when a PostCSS config applies; the
     // compile step below then skips Sass for it.
+    // Every file this stylesheet pulls in (@import targets, sass loads): Vite
+    // records them in the module graph so a dependency edit hot-updates the
+    // importing sheet (vite:css addWatchFile -> css-post file-only entries).
+    let mut css_deps: Vec<PathBuf> = Vec::new();
     let mut sass_precompiled = false;
     let source = if state.has_postcss && oj_css::is_sass(url) {
         let data = sass_additional_data_for(state, url);
@@ -4792,8 +4806,9 @@ async fn ensure_module(
         let dir = file.parent().map(Path::to_path_buf);
         let src = source.clone();
         let css_resolve = state.css_resolve.clone();
-        let compiled = tokio::task::spawn_blocking(move || {
-            oj_css::compile_sass_opts(
+        let (compiled, deps) = tokio::task::spawn_blocking(move || {
+            let mut deps = Vec::new();
+            let out = oj_css::compile_sass_collecting(
                 &src,
                 &oj_css::SassOptions {
                     load_dir: dir.as_deref(),
@@ -4801,10 +4816,13 @@ async fn ensure_module(
                     load_paths: &load_paths,
                     resolve: css_resolve.as_ref(),
                 },
-            )
+                &mut deps,
+            );
+            out.map(|css| (css, deps))
         })
         .await
         .map_err(|e| format!("sass compile task failed for {url}: {e}"))??;
+        css_deps.extend(deps);
         sass_precompiled = true;
         compiled
     } else {
@@ -4818,7 +4836,12 @@ async fn ensure_module(
         // postcss-import is the first plugin of Vite's PostCSS chain, so the
         // rules of an @imported stylesheet go through the user's plugins too:
         // inline before the PostCSS pass, not after it.
-        let source = oj_css::inline_imports_with(&source, file, &state.css_resolve.as_ref())?;
+        let source = oj_css::inline_imports_collecting(
+            &source,
+            file,
+            &state.css_resolve.as_ref(),
+            &mut css_deps,
+        )?;
         imports_inlined = true;
         match run_css_engine(state, url, &source).await {
             Ok(out) => out,
@@ -4857,6 +4880,7 @@ async fn ensure_module(
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+            import_bindings: Vec::new(),
         });
         register_in_graph(state, url, &module);
         return Ok((String::new(), module));
@@ -4927,12 +4951,14 @@ async fn ensure_module(
                 css_exports: Vec::new(),
                 fs_allow: Vec::new(),
                 watch_files: Vec::new(),
+                import_bindings: Vec::new(),
             });
         }
         if is_css {
+            let mut css_deps = css_deps;
             let resolve = css_resolve.as_ref();
             let css_src = if oj_css::is_sass(&url_owned) && !sass_precompiled {
-                oj_css::compile_sass_opts(
+                oj_css::compile_sass_collecting(
                     &source,
                     &oj_css::SassOptions {
                         load_dir: Some(&dir),
@@ -4940,6 +4966,7 @@ async fn ensure_module(
                         load_paths: &sass_load_paths,
                         resolve,
                     },
+                    &mut css_deps,
                 )?
             } else {
                 source.clone()
@@ -4949,10 +4976,21 @@ async fn ensure_module(
             let css_src = if imports_inlined {
                 css_src
             } else {
-                oj_css::inline_imports_with(&css_src, &file_owned, &resolve)?
+                oj_css::inline_imports_collecting(&css_src, &file_owned, &resolve, &mut css_deps)?
             };
             let output =
                 oj_css::compile_css_dev(&url_owned, &css_src, css_dev_sourcemap, &resolve)?;
+            // The pulled-in files enter the graph as this sheet's imports (Vite's
+            // file-only entries via addWatchFile): an edit to one hot-updates
+            // this sheet, and its stamp folds into the compile key so the sheet
+            // recompiles instead of serving the cached css.
+            let mut dep_imports: Vec<String> = css_deps
+                .iter()
+                .filter(|p| p.starts_with(&root))
+                .map(|p| url_of(&root, p))
+                .collect();
+            dep_imports.sort();
+            dep_imports.dedup();
             // A CSS module exports its class map, which changes on edit, so it
             // cannot self-accept (Vite's css-analysis): the update climbs to the
             // importing component, whose re-import fetches the new exports.
@@ -4963,11 +5001,12 @@ async fn ensure_module(
                 kind: "css".into(),
                 code: output.css,
                 map_data_url: None,
-                imports: Vec::new(),
+                imports: dep_imports,
                 require_map: Vec::new(),
                 css_exports: output.exports.unwrap_or_default(),
                 fs_allow: Vec::new(),
                 watch_files: Vec::new(),
+                import_bindings: Vec::new(),
             });
         }
         // The first relative import nothing on disk satisfies. Vite's import
@@ -5170,11 +5209,13 @@ async fn ensure_module(
             hot: output.hot_accept.map(|h| oj_cache::HotMeta {
                 self_accept: h.self_accepting,
                 deps: h.deps,
+                accepted_exports: h.accepted_exports,
             }),
             code: output.code,
             map_data_url: output.map_data_url,
             fs_allow: fs_allow_from(&output.imports),
             watch_files: Vec::new(),
+            import_bindings: output.import_bindings,
             imports: output.imports,
             kind: if is_svelte {
                 "svelte".into()
@@ -5472,6 +5513,19 @@ fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
         })
         .unwrap_or_default();
     graph.set_accepted_deps(Path::new(url), &accepted);
+    graph.set_accepted_exports(Path::new(url), hot.and_then(|h| h.accepted_exports.clone()));
+    let bindings: Vec<(PathBuf, Vec<String>)> = module
+        .import_bindings
+        .iter()
+        .filter(|(s, _)| s.starts_with('/') && !s.starts_with("/@oj/") && !is_worker_query(s))
+        .map(|(s, names)| {
+            (
+                PathBuf::from(s.split('?').next().unwrap_or(s)),
+                names.clone(),
+            )
+        })
+        .collect();
+    graph.set_imported_bindings(Path::new(url), &bindings);
 }
 
 /// The compiled stylesheet as `text/css` (Vite's `?direct` / raw `<link>` request).
@@ -8088,6 +8142,16 @@ fn is_restart_trigger(path: &Path) -> bool {
     )
 }
 
+/// True for tsconfig files whose change must re-run the tsconfig-aware
+/// transform (Vite: any `/tsconfig.json` plus every .json its resolution
+/// cache loaded; the name pattern covers the `extends` bases like
+/// tsconfig.base.json without tracking cache membership).
+fn is_tsconfig_file(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+        n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json"))
+    })
+}
+
 /// Re-exec the current binary with the same arguments so a fresh process
 /// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
 /// dev port is released as the image is replaced. Does not return on success.
@@ -8243,6 +8307,19 @@ fn spawn_watcher(state: Arc<ServerState>) {
                 .any(|p| is_restart_trigger(p) || is_config_dependency(p))
             {
                 restart_process();
+            }
+            // Vite's reloadOnTsconfigChange: a tsconfig change clears the
+            // tsconfig cache, invalidates every module graph and forces a full
+            // reload ("the nuclear option"). The compile key folds the
+            // class-field semantics in, so cleared discovery alone makes stale
+            // persistent-cache entries unreachable.
+            if paths.iter().any(|p| is_tsconfig_file(p)) {
+                oj_compiler::tsconfig::clear_cache();
+                state.mtime_keys.lock().unwrap().clear();
+                state.memory.lock().unwrap().clear();
+                let _ = state
+                    .reload_tx
+                    .send(full_reload_frame("tsconfig change", None, None));
             }
             if !state.hmr_enabled {
                 continue;
@@ -8605,6 +8682,36 @@ async fn decide(
             continue;
         }
         let targets = state.graph.lock().unwrap().update_targets(Path::new(&url));
+        // A changed stylesheet may also be inlined into OTHER sheets (@import,
+        // sass @use), which record it among their imports: each such importer
+        // must hot-swap itself too. Vite dispatches both because the file-only
+        // dep entry exists next to the real module; oj keeps one node per path
+        // (self-accepting when the sheet is also served directly), so the walk
+        // stops there and the css importers are seeded explicitly.
+        let targets = targets.map(|mut targets| {
+            if is_style_ext(ext) {
+                let css_importers: Vec<PathBuf> = {
+                    let g = state.graph.lock().unwrap();
+                    g.node(Path::new(&url))
+                        .map(|n| {
+                            n.importers
+                                .iter()
+                                .filter(|p| is_style_url(&p.to_string_lossy()))
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                for importer in css_importers {
+                    if let Ok(more) = state.graph.lock().unwrap().update_targets(&importer) {
+                        targets.extend(more);
+                    }
+                }
+                targets.sort();
+                targets.dedup();
+            }
+            targets
+        });
         match targets {
             Ok(targets) => {
                 let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
@@ -9525,6 +9632,16 @@ export default [{{
         }
         for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
             assert!(!is_restart_trigger(Path::new(f)), "{f}");
+        }
+    }
+
+    #[test]
+    fn tsconfig_files_trigger_the_reload_path() {
+        for f in ["tsconfig.json", "app/tsconfig.json", "tsconfig.base.json"] {
+            assert!(is_tsconfig_file(Path::new(f)), "{f}");
+        }
+        for f in ["package.json", "src/tsconfig.ts", "not-tsconfig.json"] {
+            assert!(!is_tsconfig_file(Path::new(f)), "{f}");
         }
     }
 

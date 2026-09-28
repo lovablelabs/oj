@@ -236,6 +236,7 @@ fn an_entry_is_only_ever_published_whole() {
         css_exports: vec![("a\nb".into(), "c\"d".into())],
         fs_allow: vec!["/tmp/a b/c".into()],
         watch_files: vec!["\\\\?\\C:\\x".into()],
+        import_bindings: Vec::new(),
         hot: None,
     };
     f.cache.put(&key, &written);

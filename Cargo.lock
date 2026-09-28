@@ -6080,6 +6080,7 @@ dependencies = [
  "oxc_ecmascript",
  "oxc_minifier",
  "oxc_parser",
+ "oxc_resolver",
  "oxc_semantic",
  "oxc_sourcemap",
  "oxc_span",
