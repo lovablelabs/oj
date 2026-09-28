@@ -86,7 +86,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential ca-certificates curl git pkg-config python3 cmake \
-            binutils xz-utils file
+            binutils xz-utils file clang libclang-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The toolchain itself comes from rust-toolchain.toml (rustup installs
       # it on the first cargo call); this only provides rustup.
