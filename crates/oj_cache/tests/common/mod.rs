@@ -37,6 +37,7 @@ pub fn module(code: &str) -> CachedModule {
         css_exports: vec![("button".into(), "button_x1".into())],
         fs_allow: vec!["/node_modules/react".into()],
         watch_files: vec!["/tailwind.config.ts".into()],
+        import_bindings: vec![("/src/dep.js".into(), vec!["a".into()])],
         hot: None,
     }
 }

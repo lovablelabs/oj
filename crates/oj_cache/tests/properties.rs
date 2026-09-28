@@ -31,6 +31,10 @@ fn cached_module() -> impl Strategy<Value = CachedModule> {
                 css_exports: pairs.clone(),
                 fs_allow: pairs.iter().map(|(a, _)| a.clone()).collect(),
                 watch_files: pairs.iter().map(|(_, b)| b.clone()).collect(),
+                import_bindings: pairs
+                    .iter()
+                    .map(|(a, b)| (a.clone(), vec![b.clone()]))
+                    .collect(),
                 hot: None,
             },
         )

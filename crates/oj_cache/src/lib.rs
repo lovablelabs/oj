@@ -232,6 +232,7 @@ mod tests {
             css_exports: Vec::new(),
             fs_allow: Vec::new(),
             watch_files: Vec::new(),
+            import_bindings: Vec::new(),
             hot: None,
         }
     }
