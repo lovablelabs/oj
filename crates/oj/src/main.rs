@@ -271,6 +271,142 @@ fn raise_fd_limit() {
     }
 }
 
+/// The app root the agent detection should walk from, per subcommand: the
+/// user-facing commands' parsed root (clap's own semantics, so flags can
+/// never be misread as a root), and None for internal one-shot children
+/// (`engine-job`, `start-script`, `js-eval`, `compile`), which always inherit
+/// the parent oj's environment and must not pay a filesystem walk before the
+/// orphan-reap gate.
+fn agent_detection_root(command: &Command) -> Option<Option<&PathBuf>> {
+    match command {
+        Command::Dev { root, .. } | Command::Build { root, .. } | Command::Preview { root, .. } => {
+            Some(root.as_ref())
+        }
+        _ => None,
+    }
+}
+
+/// The app's package manager, as `npm_config_user_agent` would present it.
+/// Vite prefix-matches the manager NAME, but the VERSION matters too:
+/// ecosystem tools version-gate on the agent (yarn classic vs berry is
+/// `version.startsWith('1.')`), so the `packageManager` field's real version
+/// wins and lockfile-shape detection picks a representative one, sniffing the
+/// lockfile where the major is knowable (Berry keeps a yarn.lock; pnpm 8
+/// writes lockfileVersion 6). The tail is a parseable `tool/version` field
+/// (`oj/<version>`), never prose, because consumers split the agent on
+/// spaces. Detection walks up from the parsed app root and stops at a `.git`
+/// DIRECTORY (a `.git` file is a submodule or worktree whose workspace
+/// lockfile legitimately lives above) or at $HOME when the walk started below
+/// it: this value is pinned into every child's environment, so a stray
+/// lockfile in an unrelated ancestor (an accidental `npm i` in $HOME) must
+/// never win. Best effort by design: returning None leaves the environment
+/// untouched.
+fn detect_package_manager_agent(root_arg: Option<&PathBuf>) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut dir = match root_arg {
+        Some(arg) => {
+            let p = cwd.join(arg);
+            if p.is_dir() {
+                p
+            } else {
+                cwd.clone()
+            }
+        }
+        // Mirror the CLI's default root: playground/ when it serves one.
+        None => {
+            let playground = cwd.join("playground");
+            if playground.join("index.html").is_file() {
+                playground
+            } else {
+                cwd.clone()
+            }
+        }
+    };
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let started_below_home = home
+        .as_deref()
+        .is_some_and(|h| dir.starts_with(h) && dir != h);
+    loop {
+        // $HOME itself is never scanned when the walk started below it: its
+        // stray lockfiles are another project's (or nobody's).
+        if started_below_home && home.as_deref() == Some(dir.as_path()) {
+            return None;
+        }
+        if let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg) {
+                if let Some(pm) = v.get("packageManager").and_then(|p| p.as_str()) {
+                    let mut parts = pm.splitn(2, '@');
+                    let name = parts.next().unwrap_or_default();
+                    // `pnpm@9.0.0+sha512...`: the hash suffix is not part of
+                    // the version tools parse.
+                    let version = parts
+                        .next()
+                        .map(|v| v.split('+').next().unwrap_or(v))
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or("0.0.0");
+                    if !name.is_empty() {
+                        return Some(format!("{name}/{version} oj/{}", env!("CARGO_PKG_VERSION")));
+                    }
+                }
+            }
+        }
+        // One shared manager mapping (oj_server::preseed keeps the
+        // change-stamp superset next to it); the versions are representative,
+        // not tracked: only the MAJOR gates anything downstream, and the two
+        // knowable majors are sniffed from the lockfile itself.
+        for (file, manager, version) in oj_server::PACKAGE_MANAGER_LOCKFILES {
+            let path = dir.join(file);
+            if path.exists() {
+                let version = sniffed_manager_version(&path, manager, version);
+                return Some(format!(
+                    "{manager}/{version} oj/{}",
+                    env!("CARGO_PKG_VERSION")
+                ));
+            }
+        }
+        // A repo boundary ends the walk: this dir was the app's repo and it
+        // answered nothing; an ancestor's lockfile is another project's. A
+        // `.git` FILE is a submodule or worktree, whose workspace lockfile
+        // legitimately lives above -- only a `.git` directory stops.
+        if dir.join(".git").is_dir() || !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// The representative version, upgraded where the lockfile states its major:
+/// Berry never dropped yarn.lock (its `__metadata:` header disambiguates
+/// classic 1.x from 4.x, the split `version.startsWith('1.')` gates care
+/// about), and pnpm 8 writes `lockfileVersion: '6`.
+fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_version: &str) -> String {
+    let head = || -> Option<String> {
+        use std::io::Read;
+        let mut buf = vec![0u8; 4096];
+        let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+        buf.truncate(n);
+        Some(String::from_utf8_lossy(&buf).into_owned())
+    };
+    match (manager, path.file_name().and_then(|n| n.to_str())) {
+        ("yarn", Some("yarn.lock")) => {
+            if head().is_some_and(|h| h.contains("__metadata:")) {
+                "4.0.0".to_string()
+            } else {
+                default_version.to_string()
+            }
+        }
+        ("pnpm", Some("pnpm-lock.yaml" | "lock.yaml")) => {
+            if head().is_some_and(|h| {
+                h.contains("lockfileVersion: '6") || h.contains("lockfileVersion: 6")
+            }) {
+                "8.0.0".to_string()
+            } else {
+                default_version.to_string()
+            }
+        }
+        _ => default_version.to_string(),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
@@ -282,6 +418,35 @@ fn main() -> anyhow::Result<()> {
     // Vite's gate but survives this is_none check and the JS-side ??= belts).
     if std::env::var_os("VITE_CONFIG_NATIVE_IGNORE_WARNING").is_none() {
         std::env::set_var("VITE_CONFIG_NATIVE_IGNORE_WARNING", "true");
+    }
+    // Vite sorts its lockfile-format preference by `npm_config_user_agent`
+    // (optimizer/index.ts), which every package-manager launch sets and a
+    // bare binary launch does not. Agentless, the list REVERSES: a pnpm app
+    // with both node_modules/.pnpm/lock.yaml (content-only hash) and a stray
+    // node_modules/.package-lock.json gets the npm entry, whose hash appends
+    // the patches-dir MTIME — and oj's embedded engine truncates mtimeMs to
+    // whole milliseconds (deno_io::FsStat carries i64 ms) where Node keeps
+    // the fraction, so the optimizer's lockfileHash never matches a
+    // pnpm-launched Vite's and node_modules/.vite is re-bundled on every
+    // launcher switch. Present the app's own package manager instead, the
+    // way its `pnpm dev` would; a set agent (any PM wrapper) always wins.
+    // Parsed before the runtime exists (still single-threaded, so set_var
+    // below stays safe; --help/--version now exit without spinning it up).
+    // The parsed CLI is the single source for the app root: a second argv
+    // parser would drift from clap the moment a flag is added.
+    let cli = Cli::parse();
+    // An EMPTY agent counts as unset: Vite's lockfile-preference sort treats
+    // "" exactly like a missing agent (falsy), so leaving it would keep the
+    // reversal this preset exists to fix.
+    let agent_unset = std::env::var_os("npm_config_user_agent")
+        .map(|v| v.is_empty())
+        .unwrap_or(true);
+    if agent_unset {
+        if let Some(root) = agent_detection_root(&cli.command) {
+            if let Some(agent) = detect_package_manager_agent(root) {
+                std::env::set_var("npm_config_user_agent", agent);
+            }
+        }
     }
     // Before any in-process engine boots (each really chdirs to its app root):
     // a restart must re-resolve relative CLI args against the directory oj was
@@ -304,17 +469,17 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
-        .block_on(run())
+        .block_on(run(cli))
 }
 
-async fn run() -> anyhow::Result<()> {
+async fn run(cli: Cli) -> anyhow::Result<()> {
     // One-shot engine jobs (config extraction) run in `oj engine-job`
     // children: a native addon a job loads can crash the process when it is
     // re-initialized after an earlier engine died (napi-rs before 3.10).
     if let Ok(exe) = std::env::current_exe() {
         oj_server::plugins::engine_jobs_via_subprocess(exe);
     }
-    match Cli::parse().command {
+    match cli.command {
         Command::Dev {
             root,
             port,

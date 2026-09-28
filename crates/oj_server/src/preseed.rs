@@ -41,10 +41,32 @@ fn stamp_key() -> String {
     )
 }
 
+/// The manager-identifying lockfiles, in Vite's own lockfileFormats order
+/// (optimizer/index.ts), with the manager each one implies and a
+/// representative version: (path, manager, version). Most specific first:
+/// bun before yarn because a bun install can be configured to ALSO emit a
+/// yarn.lock, never the reverse; rush is pnpm under the hood; the yarn
+/// version split is classic (yarn.lock) vs berry (its node_modules state
+/// file). Shared with the `npm_config_user_agent` preset in the oj binary so
+/// this mapping and the change-stamp below can never drift apart silently.
+pub const PACKAGE_MANAGER_LOCKFILES: &[(&str, &str, &str)] = &[
+    ("node_modules/.pnpm/lock.yaml", "pnpm", "9.0.0"),
+    ("pnpm-lock.yaml", "pnpm", "9.0.0"),
+    (".rush/temp/shrinkwrap-deps.json", "pnpm", "9.0.0"),
+    ("bun.lock", "bun", "1.2.0"),
+    ("bun.lockb", "bun", "1.2.0"),
+    ("node_modules/.yarn-state.yml", "yarn", "4.0.0"),
+    ("yarn.lock", "yarn", "1.22.22"),
+    ("node_modules/.package-lock.json", "npm", "10.0.0"),
+    ("package-lock.json", "npm", "10.0.0"),
+];
+
 /// Files that stand in for "the installed dependency tree changed". A
-/// superset of Vite's own lockfile lookup on purpose: this stamp is only
-/// compared against itself, so extra sensitivity can at worst re-run the
-/// child (which then performs Vite's exact freshness check and exits).
+/// superset of Vite's own lockfile lookup on purpose (everything in
+/// [`PACKAGE_MANAGER_LOCKFILES`] plus formats with no manager mapping):
+/// this stamp is only compared against itself, so extra sensitivity can at
+/// worst re-run the child (which then performs Vite's exact freshness check
+/// and exits).
 const LOCKFILE_CANDIDATES: &[&str] = &[
     "node_modules/.pnpm/lock.yaml",
     "node_modules/.package-lock.json",
