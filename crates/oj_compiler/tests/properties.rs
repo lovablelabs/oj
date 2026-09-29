@@ -113,7 +113,7 @@ proptest! {
         for _ in 0..3 {
             let again = compile(Path::new(&path), &source, &opts).unwrap();
             prop_assert_eq!(&first.code, &again.code);
-            prop_assert_eq!(&first.map_data_url, &again.map_data_url);
+            prop_assert_eq!(&first.map_json, &again.map_json);
             prop_assert_eq!(&first.imports, &again.imports);
             prop_assert_eq!(&first.dynamic_imports, &again.dynamic_imports);
             prop_assert_eq!(first.is_refresh_boundary, again.is_refresh_boundary);
@@ -250,7 +250,7 @@ proptest! {
     fn source_maps_are_well_formed(source in module_source()) {
         let out = compile(Path::new("/src/App.tsx"), &source, &CompileOptions::dev());
         let Ok(out) = out else { return Ok(()) };
-        let Some(url) = out.map_data_url.clone() else { return Ok(()) };
+        let Some(url) = out.map_data_url() else { return Ok(()) };
         prop_assert!(url.starts_with("data:application/json;"), "{url}");
         let inlined = out.code_with_inline_map();
         prop_assert!(inlined.contains("//# sourceMappingURL="));

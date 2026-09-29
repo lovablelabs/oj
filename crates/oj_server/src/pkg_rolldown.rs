@@ -83,6 +83,12 @@ pub fn cached_chunk(path: &str) -> Option<Bytes> {
     chunk_cache().lock().unwrap().get(path).cloned()
 }
 
+/// (entries, bytes) resident in the emitted-chunk map, for /@oj/debug/mem.
+pub fn debug_stats() -> (usize, usize) {
+    let m = chunk_cache().lock().unwrap();
+    (m.len(), m.values().map(Bytes::len).sum())
+}
+
 fn store_chunk(path: String, code: Bytes) {
     chunk_cache().lock().unwrap().insert(path, code);
 }

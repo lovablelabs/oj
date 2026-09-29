@@ -21,9 +21,9 @@ fn cached_module() -> impl Strategy<Value = CachedModule> {
         proptest::collection::vec((".{0,8}", ".{0,8}"), 0..3),
     )
         .prop_map(
-            |(code, map_data_url, imports, is_boundary, kind, pairs)| CachedModule {
+            |(code, map_json, imports, is_boundary, kind, pairs)| CachedModule {
                 code,
-                map_data_url,
+                map_json,
                 imports,
                 is_boundary,
                 kind: kind.to_string(),

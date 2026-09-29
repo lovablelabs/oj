@@ -331,7 +331,7 @@ fn a_source_map_is_omitted_when_a_module_gains_synthesized_nodes() {
     let entry = dir.path().join("src.ts");
 
     let plain = compile(&entry, "export const a = 1;", &CompileOptions::dev()).unwrap();
-    assert!(plain.map_data_url.is_some(), "a normal module has a map");
+    assert!(plain.map_json.is_some(), "a normal module has a map");
 
     let globbed = compile(
         &entry,
@@ -340,7 +340,7 @@ fn a_source_map_is_omitted_when_a_module_gains_synthesized_nodes() {
     )
     .unwrap();
     assert!(
-        globbed.map_data_url.is_none(),
+        globbed.map_json.is_none(),
         "a synthesized module must not claim a map"
     );
     assert_eq!(
@@ -364,7 +364,7 @@ fn sourcemap_can_be_turned_off_entirely() {
         },
     )
     .unwrap();
-    assert!(out.map_data_url.is_none());
+    assert!(out.map_json.is_none());
 }
 
 #[test]

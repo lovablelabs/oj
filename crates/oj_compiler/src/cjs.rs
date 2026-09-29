@@ -215,7 +215,7 @@ export default (module.exports && module.exports.__esModule) ? module.exports["d
 
     Ok(CompileOutput {
         code: out,
-        map_data_url: None,
+        map_json: None,
         imports: resolved_imports,
         dynamic_imports: Vec::new(),
         import_bindings: Vec::new(),

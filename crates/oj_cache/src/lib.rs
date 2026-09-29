@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod start_codegen;
 
-// 6: HotMeta semantics changed (acceptExports is a partial accept, no longer
-// self_accept) and CachedModule grew import_bindings; older entries would
-// deserialize with the old meaning.
-pub const CACHE_FORMAT: u32 = 6;
+// 7: map_json became raw map_json (encode-at-serve). 6: HotMeta semantics
+// changed (acceptExports = partial accept) and CachedModule grew
+// import_bindings; older entries would deserialize with the old meaning.
+pub const CACHE_FORMAT: u32 = 7;
 
 pub const CACHE_ROOT_VERSION: u32 = 1;
 
@@ -99,7 +99,9 @@ pub fn heal_legacy_layout(app_root: &Path) {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CachedModule {
     pub code: String,
-    pub map_data_url: Option<String>,
+    /// Raw sourcemap JSON; encoded to a data URL at serve time (Vite's
+    /// genSourceMapUrl shape), so caches retain 25% fewer map bytes.
+    pub map_json: Option<String>,
     pub imports: Vec<String>,
     pub is_boundary: bool,
     #[serde(default)]
@@ -227,7 +229,7 @@ mod tests {
     fn sample() -> CachedModule {
         CachedModule {
             code: "export const x = 1;".into(),
-            map_data_url: Some("data:application/json;base64,e30=".into()),
+            map_json: Some("data:application/json;base64,e30=".into()),
             imports: vec!["/node_modules/react/index.js".into()],
             is_boundary: true,
             kind: "esm".into(),

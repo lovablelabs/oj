@@ -77,6 +77,12 @@ pub fn store(url: &str, code: Bytes) {
     cache().lock().unwrap().insert(url.to_string(), code);
 }
 
+/// (entries, bytes) resident in the served-bundle map, for /@oj/debug/mem.
+pub fn debug_stats() -> (usize, usize) {
+    let m = cache().lock().unwrap();
+    (m.len(), m.values().map(Bytes::len).sum())
+}
+
 fn read(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }

@@ -58,7 +58,7 @@ fn an_entry_from_an_older_schema_still_loads() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        br#"{"code":"export const a = 1;","map_data_url":null,"imports":["./b.ts"],"is_boundary":true}"#,
+        br#"{"code":"export const a = 1;","map_json":null,"imports":["./b.ts"],"is_boundary":true}"#,
     )
     .unwrap();
 
@@ -228,7 +228,7 @@ fn an_entry_is_only_ever_published_whole() {
     let key = f.cache.key(b"source", "/src/App.tsx", "dev");
     let written = CachedModule {
         code: "const s = \"\u{2028}\u{2029}\\n\t\0é🚀\";".into(),
-        map_data_url: None,
+        map_json: None,
         imports: vec![String::new(), "…/ünïcødé.tsx".into()],
         is_boundary: false,
         kind: "cjs".into(),
