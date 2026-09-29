@@ -3,20 +3,18 @@
 # same forks, reference/ and the e2e fixtures are left out of oxfmt too (see
 # .oxfmtrc.json).
 JS_FILES = '**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'
-OXFMT = node_modules/.bin/oxfmt
+# The pinned oxfmt release binary (version and checksums in the script),
+# fetched into .tools/ on first use; no Node or npm needed. Run inside the
+# recipe so a failed download or checksum fails the target.
+OXFMT = oxfmt="$$(tools/fetch-oxfmt.sh)" && "$$oxfmt"
 
-lint: $(OXFMT)
+lint:
 	cargo fmt -- --check --color always
 	cargo clippy --workspace --all-targets --exclude oj_deno_napi --exclude oj_deno_runtime --exclude oj_deno_snapshots -- -D warnings
 	$(OXFMT) --check $(JS_FILES)
 
-fmt: $(OXFMT)
+fmt:
 	cargo fmt
 	$(OXFMT) $(JS_FILES)
-
-# oxfmt is pinned in the root package.json; install it on first use.
-$(OXFMT): package.json package-lock.json
-	npm ci --no-audit --no-fund
-	@touch $@
 
 .PHONY: lint fmt
