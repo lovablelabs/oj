@@ -432,6 +432,43 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
   }
 }
 
+
+// Vite's resolved `server` also guarantees these scalars
+// (_serverConfigDefaults, server/index.ts): plugins read them exactly the
+// way they read fs.allow. Present values always win — including the REAL
+// port oj's Rust side passes in the boot config — and only absent fields
+// get Vite's defaults (undefined-only, mergeWithDefaults semantics; warmup
+// and cors object forms deep-fill). `sourcemapIgnoreList: false` resolves
+// to a constant-false function and the default is Vite's isInNodeModules.
+function fillResolvedServerScalars(server) {
+  const defaults = {
+    port: 5173,
+    strictPort: false,
+    host: "localhost",
+    allowedHosts: [],
+    open: false,
+    middlewareMode: false,
+    preTransformRequests: true,
+    headers: {},
+  };
+  for (const k of Object.keys(defaults)) {
+    if (server[k] === undefined) server[k] = defaults[k];
+  }
+  const isPlain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  server.warmup = isPlain(server.warmup)
+    ? { clientFiles: [], ssrFiles: [], ...server.warmup }
+    : (server.warmup ?? { clientFiles: [], ssrFiles: [] });
+  const corsDefault = { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/ };
+  server.cors = isPlain(server.cors)
+    ? { ...corsDefault, ...server.cors }
+    : (server.cors === undefined ? corsDefault : server.cors);
+  if (server.sourcemapIgnoreList === false) server.sourcemapIgnoreList = () => false;
+  else if (server.sourcemapIgnoreList === undefined) {
+    server.sourcemapIgnoreList = (id) => id.includes("node_modules");
+  }
+  return server;
+}
+
 function withResolvedDefaults(config) {
   const c = config ?? {};
   const merged = mergeConfigLite(
@@ -545,6 +582,7 @@ function withResolvedDefaults(config) {
       allow: allow.map((d) => (process.platform === "win32" ? pathResolve(cacheRoot, d).replace(/\\/g, "/") : pathResolve(cacheRoot, d))),
       deny: rawFs.deny === undefined ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"] : rawFs.deny,
     };
+    fillResolvedServerScalars(merged.server);
   }
   // Vite's resolved config carries a `logger`; plugins (e.g. the cloudflare
   // plugin's ViteMiniflareLogger) call `config.logger.info/warn/error`.

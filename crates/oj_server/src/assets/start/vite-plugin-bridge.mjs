@@ -297,12 +297,50 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
 // (CLIENT_DIR when vite sits outside every allow entry) has no oj
 // equivalent: oj serves its client from memory, and its serving side allows
 // any node_modules path outright.
+
+// Vite's resolved `server` also guarantees these scalars
+// (_serverConfigDefaults, server/index.ts): plugins read them exactly the
+// way they read fs.allow. Present values always win; only absent fields get
+// Vite's defaults (undefined-only, mergeWithDefaults semantics; warmup and
+// cors object forms deep-fill). `sourcemapIgnoreList: false` resolves to a
+// constant-false function and the default is Vite's isInNodeModules. A build
+// container binds nothing, so Vite's configured-port default (5173) is the
+// honest resolved value here, as in `vite build`.
+function fillResolvedServerScalars(server) {
+  const defaults = {
+    port: 5173,
+    strictPort: false,
+    host: "localhost",
+    allowedHosts: [],
+    open: false,
+    middlewareMode: false,
+    preTransformRequests: true,
+    headers: {},
+  };
+  for (const k of Object.keys(defaults)) {
+    if (server[k] === undefined) server[k] = defaults[k];
+  }
+  const isPlain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  server.warmup = isPlain(server.warmup)
+    ? { clientFiles: [], ssrFiles: [], ...server.warmup }
+    : (server.warmup ?? { clientFiles: [], ssrFiles: [] });
+  const corsDefault = { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/ };
+  server.cors = isPlain(server.cors)
+    ? { ...corsDefault, ...server.cors }
+    : (server.cors === undefined ? corsDefault : server.cors);
+  if (server.sourcemapIgnoreList === false) server.sourcemapIgnoreList = () => false;
+  else if (server.sourcemapIgnoreList === undefined) {
+    server.sourcemapIgnoreList = (id) => id.includes("node_modules");
+  }
+  return server;
+}
+
 export function withResolvedServerFs(server, root) {
   const rawFs = server?.fs ?? {};
   // Vite: `allow: raw?.fs?.allow ?? [workspaceRoot]` — an EXPLICIT empty
   // list stays empty; only an absent one gets the workspace-root default.
   const allow = Array.isArray(rawFs.allow) ? rawFs.allow : [searchForWorkspaceRoot(root)];
-  return {
+  return fillResolvedServerScalars({
     ...(server ?? {}),
     fs: {
       ...rawFs,
@@ -314,7 +352,7 @@ export function withResolvedServerFs(server, root) {
       allow: allow.map((d) => (process.platform === "win32" ? pathResolve(root, d).replace(/\\/g, "/") : pathResolve(root, d))),
       deny: rawFs.deny === undefined ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"] : rawFs.deny,
     },
-  };
+  });
 }
 
 export function createPluginContainer(vite, allPlugins, {
