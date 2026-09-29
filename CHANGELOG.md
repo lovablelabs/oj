@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Idle engines now return memory the way Node does. V8's MemoryReducer (the delayed GC tasks V8 posts after a collection) runs for every embedded engine: the engine kept those tasks queued and unrun once its event loop drained, so an idle isolate held its high-water heap until the next job. After 10 seconds without jobs an engine also signals V8 moderate memory pressure once (incremental footprint-reducing GC, re-armed by real work), like workerd, as a backstop for heaps the reducer's own triggers skip.
+- Idle engines now return memory the way Node does: V8's MemoryReducer (the delayed GC tasks V8 posts after a collection that grew the heap) runs for every embedded engine. The engine left those tasks queued and unrun once its event loop drained, so an idle isolate kept its high-water heap until the next job; Node's platform runs the same tasks off libuv timers.
 
 ## [0.2.13] - 2026-09-29
 

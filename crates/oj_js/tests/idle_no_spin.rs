@@ -47,10 +47,7 @@ async fn an_idle_engine_does_not_spin() {
         r#"{"name":"p","version":"1.0.0"}"#,
     )
     .unwrap();
-    let mut config = oj_js::EngineConfig::new(dir.path());
-    // The backstop's own tick is not what this measures.
-    config.idle_shrink_after = None;
-    let engine = oj_js::JsEngine::spawn(config).unwrap();
+    let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(dir.path())).unwrap();
     // Allocate enough to arm V8's reducer, so its delayed tasks do wake the
     // engine during the idle window below.
     engine

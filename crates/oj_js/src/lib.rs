@@ -49,10 +49,6 @@ use deno_runtime::worker::MainWorker;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-/// The default [`EngineConfig::idle_shrink_after`]: the order of Bun's first
-/// idle collection (10s) and V8's own MemoryReducer start delay (8s).
-pub const DEFAULT_IDLE_SHRINK_AFTER: Duration = Duration::from_secs(10);
-
 /// Configuration for a [`JsEngine`].
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -66,21 +62,6 @@ pub struct EngineConfig {
     /// Default wall-clock deadline applied to every job that does not carry
     /// its own.
     pub default_deadline: Option<Duration>,
-    /// After this long with no jobs, the engine signals V8 moderate memory
-    /// pressure once (an incremental, footprint-reducing collection), re-armed
-    /// by the next job. The primary mechanism is V8's own MemoryReducer, which
-    /// Node runs off libuv timers and which runs here too: deno_core's
-    /// platform queues V8's delayed tasks and the engine drains them on every
-    /// wake (see the tick). The reducer only arms after a collection that grew
-    /// the heap, though, so this is the backstop for an isolate that went
-    /// quiet without one, the idle collection Bun (10s) and workerd (moderate
-    /// pressure) also run.
-    ///
-    /// Idle means NO JOBS: an engine serving background work inside its event
-    /// loop (the plugin host's configureServer middleware) still gets the
-    /// signal once per job-quiet period; moderate pressure is incremental, so
-    /// that traffic is not paused for a full collection.
-    pub idle_shrink_after: Option<Duration>,
     /// Persistent V8 code-cache directory. When set, compiled bytecode for
     /// the modules an engine loads from disk (ESM, `require`d CJS, residual
     /// ext scripts) is stored here and reused by later engines, cutting the
@@ -96,7 +77,6 @@ impl EngineConfig {
         Self {
             root: root.into(),
             memory_limit_bytes: None,
-            idle_shrink_after: Some(DEFAULT_IDLE_SHRINK_AFTER),
             default_deadline: None,
             code_cache_dir: None,
         }
@@ -167,15 +147,6 @@ pub struct JsEngine {
     /// outside the engine thread (see [`JsEngine::abandon`]).
     isolate: v8::IsolateHandle,
     default_deadline: Option<Duration>,
-    /// Times the idle shrink ran (see [`EngineConfig::idle_shrink_after`]);
-    /// observability for tests and memory probes.
-    idle_shrinks: Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl JsEngine {
-    pub fn idle_shrinks(&self) -> u64 {
-        self.idle_shrinks.load(std::sync::atomic::Ordering::Relaxed)
-    }
 }
 
 impl JsEngine {
@@ -232,8 +203,6 @@ impl JsEngine {
     ) -> Result<JsEngine, EngineError> {
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
-        let idle_shrinks = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let idle_shrinks_thread = Arc::clone(&idle_shrinks);
         let (tx, rx) = mpsc::unbounded_channel();
         ENGINES.lock().unwrap().push(tx.downgrade());
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -242,16 +211,7 @@ impl JsEngine {
             // V8 + deeply recursive module instantiation want more than the
             // 2MB default, especially in debug builds.
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || {
-                engine_thread(
-                    config,
-                    module_host,
-                    hooks,
-                    rx,
-                    ready_tx,
-                    idle_shrinks_thread,
-                )
-            })
+            .spawn(move || engine_thread(config, module_host, hooks, rx, ready_tx))
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(isolate)) => Ok(JsEngine {
@@ -259,7 +219,6 @@ impl JsEngine {
                 thread: Mutex::new(Some(thread)),
                 isolate,
                 default_deadline,
-                idle_shrinks,
             }),
             Ok(Err(e)) => {
                 let _ = thread.join();
@@ -448,7 +407,6 @@ fn engine_thread(
     hooks: Option<EngineHooks>,
     mut rx: mpsc::UnboundedReceiver<Job>,
     ready: std::sync::mpsc::Sender<Result<v8::IsolateHandle, EngineError>>,
-    idle_shrinks: Arc<std::sync::atomic::AtomicU64>,
 ) {
     // Current-thread runtime: the JsRuntime is !Send and every part of the
     // worker must stay on this thread.
@@ -538,26 +496,24 @@ fn engine_thread(
             /// heap, and the isolate is condemned: later jobs fail fast until
             /// the owner replaces the engine.
             MemoryExhausted,
-            /// No jobs for `idle_shrink_after`: signal V8 moderate memory
-            /// pressure once (see [`EngineConfig::idle_shrink_after`]).
-            IdleShrink,
             Closed,
         }
         let mut pending: Vec<PendingCall> = Vec::new();
-        let mut last_activity = tokio::time::Instant::now();
-        let mut idle_shrunk = false;
         // The event loop drained completely (no ops, no live timers). It is
-        // still polled on every wake: V8 posts its own foreground work (the
-        // MemoryReducer's delayed GC tasks, incremental-marking steps) through
-        // deno_core's platform, which queues a task once it is due and wakes
-        // the waker the last poll registered; only a poll drains that queue.
-        // A drained poll registers the waker and returns, so nothing spins:
-        // the engine wakes only for a job, a due V8 task, or a timer. While
-        // the loop HAS work it is polled even with no call pending, since a
-        // module may have left long-lived background work behind (the plugin
-        // host's configureServer middleware server, a Miniflare instance).
-        // The flag now only tells the shutdown path whether a final flush is
-        // needed.
+        // still polled on every wake, as Node's platform runs V8's delayed
+        // tasks off libuv timers: V8 posts its own foreground work (the
+        // MemoryReducer's delayed GC tasks, which return an idle heap's pages,
+        // and incremental-marking steps) through deno_core's platform, which
+        // queues a task once it is due and wakes the waker the last poll
+        // registered; only a poll drains that queue. Skipping the poll left
+        // those tasks queued, and an idle isolate kept its high-water heap
+        // until the next job. A drained poll registers the waker and returns,
+        // so nothing spins: the engine wakes only for a job, a due V8 task, or
+        // a timer. While the loop HAS work it is polled even with no call
+        // pending, since a module may have left long-lived background work
+        // behind (the plugin host's configureServer middleware server, a
+        // Miniflare instance). The flag only tells the shutdown path whether a
+        // final flush is needed.
         let mut event_loop_idle = false;
         let mut eval_counter: u64 = 0;
         // Set once the heap-limit callback has fired: the isolate ran on and
@@ -572,10 +528,6 @@ fn engine_thread(
             // pending set only changes between iterations.
             let next_deadline = pending.iter().filter_map(|p| p.deadline).min();
             let mut expiry = next_deadline.map(|d| Box::pin(tokio::time::sleep_until(d)));
-            let mut idle = config
-                .idle_shrink_after
-                .filter(|_| pending.is_empty() && !idle_shrunk && !condemned)
-                .map(|after| Box::pin(tokio::time::sleep_until(last_activity + after)));
             let tick = std::future::poll_fn(|cx| {
                 match rx.poll_recv(cx) {
                     std::task::Poll::Ready(Some(job)) => {
@@ -592,11 +544,6 @@ fn engine_thread(
                 if let Some(expiry) = expiry.as_mut() {
                     if expiry.as_mut().poll(cx).is_ready() {
                         return std::task::Poll::Ready(Tick::Expired);
-                    }
-                }
-                if let Some(idle) = idle.as_mut() {
-                    if idle.as_mut().poll(cx).is_ready() {
-                        return std::task::Poll::Ready(Tick::IdleShrink);
                     }
                 }
                 match worker
@@ -620,16 +567,6 @@ fn engine_thread(
             .await;
             if matches!(tick, Tick::Job(_)) {
                 event_loop_idle = false;
-            }
-            // Real work re-arms the idle shrink; the shrink itself, a Gc
-            // probe (a memory measurement must not count as activity), and
-            // shutdown do not.
-            match &tick {
-                Tick::IdleShrink | Tick::Job(Job::Gc { .. }) | Tick::Closed => {}
-                _ => {
-                    last_activity = tokio::time::Instant::now();
-                    idle_shrunk = false;
-                }
             }
             if condemned {
                 if let Tick::Job(job) = tick {
@@ -787,16 +724,6 @@ fn engine_thread(
                             i += 1;
                         }
                     }
-                }
-                Tick::IdleShrink => {
-                    // Incremental and footprint-reducing: V8 drives it through
-                    // the same platform tasks the tick drains.
-                    worker
-                        .js_runtime
-                        .v8_isolate()
-                        .memory_pressure_notification(v8::MemoryPressureLevel::Moderate);
-                    idle_shrinks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    idle_shrunk = true;
                 }
                 Tick::MemoryExhausted => {
                     oom.store(false, Ordering::SeqCst);

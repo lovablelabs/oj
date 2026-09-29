@@ -779,34 +779,3 @@ fn collect_all_garbage_counts_only_live_engines() {
     // in parallel and may hold engines, so only assert it returns.
     let _ = oj_js::collect_all_garbage(Duration::from_secs(10));
 }
-
-#[tokio::test]
-async fn idle_engines_shrink_once_and_rearm_on_work() {
-    // The idle backstop (moderate memory pressure, see
-    // EngineConfig::idle_shrink_after): once per idle period, re-armed by real
-    // work, NOT re-armed by a Gc probe (a measurement is not activity).
-    let root = app_root();
-    let mut config = EngineConfig::new(root.path());
-    config.idle_shrink_after = Some(Duration::from_millis(150));
-    let engine = JsEngine::spawn(config).unwrap();
-    engine
-        .eval(EvalInput::Source(
-            "globalThis.x = new Array(4 * 1024 * 1024).fill(1); globalThis.x = null; export default 1;".into(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(engine.idle_shrinks(), 0, "no shrink while active");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(engine.idle_shrinks(), 1, "one shrink after the idle window");
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(engine.idle_shrinks(), 1, "idle does not shrink repeatedly");
-    assert!(engine.collect_garbage(Duration::from_secs(5)));
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(engine.idle_shrinks(), 1, "a Gc probe is not activity");
-    engine
-        .eval(EvalInput::Source("export default 2;".into()))
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(engine.idle_shrinks(), 2, "real work re-arms the shrink");
-}

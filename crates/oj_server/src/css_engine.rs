@@ -155,10 +155,6 @@ impl CssEngine {
             root: root.to_path_buf(),
             memory_limit_bytes: Some(memory_limit_bytes),
             default_deadline: Some(deadline),
-            // Tailwind recompiles per edit and its toolchain state lives in
-            // this isolate: the between-edits idle is exactly where the
-            // high-water pages should come back.
-            idle_shrink_after: Some(oj_js::DEFAULT_IDLE_SHRINK_AFTER),
             code_cache_dir: Some(crate::engine_code_cache_dir(root)),
         };
         // JsEngine::spawn blocks until the isolate is up; keep it off the
