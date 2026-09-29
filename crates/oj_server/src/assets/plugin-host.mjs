@@ -402,6 +402,36 @@ function makeCreateResolver(config) {
   };
 }
 
+// Vite's searchRoot.ts: the nearest ancestor that looks like a workspace
+// root (pnpm-workspace.yaml or lerna.json beside it, a package.json with
+// `workspaces`, or a deno.json(c) with `workspace`), else the nearest
+// package root. `server.fs.allow` defaults to it.
+function searchForPackageRoot(current, root = current) {
+  for (;;) {
+    if (existsSync(join(current, "package.json"))) return current;
+    const dir = dirname(current);
+    if (!dir || dir === current) return root;
+    current = dir;
+  }
+}
+function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
+  const readJson = (p) => {
+    try {
+      return JSON.parse(readFileSync(p, "utf8")) || {};
+    } catch {
+      return null;
+    }
+  };
+  for (;;) {
+    if (["pnpm-workspace.yaml", "lerna.json"].some((f) => existsSync(join(current, f)))) return current;
+    if (readJson(join(current, "package.json"))?.workspaces) return current;
+    if (["deno.json", "deno.jsonc"].some((f) => readJson(join(current, f))?.workspace)) return current;
+    const dir = dirname(current);
+    if (!dir || dir === current) return root;
+    current = dir;
+  }
+}
+
 function withResolvedDefaults(config) {
   const c = config ?? {};
   const merged = mergeConfigLite(
@@ -486,6 +516,26 @@ function withResolvedDefaults(config) {
   if (merged.publicDir !== false) {
     const pd = typeof merged.publicDir === "string" && merged.publicDir.length > 0 ? merged.publicDir : "public";
     merged.publicDir = isAbsolute(pd) ? pd : pathResolve(merged.root, pd);
+  }
+  // Vite ALWAYS resolves `server.fs` (resolveServerOptions): strict on, the
+  // default deny list, and `allow` defaulting to the workspace root, each
+  // entry resolved absolute. Plugins index into `config.server.fs.allow`
+  // directly in resolveId-time checks (isServeableFile shapes), so an
+  // undefined here fails every bundle that runs them. Vite's pnp/pnpm
+  // virtual-store extras are serving concerns, not config shape, and are
+  // handled by oj's own fs allow list.
+  {
+    merged.server = merged.server ?? {};
+    const rawFs = merged.server.fs ?? {};
+    const allow = Array.isArray(rawFs.allow) && rawFs.allow.length > 0
+      ? rawFs.allow
+      : [searchForWorkspaceRoot(cacheRoot)];
+    merged.server.fs = {
+      ...rawFs,
+      strict: rawFs.strict ?? true,
+      allow: allow.map((d) => pathResolve(cacheRoot, d)),
+      deny: rawFs.deny ?? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"],
+    };
   }
   // Vite's resolved config carries a `logger`; plugins (e.g. the cloudflare
   // plugin's ViteMiniflareLogger) call `config.logger.info/warn/error`.

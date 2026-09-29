@@ -256,6 +256,56 @@ export function findConfig(app) {
   return null;
 }
 
+// Vite's searchRoot.ts: the nearest ancestor that looks like a workspace root
+// (pnpm-workspace.yaml or lerna.json beside it, a package.json with
+// `workspaces`, or a deno.json(c) with `workspace`), else the nearest package
+// root. `server.fs.allow` defaults to it.
+function searchForPackageRoot(current, root = current) {
+  for (;;) {
+    if (existsSync(join(current, "package.json"))) return current;
+    const dir = dirname(current);
+    if (!dir || dir === current) return root;
+    current = dir;
+  }
+}
+function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
+  const readJson = (p) => {
+    try {
+      return JSON.parse(readFileSync(p, "utf8")) || {};
+    } catch {
+      return null;
+    }
+  };
+  for (;;) {
+    if (["pnpm-workspace.yaml", "lerna.json"].some((f) => existsSync(join(current, f)))) return current;
+    if (readJson(join(current, "package.json"))?.workspaces) return current;
+    if (["deno.json", "deno.jsonc"].some((f) => readJson(join(current, f))?.workspace)) return current;
+    const dir = dirname(current);
+    if (!dir || dir === current) return root;
+    current = dir;
+  }
+}
+
+// Vite ALWAYS resolves `server.fs` (resolveServerOptions): strict on, the
+// default deny list, and `allow` defaulting to the workspace root, entries
+// resolved absolute. Plugins index into `config.server.fs.allow` in
+// resolveId-time checks, so an undefined here fails the whole bundle.
+export function withResolvedServerFs(server, root) {
+  const rawFs = server?.fs ?? {};
+  const allow = Array.isArray(rawFs.allow) && rawFs.allow.length > 0
+    ? rawFs.allow
+    : [searchForWorkspaceRoot(root)];
+  return {
+    ...(server ?? {}),
+    fs: {
+      ...rawFs,
+      strict: rawFs.strict ?? true,
+      allow: allow.map((d) => pathResolve(root, d)),
+      deny: rawFs.deny ?? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"],
+    },
+  };
+}
+
 export function createPluginContainer(vite, allPlugins, {
   command = "serve", mode = command === "build" ? "production" : "development", environment = "client", config = {},
 } = {}) {
@@ -325,6 +375,7 @@ export function createPluginContainer(vite, allPlugins, {
     };
     resolvedConfig.environments[name] = envc;
   }
+  resolvedConfig.server = withResolvedServerFs(resolvedConfig.server, resolvedConfig.root);
   // Vite resolves `build.outDir` ("dist") and an absolute `publicDir` ("" when
   // disabled); build plugins compute output paths from both.
   resolvedConfig.build = { outDir: "dist", ...resolvedConfig.build };
