@@ -31,6 +31,7 @@ test("bundling container: resolveId reading server.fs.allow.some() survives and 
   fs.writeFileSync(path.join(ws, "pnpm-workspace.yaml"), "packages:\n  - web\n");
   fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "web" }));
 
+  try {
   let seenConfig = null;
   let seenAllow = null;
   const plugins = [
@@ -62,7 +63,9 @@ test("bundling container: resolveId reading server.fs.allow.some() survives and 
   assert.deepEqual(seenAllow.allow, [ws], "allow defaults to the workspace root");
   assert.equal(seenConfig.strict, true);
   assert.deepEqual(seenConfig.deny, VITE_DENY);
-  fs.rmSync(ws, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
 });
 
 test("bundling container: a user allow list is kept, resolved absolute", async () => {

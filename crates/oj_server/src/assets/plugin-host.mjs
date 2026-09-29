@@ -525,7 +525,10 @@ function withResolvedDefaults(config) {
   // virtual-store addition is not mirrored: it reads
   // node_modules/.modules.yaml with JSON.parse (server/index.ts), which
   // throws on pnpm's real YAML and is swallowed, so observed Vite behavior
-  // carries no store entry either.
+  // carries no store entry either. Vite's own-client-dir push (CLIENT_DIR
+  // when vite sits outside every allow entry) has no oj equivalent: oj
+  // serves its client from memory, and its serving side allows any
+  // node_modules path outright.
   {
     merged.server = merged.server ?? {};
     const rawFs = merged.server.fs ?? {};
@@ -1506,6 +1509,11 @@ initStage("config-hooks-done");
 // Vite's environment carries the resolved config (per-environment overrides
 // merged), its logger and getTopLevelConfig(); applyToEnvironment and every
 // hook's this.environment read them.
+// A non-client environment re-resolves, so its `server.fs.allow` is a
+// SNAPSHOT taken here (after runConfigHooks, so configResolved-time pushes
+// are captured); Vite shares one `server` object across environments, so a
+// post-boot push would be visible everywhere there. oj's serving allow-list
+// reads the raw config on its own path and is unaffected either way.
 environment.config =
   envName === "client"
     ? resolvedConfig

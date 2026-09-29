@@ -293,7 +293,10 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
 // fails the whole bundle. Vite's pnpm virtual-store addition is not mirrored:
 // it reads node_modules/.modules.yaml with JSON.parse (server/index.ts),
 // which throws on pnpm's real YAML and is swallowed, so observed Vite
-// behavior carries no store entry either.
+// behavior carries no store entry either. Vite's own-client-dir push
+// (CLIENT_DIR when vite sits outside every allow entry) has no oj
+// equivalent: oj serves its client from memory, and its serving side allows
+// any node_modules path outright.
 export function withResolvedServerFs(server, root) {
   const rawFs = server?.fs ?? {};
   // Vite: `allow: raw?.fs?.allow ?? [workspaceRoot]` — an EXPLICIT empty
