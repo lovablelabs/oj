@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { tmpProject } from "./harness.mjs";
@@ -17,6 +17,11 @@ if (!fs.existsSync(oj)) {
   // incremental link of the bin, not a cold build.
   execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 }
+// The first exec of a freshly linked binary is slow (a ~400MB debug build:
+// cold page cache, and macOS scans a new executable on its first launch),
+// measured at 3.5s, and 8s right after a link. The tests below time how fast
+// a child exits, so that one-time cost is paid here, not inside their windows.
+execFileSync(oj, ["--version"], { stdio: "ignore" });
 
 const alive = (pid) => {
   try {
@@ -50,10 +55,11 @@ test("a child born an orphan exits immediately (OJ_PARENT_PID mismatch)", async 
   });
   child.stdin.end(JSON.stringify([]));
   try {
+    let timer;
     const code = await new Promise((resolve, reject) => {
       child.on("exit", (c) => resolve(c));
-      setTimeout(() => reject(new Error("born-orphan child did not exit")), 5000);
-    });
+      timer = setTimeout(() => reject(new Error("born-orphan child did not exit")), 5000);
+    }).finally(() => clearTimeout(timer));
     assert.equal(code, 0, "a born orphan exits cleanly instead of running its job");
   } finally {
     child.kill("SIGKILL");
