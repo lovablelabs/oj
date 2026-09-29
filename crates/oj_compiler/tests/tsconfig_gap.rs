@@ -86,7 +86,10 @@ fn numeric_targets_derive_the_default_like_vite() {
             r#"{ "compilerOptions": { "target": "ES2022" } }"#,
         )],
     );
-    assert!(!out.contains("this.foo = 1"), "ES2022 implies define: {out}");
+    assert!(
+        !out.contains("this.foo = 1"),
+        "ES2022 implies define: {out}"
+    );
     let out = compile_with(
         "es2016",
         &[(
@@ -94,7 +97,10 @@ fn numeric_targets_derive_the_default_like_vite() {
             r#"{ "compilerOptions": { "target": "ES2016" } }"#,
         )],
     );
-    assert!(out.contains("this.foo = 1"), "ES2016 implies assignment: {out}");
+    assert!(
+        out.contains("this.foo = 1"),
+        "ES2016 implies assignment: {out}"
+    );
 }
 
 #[test]
