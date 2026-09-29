@@ -915,7 +915,8 @@ fn create_command(
     // tty operations on the inherited terminal would SIGTTOU-stop (see the
     // spawnSync maxBuffer comment below for the same hazard). Decided above,
     // before stdio was consumed.
-    if detached || oj_own_group || !fds_to_dup.is_empty() || should_clear_groups {
+    if detached || oj_own_group || !fds_to_dup.is_empty() || should_clear_groups
+    {
       command.pre_exec(move || {
         if should_clear_groups {
           // Keep the identity change in one checked sequence. Command::uid
@@ -1191,7 +1192,8 @@ fn spawn_child(
   detached: bool,
   oj_own_group: bool,
 ) -> Result<Child, ProcessError> {
-  let (mut child, pid) = spawn_command(command, Some(oj_own_group && !detached))?;
+  let (mut child, pid) =
+    spawn_command(command, Some(oj_own_group && !detached))?;
 
   #[cfg(not(windows))]
   let stdin_rid = child
@@ -1316,7 +1318,8 @@ fn spawn_child_node(
   detached: bool,
   oj_own_group: bool,
 ) -> Result<NodeChild, ProcessError> {
-  let (mut child, pid) = spawn_command(command, Some(oj_own_group && !detached))?;
+  let (mut child, pid) =
+    spawn_command(command, Some(oj_own_group && !detached))?;
 
   let stdin_fd = child_stdio_to_fd!(child, stdin);
   let stdout_fd = child_stdio_to_fd!(child, stdout);
@@ -1626,21 +1629,37 @@ fn op_spawn_child(
   let detached = args.detached;
   #[cfg(unix)]
   let retry_args = args.clone();
-  let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) = create_command(
-    state, args, &api_name, /* allow_cwd_inherit */ false,
-    /* wrap_in_shell */ false,
-  )?;
-  let child = spawn_child(state, command, pipe_rid, extra_pipe_fds, detached, oj_own_group);
+  let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
+    create_command(
+      state, args, &api_name, /* allow_cwd_inherit */ false,
+      /* wrap_in_shell */ false,
+    )?;
+  let child = spawn_child(
+    state,
+    command,
+    pipe_rid,
+    extra_pipe_fds,
+    detached,
+    oj_own_group,
+  );
   for handle in handles_to_close {
     deno_io::close_raw_handle(handle);
   }
   #[cfg(unix)]
   if matches!(&child, Err(err) if err.is_enoexec()) {
-    let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) = create_command(
-      state, retry_args, &api_name, /* allow_cwd_inherit */ false,
-      /* wrap_in_shell */ true,
-    )?;
-    let child = spawn_child(state, command, pipe_rid, extra_pipe_fds, detached, oj_own_group);
+    let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
+      create_command(
+        state, retry_args, &api_name, /* allow_cwd_inherit */ false,
+        /* wrap_in_shell */ true,
+      )?;
+    let child = spawn_child(
+      state,
+      command,
+      pipe_rid,
+      extra_pipe_fds,
+      detached,
+      oj_own_group,
+    );
     for handle in handles_to_close {
       deno_io::close_raw_handle(handle);
     }
@@ -1662,23 +1681,37 @@ fn op_node_spawn_child(
   let retry_args = args.clone();
   // `child_process.spawn` in Node tolerates the parent's cwd being unlinked
   // by inheriting it, so allow cwd inheritance for Node-compat spawns.
-  let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) = create_command(
-    state, args, &api_name, /* allow_cwd_inherit */ true,
-    /* wrap_in_shell */ false,
-  )?;
-  let child =
-    spawn_child_node(state, command, pipe_rid, extra_pipe_fds, detached, oj_own_group);
+  let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
+    create_command(
+      state, args, &api_name, /* allow_cwd_inherit */ true,
+      /* wrap_in_shell */ false,
+    )?;
+  let child = spawn_child_node(
+    state,
+    command,
+    pipe_rid,
+    extra_pipe_fds,
+    detached,
+    oj_own_group,
+  );
   for handle in handles_to_close {
     deno_io::close_raw_handle(handle);
   }
   #[cfg(unix)]
   if matches!(&child, Err(err) if err.is_enoexec()) {
-    let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) = create_command(
-      state, retry_args, &api_name, /* allow_cwd_inherit */ true,
-      /* wrap_in_shell */ true,
-    )?;
-    let child =
-      spawn_child_node(state, command, pipe_rid, extra_pipe_fds, detached, oj_own_group);
+    let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
+      create_command(
+        state, retry_args, &api_name, /* allow_cwd_inherit */ true,
+        /* wrap_in_shell */ true,
+      )?;
+    let child = spawn_child_node(
+      state,
+      command,
+      pipe_rid,
+      extra_pipe_fds,
+      detached,
+      oj_own_group,
+    );
     for handle in handles_to_close {
       deno_io::close_raw_handle(handle);
     }
