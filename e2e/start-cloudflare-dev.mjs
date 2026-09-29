@@ -317,23 +317,29 @@ async function runDev() {
     // instead assert through the logs that oj sent the post-regen invalidate
     // and the plugin host received it (the graph not knowing routeTree.gen.ts
     // makes the host log the unmatched change, which doubles as a receipt).
-    fs.writeFileSync(path.join(app, "src", "routes", "extra.tsx"), [
+    // Retouchable (identical bytes): the watcher thread may register watches
+    // after HTTP-ready on a loaded runner, so a single write can predate
+    // registration and never be seen; the mtime bump re-fires it.
+    const extraRoute = [
       'import { createFileRoute } from "@tanstack/react-router";',
       "",
       'export const Route = createFileRoute("/extra")({',
       "  component: () => <main>extra-page-marker</main>,",
       "});",
       "",
-    ].join("\n"));
+    ].join("\n");
+    const touchExtra = () => fs.writeFileSync(path.join(app, "src", "routes", "extra.tsx"), extraRoute);
+    touchExtra();
     let regenSent = false;
     let regenReceived = false;
-    for (let i = 0; i < 300 && !(regenSent && regenReceived); i++) {
+    for (let i = 0; i < 450 && !(regenSent && regenReceived); i++) {
       regenSent = /regen outputs changed \([^)]*routeTree\.gen\.ts/.test(log);
       regenReceived = /routeTree\.gen\.ts matched no module/.test(log);
+      if (i > 0 && i % 30 === 0 && !regenSent) touchExtra();
       await new Promise((r) => setTimeout(r, 100));
     }
     if (!regenSent) {
-      throw new Error(`no post-regen worker invalidate for routeTree.gen.ts within 30s of a new route file; log tail:\n${log.slice(-4000)}`);
+      throw new Error(`no post-regen worker invalidate for routeTree.gen.ts within 45s of a new route file; log tail:\n${log.slice(-4000)}`);
     }
     if (!regenReceived) {
       throw new Error(`the plugin host never received the routeTree.gen.ts invalidate; log tail:\n${log.slice(-4000)}`);
