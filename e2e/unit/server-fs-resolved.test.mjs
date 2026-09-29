@@ -86,6 +86,19 @@ test("bundling container: a user allow list is kept, resolved absolute", async (
   assert.deepEqual(seen.deny, VITE_DENY, "deny still gets the Vite default");
 });
 
+test("bundling container: an EXPLICIT empty allow list stays empty (Vite's ?? semantics)", async () => {
+  let seen = null;
+  const container = bridge.createPluginContainer({}, [
+    { name: "reader", configResolved(config) { seen = config.server.fs; } },
+  ], {
+    command: "serve",
+    environment: "client",
+    config: { root: repo, server: { fs: { allow: [] } } },
+  });
+  await container.resolveId("virtual:probe", undefined);
+  assert.deepEqual(seen.allow, [], "allow: [] must not be broadened to the workspace root");
+});
+
 test("dev plugin host: configResolved sees the resolved server.fs", async () => {
   const fx = tmpProject({ prefix: "oj-fs-host-" });
   fx.write(

@@ -521,19 +521,21 @@ function withResolvedDefaults(config) {
   // default deny list, and `allow` defaulting to the workspace root, each
   // entry resolved absolute. Plugins index into `config.server.fs.allow`
   // directly in resolveId-time checks (isServeableFile shapes), so an
-  // undefined here fails every bundle that runs them. Vite's pnp/pnpm
-  // virtual-store extras are serving concerns, not config shape, and are
-  // handled by oj's own fs allow list.
+  // undefined here fails every bundle that runs them. Vite's pnpm
+  // virtual-store addition is not mirrored: it reads
+  // node_modules/.modules.yaml with JSON.parse (server/index.ts), which
+  // throws on pnpm's real YAML and is swallowed, so observed Vite behavior
+  // carries no store entry either.
   {
     merged.server = merged.server ?? {};
     const rawFs = merged.server.fs ?? {};
-    const allow = Array.isArray(rawFs.allow) && rawFs.allow.length > 0
-      ? rawFs.allow
-      : [searchForWorkspaceRoot(cacheRoot)];
+    // Vite: `allow: raw?.fs?.allow ?? [workspaceRoot]` — an EXPLICIT empty
+    // list stays empty; only an absent one gets the workspace-root default.
+    const allow = Array.isArray(rawFs.allow) ? rawFs.allow : [searchForWorkspaceRoot(cacheRoot)];
     merged.server.fs = {
       ...rawFs,
       strict: rawFs.strict ?? true,
-      allow: allow.map((d) => pathResolve(cacheRoot, d)),
+      allow: allow.map((d) => pathResolve(cacheRoot, d).replace(/\\/g, "/")),
       deny: rawFs.deny ?? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"],
     };
   }

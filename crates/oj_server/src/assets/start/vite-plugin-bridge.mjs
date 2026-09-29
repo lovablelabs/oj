@@ -288,19 +288,23 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
 
 // Vite ALWAYS resolves `server.fs` (resolveServerOptions): strict on, the
 // default deny list, and `allow` defaulting to the workspace root, entries
-// resolved absolute. Plugins index into `config.server.fs.allow` in
-// resolveId-time checks, so an undefined here fails the whole bundle.
+// resolved absolute (normalizePath'd). Plugins index into
+// `config.server.fs.allow` in resolveId-time checks, so an undefined here
+// fails the whole bundle. Vite's pnpm virtual-store addition is not mirrored:
+// it reads node_modules/.modules.yaml with JSON.parse (server/index.ts),
+// which throws on pnpm's real YAML and is swallowed, so observed Vite
+// behavior carries no store entry either.
 export function withResolvedServerFs(server, root) {
   const rawFs = server?.fs ?? {};
-  const allow = Array.isArray(rawFs.allow) && rawFs.allow.length > 0
-    ? rawFs.allow
-    : [searchForWorkspaceRoot(root)];
+  // Vite: `allow: raw?.fs?.allow ?? [workspaceRoot]` — an EXPLICIT empty
+  // list stays empty; only an absent one gets the workspace-root default.
+  const allow = Array.isArray(rawFs.allow) ? rawFs.allow : [searchForWorkspaceRoot(root)];
   return {
     ...(server ?? {}),
     fs: {
       ...rawFs,
       strict: rawFs.strict ?? true,
-      allow: allow.map((d) => pathResolve(root, d)),
+      allow: allow.map((d) => pathResolve(root, d).replace(/\\/g, "/")),
       deny: rawFs.deny ?? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"],
     },
   };
@@ -375,7 +379,7 @@ export function createPluginContainer(vite, allPlugins, {
     };
     resolvedConfig.environments[name] = envc;
   }
-  resolvedConfig.server = withResolvedServerFs(resolvedConfig.server, resolvedConfig.root);
+  resolvedConfig.server = withResolvedServerFs(resolvedConfig.server, pathResolve(resolvedConfig.root));
   // Vite resolves `build.outDir` ("dist") and an absolute `publicDir` ("" when
   // disabled); build plugins compute output paths from both.
   resolvedConfig.build = { outDir: "dist", ...resolvedConfig.build };
