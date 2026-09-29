@@ -5,11 +5,19 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.13] - 2026-09-29
 
 ### Fixed
 
 - The resolved config handed to plugins now carries `server.fs` resolved the way Vite does (`strict: true`, the default deny list, `allow` defaulting to the workspace root with absolute entries), in the dev plugin host and in the bundling plugin container alike. A plugin whose `resolveId` checks `this.environment.config.server.fs.allow` per `?url` import (an allow-list membership test) crashed every client entry bundle under 0.2.12 with `Cannot read properties of undefined (reading 'some')`.
+- A module whose `acceptExports` list covers every export it has is now fully self-accepting, as in Vite: namespace and dynamic importers hot-swap through it instead of full-reloading.
+- An edit to a css dependency of a CSS module whose importing component does not accept now forces the full reload it needs; the seeded importer walk used to swallow that case and the page kept stale styles.
+- A stylesheet no longer records itself among its own css dependencies (sass can report the entry), and the eager crawl skips `_partial.scss` files instead of logging failed standalone compiles.
+- The tsconfig class-field decision is made once, from the original file path, and handed to the compile, so a synthetic compile path (`x.svg` -> `x.svg.tsx`) can never disagree with the cache key.
+
+### Changed
+
+- The persistent-cache format is now v6: `acceptExports` metadata changed meaning (a partial accept, no longer a self-accept), so entries written by earlier versions are not reused.
 
 ## [0.2.12] - 2026-09-28
 
