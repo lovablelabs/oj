@@ -46,12 +46,22 @@ async function up() {
   }
   return false;
 }
-async function waitFor(frames, pred, ms = 15000) {
-  for (let i = 0; i < ms / 100; i++) {
-    if (frames.some(pred)) return true;
+// Deadline-based wait, retouching the probe write on the way: the watcher
+// thread may register its watches after HTTP-ready on a loaded runner, so a
+// single write can predate registration and never be seen; rewriting the
+// same bytes bumps the mtime and re-fires it.
+async function waitFor(frames, pred, { ms = 45000, touch } = {}) {
+  const deadline = Date.now() + ms;
+  let touched = Date.now();
+  while (!frames.some(pred)) {
+    if (Date.now() >= deadline) return false;
+    if (touch && Date.now() - touched >= 3000) {
+      touch();
+      touched = Date.now();
+    }
     await sleep(100);
   }
-  return false;
+  return true;
 }
 const isEvent = (f, ev) => f?.type === "custom" && f?.event === ev;
 
@@ -84,11 +94,14 @@ try {
   }
   console.log("connect frames:   dev-server-mode + boot-progress ok");
 
-  // Edit a route source file -> the watcher rebuilds and narrates an update batch.
+  // Edit a route source file -> the watcher rebuilds and narrates an update
+  // batch. Identical bytes per retouch: one logical change, re-fired on mtime.
   frames.length = 0;
-  fs.appendFileSync(routeFile, `\n// narration probe ${Date.now()}\n`);
+  const probed = fs.readFileSync(routeFile, "utf8") + `\n// narration probe ${Date.now()}\n`;
+  const touch = () => fs.writeFileSync(routeFile, probed);
+  touch();
 
-  const opened = await waitFor(frames, (f) => isEvent(f, "lovable:update-progress") && f.data.done === false);
+  const opened = await waitFor(frames, (f) => isEvent(f, "lovable:update-progress") && f.data.done === false, { touch });
   if (!opened) throw new Error(`no update-progress open frame; got ${JSON.stringify(frames)}`);
   const done = await waitFor(frames, (f) => isEvent(f, "lovable:update-progress") && f.data.done === true);
   if (!done) throw new Error(`no update-progress done frame; got ${JSON.stringify(frames)}`);

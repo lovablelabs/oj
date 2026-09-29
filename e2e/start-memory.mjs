@@ -73,9 +73,19 @@ try {
   const samples = [];
   for (let i = 0; i < EDITS; i++) {
     const before = rebuilds();
-    fs.writeFileSync(aboutFile, original + `\n// mem probe ${i} ${Date.now()}\n`);
+    // Identical bytes per retouch: the first edit can predate the watcher's
+    // registration on a loaded runner; the mtime bump re-fires it.
+    const probed = original + `\n// mem probe ${i}\n`;
+    fs.writeFileSync(aboutFile, probed);
     const deadline = Date.now() + 120000;
-    while (Date.now() < deadline && rebuilds() <= before) await sleep(200);
+    let touched = Date.now();
+    while (Date.now() < deadline && rebuilds() <= before) {
+      if (Date.now() - touched >= 3000) {
+        fs.writeFileSync(aboutFile, probed);
+        touched = Date.now();
+      }
+      await sleep(200);
+    }
     must(rebuilds() > before, `edit ${i}: no rebuild within 120s:\n${log.slice(-1500)}`);
     // Let the reload signal and any post-rebundle work settle before sampling.
     await sleep(750);
