@@ -499,13 +499,21 @@ fn engine_thread(
             Closed,
         }
         let mut pending: Vec<PendingCall> = Vec::new();
-        // The event loop drained completely (no ops, no live timers): only a
-        // new job can create work, so skip event-loop polling until one
-        // arrives and the scheduler parks instead of spinning. While the loop
-        // HAS work it is polled even with no call pending — a module may have
-        // left long-lived background work behind (the plugin host's
-        // configureServer middleware server, a Miniflare instance), and that
-        // work must keep serving between hook calls.
+        // The event loop drained completely (no ops, no live timers). It is
+        // still polled on every wake, as Node's platform runs V8's delayed
+        // tasks off libuv timers: V8 posts its own foreground work (the
+        // MemoryReducer's delayed GC tasks, which return an idle heap's pages,
+        // and incremental-marking steps) through deno_core's platform, which
+        // queues a task once it is due and wakes the waker the last poll
+        // registered; only a poll drains that queue. Skipping the poll left
+        // those tasks queued, and an idle isolate kept its high-water heap
+        // until the next job. A drained poll registers the waker and returns,
+        // so nothing spins: the engine wakes only for a job, a due V8 task, or
+        // a timer. While the loop HAS work it is polled even with no call
+        // pending, since a module may have left long-lived background work
+        // behind (the plugin host's configureServer middleware server, a
+        // Miniflare instance). The flag only tells the shutdown path whether a
+        // final flush is needed.
         let mut event_loop_idle = false;
         let mut eval_counter: u64 = 0;
         // Set once the heap-limit callback has fired: the isolate ran on and
@@ -538,23 +546,21 @@ fn engine_thread(
                         return std::task::Poll::Ready(Tick::Expired);
                     }
                 }
-                if !event_loop_idle {
-                    match worker
-                        .js_runtime
-                        .poll_event_loop(cx, PollEventLoopOptions::default())
-                    {
-                        std::task::Poll::Ready(Ok(())) => event_loop_idle = true,
-                        std::task::Poll::Ready(Err(e)) => {
-                            return std::task::Poll::Ready(Tick::Broken(e))
-                        }
-                        std::task::Poll::Pending => {}
+                match worker
+                    .js_runtime
+                    .poll_event_loop(cx, PollEventLoopOptions::default())
+                {
+                    std::task::Poll::Ready(Ok(())) => event_loop_idle = true,
+                    std::task::Poll::Ready(Err(e)) => {
+                        return std::task::Poll::Ready(Tick::Broken(e))
                     }
-                    // The heap-limit callback runs inside the poll above, so
-                    // a mid-pump exhaustion is visible right here — the tick
-                    // never depends on a waker the terminated JS can't fire.
-                    if oom.load(Ordering::SeqCst) {
-                        return std::task::Poll::Ready(Tick::MemoryExhausted);
-                    }
+                    std::task::Poll::Pending => event_loop_idle = false,
+                }
+                // The heap-limit callback runs inside the poll above, so a
+                // mid-pump exhaustion is visible right here — the tick never
+                // depends on a waker the terminated JS can't fire.
+                if oom.load(Ordering::SeqCst) {
+                    return std::task::Poll::Ready(Tick::MemoryExhausted);
                 }
                 std::task::Poll::Pending
             })

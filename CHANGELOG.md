@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Idle engines now return memory the way Node does: V8's MemoryReducer (the delayed GC tasks V8 posts after a collection that grew the heap) runs for every embedded engine. The engine left those tasks queued and unrun once its event loop drained, so an idle isolate kept its high-water heap until the next job; Node's platform runs the same tasks off libuv timers.
+
 ## [0.2.13] - 2026-09-29
 
 ### Fixed
