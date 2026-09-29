@@ -68,6 +68,40 @@ fn re_recording_identical_edges_allocates_nothing() {
     assert_eq!(allocations(|| g.set_accepted_deps(&app, &[])), 0);
     // add_import of an edge that is already there is a no-op on both sides.
     assert_eq!(allocations(|| g.add_import(&app, &imports[0])), 0);
+    // Partial-accept metadata (acceptExports + importedBindings) re-recorded
+    // unchanged, as every warm request does since #272: compared borrowed,
+    // materialized only on change.
+    let names = ["a".to_string(), "b".to_string()];
+    g.set_accepted_exports(&app, Some(&names));
+    let bindings = [
+        (imports[0].as_path(), names.as_slice()),
+        (imports[1].as_path(), &names[..1]),
+        // A repeated clean path (`./a.css` + `./a.css?inline`), like the
+        // server's query-stripped iterator can produce.
+        (imports[2].as_path(), [].as_slice()),
+        (imports[2].as_path(), [].as_slice()),
+    ];
+    g.set_imported_bindings(&app, bindings.iter().copied());
+    assert_eq!(
+        allocations(|| g.set_accepted_exports(&app, Some(&names))),
+        0
+    );
+    assert_eq!(
+        allocations(|| g.set_imported_bindings(&app, bindings.iter().copied())),
+        0
+    );
+    assert_eq!(
+        allocations(|| g.set_accepted_exports(&imports[0], None)),
+        0,
+        "the no-hot common case is free"
+    );
+    assert_eq!(
+        allocations(
+            || g.set_imported_bindings(&imports[0], std::iter::empty::<(&Path, &[String])>())
+        ),
+        0,
+        "the no-bindings common case is free"
+    );
     // ensure_module of a known module no longer builds an owned key.
     assert_eq!(
         allocations(|| {

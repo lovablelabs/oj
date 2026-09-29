@@ -5400,6 +5400,14 @@ fn module_weight(module: &CachedModule) -> usize {
         + strs(&module.watch_files)
         + pairs(&module.require_map)
         + pairs(&module.css_exports)
+        + module
+            .import_bindings
+            .iter()
+            .map(|(s, names)| s.len() + std::mem::size_of::<String>() + strs(names))
+            .sum::<usize>()
+        + module.hot.as_ref().map_or(0, |h| {
+            strs(&h.deps) + h.accepted_exports.as_deref().map_or(0, strs)
+        })
 }
 
 fn memory_cache_budget() -> usize {
@@ -5517,19 +5525,23 @@ fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
         })
         .unwrap_or_default();
     graph.set_accepted_deps(Path::new(url), &accepted);
-    graph.set_accepted_exports(Path::new(url), hot.and_then(|h| h.accepted_exports.clone()));
-    let bindings: Vec<(PathBuf, Vec<String>)> = module
+    graph.set_accepted_exports(
+        Path::new(url),
+        hot.and_then(|h| h.accepted_exports.as_deref()),
+    );
+    // Borrowed all the way down: the graph compares in place and only the
+    // changed case materializes, keeping the warm re-register heap-free.
+    let bindings = module
         .import_bindings
         .iter()
         .filter(|(s, _)| s.starts_with('/') && !s.starts_with("/@oj/") && !is_worker_query(s))
         .map(|(s, names)| {
             (
-                PathBuf::from(s.split('?').next().unwrap_or(s)),
-                names.clone(),
+                Path::new(s.split('?').next().unwrap_or(s)),
+                names.as_slice(),
             )
-        })
-        .collect();
-    graph.set_imported_bindings(Path::new(url), &bindings);
+        });
+    graph.set_imported_bindings(Path::new(url), bindings);
 }
 
 /// The compiled stylesheet as `text/css` (Vite's `?direct` / raw `<link>` request).

@@ -88,14 +88,52 @@ impl ModuleGraph {
         self.ensure_module(path).accepted_hmr_deps = deps.iter().cloned().collect();
     }
 
-    pub fn set_accepted_exports(&mut self, path: &Path, names: Option<Vec<String>>) {
-        self.ensure_module(path).accepted_exports = names.map(|n| n.into_iter().collect());
+    /// Records the partial-accept list. The dev server re-registers a module
+    /// on every request, so the unchanged case (compared borrowed, order-free)
+    /// must not touch the heap — see tests/warm_path.rs.
+    pub fn set_accepted_exports(&mut self, path: &Path, names: Option<&[String]>) {
+        let unchanged = match (self.modules.get(path), names) {
+            (Some(node), Some(v)) => node
+                .accepted_exports
+                .as_ref()
+                .is_some_and(|set| set.len() == v.len() && v.iter().all(|n| set.contains(n))),
+            (Some(node), None) => node.accepted_exports.is_none(),
+            (None, None) => true,
+            (None, Some(_)) => false,
+        };
+        if unchanged {
+            return;
+        }
+        self.ensure_module(path).accepted_exports = names.map(|n| n.iter().cloned().collect());
     }
 
-    pub fn set_imported_bindings(&mut self, path: &Path, bindings: &[(PathBuf, Vec<String>)]) {
+    /// Records the per-import used bindings from a re-scannable borrowed
+    /// iterator; the unchanged case allocates nothing (warm_path.rs). The
+    /// distinct-path count is an O(n²) scan, fine at import-list sizes.
+    pub fn set_imported_bindings<'a, I>(&mut self, path: &Path, bindings: I)
+    where
+        I: Iterator<Item = (&'a Path, &'a [String])> + Clone,
+    {
+        let unchanged = self.modules.get(path).is_some_and(|node| {
+            let map = &node.imported_bindings;
+            let mut distinct = 0usize;
+            for (idx, (p, names)) in bindings.clone().enumerate() {
+                match map.get(p) {
+                    Some(set)
+                        if set.len() == names.len() && names.iter().all(|n| set.contains(n)) => {}
+                    _ => return false,
+                }
+                if !bindings.clone().take(idx).any(|(prev, _)| prev == p) {
+                    distinct += 1;
+                }
+            }
+            distinct == map.len()
+        });
+        if unchanged {
+            return;
+        }
         self.ensure_module(path).imported_bindings = bindings
-            .iter()
-            .map(|(p, names)| (p.clone(), names.iter().cloned().collect()))
+            .map(|(p, names)| (p.to_path_buf(), names.iter().cloned().collect()))
             .collect();
     }
 
@@ -589,10 +627,10 @@ mod tests {
         let (main, mod_) = (Path::new("/main.js"), Path::new("/mod.js"));
         let mut g = ModuleGraph::new();
         g.add_import(main, mod_);
-        g.set_accepted_exports(mod_, Some(vec!["a".into()]));
+        g.set_accepted_exports(mod_, Some(&["a".into()]));
 
         // Importer uses only the accepted export: the partial boundary covers it.
-        g.set_imported_bindings(main, &[(mod_.to_path_buf(), vec!["a".into()])]);
+        g.set_imported_bindings(main, [(mod_, ["a".to_string()].as_slice())].into_iter());
         let targets = g.update_targets(mod_).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].boundary, mod_);
@@ -600,17 +638,17 @@ mod tests {
         // An unlisted binding, a namespace import and a missing bindings record
         // all climb past the boundary; main is an entry, so: full reload.
         for used in [vec!["a".into(), "b".into()], vec!["*".to_string()]] {
-            g.set_imported_bindings(main, &[(mod_.to_path_buf(), used)]);
+            g.set_imported_bindings(main, [(mod_, used.as_slice())].into_iter());
             assert!(g.update_targets(mod_).is_err(), "must propagate past mod");
         }
-        g.set_imported_bindings(main, &[]);
+        g.set_imported_bindings(main, std::iter::empty::<(&Path, &[String])>());
         assert!(
             g.update_targets(mod_).is_err(),
             "unknown bindings propagate"
         );
 
         // A side-effect import (analyzed, zero names) is within any accepted set.
-        g.set_imported_bindings(main, &[(mod_.to_path_buf(), Vec::new())]);
+        g.set_imported_bindings(main, [(mod_, [].as_slice())].into_iter());
         let targets = g.update_targets(mod_).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].boundary, mod_);
@@ -618,7 +656,7 @@ mod tests {
         // A partially accepting module with no importers is not a dead end.
         let lone = Path::new("/lone.js");
         g.ensure_module(lone);
-        g.set_accepted_exports(lone, Some(vec!["x".into()]));
+        g.set_accepted_exports(lone, Some(&["x".into()]));
         let targets = g.update_targets(lone).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].boundary, lone);
