@@ -847,6 +847,10 @@ impl DevServer {
             oj_config::environment_defines(&config, "ssr"),
         ));
 
+        // BEFORE any engine boots: children spawned by plugin hooks register
+        // here (forked deno_process spawn hook, own process group each) so
+        // restarts and shutdown can kill whole plugin-spawned trees.
+        deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
@@ -912,6 +916,14 @@ impl DevServer {
             "env": { "command": "serve", "mode": dev_mode },
             "environment": { "name": "client", "mode": host_env_mode },
             "pluginsFormat": plugins_format,
+            // Per-environment optimizer include extension, snapshotted by the
+            // preseed child from Vite's own prior _metadata.json (deps a
+            // plugin injects at runtime, e.g. Cloudflare's unenv polyfills,
+            // land there on commit). BOTH the child and buildEnvironments
+            // fold this same snapshot into optimizeDeps.include so the
+            // seeded metadata's configHash matches — the next cold boot then
+            // never re-optimizes in-host (which ended in server.restart()).
+            "preseedIncludePath": oj_cache::cache_root(&root).join("preseed-include.json").to_string_lossy(),
             "ojStartMode": is_start,
         });
         if plugins_format == "vite" {
@@ -1551,12 +1563,19 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
     #[cfg(unix)]
     let code = {
         use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => tokio::select! {
+        // SIGHUP too: own-group children no longer share the terminal's
+        // session, so a closed terminal/SSH drop must be forwarded like ^C
+        // or every plugin runtime is orphaned.
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            (Ok(mut term), Ok(mut hup)) => tokio::select! {
                 _ = tokio::signal::ctrl_c() => 130,
                 _ = term.recv() => 143,
+                _ = hup.recv() => 129,
             },
-            Err(_) => {
+            _ => {
                 let _ = tokio::signal::ctrl_c().await;
                 130
             }
@@ -1578,6 +1597,9 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
         })
         .await;
     }
+    // Own-group children no longer sit in the terminal's foreground group, so
+    // the signal that ends oj never reaches them — forward it.
+    child_groups::kill_all();
     std::process::exit(code);
 }
 
@@ -8254,8 +8276,83 @@ fn is_tsconfig_file(path: &Path) -> bool {
 /// Re-exec the current binary with the same arguments so a fresh process
 /// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
 /// dev port is released as the image is replaced. Does not return on success.
+mod child_groups {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static CHILDREN: Mutex<Vec<(u32, bool)>> = Mutex::new(Vec::new());
+
+    pub fn register(pid: u32, own_group: bool) {
+        CHILDREN.lock().unwrap().push((pid, own_group));
+    }
+
+    /// The fork reports a child it reaped or now owns the kill for; retiring
+    /// the entry here is what keeps a later sweep from ever aiming at a
+    /// recycled pid.
+    pub fn unregister(pid: u32) {
+        CHILDREN.lock().unwrap().retain(|(p, _)| *p != pid);
+    }
+
+    /// SIGKILL every registered child (its whole group when it leads one) and
+    /// reap the corpses, so an exec'd image inherits neither survivors nor
+    /// zombies. Drains in rounds: a child spawned while the sweep runs lands
+    /// in the emptied registry and is taken by the next round.
+    pub fn kill_all() -> usize {
+        let mut killed = 0usize;
+        #[cfg(unix)]
+        for _round in 0..3 {
+            let children: Vec<(u32, bool)> = std::mem::take(&mut *CHILDREN.lock().unwrap());
+            if children.is_empty() {
+                break;
+            }
+            for (pid, own_group) in &children {
+                let pid_i = *pid as i32;
+                // Never trust a stale entry: an own-group child still leads
+                // its group iff getpgid(pid) == pid, and a direct child must
+                // still exist. (The fork retires reaped children, so stale
+                // entries are rare; this is the second lock against pid
+                // recycling. A recycled pid that happens to lead its own new
+                // group remains a theoretical TOCTOU.)
+                let target = if *own_group {
+                    if unsafe { libc::getpgid(pid_i) } != pid_i {
+                        continue;
+                    }
+                    -pid_i
+                } else {
+                    if unsafe { libc::kill(pid_i, 0) } != 0 {
+                        continue;
+                    }
+                    pid_i
+                };
+                if unsafe { libc::kill(target, libc::SIGKILL) } == 0 {
+                    killed += 1;
+                }
+            }
+            // Reap OUR direct children only, each with a small bound — a
+            // per-pid wait can never stall on some unrelated live child the
+            // way a waitpid(-1) sweep did.
+            for (pid, _) in &children {
+                let deadline = Instant::now() + Duration::from_millis(200);
+                loop {
+                    let r =
+                        unsafe { libc::waitpid(*pid as i32, std::ptr::null_mut(), libc::WNOHANG) };
+                    if r != 0 || Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+        killed
+    }
+}
+
 fn restart_process() -> ! {
     eprintln!("{} config/env changed — restarting dev server", oj_brand());
+    let killed = child_groups::kill_all();
+    if killed > 0 {
+        eprintln!("oj: restart killed {killed} child process(es)");
+    }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // In-process plugin hosts chdir the whole process to their app root, so a

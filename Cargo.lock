@@ -6146,6 +6146,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "oj_deno_process"
+version = "0.2.13"
+dependencies = [
+ "deno_core",
+ "deno_error",
+ "deno_fs",
+ "deno_io",
+ "deno_os",
+ "deno_path_util",
+ "deno_permissions",
+ "deno_process",
+ "deno_signals",
+ "deno_subprocess_windows",
+ "libc",
+ "log",
+ "memchr",
+ "nix 0.30.1",
+ "rand 0.8.5",
+ "serde",
+ "sys_traits",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "oj_deno_runtime"
 version = "0.2.13"
 dependencies = [
@@ -6177,7 +6204,6 @@ dependencies = [
  "deno_os",
  "deno_path_util",
  "deno_permissions",
- "deno_process",
  "deno_resolver",
  "deno_signals",
  "deno_telemetry",
@@ -6201,6 +6227,7 @@ dependencies = [
  "node_resolver",
  "notify",
  "oj_deno_napi",
+ "oj_deno_process",
  "once_cell",
  "qbsdiff",
  "raw-window-handle",
@@ -6290,6 +6317,7 @@ dependencies = [
  "oj_compiler",
  "oj_config",
  "oj_css",
+ "oj_deno_process",
  "oj_env",
  "oj_graph",
  "oj_js",

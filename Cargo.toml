@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/oj_compiler",
+    "crates/oj_deno_process",
     "crates/oj_css",
     "crates/oj_env",
     "crates/oj_config",

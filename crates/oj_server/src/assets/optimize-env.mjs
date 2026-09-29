@@ -20,10 +20,11 @@
 // environment finding new deps) still runs inside the host; intercepting
 // every such path would mean owning Vite's optimizer scheduling.
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { foldIncludeSnapshot, priorDepIds, writeIncludeSnapshot } from "./discovered-deps.mjs";
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj:";
@@ -67,6 +68,11 @@ async function main() {
   }
 
   const rc = await vite.resolveConfig({ root, configFile: undefined, mode }, "serve", "development", "development");
+  // Snapshot BEFORE folding: the host folds the same file, and this child's
+  // own optimize rewrites the metadata the snapshot was derived from.
+  const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
+  if (snapshotPath) writeIncludeSnapshot(snapshotPath, priorDepIds(rc));
+  foldIncludeSnapshot(rc, snapshotPath);
 
   const seeded = [];
   let failed = false;

@@ -7,6 +7,21 @@ use std::sync::Mutex;
 use oj_resolver::OjResolver;
 
 pub const PLUGIN_HOST_JS: &str = include_str!("assets/plugin-host.mjs");
+/// Sibling module both the plugin host and the preseed optimizer child import
+/// (`./discovered-deps.mjs` relative to their own materialized location).
+pub const DISCOVERED_DEPS_JS: &str = include_str!("assets/discovered-deps.mjs");
+
+/// Idempotent, atomic materialization of an embedded asset into `dir`.
+pub(crate) fn ensure_asset(dir: &Path, name: &str, bytes: &str) -> std::io::Result<()> {
+    let path = dir.join(name);
+    if std::fs::read(&path).ok().as_deref() == Some(bytes.as_bytes()) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{name}.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, &path)
+}
 pub const VITE_EXTRACT_JS: &str = include_str!("assets/vite-extract.mjs");
 
 /// The host's `getServeInfo` report: how requests are served.
@@ -1957,6 +1972,11 @@ impl PluginHost {
         // in one process (boot + lazy SSR + per-environment build hosts), and
         // a plain truncating write could hand a sibling engine's import a
         // half-written module.
+        let _ = ensure_asset(
+            oj_cache::cache_root(&root).as_path(),
+            "discovered-deps.mjs",
+            DISCOVERED_DEPS_JS,
+        );
         if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
             let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
             std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;

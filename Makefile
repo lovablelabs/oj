@@ -10,7 +10,7 @@ OXFMT = oxfmt="$$(tools/fetch-oxfmt.sh)" && "$$oxfmt"
 
 lint:
 	cargo fmt -- --check --color always
-	cargo clippy --workspace --all-targets --exclude oj_deno_napi --exclude oj_deno_runtime --exclude oj_deno_snapshots -- -D warnings
+	cargo clippy --workspace --all-targets --exclude oj_deno_napi --exclude oj_deno_process --exclude oj_deno_runtime --exclude oj_deno_snapshots -- -D warnings
 	$(OXFMT) --check $(JS_FILES)
 
 fmt:

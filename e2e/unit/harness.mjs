@@ -343,6 +343,9 @@ export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const hostScript = path.join(runDir, "plugin-host.mjs");
   fs.copyFileSync(asset("plugin-host.mjs"), hostScript);
+  // The host is a two-file asset: it imports ./discovered-deps.mjs as a
+  // sibling (materialized next to it by oj the same way).
+  fs.copyFileSync(asset("discovered-deps.mjs"), path.join(runDir, "discovered-deps.mjs"));
   const host = rpcSidecar(hostScript, {
     args: [
       fx.configPath,

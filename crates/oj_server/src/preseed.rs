@@ -218,6 +218,11 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
         std::fs::write(&tmp, OPTIMIZE_ENV_JS)?;
         std::fs::rename(&tmp, &script)?;
     }
+    crate::plugins::ensure_asset(
+        &cache,
+        "discovered-deps.mjs",
+        crate::plugins::DISCOVERED_DEPS_JS,
+    )?;
     let report = cache.join(REPORT_FILE);
     let _ = std::fs::remove_file(&report);
     let exe = std::env::current_exe()?;
@@ -247,6 +252,16 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
             (
                 "OJ_PRESEED_REPORT".into(),
                 report.to_string_lossy().into_owned(),
+            ),
+            // Include-extension snapshot (see lib.rs preseedIncludePath):
+            // this child writes it from Vite's prior metadata, then both it
+            // and the host fold the same file into optimizeDeps.include.
+            (
+                "OJ_PRESEED_INCLUDE".into(),
+                oj_cache::cache_root(root)
+                    .join("preseed-include.json")
+                    .to_string_lossy()
+                    .into_owned(),
             ),
         ];
         let mut stdin = child.stdin.take().expect("piped stdin");
