@@ -23,6 +23,25 @@ if (!installed) {
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const must = (cond, msg) => { if (!cond) throw new Error(msg); };
+
+// Wait for `cond`, retouching the probe write on the way: the watcher thread
+// may register its watches after HTTP-ready on a loaded runner, so a single
+// write can predate registration and never be seen; rewriting the same bytes
+// bumps the mtime and re-fires it. Resolves false on timeout.
+async function settles(cond, { touch, timeoutMs = 45000, touchEveryMs = 3000, pollMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let touched = Date.now();
+  while (!cond()) {
+    if (Date.now() >= deadline) return false;
+    if (touch && Date.now() - touched >= touchEveryMs) {
+      touch();
+      touched = Date.now();
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return true;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Retried, as in start.mjs: SIGKILLed servers orphan node children for a beat,
 // and their NODE_COMPILE_CACHE flush into .oj-cache/v8 races the removal
@@ -82,9 +101,14 @@ async function run(label, gated, check) {
     await waitUp();
     await (await reloadListener()).close();
     const listener = await reloadListener();
-    // A real source change: the watcher rebuilds the client bundle.
-    fs.writeFileSync(aboutFile, original + `\n// gate probe ${label} ${Date.now()}\n`);
-    await check(listener, () => log);
+    // A real source change: the watcher rebuilds the client bundle. The
+    // probe is identical bytes on every retouch (see `settles`), so it stays
+    // one logical change (Vite's chokidar scan has the same registration
+    // race; its playgrounds poll and re-edit too).
+    const probe = original + `\n// gate probe ${label}\n`;
+    const touch = () => fs.writeFileSync(aboutFile, probe);
+    touch();
+    await check(listener, () => log, touch);
     await listener.close();
   } finally {
     fs.writeFileSync(aboutFile, original);
@@ -96,10 +120,17 @@ async function run(label, gated, check) {
 
 // 1. Gate on: the rebuild happens, the reload is held, the status shows it, the
 //    flush releases exactly one reload.
-await run("gated", true, async (listener, log) => {
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline && !log().includes("reload held")) await sleep(200);
+await run("gated", true, async (listener, log, touch) => {
+  await settles(() => log().includes("reload held"), { touch });
   must(log().includes("oj start: rebuilt, reload held"), `gated: the watcher should rebuild and hold the reload:\n${log().slice(-1200)}`);
+  // Quiesce: a retouch issued just before the hold was seen may still be
+  // rebuilding; wait until no new hold lands for 2s so the flush below
+  // releases a settled gate.
+  for (;;) {
+    const holds = log().split("reload held").length;
+    await sleep(2000);
+    if (log().split("reload held").length === holds) break;
+  }
   await sleep(1500);
   must(listener.reloads.length === 0, `gated: a reload reached the page before the flush (${listener.reloads.length})`);
   const status = await (await fetch(`http://localhost:${PORT}/__hmr_gate`)).json();
@@ -116,14 +147,13 @@ await run("gated", true, async (listener, log) => {
 });
 
 // 2. Gate off: the reload follows the rebuild at once.
-await run("plain", false, async (listener) => {
+await run("plain", false, async (listener, _log, touch) => {
   // An environment that enables the gate globally makes this half moot.
   if ((await (await fetch(`http://localhost:${PORT}/__hmr_gate`)).json()).enabled) {
     console.log("plain: the gate is enabled by the environment, skipping the immediate-reload check");
     return;
   }
-  const until = Date.now() + 30000;
-  while (Date.now() < until && listener.reloads.length === 0) await sleep(100);
+  await settles(() => listener.reloads.length > 0, { touch });
   must(listener.reloads.length >= 1, "plain: the rebuild should reload the page without a gate");
   console.log("plain: rebuild reloads immediately");
 });
