@@ -901,7 +901,9 @@ impl DevServer {
                 // app's `server.proxy`, so the single Node proxy can cover it.
                 // The {from,to} rewrite form crosses fine; a FUNCTION rewrite
                 // (vite-format only) rides the host's own loaded config instead.
-                "server": { "port": port, "host": server_cfg.host, "proxy": server_cfg.proxy },
+                // `strictPort` too: the resolved config plugins read carries
+                // oj's real values, not Vite's defaults.
+                "server": { "port": port, "strictPort": strict_port, "host": server_cfg.host, "proxy": server_cfg.proxy },
                 // `{}` rather than null when the config has none: the host deep-merges
                 // this over the user's Vite-resolved config, and a null would erase
                 // its environments (and their per-environment `define`).

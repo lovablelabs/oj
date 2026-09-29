@@ -432,6 +432,95 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
   }
 }
 
+
+// Vite's resolved `server` also guarantees these scalars
+// (_serverConfigDefaults, server/index.ts): plugins read them exactly the
+// way they read fs.allow. Present values always win — including the REAL
+// port oj's Rust side passes in the boot config — and only absent fields
+// get Vite's defaults (undefined-only, mergeWithDefaults semantics; warmup
+// and cors object forms deep-fill). `sourcemapIgnoreList: false` resolves
+// to a constant-false function and the default is Vite's isInNodeModules.
+// TWIN COPY: keep this function byte-identical with its sibling in
+// plugin-host.mjs / start/vite-plugin-bridge.mjs (separately embedded assets).
+function fillResolvedServerScalars(server) {
+  // `host` is deliberately NOT filled: Vite overrides its own default with
+  // undefined ("do not set here to detect whether host is set or not",
+  // server/index.ts) so plugins can tell an explicit host apart.
+  const defaults = {
+    port: 5173,
+    strictPort: false,
+    allowedHosts: [],
+    open: false,
+    middlewareMode: false,
+    preTransformRequests: true,
+    perEnvironmentStartEndDuringDev: false,
+    perEnvironmentWatchChangeDuringDev: false,
+    headers: {},
+  };
+  for (const k of Object.keys(defaults)) {
+    if (server[k] === undefined) server[k] = defaults[k];
+  }
+  const isPlain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  server.warmup = isPlain(server.warmup)
+    ? { clientFiles: [], ssrFiles: [], ...server.warmup }
+    : (server.warmup ?? { clientFiles: [], ssrFiles: [] });
+  const corsDefault = { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/ };
+  server.cors = isPlain(server.cors)
+    ? { ...corsDefault, ...server.cors }
+    : (server.cors === undefined ? corsDefault : server.cors);
+  if (server.sourcemapIgnoreList === false) server.sourcemapIgnoreList = () => false;
+  else if (server.sourcemapIgnoreList === undefined) {
+    server.sourcemapIgnoreList = (id) => id.includes("node_modules");
+  }
+  // Vite resolves `forwardConsole` to { enabled, unhandledErrors, logLevels }
+  // (resolveForwardConsoleOptions). An unset value takes Vite's disabled
+  // shape (its default is agent-detection, but oj does not forward console,
+  // so advertising agent-enabled would lie); explicit user values resolve
+  // exactly as Vite resolves them.
+  const fc = server.forwardConsole;
+  // An already-resolved shape (enabled boolean) passes through — including a
+  // vite-resolved base config whose agent detection turned it on; oj does not
+  // forward console, but rewriting a resolved value the user's own vite run
+  // produced would be worse than carrying it.
+  if (fc === undefined || fc === false) {
+    server.forwardConsole = { enabled: false, unhandledErrors: false, logLevels: [] };
+  } else if (fc === true) {
+    server.forwardConsole = { enabled: true, unhandledErrors: true, logLevels: ["error", "warn"] };
+  } else if (fc !== null && typeof fc === "object" && typeof fc.enabled !== "boolean") {
+    const unhandledErrors = fc.unhandledErrors ?? true;
+    const logLevels = fc.logLevels ?? [];
+    server.forwardConsole = { enabled: unhandledErrors || logLevels.length > 0, unhandledErrors, logLevels };
+  }
+  // Vite's setupHmrWsOptionCompat (utils.ts): unless hmr or ws is disabled,
+  // resolved `server.ws` is ALWAYS an object, with the legacy hmr keys
+  // mirrored in where ws leaves them unset; `hmr: true` normalizes to {}.
+  // (The deprecation defineProperty shim is warning sugar, not shape.)
+  if (server.hmr !== false && server.ws !== false) {
+    if (server.hmr === true) server.hmr = {};
+    const ws = server.ws ? { ...server.ws } : {};
+    if (server.hmr && typeof server.hmr === "object") {
+      for (const key of ["protocol", "host", "port", "clientPort", "path", "timeout", "server"]) {
+        if (server.hmr[key] !== undefined) ws[key] ??= server.hmr[key];
+      }
+    }
+    server.ws = ws;
+  }
+  // Vite appends __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS (comma-split,
+  // trimmed) unless it carries reserved characters (server/index.ts).
+  const rawAdditionalHosts = process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS;
+  if (rawAdditionalHosts && Array.isArray(server.allowedHosts) && !/[\\"']/.test(rawAdditionalHosts)) {
+    server.allowedHosts = [
+      ...server.allowedHosts,
+      ...rawAdditionalHosts.split(",").map((h) => h.trim()).filter(Boolean),
+    ];
+  }
+  // Vite strips a single trailing slash off a user `origin`.
+  if (typeof server.origin === "string" && server.origin.endsWith("/")) {
+    server.origin = server.origin.slice(0, -1);
+  }
+  return server;
+}
+
 function withResolvedDefaults(config) {
   const c = config ?? {};
   const merged = mergeConfigLite(
@@ -545,6 +634,7 @@ function withResolvedDefaults(config) {
       allow: allow.map((d) => (process.platform === "win32" ? pathResolve(cacheRoot, d).replace(/\\/g, "/") : pathResolve(cacheRoot, d))),
       deny: rawFs.deny === undefined ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"] : rawFs.deny,
     };
+    fillResolvedServerScalars(merged.server);
   }
   // Vite's resolved config carries a `logger`; plugins (e.g. the cloudflare
   // plugin's ViteMiniflareLogger) call `config.logger.info/warn/error`.
