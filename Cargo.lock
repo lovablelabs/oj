@@ -2693,8 +2693,6 @@ dependencies = [
 [[package]]
 name = "deno_process"
 version = "0.74.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0773ddbef9fa2d6bc96bf7e5fd9a15b2cd870618d8703d776987bea61dee838"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -6281,6 +6279,7 @@ dependencies = [
  "anyhow",
  "axum",
  "blake3",
+ "deno_process",
  "futures-util",
  "glob",
  "json-strip-comments",

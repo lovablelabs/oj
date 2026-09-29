@@ -3,12 +3,23 @@
 
 import http from "node:http";
 import https from "node:https";
-import { existsSync, fstatSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, stat as fsStat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { foldDiscoveredDeps, recordDiscoveredDep } from "./discovered-deps.mjs";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format as formatUtil, stripVTControlCharacters } from "node:util";
@@ -1989,6 +2000,9 @@ async function buildEnvironments(server) {
     // makes the client env bundled from these fields, and the manifest plugin
     // bound to these environments reads them at load time.
     coerceBundledDevOff(rc);
+    // BEFORE the environments are built: include must be in the config the
+    // optimizer hashes, or the preseed child's metadata cannot validate.
+    foldDiscoveredDeps(rc, initial.discoveredDepsPath);
   } catch (e) {
     process.stderr.write(`${OJ} plugin host: vite.resolveConfig failed: ${(e && e.message) || e}\n`);
     return undefined;
@@ -2031,6 +2045,15 @@ async function buildEnvironments(server) {
         }
       } catch (e) {
         process.stderr.write(`${OJ} plugin host: env.init(${name}) failed: ${(e && e.message) || e}\n`);
+      }
+      const ledgerPath = initial.discoveredDepsPath;
+      if (ledgerPath && ei?.depsOptimizer && typeof ei.depsOptimizer.registerMissingImport === "function") {
+        const optimizer = ei.depsOptimizer;
+        const original = optimizer.registerMissingImport.bind(optimizer);
+        optimizer.registerMissingImport = (id, ...rest) => {
+          recordDiscoveredDep(ledgerPath, name, id);
+          return original(id, ...rest);
+        };
       }
     }),
   );

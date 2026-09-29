@@ -206,3 +206,10 @@ rustc-hash = { opt-level = 3 }
 dashmap = { opt-level = 3 }
 parking_lot = { opt-level = 3 }
 mio = { opt-level = 3 }
+
+# Vendored fork of deno_process (0.74.0): children spawn into their own
+# process groups and report to an embedder hook, so a self-restart exec can
+# kill entire plugin-spawned trees (see oj_server child_groups). Diff is the
+# `oj patch` blocks in crates/deno_process/lib.rs.
+[patch.crates-io]
+deno_process = { path = "crates/deno_process" }

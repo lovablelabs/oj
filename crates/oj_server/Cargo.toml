@@ -42,3 +42,5 @@ tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# The workspace-patched fork (crates/deno_process): spawn hook + own groups.
+deno_process = "0.74.0"

@@ -4,6 +4,7 @@
   "ignorePatterns": [
     "reference/**",
     "crates/oj_deno_*/**",
+    "crates/deno_process/**",
     "e2e/fixtures/**",
     "**/node_modules/**",
     "**/dist/**",
