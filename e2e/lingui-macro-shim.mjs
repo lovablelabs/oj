@@ -13,12 +13,12 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const port = 5291;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
@@ -74,12 +74,7 @@ let failed = false;
 try {
   server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: ["ignore", "ignore", "pipe"] });
   server.stderr.on("data", (d) => (stderr += d.toString()));
-  for (let i = 0; i < 80; i++) {
-    try {
-      if ((await fetch(`http://localhost:${port}/`)).ok) break;
-    } catch {}
-    await sleep(250);
-  }
+  await waitUp(`http://localhost:${port}/`);
 
   // --- HTTP wiring ---
   const shim = await get("/@oj/lingui-macro-shim.js");

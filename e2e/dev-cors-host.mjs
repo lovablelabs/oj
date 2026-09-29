@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -49,7 +50,7 @@ async function withServer(config, fn) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
   try {
-    for (let i = 0; i < 80; i++) { try { if ((await req("/")).status) break; } catch {} await sleep(200); }
+    await settles(async () => { try { return Boolean((await req("/")).status); } catch { return false; } }, { pollMs: 200 });
     await fn();
   } finally {
     srv.kill("SIGKILL");

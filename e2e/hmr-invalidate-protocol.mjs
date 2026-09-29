@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -38,18 +39,14 @@ fs.writeFileSync(
 );
 
 async function waitFor(pred, label, ms = 10000) {
-  for (let i = 0; i < ms / 100; i++) {
-    if (pred()) return;
-    await sleep(100);
-  }
-  throw new Error(`timeout: ${label}`);
+  if (!(await settles(pred, { timeoutMs: ms }))) throw new Error(`timeout: ${label}`);
 }
 
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
 let failed = false;
 let ws;
 try {
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
 
   const frames = [];
   ws = new WebSocket(`ws://localhost:${port}/__ws`);

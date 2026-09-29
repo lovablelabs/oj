@@ -5,6 +5,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -27,14 +28,13 @@ async function startServer(logFd) {
   await sleep(300);
   const args = ["dev", playground, "--port", "5199"];
   const server = spawn(oj, args, { stdio: ["ignore", logFd, logFd] });
-  for (let i = 0; i < 80; i++) {
-    try {
-      if ((await fetch("http://localhost:5199/")).ok) return server;
-    } catch {}
-    await sleep(250);
+  try {
+    await waitUp("http://localhost:5199/", { proc: server });
+    return server;
+  } catch (e) {
+    server.kill("SIGKILL");
+    throw e;
   }
-  server.kill("SIGKILL");
-  throw new Error("dev server did not start");
 }
 
 let failed = 0;

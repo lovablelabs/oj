@@ -14,6 +14,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -65,7 +66,7 @@ try {
   assert.ok(inlineChunk, "inline script bundled with its relative import");
 
   srv = spawn(oj, ["preview", app, "--port", String(PORT)], { stdio: "ignore" });
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   const browser = await chromium.launch();
   const page = await browser.newPage();
   const errors = [];

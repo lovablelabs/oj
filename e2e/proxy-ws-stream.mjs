@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -157,7 +158,7 @@ const logPath = path.join(os.tmpdir(), "oj-proxyws.log");
 const logFd = fs.openSync(logPath, "w");
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", logFd, logFd] });
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
 
   // streamed response: the first chunk arrives long before the upstream ends
   const t0 = Date.now();

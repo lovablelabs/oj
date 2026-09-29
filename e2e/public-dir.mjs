@@ -10,11 +10,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const SW = `self.addEventListener("install", () => {});\nconst mode = import.meta.env;\nimport "./nope.js";\n// raw public bytes\n`;
 const CSS = `body { color: red; }  /* raw public bytes */\n`;
@@ -77,15 +77,7 @@ async function withServer(app, port, fn) {
   srv.stderr.on("data", (d) => (log += d));
   try {
     let up = false;
-    for (let i = 0; i < 100; i++) {
-      try {
-        if ((await fetch(`http://localhost:${port}/`)).ok) {
-          up = true;
-          break;
-        }
-      } catch {}
-      await sleep(200);
-    }
+    up = await waitUp(`http://localhost:${port}/`).then(() => true, () => false);
     if (!up) throw new Error(`server did not start on ${port}:\n${log}`);
     await fn(`http://localhost:${port}`);
   } finally {

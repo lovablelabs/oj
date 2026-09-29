@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -50,7 +51,7 @@ let srv = null;
 try {
   // Dev: source import resolves the `development` export.
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   const depUrl = main.match(/from\s+"([^"]+)"/)[1];
   const served = await (await fetch(`http://localhost:${PORT}${depUrl}`)).text();
@@ -70,14 +71,14 @@ try {
   fs.writeFileSync(path.join(app, "oj.config.json"), JSON.stringify({ optimizeDeps: { include: ["cond-dep"] } }));
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   let bundled = null;
-  for (let i = 0; i < 50 && !bundled; i++) {
+  await settles(async () => {
     const m = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
     const u = m.match(/from\s+"(\/@oj-deps\/[^"]+)"/);
     if (u) bundled = await (await fetch(`http://localhost:${PORT}${u[1]}`)).text();
-    else await sleep(200);
-  }
+    return Boolean(bundled);
+  }, { pollMs: 200 });
   assert.ok(bundled, "cond-dep was not pre-bundled from optimizeDeps.include");
   assert.match(bundled, /DEV_BUILD/, `pre-bundle picked a different file than the dev server:\n${bundled.slice(0, 300)}`);
   srv.kill("SIGKILL"); srv = null;

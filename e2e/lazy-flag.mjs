@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -31,13 +32,6 @@ fs.writeFileSync(path.join(app, "dep.tsx"), `export const dep = 7;\n`);
 fs.writeFileSync(path.join(app, "unused.tsx"), `export const unused = 99;\n`);
 fs.writeFileSync(path.join(app, "main.tsx"), `import { dep } from "./dep";\nexport const value = dep + 1;\nconsole.log(value);\n`);
 
-async function waitUp() {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return; } catch {}
-    await sleep(100);
-  }
-  throw new Error("oj never came up");
-}
 
 // Run oj, collect stdout, request the entry + main, and report whether the eager
 // crawl ran (it prints "eager graph ready").
@@ -49,14 +43,14 @@ async function run({ lazy }) {
   let out = "";
   proc.stdout.on("data", (d) => (out += d.toString()));
   try {
-    await waitUp();
+    await waitUp(`http://localhost:${port}/`);
     const root = await fetch(`http://localhost:${port}/`);
     const main = await fetch(`http://localhost:${port}/main.tsx`);
     assert.equal(root.status, 200, "index serves");
     assert.equal(main.status, 200, "on-demand module serves");
     assert.match(await main.text(), /const value/, "module compiled");
     // Give the eager crawl (if any) time to finish and log.
-    for (let i = 0; i < 20 && !/eager graph ready/.test(out); i++) await sleep(150);
+    await settles(() => /eager graph ready/.test(out), { timeoutMs: 3000, pollMs: 150 });
     return out;
   } finally {
     try { execSync(`pkill -P ${proc.pid}`); } catch {}

@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -56,11 +57,7 @@ try {
 
   child = spawn(OJ, ["dev", "--port", String(PORT)], { cwd: app, stdio: "ignore" });
   const up = async () => {
-    for (let i = 0; i < 300; i++) {
-      try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return true; } catch {}
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return false;
+    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
   };
   if (!(await up())) throw new Error("dev server did not start");
 

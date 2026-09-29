@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -25,14 +26,7 @@ function lanIp() {
 }
 
 async function reachable(ip, port) {
-  for (let i = 0; i < 40; i++) {
-    try {
-      const r = await fetch(`http://${ip}:${port}/`, { signal: AbortSignal.timeout(1500) });
-      if (r.ok) return true;
-    } catch {}
-    await sleep(200);
-  }
-  return false;
+  return waitUp(`http://${ip}:${port}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(() => true, () => false);
 }
 
 async function probe(ip, port) {

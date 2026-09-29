@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -34,13 +35,9 @@ const srv = spawn(oj, ["dev", app, "--ssr", "src/entry-server.ts", "--port", Str
 });
 try {
   let home = null;
-  for (let i = 0; i < 120 && !home; i++) {
-    try {
-      const res = await fetch(`${base}/`);
-      if (res.ok) home = await res.text();
-    } catch {}
-    if (!home) await new Promise((r) => setTimeout(r, 500));
-  }
+  await waitUp(`${base}/`, {
+    until: async (res) => res.ok && (home = await res.text()) !== undefined,
+  }).catch(() => {});
   must(home && home.includes('"page":"home"'), `ssr dev did not come up:\n${home}`);
   must(home.includes("<title>/</title>"), "head() output missing from the document");
 

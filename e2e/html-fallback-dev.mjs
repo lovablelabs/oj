@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -43,7 +44,7 @@ async function get(pathname, headers = html) {
 async function withServer(app, fn) {
   const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   try {
-    for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`, { headers: html })).status) break; } catch {} await sleep(200); }
+    await waitUp(`http://localhost:${port}/`, { init: { headers: html }, until: () => true });
     await fn();
   } finally {
     srv.kill("SIGKILL");

@@ -10,11 +10,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-csp-nonce-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
@@ -50,16 +50,9 @@ function everyTagHasNonce(html, re) {
   const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   try {
     let html = null;
-    for (let i = 0; i < 100; i++) {
-      try {
-        const r = await fetch(`http://localhost:${port}/`);
-        if (r.ok) {
-          html = await r.text();
-          break;
-        }
-      } catch {}
-      await sleep(200);
-    }
+    await waitUp(`http://localhost:${port}/`, {
+      until: async (r) => r.ok && (html = await r.text()) !== undefined,
+    }).catch(() => {});
     check("dev server serves the page", !!html, "no response on 6307");
     if (html) {
       check("dev: every script carries the nonce (incl. injected client)", everyTagHasNonce(html, /<script[^>]*>/g), html);

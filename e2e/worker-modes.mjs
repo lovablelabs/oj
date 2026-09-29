@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -56,7 +57,7 @@ async function mode(label, args, port, build) {
       throw new Error(`worker not emitted as a separate chunk: ${chunks.join(",")}`);
   }
   const srv = spawn(oj, args, { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
   try {
     await check(port);
     console.log(`[${label}] worker OK`);

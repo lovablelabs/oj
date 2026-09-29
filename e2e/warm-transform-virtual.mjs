@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -81,13 +82,6 @@ async function stopOj(proc) {
   try { execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs -r kill -9`); } catch {}
   await sleep(500);
 }
-async function waitUp() {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return; } catch {}
-    await sleep(100);
-  }
-  throw new Error("oj never came up");
-}
 
 // Pull the virtual's URL out of the transformed main.tsx (an absolute .stateful.css path).
 function virtUrlFrom(mainBody) {
@@ -102,7 +96,7 @@ try {
   // --- COLD: transform runs, virtual is populated and served ---
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   proc = startOj();
-  await waitUp();
+  await waitUp(`http://localhost:${port}/`);
   const coldMain = await get("/main.tsx");
   assert.equal(coldMain.status, 200);
   const virtUrl = virtUrlFrom(coldMain.body);
@@ -116,7 +110,7 @@ try {
   // repopulate the virtual so it still serves instead of 404ing. ---
   assert.ok(fs.existsSync(path.join(app, ".oj-cache")), "cache persisted for the warm run");
   proc = startOj();
-  await waitUp();
+  await waitUp(`http://localhost:${port}/`);
   const warmMain = await get("/main.tsx");
   assert.equal(warmMain.status, 200);
   const warmVirt = virtUrlFrom(warmMain.body);

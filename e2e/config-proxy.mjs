@@ -8,11 +8,11 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
@@ -33,7 +33,7 @@ try {
   const log = path.join(app, "server.log");
   const fd = fs.openSync(log, "w");
   srv = spawn(oj, ["dev", app, "--port", "5360"], { stdio: ["ignore", fd, fd] });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch("http://localhost:5360/")).ok) break; } catch {} await sleep(200); }
+  await waitUp("http://localhost:5360/");
 
   const res = await fetch("http://localhost:5360/api/hello");
   const body = await res.text();

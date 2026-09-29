@@ -5,6 +5,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -26,13 +27,7 @@ function start() {
   return spawn(oj, ["dev", playground, "--port", String(PORT)], { stdio: "ignore" });
 }
 async function up() {
-  for (let i = 0; i < 80; i++) {
-    try {
-      if ((await fetch(`http://localhost:${PORT}/`)).ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error("dev server did not start");
+  await waitUp(`http://localhost:${PORT}/`);
 }
 const parsedModules = async () =>
   (await (await fetch(`http://localhost:${PORT}/__oj_parsed`)).text()).trim().split(",");

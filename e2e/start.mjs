@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertHydrates, parseBoundPort } from "./lib/hydration.mjs";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -42,13 +43,6 @@ const rm = (p) => {
 const get = async (port, route = "/") => {
   const res = await fetch(`http://localhost:${port}${route}`);
   return { status: res.status, body: await res.text() };
-};
-const waitUp = async (port) => {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return; } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`server on :${port} did not start`);
 };
 
 async function assertApp(port, label) {
@@ -160,13 +154,13 @@ async function devPhase() {
   try {
     // oj may increment off a busy port; use the port it actually bound.
     let port = reqPort;
-    for (let i = 0; i < 240; i++) {
-      if (srv.exitCode != null) break;
+    await settles(() => {
+      if (srv.exitCode != null) return true;
       const bound = parseBoundPort(log);
-      if (bound) { port = bound; break; }
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    await waitUp(port);
+      if (bound) port = bound;
+      return Boolean(bound);
+    }, { timeoutMs: 60000, pollMs: 250 });
+    await waitUp(`http://localhost:${port}/`);
     await assertApp(port, "start-dev");
     await assertDevRouting(port);
     await assertInlineSourceMaps(port);
@@ -262,7 +256,7 @@ async function assertBuildStartResilient() {
   });
   srv.stderr.on("data", (d) => (stderr += d));
   try {
-    await waitUp(port);
+    await waitUp(`http://localhost:${port}/`);
     const home = await get(port, "/");
     if (home.status !== 200) throw new Error(`start-dev: server did not stay up after a throwing buildStart (${home.status})`);
     if (!home.body.includes("BUILDSTART_SKIPPED")) {
@@ -299,7 +293,7 @@ async function prodPhase() {
     cwd: app, stdio: "ignore", env: { ...process.env, PORT: String(port) },
   });
   try {
-    await waitUp(port);
+    await waitUp(`http://localhost:${port}/`);
     await assertApp(port, "start-prod");
   } finally {
     srv.kill("SIGKILL");

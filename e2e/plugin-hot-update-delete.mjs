@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -55,24 +56,24 @@ let stderr = "";
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "ignore", "pipe"] });
 srv.stderr.on("data", (d) => (stderr += d.toString()));
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   await (await fetch(`http://localhost:${PORT}/src/a.js`)).text();
   await (await fetch(`http://localhost:${PORT}/src/gone.js`)).text();
   await sleep(500);
 
   fs.writeFileSync(path.join(app, "src", "a.js"), `export const A = "a2";\n`);
-  for (let i = 0; i < 50 && !events().some((e) => e.startsWith("hotUpdate:a.js")); i++) await sleep(100);
+  await settles(() => events().some((e) => e.startsWith("hotUpdate:a.js")));
   assert.ok(events().includes("hotUpdate:a.js:update"), `an edited file is an update:\n${events().join("\n")}`);
   assert.ok(events().includes("watchChange:a.js:update"), `watchChange sees update:\n${events().join("\n")}`);
 
   fs.rmSync(path.join(app, "src", "gone.js"));
-  for (let i = 0; i < 50 && !events().some((e) => e.startsWith("hotUpdate:gone.js")); i++) await sleep(100);
+  await settles(() => events().some((e) => e.startsWith("hotUpdate:gone.js")));
   assert.ok(events().includes("hotUpdate:gone.js:delete"), `a removed file reaches hotUpdate with type delete:\n${events().join("\n")}`);
   assert.ok(events().includes("watchChange:gone.js:delete"), `watchChange sees delete:\n${events().join("\n")}`);
 
   fs.writeFileSync(path.join(app, "src", "fresh.js"), `export const F = "f";\n`);
-  for (let i = 0; i < 50 && !events().some((e) => e.startsWith("hotUpdate:fresh.js")); i++) await sleep(100);
+  await settles(() => events().some((e) => e.startsWith("hotUpdate:fresh.js")));
   assert.ok(events().includes("hotUpdate:fresh.js:create"), `a new file reaches hotUpdate with type create:\n${events().join("\n")}`);
   assert.ok(events().includes("watchChange:fresh.js:create"), `watchChange sees create:\n${events().join("\n")}`);
 
@@ -94,7 +95,7 @@ try {
   fs.writeFileSync(path.join(app, "src", "boom.js"), `export const B = 1;\n`);
   const frame = await errorFrame;
   assert.match(frame.err.message, /\[plugin:watcher\] boom hook/, "the client error names the plugin");
-  for (let i = 0; i < 50 && !stderr.includes("hotUpdate failed"); i++) await sleep(100);
+  await settles(() => stderr.includes("hotUpdate failed"));
   assert.match(stderr, /hotUpdate failed for .*boom\.js: .*boom hook/, `the server logs the hook error:\n${stderr}`);
   ws.close();
   console.log("PLUGIN-HOT-UPDATE-DELETE E2E PASSED");

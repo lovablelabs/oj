@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -52,19 +53,17 @@ const srv = spawn(oj, ["dev", app, "--ssr", "src/entry-server.js", "--port", Str
 });
 let log = "";
 srv.stderr.on("data", (d) => (log += d));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const get = async () => (await fetch(`http://localhost:${PORT}/`)).text();
 const field = (body, name) => body.match(new RegExp(`${name}:([^|<"]+)`))?.[1];
 try {
   let body = "";
-  for (let i = 0; i < 120; i++) {
+  await settles(async () => {
+    if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
     try {
       body = await get();
-      if (body.includes("msg:")) break;
-    } catch {}
-    if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
-    await sleep(300);
-  }
+      return body.includes("msg:");
+    } catch { return false; }
+  }, { pollMs: 300 });
   if (field(body, "msg") !== "m1") throw new Error(`first render wrong: ${body.slice(0, 300)}`);
   const execs0 = Number(field(body, "execs"));
 
@@ -80,11 +79,10 @@ try {
   // restart, and the UNTOUCHED state.js instance survives the update.
   w("src/dep.js", 'export const msg = "m2";\n');
   let after = "";
-  for (let i = 0; i < 80; i++) {
+  await settles(async () => {
     after = await get();
-    if (field(after, "msg") === "m2") break;
-    await sleep(250);
-  }
+    return field(after, "msg") === "m2";
+  }, { pollMs: 250 });
   if (field(after, "msg") !== "m2") throw new Error(`the dep edit never reached the SSR render:\n${after.slice(0, 300)}\n${log.slice(-2000)}`);
   if (srv.exitCode !== null) throw new Error("the server restarted (or died) for a source edit");
   const execs2 = Number(field(after, "execs"));

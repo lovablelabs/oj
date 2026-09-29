@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { waitUp } from "./util.mjs";
 
 const OJ = path.join(process.cwd(), "target", "debug", "oj");
 const PORT = 5330;
@@ -27,14 +28,7 @@ try {
   fs.writeFileSync(path.join(app, "src", "main.js"), "export const mode = process.env.NODE_ENV;\n");
 
   child = spawn(OJ, ["dev", "--port", String(PORT)], { cwd: app, stdio: "ignore" });
-  const up = async () => {
-    for (let i = 0; i < 300; i++) {
-      try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return true; } catch {}
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return false;
-  };
-  if (!(await up())) throw new Error("dev server did not start");
+  await waitUp(`http://localhost:${PORT}/`, { proc: child });
 
   const mod = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   if (/process\.env\.NODE_ENV/.test(mod)) {

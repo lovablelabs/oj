@@ -16,12 +16,12 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
@@ -73,12 +73,7 @@ const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" })
 const exited = new Promise((r) => srv.on("exit", r));
 let failed = false;
 try {
-  for (let i = 0; i < 80; i++) {
-    try {
-      if ((await fetch(`http://localhost:${port}/`)).ok) break;
-    } catch {}
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${port}/`);
   const browser = await chromium.launch();
   const page = await browser.newPage();
   const errors = [];

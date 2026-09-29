@@ -12,11 +12,11 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORT = 6113;
 const BACKEND = 6114;
 
@@ -41,7 +41,7 @@ let srv;
 try {
   await new Promise((r) => backend.listen(BACKEND, r));
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
 
   const get = async (p) => (await fetch(`http://localhost:${PORT}${p}`)).text();
   assert.equal(await get("/api/hello"), "BACKEND:/api/hello", "prefix context");

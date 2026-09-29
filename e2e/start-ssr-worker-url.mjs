@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -35,7 +36,6 @@ if (!installed) {
 }
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };
@@ -206,14 +206,7 @@ async function served(cmd, args, opts, check) {
   srv.stderr.on("data", (d) => (stderr += d));
   const exited = new Promise((r) => srv.once("exit", r));
   try {
-    let up = false;
-    for (let i = 0; i < 240 && !up; i++) {
-      try {
-        up = (await fetch(`http://localhost:${PORT}/`)).status > 0;
-      } catch {
-        await sleep(500);
-      }
-    }
+    const up = await waitUp(`http://localhost:${PORT}/`, { until: () => true }).then(() => true, () => false);
     must(up, `server on :${PORT} did not start\n${stderr.slice(-2000)}`);
     await check(() => stderr);
   } finally {

@@ -12,6 +12,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -43,7 +44,7 @@ fs.writeFileSync(
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
 
   // The served wrapper of a CSS module carries no self-accept; a plain sheet does.
   const wrapper = await (await fetch(`http://localhost:${port}/src/a.module.css?import`)).text();

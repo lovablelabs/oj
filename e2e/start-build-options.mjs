@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -42,13 +43,6 @@ fs.writeFileSync(
     `export default { ...base, base: "/app/", build: { ...(base as any).build, sourcemap: true, minify: false } };\n`,
 );
 
-const waitUp = async (port) => {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return; } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`server on :${port} did not start`);
-};
 
 // A dist/ left by an earlier fixture build would read as "--out ignored" below;
 // the assertion is about this build writing there, so start from a clean slate.
@@ -83,7 +77,7 @@ try {
     cwd: out, stdio: "ignore", env: { ...process.env, PORT: String(port) },
   });
   try {
-    await waitUp(port);
+    await waitUp(`http://localhost:${port}/`);
     const home = await fetch(`http://localhost:${port}/`);
     const html = await home.text();
     if (home.status !== 200) throw new Error(`/ returned ${home.status}`);

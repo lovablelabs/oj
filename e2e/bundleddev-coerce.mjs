@@ -30,6 +30,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertHydrates, assertModuleGraphServes, parseBoundPort } from "./lib/hydration.mjs";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -195,24 +196,24 @@ async function run() {
   try {
     // Read the port oj actually bound before probing it: it may have incremented
     // off REQ_PORT, and probing REQ_PORT would then hit a stale server.
-    for (let i = 0; i < 240; i++) {
-      if (srv.exitCode != null) break;
+    await settles(() => {
+      if (srv.exitCode != null) return true;
       const bound = parseBoundPort(log);
-      if (bound) { PORT = bound; break; }
-      await new Promise((r) => setTimeout(r, 250));
-    }
+      if (bound) PORT = bound;
+      return Boolean(bound);
+    }, { timeoutMs: 60000, pollMs: 250 });
     let up = false;
     let lastStatus = "no response";
-    for (let i = 0; i < 240 && !up; i++) {
-      if (srv.exitCode != null) break;
+    await settles(async () => {
+      if (srv.exitCode != null) return true;
       try {
         const r = await fetch(`http://127.0.0.1:${PORT}/`);
         lastStatus = String(r.status);
         up = r.status === 200;
         if (!up) lastStatus = `${r.status}: ${(await r.text()).slice(0, 300)}`;
       } catch (e) { lastStatus = `fetch error: ${(e && e.message) || e}`; }
-      if (!up) await new Promise((r) => setTimeout(r, 500));
-    }
+      return up;
+    }, { timeoutMs: 120000, pollMs: 500 });
     if (!up) throw new Error(`oj dev did not serve 200 on :${PORT} (last: ${lastStatus}); log:\n${log.slice(-4000)}`);
 
     const home = await req("/");
@@ -287,11 +288,7 @@ async function run() {
     console.log("bundledDev-coerce: the standard dev client entry serves 200");
 
     // The one-time coercion warning must have been printed.
-    let warned = false;
-    for (let i = 0; i < 40 && !warned; i++) {
-      warned = /experimental\.bundledDev is not supported/.test(log);
-      if (!warned) await new Promise((r) => setTimeout(r, 100));
-    }
+    const warned = await settles(() => /experimental\.bundledDev is not supported/.test(log));
     if (!warned) {
       throw new Error(`the one-time bundledDev coercion warning was never printed; log tail:\n${log.slice(-2000)}`);
     }

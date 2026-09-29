@@ -6,6 +6,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -118,13 +119,7 @@ const cleanup = () => {
 };
 
 const up = async () => {
-  for (let i = 0; i < 60; i++) {
-    try {
-      if ((await fetch(`${base}/`)).ok) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error("prod SSR server did not start");
+  await waitUp(`${base}/`);
 };
 
 try {

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -55,10 +56,7 @@ const port = 5497;
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {}
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${port}/`);
 
   const ws = new WebSocket(`ws://localhost:${port}/__ws`);
   await new Promise((res, rej) => {

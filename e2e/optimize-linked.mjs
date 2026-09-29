@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -56,10 +57,7 @@ try {
   );
 
   server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" } });
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 250));
-  }
+  await waitUp(`http://localhost:${port}/`);
   // let the optimizer settle
   await new Promise((r) => setTimeout(r, 800));
 

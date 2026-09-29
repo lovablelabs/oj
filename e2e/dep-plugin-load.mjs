@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -71,7 +72,7 @@ fs.writeFileSync(
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   const urls = [...main.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
   assert.equal(urls.length, 3, `three rewritten imports:\n${main}`);

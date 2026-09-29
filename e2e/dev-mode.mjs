@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -43,7 +44,7 @@ async function served(args) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const srv = spawn(oj, ["dev", app, "--port", String(PORT), ...args], { stdio: "ignore" });
   try {
-    for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+    await waitUp(`http://localhost:${PORT}/`);
     return await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   } finally {
     srv.kill("SIGKILL");

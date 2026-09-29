@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -105,19 +106,14 @@ const killServer = () => {
 let log = "";
 server.stdout.on("data", (d) => (log += d));
 server.stderr.on("data", (d) => (log += d));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
   let body;
   let status = 0;
-  for (let i = 0; i < 120; i++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/shim-probe`);
-      status = res.status;
-      body = await res.text();
-      if (status === 200 || status === 500) break;
-    } catch {}
-    await sleep(500);
-  }
+  await waitUp(`http://127.0.0.1:${port}/shim-probe`, { until: async (res) => {
+    status = res.status;
+    body = await res.text();
+    return status === 200 || status === 500;
+  } }).catch(() => {});
   // SSR runs on the server where node:crypto is real, so canSign is true;
   // the point is that the CLIENT graph (same module) linked and serves.
   if (status !== 200 || !body.includes("canSign:true") || !body.includes("events:npm-events")) {

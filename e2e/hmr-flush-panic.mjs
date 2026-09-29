@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { waitUp } from "./util.mjs";
 
 const OJ = path.join(process.cwd(), "target", "debug", "oj");
 const PORT = 5337;
@@ -37,11 +38,7 @@ try {
     env: { ...process.env, OJ_HMR_GATE: "1", OJ_HMR_FULL_RELOAD: "false" },
   });
   const up = async () => {
-    for (let i = 0; i < 300; i++) {
-      try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return true; } catch {}
-      await sleep(100);
-    }
-    return false;
+    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
   };
   if (!(await up())) throw new Error("dev server did not start");
 

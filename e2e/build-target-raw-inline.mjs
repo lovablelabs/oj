@@ -8,12 +8,12 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
@@ -61,7 +61,7 @@ try {
 
   // runtime check on the downleveled build
   const srv = spawn(oj, ["preview", app, "--port", "5381"], { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch("http://localhost:5381/")).ok) break; } catch {} await sleep(200); }
+  await waitUp("http://localhost:5381/");
   const browser = await chromium.launch();
   const page = await browser.newPage();
   const errors = [];

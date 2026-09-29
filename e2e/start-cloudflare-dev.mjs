@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertHydrates, parseBoundPort } from "./lib/hydration.mjs";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -36,23 +37,6 @@ if (!installed) {
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
-// Wait for `cond`, retouching the probe write on the way: the watcher thread
-// may register its watches after HTTP-ready on a loaded runner, so a single
-// write can predate registration and never be seen; rewriting the same bytes
-// bumps the mtime and re-fires it. Resolves false on timeout.
-async function settles(cond, { touch, timeoutMs = 45000, touchEveryMs = 3000, pollMs = 100 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  let touched = Date.now();
-  while (!cond()) {
-    if (Date.now() >= deadline) return false;
-    if (touch && Date.now() - touched >= touchEveryMs) {
-      touch();
-      touched = Date.now();
-    }
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  return true;
-}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oj-start-cf-dev-"));
 const app = path.join(tmp, "app");
@@ -192,18 +176,18 @@ async function runDev() {
   try {
     // Read the port oj actually bound before probing it (it may increment off a
     // busy REQ_PORT), so a stale server never fools the probes or the browser.
-    for (let i = 0; i < 240; i++) {
-      if (srv.exitCode != null) break;
+    await settles(() => {
+      if (srv.exitCode != null) return true;
       const bound = parseBoundPort(log);
-      if (bound) { PORT = bound; break; }
-      await new Promise((r) => setTimeout(r, 250));
-    }
+      if (bound) PORT = bound;
+      return Boolean(bound);
+    }, { timeoutMs: 60000, pollMs: 250 });
     let up = false;
-    for (let i = 0; i < 240 && !up; i++) {
-      if (srv.exitCode != null) break;
+    await settles(async () => {
+      if (srv.exitCode != null) return true;
       try { up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200; } catch {}
-      if (!up) await new Promise((r) => setTimeout(r, 500));
-    }
+      return up;
+    }, { timeoutMs: 120000, pollMs: 500 });
     if (!up) throw new Error(`oj dev did not serve on :${PORT}; log:\n${log.slice(-4000)}`);
 
     // The document must have rendered in the worker (the wrangler var proves
@@ -272,14 +256,11 @@ async function runDev() {
     );
     const t0 = Date.now();
     let fresh = null;
-    for (let i = 0; i < 200; i++) {
+    await settles(async () => {
       const res = await get("/about");
-      if (res.status === 200 && res.body.includes("about-page-edited-marker")) {
-        fresh = Date.now() - t0;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 100));
-    }
+      if (res.status === 200 && res.body.includes("about-page-edited-marker")) fresh = Date.now() - t0;
+      return fresh != null;
+    }, { timeoutMs: 20000 });
     if (fresh == null) {
       throw new Error(`/about still stale 20s after the edit; log tail:\n${log.slice(-4000)}`);
     }
@@ -304,25 +285,20 @@ async function runDev() {
     // rebundle here, so a loaded box can take a while even though the prompt
     // invalidate usually lands well under a second. The measured elapsed ms is
     // printed below, so the fast path stays visible in the logs.
-    for (let i = 0; i < 300; i++) {
+    await settles(async () => {
       const res = await get("/about");
-      if (res.status === 200 && res.body.includes("about-page-rapid-marker")) {
-        rapid = Date.now() - t1;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
+      if (res.status === 200 && res.body.includes("about-page-rapid-marker")) rapid = Date.now() - t1;
+      return rapid != null;
+    }, { timeoutMs: 15000, pollMs: 50 });
     if (rapid == null) {
       throw new Error(`/about still stale 15s after the rapid second edit; log tail:\n${log.slice(-4000)}`);
     }
 
     // The coalesced rebundle must not lose the first edit either.
-    let firstEditFresh = false;
-    for (let i = 0; i < 100 && !firstEditFresh; i++) {
+    const firstEditFresh = await settles(async () => {
       const res = await get("/");
-      firstEditFresh = res.status === 200 && res.body.includes("HOME-RAPID!");
-      if (!firstEditFresh) await new Promise((r) => setTimeout(r, 100));
-    }
+      return res.status === 200 && res.body.includes("HOME-RAPID!");
+    }, { timeoutMs: 10000 });
     if (!firstEditFresh) {
       throw new Error(`/ never picked up the first rapid edit; log tail:\n${log.slice(-4000)}`);
     }
@@ -413,23 +389,21 @@ function spawnSlowDev(port, extraEnv) {
     // Let the SIGTERM land before the next phase (or cleanup) touches the tree.
     await new Promise((r) => setTimeout(r, 500));
   };
-  const waitForLog = async (re, what, tries = 240) => {
-    for (let i = 0; i < tries; i++) {
-      if (re.test(state.log)) return;
-      if (srv.exitCode != null) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    throw new Error(`${what}; log tail:\n${state.log.slice(-4000)}`);
+  const waitForLog = async (re, what, timeoutMs = 120000) => {
+    const ok = await settles(() => srv.exitCode != null || re.test(state.log), { timeoutMs, pollMs: 500 });
+    if (!ok || !re.test(state.log)) throw new Error(`${what}; log tail:\n${state.log.slice(-4000)}`);
   };
-  const waitForDoc = async (route, marker, what, tries = 120) => {
-    for (let i = 0; i < tries; i++) {
+  const waitForDoc = async (route, marker, what, timeoutMs = 60000) => {
+    let doc = null;
+    await settles(async () => {
       try {
         const res = await fetch(`http://127.0.0.1:${port}${route}`);
         const body = await res.text();
-        if (res.status === 200 && body.includes(marker)) return body;
+        if (res.status === 200 && body.includes(marker)) doc = body;
       } catch {}
-      await new Promise((r) => setTimeout(r, 500));
-    }
+      return doc != null;
+    }, { timeoutMs, pollMs: 500 });
+    if (doc != null) return doc;
     throw new Error(`${what}; log tail:\n${state.log.slice(-4000)}`);
   };
   return { srv, state, stop, waitForLog, waitForDoc };

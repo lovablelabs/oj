@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -68,7 +69,7 @@ async function run(label, args, port, isBuild) {
     execSync(`${oj} build ${app}`, { stdio: "ignore" });
   }
   const srv = spawn(oj, args, { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
   try {
     await colors(port);
     console.log(`[${label}] less + stylus OK`);

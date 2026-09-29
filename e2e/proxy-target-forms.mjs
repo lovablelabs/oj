@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -98,10 +99,7 @@ try {
   await new Promise((r) => backend.listen(BACKEND, "127.0.0.1", r));
   const logFd = fs.openSync(path.join(tmp, "server.log"), "w");
   srv = spawn(oj, ["dev", tmp, "--port", String(PORT)], { stdio: ["ignore", logFd, logFd] });
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://127.0.0.1:${PORT}/`)).ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 250));
-  }
+  await waitUp(`http://127.0.0.1:${PORT}/`);
 
   // 1. URL-instance target.
   const urlt = await get("/urlt/data");

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -51,10 +52,7 @@ let failed = false;
 try {
   // Auto-discovery is opt-in (include-only pre-bundling is the default); this test covers the discovered path.
   server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" } });
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 250));
-  }
+  await waitUp(`http://localhost:${port}/`);
 
   const main = await get("/main.js");
   assert.equal(main.status, 200);

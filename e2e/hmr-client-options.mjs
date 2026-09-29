@@ -20,6 +20,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -63,7 +64,7 @@ function upgrade(pathname, headers = {}) {
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
 
   const client = await (await fetch(`http://localhost:${port}/@oj/client.js`)).text();
   assert.ok(!/__HMR_[A-Z_]+__|__WS_TOKEN__/.test(client), "every placeholder is filled");
@@ -102,7 +103,7 @@ try {
     await page.waitForFunction(
       () => performance.getEntriesByType("resource").length >= 0, { timeout: 1000 },
     ).catch(() => {});
-    for (let i = 0; i < 50 && !logs.some((l) => l.includes("Internal Server Error")); i++) await sleep(100);
+    await settles(() => logs.some((l) => l.includes("Internal Server Error")));
     assert.ok(logs.some((l) => l.includes("Internal Server Error")), `error logged to the console: ${logs.join(" | ")}`);
     assert.equal(await page.locator('[role="dialog"]').count(), 0, "no overlay when hmr.overlay is false");
 

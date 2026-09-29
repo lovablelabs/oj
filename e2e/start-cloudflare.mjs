@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -155,11 +156,11 @@ async function runInWorkerd() {
   };
   try {
     let up = false;
-    for (let i = 0; i < 240 && !up; i++) {
-      if (srv.exitCode != null) break;
+    await settles(async () => {
+      if (srv.exitCode != null) return true;
       try { up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200; } catch {}
-      if (!up) await new Promise((r) => setTimeout(r, 500));
-    }
+      return up;
+    }, { timeoutMs: 120000, pollMs: 500 });
     if (!up) throw new Error(`wrangler dev did not serve on :${PORT}; log:\n${log.slice(-3000)}`);
     if (!/redirected Wrangler configuration/i.test(log) || !log.includes("dist/ssr/wrangler.json")) {
       throw new Error(`wrangler did not pick up the plugin's deploy redirect; log:\n${log.slice(0, 2000)}`);

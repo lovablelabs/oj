@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { settles, waitUp } from "./util.mjs";
 
 const OJ = path.join(process.cwd(), "target", "debug", "oj");
 const PORT = 5251;
@@ -25,11 +26,7 @@ fs.writeFileSync(path.join(app, "src", "main.tsx"), 'document.body.dataset.ok = 
 fs.writeFileSync(path.join(app, ".env"), "VITE_FOO=1\n");
 
 const up = async () => {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(BASE)).ok) return true; } catch {}
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return false;
+  return waitUp(BASE).then(() => true, () => false);
 };
 
 let stderr = "";
@@ -46,13 +43,7 @@ try {
   // Touch a watched config/.env file → expect a restart.
   fs.appendFileSync(path.join(app, ".env"), "VITE_BAR=2\n");
 
-  const restarted = await (async () => {
-    for (let i = 0; i < 60; i++) {
-      if (/restarting dev server/i.test(stderr)) return true;
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    return false;
-  })();
+  const restarted = await settles(() => /restarting dev server/i.test(stderr));
   if (!restarted) throw new Error("no restart log after .env change:\n" + stderr);
   console.log("restart triggered:  yes");
 
@@ -64,6 +55,15 @@ try {
   console.error("FAIL:", e.message);
 } finally {
   child.kill("SIGKILL");
-  fs.rmSync(app, { recursive: true, force: true });
+  // The restarted server's short-lived children may still be flushing into
+  // the app dir (the suite's ENOTEMPTY teardown class): retry the removal.
+  await settles(() => {
+    try {
+      fs.rmSync(app, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }, { timeoutMs: 5000, pollMs: 150 });
 }
 process.exit(failed ? 1 : 0);
