@@ -12,6 +12,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -40,11 +41,7 @@ const routeFile = (() => {
 })();
 
 async function up() {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return true; } catch {}
-    await sleep(500);
-  }
-  return false;
+  return waitUp(`http://localhost:${port}/`).then(() => true, () => false);
 }
 // Deadline-based wait, retouching the probe write on the way: the watcher
 // thread may register its watches after HTTP-ready on a loaded runner, so a

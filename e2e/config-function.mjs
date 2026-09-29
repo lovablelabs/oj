@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -35,7 +36,7 @@ let failed = false;
 try {
   // dev: command=serve, mode=development
   const srv = spawn(oj, ["dev", app, "--port", "5375"], { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch("http://localhost:5375/dev/")).ok) break; } catch {} await sleep(200); }
+  await waitUp("http://localhost:5375/dev/");
   const devMain = await (await fetch("http://localhost:5375/dev/src/main.js")).text();
   srv.kill("SIGKILL");
   await sleep(200);

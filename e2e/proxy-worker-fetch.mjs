@@ -32,6 +32,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -308,11 +309,11 @@ async function run() {
   };
   try {
     let up = false;
-    for (let i = 0; i < 240 && !up; i++) {
-      if (srv.exitCode != null) break;
+    await settles(async () => {
+      if (srv.exitCode != null) return true;
       try { up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200; } catch {}
-      if (!up) await new Promise((r) => setTimeout(r, 500));
-    }
+      return up;
+    }, { timeoutMs: 120000, pollMs: 500 });
     if (!up) throw new Error(`oj dev did not serve on :${PORT}; log:\n${log.slice(-4000)}`);
 
     // Control: the worker renders `/` (the wrangler var proves the worker path

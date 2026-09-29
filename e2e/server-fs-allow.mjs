@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { waitUp } from "./util.mjs";
 
 const OJ = path.join(process.cwd(), "target", "debug", "oj");
 
@@ -44,12 +45,13 @@ const startApp = async (port, viteConfig) => {
   fs.writeFileSync(path.join(app, "src", "main.js"), "export const v = 1;\n");
   if (viteConfig) fs.writeFileSync(path.join(app, "vite.config.mjs"), viteConfig);
   const c = spawn(OJ, ["dev", "--port", String(port)], { cwd: app, stdio: "ignore" });
-  for (let i = 0; i < 300; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return c; } catch {}
-    await new Promise((r) => setTimeout(r, 100));
+  try {
+    await waitUp(`http://localhost:${port}/`, { proc: c });
+    return c;
+  } catch (e) {
+    c.kill("SIGKILL");
+    throw e;
   }
-  c.kill("SIGKILL");
-  throw new Error("dev server did not start");
 };
 
 try {

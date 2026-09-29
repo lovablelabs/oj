@@ -9,11 +9,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-html-ctx-"));
 fs.mkdirSync(path.join(app, "nested"), { recursive: true });
@@ -61,15 +61,7 @@ function check(label, ok, detail) {
   const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   try {
     let up = false;
-    for (let i = 0; i < 100; i++) {
-      try {
-        if ((await fetch(`http://localhost:${port}/`)).ok) {
-          up = true;
-          break;
-        }
-      } catch {}
-      await sleep(200);
-    }
+    up = await waitUp(`http://localhost:${port}/`).then(() => true, () => false);
     check("dev server starts", up, "no response on 6308");
     if (up) {
       const main = await (await fetch(`http://localhost:${port}/`)).text();

@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { settles, waitUp } from "./util.mjs";
 
 const OJ = path.join(process.cwd(), "target", "debug", "oj");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -29,11 +30,7 @@ function makeApp(pluginSrc) {
 }
 
 async function up(port) {
-  for (let i = 0; i < 300; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return true; } catch {}
-    await sleep(100);
-  }
-  return false;
+  return waitUp(`http://localhost:${port}/`).then(() => true, () => false);
 }
 
 function openWs(port) {
@@ -44,13 +41,7 @@ function openWs(port) {
   return { msgs, ready, close: () => ws.close() };
 }
 
-async function waitFor(msgs, pred, ms = 6000) {
-  for (let i = 0; i < ms / 100; i++) {
-    if (msgs.some(pred)) return true;
-    await sleep(100);
-  }
-  return false;
-}
+const waitFor = (msgs, pred, ms = 6000) => settles(() => msgs.some(pred), { timeoutMs: ms });
 
 async function scenario(name, port, pluginSrc, edit, predicate) {
   const app = makeApp(pluginSrc);

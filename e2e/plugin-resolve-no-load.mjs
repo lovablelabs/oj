@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -45,14 +46,7 @@ fs.writeFileSync(
 const port = 5493;
 const base = `http://127.0.0.1:${port}`;
 async function reachable() {
-  for (let i = 0; i < 50; i++) {
-    try {
-      const r = await fetch(`${base}/`, { signal: AbortSignal.timeout(1500) });
-      if (r.ok) return true;
-    } catch {}
-    await sleep(200);
-  }
-  return false;
+  return waitUp(`${base}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(() => true, () => false);
 }
 
 let failed = false;

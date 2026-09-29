@@ -14,6 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -116,19 +117,14 @@ const server = spawn(oj, ["dev", ".", "--port", String(port), "--host=127.0.0.1"
 let log = "";
 server.stdout.on("data", (d) => (log += d));
 server.stderr.on("data", (d) => (log += d));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
   let body;
   let status = 0;
-  for (let i = 0; i < 120; i++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/gpu-tier`);
-      status = res.status;
-      body = await res.text();
-      if (status === 200 || status === 500) break;
-    } catch {}
-    await sleep(500);
-  }
+  await waitUp(`http://127.0.0.1:${port}/gpu-tier`, { until: async (res) => {
+    status = res.status;
+    body = await res.text();
+    return status === 200 || status === 500;
+  } }).catch(() => {});
   if (status !== 200 || !body.includes("tier:3")) {
     console.error(log.slice(-4000));
     throw new Error(

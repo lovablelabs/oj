@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -40,13 +41,6 @@ const rm = (p) => {
   }
 };
 const must = (cond, msg) => { if (!cond) throw new Error(msg); };
-const waitUp = async (port) => {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return; } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`server on :${port} did not start`);
-};
 
 async function assertServerRoutes(port, label) {
   // 6 MB of random bytes: not valid UTF-8, well past any small-body path.
@@ -99,7 +93,7 @@ async function devPhase() {
   rm(path.join(app, ".oj-cache"));
   const srv = spawn(oj, ["dev", app, "--port", String(DEV_PORT)], { stdio: "ignore" });
   try {
-    await waitUp(DEV_PORT);
+    await waitUp(`http://localhost:${DEV_PORT}/`);
     await assertServerRoutes(DEV_PORT, "start-dev");
   } finally {
     srv.kill("SIGKILL");
@@ -131,7 +125,7 @@ async function prodPhase() {
     cwd: app, stdio: "ignore", env: { ...process.env, PORT: String(PROD_PORT) },
   });
   try {
-    await waitUp(PROD_PORT);
+    await waitUp(`http://localhost:${PROD_PORT}/`);
     await assertServerRoutes(PROD_PORT, "start-prod");
   } finally {
     srv.kill("SIGKILL");

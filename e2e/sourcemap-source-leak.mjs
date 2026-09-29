@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -51,7 +52,6 @@ let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "ignore", "pipe"], detached: true });
 let log = "";
 srv.stderr.on("data", (d) => (log += d));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const get = async (u) => {
   const res = await fetch(`http://localhost:${PORT}${u}`);
   return { status: res.status, text: await res.text() };
@@ -62,13 +62,7 @@ const inlineMaps = (text) =>
     Buffer.from(m[1], "base64").toString("utf8"),
   );
 try {
-  for (let i = 0; i < 100; i++) {
-    try {
-      if ((await fetch(`http://localhost:${PORT}/`)).ok) break;
-    } catch {}
-    if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${PORT}/`, { proc: srv }).catch(() => {});
   const main = await get("/src/main.js");
   if (main.status !== 200) throw new Error(`main.js returned ${main.status}\n${log.slice(-2000)}`);
   // The dep's served URL, however oj spelled the rewrite.

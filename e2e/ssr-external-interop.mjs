@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -94,18 +95,16 @@ const srv = spawn(oj, ["dev", app, "--ssr", "src/entry-server.js", "--port", Str
 });
 let log = "";
 srv.stderr.on("data", (d) => (log += d));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
   let body = "";
-  for (let i = 0; i < 120; i++) {
+  await settles(async () => {
+    if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
     try {
       const res = await fetch(`http://localhost:${PORT}/`);
       body = await res.text();
-      if (res.status === 200 && body.includes("INTEROP:")) break;
-    } catch {}
-    if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
-    await sleep(300);
-  }
+      return res.status === 200 && body.includes("INTEROP:");
+    } catch { return false; }
+  }, { pollMs: 300 });
   const must = (cond, msg) => {
     if (!cond) throw new Error(`${msg}\nrendered: ${body.slice(0, 1500)}\n${log.slice(-1500)}`);
   };

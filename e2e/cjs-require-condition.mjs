@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -56,7 +57,7 @@ let srv = null;
 let browser = null;
 try {
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
 
   // The ESM importer keeps the `import` condition.
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
@@ -76,10 +77,7 @@ try {
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(`http://localhost:${PORT}/`, { timeout: 30000 });
   let result = null;
-  for (let i = 0; i < 50 && !result; i++) {
-    result = await page.evaluate(() => window.__R || null);
-    if (!result) await sleep(100);
-  }
+  await settles(async () => (result = await page.evaluate(() => window.__R || null)));
   assert.deepEqual(errors, [], `page errors: ${errors.join("; ")}`);
   assert.deepEqual(result, { kind: "function", value: "CJS_BUILD", esm: "ESM_BUILD" });
   console.log("CJS-REQUIRE-CONDITION E2E PASSED");

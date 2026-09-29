@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { settles, waitUp } from "./util.mjs";
 
 const OJ = path.join(process.cwd(), "target", "debug", "oj");
 const PORT = 5325;
@@ -34,11 +35,7 @@ try {
 
   const get = async () => (await fetch(`http://localhost:${PORT}/src/mod.js`)).text();
   const up = async () => {
-    for (let i = 0; i < 300; i++) {
-      try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return true; } catch {}
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return false;
+    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
   };
   if (!(await up())) throw new Error("server did not start:\n" + out);
 
@@ -50,12 +47,10 @@ try {
 
   fs.writeFileSync(mod, 'export const marker = "VALUE_B_LONGER";\nexport const extra = 1;\n');
 
-  let updated = false;
-  for (let i = 0; i < 60; i++) {
+  const updated = await settles(async () => {
     const b = await get();
-    if (b.includes("VALUE_B_LONGER") && !b.includes("VALUE_A")) { updated = true; break; }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+    return b.includes("VALUE_B_LONGER") && !b.includes("VALUE_A");
+  });
   if (!updated) throw new Error("stale content served after edit (fast-path did not invalidate)");
   console.log("edit invalidation:  fresh content served");
   console.log("\nMTIME FAST-PATH VERIFIED: warm reuse is correct, edits are never stale");

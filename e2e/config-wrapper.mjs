@@ -8,6 +8,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -50,10 +51,7 @@ const port = 5498;
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {}
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${port}/`);
 
   const html = await (await fetch(`http://localhost:${port}/`)).text();
   assert.match(html, /window\.__PRESET = 1/, "wrapper's transformIndexHtml plugin ran (config-wrapper evaluated)");

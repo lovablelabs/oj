@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -82,8 +83,8 @@ export default {
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
-  for (let i = 0; i < 50 && !fs.existsSync(path.join(marks, "resolved.json")); i++) await sleep(100);
+  await waitUp(`http://localhost:${PORT}/`);
+  await settles(() => fs.existsSync(path.join(marks, "resolved.json")));
   const rc = JSON.parse(fs.readFileSync(path.join(marks, "resolved.json"), "utf8"));
   assert.equal(rc.outDir, "vite-out", "build.outDir comes from the app's resolved Vite config, not the synthesized 'dist'");
   assert.equal(rc.sourcemap, true);

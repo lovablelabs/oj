@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -39,10 +40,7 @@ fs.writeFileSync(
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
 );
 
-async function up() {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) return true; } catch {} await sleep(200); }
-  return false;
-}
+const up = () => waitUp(`http://localhost:${port}/`).then(() => true, () => false);
 
 let failed = false;
 const log = path.join(app, "server.log");
@@ -81,15 +79,12 @@ try {
   // 3. a normal edit still updates (the watcher is alive)
   n = frames.length;
   fs.writeFileSync(path.join(app, "src", "main.js"), `import { g } from "./generated/out.js";\ndocument.title = "w" + g;\nif (import.meta.hot) import.meta.hot.accept();\n`);
-  for (let i = 0; i < 50 && frames.length === n; i++) await sleep(100);
+  await settles(() => frames.length !== n);
   assert.ok(frames.length > n && frames[frames.length - 1].type === "update", "a source edit still hot updates");
 
   // 4. a config dependency edit restarts the server
   fs.writeFileSync(path.join(app, "config-helper.mjs"), `export const ignored = ["src/generated/**", "other/**"];\n`);
-  for (let i = 0; i < 100; i++) {
-    if (fs.readFileSync(log, "utf8").includes("restarting dev server")) break;
-    await sleep(100);
-  }
+  await settles(() => fs.readFileSync(log, "utf8").includes("restarting dev server"));
   assert.match(fs.readFileSync(log, "utf8"), /restarting dev server/, "editing a config dependency restarts");
   assert.ok(await up(), "server came back after the restart");
   console.log("WATCH-CONFIG-DEPS-IGNORED E2E PASSED");

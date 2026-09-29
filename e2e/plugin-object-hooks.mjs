@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -63,7 +64,7 @@ const read = (n) => fs.readFileSync(path.join(marks, n), "utf8");
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
 
   assert.equal(read("config-order"), "first-then-second", "config order:post ran before the normal hook");
   assert.deepEqual(JSON.parse(read("configResolved")), { first: "1", second: "2" }, "configResolved object form saw both config results");
@@ -78,7 +79,7 @@ try {
   assert.doesNotMatch(other, /TRANSFORMED/, "glob id filter must not match a file outside src/");
 
   fs.writeFileSync(path.join(app, "src", "deep", "a.js"), `export const A = "a2";\n`);
-  for (let i = 0; i < 50 && !fs.existsSync(path.join(marks, "hotUpdate")); i++) await sleep(100);
+  await settles(() => fs.existsSync(path.join(marks, "hotUpdate")));
   const hot = JSON.parse(read("hotUpdate"));
   assert.equal(hot.file, "a.js", "hotUpdate object form was dispatched");
   assert.equal(hot.hasServer, true, "hotUpdate context carries server.ws.send");

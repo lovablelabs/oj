@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -50,13 +51,12 @@ const srv = spawn(oj, ["dev", app, "--ssr", "src/entry-server.ts", "--port", Str
 let failed = false;
 try {
   let body = "";
-  for (let i = 0; i < 120; i++) {
+  await settles(async () => {
     try {
       body = await (await fetch(`http://localhost:${PORT}/`)).text();
-      if (body.includes("ssr-boom-marker")) break;
-    } catch {}
-    await sleep(500);
-  }
+      return body.includes("ssr-boom-marker");
+    } catch { return false; }
+  }, { timeoutMs: 60000, pollMs: 500 });
   if (!body.includes("ssr-boom-marker")) throw new Error(`the render error never reached the response:\n${body.slice(0, 400)}`);
   const stack = body.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   const libFrame = stack.match(/at boom \(([^)]*)\)/);

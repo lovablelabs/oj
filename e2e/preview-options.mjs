@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -28,7 +29,6 @@ fs.writeFileSync(path.join(app, "src", "main.js"), `window.__P = 1;\n`);
 fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head></head><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`);
 fs.writeFileSync(path.join(app, "about.html"), `<!doctype html><html><body>about</body></html>`);
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function request(p, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port: PORT, path: p, method: "GET", headers }, (res) => {
@@ -44,12 +44,8 @@ async function startPreview(args = []) {
   const srv = spawn(oj, ["preview", app, "--port", String(PORT), ...args], { stdio: ["ignore", "pipe", "pipe"] });
   let err = "";
   srv.stderr.on("data", (d) => (err += d));
-  for (let i = 0; i < 100; i++) {
-    try {
-      const r = await request("/");
-      if (r.status) return srv;
-    } catch {}
-    await sleep(100);
+  if (await settles(async () => { try { return Boolean((await request("/")).status); } catch { return false; } })) {
+    return srv;
   }
   throw new Error(`preview did not start: ${err}`);
 }

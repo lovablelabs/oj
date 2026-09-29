@@ -8,6 +8,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -43,7 +44,7 @@ async function built(mode, shellEnv = {}) {
   Object.assign(env, shellEnv);
   execSync(mode ? `${oj} build ${app} --mode ${mode}` : `${oj} build ${app}`, { stdio: "ignore", env });
   const srv = spawn(oj, ["preview", app, "--port", "5471"], { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch("http://localhost:5471/")).ok) break; } catch {} await sleep(200); }
+  await waitUp("http://localhost:5471/");
   const browser = await chromium.launch();
   const page = await browser.newPage();
   try {

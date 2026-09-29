@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 // Vite runs plugin `load` hooks before reading a module from disk (the fs read is
 // its last-resort `vite:load-fallback` plugin), so a plugin can replace an
@@ -50,7 +51,7 @@ let failed = false;
 const port = 5397;
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
 
   const data = await (await fetch(`http://localhost:${port}/src/data.js`)).text();
   if (!/FROM_PLUGIN/.test(data)) throw new Error(`plugin load did not run before the disk read: ${data.slice(0, 80)}`);

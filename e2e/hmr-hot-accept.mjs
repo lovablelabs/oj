@@ -16,6 +16,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -46,7 +47,7 @@ w("index.html", `<!doctype html><html><head><title>t</title></head><body><script
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   assert.match(main, /createHotContext\("\/src\/main\.js"\)/, `hot context injected for a module using import.meta.hot:\n${main}`);
   assert.match(main, /accept\("\/src\/util\.js"/, "accept dep specifier rewritten to its served url");

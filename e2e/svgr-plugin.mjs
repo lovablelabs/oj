@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 // A plain `.svg` import (no `?react`) must go through a configured plugin
 // `transform` that componentizes svgs (vite-plugin-svgr with an `include` list,
@@ -113,7 +114,7 @@ async function mode(label, args, port, build) {
   }
   const srv = spawn(oj, args, { stdio: "ignore" });
   try {
-    for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+    await waitUp(`http://localhost:${port}/`);
     if (!build) await checkSource(port);
     await checkRender(port);
     console.log(`[${label}] plain-svg svgr OK`);

@@ -17,6 +17,7 @@ import net from "node:net";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -105,11 +106,10 @@ try {
 
   // first render through blob import map + esm.sh react
   let h1 = null;
-  for (let i = 0; i < 120; i++) {
+  await settles(async () => {
     h1 = await front().locator("h1").textContent({ timeout: 1000 }).catch(() => null);
-    if (h1 && h1.includes("juice stand")) break;
-    await sleep(500);
-  }
+    return h1 && h1.includes("juice stand");
+  }, { timeoutMs: 60000, pollMs: 500 });
   if (!h1 || !h1.includes("juice stand")) bad.push(`preview h1: ${h1}`);
 
   // css module class applied; state updates on click
@@ -130,11 +130,10 @@ try {
   await page.keyboard.press(selectAll);
   await page.keyboard.insertText("body { background: rgb(10, 20, 30); color: white } main { max-width: 26rem; margin: 3rem auto }");
   let newBg = null;
-  for (let i = 0; i < 40; i++) {
-    await sleep(500);
+  await settles(async () => {
     newBg = await front().locator("body").evaluate((el) => getComputedStyle(el).backgroundColor).catch(() => null);
-    if (newBg === "rgb(10, 20, 30)") break;
-  }
+    return newBg === "rgb(10, 20, 30)";
+  }, { pollMs: 500 });
   if (newBg !== "rgb(10, 20, 30)") bad.push(`background after edit: ${newBg}`);
 
   // a missing import raises the strip and keeps the last good preview
@@ -152,11 +151,10 @@ try {
   await page.keyboard.press(selectAll);
   await page.keyboard.insertText("export default function App(){ return <h1>fixed!</h1> }");
   let fixed = null;
-  for (let i = 0; i < 40; i++) {
-    await sleep(500);
+  await settles(async () => {
     fixed = await front().locator("h1").textContent().catch(() => null);
-    if (fixed === "fixed!") break;
-  }
+    return fixed === "fixed!";
+  }, { pollMs: 500 });
   if (fixed !== "fixed!") bad.push(`h1 after fix: ${fixed}`);
   if ((await page.locator(".play__errors").count()) !== 0) bad.push("error strip still visible after fix");
 
@@ -173,11 +171,10 @@ try {
     await sleep(150);
   }
   let last = null;
-  for (let i = 0; i < 40; i++) {
-    await sleep(500);
+  await settles(async () => {
     last = await front().locator("h1").textContent().catch(() => null);
-    if (last === "burst 8") break;
-  }
+    return last === "burst 8";
+  }, { pollMs: 500 });
   if (last !== "burst 8") bad.push(`h1 after burst: ${last}`);
   if (blanks > 0) bad.push(`front pane was empty ${blanks} time(s) during burst typing`);
 } finally {

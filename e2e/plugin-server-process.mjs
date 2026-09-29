@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -69,19 +70,15 @@ let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: ["ignore", "inherit", "inherit"] });
 const exited = new Promise((resolve) => srv.once("exit", (code, signal) => resolve({ code, signal })));
 try {
-  for (let i = 0; i < 150; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {}
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${port}/`);
 
   // 1. the listening contract: emitted, real port, self-dial connects.
   let probe = null;
-  for (let i = 0; i < 100; i++) {
+  await settles(async () => {
     const res = await fetch(`http://localhost:${port}/__probe-result`);
     probe = await res.json();
-    if (probe.listening && (probe.fetchStatus !== null || probe.fetchError !== null)) break;
-    await sleep(200);
-  }
+    return probe.listening && (probe.fetchStatus !== null || probe.fetchError !== null);
+  }, { pollMs: 200 });
   assert.equal(probe.addressAtConfigure, null, "address() must be null before the socket is bound (Vite parity)");
   assert.equal(probe.urlsAtConfigure, null, "resolvedUrls is null until listen (Vite parity)");
   assert.equal(probe.listening, true, `"listening" never fired: ${JSON.stringify(probe)}`);

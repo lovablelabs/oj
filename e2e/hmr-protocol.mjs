@@ -8,6 +8,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -29,7 +30,7 @@ fs.writeFileSync(
 async function run(args, port, hmrAsset) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const srv = spawn(oj, args, { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
   try {
     // the served HMR client must derive the ws protocol from location.protocol
     // (so wss is used behind an https sandbox proxy instead of hardcoded ws://)

@@ -11,6 +11,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -42,13 +43,6 @@ const get = async (route) => {
   const res = await fetch(`http://localhost:${PORT}${route}`);
   return { status: res.status, body: await res.text() };
 };
-const waitUp = async () => {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return; } catch {}
-    await sleep(500);
-  }
-  throw new Error(`server on :${PORT} did not start`);
-};
 
 // Every JS chunk of the dev client bundle, concatenated (routes may be split
 // out of the entry chunk, so the entry alone is not enough).
@@ -70,7 +64,7 @@ async function served(args, check) {
   rm(path.join(app, ".oj-cache"));
   const srv = spawn(oj, ["dev", app, "--port", String(PORT), ...args], { stdio: "ignore" });
   try {
-    await waitUp();
+    await waitUp(`http://localhost:${PORT}/`);
     await check();
   } finally {
     srv.kill("SIGKILL");

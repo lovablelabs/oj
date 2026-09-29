@@ -9,6 +9,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
@@ -24,23 +25,6 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const must = (cond, msg) => { if (!cond) throw new Error(msg); };
 
-// Wait for `cond`, retouching the probe write on the way: the watcher thread
-// may register its watches after HTTP-ready on a loaded runner, so a single
-// write can predate registration and never be seen; rewriting the same bytes
-// bumps the mtime and re-fires it. Resolves false on timeout.
-async function settles(cond, { touch, timeoutMs = 45000, touchEveryMs = 3000, pollMs = 100 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  let touched = Date.now();
-  while (!cond()) {
-    if (Date.now() >= deadline) return false;
-    if (touch && Date.now() - touched >= touchEveryMs) {
-      touch();
-      touched = Date.now();
-    }
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  return true;
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Retried, as in start.mjs: SIGKILLed servers orphan node children for a beat,
@@ -55,13 +39,6 @@ const rm = (p) => {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
     }
   }
-};
-const waitUp = async () => {
-  for (let i = 0; i < 240; i++) {
-    try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return; } catch {}
-    await sleep(500);
-  }
-  throw new Error(`server on :${PORT} did not start`);
 };
 const aboutFile = path.join(app, "src", "routes", "about.tsx");
 const original = fs.readFileSync(aboutFile, "utf8");
@@ -98,7 +75,7 @@ async function run(label, gated, check) {
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
   try {
-    await waitUp();
+    await waitUp(`http://localhost:${PORT}/`);
     await (await reloadListener()).close();
     const listener = await reloadListener();
     // A real source change: the watcher rebuilds the client bundle. The

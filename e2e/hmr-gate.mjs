@@ -8,6 +8,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -33,10 +34,7 @@ const srv = spawn(oj, ["dev", app, "--port", String(port)], {
   env: { ...process.env, OJ_HMR_GATE: "1" },
 });
 try {
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {}
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${port}/`);
 
   // on-connect custom frame: dev-server-mode
   const ws = new WebSocket(`ws://localhost:${port}/__ws`);

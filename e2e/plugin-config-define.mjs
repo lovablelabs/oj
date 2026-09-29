@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -58,7 +59,7 @@ function check(code, label) {
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   check(await (await fetch(`http://localhost:${PORT}/src/main.js`)).text(), "dev");
   srv.kill("SIGKILL");
   await sleep(300);
@@ -93,8 +94,7 @@ try {
     env: { ...process.env, OJ_PLUGIN_TIMEOUT: "2" },
   });
   try {
-    let up = false;
-    for (let i = 0; i < 150; i++) { try { if ((await fetch(`http://localhost:${SLOW_PORT}/`)).ok) { up = true; break; } } catch {} await sleep(200); }
+    const up = await waitUp(`http://localhost:${SLOW_PORT}/`).then(() => true, () => false);
     assert.ok(up, "slow-boot dev server never came up (boot RPCs raced init instead of waiting)");
     check(await (await fetch(`http://localhost:${SLOW_PORT}/src/main.js`)).text(), "slow-boot dev");
   } finally {

@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -53,7 +54,7 @@ export default [{
 
 let failed = false;
 let srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
-const up = async () => { for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return; } catch {} await sleep(200); } throw new Error("server not up"); };
+const up = () => waitUp(`http://localhost:${PORT}/`);
 try {
   await up();
   const first = await (await fetch(`http://localhost:${PORT}/src/a.js`)).text();

@@ -5,17 +5,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { repo, tmpProject } from './unit/harness.mjs';
+import { settles } from "./util.mjs";
 
 const fx = tmpProject({ prefix: 'oj-config-adoption-', linkEsbuild: true });
 let child;
 let log = '';
 const waitFor = async (predicate) => {
-  for (let i = 0; i < 200; i++) {
-    if (await predicate()) return;
+  const ok = await settles(async () => {
     if (child.exitCode !== null) throw new Error(log);
-    await new Promise(r => setTimeout(r, 50));
-  }
-  throw new Error(`timed out\n${log}`);
+    return predicate();
+  }, { timeoutMs: 10000, pollMs: 50 });
+  if (!ok) throw new Error(`timed out\n${log}`);
 };
 try {
   fx.write('index.html', '<html><head></head><body></body></html>');

@@ -11,11 +11,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-css-modules-options-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
@@ -80,15 +80,7 @@ function checkExports(mode, styles, theme, css) {
   srv.stderr.on("data", (d) => (log += d));
   try {
     let up = false;
-    for (let i = 0; i < 100; i++) {
-      try {
-        if ((await fetch(`http://localhost:${port}/`)).ok) {
-          up = true;
-          break;
-        }
-      } catch {}
-      await sleep(200);
-    }
+    up = await waitUp(`http://localhost:${port}/`).then(() => true, () => false);
     if (!up) throw new Error(`dev server did not start:\n${log}`);
     const wrapper = await (await fetch(`http://localhost:${port}/src/app.module.css?import`)).text();
     const map = wrapper.match(/export default (\{.*?\});?\s*$/m);

@@ -7,12 +7,12 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
@@ -39,7 +39,7 @@ async function check(port) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const args = ["dev", app, "--port", String(port)];
   const srv = spawn(oj, args, { stdio: "ignore" });
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://localhost:${port}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${port}/`);
   const browser = await chromium.launch();
   const page = await browser.newPage();
   const errors = [];

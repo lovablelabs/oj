@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -46,15 +47,9 @@ w(
 
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore", detached: true });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let browser;
 try {
-  for (let i = 0; i < 100; i++) {
-    try {
-      if ((await fetch(`http://localhost:${PORT}/`)).ok) break;
-    } catch {}
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${PORT}/`);
   browser = await chromium.launch();
   const page = await browser.newPage();
   await page.goto(`http://localhost:${PORT}/`);
@@ -62,11 +57,9 @@ try {
   await page.evaluate(() => (window.__NO_RELOAD = true));
   const color = (sel) => page.evaluate((s) => getComputedStyle(document.querySelector(s)).color, sel);
   const waitColor = async (sel, want, label) => {
-    for (let i = 0; i < 80; i++) {
-      if ((await color(sel)) === want) return;
-      await sleep(250);
+    if (!(await settles(async () => (await color(sel)) === want, { pollMs: 250 }))) {
+      throw new Error(`${label}: wanted ${want}, still ${await color(sel)}`);
     }
-    throw new Error(`${label}: wanted ${want}, still ${await color(sel)}`);
   };
   if ((await color(".box")) !== "rgb(10, 20, 30)") throw new Error(`initial @import color wrong: ${await color(".box")}`);
   if ((await color(".sbox")) !== "rgb(40, 50, 60)") throw new Error(`initial sass color wrong: ${await color(".sbox")}`);

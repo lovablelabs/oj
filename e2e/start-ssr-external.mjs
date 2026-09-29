@@ -10,6 +10,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -36,7 +37,6 @@ const rm = (p) => {
     }
   }
 };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const must = (cond, msg) => { if (!cond) throw new Error(msg); };
 const dist = path.join(app, "dist");
 
@@ -64,11 +64,7 @@ try {
     cwd: app, stdio: "ignore", env: { ...process.env, PORT: String(PORT) },
   });
   try {
-    let up = false;
-    for (let i = 0; i < 120 && !up; i++) {
-      try { up = (await fetch(`http://localhost:${PORT}/`)).ok; } catch {}
-      if (!up) await sleep(500);
-    }
+    const up = await waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
     must(up, `built server on :${PORT} did not start with react external`);
     const html = await (await fetch(`http://localhost:${PORT}/`)).text();
     for (const marker of ["HOME!", "server-fn-marker", "fixture-define-marker", "Alpha Widget, Beta Widget"]) {

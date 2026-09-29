@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { HYDRATION_SIGNATURES, collectBrowserErrors } from "./lib/hydration.mjs";
+import { settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -42,15 +43,18 @@ const cleanup = () => {
 
 const get = async () => (await fetch(`${base}/`)).text();
 const stripTags = (html) => html.replace(/<[^>]*>/g, "");
-const waitFor = async (pred, tries = 60) => {
-  for (let i = 0; i < tries; i++) {
+const waitFor = async (pred, timeoutMs = 30000) => {
+  let html;
+  const ok = await settles(async () => {
     try {
-      const html = await get();
-      if (pred(html)) return html;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error("timed out waiting for a render");
+      html = await get();
+      return pred(html);
+    } catch {
+      return false;
+    }
+  }, { timeoutMs, pollMs: 500 });
+  if (!ok) throw new Error("timed out waiting for a render");
+  return html;
 };
 
 try {
@@ -128,11 +132,7 @@ try {
   if (!fs.existsSync(bootstrap)) throw new Error("module runner bootstrap was not written");
   console.log("ssr-dev: module runner re-eval ok (ssr: 41, then 8)");
 
-  let pushed = false;
-  for (let i = 0; i < 20 && !pushed; i++) {
-    pushed = fs.readFileSync(errLog, "utf8").includes("hmr push -> invalidated");
-    if (!pushed) await new Promise((r) => setTimeout(r, 250));
-  }
+  const pushed = await settles(() => fs.readFileSync(errLog, "utf8").includes("hmr push -> invalidated"));
   if (!pushed) throw new Error("runner did not receive a server-side HMR push");
   console.log("ssr-dev: server-side HMR push ok (runner invalidated on change event)");
 

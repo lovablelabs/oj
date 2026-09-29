@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -63,16 +64,9 @@ const srv = spawn(oj, ["dev", "--port", String(port)], {
 });
 try {
   let served = null;
-  for (let i = 0; i < 150; i++) {
-    try {
-      const res = await fetch(`http://localhost:${port}/probe.js`);
-      if (res.ok) {
-        served = await res.text();
-        break;
-      }
-    } catch {}
-    await sleep(200);
-  }
+  await waitUp(`http://localhost:${port}/probe.js`, {
+    until: async (res) => res.ok && (served = await res.text()) !== undefined,
+  }).catch(() => {});
   assert.ok(served, "dev server never served /probe.js");
   assert.match(served, /dotenv-value/, ".env file var must inline");
   assert.match(served, /shell-value/, "process-env VITE_* must inline");

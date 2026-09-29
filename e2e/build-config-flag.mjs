@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -75,7 +76,7 @@ try {
   // Dev with --config: envPrefix applies too.
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   srv = spawn(oj, ["dev", app, "--port", String(PORT), "--config", "configs/vite.alt.js"], { stdio: "ignore" });
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(200); }
+  await waitUp(`http://localhost:${PORT}/`);
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   assert.match(main, /from-env/, `dev honors the APP_ envPrefix from vite.config:\n${main}`);
   assert.match(main, /util\.custom\.js/, `dev honors resolve.extensions from vite.config:\n${main}`);

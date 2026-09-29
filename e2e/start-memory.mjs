@@ -12,6 +12,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
@@ -41,13 +42,6 @@ const rm = (p) => {
     }
   }
 };
-const waitUp = async () => {
-  for (let i = 0; i < 240; i++) {
-    try { if ((await fetch(`http://localhost:${PORT}/`)).ok) return; } catch {}
-    await sleep(500);
-  }
-  throw new Error(`server on :${PORT} did not start`);
-};
 
 const aboutFile = path.join(app, "src", "routes", "about.tsx");
 const original = fs.readFileSync(aboutFile, "utf8");
@@ -64,7 +58,7 @@ const rssMb = () =>
   Number(execSync(`ps -o rss= -p ${srv.pid}`).toString().trim()) / 1024;
 
 try {
-  await waitUp();
+  await waitUp(`http://localhost:${PORT}/`);
   // Warm the SSR runner too, so later samples measure rebundles, not the
   // first render's imports.
   await fetch(`http://localhost:${PORT}/`);
