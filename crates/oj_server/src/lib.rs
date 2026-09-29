@@ -850,7 +850,7 @@ impl DevServer {
         // BEFORE any engine boots: children spawned by plugin hooks register
         // here (forked deno_process spawn hook, own process group each) so
         // restarts and shutdown can kill whole plugin-spawned trees.
-        deno_process::oj_hook::set(child_groups::register);
+        deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
@@ -1380,18 +1380,6 @@ impl DevServer {
             });
         }
         spawn_watcher(Arc::clone(&state));
-        // Idle memory return (see idle_trim): stamp boot as activity so the
-        // boot froth itself gets trimmed a minute after a request-less start.
-        idle_trim::touch(now_millis() as u64);
-        tokio::spawn(async {
-            let mut tick = tokio::time::interval(Duration::from_secs(15));
-            loop {
-                tick.tick().await;
-                if idle_trim::due(now_millis() as u64) {
-                    idle_trim::trim();
-                }
-            }
-        });
         let (client_files, ssr_files) = oj_config::server_warmup_files(&config);
         if !client_files.is_empty() || !ssr_files.is_empty() {
             let state = Arc::clone(&state);
@@ -1575,12 +1563,19 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
     #[cfg(unix)]
     let code = {
         use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => tokio::select! {
+        // SIGHUP too: own-group children no longer share the terminal's
+        // session, so a closed terminal/SSH drop must be forwarded like ^C
+        // or every plugin runtime is orphaned.
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            (Ok(mut term), Ok(mut hup)) => tokio::select! {
                 _ = tokio::signal::ctrl_c() => 130,
                 _ = term.recv() => 143,
+                _ = hup.recv() => 129,
             },
-            Err(_) => {
+            _ => {
                 let _ = tokio::signal::ctrl_c().await;
                 130
             }
@@ -4655,10 +4650,6 @@ async fn ensure_module(
     }
 
     let is_server = is_server_module(file) && !is_dep_early;
-
-    // Native-allocation activity for the idle-trim gate: compiles are where
-    // the churn is made (requests that hit caches allocate next to nothing).
-    idle_trim::touch(now_millis() as u64);
 
     let mode = if is_server { "server" } else { "dev" };
     // Fold the newest HMR stamp among this module's imports into the key: after a
@@ -8285,51 +8276,6 @@ fn is_tsconfig_file(path: &Path) -> bool {
 /// Re-exec the current binary with the same arguments so a fresh process
 /// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
 /// dev port is released as the image is replaced. Does not return on success.
-/// Linux-only idle memory return: glibc never gives freed arena pages back to
-/// the OS on its own, and a cold boot's native churn (in-host rolldown
-/// optimizer passes, first compiles) leaves large freed-but-resident arenas
-/// that V8's MemoryReducer (#270) cannot touch — it only returns V8 heap.
-/// Once the server has been CHURN-idle for a minute — no compiles and no
-/// watcher batches, the two places native churn is made; cache-hit request
-/// serving allocates next to nothing — return them with one `malloc_trim(0)`
-/// per busy period. macOS's allocator decays on its own and
-/// musl has no malloc_trim, so the call is glibc-gated; the bookkeeping runs
-/// everywhere so the state machine stays tested on every platform.
-mod idle_trim {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-    static LAST_ACTIVITY_MS: AtomicU64 = AtomicU64::new(0);
-    static TRIMMED: AtomicBool = AtomicBool::new(false);
-    pub const IDLE_AFTER_MS: u64 = 60_000;
-
-    pub fn touch(now_ms: u64) {
-        LAST_ACTIVITY_MS.store(now_ms, Ordering::Relaxed);
-        TRIMMED.store(false, Ordering::Relaxed);
-    }
-
-    /// Whether a trim should run NOW: at most one per busy-to-idle transition.
-    pub fn due(now_ms: u64) -> bool {
-        let last = LAST_ACTIVITY_MS.load(Ordering::Relaxed);
-        if last == 0 || now_ms.saturating_sub(last) < IDLE_AFTER_MS {
-            return false;
-        }
-        !TRIMMED.swap(true, Ordering::Relaxed)
-    }
-
-    pub fn trim() {
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            libc::malloc_trim(0);
-        }
-    }
-}
-
-/// Plugin-spawned children, registered by the forked `deno_process` spawn
-/// hook: each non-detached engine child runs in its OWN process group (its
-/// grandchildren inherit it), so killing `-pid` takes the whole tree. Needed
-/// because a self-restart is an `exec` — same pid, no destructors, parent-
-/// death watchdogs never fire — and because own-group children no longer die
-/// with the terminal's foreground group on Ctrl-C.
 mod child_groups {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -8340,36 +8286,61 @@ mod child_groups {
         CHILDREN.lock().unwrap().push((pid, own_group));
     }
 
+    /// The fork reports a child it reaped or now owns the kill for; retiring
+    /// the entry here is what keeps a later sweep from ever aiming at a
+    /// recycled pid.
+    pub fn unregister(pid: u32) {
+        CHILDREN.lock().unwrap().retain(|(p, _)| *p != pid);
+    }
+
     /// SIGKILL every registered child (its whole group when it leads one) and
     /// reap the corpses, so an exec'd image inherits neither survivors nor
-    /// zombies. Exited children (ESRCH) are pruned silently.
+    /// zombies. Drains in rounds: a child spawned while the sweep runs lands
+    /// in the emptied registry and is taken by the next round.
     pub fn kill_all() -> usize {
-        let children: Vec<(u32, bool)> = std::mem::take(&mut *CHILDREN.lock().unwrap());
         let mut killed = 0usize;
         #[cfg(unix)]
-        {
+        for _round in 0..3 {
+            let children: Vec<(u32, bool)> = std::mem::take(&mut *CHILDREN.lock().unwrap());
+            if children.is_empty() {
+                break;
+            }
             for (pid, own_group) in &children {
+                let pid_i = *pid as i32;
+                // Never trust a stale entry: an own-group child still leads
+                // its group iff getpgid(pid) == pid, and a direct child must
+                // still exist. (The fork retires reaped children, so stale
+                // entries are rare; this is the second lock against pid
+                // recycling. A recycled pid that happens to lead its own new
+                // group remains a theoretical TOCTOU.)
                 let target = if *own_group {
-                    -(*pid as i32)
+                    if unsafe { libc::getpgid(pid_i) } != pid_i {
+                        continue;
+                    }
+                    -pid_i
                 } else {
-                    *pid as i32
+                    if unsafe { libc::kill(pid_i, 0) } != 0 {
+                        continue;
+                    }
+                    pid_i
                 };
                 if unsafe { libc::kill(target, libc::SIGKILL) } == 0 {
                     killed += 1;
                 }
             }
-            // Only DIRECT children are ours to reap; killed grandchildren
-            // reparent to init.
-            let deadline = Instant::now() + Duration::from_millis(500);
-            loop {
-                let reaped = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
-                if reaped > 0 {
-                    continue;
+            // Reap OUR direct children only, each with a small bound — a
+            // per-pid wait can never stall on some unrelated live child the
+            // way a waitpid(-1) sweep did.
+            for (pid, _) in &children {
+                let deadline = Instant::now() + Duration::from_millis(200);
+                loop {
+                    let r =
+                        unsafe { libc::waitpid(*pid as i32, std::ptr::null_mut(), libc::WNOHANG) };
+                    if r != 0 || Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                if reaped < 0 || Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
             }
         }
         killed
@@ -8554,7 +8525,6 @@ fn spawn_watcher(state: Arc<ServerState>) {
                     continue;
                 }
             }
-            idle_trim::touch(now_millis() as u64);
             let messages = state.rt.block_on(decide(&state, &paths, &created));
             if messages.is_empty() {
                 continue;
@@ -9886,24 +9856,6 @@ export default [{{
         for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
             assert!(!is_restart_trigger(Path::new(f)), "{f}");
         }
-    }
-
-    #[test]
-    fn idle_trim_fires_once_per_busy_period() {
-        idle_trim::touch(1_000);
-        assert!(!idle_trim::due(1_000), "not idle yet");
-        assert!(
-            !idle_trim::due(1_000 + idle_trim::IDLE_AFTER_MS - 1),
-            "just under the threshold"
-        );
-        assert!(idle_trim::due(1_000 + idle_trim::IDLE_AFTER_MS), "idle now");
-        assert!(
-            !idle_trim::due(1_000 + idle_trim::IDLE_AFTER_MS * 2),
-            "one trim per idle period"
-        );
-        idle_trim::touch(500_000);
-        assert!(!idle_trim::due(500_001), "activity resets the machine");
-        assert!(idle_trim::due(500_000 + idle_trim::IDLE_AFTER_MS));
     }
 
     #[test]

@@ -39,6 +39,12 @@ version = "=0.7.1"
 [dependencies.deno_fs]
 version = "0.169.0"
 
+# oj patch: the registry crate, for the SHARED ipc types deno_node also
+# links (one definition; see lib.rs "oj patch" by the ipc re-export).
+[dependencies.deno_process_upstream]
+package = "deno_process"
+version = "=0.74.0"
+
 [dependencies.deno_io]
 version = "0.169.0"
 

@@ -14,7 +14,10 @@
 // configHash covers `include` sorted and deduped (optimizer/index.ts
 // getConfigHash), and the child rewrites metadata between the two reads.
 // A stale entry (dep since removed) costs only Vite's "present in
-// optimizeDeps.include" warning.
+// optimizeDeps.include" warning, and ages out at the next metadata-bearing
+// boot. Expected shape: the boot after a discovery session re-optimizes ONCE
+// (in the child — the grown include changes configHash), then the set reaches
+// its fixed point and every later boot validates.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -32,7 +35,11 @@ export function priorDepIds(rc) {
     } catch {
       continue;
     }
-    const ids = new Set([...Object.keys(metadata?.optimized ?? {}), ...Object.keys(metadata?.discovered ?? {})]);
+    // On-disk metadata carries every committed dep — including mid-session
+    // discoveries — under `optimized` (stringifyDepsOptimizerMetadata writes
+    // no `discovered` section). Capped deterministically: sorted, so the
+    // include set is stable across boots even past the cap.
+    const ids = new Set(Object.keys(metadata?.optimized ?? {}));
     if (ids.size > 0) out[name] = [...ids].sort().slice(0, 500);
   }
   return out;
@@ -40,11 +47,23 @@ export function priorDepIds(rc) {
 
 // Written by the preseed child BEFORE it resolves its config (atomic rename;
 // the host may already be reading a previous snapshot).
+// MERGED per environment, never replaced wholesale: an environment with
+// metadata on disk is authoritative (its dep set is the fixed-point superset,
+// and replacement is what lets removed deps age out), but an environment with
+// NO metadata keeps its previous snapshot entry — otherwise a `.vite` wipe
+// with a surviving `.oj-cache` (a node_modules reinstall) would clobber the
+// accumulated set with nothing and bring back the discovery-restart double
+// boot for exactly the case this exists for.
 export function writeIncludeSnapshot(snapshotPath, byEnv) {
   try {
+    let previous = {};
+    try {
+      previous = JSON.parse(readFileSync(snapshotPath, "utf8")) ?? {};
+    } catch {}
+    const merged = { ...previous, ...byEnv };
     mkdirSync(dirname(snapshotPath), { recursive: true });
     const tmp = `${snapshotPath}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(byEnv, null, 2));
+    writeFileSync(tmp, JSON.stringify(merged, null, 2));
     renameSync(tmp, snapshotPath);
   } catch {}
 }

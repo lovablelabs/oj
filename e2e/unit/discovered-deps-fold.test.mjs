@@ -24,11 +24,18 @@ test("prior metadata dep ids round-trip through the snapshot into include", () =
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oj-preseed-"));
   fs.mkdirSync(path.join(dir, "deps_ssr"), { recursive: true });
   fs.mkdirSync(path.join(dir, "deps"), { recursive: true });
+  // Vite's on-disk metadata persists every committed dep — mid-session
+  // discoveries included — under `optimized` (it writes no `discovered`
+  // section); `chunks` must never be folded.
   fs.writeFileSync(
     path.join(dir, "deps_ssr", "_metadata.json"),
     JSON.stringify({
-      optimized: { "react-dom/client": {}, "unenv/node/process": {} },
-      discovered: { "@cloudflare/unenv-preset/node/console": {} },
+      optimized: {
+        "react-dom/client": {},
+        "unenv/node/process": {},
+        "@cloudflare/unenv-preset/node/console": {},
+      },
+      chunks: { "chunk-ABC123": {} },
     }),
   );
   fs.writeFileSync(path.join(dir, "deps", "_metadata.json"), "not json");
@@ -62,6 +69,18 @@ test("prior metadata dep ids round-trip through the snapshot into include", () =
     [...rc.environments.ssr.optimizeDeps.include].sort(),
     "both sides hash the same set",
   );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a metadata-less environment keeps its previous snapshot entry", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oj-preseed-merge-"));
+  const snapshot = path.join(dir, "preseed-include.json");
+  writeIncludeSnapshot(snapshot, { ssr: ["unenv/node/process"], worker: ["a"] });
+  // A `.vite` wipe: priorDepIds finds nothing for ssr, fresh data for worker.
+  writeIncludeSnapshot(snapshot, { worker: ["a", "b"] });
+  const merged = JSON.parse(fs.readFileSync(snapshot, "utf8"));
+  assert.deepEqual(merged.ssr, ["unenv/node/process"], "wiped metadata must not clobber the set");
+  assert.deepEqual(merged.worker, ["a", "b"], "metadata-bearing env is authoritative");
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

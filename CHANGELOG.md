@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A plugin-driven `server.restart()` (and any config/.env restart) now kills and reaps every descendant process before the re-exec: a plugin-spawned runtime (e.g. a worker) used to survive the exec as a stranded frozen child holding its whole footprint beside the fresh boot's own copy.
 - Optimizer deps that only the runtime discovers (a plugin injecting scanner-invisible imports) are recorded and folded into `optimizeDeps.include` by both the pre-optimize child and the plugin host on the next boot, so the in-host discovery optimize — and the restart some plugins issue after it — fires at most once per app instead of on every cold boot.
-- On Linux (glibc), freed native memory is returned to the OS with an idle-gated `malloc_trim` once the server has been request-idle for a minute; glibc never returns freed arena pages on its own, so a cold boot's bundling churn stayed resident forever.
 
 ## [0.2.13] - 2026-09-29
 

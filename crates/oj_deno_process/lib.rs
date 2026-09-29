@@ -63,10 +63,13 @@ use serde::Deserialize;
 #[cfg(unix)]
 use tokio::process::Child as AsyncChild;
 
-pub mod ipc;
-use ipc::IpcAdvancedStreamResource;
-use ipc::IpcJsonStreamResource;
-use ipc::IpcRefTracker;
+// oj patch: the ipc module is UPSTREAM's, re-exported — deno_node's ops
+// downcast these resources by the registry crate's types, so carrying our own
+// copy made every child_process IPC round trip fail with "Bad resource ID".
+pub use deno_process_upstream::ipc;
+use deno_process_upstream::ipc::IpcAdvancedStreamResource;
+use deno_process_upstream::ipc::IpcJsonStreamResource;
+use deno_process_upstream::ipc::IpcRefTracker;
 
 pub const UNSTABLE_FEATURE_NAME: &str = "process";
 #[cfg(unix)]
@@ -389,6 +392,8 @@ impl Resource for ChildResource {
 impl Drop for ChildResource {
   fn drop(&mut self) {
     if self.kill_on_drop.get() {
+      // oj patch: this resource owns the kill now; retire the registry entry.
+      crate::oj_hook::report_exit(self.pid);
       #[cfg(unix)]
       {
         // Send SIGKILL to the child process. Best-effort; ignore errors
@@ -689,6 +694,10 @@ fn create_command(
   mut args: SpawnArgs,
   api_name: &str,
   allow_cwd_inherit: bool,
+  // oj patch: sync spawns (execSync/spawnSync) must stay in the caller's
+  // process group — they block until exit, and re-grouping them would take
+  // them out of the terminal's foreground group (Ctrl-C, tty signals).
+  oj_allow_group: bool,
   // When `true` (Unix only), the resolved command is run as an argument to
   // `/bin/sh` instead of being exec'd directly. Used as a fallback when a
   // direct spawn fails with `ENOEXEC` (e.g. a shebang-less shell script), to
@@ -803,7 +812,8 @@ fn create_command(
   command.envs(run_env.envs.into_iter().map(|(k, v)| (k.into_inner(), v)));
 
   // oj patch: decided before stdio is consumed; see the pre_exec block.
-  let oj_own_group = crate::oj_hook::enabled()
+  let oj_own_group = oj_allow_group
+    && crate::oj_hook::enabled()
     && !args.detached
     && !matches!(args.stdio.stdin, StdioOrFd::Stdio(Stdio::Inherit));
 
@@ -1192,8 +1202,10 @@ fn spawn_child(
   detached: bool,
   oj_own_group: bool,
 ) -> Result<Child, ProcessError> {
+  // oj patch: None for detached — Some(false) would REGISTER the child for a
+  // direct kill, breaking the detached outlive-the-parent contract.
   let (mut child, pid) =
-    spawn_command(command, Some(oj_own_group && !detached))?;
+    spawn_command(command, if detached { None } else { Some(oj_own_group) })?;
 
   #[cfg(not(windows))]
   let stdin_rid = child
@@ -1318,8 +1330,9 @@ fn spawn_child_node(
   detached: bool,
   oj_own_group: bool,
 ) -> Result<NodeChild, ProcessError> {
+  // oj patch: None for detached (see spawn_child).
   let (mut child, pid) =
-    spawn_command(command, Some(oj_own_group && !detached))?;
+    spawn_command(command, if detached { None } else { Some(oj_own_group) })?;
 
   let stdin_fd = child_stdio_to_fd!(child, stdin);
   let stdout_fd = child_stdio_to_fd!(child, stdout);
@@ -1632,7 +1645,7 @@ fn op_spawn_child(
   let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
     create_command(
       state, args, &api_name, /* allow_cwd_inherit */ false,
-      /* wrap_in_shell */ false,
+      /* oj_allow_group */ true, /* wrap_in_shell */ false,
     )?;
   let child = spawn_child(
     state,
@@ -1650,7 +1663,7 @@ fn op_spawn_child(
     let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
       create_command(
         state, retry_args, &api_name, /* allow_cwd_inherit */ false,
-        /* wrap_in_shell */ true,
+        /* oj_allow_group */ true, /* wrap_in_shell */ true,
       )?;
     let child = spawn_child(
       state,
@@ -1684,7 +1697,7 @@ fn op_node_spawn_child(
   let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
     create_command(
       state, args, &api_name, /* allow_cwd_inherit */ true,
-      /* wrap_in_shell */ false,
+      /* oj_allow_group */ true, /* wrap_in_shell */ false,
     )?;
   let child = spawn_child_node(
     state,
@@ -1702,7 +1715,7 @@ fn op_node_spawn_child(
     let (command, pipe_rid, extra_pipe_fds, handles_to_close, oj_own_group) =
       create_command(
         state, retry_args, &api_name, /* allow_cwd_inherit */ true,
-        /* wrap_in_shell */ true,
+        /* oj_allow_group */ true, /* wrap_in_shell */ true,
       )?;
     let child = spawn_child_node(
       state,
@@ -1734,13 +1747,16 @@ async fn op_spawn_wait(
     .resource_table
     .get::<ChildResource>(rid)
     .map_err(ProcessError::Resource)?;
-  let result = resource
+  let result: ChildStatus = resource
     .child
     .try_borrow_mut()
     .map_err(ProcessError::BorrowMut)?
     .wait()
     .await?
     .try_into()?;
+  // oj patch: the child exited and was reaped — retire its registry entry so
+  // a later kill sweep can never aim at a recycled pid.
+  crate::oj_hook::report_exit(resource.pid);
   if let Ok(resource) = state.borrow_mut().resource_table.take_any(rid) {
     resource.close();
   }
@@ -1766,6 +1782,7 @@ fn op_spawn_sync(
     args,
     "Deno.Command().outputSync()",
     /* allow_cwd_inherit */ false,
+    /* oj_allow_group */ false,
     /* wrap_in_shell */ false,
   )?;
 
@@ -1797,6 +1814,7 @@ fn op_spawn_sync(
         retry_args,
         "Deno.Command().outputSync()",
         /* allow_cwd_inherit */ false,
+        /* oj_allow_group */ false,
         /* wrap_in_shell */ true,
       )?;
       if timeout.is_some_and(|t| t > 0) {
@@ -2620,9 +2638,11 @@ pub mod oj_hook {
   use std::sync::OnceLock;
 
   static HOOK: OnceLock<fn(pid: u32, own_group: bool)> = OnceLock::new();
+  static EXIT: OnceLock<fn(pid: u32)> = OnceLock::new();
 
-  pub fn set(f: fn(pid: u32, own_group: bool)) {
-    let _ = HOOK.set(f);
+  pub fn set(spawned: fn(pid: u32, own_group: bool), exited: fn(pid: u32)) {
+    let _ = HOOK.set(spawned);
+    let _ = EXIT.set(exited);
   }
 
   pub(crate) fn enabled() -> bool {
@@ -2632,6 +2652,12 @@ pub mod oj_hook {
   pub(crate) fn report(pid: u32, own_group: bool) {
     if let Some(f) = HOOK.get() {
       f(pid, own_group);
+    }
+  }
+
+  pub(crate) fn report_exit(pid: u32) {
+    if let Some(f) = EXIT.get() {
+      f(pid);
     }
   }
 }
