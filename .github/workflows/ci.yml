@@ -81,6 +81,8 @@ jobs:
         run: node e2e/warm-cache.mjs
       - name: ssr dev + hydration
         run: node e2e/ssr-dev.mjs
+      - name: no-cache flag e2e
+        run: node e2e/no-cache.mjs
       - name: ESM dependency's bare import of a UMD-main sibling (detect-gpu shape)
         run: node e2e/dep-esm-bare-import.mjs
       - name: ESM dependency's named import of an unbundled UMD sibling (proj4 shape)

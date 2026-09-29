@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -47,13 +48,6 @@ function moduleCacheEntries() {
   return n;
 }
 
-async function waitUp() {
-  for (let i = 0; i < 120; i++) {
-    try { if ((await fetch(`http://localhost:${port}/`)).ok) return; } catch {}
-    await sleep(100);
-  }
-  throw new Error("oj never came up");
-}
 
 // Run oj (optionally with --no-cache), request the module, give the async cache
 // writer time to flush, and return how many module cache entries exist after.
@@ -61,14 +55,17 @@ async function runAndCount({ noCache }) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const args = ["dev", app, "--port", String(port)];
   if (noCache) args.push("--no-cache");
-  const proc = spawn(oj, args, { stdio: "ignore" });
+  // The persistent cache is opt-in (OJ_ENABLE_CACHE / --enable-cache), so the
+  // control run must enable it for "caches normally" to mean anything; the
+  // --no-cache run keeps the SAME env, proving the flag beats the env.
+  const proc = spawn(oj, args, { stdio: "ignore", env: { ...process.env, OJ_ENABLE_CACHE: "1" } });
   try {
-    await waitUp();
+    await waitUp(`http://localhost:${port}/`);
     const r = await fetch(`http://localhost:${port}/main.tsx`);
     assert.equal(r.status, 200, "module serves");
     // The cache write is async (channel -> background writer). Poll briefly so
     // the control run has a fair chance to persist before we count.
-    for (let i = 0; i < 20 && moduleCacheEntries() === 0; i++) await sleep(150);
+    await settles(() => moduleCacheEntries() !== 0, { timeoutMs: 3000, pollMs: 150 });
     await sleep(300);
     return moduleCacheEntries();
   } finally {
