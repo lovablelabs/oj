@@ -23,6 +23,25 @@ if (!installed) {
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const must = (cond, msg) => { if (!cond) throw new Error(msg); };
+
+// Wait for `cond`, retouching the probe write on the way: the watcher thread
+// may register its watches after HTTP-ready on a loaded runner, so a single
+// write can predate registration and never be seen; rewriting the same bytes
+// bumps the mtime and re-fires it. Resolves false on timeout.
+async function settles(cond, { touch, timeoutMs = 45000, touchEveryMs = 3000, pollMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let touched = Date.now();
+  while (!cond()) {
+    if (Date.now() >= deadline) return false;
+    if (touch && Date.now() - touched >= touchEveryMs) {
+      touch();
+      touched = Date.now();
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return true;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Retried, as in start.mjs: SIGKILLed servers orphan node children for a beat,
 // and their NODE_COMPILE_CACHE flush into .oj-cache/v8 races the removal
@@ -82,13 +101,10 @@ async function run(label, gated, check) {
     await waitUp();
     await (await reloadListener()).close();
     const listener = await reloadListener();
-    // A real source change: the watcher rebuilds the client bundle. The write
-    // is a RETOUCHABLE probe: oj answers HTTP before its watcher thread has
-    // registered every watch on this large fixture, so on a loaded CI runner
-    // a single write can land before registration and never be seen (Vite's
-    // chokidar scan has the same race; its playgrounds poll and re-edit too).
-    // Identical bytes each time: a retouch is one logical change, and the
-    // mtime bump alone re-fires the watcher.
+    // A real source change: the watcher rebuilds the client bundle. The
+    // probe is identical bytes on every retouch (see `settles`), so it stays
+    // one logical change (Vite's chokidar scan has the same registration
+    // race; its playgrounds poll and re-edit too).
     const probe = original + `\n// gate probe ${label}\n`;
     const touch = () => fs.writeFileSync(aboutFile, probe);
     touch();
@@ -105,15 +121,7 @@ async function run(label, gated, check) {
 // 1. Gate on: the rebuild happens, the reload is held, the status shows it, the
 //    flush releases exactly one reload.
 await run("gated", true, async (listener, log, touch) => {
-  const deadline = Date.now() + 45000;
-  let lastTouch = Date.now();
-  while (Date.now() < deadline && !log().includes("reload held")) {
-    if (Date.now() - lastTouch > 3000) {
-      touch();
-      lastTouch = Date.now();
-    }
-    await sleep(200);
-  }
+  await settles(() => log().includes("reload held"), { touch });
   must(log().includes("oj start: rebuilt, reload held"), `gated: the watcher should rebuild and hold the reload:\n${log().slice(-1200)}`);
   // Quiesce: a retouch issued just before the hold was seen may still be
   // rebuilding; wait until no new hold lands for 2s so the flush below
@@ -145,15 +153,7 @@ await run("plain", false, async (listener, _log, touch) => {
     console.log("plain: the gate is enabled by the environment, skipping the immediate-reload check");
     return;
   }
-  const until = Date.now() + 45000;
-  let lastTouch = Date.now();
-  while (Date.now() < until && listener.reloads.length === 0) {
-    if (Date.now() - lastTouch > 3000) {
-      touch();
-      lastTouch = Date.now();
-    }
-    await sleep(100);
-  }
+  await settles(() => listener.reloads.length > 0, { touch });
   must(listener.reloads.length >= 1, "plain: the rebuild should reload the page without a gate");
   console.log("plain: rebuild reloads immediately");
 });
