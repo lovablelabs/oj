@@ -1,0 +1,12 @@
+{
+  "name": "oj-repo-tools",
+  "private": true,
+  "description": "Repository tooling only (formatting); oj itself is a Rust crate.",
+  "scripts": {
+    "fmt": "oxfmt '**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'",
+    "fmt:check": "oxfmt --check '**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'"
+  },
+  "devDependencies": {
+    "oxfmt": "0.71.0"
+  }
+}
