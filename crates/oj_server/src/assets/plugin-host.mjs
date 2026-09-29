@@ -402,6 +402,36 @@ function makeCreateResolver(config) {
   };
 }
 
+// Vite's searchRoot.ts: the nearest ancestor that looks like a workspace
+// root (pnpm-workspace.yaml or lerna.json beside it, a package.json with
+// `workspaces`, or a deno.json(c) with `workspace`), else the nearest
+// package root. `server.fs.allow` defaults to it.
+function searchForPackageRoot(current, root = current) {
+  for (;;) {
+    if (existsSync(join(current, "package.json"))) return current;
+    const dir = dirname(current);
+    if (!dir || dir === current) return root;
+    current = dir;
+  }
+}
+function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
+  const readJson = (p) => {
+    try {
+      return JSON.parse(readFileSync(p, "utf8")) || {};
+    } catch {
+      return null;
+    }
+  };
+  for (;;) {
+    if (["pnpm-workspace.yaml", "lerna.json"].some((f) => existsSync(join(current, f)))) return current;
+    if (readJson(join(current, "package.json"))?.workspaces) return current;
+    if (["deno.json", "deno.jsonc"].some((f) => readJson(join(current, f))?.workspace)) return current;
+    const dir = dirname(current);
+    if (!dir || dir === current) return root;
+    current = dir;
+  }
+}
+
 function withResolvedDefaults(config) {
   const c = config ?? {};
   const merged = mergeConfigLite(
@@ -486,6 +516,35 @@ function withResolvedDefaults(config) {
   if (merged.publicDir !== false) {
     const pd = typeof merged.publicDir === "string" && merged.publicDir.length > 0 ? merged.publicDir : "public";
     merged.publicDir = isAbsolute(pd) ? pd : pathResolve(merged.root, pd);
+  }
+  // Vite ALWAYS resolves `server.fs` (resolveServerOptions): strict on, the
+  // default deny list, and `allow` defaulting to the workspace root, each
+  // entry resolved absolute. Plugins index into `config.server.fs.allow`
+  // directly in resolveId-time checks (isServeableFile shapes), so an
+  // undefined here fails every bundle that runs them. Vite's pnpm
+  // virtual-store addition is not mirrored: it reads
+  // node_modules/.modules.yaml with JSON.parse (server/index.ts), which
+  // throws on pnpm's real YAML and is swallowed, so observed Vite behavior
+  // carries no store entry either. Vite's own-client-dir push (CLIENT_DIR
+  // when vite sits outside every allow entry) has no oj equivalent: oj
+  // serves its client from memory, and its serving side allows any
+  // node_modules path outright.
+  {
+    merged.server = merged.server ?? {};
+    const rawFs = merged.server.fs ?? {};
+    // Vite: `allow: raw?.fs?.allow ?? [workspaceRoot]` — an EXPLICIT empty
+    // list stays empty; only an absent one gets the workspace-root default.
+    const allow = Array.isArray(rawFs.allow) ? rawFs.allow : [searchForWorkspaceRoot(cacheRoot)];
+    merged.server.fs = {
+      ...rawFs,
+      // mergeWithDefaults skips only `undefined` ("let null to set the
+      // value"), so an explicit null passes through as in Vite.
+      strict: rawFs.strict === undefined ? true : rawFs.strict,
+      // Vite's normalizePath backslash-replaces on Windows only; POSIX
+      // filenames may legally contain one.
+      allow: allow.map((d) => (process.platform === "win32" ? pathResolve(cacheRoot, d).replace(/\\/g, "/") : pathResolve(cacheRoot, d))),
+      deny: rawFs.deny === undefined ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"] : rawFs.deny,
+    };
   }
   // Vite's resolved config carries a `logger`; plugins (e.g. the cloudflare
   // plugin's ViteMiniflareLogger) call `config.logger.info/warn/error`.
@@ -1450,6 +1509,11 @@ initStage("config-hooks-done");
 // Vite's environment carries the resolved config (per-environment overrides
 // merged), its logger and getTopLevelConfig(); applyToEnvironment and every
 // hook's this.environment read them.
+// A non-client environment re-resolves, so its `server.fs.allow` is a
+// SNAPSHOT taken here (after runConfigHooks, so configResolved-time pushes
+// are captured); Vite shares one `server` object across environments, so a
+// post-boot push would be visible everywhere there. oj's serving allow-list
+// reads the raw config on its own path and is unaffected either way.
 environment.config =
   envName === "client"
     ? resolvedConfig

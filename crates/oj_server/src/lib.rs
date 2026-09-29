@@ -5850,6 +5850,25 @@ pub fn is_node_builtin(spec: &str) -> bool {
 // must not expose the whole repository over /@fs by default. oj seeds
 // server.fs.allow with this, matching Vite's default.
 fn workspace_root(root: &Path) -> PathBuf {
+    // Vite's hasWorkspacePackageJSON / hasWorkspaceDenoJSON: the PARSED field,
+    // truthy by JS rules — a dependency literally named "workspaces" must not
+    // widen the served root, and a deno.jsonc counts only while it is also
+    // valid JSON (Vite skips full JSONC parsing).
+    let field_truthy = |file: &Path, field: &str| -> bool {
+        let Ok(txt) = std::fs::read_to_string(file) else {
+            return false;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+            return false;
+        };
+        match v.get(field) {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(b)) => *b,
+            Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
+            Some(serde_json::Value::String(s)) => !s.is_empty(),
+            Some(_) => true,
+        }
+    };
     let mut pkg_root: Option<PathBuf> = None;
     let mut dir = root;
     loop {
@@ -5857,14 +5876,17 @@ fn workspace_root(root: &Path) -> PathBuf {
             return dir.to_path_buf();
         }
         if dir.join("package.json").exists() {
-            if let Ok(txt) = std::fs::read_to_string(dir.join("package.json")) {
-                if txt.contains("\"workspaces\"") {
-                    return dir.to_path_buf();
-                }
+            if field_truthy(&dir.join("package.json"), "workspaces") {
+                return dir.to_path_buf();
             }
             if pkg_root.is_none() {
                 pkg_root = Some(dir.to_path_buf());
             }
+        }
+        if field_truthy(&dir.join("deno.json"), "workspace")
+            || field_truthy(&dir.join("deno.jsonc"), "workspace")
+        {
+            return dir.to_path_buf();
         }
         match dir.parent() {
             Some(p) => dir = p,
@@ -9466,6 +9488,32 @@ export default [{{
             workspace_root(&bare),
             repo,
             "nearest ancestor with a package.json"
+        );
+
+        // The PARSED field decides, not a substring: a dependency literally
+        // named "workspaces" must not widen the served root.
+        std::fs::write(
+            repo.join("package.json"),
+            r#"{"dependencies":{"workspaces":"1.0.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(workspace_root(&app), app, "substring is not a marker");
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+
+        // A deno.json with a truthy `workspace` is a marker (Vite's
+        // hasWorkspaceDenoJSON); a deno.jsonc counts only as valid JSON.
+        std::fs::write(repo.join("deno.json"), r#"{"workspace":["./apps/web"]}"#).unwrap();
+        assert_eq!(workspace_root(&app), repo, "deno.json workspace widens");
+        std::fs::remove_file(repo.join("deno.json")).unwrap();
+        std::fs::write(
+            repo.join("deno.jsonc"),
+            "// comment\n{\"workspace\":[\"./apps/web\"]}",
+        )
+        .unwrap();
+        assert_eq!(
+            workspace_root(&app),
+            app,
+            "a deno.jsonc with comments is skipped like Vite"
         );
     }
 
