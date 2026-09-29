@@ -89,6 +89,39 @@ test("bundling container: forwardConsole true and object forms resolve like Vite
   assert.deepEqual(await resolved({ unhandledErrors: false }), { enabled: false, unhandledErrors: false, logLevels: [] });
 });
 
+test("bundling container: ws/hmr compat, allowedHosts env append, origin strip", async () => {
+  const resolved = async (server, env) => {
+    if (env) process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = env;
+    try {
+      let seen = null;
+      const container = bridge.createPluginContainer({}, [
+        { name: "reader", configResolved(config) { seen = config.server; } },
+      ], { command: "serve", environment: "client", config: { root: repo, server } });
+      await container.resolveId("virtual:probe", undefined);
+      return seen;
+    } finally {
+      if (env) delete process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS;
+    }
+  };
+
+  // setupHmrWsOptionCompat: resolved ws is ALWAYS an object unless disabled,
+  // legacy hmr keys mirrored where ws leaves them unset, hmr:true -> {}.
+  assert.deepEqual((await resolved({})).ws, {}, "ws defaults to an object");
+  const mirrored = await resolved({ hmr: { port: 24678, protocol: "wss" }, ws: { port: 1234 } });
+  assert.deepEqual(mirrored.ws, { port: 1234, protocol: "wss" }, "hmr keys fill only unset ws keys");
+  assert.deepEqual((await resolved({ hmr: true })).hmr, {}, "hmr:true normalizes to {}");
+  assert.equal((await resolved({ ws: false })).ws, false, "ws:false is respected");
+  assert.equal((await resolved({ hmr: false })).ws, undefined, "hmr:false skips the compat entirely");
+
+  // __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: comma-split, trimmed, appended;
+  // reserved characters skip the whole value.
+  assert.deepEqual((await resolved({}, " a.example ,b.example,")).allowedHosts, ["a.example", "b.example"]);
+  assert.deepEqual((await resolved({}, 'bad"host')).allowedHosts, [], "reserved characters skip the append");
+
+  // origin: a single trailing slash is stripped.
+  assert.equal((await resolved({ origin: "http://x:8080/" })).origin, "http://x:8080");
+});
+
 test("dev plugin host: the boot config's real port wins over Vite's default", async () => {
   const fx = tmpProject({ prefix: "oj-scalar-" });
   fx.write(

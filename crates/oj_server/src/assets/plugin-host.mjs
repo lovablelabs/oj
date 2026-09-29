@@ -440,6 +440,8 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
 // get Vite's defaults (undefined-only, mergeWithDefaults semantics; warmup
 // and cors object forms deep-fill). `sourcemapIgnoreList: false` resolves
 // to a constant-false function and the default is Vite's isInNodeModules.
+// TWIN COPY: keep this function byte-identical with its sibling in
+// plugin-host.mjs / start/vite-plugin-bridge.mjs (separately embedded assets).
 function fillResolvedServerScalars(server) {
   // `host` is deliberately NOT filled: Vite overrides its own default with
   // undefined ("do not set here to detect whether host is set or not",
@@ -476,6 +478,10 @@ function fillResolvedServerScalars(server) {
   // so advertising agent-enabled would lie); explicit user values resolve
   // exactly as Vite resolves them.
   const fc = server.forwardConsole;
+  // An already-resolved shape (enabled boolean) passes through — including a
+  // vite-resolved base config whose agent detection turned it on; oj does not
+  // forward console, but rewriting a resolved value the user's own vite run
+  // produced would be worse than carrying it.
   if (fc === undefined || fc === false) {
     server.forwardConsole = { enabled: false, unhandledErrors: false, logLevels: [] };
   } else if (fc === true) {
@@ -484,6 +490,33 @@ function fillResolvedServerScalars(server) {
     const unhandledErrors = fc.unhandledErrors ?? true;
     const logLevels = fc.logLevels ?? [];
     server.forwardConsole = { enabled: unhandledErrors || logLevels.length > 0, unhandledErrors, logLevels };
+  }
+  // Vite's setupHmrWsOptionCompat (utils.ts): unless hmr or ws is disabled,
+  // resolved `server.ws` is ALWAYS an object, with the legacy hmr keys
+  // mirrored in where ws leaves them unset; `hmr: true` normalizes to {}.
+  // (The deprecation defineProperty shim is warning sugar, not shape.)
+  if (server.hmr !== false && server.ws !== false) {
+    if (server.hmr === true) server.hmr = {};
+    const ws = server.ws ? { ...server.ws } : {};
+    if (server.hmr && typeof server.hmr === "object") {
+      for (const key of ["protocol", "host", "port", "clientPort", "path", "timeout", "server"]) {
+        if (server.hmr[key] !== undefined) ws[key] ??= server.hmr[key];
+      }
+    }
+    server.ws = ws;
+  }
+  // Vite appends __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS (comma-split,
+  // trimmed) unless it carries reserved characters (server/index.ts).
+  const rawAdditionalHosts = process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS;
+  if (rawAdditionalHosts && Array.isArray(server.allowedHosts) && !/[\\"']/.test(rawAdditionalHosts)) {
+    server.allowedHosts = [
+      ...server.allowedHosts,
+      ...rawAdditionalHosts.split(",").map((h) => h.trim()).filter(Boolean),
+    ];
+  }
+  // Vite strips a single trailing slash off a user `origin`.
+  if (typeof server.origin === "string" && server.origin.endsWith("/")) {
+    server.origin = server.origin.slice(0, -1);
   }
   return server;
 }
