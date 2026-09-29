@@ -19,7 +19,7 @@ import { readFile, stat as fsStat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
-import { foldDiscoveredDeps, recordDiscoveredDep } from "./discovered-deps.mjs";
+import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format as formatUtil, stripVTControlCharacters } from "node:util";
@@ -2002,7 +2002,7 @@ async function buildEnvironments(server) {
     coerceBundledDevOff(rc);
     // BEFORE the environments are built: include must be in the config the
     // optimizer hashes, or the preseed child's metadata cannot validate.
-    foldDiscoveredDeps(rc, initial.discoveredDepsPath);
+    foldIncludeSnapshot(rc, initial.preseedIncludePath);
   } catch (e) {
     process.stderr.write(`${OJ} plugin host: vite.resolveConfig failed: ${(e && e.message) || e}\n`);
     return undefined;
@@ -2045,15 +2045,6 @@ async function buildEnvironments(server) {
         }
       } catch (e) {
         process.stderr.write(`${OJ} plugin host: env.init(${name}) failed: ${(e && e.message) || e}\n`);
-      }
-      const ledgerPath = initial.discoveredDepsPath;
-      if (ledgerPath && ei?.depsOptimizer && typeof ei.depsOptimizer.registerMissingImport === "function") {
-        const optimizer = ei.depsOptimizer;
-        const original = optimizer.registerMissingImport.bind(optimizer);
-        optimizer.registerMissingImport = (id, ...rest) => {
-          recordDiscoveredDep(ledgerPath, name, id);
-          return original(id, ...rest);
-        };
       }
     }),
   );

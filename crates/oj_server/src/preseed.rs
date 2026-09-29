@@ -253,13 +253,13 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
                 "OJ_PRESEED_REPORT".into(),
                 report.to_string_lossy().into_owned(),
             ),
-            // Discovered-deps ledger (see lib.rs discoveredDepsPath): folded
-            // into optimizeDeps.include so this child's metadata covers deps
-            // only the runtime discovers.
+            // Include-extension snapshot (see lib.rs preseedIncludePath):
+            // this child writes it from Vite's prior metadata, then both it
+            // and the host fold the same file into optimizeDeps.include.
             (
-                "OJ_DISCOVERED_DEPS".into(),
+                "OJ_PRESEED_INCLUDE".into(),
                 oj_cache::cache_root(root)
-                    .join("discovered-deps.json")
+                    .join("preseed-include.json")
                     .to_string_lossy()
                     .into_owned(),
             ),

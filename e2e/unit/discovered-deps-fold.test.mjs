@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 //
-// The discovered-deps ledger folds into optimizeDeps.include identically in
-// the preseed child and the plugin host: Vite's configHash covers `include`
-// sorted and deduped (optimizer/index.ts getConfigHash), so both sides
-// applying the same SET is what lets the child-seeded metadata validate.
+// The preseed include extension: dep ids are read from Vite's OWN prior
+// _metadata.json (where every committed optimize, including a mid-session
+// discovery of plugin-injected deps, persists them), snapshotted to one file,
+// and folded into optimizeDeps.include identically by the preseed child and
+// the plugin host — Vite's configHash covers `include` sorted and deduped, so
+// the child-seeded metadata only validates when both sides apply the same set.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -14,39 +16,59 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { repo } from "./harness.mjs";
 
-const { foldDiscoveredDeps } = await import(
+const { foldIncludeSnapshot, priorDepIds, writeIncludeSnapshot } = await import(
   pathToFileURL(join(repo, "crates/oj_server/src/assets/discovered-deps.mjs")).href
 );
 
-test("folds ledger ids into include as a set union, per environment", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oj-ledger-"));
-  const ledger = path.join(dir, "discovered-deps.json");
+test("prior metadata dep ids round-trip through the snapshot into include", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oj-preseed-"));
+  fs.mkdirSync(path.join(dir, "deps_ssr"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "deps"), { recursive: true });
   fs.writeFileSync(
-    ledger,
+    path.join(dir, "deps_ssr", "_metadata.json"),
     JSON.stringify({
-      ssr: ["unenv/node/process", "react-dom/client", "react-dom/client", 42],
-      ghost: ["never-applied"],
+      optimized: { "react-dom/client": {}, "unenv/node/process": {} },
+      discovered: { "@cloudflare/unenv-preset/node/console": {} },
     }),
   );
+  fs.writeFileSync(path.join(dir, "deps", "_metadata.json"), "not json");
+
   const rc = {
+    cacheDir: dir,
     environments: {
       ssr: { optimizeDeps: { include: ["react-dom/client", "existing"] } },
       client: {},
     },
   };
-  foldDiscoveredDeps(rc, ledger);
+  const byEnv = priorDepIds(rc);
+  assert.deepEqual(Object.keys(byEnv), ["ssr"], "unreadable metadata is skipped");
+  assert.deepEqual(byEnv.ssr, ["@cloudflare/unenv-preset/node/console", "react-dom/client", "unenv/node/process"]);
+
+  const snapshot = path.join(dir, "preseed-include.json");
+  writeIncludeSnapshot(snapshot, byEnv);
+  foldIncludeSnapshot(rc, snapshot);
   assert.deepEqual(
     [...rc.environments.ssr.optimizeDeps.include].sort(),
-    ["existing", "react-dom/client", "unenv/node/process"],
-    "union, deduped, non-strings dropped",
+    ["@cloudflare/unenv-preset/node/console", "existing", "react-dom/client", "unenv/node/process"],
+    "set union, deduped",
   );
   assert.equal(rc.environments.client.optimizeDeps, undefined, "untouched env stays untouched");
+
+  // The HOST folds the same file: an identical rc gets an identical include.
+  const rc2 = { cacheDir: dir, environments: { ssr: { optimizeDeps: { include: ["react-dom/client", "existing"] } } } };
+  foldIncludeSnapshot(rc2, snapshot);
+  assert.deepEqual(
+    [...rc2.environments.ssr.optimizeDeps.include].sort(),
+    [...rc.environments.ssr.optimizeDeps.include].sort(),
+    "both sides hash the same set",
+  );
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("missing file, empty path, and unknown envs are silent no-ops", () => {
-  const rc = { environments: { ssr: {} } };
-  foldDiscoveredDeps(rc, undefined);
-  foldDiscoveredDeps(rc, "/nonexistent/discovered-deps.json");
-  assert.deepEqual(rc, { environments: { ssr: {} } });
+test("missing snapshot, empty path, and unknown envs are silent no-ops", () => {
+  const rc = { cacheDir: "/nonexistent", environments: { ssr: {} } };
+  assert.deepEqual(priorDepIds(rc), {});
+  foldIncludeSnapshot(rc, undefined);
+  foldIncludeSnapshot(rc, "/nonexistent/preseed-include.json");
+  assert.deepEqual(rc.environments, { ssr: {} });
 });

@@ -916,13 +916,14 @@ impl DevServer {
             "env": { "command": "serve", "mode": dev_mode },
             "environment": { "name": "client", "mode": host_env_mode },
             "pluginsFormat": plugins_format,
-            // Runtime-DISCOVERED optimizer deps (a plugin injecting scanner-
-            // invisible imports, e.g. Cloudflare's unenv polyfills) get
-            // recorded here by the host and folded into optimizeDeps.include
-            // by BOTH the preseed child and buildEnvironments, so the seeded
-            // metadata's configHash matches and the next cold boot never
-            // re-optimizes in-host (which ended in server.restart()).
-            "discoveredDepsPath": oj_cache::cache_root(&root).join("discovered-deps.json").to_string_lossy(),
+            // Per-environment optimizer include extension, snapshotted by the
+            // preseed child from Vite's own prior _metadata.json (deps a
+            // plugin injects at runtime, e.g. Cloudflare's unenv polyfills,
+            // land there on commit). BOTH the child and buildEnvironments
+            // fold this same snapshot into optimizeDeps.include so the
+            // seeded metadata's configHash matches — the next cold boot then
+            // never re-optimizes in-host (which ended in server.restart()).
+            "preseedIncludePath": oj_cache::cache_root(&root).join("preseed-include.json").to_string_lossy(),
             "ojStartMode": is_start,
         });
         if plugins_format == "vite" {
@@ -1453,15 +1454,7 @@ impl DevServer {
             .route("/__ws", get(ws_upgrade))
             .route("/__hmr_flush", post(hmr_flush))
             .route("/__hmr_gate", get(hmr_gate_status))
-            .fallback(serve_fallback)
-            // Every request stamps activity for the idle-trim state machine
-            // (an atomic store; ordering among layers is irrelevant).
-            .layer(axum::middleware::from_fn(
-                |req: axum::extract::Request, next: axum::middleware::Next| async {
-                    idle_trim::touch(now_millis() as u64);
-                    next.run(req).await
-                },
-            ));
+            .fallback(serve_fallback);
         // `server.hmr.path`: the client dials this path instead of /__ws (Vite
         // serves its socket at base + hmr.path).
         if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
@@ -4662,6 +4655,10 @@ async fn ensure_module(
     }
 
     let is_server = is_server_module(file) && !is_dep_early;
+
+    // Native-allocation activity for the idle-trim gate: compiles are where
+    // the churn is made (requests that hit caches allocate next to nothing).
+    idle_trim::touch(now_millis() as u64);
 
     let mode = if is_server { "server" } else { "dev" };
     // Fold the newest HMR stamp among this module's imports into the key: after a
@@ -8292,8 +8289,10 @@ fn is_tsconfig_file(path: &Path) -> bool {
 /// the OS on its own, and a cold boot's native churn (in-host rolldown
 /// optimizer passes, first compiles) leaves large freed-but-resident arenas
 /// that V8's MemoryReducer (#270) cannot touch — it only returns V8 heap.
-/// Once the server has been request-idle for a minute, return them with one
-/// `malloc_trim(0)` per busy period. macOS's allocator decays on its own and
+/// Once the server has been CHURN-idle for a minute — no compiles and no
+/// watcher batches, the two places native churn is made; cache-hit request
+/// serving allocates next to nothing — return them with one `malloc_trim(0)`
+/// per busy period. macOS's allocator decays on its own and
 /// musl has no malloc_trim, so the call is glibc-gated; the bookkeeping runs
 /// everywhere so the state machine stays tested on every platform.
 mod idle_trim {
@@ -8555,6 +8554,7 @@ fn spawn_watcher(state: Arc<ServerState>) {
                     continue;
                 }
             }
+            idle_trim::touch(now_millis() as u64);
             let messages = state.rt.block_on(decide(&state, &paths, &created));
             if messages.is_empty() {
                 continue;
