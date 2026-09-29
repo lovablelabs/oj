@@ -303,9 +303,13 @@ export function withResolvedServerFs(server, root) {
     ...(server ?? {}),
     fs: {
       ...rawFs,
-      strict: rawFs.strict ?? true,
-      allow: allow.map((d) => pathResolve(root, d).replace(/\\/g, "/")),
-      deny: rawFs.deny ?? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"],
+      // mergeWithDefaults skips only `undefined` ("let null to set the
+      // value"), so an explicit null passes through as in Vite.
+      strict: rawFs.strict === undefined ? true : rawFs.strict,
+      // Vite's normalizePath backslash-replaces on Windows only; POSIX
+      // filenames may legally contain one.
+      allow: allow.map((d) => (process.platform === "win32" ? pathResolve(root, d).replace(/\\/g, "/") : pathResolve(root, d))),
+      deny: rawFs.deny === undefined ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"] : rawFs.deny,
     },
   };
 }
