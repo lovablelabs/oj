@@ -1419,6 +1419,7 @@ impl DevServer {
             // GC-before-measuring point, symmetric with probing a Node
             // server through its inspector). 404 unless enabled.
             .route("/@oj/debug/gc", get(debug_gc))
+            .route("/@oj/debug/mem", get(debug_mem_stats))
             .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
             .route(
                 "/@oj/lingui-macro-shim.js",
@@ -1783,9 +1784,12 @@ fn ws_token_rejected(check: bool, token: &str, headers: &HeaderMap, query: Optio
 
 // An SSR module carries its source map inline: the runner maps stack frames
 // through it back to the original file (Vite's ssrFixStacktrace).
-fn with_inline_map(code: String, map_data_url: Option<String>) -> String {
-    match map_data_url {
-        Some(map) => format!("{code}\n//# sourceMappingURL={map}\n"),
+fn with_inline_map(code: String, map_json: Option<String>) -> String {
+    match map_json {
+        Some(map) => format!(
+            "{code}\n//# sourceMappingURL={}\n",
+            oj_compiler::map_json_to_data_url(&map)
+        ),
         None => code,
     }
 }
@@ -2092,7 +2096,7 @@ fn ssr_compile_source(
         };
     }
     match oj_compiler::compile(&compile_path, &source, &opts) {
-        Ok(out) => Ok(with_inline_map(out.code, out.map_data_url)),
+        Ok(out) => Ok(with_inline_map(out.code, out.map_json)),
         Err(e) => Err(SsrModuleError::Failed(format!("{e}"))),
     }
 }
@@ -4455,8 +4459,12 @@ async fn serve_compiled(
             ctx_predefined,
         ));
     }
-    if let Some(map_url) = &module.map_data_url {
-        body.push_str(&format!("\n//# sourceMappingURL={map_url}\n"));
+    if let Some(map) = &module.map_json {
+        // Vite builds the data URL per send (genSourceMapUrl); caches retain
+        // the raw JSON, 25% smaller than base64.
+        body.push_str("\n//# sourceMappingURL=");
+        body.push_str(&oj_compiler::map_json_to_data_url(map));
+        body.push('\n');
     }
 
     (
@@ -4501,7 +4509,7 @@ async fn ensure_module(
             hot: None,
             kind: String::new(),
             code: default,
-            map_data_url: None,
+            map_json: None,
             imports: Vec::new(),
             require_map: Vec::new(),
             css_exports: Vec::new(),
@@ -4607,7 +4615,7 @@ async fn ensure_module(
             hot: None,
             kind: "css".into(),
             code: css,
-            map_data_url: None,
+            map_json: None,
             imports: Vec::new(),
             require_map: Vec::new(),
             css_exports: Vec::new(),
@@ -4703,7 +4711,7 @@ async fn ensure_module(
             hot: None,
             kind: String::new(),
             code,
-            map_data_url: None,
+            map_json: None,
             imports: Vec::new(),
             require_map: Vec::new(),
             css_exports: Vec::new(),
@@ -4878,7 +4886,7 @@ async fn ensure_module(
                 "export default {};\n",
                 serde_json::Value::String(clean.to_string())
             ),
-            map_data_url: None,
+            map_json: None,
             imports: Vec::new(),
             require_map: Vec::new(),
             css_exports: Vec::new(),
@@ -4949,7 +4957,7 @@ async fn ensure_module(
                 hot: None,
                 kind: String::new(),
                 code,
-                map_data_url: None,
+                map_json: None,
                 imports: Vec::new(),
                 require_map: Vec::new(),
                 css_exports: Vec::new(),
@@ -5006,7 +5014,7 @@ async fn ensure_module(
                 hot: None,
                 kind: "css".into(),
                 code: output.css,
-                map_data_url: None,
+                map_json: None,
                 imports: dep_imports,
                 require_map: Vec::new(),
                 css_exports: output.exports.unwrap_or_default(),
@@ -5218,7 +5226,7 @@ async fn ensure_module(
                 accepted_exports: h.accepted_exports,
             }),
             code: output.code,
-            map_data_url: output.map_data_url,
+            map_json: output.map_json,
             fs_allow: fs_allow_from(&output.imports),
             watch_files: Vec::new(),
             import_bindings: output.import_bindings,
@@ -5342,6 +5350,18 @@ impl MemoryCache {
         self.total = 0;
     }
 
+    /// (entries, accounted bytes, code bytes, map bytes) — the deterministic
+    /// footprint split behind /@oj/debug/mem.
+    fn stats(&self) -> (usize, usize, usize, usize) {
+        let mut code = 0;
+        let mut map = 0;
+        for e in self.map.values() {
+            code += e.module.code.len();
+            map += e.module.map_json.as_ref().map_or(0, String::len);
+        }
+        (self.map.len(), self.total, code, map)
+    }
+
     fn put(&mut self, url: &str, key: &str, module: &Arc<CachedModule>) {
         let bytes = module_weight(module) + url.len() + key.len() + MEMORY_ENTRY_OVERHEAD;
         self.seq += 1;
@@ -5395,7 +5415,7 @@ fn module_weight(module: &CachedModule) -> usize {
             .sum::<usize>()
     }
     module.code.len()
-        + module.map_data_url.as_ref().map_or(0, String::len)
+        + module.map_json.as_ref().map_or(0, String::len)
         + module.kind.len()
         + strs(&module.imports)
         + strs(&module.fs_allow)
@@ -6952,6 +6972,34 @@ fn debug_mem() -> bool {
         std::env::var("OJ_DEBUG_MEM").is_ok_and(|v| !v.is_empty() && v != "0")
     });
     *ON
+}
+
+/// Deterministic resident-byte split (OJ_DEBUG_MEM=1): the budgeted module
+/// cache and the served-dep store, so soaks measure retention without RSS
+/// noise (the footprint-honest-reporting lever).
+async fn debug_mem_stats(
+    headers: axum::http::HeaderMap,
+    State(state): State<Arc<ServerState>>,
+) -> Response {
+    if !debug_mem() {
+        return (axum::http::StatusCode::NOT_FOUND, "").into_response();
+    }
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return (axum::http::StatusCode::FORBIDDEN, "").into_response();
+    }
+    let (entries, total, code, map) = state.memory.lock().unwrap().stats();
+    let (pb_entries, pb_bytes) = pkg_bundle::debug_stats();
+    let (pr_entries, pr_bytes) = pkg_rolldown::debug_stats();
+    let (pkg_entries, pkg_bytes) = (pb_entries + pr_entries, pb_bytes + pr_bytes);
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({
+            "module_cache": { "entries": entries, "bytes": total, "code_bytes": code, "map_bytes": map },
+            "pkg_store_memory": { "entries": pkg_entries, "bytes": pkg_bytes },
+        })
+        .to_string(),
+    )
+        .into_response()
 }
 
 async fn debug_gc(headers: axum::http::HeaderMap) -> Response {

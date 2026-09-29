@@ -305,7 +305,10 @@ impl CompileOptions {
 #[derive(Debug)]
 pub struct CompileOutput {
     pub code: String,
-    pub map_data_url: Option<String>,
+    /// The sourcemap as RAW JSON; the data URL is built at serve time, as
+    /// Vite's genSourceMapUrl does per send. Raw JSON retains 25% fewer bytes
+    /// than base64 in every cache that holds the module.
+    pub map_json: Option<String>,
     pub imports: Vec<String>,
     pub dynamic_imports: Vec<String>,
     /// Per import (rewritten specifier), the binding names this module uses
@@ -335,10 +338,15 @@ pub struct HotAccept {
 
 impl CompileOutput {
     pub fn code_with_inline_map(&self) -> String {
-        match &self.map_data_url {
+        match self.map_data_url() {
             Some(url) => format!("{}\n//# sourceMappingURL={}\n", self.code, url),
             None => self.code.clone(),
         }
+    }
+
+    /// The inline `data:` form of [`CompileOutput::map_json`].
+    pub fn map_data_url(&self) -> Option<String> {
+        self.map_json.as_deref().map(map_json_to_data_url)
     }
 
     pub fn has_refresh_registrations(&self) -> bool {
@@ -583,17 +591,21 @@ pub fn compile_module_with_maps(
     let CodegenReturn { code, map, .. } =
         Codegen::new().with_options(codegen_options).build(&program);
 
-    let map_data_url = map.map(|oj_map| {
-        if input_maps.is_empty() {
-            oj_map.to_data_url()
+    let map_json = map.map(|oj_map| {
+        let mut json = if input_maps.is_empty() {
+            oj_map.to_json_string()
         } else {
-            compose_input_maps_data_url(&oj_map, input_maps)
-        }
+            compose_input_maps_json(&oj_map, input_maps)
+        };
+        // to_json_string over-reserves ~4x; this String is RETAINED per module
+        // in every cache, so excess capacity is resident memory.
+        json.shrink_to_fit();
+        json
     });
 
     Ok(CompileOutput {
         code,
-        map_data_url,
+        map_json,
         imports,
         dynamic_imports,
         import_bindings,
@@ -730,7 +742,17 @@ fn lex_hot_accept<'a>(
     Some(accept)
 }
 
-fn compose_input_maps_data_url(oj_map: &oxc_sourcemap::SourceMap, input_maps: &[String]) -> String {
+/// `data:application/json;base64,...` for a raw map JSON string (Vite's
+/// genSourceMapUrl, sourcemap.ts).
+pub fn map_json_to_data_url(json: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "data:application/json;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(json)
+    )
+}
+
+fn compose_input_maps_json(oj_map: &oxc_sourcemap::SourceMap, input_maps: &[String]) -> String {
     let mut acc = oj_map.to_json_string();
     for pm in input_maps.iter().rev() {
         let outer = match oxc_sourcemap::SourceMap::from_json_string(&acc) {
@@ -744,8 +766,8 @@ fn compose_input_maps_data_url(oj_map: &oxc_sourcemap::SourceMap, input_maps: &[
         acc = compose_two(&outer, &inner).to_json_string();
     }
     match oxc_sourcemap::SourceMap::from_json_string(&acc) {
-        Ok(m) => m.to_data_url(),
-        Err(_) => oj_map.to_data_url(),
+        Ok(m) => m.to_json_string(),
+        Err(_) => oj_map.to_json_string(),
     }
 }
 
@@ -948,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_input_maps_data_url_folds_and_degrades_gracefully() {
+    fn compose_input_maps_json_folds_and_degrades_gracefully() {
         use oxc_sourcemap::{SourceMap, SourceMapBuilder};
         let mut ib = SourceMapBuilder::default();
         let sid = ib.add_source_and_content("app.tsx", "let x = 1;");
@@ -968,16 +990,19 @@ mod tests {
             "folded map references the original source: {folded}"
         );
 
-        // The public entry point emits an inline JSON sourcemap data URL and never panics.
-        let url = compose_input_maps_data_url(&oj_map, &[plugin_map]);
+        // The composed map is raw JSON; the serve-time encoder turns it into
+        // the inline data URL (Vite's genSourceMapUrl split).
+        let json = compose_input_maps_json(&oj_map, &[plugin_map]);
+        assert!(json.trim_start().starts_with('{'), "raw JSON map: {json}");
+        let url = map_json_to_data_url(&json);
         assert!(
             url.starts_with("data:application/json") && url.contains("base64,"),
             "emits an inline data URL: {url}",
         );
 
         // Garbage input maps degrade to oj's own map rather than erroring.
-        let fallback = compose_input_maps_data_url(&oj_map, &["not json".to_string()]);
-        assert!(fallback.starts_with("data:application/json") && fallback.contains("base64,"));
+        let fallback = compose_input_maps_json(&oj_map, &["not json".to_string()]);
+        assert!(fallback.trim_start().starts_with('{'));
     }
 
     #[test]
@@ -1053,7 +1078,7 @@ import React from "react";
             "prod uses the automatic runtime:\n{}",
             out.code
         );
-        assert!(out.map_data_url.is_some());
+        assert!(out.map_json.is_some());
     }
 
     #[test]
@@ -1555,7 +1580,7 @@ export const used: A extends B ? number : number = c + d;
             None,
         )
         .unwrap();
-        assert!(no_map.map_data_url.is_none());
+        assert!(no_map.map_json.is_none());
         assert_eq!(no_map.code_with_inline_map(), no_map.code);
 
         let with_map = compile(
@@ -1564,7 +1589,7 @@ export const used: A extends B ? number : number = c + d;
             &CompileOptions::prod(),
         )
         .unwrap();
-        assert!(with_map.map_data_url.is_some());
+        assert!(with_map.map_json.is_some());
         assert!(with_map
             .code_with_inline_map()
             .contains("sourceMappingURL="));

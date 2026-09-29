@@ -59,6 +59,7 @@ oxc_syntax = "0.146.0"
 oxc_codegen = "0.146.0"
 oxc_diagnostics = "0.146.0"
 oxc_resolver = "11.24.2"
+base64 = "0.22"
 
 anyhow = "1.0.104"
 blake3 = "1.8.6"

@@ -6071,6 +6071,7 @@ dependencies = [
 name = "oj_compiler"
 version = "0.2.13"
 dependencies = [
+ "base64 0.22.1",
  "glob",
  "memchr",
  "oxc_allocator",

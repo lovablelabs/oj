@@ -29,7 +29,7 @@ pub fn entry_path(dir: &std::path::Path, key: &str) -> std::path::PathBuf {
 pub fn module(code: &str) -> CachedModule {
     CachedModule {
         code: code.to_string(),
-        map_data_url: Some("data:application/json;base64,e30=".into()),
+        map_json: Some("data:application/json;base64,e30=".into()),
         imports: vec!["/node_modules/react/index.js".into()],
         is_boundary: true,
         kind: "esm".into(),

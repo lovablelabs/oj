@@ -369,7 +369,7 @@ pub fn ssr_transform_module_with_map(
     opts: &crate::CompileOptions,
 ) -> Result<(String, Option<String>), crate::CompileError> {
     let compiled = crate::compile(path, source, opts)?;
-    Ok((ssr_transform(&compiled.code, path), compiled.map_data_url))
+    Ok((ssr_transform(&compiled.code, path), compiled.map_json))
 }
 
 fn resolve_local_symbol(scoping: &Scoping, s: &ExportSpecifier) -> Option<SymbolId> {
@@ -743,8 +743,10 @@ mod tests {
             ssr_transform_module_with_map(Path::new("c.ts"), src, &CompileOptions::dev()).unwrap();
         assert!(code.contains("__vite_ssr_import__"), "{code}");
         let map = map.expect("dev compile carries a source map");
+        // Raw JSON since the encode-at-serve split (Vite's genSourceMapUrl
+        // builds the data URL per send).
         assert!(
-            map.starts_with("data:application/json;charset=utf-8;base64,"),
+            map.trim_start().starts_with('{') && map.contains("\"mappings\""),
             "{map}"
         );
     }

@@ -65,7 +65,7 @@ fuzz_target!(|data: &[u8]| {
         for import in out.imports.iter().chain(out.dynamic_imports.iter()) {
             assert!(!import.contains('\n'), "specifier with a newline: {import:?}");
         }
-        if let Some(url) = &out.map_data_url {
+        if let Some(url) = &out.map_data_url() {
             assert!(url.starts_with("data:application/json;"), "{url}");
         }
         // Compilation is a pure function of its inputs.
