@@ -76,6 +76,28 @@ fn esnext_target_keeps_define_semantics() {
 }
 
 #[test]
+fn numeric_targets_derive_the_default_like_vite() {
+    // Verified against vite@8.3.0-beta.1 dev AND build: ES2022+ implies
+    // define semantics, ES2021 and below imply assignment semantics.
+    let out = compile_with(
+        "es2022",
+        &[(
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "target": "ES2022" } }"#,
+        )],
+    );
+    assert!(!out.contains("this.foo = 1"), "ES2022 implies define: {out}");
+    let out = compile_with(
+        "es2016",
+        &[(
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "target": "ES2016" } }"#,
+        )],
+    );
+    assert!(out.contains("this.foo = 1"), "ES2016 implies assignment: {out}");
+}
+
+#[test]
 fn no_tsconfig_keeps_define_semantics() {
     let out = compile_with("none", &[]);
     assert!(
