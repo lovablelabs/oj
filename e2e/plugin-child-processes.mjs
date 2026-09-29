@@ -5,8 +5,9 @@
 // trip works (the fork must SHARE upstream's ipc resource types — a second
 // copy makes deno_node's ops fail with "Bad resource ID"), a detached child
 // outlives restarts AND shutdown (never registered for the kill sweep), a
-// plain child dies across the self-restart exec, and Ctrl-C is forwarded to
-// own-group children (they no longer sit in the terminal's foreground group).
+// plain child dies across the self-restart exec, SIGINT and SIGHUP are
+// forwarded to own-group children (they no longer sit in the terminal's
+// foreground group), and a SYNC spawn stays in the caller's group.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -32,11 +33,19 @@ fs.writeFileSync(p("main.js"), "export const ok = 1;\n");
 fs.writeFileSync(p(".env"), "VITE_FOO=1\n");
 fs.writeFileSync(
   p("oj.plugins.mjs"),
-  `import { spawn } from "node:child_process";
+  `import { execSync, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 export default [{
   name: "test:children",
   configureServer() {
+    // A sync spawn must STAY in the caller's process group (re-grouping a
+    // blocking child risks SIGTTOU stops on an inherited terminal). The sh
+    // child reports its own pgid + pid and the server's pgid.
+    const [childPgid, childPid, serverPgid] = execSync(
+      \`ps -o pgid= -p $$; echo $$; ps -o pgid= -p \${process.pid}\`,
+    ).toString().split("\\n").map(Number);
+    writeFileSync(new URL("./sync.json", import.meta.url), JSON.stringify({ childPgid, childPid, serverPgid }));
+
     // IPC round trip (node from PATH: process.execPath here is the oj binary).
     const ipc = spawn("node", ["-e", "process.on('message', (m) => { process.send({ echo: m }); process.exit(0); })"], {
       stdio: ["ignore", "ignore", "ignore", "ipc"],
@@ -74,6 +83,7 @@ const reaped = (pid) => settles(() => !alive(pid), { timeoutMs: 15000 });
 
 let failed = false;
 let stderr = "";
+let srv2;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "ignore", "pipe"] });
 srv.stderr.on("data", (d) => (stderr += d));
 try {
@@ -89,6 +99,14 @@ try {
   const echoed = JSON.parse(fs.readFileSync(p("ipc.json"), "utf8"));
   must(echoed?.echo?.hello === "world", `IPC echo carried the wrong payload: ${JSON.stringify(echoed)}`);
   console.log("ipc round trip:     ok");
+
+  // Sync spawns keep the caller's group: never a group leader of their own.
+  const sync = JSON.parse(fs.readFileSync(p("sync.json"), "utf8"));
+  must(
+    sync.childPgid === sync.serverPgid && sync.childPgid !== sync.childPid,
+    `sync spawn left the caller's process group: ${JSON.stringify(sync)}`,
+  );
+  console.log("sync spawn group:   kept");
 
   const plainPid = Number(fs.readFileSync(p("plain.pid"), "utf8"));
   const detachedPid = Number(fs.readFileSync(p("detached.pid"), "utf8"));
@@ -116,6 +134,26 @@ try {
   must(alive(detachedPid), "detached child must outlive Ctrl-C");
   console.log("sigint forwarding:  ok");
 
+  // 4. SIGHUP: the same forwarding contract (own-group children left the
+  //    terminal session, so nothing dies with it implicitly).
+  try {
+    process.kill(Number(fs.readFileSync(p("detached.pid"), "utf8")), "SIGKILL");
+  } catch {}
+  srv2 = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "ignore", "pipe"] });
+  await waitUp(`http://localhost:${PORT}/`, { proc: srv2 });
+  await settles(() => {
+    try {
+      const pid = Number(fs.readFileSync(p("plain.pid"), "utf8"));
+      return pid !== plain2 && alive(pid);
+    } catch {
+      return false;
+    }
+  });
+  const plain3 = Number(fs.readFileSync(p("plain.pid"), "utf8"));
+  srv2.kill("SIGHUP");
+  must(await reaped(plain3), "plain child survived SIGHUP (signal not forwarded)");
+  console.log("sighup forwarding:  ok");
+
   try {
     process.kill(detachedPid, "SIGKILL");
   } catch {}
@@ -126,6 +164,9 @@ try {
 } finally {
   try {
     srv.kill("SIGKILL");
+  } catch {}
+  try {
+    srv2?.kill("SIGKILL");
   } catch {}
   for (const f of ["plain.pid", "detached.pid"]) {
     try {
