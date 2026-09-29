@@ -23,8 +23,9 @@ if (!installed) {
 }
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
-const must = (cond, msg) => { if (!cond) throw new Error(msg); };
-
+const must = (cond, msg) => {
+  if (!cond) throw new Error(msg);
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Retried, as in start.mjs: SIGKILLed servers orphan node children for a beat,
@@ -50,20 +51,32 @@ const gateConfig = path.join(app, "oj.config.json");
 async function reloadListener() {
   const ws = new WebSocket(`ws://localhost:${PORT}/@oj-start/hmr`);
   const reloads = [];
-  ws.addEventListener("message", (ev) => { if (String(ev.data) === "reload") reloads.push(Date.now()); });
-  await new Promise((resolve, reject) => { ws.addEventListener("open", resolve); ws.addEventListener("error", reject); });
-  return { reloads, close: async () => {
-    const closed = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Start HMR socket did not close without a reload")), 2000);
-      ws.addEventListener("close", (event) => {
-        clearTimeout(timer);
-        if (event.wasClean) resolve();
-        else reject(new Error("Start HMR socket closed without completing the close handshake"));
-      }, { once: true });
-    });
-    ws.close();
-    await closed;
-  } };
+  ws.addEventListener("message", (ev) => {
+    if (String(ev.data) === "reload") reloads.push(Date.now());
+  });
+  await new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve);
+    ws.addEventListener("error", reject);
+  });
+  return {
+    reloads,
+    close: async () => {
+      const closed = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Start HMR socket did not close without a reload")), 2000);
+        ws.addEventListener(
+          "close",
+          (event) => {
+            clearTimeout(timer);
+            if (event.wasClean) resolve();
+            else reject(new Error("Start HMR socket closed without completing the close handshake"));
+          },
+          { once: true },
+        );
+      });
+      ws.close();
+      await closed;
+    },
+  };
 }
 
 async function run(label, gated, check) {
@@ -99,7 +112,10 @@ async function run(label, gated, check) {
 //    flush releases exactly one reload.
 await run("gated", true, async (listener, log, touch) => {
   await settles(() => log().includes("reload held"), { touch });
-  must(log().includes("oj start: rebuilt, reload held"), `gated: the watcher should rebuild and hold the reload:\n${log().slice(-1200)}`);
+  must(
+    log().includes("oj start: rebuilt, reload held"),
+    `gated: the watcher should rebuild and hold the reload:\n${log().slice(-1200)}`,
+  );
   // Quiesce: a retouch issued just before the hold was seen may still be
   // rebuilding; wait until no new hold lands for 2s so the flush below
   // releases a settled gate.
@@ -111,15 +127,30 @@ await run("gated", true, async (listener, log, touch) => {
   await sleep(1500);
   must(listener.reloads.length === 0, `gated: a reload reached the page before the flush (${listener.reloads.length})`);
   const status = await (await fetch(`http://localhost:${PORT}/__hmr_gate`)).json();
-  must(status.enabled === true && status.heldReload === true && status.count >= 1, `gated: /__hmr_gate should report the held reload, got ${JSON.stringify(status)}`);
-  must(typeof status.startedAt === "number" && status.startedAt > 0, "gated: /__hmr_gate carries startedAt for the editor's restart detection");
+  must(
+    status.enabled === true && status.heldReload === true && status.count >= 1,
+    `gated: /__hmr_gate should report the held reload, got ${JSON.stringify(status)}`,
+  );
+  must(
+    typeof status.startedAt === "number" && status.startedAt > 0,
+    "gated: /__hmr_gate carries startedAt for the editor's restart detection",
+  );
   const flushed = await (await fetch(`http://localhost:${PORT}/__hmr_flush`, { method: "POST" })).json();
-  must(flushed.reload === true, `gated: the flush response should say a reload was released, got ${JSON.stringify(flushed)}`);
+  must(
+    flushed.reload === true,
+    `gated: the flush response should say a reload was released, got ${JSON.stringify(flushed)}`,
+  );
   const until = Date.now() + 10000;
   while (Date.now() < until && listener.reloads.length === 0) await sleep(100);
-  must(listener.reloads.length === 1, `gated: expected exactly one reload after the flush, got ${listener.reloads.length}`);
+  must(
+    listener.reloads.length === 1,
+    `gated: expected exactly one reload after the flush, got ${listener.reloads.length}`,
+  );
   const after = await (await fetch(`http://localhost:${PORT}/__hmr_gate`)).json();
-  must(after.heldReload === false && after.count === 0, `gated: the gate should be empty after the flush, got ${JSON.stringify(after)}`);
+  must(
+    after.heldReload === false && after.count === 0,
+    `gated: the gate should be empty after the flush, got ${JSON.stringify(after)}`,
+  );
   console.log("gated: rebuild held, status reported it, flush released one reload");
 });
 

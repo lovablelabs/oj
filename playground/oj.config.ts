@@ -1,7 +1,7 @@
 import { defineConfig } from "oj";
 export default defineConfig({
   virtualModules: {
-    "virtual:oj-info": "export const tool = \"oj\"; export default { version: 9 };",
+    "virtual:oj-info": 'export const tool = "oj"; export default { version: 9 };',
   },
   define: {
     __OJ_DEFINE_GLOBAL__: JSON.stringify("global-define"),

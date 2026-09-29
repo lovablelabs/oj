@@ -46,10 +46,7 @@ export class ErrorBoundary extends Component<
   static getDerivedStateFromError(e: unknown) {
     return { error: String((e as Error)?.message ?? e) };
   }
-  static getDerivedStateFromProps(
-    props: { resetKey: string },
-    state: { error: string | null; key: string },
-  ) {
+  static getDerivedStateFromProps(props: { resetKey: string }, state: { error: string | null; key: string }) {
     return props.resetKey !== state.key ? { error: null, key: props.resetKey } : null;
   }
   render() {

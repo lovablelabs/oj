@@ -4,7 +4,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { asset } from "./harness.mjs";
-import { detectSsrRunnerBacked, extractAlias, extractOptimizeDeps, extractProxy, extractResolve, extractSsr, mergeConfigLite, warnUnsupported } from "../../crates/oj_server/src/assets/vite-extract.mjs";
+import {
+  detectSsrRunnerBacked,
+  extractAlias,
+  extractOptimizeDeps,
+  extractProxy,
+  extractResolve,
+  extractSsr,
+  mergeConfigLite,
+  warnUnsupported,
+} from "../../crates/oj_server/src/assets/vite-extract.mjs";
 
 test("optimizeDeps carries needsInterop and force alongside the lists", () => {
   const out = extractOptimizeDeps({
@@ -14,7 +23,13 @@ test("optimizeDeps carries needsInterop and force alongside the lists", () => {
     force: true,
     esbuildOptions: { target: "es2020" },
   });
-  assert.deepEqual(out, { include: ["a", "pkg/*"], exclude: ["b"], needsInterop: ["cjs-ish"], force: true, esbuildOptions: { target: "es2020" } });
+  assert.deepEqual(out, {
+    include: ["a", "pkg/*"],
+    exclude: ["b"],
+    needsInterop: ["cjs-ish"],
+    force: true,
+    esbuildOptions: { target: "es2020" },
+  });
   assert.equal(extractOptimizeDeps({ force: "yes" }), null, "non-boolean force is ignored");
   assert.equal(extractOptimizeDeps(undefined), null);
 });
@@ -71,8 +86,15 @@ test("non-string replacements are ignored", () => {
 function captureStderr(fn) {
   const lines = [];
   const write = process.stderr.write;
-  process.stderr.write = (chunk) => { lines.push(String(chunk)); return true; };
-  try { fn(); } finally { process.stderr.write = write; }
+  process.stderr.write = (chunk) => {
+    lines.push(String(chunk));
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = write;
+  }
   return lines.join("");
 }
 
@@ -109,7 +131,6 @@ test("function-valued proxy options: the extracted entry drops them, but rewrite
   assert.match(err, /server\.proxy\["\/api"\]\.bypass is a function; applied by the plugin host proxy/);
 });
 
-
 test("Vite's own client aliases (@vite/env, @vite/client) are skipped without a warning", () => {
   let out;
   const stderr = captureStderr(() => {
@@ -134,11 +155,27 @@ test("warnUnsupported reports only options the user's config sets", () => {
     server: { cors: { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/ } },
     build: { terserOptions: {} },
   };
-  assert.notEqual(captureStderr(() => warnUnsupported(resolvedDefaults)), "", "the resolved shape would warn");
+  assert.notEqual(
+    captureStderr(() => warnUnsupported(resolvedDefaults)),
+    "",
+    "the resolved shape would warn",
+  );
   const rawUserConfig = { plugins: [], tanstackStart: { server: { entry: "server" } } };
-  assert.equal(captureStderr(() => warnUnsupported(rawUserConfig)), "");
-  assert.equal(captureStderr(() => warnUnsupported(null)), "");
-  const userSets = captureStderr(() => warnUnsupported({ worker: { format: "es" }, esbuild: { charset: "ascii" }, build: { terserOptions: { compress: true } } }));
+  assert.equal(
+    captureStderr(() => warnUnsupported(rawUserConfig)),
+    "",
+  );
+  assert.equal(
+    captureStderr(() => warnUnsupported(null)),
+    "",
+  );
+  const userSets = captureStderr(() =>
+    warnUnsupported({
+      worker: { format: "es" },
+      esbuild: { charset: "ascii" },
+      build: { terserOptions: { compress: true } },
+    }),
+  );
   assert.match(userSets, /worker config is not applied/);
   assert.match(userSets, /esbuild options charset are not applied/);
   assert.match(userSets, /build.terserOptions is not applied/);
@@ -157,10 +194,10 @@ test("warnUnsupported reports only options the user's config sets", () => {
 });
 
 test("resolve.externalConditions is extracted, top-level and through the ssr sugar", () => {
-  assert.deepEqual(
-    extractResolve({ conditions: ["custom"], externalConditions: ["custom-ext"] }),
-    { conditions: ["custom"], externalConditions: ["custom-ext"] },
-  );
+  assert.deepEqual(extractResolve({ conditions: ["custom"], externalConditions: ["custom-ext"] }), {
+    conditions: ["custom"],
+    externalConditions: ["custom-ext"],
+  });
 
   // Vite's `ssr.resolve` sugar carries it too.
   const viaSsr = extractSsr({ noExternal: ["dep"], resolve: { externalConditions: ["workerd-ext"] } });
@@ -215,9 +252,7 @@ test("detectSsrRunnerBacked: raw or config-hook environment declaration", async 
     name: "late",
     config: {
       handler: (conf) =>
-        conf.custom?.flag
-          ? { environments: { ssr: { dev: { createEnvironment: () => ({}) } } } }
-          : null,
+        conf.custom?.flag ? { environments: { ssr: { dev: { createEnvironment: () => ({}) } } } } : null,
     },
   };
   assert.equal(await detectSsrRunnerBacked({ plugins: [late, early] }), true);
@@ -243,7 +278,12 @@ test("detectSsrRunnerBacked: raw or config-hook environment declaration", async 
   assert.equal(await detectSsrRunnerBacked({ plugins: [checker] }), false);
 
   // A throwing config hook must not fail extraction nor mask other plugins.
-  const throwing = { name: "boom", config: () => { throw new Error("boom"); } };
+  const throwing = {
+    name: "boom",
+    config: () => {
+      throw new Error("boom");
+    },
+  };
   assert.equal(await detectSsrRunnerBacked({ plugins: [throwing, declaring] }), true);
   assert.equal(await detectSsrRunnerBacked({ plugins: [throwing] }), false);
 
@@ -277,9 +317,7 @@ test("detectSsrRunnerBacked: hook order is primary, enforce secondary (Vite getS
     name: "enforce-pre-plain-hook",
     enforce: "pre",
     config: (conf) =>
-      conf.custom?.first
-        ? { environments: { ssr: { dev: { createEnvironment: () => ({}) } } } }
-        : null,
+      conf.custom?.first ? { environments: { ssr: { dev: { createEnvironment: () => ({}) } } } } : null,
   };
   // The enforce-pre plugin sorts earlier by enforce, but its plain hook must
   // still run AFTER the order-pre hook — so it sees the marker and declares.
@@ -297,9 +335,7 @@ test("detectSsrRunnerBacked: hook order is primary, enforce secondary (Vite getS
     config: {
       order: "post",
       handler: (conf) =>
-        conf.probe?.ranFirst
-          ? null
-          : { environments: { ssr: { dev: { createEnvironment: () => ({}) } } } },
+        conf.probe?.ranFirst ? null : { environments: { ssr: { dev: { createEnvironment: () => ({}) } } } },
     },
   };
   // orderPre runs first, then the enforce-pre plain hook (probe NOT set since
@@ -314,8 +350,7 @@ test("detectSsrRunnerBacked: hook order is primary, enforce secondary (Vite getS
 test("detectSsrRunnerBacked: configEnvironment-declared factories are seen", async () => {
   const viaEnvHook = {
     name: "acme-workerd",
-    configEnvironment: (name) =>
-      name === "ssr" ? { dev: { createEnvironment: () => ({}) } } : null,
+    configEnvironment: (name) => (name === "ssr" ? { dev: { createEnvironment: () => ({}) } } : null),
   };
   assert.equal(await detectSsrRunnerBacked({ plugins: [viaEnvHook] }), true);
 
@@ -333,7 +368,12 @@ test("detectSsrRunnerBacked: configEnvironment-declared factories are seen", asy
     configEnvironment: () => ({ dev: { createEnvironment: () => ({}) } }),
   };
   assert.equal(await detectSsrRunnerBacked({ plugins: [skipped] }), false);
-  const throwing = { name: "boom-env", configEnvironment: () => { throw new Error("boom"); } };
+  const throwing = {
+    name: "boom-env",
+    configEnvironment: () => {
+      throw new Error("boom");
+    },
+  };
   assert.equal(await detectSsrRunnerBacked({ plugins: [throwing, viaEnvHook] }), true);
 
   // Under `command: "build"` with no ssr config there is no implicit ssr
@@ -343,10 +383,7 @@ test("detectSsrRunnerBacked: configEnvironment-declared factories are seen", asy
     configEnvironment: (name) => (name === "ssr" ? { dev: { createEnvironment: () => ({}) } } : null),
   };
   assert.equal(await detectSsrRunnerBacked({ plugins: [ssrOnly] }, { command: "build" }), false);
-  assert.equal(
-    await detectSsrRunnerBacked({ ssr: {}, plugins: [ssrOnly] }, { command: "build" }),
-    true,
-  );
+  assert.equal(await detectSsrRunnerBacked({ ssr: {}, plugins: [ssrOnly] }, { command: "build" }), true);
 });
 
 // A config hook that calls this.error() fails that plugin's evaluation the way
@@ -363,7 +400,10 @@ test("detectSsrRunnerBacked: this.error() in a config hook is a named failure, n
   let result;
   const lines = [];
   const write = process.stderr.write;
-  process.stderr.write = (chunk) => { lines.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => {
+    lines.push(String(chunk));
+    return true;
+  };
   try {
     result = await detectSsrRunnerBacked({ plugins: [erroring] });
   } finally {
@@ -379,14 +419,12 @@ test("detectSsrRunnerBacked: this.error() in a config hook is a named failure, n
 // noExternal|external a `true` on either side wins over lists instead of
 // concatenating into a nonsense array; environments.<name> restarts the path.
 test("mergeConfigLite: ssr/resolve noExternal|external true wins over lists", () => {
-  assert.deepEqual(
-    mergeConfigLite({ ssr: { noExternal: ["a"] } }, { ssr: { noExternal: true } }),
-    { ssr: { noExternal: true } },
-  );
-  assert.deepEqual(
-    mergeConfigLite({ ssr: { external: true } }, { ssr: { external: ["b"] } }),
-    { ssr: { external: true } },
-  );
+  assert.deepEqual(mergeConfigLite({ ssr: { noExternal: ["a"] } }, { ssr: { noExternal: true } }), {
+    ssr: { noExternal: true },
+  });
+  assert.deepEqual(mergeConfigLite({ ssr: { external: true } }, { ssr: { external: ["b"] } }), {
+    ssr: { external: true },
+  });
   assert.deepEqual(
     mergeConfigLite(
       { environments: { ssr: { resolve: { noExternal: true } } } },
@@ -395,10 +433,9 @@ test("mergeConfigLite: ssr/resolve noExternal|external true wins over lists", ()
     { environments: { ssr: { resolve: { noExternal: true } } } },
   );
   // Outside those paths, arrays still concatenate and scalars still replace.
-  assert.deepEqual(
-    mergeConfigLite({ ssr: { noExternal: ["a"] } }, { ssr: { noExternal: ["b"] } }),
-    { ssr: { noExternal: ["a", "b"] } },
-  );
+  assert.deepEqual(mergeConfigLite({ ssr: { noExternal: ["a"] } }, { ssr: { noExternal: ["b"] } }), {
+    ssr: { noExternal: ["a", "b"] },
+  });
   // ... and outside those paths the rule does NOT apply (as in Vite, where
   // the special case is keyed on the ssr/resolve rootPath): arrays concat.
   assert.deepEqual(mergeConfigLite({ other: { external: ["a"] } }, { other: { external: true } }), {
@@ -423,15 +460,13 @@ test("mergeConfigLite: non-plain objects like RegExps replace, never spread", ()
     "a Date replaces instead of merging into a plain object",
   );
   // An array side still concatenates a RegExp value, as in Vite.
-  assert.deepEqual(
-    mergeConfigLite({ other: { list: ["a"] } }, { other: { list: later } }),
-    { other: { list: ["a", later] } },
-  );
+  assert.deepEqual(mergeConfigLite({ other: { list: ["a"] } }, { other: { list: later } }), {
+    other: { list: ["a", later] },
+  });
   // Plain objects still merge recursively.
-  assert.deepEqual(
-    mergeConfigLite({ resolve: { dedupe: ["a"] } }, { resolve: { conditions: ["c"] } }),
-    { resolve: { dedupe: ["a"], conditions: ["c"] } },
-  );
+  assert.deepEqual(mergeConfigLite({ resolve: { dedupe: ["a"] } }, { resolve: { conditions: ["c"] } }), {
+    resolve: { dedupe: ["a"], conditions: ["c"] },
+  });
 });
 
 // The twins ship in two self-contained assets; drift between them is a bug
@@ -489,10 +524,7 @@ test("NODE_ENV-rule and externalizeDepsPlugin twins are byte-identical across th
       /\nfunction injectFileScopeVariablesRolldownPlugin\(\) \{\n[\s\S]*?\n\}\n/,
       "injectFileScopeVariablesRolldownPlugin",
     ],
-    [
-      /\nasync function bundleViteConfigFile\(configPath, appRoot\) \{\n[\s\S]*?\n\}\n/,
-      "bundleViteConfigFile",
-    ],
+    [/\nasync function bundleViteConfigFile\(configPath, appRoot\) \{\n[\s\S]*?\n\}\n/, "bundleViteConfigFile"],
   ]) {
     assert.equal(
       block("vite-extract.mjs", re, what),

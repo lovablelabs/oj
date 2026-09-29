@@ -39,7 +39,10 @@ try {
   if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(nm, "@esbuild"));
 
   // Normal node_modules dep (real dir) -> should be pre-bundled.
-  fs.writeFileSync(path.join(nm, "norm-lib", "package.json"), '{"name":"norm-lib","version":"1.0.0","main":"index.js"}');
+  fs.writeFileSync(
+    path.join(nm, "norm-lib", "package.json"),
+    '{"name":"norm-lib","version":"1.0.0","main":"index.js"}',
+  );
   fs.writeFileSync(path.join(nm, "norm-lib", "index.js"), 'module.exports = { hi: function () { return "norm"; } };\n');
   // Workspace package symlinked into node_modules -> should be skipped.
   fs.writeFileSync(path.join(linkSrc, "package.json"), '{"name":"link-lib","version":"1.0.0","module":"index.js"}');
@@ -56,7 +59,10 @@ try {
     'import { hi as h1 } from "norm-lib";\nimport { hi as h2 } from "link-lib";\nwindow.__R = h1() + h2();\n',
   );
 
-  server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" } });
+  server = spawn(oj, ["dev", app, "--port", String(port)], {
+    stdio: "ignore",
+    env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" },
+  });
   await waitUp(`http://localhost:${port}/`);
   // let the optimizer settle
   await new Promise((r) => setTimeout(r, 800));
@@ -66,7 +72,8 @@ try {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const meta = manifest.metadata || {};
   if (!("norm-lib" in meta)) throw new Error(`normal dep should be pre-bundled; manifest: ${JSON.stringify(meta)}`);
-  if ("link-lib" in meta) throw new Error(`linked/workspace dep must NOT be pre-bundled; manifest: ${JSON.stringify(meta)}`);
+  if ("link-lib" in meta)
+    throw new Error(`linked/workspace dep must NOT be pre-bundled; manifest: ${JSON.stringify(meta)}`);
   console.log("norm-lib pre-bundled:  yes");
   console.log("link-lib skipped:      yes (served as workspace source)");
   console.log("\nLINKED-DEP SKIP VERIFIED");

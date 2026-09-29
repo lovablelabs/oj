@@ -49,7 +49,10 @@ export default [{
 }];\n`,
 );
 
-const events = () => (fs.existsSync(path.join(marks, "events")) ? fs.readFileSync(path.join(marks, "events"), "utf8").trim().split("\n") : []);
+const events = () =>
+  fs.existsSync(path.join(marks, "events"))
+    ? fs.readFileSync(path.join(marks, "events"), "utf8").trim().split("\n")
+    : [];
 
 let failed = false;
 let stderr = "";
@@ -69,12 +72,18 @@ try {
 
   fs.rmSync(path.join(app, "src", "gone.js"));
   await settles(() => events().some((e) => e.startsWith("hotUpdate:gone.js")));
-  assert.ok(events().includes("hotUpdate:gone.js:delete"), `a removed file reaches hotUpdate with type delete:\n${events().join("\n")}`);
+  assert.ok(
+    events().includes("hotUpdate:gone.js:delete"),
+    `a removed file reaches hotUpdate with type delete:\n${events().join("\n")}`,
+  );
   assert.ok(events().includes("watchChange:gone.js:delete"), `watchChange sees delete:\n${events().join("\n")}`);
 
   fs.writeFileSync(path.join(app, "src", "fresh.js"), `export const F = "f";\n`);
   await settles(() => events().some((e) => e.startsWith("hotUpdate:fresh.js")));
-  assert.ok(events().includes("hotUpdate:fresh.js:create"), `a new file reaches hotUpdate with type create:\n${events().join("\n")}`);
+  assert.ok(
+    events().includes("hotUpdate:fresh.js:create"),
+    `a new file reaches hotUpdate with type create:\n${events().join("\n")}`,
+  );
   assert.ok(events().includes("watchChange:fresh.js:create"), `watchChange sees create:\n${events().join("\n")}`);
 
   // A throwing hotUpdate: logged on the server and delivered to the client as
@@ -88,8 +97,15 @@ try {
     const timer = setTimeout(() => rej(new Error("no error frame after the throwing hotUpdate")), 8000);
     ws.addEventListener("message", (e) => {
       let m;
-      try { m = JSON.parse(e.data); } catch { return; }
-      if (m.type === "error") { clearTimeout(timer); res(m); }
+      try {
+        m = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      if (m.type === "error") {
+        clearTimeout(timer);
+        res(m);
+      }
     });
   });
   fs.writeFileSync(path.join(app, "src", "boom.js"), `export const B = 1;\n`);

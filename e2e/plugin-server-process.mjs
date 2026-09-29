@@ -74,11 +74,14 @@ try {
 
   // 1. the listening contract: emitted, real port, self-dial connects.
   let probe = null;
-  await settles(async () => {
-    const res = await fetch(`http://localhost:${port}/__probe-result`);
-    probe = await res.json();
-    return probe.listening && (probe.fetchStatus !== null || probe.fetchError !== null);
-  }, { pollMs: 200 });
+  await settles(
+    async () => {
+      const res = await fetch(`http://localhost:${port}/__probe-result`);
+      probe = await res.json();
+      return probe.listening && (probe.fetchStatus !== null || probe.fetchError !== null);
+    },
+    { pollMs: 200 },
+  );
   assert.equal(probe.addressAtConfigure, null, "address() must be null before the socket is bound (Vite parity)");
   assert.equal(probe.urlsAtConfigure, null, "resolvedUrls is null until listen (Vite parity)");
   assert.equal(probe.listening, true, `"listening" never fired: ${JSON.stringify(probe)}`);

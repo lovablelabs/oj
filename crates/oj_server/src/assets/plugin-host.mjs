@@ -67,10 +67,7 @@ function mergeConfigLite(defaults, overrides, rootPath = "") {
     }
     if (existing == null) merged[key] = value;
     else if (Array.isArray(existing) || Array.isArray(value)) {
-      merged[key] = [
-        ...(Array.isArray(existing) ? existing : [existing]),
-        ...(Array.isArray(value) ? value : [value]),
-      ];
+      merged[key] = [...(Array.isArray(existing) ? existing : [existing]), ...(Array.isArray(value) ? value : [value])];
     } else if (isPlainObject(existing) && isPlainObject(value)) {
       // As in Vite: an `environments.<name>` node restarts path tracking, so
       // `environments.ssr.resolve.noExternal` merges like `resolve.noExternal`.
@@ -153,9 +150,7 @@ if (ojEngineBoot) {
       // The host still boots (the shadow anchors cwd() readers), but relative
       // fs stays wherever the process was; say so instead of failing quietly.
       try {
-        process.stderr.write(
-          `${OJ} plugin host: could not chdir to ${configRoot}: ${e?.message ?? e}\n`
-        );
+        process.stderr.write(`${OJ} plugin host: could not chdir to ${configRoot}: ${e?.message ?? e}\n`);
       } catch {}
     }
   }
@@ -284,7 +279,9 @@ function coerceBundledDevOff(cfg) {
   }
   if (flipped && !_bundledDevWarned) {
     _bundledDevWarned = true;
-    process.stderr.write(`${OJ}: experimental.bundledDev is not supported; using the standard dev client entry instead\n`);
+    process.stderr.write(
+      `${OJ}: experimental.bundledDev is not supported; using the standard dev client entry instead\n`,
+    );
   }
   return flipped;
 }
@@ -388,9 +385,7 @@ function makeCreateResolver(config) {
       let spec = id.split("?", 1)[0];
       if (spec.startsWith("\0") || spec.startsWith("/@")) return undefined;
       spec = applyAlias(spec, entries);
-      const baseDir = importer
-        ? dirname(importer.startsWith("file://") ? fileURLToPath(importer) : importer)
-        : root;
+      const baseDir = importer ? dirname(importer.startsWith("file://") ? fileURLToPath(importer) : importer) : root;
       if (spec.startsWith(".")) return probeFile(pathResolve(baseDir, spec), exts) ?? undefined;
       if (isAbsolute(spec)) return probeFile(spec, exts) ?? undefined;
       try {
@@ -432,7 +427,6 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
   }
 }
 
-
 // Vite's resolved `server` also guarantees these scalars
 // (_serverConfigDefaults, server/index.ts): plugins read them exactly the
 // way they read fs.allow. Present values always win — including the REAL
@@ -467,7 +461,9 @@ function fillResolvedServerScalars(server) {
   const corsDefault = { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/ };
   server.cors = isPlain(server.cors)
     ? { ...corsDefault, ...server.cors }
-    : (server.cors === undefined ? corsDefault : server.cors);
+    : server.cors === undefined
+      ? corsDefault
+      : server.cors;
   if (server.sourcemapIgnoreList === false) server.sourcemapIgnoreList = () => false;
   else if (server.sourcemapIgnoreList === undefined) {
     server.sourcemapIgnoreList = (id) => id.includes("node_modules");
@@ -511,7 +507,10 @@ function fillResolvedServerScalars(server) {
   if (rawAdditionalHosts && Array.isArray(server.allowedHosts) && !/[\\"']/.test(rawAdditionalHosts)) {
     server.allowedHosts = [
       ...server.allowedHosts,
-      ...rawAdditionalHosts.split(",").map((h) => h.trim()).filter(Boolean),
+      ...rawAdditionalHosts
+        .split(",")
+        .map((h) => h.trim())
+        .filter(Boolean),
     ];
   }
   // Vite strips a single trailing slash off a user `origin`.
@@ -631,8 +630,13 @@ function withResolvedDefaults(config) {
       strict: rawFs.strict === undefined ? true : rawFs.strict,
       // Vite's normalizePath backslash-replaces on Windows only; POSIX
       // filenames may legally contain one.
-      allow: allow.map((d) => (process.platform === "win32" ? pathResolve(cacheRoot, d).replace(/\\/g, "/") : pathResolve(cacheRoot, d))),
-      deny: rawFs.deny === undefined ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"] : rawFs.deny,
+      allow: allow.map((d) =>
+        process.platform === "win32" ? pathResolve(cacheRoot, d).replace(/\\/g, "/") : pathResolve(cacheRoot, d),
+      ),
+      deny:
+        rawFs.deny === undefined
+          ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"]
+          : rawFs.deny,
     };
     fillResolvedServerScalars(merged.server);
   }
@@ -641,8 +645,13 @@ function withResolvedDefaults(config) {
   if (!merged.logger || typeof merged.logger.info !== "function") {
     const w = (...a) => process.stderr.write(a.map(String).join(" ") + "\n");
     merged.logger = {
-      info: () => {}, warn: w, warnOnce: w, error: w,
-      clearScreen: () => {}, hasErrorLogged: () => false, hasWarned: false,
+      info: () => {},
+      warn: w,
+      warnOnce: w,
+      error: w,
+      clearScreen: () => {},
+      hasErrorLogged: () => false,
+      hasWarned: false,
     };
   }
   return merged;
@@ -659,8 +668,7 @@ const environment = {
 // Vite tags each environment's resolved config with a `consumer` ("client" or
 // "server"); plugins like @vitejs/plugin-react read `env.config.consumer`
 // directly in applyToEnvironment, so it must be present or they throw.
-environment.config.consumer =
-  environment.config.consumer ?? (envName === "client" ? "client" : "server");
+environment.config.consumer = environment.config.consumer ?? (envName === "client" ? "client" : "server");
 // Vite's DevEnvironment carries `transformRequest`, which runs the module
 // pipeline for one id. oj otherwise stubs it, but a plugin's transform can
 // depend on it: TanStack Start's server-fn compiler, in dev, calls
@@ -762,7 +770,9 @@ async function loadUserResolvedViteConfig() {
     );
     return rc && typeof rc === "object" ? rc : null;
   } catch (e) {
-    process.stderr.write(`${OJ} plugin host: vite.resolveConfig failed, using synthesized config: ${(e && e.message) || e}\n`);
+    process.stderr.write(
+      `${OJ} plugin host: vite.resolveConfig failed, using synthesized config: ${(e && e.message) || e}\n`,
+    );
     return null;
   } finally {
     // A throwing resolveConfig may leave the unset behind; the fallback paths
@@ -988,9 +998,13 @@ async function bundleViteConfigFile(configPath, appRoot) {
   } catch {}
   // The bundlers are vite's dependencies, not usually the app's own.
   const resolveSpec = (spec) => {
-    try { return req.resolve(spec); } catch {}
+    try {
+      return req.resolve(spec);
+    } catch {}
     if (vitePkgDir) {
-      try { return req.resolve(spec, { paths: [vitePkgDir] }); } catch {}
+      try {
+        return req.resolve(spec, { paths: [vitePkgDir] });
+      } catch {}
     }
     return null;
   };
@@ -1071,11 +1085,7 @@ async function loadViteConfig(configPath) {
     // fallback bundler is missing, buries it under a bundler error ("Cannot
     // find module 'esbuild'", #215) -- so propagate it instead, as Vite's
     // loadConfigFromFile itself rethrows.
-    const loaded = await vite.loadConfigFromFile(
-      { command: env.command, mode: env.mode },
-      configPath,
-      appRoot,
-    );
+    const loaded = await vite.loadConfigFromFile({ command: env.command, mode: env.mode }, configPath, appRoot);
     if (loaded && loaded.config) return loaded.config;
   }
   let mod;
@@ -1097,7 +1107,9 @@ async function loadViteConfig(configPath) {
     try {
       mod = await import(pathToFileURL(out).href);
     } finally {
-      try { unlinkSync(out); } catch {}
+      try {
+        unlinkSync(out);
+      } catch {}
     }
   } else {
     mod = await import(pathToFileURL(configPath).href);
@@ -1385,12 +1397,16 @@ const ctx = {
     const ambient = (this && this._resolveSkipCalls) || null;
     let skipCalls = ambient;
     if (!options || options.skipSelf !== false) {
-      const prior = ambient ? ambient.findIndex((c) => c.id === source && c.importer === importer && c.plugin === self) : -1;
+      const prior = ambient
+        ? ambient.findIndex((c) => c.id === source && c.importer === importer && c.plugin === self)
+        : -1;
       if (prior !== -1) {
         skipCalls = ambient.slice();
         skipCalls[prior] = { ...skipCalls[prior], called: true };
       } else if (self) {
-        skipCalls = ambient ? [...ambient, { id: source, importer, plugin: self }] : [{ id: source, importer, plugin: self }];
+        skipCalls = ambient
+          ? [...ambient, { id: source, importer, plugin: self }]
+          : [{ id: source, importer, plugin: self }];
       }
     }
     const viaPlugin = await resolveIdFull(source, importer, {
@@ -1501,7 +1517,6 @@ function resolveHookCtx(p, skipCalls) {
   return Object.create(base, { _resolveSkipCalls: { value: skipCalls } });
 }
 
-
 let pluginConfigDelta = {};
 async function runConfigHooks() {
   userResolvedViteConfig = await loadUserResolvedViteConfig();
@@ -1573,7 +1588,9 @@ async function runConfigHooks() {
           if (r) config.environments[name] = mergeConfigLite(config.environments[name], r);
         } catch (e) {
           if (!ojStartMode) throw e;
-          process.stderr.write(`${OJ} plugin host: configEnvironment(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
+          process.stderr.write(
+            `${OJ} plugin host: configEnvironment(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`,
+          );
         }
       }
     }
@@ -1719,7 +1736,8 @@ function createModuleGraph() {
     getModuleById: (id) => (id == null || !knownModuleId(String(id)) ? undefined : moduleNode(String(id))),
     getModuleByUrl: async (url) => (url == null || !knownModuleId(String(url)) ? undefined : moduleNode(String(url))),
     getModulesByFile: (file) =>
-      fileToModulesMap.get(String(file)) ?? (knownModuleId(String(file)) ? new Set([moduleNode(String(file))]) : undefined),
+      fileToModulesMap.get(String(file)) ??
+      (knownModuleId(String(file)) ? new Set([moduleNode(String(file))]) : undefined),
     // Vite creates the node on demand here (used by plugins that pre-seed urls).
     ensureEntryFromUrl: async (url) => moduleNode(String(url)),
     invalidateModule(mod) {
@@ -1861,12 +1879,7 @@ async function ojEmitListening(server) {
 }
 
 // Vite's constants.ts loopbackHosts / wildcardHosts.
-const OJ_LOOPBACK_HOSTS = new Set([
-  "localhost",
-  "127.0.0.1",
-  "::1",
-  "0000:0000:0000:0000:0000:0000:0000:0001",
-]);
+const OJ_LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0000:0000:0000:0000:0000:0000:0000:0001"]);
 const OJ_WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "0000:0000:0000:0000:0000:0000:0000:0000"]);
 
 // Vite's utils.ts resolveHostname, minus the async localhost-vs-DNS probe
@@ -1962,7 +1975,12 @@ async function buildEnvironments(server) {
     // in configureServer, and the two agree because both resolve from `root`.
     hostPhase("cf: resolveConfig begin");
     initStage("cf:resolveConfig");
-    rc = await vite.resolveConfig({ root, configFile: undefined, mode: environment.mode }, "serve", "development", "development");
+    rc = await vite.resolveConfig(
+      { root, configFile: undefined, mode: environment.mode },
+      "serve",
+      "development",
+      "development",
+    );
     hostPhase("cf: resolveConfig done");
     initStage("cf:resolveConfig-done");
     // The fresh resolve reads the app's vite.config again, so bundledDev is back
@@ -1990,30 +2008,32 @@ async function buildEnvironments(server) {
   }
   const environments = {};
   // Vite's createServer creates and inits every environment in parallel.
-  await Promise.all(Object.entries(rc.environments || {}).map(async ([name, envOpts]) => {
-    let ei;
-    try {
-      const factory = envOpts && envOpts.dev && envOpts.dev.createEnvironment;
-      ei = factory
-        ? await factory(name, rc, { ws: server.ws })
-        : new vite.DevEnvironment(name, rc, { hot: true, transport: server.ws });
-      hostPhase(`cf: createEnvironment(${name}) done`);
-      initStage(`cf:createEnvironment:${name}`);
-    } catch (e) {
-      process.stderr.write(`${OJ} plugin host: createEnvironment(${name}) failed: ${(e && e.message) || e}\n`);
-      return;
-    }
-    environments[name] = ei;
-    try {
-      if (ei && typeof ei.init === "function") {
-        await ei.init({ watcher: server.watcher });
-        hostPhase(`cf: init(${name}) done`);
-        initStage(`cf:init:${name}`);
+  await Promise.all(
+    Object.entries(rc.environments || {}).map(async ([name, envOpts]) => {
+      let ei;
+      try {
+        const factory = envOpts && envOpts.dev && envOpts.dev.createEnvironment;
+        ei = factory
+          ? await factory(name, rc, { ws: server.ws })
+          : new vite.DevEnvironment(name, rc, { hot: true, transport: server.ws });
+        hostPhase(`cf: createEnvironment(${name}) done`);
+        initStage(`cf:createEnvironment:${name}`);
+      } catch (e) {
+        process.stderr.write(`${OJ} plugin host: createEnvironment(${name}) failed: ${(e && e.message) || e}\n`);
+        return;
       }
-    } catch (e) {
-      process.stderr.write(`${OJ} plugin host: env.init(${name}) failed: ${(e && e.message) || e}\n`);
-    }
-  }));
+      environments[name] = ei;
+      try {
+        if (ei && typeof ei.init === "function") {
+          await ei.init({ watcher: server.watcher });
+          hostPhase(`cf: init(${name}) done`);
+          initStage(`cf:init:${name}`);
+        }
+      } catch (e) {
+        process.stderr.write(`${OJ} plugin host: env.init(${name}) failed: ${(e && e.message) || e}\n`);
+      }
+    }),
+  );
   return environments;
 }
 
@@ -2100,7 +2120,9 @@ function resyncEnvironments(environments) {
   lastProcessedChange.clear();
   for (const env of Object.values(environments || {})) {
     if (!env || env.__ojStub) continue;
-    try { env.moduleGraph?.invalidateAll?.(); } catch {}
+    try {
+      env.moduleGraph?.invalidateAll?.();
+    } catch {}
     hotSend(env, { type: "full-reload", path: "*" });
   }
 }
@@ -2119,7 +2141,9 @@ async function invalidateEnvironments(environments, watcher, changes) {
     })
     .filter(freshChange);
   for (const { file, type } of normalized) {
-    try { watcher.emit(WATCHER_EVENT[type], file); } catch {}
+    try {
+      watcher.emit(WATCHER_EVENT[type], file);
+    } catch {}
   }
   if (!environments) return;
   const timestamp = Date.now();
@@ -2162,7 +2186,6 @@ function prepareErrorPayload(err) {
   };
 }
 
-
 function hotSend(env, payload) {
   try {
     if (env.hot && typeof env.hot.send === "function") env.hot.send(payload);
@@ -2178,7 +2201,9 @@ function sortedHotUpdatePlugins(env) {
   let sorted = sortedHotUpdateCache.get(env);
   if (sorted) return sorted;
   sorted = [];
-  let pre = 0, normal = 0, post = 0;
+  let pre = 0,
+    normal = 0,
+    post = 0;
   for (const plugin of env.plugins ?? []) {
     const hook = plugin && (plugin.hotUpdate ?? plugin.handleHotUpdate);
     if (!hook) continue;
@@ -2277,14 +2302,16 @@ function updateModules(env, file, modules, timestamp) {
       needFullReload = true;
       continue;
     }
-    updates.push(...boundaries.map(({ boundary, acceptedVia, isWithinCircularImport }) => ({
-      type: `${boundary.type ?? "js"}-update`,
-      timestamp,
-      path: normalizeHmrUrl(boundary.url),
-      acceptedPath: normalizeHmrUrl(acceptedVia.url),
-      explicitImportRequired: (boundary.type ?? "js") === "js" ? isExplicitImportRequired(acceptedVia.url) : false,
-      isWithinCircularImport,
-    })));
+    updates.push(
+      ...boundaries.map(({ boundary, acceptedVia, isWithinCircularImport }) => ({
+        type: `${boundary.type ?? "js"}-update`,
+        timestamp,
+        path: normalizeHmrUrl(boundary.url),
+        acceptedPath: normalizeHmrUrl(acceptedVia.url),
+        explicitImportRequired: (boundary.type ?? "js") === "js" ? isExplicitImportRequired(acceptedVia.url) : false,
+        isWithinCircularImport,
+      })),
+    );
   }
   const isClientHtmlChange = file.endsWith(".html") && env.name === "client" && modules.every((m) => m.type !== "js");
   if (needFullReload || isClientHtmlChange) {
@@ -2304,25 +2331,39 @@ function propagateUpdate(node, traversedModules, boundaries, currentChain = [nod
   // Not analyzed yet (never transformed): nothing imported it, stop quietly.
   if (node.id && node.isSelfAccepting === undefined) return false;
   if (node.isSelfAccepting) {
-    boundaries.push({ boundary: node, acceptedVia: node, isWithinCircularImport: isNodeWithinCircularImports(node, currentChain) });
+    boundaries.push({
+      boundary: node,
+      acceptedVia: node,
+      isWithinCircularImport: isNodeWithinCircularImports(node, currentChain),
+    });
     return false;
   }
   if (node.acceptedHmrExports) {
-    boundaries.push({ boundary: node, acceptedVia: node, isWithinCircularImport: isNodeWithinCircularImports(node, currentChain) });
+    boundaries.push({
+      boundary: node,
+      acceptedVia: node,
+      isWithinCircularImport: isNodeWithinCircularImports(node, currentChain),
+    });
   } else if (!node.importers || !node.importers.size) {
     return true;
   }
   for (const importer of node.importers) {
     const subChain = currentChain.concat(importer);
     if (importer.acceptedHmrDeps && importer.acceptedHmrDeps.has(node)) {
-      boundaries.push({ boundary: importer, acceptedVia: node, isWithinCircularImport: isNodeWithinCircularImports(importer, subChain) });
+      boundaries.push({
+        boundary: importer,
+        acceptedVia: node,
+        isWithinCircularImport: isNodeWithinCircularImports(importer, subChain),
+      });
       continue;
     }
     if (node.id && node.acceptedHmrExports && importer.importedBindings) {
       const importedBindingsFromNode = importer.importedBindings.get(node.id);
-      if (importedBindingsFromNode && areAllImportsAccepted(importedBindingsFromNode, node.acceptedHmrExports)) continue;
+      if (importedBindingsFromNode && areAllImportsAccepted(importedBindingsFromNode, node.acceptedHmrExports))
+        continue;
     }
-    if (!currentChain.includes(importer) && propagateUpdate(importer, traversedModules, boundaries, subChain)) return true;
+    if (!currentChain.includes(importer) && propagateUpdate(importer, traversedModules, boundaries, subChain))
+      return true;
   }
   return false;
 }
@@ -2336,7 +2377,8 @@ function isNodeWithinCircularImports(node, nodeChain, currentChain = [node], tra
     if (importer === node) continue;
     if (nodeChain.includes(importer)) return true;
     if (!currentChain.includes(importer)) {
-      if (isNodeWithinCircularImports(importer, nodeChain, currentChain.concat(importer), traversedModules)) return true;
+      if (isNodeWithinCircularImports(importer, nodeChain, currentChain.concat(importer), traversedModules))
+        return true;
     }
   }
   return false;
@@ -2376,7 +2418,9 @@ function stubHttpServer() {
   const host = typeof srvCfg.host === "string" && srvCfg.host !== "localhost" ? srvCfg.host : "127.0.0.1";
   const s = new EventEmitter();
   let listening = false;
-  s.on("listening", () => { listening = true; });
+  s.on("listening", () => {
+    listening = true;
+  });
   // `upgrade` listeners are held (in registration order, prepend honored) and
   // replayed onto the real middleware server once it exists: Vite's shared
   // httpServer semantics for tunnel-style plugins.
@@ -2385,9 +2429,12 @@ function stubHttpServer() {
   const wrap = (method) => {
     const orig = s[method].bind(s);
     s[method] = (event, cb) => {
-      if (event === "listening" && listening) { cb(); return s; }
+      if (event === "listening" && listening) {
+        cb();
+        return s;
+      }
       if (event === "upgrade") {
-        if (s._upgradeTarget) return s._upgradeTarget[method === "once" ? "once" : "on"](event, cb), s;
+        if (s._upgradeTarget) return (s._upgradeTarget[method === "once" ? "once" : "on"](event, cb), s);
         s._upgradeListeners.push([method === "once" ? "once" : "on", cb]);
         return s;
       }
@@ -2401,7 +2448,7 @@ function stubHttpServer() {
     const origPrepend = s.prependListener.bind(s);
     s.prependListener = (event, cb) => {
       if (event === "upgrade") {
-        if (s._upgradeTarget) return s._upgradeTarget.prependListener(event, cb), s;
+        if (s._upgradeTarget) return (s._upgradeTarget.prependListener(event, cb), s);
         s._upgradeListeners.unshift(["on", cb]);
         return s;
       }
@@ -2410,7 +2457,7 @@ function stubHttpServer() {
     const origRemove = s.removeListener.bind(s);
     const remove = (event, cb) => {
       if (event === "upgrade") {
-        if (s._upgradeTarget) return s._upgradeTarget.removeListener(event, cb), s;
+        if (s._upgradeTarget) return (s._upgradeTarget.removeListener(event, cb), s);
         const i = s._upgradeListeners.findIndex(([, fn]) => fn === cb);
         if (i !== -1) s._upgradeListeners.splice(i, 1);
         return s;
@@ -2433,7 +2480,10 @@ function stubHttpServer() {
     return { address, family: address.includes(":") ? "IPv6" : "IPv4", port: bound };
   };
   s.listen = () => s;
-  s.close = (cb) => { if (typeof cb === "function") cb(); return s; };
+  s.close = (cb) => {
+    if (typeof cb === "function") cb();
+    return s;
+  };
   Object.defineProperty(s, "listening", { get: () => listening });
   return s;
 }
@@ -2445,9 +2495,7 @@ function stubHttpServer() {
 function stubEnvironment(name, server) {
   const isClient = name === "client";
   const base = resolvedConfig ?? {};
-  const config = isClient
-    ? base
-    : withResolvedDefaults(mergeConfigLite(base, (base.environments ?? {})[name] ?? {}));
+  const config = isClient ? base : withResolvedDefaults(mergeConfigLite(base, (base.environments ?? {})[name] ?? {}));
   // Vite tags each environment's config with its consumer; the merge above
   // inherits the host environment's tag, so set it per environment.
   if (isClient) config.consumer = config.consumer ?? "client";
@@ -2496,20 +2544,30 @@ function doesProxyContextMatchUrl(context, url) {
 function pipeTarget(target) {
   if (target instanceof URL) return target;
   if (typeof target === "string") {
-    try { return new URL(target); } catch { return null; }
+    try {
+      return new URL(target);
+    } catch {
+      return null;
+    }
   }
   if (target && typeof target === "object") {
     if (typeof target.href === "string") {
-      try { return new URL(target.href); } catch {}
+      try {
+        return new URL(target.href);
+      } catch {}
     }
     let protocol = typeof target.protocol === "string" && target.protocol ? target.protocol : "http:";
     if (!protocol.endsWith(":")) protocol += ":";
     const hostOnly = typeof target.host === "string" ? target.host.split(":") : [];
     const hostname = target.hostname || hostOnly[0] || "";
     if (!hostname) return null;
-    const port = target.port != null ? String(target.port) : (hostOnly[1] || "");
+    const port = target.port != null ? String(target.port) : hostOnly[1] || "";
     const pathname = target.pathname || target.path || "";
-    try { return new URL(`${protocol}//${hostname}${port ? ":" + port : ""}${pathname}`); } catch { return null; }
+    try {
+      return new URL(`${protocol}//${hostname}${port ? ":" + port : ""}${pathname}`);
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -2554,8 +2612,12 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
     } else if (opts.rewrite && typeof opts.rewrite === "object" && typeof opts.rewrite.from === "string") {
       const to = typeof opts.rewrite.to === "string" ? opts.rewrite.to : "";
       let re = null;
-      try { re = new RegExp(opts.rewrite.from); } catch (e) {
-        process.stderr.write(`${OJ} plugin host: server.proxy["${context}"].rewrite.from is not a valid regex: ${(e && e.message) || e}\n`);
+      try {
+        re = new RegExp(opts.rewrite.from);
+      } catch (e) {
+        process.stderr.write(
+          `${OJ} plugin host: server.proxy["${context}"].rewrite.from is not a valid regex: ${(e && e.message) || e}\n`,
+        );
       }
       if (re) rewriteFn = (url) => url.replace(re, to);
     }
@@ -2571,15 +2633,24 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
   // resolvable, it is the single forward and `configure` is honoured.
   let httpProxyLib = null;
   const requirers = [];
-  try { requirers.push(createRequire(createRequire(appRoot + "/package.json").resolve("vite"))); } catch {}
-  try { requirers.push(createRequire(appRoot + "/package.json")); } catch {}
-  try { requirers.push(createRequire(import.meta.url)); } catch {}
+  try {
+    requirers.push(createRequire(createRequire(appRoot + "/package.json").resolve("vite")));
+  } catch {}
+  try {
+    requirers.push(createRequire(appRoot + "/package.json"));
+  } catch {}
+  try {
+    requirers.push(createRequire(import.meta.url));
+  } catch {}
   for (const req of requirers) {
     for (const name of ["http-proxy-3", "http-proxy"]) {
       try {
         const mod = await import(pathToFileURL(req.resolve(name)).href);
         const lib = mod.default ?? mod;
-        if (lib && typeof lib.createProxyServer === "function") { httpProxyLib = lib; break; }
+        if (lib && typeof lib.createProxyServer === "function") {
+          httpProxyLib = lib;
+          break;
+        }
       } catch {}
     }
     if (httpProxyLib) break;
@@ -2594,8 +2665,12 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
     for (const [context, opts] of contexts) {
       const proxy = httpProxyLib.createProxyServer(opts);
       if (typeof opts.configure === "function") {
-        try { opts.configure(proxy, opts); } catch (e) {
-          process.stderr.write(`${OJ} plugin host: server.proxy["${context}"].configure threw: ${(e && e.message) || e}\n`);
+        try {
+          opts.configure(proxy, opts);
+        } catch (e) {
+          process.stderr.write(
+            `${OJ} plugin host: server.proxy["${context}"].configure threw: ${(e && e.message) || e}\n`,
+          );
         }
       }
       // Strip oj's internal signal headers from the target's response so a
@@ -2612,7 +2687,9 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
         process.stderr.write(`${OJ} plugin host: http proxy error: ${(err && (err.stack || err.message)) || err}\n`);
         if (res && "req" in res) {
           if (!res.headersSent && !res.writableEnded) {
-            try { res.writeHead(502, { "Content-Type": "text/plain" }).end(); } catch {}
+            try {
+              res.writeHead(502, { "Content-Type": "text/plain" }).end();
+            } catch {}
           }
         } else if (res && typeof res.end === "function") {
           res.end();
@@ -2626,11 +2703,22 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
     // changeOrigin, secure, rewrite, header + body streaming). Be HONEST about
     // the http-proxy-only options it cannot apply without the proxy instance —
     // warn once per entry instead of silently ignoring them.
-    const PIPE_UNSUPPORTED = ["configure", "xfwd", "cookieDomainRewrite", "cookiePathRewrite", "followRedirects", "autoRewrite", "protocolRewrite", "hostRewrite"];
+    const PIPE_UNSUPPORTED = [
+      "configure",
+      "xfwd",
+      "cookieDomainRewrite",
+      "cookiePathRewrite",
+      "followRedirects",
+      "autoRewrite",
+      "protocolRewrite",
+      "hostRewrite",
+    ];
     for (const [context, opts] of contexts) {
       const present = PIPE_UNSUPPORTED.filter((k) => opts[k] != null && opts[k] !== false);
       if (present.length) {
-        process.stderr.write(`${OJ} plugin host: server.proxy["${context}"] ${present.join(", ")} need http-proxy (bundled into Vite, not resolvable here); the built-in proxy does not apply them\n`);
+        process.stderr.write(
+          `${OJ} plugin host: server.proxy["${context}"] ${present.join(", ")} need http-proxy (bundled into Vite, not resolvable here); the built-in proxy does not apply them\n`,
+        );
       }
     }
     process.stderr.write(`${OJ} plugin host: server.proxy active (${contexts.length} route(s))\n`);
@@ -2641,7 +2729,9 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
     const target = pipeTarget(opts.target);
     if (!target) {
       res.statusCode = 502;
-      res.end(`oj proxy: invalid target ${typeof opts.target === "object" ? JSON.stringify(opts.target) : opts.target}`);
+      res.end(
+        `oj proxy: invalid target ${typeof opts.target === "object" ? JSON.stringify(opts.target) : opts.target}`,
+      );
       return;
     }
     const isHttps = target.protocol === "https:";
@@ -2694,8 +2784,12 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
     // Client disconnect / response error: abort the upstream so its socket is
     // not leaked, and swallow res errors (EPIPE/ECONNRESET) so they do not
     // surface as an unhandled error on the host.
-    const abortUpstream = () => { if (!upstream.destroyed) upstream.destroy(); };
-    res.on("close", () => { if (!res.writableFinished) abortUpstream(); });
+    const abortUpstream = () => {
+      if (!upstream.destroyed) upstream.destroy();
+    };
+    res.on("close", () => {
+      if (!res.writableFinished) abortUpstream();
+    });
     res.on("error", abortUpstream);
     req.on("error", abortUpstream);
     // Stream the request body through (uploads are never buffered whole).
@@ -2756,7 +2850,7 @@ async function setupConfigureServer() {
         const path = entry.route === "/" ? null : entry.route;
         const fn = entry.handle;
         if (path && !req.url.startsWith(path)) continue;
-        if ((fn.length >= 4) !== (err != null)) continue;
+        if (fn.length >= 4 !== (err != null)) continue;
         try {
           return err != null ? fn(err, req, res, next) : fn(req, res, next);
         } catch (e) {
@@ -2775,7 +2869,9 @@ async function setupConfigureServer() {
       // A proxy `bypass` returning a string rewrote req.url and fell through
       // (nothing in the stack served it): report the rewritten url so the Rust
       // delegate can serve it via normal routing instead of returning this 404.
-      try { res.setHeader("x-oj-rewritten-url", req.url); } catch {}
+      try {
+        res.setHeader("x-oj-rewritten-url", req.url);
+      } catch {}
       res.statusCode = 404;
       res.end();
     };
@@ -2885,13 +2981,10 @@ async function setupConfigureServer() {
   const declaresRunnerEnvironment = (cfg) =>
     !!cfg &&
     typeof cfg === "object" &&
-    Object.values(cfg.environments ?? {}).some(
-      (e) => e && e.dev && typeof e.dev.createEnvironment === "function",
-    );
+    Object.values(cfg.environments ?? {}).some((e) => e && e.dev && typeof e.dev.createEnvironment === "function");
   const extractionSaysBacked = initial.runnerBacked === true;
   const hostSeesDeclaration =
-    !extractionSaysBacked &&
-    [userViteConfig, initial.config, pluginConfigDelta].some(declaresRunnerEnvironment);
+    !extractionSaysBacked && [userViteConfig, initial.config, pluginConfigDelta].some(declaresRunnerEnvironment);
   const runnerDeclared = extractionSaysBacked || hostSeesDeclaration;
   const runnerBackedSource = extractionSaysBacked
     ? "config extraction"
@@ -2961,8 +3054,7 @@ async function setupConfigureServer() {
   // rewrite / configure / bypass survive; an oj-config-format app has no
   // loadable vite config, so its `server.proxy` (with a {from,to} rewrite that
   // DOES cross the JSON bridge) arrives in the spawn payload's `initial.config`.
-  const proxyConfig =
-    userViteConfig?.server?.proxy ?? initial.config?.server?.proxy ?? resolvedConfig?.server?.proxy;
+  const proxyConfig = userViteConfig?.server?.proxy ?? initial.config?.server?.proxy ?? resolvedConfig?.server?.proxy;
   if (proxyConfig && typeof proxyConfig === "object") {
     try {
       const proxyMw = await createProxyMiddleware(proxyConfig, initial.config?.root ?? process.cwd());
@@ -3034,8 +3126,7 @@ async function ensureConfigureServerMiddleware() {
         try {
           const parsed = JSON.parse(body || "{}");
           resync = parsed.resync === true;
-          changes = parsed.changes
-            || (parsed.paths || []).map((p) => ({ path: p, type: "update" }));
+          changes = parsed.changes || (parsed.paths || []).map((p) => ({ path: p, type: "update" }));
         } catch {}
         if (resync) {
           // ACK on ENQUEUE (202-style): the queue is serialized, so an
@@ -3121,7 +3212,6 @@ if (env.command !== "build") {
   }
 }
 
-
 // Vite's plugin order puts `vite:oxc` (the TS/JSX strip) after the user's
 // enforce:"pre" plugins and before the normal and post ones, so only a pre
 // plugin (or a hook with `order: "pre"`) ever sees TypeScript or JSX; every
@@ -3153,11 +3243,16 @@ function oxcStripMatches(id) {
 function oxcStripOptions() {
   const oxc = resolvedConfig && resolvedConfig.oxc;
   if (oxc === false) return null;
-  const { jsxInject: _i, include: _in, exclude: _ex, jsxRefreshInclude: _ri, jsxRefreshExclude: _re, ...opts } =
-    oxc && typeof oxc === "object" ? oxc : {};
+  const {
+    jsxInject: _i,
+    include: _in,
+    exclude: _ex,
+    jsxRefreshInclude: _ri,
+    jsxRefreshExclude: _re,
+    ...opts
+  } = oxc && typeof oxc === "object" ? oxc : {};
   const isProduction = resolvedConfig?.isProduction ?? process.env.NODE_ENV === "production";
-  const jsx =
-    typeof opts.jsx === "string" ? opts.jsx : { development: !isProduction, ...opts.jsx, refresh: false };
+  const jsx = typeof opts.jsx === "string" ? opts.jsx : { development: !isProduction, ...opts.jsx, refresh: false };
   return { ...opts, jsx, sourcemap: true };
 }
 
@@ -3186,11 +3281,7 @@ async function transform(code, id, resolvedJson) {
       // only compiled output must see the stripped source. The id-only
       // pre-check keeps the strip lazy for plugins whose id filter can never
       // match this module.
-      if (
-        !stripped &&
-        !runsBeforeOxcStrip(p, rank) &&
-        hookTransformMatches(p.transform, id, null, true)
-      ) {
+      if (!stripped && !runsBeforeOxcStrip(p, rank) && hookTransformMatches(p.transform, id, null, true)) {
         stripped = true;
         const opts = oxcStripOptions();
         if (opts) {
@@ -3221,7 +3312,17 @@ async function transform(code, id, resolvedJson) {
       updateModuleInfo(id, r);
     }
     const prior = moduleInfoCache.get(id);
-    const info = makeModuleInfo(id, current, prior ? { meta: prior.meta, moduleSideEffects: prior.moduleSideEffects, syntheticNamedExports: prior.syntheticNamedExports } : null);
+    const info = makeModuleInfo(
+      id,
+      current,
+      prior
+        ? {
+            meta: prior.meta,
+            moduleSideEffects: prior.moduleSideEffects,
+            syntheticNamedExports: prior.syntheticNamedExports,
+          }
+        : null,
+    );
     moduleInfoCache.set(id, info);
     seenIds.add(id);
     for (const { p, fn } of pluginsWithHook("moduleParsed")) await fn.call(ctxFor(p), info);
@@ -3233,9 +3334,7 @@ async function transform(code, id, resolvedJson) {
     });
   };
   return transformWatchStore.run(bucket, () =>
-    transformEmitStore.run(chunkBucket, () =>
-      transformResolveStore.run(resolveMap, runLoop),
-    ),
+    transformEmitStore.run(chunkBucket, () => transformResolveStore.run(resolveMap, runLoop)),
   );
 }
 
@@ -3252,7 +3351,7 @@ const anyModuleParsed = () => pluginsWithHook("moduleParsed").length > 0;
 // does not; this is the one unwrap both the runner and hasTransformIndexHtml use.
 function htmlHookFn(p) {
   const hook = p && p.transformIndexHtml;
-  const fn = typeof hook === "function" ? hook : hook?.handler ?? hook?.transform;
+  const fn = typeof hook === "function" ? hook : (hook?.handler ?? hook?.transform);
   return typeof fn === "function" ? fn : null;
 }
 
@@ -3313,7 +3412,14 @@ function globToRegExpSource(glob) {
     } else if (c === "{") {
       const j = glob.indexOf("}", i);
       if (j > i) {
-        re += "(?:" + glob.slice(i + 1, j).split(",").map(globToRegExpSource).join("|") + ")";
+        re +=
+          "(?:" +
+          glob
+            .slice(i + 1, j)
+            .split(",")
+            .map(globToRegExpSource)
+            .join("|") +
+          ")";
         i = j;
       } else {
         re += "\\{";
@@ -3382,7 +3488,9 @@ function moduleTypeOf(id) {
   const clean = String(id).split("?", 1)[0].split("#", 1)[0];
   const m = /\.([a-z0-9]+)$/i.exec(clean);
   const ext = m ? m[1].toLowerCase() : "";
-  if (["js", "jsx", "ts", "tsx", "json", "css", "text", "base64", "dataurl", "binary", "empty", "asset"].includes(ext)) {
+  if (
+    ["js", "jsx", "ts", "tsx", "json", "css", "text", "base64", "dataurl", "binary", "empty", "asset"].includes(ext)
+  ) {
     return ext;
   }
   if (ext === "mjs" || ext === "cjs") return "js";
@@ -3426,7 +3534,11 @@ async function resolveIdFull(source, importer, opts) {
     // Vite merges skipCalls into the skip set: a plugin is skipped when its
     // recorded call re-issues the same id + importer, or when it already
     // re-entered once (`called`) -- the recursion hard-stop.
-    if (skipCalls && skipCalls.some((c) => c.plugin === p && (c.called || (c.id === source && c.importer === importer)))) continue;
+    if (
+      skipCalls &&
+      skipCalls.some((c) => c.plugin === p && (c.called || (c.id === source && c.importer === importer)))
+    )
+      continue;
     if (!hookIdMatches(p.resolveId, source)) continue;
     let r;
     try {
@@ -3571,7 +3683,7 @@ function injectTags(html, tags) {
 }
 
 function htmlHookRank(hook) {
-  const order = hook && typeof hook === "object" ? hook.order ?? hook.enforce : undefined;
+  const order = hook && typeof hook === "object" ? (hook.order ?? hook.enforce) : undefined;
   return order === "pre" ? -1 : order === "post" ? 1 : 0;
 }
 // `ctxJson`: Vite's IndexHtmlTransformContext for this page. Dev (indexHtml
@@ -3587,7 +3699,11 @@ async function transformIndexHtml(html, ctxJson) {
   } catch {}
   if (!htmlCtx || typeof htmlCtx !== "object") htmlCtx = {};
   if (htmlCtx.path == null) htmlCtx.path = "/index.html";
-  if (htmlCtx.filename == null) htmlCtx.filename = pathResolve(resolvedConfig?.root ?? initial.config?.root ?? process.cwd(), htmlCtx.path.replace(/^\//, ""));
+  if (htmlCtx.filename == null)
+    htmlCtx.filename = pathResolve(
+      resolvedConfig?.root ?? initial.config?.root ?? process.cwd(),
+      htmlCtx.path.replace(/^\//, ""),
+    );
   if (env.command !== "build" && devServer) htmlCtx.server = devServer;
   // Honor per-hook order: 'pre' hooks run first, 'post' last (stable within a rank).
   const entries = [];
@@ -3859,7 +3975,11 @@ async function run(hook, args) {
         const codeHas = Array.isArray(code) && code.length > 0;
         // A pattern set regexes() refused (null) or a filter with no usable
         // includes cannot gate; that plugin must always be offered the module.
-        if ((id === null && f && f.id != null) || (withCode && code === null && f && f.code != null) || (!idHas && !codeHas)) {
+        if (
+          (id === null && f && f.id != null) ||
+          (withCode && code === null && f && f.code != null) ||
+          (!idHas && !codeHas)
+        ) {
           unfiltered = true;
           continue;
         }

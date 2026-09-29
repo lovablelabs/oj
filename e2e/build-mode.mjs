@@ -51,7 +51,11 @@ async function built(mode, shellEnv = {}) {
     await page.goto("http://localhost:5471/", { timeout: 30000 });
     await page.waitForFunction(() => window.__MODE !== undefined, { timeout: 10000 });
     return await page.evaluate(() => ({
-      mode: window.__MODE, flavor: window.__FLAVOR, dev: window.__DEV, prod: window.__PROD, nodeEnv: window.__NODE_ENV,
+      mode: window.__MODE,
+      flavor: window.__FLAVOR,
+      dev: window.__DEV,
+      prod: window.__PROD,
+      nodeEnv: window.__NODE_ENV,
     }));
   } finally {
     await browser.close();

@@ -30,13 +30,20 @@ function makeApp(pluginSrc) {
 }
 
 async function up(port) {
-  return waitUp(`http://localhost:${port}/`).then(() => true, () => false);
+  return waitUp(`http://localhost:${port}/`).then(
+    () => true,
+    () => false,
+  );
 }
 
 function openWs(port) {
   const msgs = [];
   const ws = new WebSocket(`ws://localhost:${port}/__ws`);
-  ws.addEventListener("message", (e) => { try { msgs.push(JSON.parse(e.data)); } catch {} });
+  ws.addEventListener("message", (e) => {
+    try {
+      msgs.push(JSON.parse(e.data));
+    } catch {}
+  });
   const ready = new Promise((res) => ws.addEventListener("open", () => res()));
   return { msgs, ready, close: () => ws.close() };
 }

@@ -55,10 +55,22 @@ function everyTagHasNonce(html, re) {
     }).catch(() => {});
     check("dev server serves the page", !!html, "no response on 6307");
     if (html) {
-      check("dev: every script carries the nonce (incl. injected client)", everyTagHasNonce(html, /<script[^>]*>/g), html);
+      check(
+        "dev: every script carries the nonce (incl. injected client)",
+        everyTagHasNonce(html, /<script[^>]*>/g),
+        html,
+      );
       check("dev: style carries the nonce", everyTagHasNonce(html, /<style[^>]*>/g), html);
-      check("dev: stylesheet link carries the nonce", everyTagHasNonce(html, /<link[^>]*rel="stylesheet"[^>]*>/g), html);
-      check("dev: csp-nonce meta present once", (html.match(/property="csp-nonce" nonce="abc123"/g) ?? []).length === 1, html);
+      check(
+        "dev: stylesheet link carries the nonce",
+        everyTagHasNonce(html, /<link[^>]*rel="stylesheet"[^>]*>/g),
+        html,
+      );
+      check(
+        "dev: csp-nonce meta present once",
+        (html.match(/property="csp-nonce" nonce="abc123"/g) ?? []).length === 1,
+        html,
+      );
     }
   } finally {
     srv.kill();
@@ -72,9 +84,17 @@ function everyTagHasNonce(html, re) {
   if (r.status === 0) {
     const html = fs.readFileSync(path.join(app, "dist", "index.html"), "utf8");
     check("build: every script carries the nonce", everyTagHasNonce(html, /<script[^>]*>/g), html);
-    check("build: stylesheet and modulepreload links carry the nonce", everyTagHasNonce(html, /<link[^>]*rel="(?:stylesheet|modulepreload)"[^>]*>/g), html);
+    check(
+      "build: stylesheet and modulepreload links carry the nonce",
+      everyTagHasNonce(html, /<link[^>]*rel="(?:stylesheet|modulepreload)"[^>]*>/g),
+      html,
+    );
     check("build: style carries the nonce", everyTagHasNonce(html, /<style[^>]*>/g), html);
-    check("build: csp-nonce meta present once", (html.match(/property="csp-nonce" nonce="abc123"/g) ?? []).length === 1, html);
+    check(
+      "build: csp-nonce meta present once",
+      (html.match(/property="csp-nonce" nonce="abc123"/g) ?? []).length === 1,
+      html,
+    );
   }
 }
 

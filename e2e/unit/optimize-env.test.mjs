@@ -65,72 +65,83 @@ function runSeed(app) {
   });
 }
 
-test("the pre-seed writes a deps cache Vite's own optimizer accepts as warm", { skip: !installed && "fixture deps not installed" }, async () => {
-  const { tmp, app } = makeApp();
-  try {
-    runSeed(app);
-    const metaPath = path.join(app, ".vite-cache", "deps_ssr", "_metadata.json");
-    assert.ok(fs.existsSync(metaPath), "deps_ssr/_metadata.json committed");
-    const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-    assert.ok(meta.optimized.react, "react was pre-bundled for the ssr environment");
-    assert.ok(meta.lockfileHash, "metadata carries Vite's lockfileHash");
-    assert.ok(meta.configHash, "metadata carries Vite's configHash");
-    const before = fs.statSync(metaPath).mtimeMs;
+test(
+  "the pre-seed writes a deps cache Vite's own optimizer accepts as warm",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp();
+    try {
+      runSeed(app);
+      const metaPath = path.join(app, ".vite-cache", "deps_ssr", "_metadata.json");
+      assert.ok(fs.existsSync(metaPath), "deps_ssr/_metadata.json committed");
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      assert.ok(meta.optimized.react, "react was pre-bundled for the ssr environment");
+      assert.ok(meta.lockfileHash, "metadata carries Vite's lockfileHash");
+      assert.ok(meta.configHash, "metadata carries Vite's configHash");
+      const before = fs.statSync(metaPath).mtimeMs;
 
-    // Report for the parent's stamp: the seeded env and where the metadata is.
-    const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
-    assert.equal(report.failed, false);
-    assert.deepEqual(report.seeded.map((s) => s.name), ["ssr"]);
-    assert.equal(report.seeded[0].metadataPath, metaPath);
+      // Report for the parent's stamp: the seeded env and where the metadata is.
+      const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+      assert.equal(report.failed, false);
+      assert.deepEqual(
+        report.seeded.map((s) => s.name),
+        ["ssr"],
+      );
+      assert.equal(report.seeded[0].metadataPath, metaPath);
 
-    // The acceptance: resolve the config exactly the way the plugin host's
-    // buildEnvironments does, run the in-host environment's own optimizer
-    // init, and require it to LOAD the cache — a re-optimization would
-    // replace the metadata file (fresh mtime and a re-created dir).
-    const vite = await import(
-      pathToFileURL(path.join(fixture, "node_modules", "vite", "dist", "node", "index.js")).href
-    );
-    const rc = await vite.resolveConfig(
-      { root: app, configFile: undefined, mode: "dev" },
-      "serve",
-      "development",
-      "development",
-    );
-    const de = new vite.DevEnvironment("ssr", rc, { hot: false });
-    assert.ok(de.depsOptimizer, "the ssr environment has an optimizer to satisfy");
-    await de.init();
-    await de.depsOptimizer.init();
-    assert.ok(de.depsOptimizer.metadata.optimized.react, "optimizer served react from the cache");
-    assert.equal(
-      fs.statSync(metaPath).mtimeMs,
-      before,
-      "the in-host optimizer loaded the seeded cache instead of re-optimizing",
-    );
-    await de.close();
+      // The acceptance: resolve the config exactly the way the plugin host's
+      // buildEnvironments does, run the in-host environment's own optimizer
+      // init, and require it to LOAD the cache — a re-optimization would
+      // replace the metadata file (fresh mtime and a re-created dir).
+      const vite = await import(
+        pathToFileURL(path.join(fixture, "node_modules", "vite", "dist", "node", "index.js")).href
+      );
+      const rc = await vite.resolveConfig(
+        { root: app, configFile: undefined, mode: "dev" },
+        "serve",
+        "development",
+        "development",
+      );
+      const de = new vite.DevEnvironment("ssr", rc, { hot: false });
+      assert.ok(de.depsOptimizer, "the ssr environment has an optimizer to satisfy");
+      await de.init();
+      await de.depsOptimizer.init();
+      assert.ok(de.depsOptimizer.metadata.optimized.react, "optimizer served react from the cache");
+      assert.equal(
+        fs.statSync(metaPath).mtimeMs,
+        before,
+        "the in-host optimizer loaded the seeded cache instead of re-optimizing",
+      );
+      await de.close();
 
-    // Second seed run against the warm cache: also a load, never a rebuild.
-    runSeed(app);
-    assert.equal(fs.statSync(metaPath).mtimeMs, before, "a warm re-seed is a no-op");
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
+      // Second seed run against the warm cache: also a load, never a rebuild.
+      runSeed(app);
+      assert.equal(fs.statSync(metaPath).mtimeMs, before, "a warm re-seed is a no-op");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
 
-test("environments without an enabled optimizer seed nothing and report cleanly", { skip: !installed && "fixture deps not installed" }, async () => {
-  const { tmp, app } = makeApp();
-  try {
-    // No include list: Vite disables the ssr optimizer (noDiscovery default
-    // for server consumers), so there is nothing to pre-seed.
-    fs.writeFileSync(
-      path.join(app, "vite.config.mjs"),
-      `export default { cacheDir: ${JSON.stringify(path.join(app, ".vite-cache"))} };\n`,
-    );
-    runSeed(app);
-    assert.ok(!fs.existsSync(path.join(app, ".vite-cache", "deps_ssr")), "no ssr cache invented");
-    const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
-    assert.equal(report.failed, false);
-    assert.deepEqual(report.seeded, []);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
+test(
+  "environments without an enabled optimizer seed nothing and report cleanly",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp();
+    try {
+      // No include list: Vite disables the ssr optimizer (noDiscovery default
+      // for server consumers), so there is nothing to pre-seed.
+      fs.writeFileSync(
+        path.join(app, "vite.config.mjs"),
+        `export default { cacheDir: ${JSON.stringify(path.join(app, ".vite-cache"))} };\n`,
+      );
+      runSeed(app);
+      assert.ok(!fs.existsSync(path.join(app, ".vite-cache", "deps_ssr")), "no ssr cache invented");
+      const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+      assert.equal(report.failed, false);
+      assert.deepEqual(report.seeded, []);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);

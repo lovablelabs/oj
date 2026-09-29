@@ -24,7 +24,10 @@
       if (el.type === "password" || el.type === "file") continue;
       const rec = { v: el.value };
       if (el.type === "checkbox" || el.type === "radio") rec.c = el.checked;
-      if (el.selectionStart != null) { rec.s = el.selectionStart; rec.e = el.selectionEnd; }
+      if (el.selectionStart != null) {
+        rec.s = el.selectionStart;
+        rec.e = el.selectionEnd;
+      }
       fields[key(el)] = rec;
     }
     const active = document.activeElement;
@@ -33,14 +36,18 @@
       if (el.scrollTop || el.scrollLeft) (scroll.el ??= {})["#" + el.id] = [el.scrollTop, el.scrollLeft];
     }
     const data = { fields, scroll, active: active && active.matches(FIELDS) ? key(active) : null };
-    try { sessionStorage.setItem(KEY, JSON.stringify(data)); } catch {}
+    try {
+      sessionStorage.setItem(KEY, JSON.stringify(data));
+    } catch {}
   }
 
   function setValue(el, v) {
     const proto =
-      el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
-      : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype
-      : HTMLInputElement.prototype;
+      el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : el instanceof HTMLSelectElement
+          ? HTMLSelectElement.prototype
+          : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
     setter ? setter.call(el, v) : (el.value = v);
     el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -53,13 +60,18 @@
     for (const [k, rec] of Object.entries(data.fields)) {
       const el = byKey.get(k);
       if (!el) continue;
-      if (rec.c != null) { el.checked = rec.c; el.dispatchEvent(new Event("change", { bubbles: true })); }
-      else if (el.value !== rec.v) setValue(el, rec.v);
+      if (rec.c != null) {
+        el.checked = rec.c;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      } else if (el.value !== rec.v) setValue(el, rec.v);
     }
     window.scrollTo(data.scroll.x, data.scroll.y);
     for (const [sel, [t, l]] of Object.entries(data.scroll.el || {})) {
       const el = document.querySelector(sel);
-      if (el) { el.scrollTop = t; el.scrollLeft = l; }
+      if (el) {
+        el.scrollTop = t;
+        el.scrollLeft = l;
+      }
     }
     if (data.active) {
       const el = byKey.get(data.active);
@@ -67,7 +79,9 @@
         el.focus();
         const rec = data.fields[data.active];
         if (rec && rec.s != null && el.setSelectionRange) {
-          try { el.setSelectionRange(rec.s, rec.e); } catch {}
+          try {
+            el.setSelectionRange(rec.s, rec.e);
+          } catch {}
         }
       }
     }
@@ -75,11 +89,16 @@
 
   function restore() {
     let data;
-    try { data = JSON.parse(sessionStorage.getItem(KEY)); } catch {}
+    try {
+      data = JSON.parse(sessionStorage.getItem(KEY));
+    } catch {}
     if (!data) return;
     sessionStorage.removeItem(KEY);
     let n = 0;
-    const tick = () => { apply(data); if (++n < 4) setTimeout(tick, 60); };
+    const tick = () => {
+      apply(data);
+      if (++n < 4) setTimeout(tick, 60);
+    };
     requestAnimationFrame(tick);
   }
 
@@ -89,7 +108,10 @@
   let ws;
   const connect = () => {
     ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/@oj-start/hmr");
-    ws.onmessage = () => { snapshot(); location.reload(); };
+    ws.onmessage = () => {
+      snapshot();
+      location.reload();
+    };
     ws.onclose = () => setTimeout(connect, 1000);
   };
   connect();

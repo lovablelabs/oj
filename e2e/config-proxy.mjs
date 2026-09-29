@@ -22,7 +22,10 @@ fs.writeFileSync(
   path.join(app, "vite.config.mjs"),
   `export default { server: { proxy: { "/api": "http://localhost:5361" } }, worker: { format: "es" } };\n`,
 );
-fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head><title>t</title></head><body>hi</body></html>`);
+fs.writeFileSync(
+  path.join(app, "index.html"),
+  `<!doctype html><html><head><title>t</title></head><body>hi</body></html>`,
+);
 
 const backend = http.createServer((req, res) => res.end("BACKEND:" + req.url));
 

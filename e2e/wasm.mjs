@@ -20,7 +20,10 @@ const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-wasm-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "wasm-app", version: "1.0.0" }));
 // (module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))
-const wasm = Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 7, 1, 0x60, 2, 0x7f, 0x7f, 1, 0x7f, 3, 2, 1, 0, 7, 7, 1, 3, 0x61, 0x64, 0x64, 0, 0, 10, 9, 1, 7, 0, 0x20, 0, 0x20, 1, 0x6a, 0x0b]);
+const wasm = Buffer.from([
+  0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 7, 1, 0x60, 2, 0x7f, 0x7f, 1, 0x7f, 3, 2, 1, 0, 7, 7, 1, 3, 0x61, 0x64, 0x64, 0,
+  0, 10, 9, 1, 7, 0, 0x20, 0, 0x20, 1, 0x6a, 0x0b,
+]);
 fs.writeFileSync(path.join(app, "src", "add.wasm"), wasm);
 fs.writeFileSync(
   path.join(app, "src", "main.js"),

@@ -44,7 +44,10 @@ function check(label, ok, detail) {
   const port = 6306;
   const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   try {
-    const up = await waitUp(`http://localhost:${port}/`).then(() => true, () => false);
+    const up = await waitUp(`http://localhost:${port}/`).then(
+      () => true,
+      () => false,
+    );
     check("dev server starts", up, "no response on 6306");
     if (up) {
       const main = await (await fetch(`http://localhost:${port}/src/main.js`)).text();
@@ -64,9 +67,16 @@ function check(label, ok, detail) {
   if (r.status === 0) {
     const assets = path.join(app, "dist", "assets");
     const files = fs.readdirSync(assets);
-    const js = files.filter((f) => f.endsWith(".js")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+    const js = files
+      .filter((f) => f.endsWith(".js"))
+      .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+      .join("\n");
     check("build: ?url inlines under the limit", /data:image\/png;base64,/.test(js), js.slice(-300));
-    check("build: ?no-inline emits a hashed file", files.some((f) => /^small-[^.]+\.png$/.test(f)), files.join(", "));
+    check(
+      "build: ?no-inline emits a hashed file",
+      files.some((f) => /^small-[^.]+\.png$/.test(f)),
+      files.join(", "),
+    );
     check("build: ?no-inline resolves to the file url", /small-[^"'`\/]+\.png/.test(js), js.slice(-300));
   }
 }

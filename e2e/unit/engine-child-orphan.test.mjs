@@ -80,11 +80,10 @@ test("an orphaned start-script child reaps itself when its parent dies", async (
     console.log("CHILD=" + c.pid);
     setInterval(() => {}, 60_000);
   `;
-  const parent = spawn(
-    process.execPath,
-    ["-e", parentScript, oj, path.join(fx.root, "forever.mjs"), fx.root],
-    { cwd: fx.root, stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const parent = spawn(process.execPath, ["-e", parentScript, oj, path.join(fx.root, "forever.mjs"), fx.root], {
+    cwd: fx.root,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   try {
     const childPid = await new Promise((resolve, reject) => {
       let buf = "";
@@ -127,12 +126,26 @@ test("an orphaned start-script child reaps itself when its parent dies", async (
 test("an engine-job child whose declared parent is already gone exits before running its job", async () => {
   const fx = tmpProject({ prefix: "oj-child-declared-parent-" });
   fx.write("package.json", JSON.stringify({ name: "declared-fx", version: "1.0.0" }));
-  fx.write("forever.mjs", "export async function run() { setInterval(() => {}, 60_000); await new Promise(() => {}); }\n");
+  fx.write(
+    "forever.mjs",
+    "export async function run() { setInterval(() => {}, 60_000); await new Promise(() => {}); }\n",
+  );
   const result = path.join(fx.root, "result.json");
   // pid_t max: never a live process, so never this child's real parent.
   const child = spawn(
     oj,
-    ["engine-job", path.join(fx.root, "forever.mjs"), "--root", fx.root, "--export", "run", "--timeout-secs", "60", "--result", result],
+    [
+      "engine-job",
+      path.join(fx.root, "forever.mjs"),
+      "--root",
+      fx.root,
+      "--export",
+      "run",
+      "--timeout-secs",
+      "60",
+      "--result",
+      result,
+    ],
     { cwd: fx.root, stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, OJ_PARENT_PID: "2147483647" } },
   );
   child.stdin.end("{}");
@@ -145,7 +158,10 @@ test("an engine-job child whose declared parent is already gone exits before run
     assert.ok(exited, "the child exits on its first ppid poll instead of running the forever job");
     assert.equal(exited.code, 0);
     assert.ok(!fs.existsSync(result), "no result is written for a parent that is gone");
-    assert.ok(!fs.existsSync(path.join(fx.root, ".oj-cache", "v1", "code-cache")), "no code cache is written before the reaper fires");
+    assert.ok(
+      !fs.existsSync(path.join(fx.root, ".oj-cache", "v1", "code-cache")),
+      "no code cache is written before the reaper fires",
+    );
   } finally {
     fx.cleanup();
   }

@@ -35,7 +35,7 @@ export function Comp${i}() {
     </div>
   );
 }
-`
+`,
   );
 }
 
@@ -51,7 +51,7 @@ export function App() {
     </main>
   );
 }
-`
+`,
 );
 
 fs.writeFileSync(
@@ -60,7 +60,7 @@ fs.writeFileSync(
 import { App } from "./App";
 
 createRoot(document.getElementById("root")!).render(<App />);
-`
+`,
 );
 
 fs.writeFileSync(
@@ -76,7 +76,7 @@ fs.writeFileSync(
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-`
+`,
 );
 
 if (!fs.existsSync(path.join(dir, "package.json"))) {
@@ -90,8 +90,8 @@ if (!fs.existsSync(path.join(dir, "package.json"))) {
         devDependencies: { vite: "^8", "@vitejs/plugin-react": "^6" },
       },
       null,
-      2
-    )
+      2,
+    ),
   );
 }
 
@@ -99,7 +99,7 @@ fs.writeFileSync(
   path.join(dir, "vite.config.mjs"),
   `import react from "@vitejs/plugin-react";
 export default { plugins: [react()], server: { port: 5200, strictPort: true }, logLevel: "warn" };
-`
+`,
 );
 
 fs.writeFileSync(
@@ -111,13 +111,13 @@ export default {
   logLevel: "warn",
   experimental: { bundledDev: true },
 };
-`
+`,
 );
 
 // tsconfig so editors don't complain. neither tool needs it.
 fs.writeFileSync(
   path.join(dir, "tsconfig.json"),
-  JSON.stringify({ compilerOptions: { jsx: "react-jsx", strict: true } }, null, 2)
+  JSON.stringify({ compilerOptions: { jsx: "react-jsx", strict: true } }, null, 2),
 );
 
 console.log(`generated ${N} components in ${dir}`);

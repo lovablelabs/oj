@@ -22,31 +22,33 @@ const repo = resolve(here, "..", "..");
 const oj = join(repo, "target", "debug", "oj");
 const fixture = join(repo, "e2e", "fixtures", "start-app");
 
-const installed =
-  fs.existsSync(oj) && fs.existsSync(join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(oj) && fs.existsSync(join(fixture, "node_modules", "rolldown"));
 const maybe = installed ? test : test.skip;
 
 maybe("rolldown's napi binding loads and bundles under the embedded engine", () => {
   const dir = mkdtempSync(join(tmpdir(), "oj-rolldown-probe-"));
   try {
     const probe = join(dir, "probe.mjs");
-    writeFileSync(probe, [
-      // Resolved from the fixture root (the engine root's node_modules).
-      `const { rolldown } = await import(${JSON.stringify(join(fixture, "node_modules", "rolldown", "dist", "index.mjs"))});`,
-      "const bundle = await rolldown({",
-      '  input: "entry.js",',
-      "  plugins: [{",
-      '    name: "virtual",',
-      '    resolveId: (id) => (id === "entry.js" || id === "dep.js" ? "\\0" + id : null),',
-      "    load(id) {",
-      '      if (id === "\\0entry.js") return "import { x } from \'dep.js\'; export default x + 1;";',
-      '      if (id === "\\0dep.js") return "export const x = 41;";',
-      "    },",
-      "  }],",
-      "});",
-      'const { output } = await bundle.generate({ format: "esm" });',
-      "export default { code: output[0].code };",
-    ].join("\n"));
+    writeFileSync(
+      probe,
+      [
+        // Resolved from the fixture root (the engine root's node_modules).
+        `const { rolldown } = await import(${JSON.stringify(join(fixture, "node_modules", "rolldown", "dist", "index.mjs"))});`,
+        "const bundle = await rolldown({",
+        '  input: "entry.js",',
+        "  plugins: [{",
+        '    name: "virtual",',
+        '    resolveId: (id) => (id === "entry.js" || id === "dep.js" ? "\\0" + id : null),',
+        "    load(id) {",
+        '      if (id === "\\0entry.js") return "import { x } from \'dep.js\'; export default x + 1;";',
+        '      if (id === "\\0dep.js") return "export const x = 41;";',
+        "    },",
+        "  }],",
+        "});",
+        'const { output } = await bundle.generate({ format: "esm" });',
+        "export default { code: output[0].code };",
+      ].join("\n"),
+    );
     const out = execFileSync(oj, ["js-eval", probe, "--root", fixture], {
       encoding: "utf8",
       timeout: 120_000,

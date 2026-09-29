@@ -141,7 +141,12 @@ function graphPlugin() {
       server.middlewares.use((req, res, next) => {
         if (req.url === "/__oj_parsed") {
           res.setHeader("content-type", "text/plain");
-          res.end([...parsed].map((p) => p.split(/[\\/]/).pop()).sort().join(","));
+          res.end(
+            [...parsed]
+              .map((p) => p.split(/[\\/]/).pop())
+              .sort()
+              .join(","),
+          );
           return;
         }
         next();
@@ -210,7 +215,7 @@ function htmlPlugin() {
     name: "oj-html",
     transformIndexHtml(html) {
       return {
-        html: html.replace("<title>oj playground</title>", '<title>oj playground (plugin)</title>'),
+        html: html.replace("<title>oj playground</title>", "<title>oj playground (plugin)</title>"),
         tags: [
           { tag: "meta", attrs: { name: "oj-plugin-injected", content: "yes" }, injectTo: "head" },
           // No injectTo -> Vite default is head-prepend (lands right after <head>).
@@ -230,9 +235,7 @@ function htmlSeqPost() {
     transformIndexHtml: {
       order: "post",
       handler: (html) =>
-        html.includes('name="oj-html-seq" content="pre"')
-          ? html.replace('content="pre"', 'content="pre-post"')
-          : html,
+        html.includes('name="oj-html-seq" content="pre"') ? html.replace('content="pre"', 'content="pre-post"') : html,
     },
   };
 }
@@ -301,4 +304,3 @@ export default [
   applyPlugin("serve-only", "serve"),
   applyPlugin("build-only", "build"),
 ];
-

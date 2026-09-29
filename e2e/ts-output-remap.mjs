@@ -46,7 +46,10 @@ write(
     ``,
   ].join("\n"),
 );
-write("index.html", `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.ts"></script></body></html>`);
+write(
+  "index.html",
+  `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.ts"></script></body></html>`,
+);
 
 let failed = false;
 let srv = null;
@@ -66,12 +69,17 @@ try {
     const r = await fetch(`http://localhost:${PORT}${u}`);
     assert.equal(r.status, 200, `${u} not served`);
   }
-  srv.kill("SIGKILL"); srv = null;
+  srv.kill("SIGKILL");
+  srv = null;
   await sleep(300);
 
   execSync(`${oj} build ${app}`, { stdio: "pipe" });
   const assets = path.join(app, "dist", "assets");
-  const built = fs.readdirSync(assets).filter((f) => f.endsWith(".js")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+  const built = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
   for (const marker of ["A_FROM_TS", "COMP_FROM_TSX", "M_FROM_MTS", "BOTH_FROM_JS"]) {
     assert.match(built, new RegExp(marker), `build output lacks ${marker}`);
   }

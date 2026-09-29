@@ -63,11 +63,15 @@ try {
     const before = await page.evaluate(() => document.getElementById("app").className);
     assert.match(before, /foo/, `scoped foo class applied: ${before}`);
     assert.match(before, /nobar/, `bar not exported yet: ${before}`);
-    await page.evaluate(() => { window.__LOADED_AT = Date.now(); });
+    await page.evaluate(() => {
+      window.__LOADED_AT = Date.now();
+    });
 
     fs.writeFileSync(path.join(app, "src", "a.module.css"), `.foo { color: red; }\n.bar { color: blue; }\n`);
     await page.waitForFunction(
-      () => !document.getElementById("app").className.includes("nobar") && /bar/.test(document.getElementById("app").className),
+      () =>
+        !document.getElementById("app").className.includes("nobar") &&
+        /bar/.test(document.getElementById("app").className),
       { timeout: 10000 },
     );
     const stillSamePage = await page.evaluate(() => typeof window.__LOADED_AT === "number");

@@ -32,8 +32,10 @@ export function cloudflareEnvironment(config) {
   const workers = Object.entries(environments).filter(([name, options]) => {
     if (name === "client" || !options) return false;
     const builtins = options.resolve?.builtins;
-    return (Array.isArray(builtins) && builtins.includes("cloudflare:workers"))
-      || options.build?.rolldownOptions?.input?.index === WORKER_ENTRY;
+    return (
+      (Array.isArray(builtins) && builtins.includes("cloudflare:workers")) ||
+      options.build?.rolldownOptions?.input?.index === WORKER_ENTRY
+    );
   });
   if (!workers.length) return null;
   const [name, options] = workers.find(([, o]) => o.build?.manifest === true) ?? workers[0];
@@ -43,7 +45,9 @@ export function cloudflareEnvironment(config) {
     options,
     builtins,
     // The plugin's `resolve.conditions`, then the module-graph conditions rolldown adds.
-    conditions: Array.isArray(options.resolve?.conditions) ? options.resolve.conditions.filter((c) => !c.includes("|")) : ["workerd", "worker", "module", "browser"],
+    conditions: Array.isArray(options.resolve?.conditions)
+      ? options.resolve.conditions.filter((c) => !c.includes("|"))
+      : ["workerd", "worker", "module", "browser"],
     target: typeof options.build?.target === "string" ? options.build.target : undefined,
     // Rolldown plugins the plugin's `configEnvironment` attached (Vite's
     // esmExternalRequirePlugin turns `require("node:x")` of externals into imports).
@@ -75,7 +79,16 @@ export function cloudflareWorkerPlugin({ container, env, serverEntry }) {
   return {
     name: "oj-cloudflare-worker",
     resolveId: {
-      filter: { id: { include: [/^cloudflare:/, NODE_BUILTIN, NODE_POLYFILL, new RegExp(`^${USER_ENTRY.replace(/[/:]/g, "\\$&")}$`)] } },
+      filter: {
+        id: {
+          include: [
+            /^cloudflare:/,
+            NODE_BUILTIN,
+            NODE_POLYFILL,
+            new RegExp(`^${USER_ENTRY.replace(/[/:]/g, "\\$&")}$`),
+          ],
+        },
+      },
       async handler(source, importer) {
         if (source === USER_ENTRY) {
           // The plugin resolves the wrangler `main`; Start's default entry becomes oj's.

@@ -30,15 +30,12 @@ const APP = path.join(__dirname, "..", "playground", "src", "App.tsx");
         new Promise((resolve) =>
           import("/@oj/client.js").then(({ createHotContext }) => {
             createHotContext("/__hot_api_test2").on("vite:afterUpdate", () => resolve(true));
-          })
-        )
+          }),
+        ),
     );
     await page.waitForTimeout(100);
     fs.writeFileSync(APP, original.replace("oj playground", "oj playground HOTAPI"));
-    const fired = await Promise.race([
-      afterUpdate,
-      new Promise((r) => setTimeout(() => r(false), 8000)),
-    ]);
+    const fired = await Promise.race([afterUpdate, new Promise((r) => setTimeout(() => r(false), 8000))]);
     console.log("vite:afterUpdate fired:", fired);
     if (!fired) throw new Error("vite:afterUpdate did not fire");
     console.log("HOT API VERIFIED");
@@ -46,4 +43,7 @@ const APP = path.join(__dirname, "..", "playground", "src", "App.tsx");
     fs.writeFileSync(APP, original);
     await browser.close();
   }
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

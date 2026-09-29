@@ -51,18 +51,37 @@ try {
   const dist = path.join(app, "dist");
   const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
   const cssLinks = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((m) => m[1]);
-  assert.ok(cssLinks.some((h) => /^\/assets\/theme-[0-9a-f]+\.css$/.test(h)), `scss link hashed: ${cssLinks}`);
-  assert.ok(cssLinks.some((h) => /^\/assets\/base-[0-9a-f]+\.css$/.test(h)), `css link hashed: ${cssLinks}`);
+  assert.ok(
+    cssLinks.some((h) => /^\/assets\/theme-[0-9a-f]+\.css$/.test(h)),
+    `scss link hashed: ${cssLinks}`,
+  );
+  assert.ok(
+    cssLinks.some((h) => /^\/assets\/base-[0-9a-f]+\.css$/.test(h)),
+    `css link hashed: ${cssLinks}`,
+  );
   assert.ok(cssLinks.includes("https://cdn.example.test/x.css"), `external link untouched: ${cssLinks}`);
   assert.doesNotMatch(html, /src\/theme\.scss|\/src\/base\.css/, "source paths left in the built html");
-  const themeCss = fs.readFileSync(path.join(dist, cssLinks.find((h) => h.includes("theme-"))), "utf8");
+  const themeCss = fs.readFileSync(
+    path.join(
+      dist,
+      cssLinks.find((h) => h.includes("theme-")),
+    ),
+    "utf8",
+  );
   assert.match(themeCss, /#010203|rgb\(1,\s*2,\s*3\)/, `scss compiled:\n${themeCss}`);
   assert.doesNotMatch(themeCss, /\$c/, "sass variable shipped");
-  const scripts = [...html.matchAll(/<script type="module" src="([^"]+)"(?: crossorigin)?><\/script>/g)].map((m) => m[1]);
+  const scripts = [...html.matchAll(/<script type="module" src="([^"]+)"(?: crossorigin)?><\/script>/g)].map(
+    (m) => m[1],
+  );
   assert.equal(scripts.length, 2, `inline + main scripts externalized: ${scripts}`);
-  assert.ok(scripts.every((s) => /^\/assets\/.+\.js$/.test(s)), `both point at hashed chunks: ${scripts}`);
+  assert.ok(
+    scripts.every((s) => /^\/assets\/.+\.js$/.test(s)),
+    `both point at hashed chunks: ${scripts}`,
+  );
   assert.doesNotMatch(html, /import \{ x \}|@oj-inline/, "inline body or placeholder left in html");
-  const inlineChunk = scripts.map((s) => fs.readFileSync(path.join(dist, s), "utf8")).find((c) => c.includes("from-inline"));
+  const inlineChunk = scripts
+    .map((s) => fs.readFileSync(path.join(dist, s), "utf8"))
+    .find((c) => c.includes("from-inline"));
   assert.ok(inlineChunk, "inline script bundled with its relative import");
 
   srv = spawn(oj, ["preview", app, "--port", String(PORT)], { stdio: "ignore" });

@@ -32,8 +32,10 @@ if (!fs.existsSync(serverJs)) throw new Error("no server.mjs emitted");
   const homeHtml = fs.readFileSync(home, "utf8");
   if (!homeHtml.includes('data-page="home"')) throw new Error("prerendered / missing home route content");
   if (!homeHtml.includes("deferred-streamed")) throw new Error("prerendered / did not resolve the Suspense boundary");
-  if (!/src="\/assets\/entry-client[^"]*\.js"/.test(homeHtml)) throw new Error("prerendered / missing client hydration script");
-  if (!fs.readFileSync(about, "utf8").includes('data-page="about"')) throw new Error("prerendered /about missing about content");
+  if (!/src="\/assets\/entry-client[^"]*\.js"/.test(homeHtml))
+    throw new Error("prerendered / missing client hydration script");
+  if (!fs.readFileSync(about, "utf8").includes('data-page="about"'))
+    throw new Error("prerendered /about missing about content");
   console.log("ssr-prod: prerender (SSG) ok (/ and /about static HTML, Suspense resolved, hydration wired)");
 }
 {
@@ -76,7 +78,9 @@ const clientHasVirtual = fs
   .filter((f) => f.endsWith(".js"))
   .some((f) => fs.readFileSync(path.join(out, "assets", f), "utf8").includes("hello from plugin"));
 if (!clientHasVirtual) {
-  throw new Error("ssr build (client env) did not run plugin resolveId/load (virtual module absent from client bundle)");
+  throw new Error(
+    "ssr build (client env) did not run plugin resolveId/load (virtual module absent from client bundle)",
+  );
 }
 if (!fs.readFileSync(path.join(out, "entry-server.mjs"), "utf8").includes("global-define|ssr-define")) {
   throw new Error("ssr build did not apply the ssr-environment define");
@@ -93,12 +97,18 @@ if (!clientAsset) throw new Error("no hashed client hydration bundle emitted");
 console.log("ssr-prod: build emitted server bundle + client assets + server.mjs");
 
 const entryCode = fs.readFileSync(path.join(out, "assets", clientAsset), "utf8");
-if (entryCode.includes("boom: the loader failed")) throw new Error("boom route was bundled into the entry chunk (not split)");
+if (entryCode.includes("boom: the loader failed"))
+  throw new Error("boom route was bundled into the entry chunk (not split)");
 const boomChunk = assetFiles.find(
-  (f) => f !== clientAsset && f.endsWith(".js") && fs.readFileSync(path.join(out, "assets", f), "utf8").includes("boom: the loader failed"),
+  (f) =>
+    f !== clientAsset &&
+    f.endsWith(".js") &&
+    fs.readFileSync(path.join(out, "assets", f), "utf8").includes("boom: the loader failed"),
 );
 if (!boomChunk) throw new Error("boom route was not emitted as its own chunk");
-console.log(`ssr-prod: route code splitting ok (${assetFiles.filter((f) => f.endsWith(".js")).length} js chunks; boom in ${boomChunk}, not entry)`);
+console.log(
+  `ssr-prod: route code splitting ok (${assetFiles.filter((f) => f.endsWith(".js")).length} js chunks; boom in ${boomChunk}, not entry)`,
+);
 
 const mod = await import(pathToFileURL(path.join(out, "entry-server.mjs")).href);
 if (!String(await mod.render()).includes("ssr")) throw new Error("buffered render() missing ssr content");
@@ -185,16 +195,14 @@ try {
       const deferred = await page.locator("[data-deferred]").textContent();
       if (!deferred.includes("deferred-streamed")) throw new Error(`deferred content lost: ${deferred}`);
       const sfn = await page.waitForFunction(() => globalThis.__OJ_SFN, { timeout: 8000 }).then((h) => h.jsonValue());
-      if (sfn !== "hello, prod (server=true)") throw new Error("server function RPC failed in prod: " + JSON.stringify(sfn));
+      if (sfn !== "hello, prod (server=true)")
+        throw new Error("server function RPC failed in prod: " + JSON.stringify(sfn));
       await page.locator('a[href="/boom"]').click();
-      await page.waitForSelector('[data-error]', { timeout: 5000 });
+      await page.waitForSelector("[data-error]", { timeout: 5000 });
       await page.locator('[data-error] a[href="/"]').click();
       await page.waitForSelector('[data-page="home"]');
       await page.locator("button", { hasText: "ssr" }).click();
-      await page.waitForFunction(
-        () => document.querySelector("button").textContent.includes(": 1"),
-        { timeout: 5000 },
-      );
+      await page.waitForFunction(() => document.querySelector("button").textContent.includes(": 1"), { timeout: 5000 });
       await page.evaluate(() => (window.__spa = 1));
       const before = Number(await page.locator("[data-likes]").getAttribute("data-likes"));
       await page.locator("button", { hasText: "like" }).click();
@@ -204,7 +212,9 @@ try {
       if ((await page.evaluate(() => window.__spa)) !== 1) throw new Error("SPA navigation caused a full reload");
       if ((await page.evaluate(() => location.pathname)) !== "/about") throw new Error("URL did not update to /about");
       if (errors.length) throw new Error(`console errors: ${errors.join("; ")}`);
-      console.log("ssr-prod: hydration + SPA + action ok (counter interactive, like mutation, link -> /about, no reload)");
+      console.log(
+        "ssr-prod: hydration + SPA + action ok (counter interactive, like mutation, link -> /about, no reload)",
+      );
     } finally {
       await browser.close();
     }

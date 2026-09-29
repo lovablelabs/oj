@@ -60,28 +60,47 @@ rmSync(path.join(app, "node_modules"), { recursive: true, force: true });
 symlinkSync(path.join(donor, "node_modules"), path.join(app, "node_modules"), "dir");
 rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
 
-try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
-const proc = spawn(OJ, ["dev", app, "--port", String(PORT),], { stdio: "ignore" });
+try {
+  execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" });
+} catch {}
+const proc = spawn(OJ, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 const errors = [];
 let pass = true;
-const check = (cond, msg) => { console.log(`  ${cond ? "OK " : "FAIL"} ${msg}`); if (!cond) pass = false; };
+const check = (cond, msg) => {
+  console.log(`  ${cond ? "OK " : "FAIL"} ${msg}`);
+  if (!cond) pass = false;
+};
 try {
   const browser = await chromium.launch();
   const page = await browser.newPage();
-  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(m.text());
+  });
   page.on("pageerror", (e) => errors.push(String(e)));
-  for (let i = 0; i < 200; i++) { try { await page.goto(`http://localhost:${PORT}/`, { timeout: 2000 }); break; } catch { await sleep(30); } }
+  for (let i = 0; i < 200; i++) {
+    try {
+      await page.goto(`http://localhost:${PORT}/`, { timeout: 2000 });
+      break;
+    } catch {
+      await sleep(30);
+    }
+  }
   await page.waitForSelector('[data-route="0"]', { timeout: 30000 });
   check(true, "landing route 0 rendered (eager)");
   // lazy chunk requests we can observe
   const lazyReqs = [];
-  page.on("request", (req) => { if (req.url().includes("/@oj/lazy.js")) lazyReqs.push(req.url()); });
+  page.on("request", (req) => {
+    if (req.url().includes("/@oj/lazy.js")) lazyReqs.push(req.url());
+  });
   // navigate to lazy route 1
   await page.click('[data-nav="1"]');
   await page.waitForSelector('[data-route="1"]', { timeout: 30000 });
   const hook1 = await page.textContent('[data-route="1"] p');
   check(/hook value 100/.test(hook1 || ""), `lazy route 1 rendered with working hook (${JSON.stringify(hook1)})`);
-  check(lazyReqs.some((u) => u.includes("Route1")), "lazy chunk fetched via /@oj/lazy.js");
+  check(
+    lazyReqs.some((u) => u.includes("Route1")),
+    "lazy chunk fetched via /@oj/lazy.js",
+  );
   // navigate to lazy route 2
   await page.click('[data-nav="2"]');
   await page.waitForSelector('[data-route="2"]', { timeout: 30000 });
@@ -91,11 +110,13 @@ try {
   await page.click('[data-nav="0"]');
   await page.waitForSelector('[data-route="0"]', { timeout: 5000 });
   check(true, "navigated back to route 0");
-  check(errors.length === 0, `no console/page errors (${errors.length}: ${errors.slice(0,2).join(" | ")})`);
+  check(errors.length === 0, `no console/page errors (${errors.length}: ${errors.slice(0, 2).join(" | ")})`);
   await browser.close();
 } finally {
   proc.kill("SIGKILL");
-  try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
+  try {
+    execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" });
+  } catch {}
 }
 console.log(pass ? "\nBUNDLE-LAZY CORRECTNESS PASSED" : "\nBUNDLE-LAZY CORRECTNESS FAILED");
 process.exit(pass ? 0 : 1);

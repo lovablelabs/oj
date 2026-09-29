@@ -28,15 +28,31 @@ const write = (rel, text) => {
   fs.mkdirSync(path.dirname(path.join(app, rel)), { recursive: true });
   fs.writeFileSync(path.join(app, rel), text);
 };
-write("package.json", JSON.stringify({ name: "excldep-app", version: "1.0.0", dependencies: { "excl-dep": "1.0.0", "plain-dep": "1.0.0" } }));
+write(
+  "package.json",
+  JSON.stringify({
+    name: "excldep-app",
+    version: "1.0.0",
+    dependencies: { "excl-dep": "1.0.0", "plain-dep": "1.0.0" },
+  }),
+);
 write("oj.config.json", JSON.stringify({ optimizeDeps: { exclude: ["excl-dep"] } }));
 for (const name of ["excl-dep", "plain-dep"]) {
-  write(`node_modules/${name}/package.json`, JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js" }));
+  write(
+    `node_modules/${name}/package.json`,
+    JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js" }),
+  );
   write(`node_modules/${name}/index.js`, `export const tag = "__MARKER__";\nexport { helper } from "./helper.js";\n`);
   write(`node_modules/${name}/helper.js`, `export const helper = "ON_DISK";\n`);
 }
-write("src/main.js", `import { tag as a } from "excl-dep";\nimport { tag as b } from "plain-dep";\nconsole.log(a, b);\n`);
-write("index.html", `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`);
+write(
+  "src/main.js",
+  `import { tag as a } from "excl-dep";\nimport { tag as b } from "plain-dep";\nconsole.log(a, b);\n`,
+);
+write(
+  "index.html",
+  `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
+);
 // Function-form hooks: no `filter`, so oj learns nothing about which ids they want.
 write(
   "oj.plugins.mjs",

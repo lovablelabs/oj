@@ -64,7 +64,7 @@ try {
   // Both gates must have skipped RPCs for unclaimed server modules.
   const tRe = /hook gate skipped ssr transform for /;
   const lRe = /hook gate skipped start load for /;
-  for (const t1 = Date.now(); !(tRe.test(stderr) && lRe.test(stderr)) && Date.now() - t1 < 5000; ) {
+  for (const t1 = Date.now(); !(tRe.test(stderr) && lRe.test(stderr)) && Date.now() - t1 < 5000;) {
     await new Promise((r) => setTimeout(r, 50));
   }
   assert.match(stderr, tRe, "ssr transform gate skipped unclaimed server modules");

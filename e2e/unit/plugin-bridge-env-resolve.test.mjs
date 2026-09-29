@@ -12,9 +12,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { repo } from "./harness.mjs";
 
-const bridge = await import(
-  pathToFileURL(join(repo, "crates/oj_server/src/assets/start/vite-plugin-bridge.mjs")).href
-);
+const bridge = await import(pathToFileURL(join(repo, "crates/oj_server/src/assets/start/vite-plugin-bridge.mjs")).href);
 
 test("configResolved sees a complete environments[env].resolve (cloudflare plugin's .external read does not crash)", async () => {
   let seen = null;

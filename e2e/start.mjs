@@ -131,7 +131,10 @@ async function assertDevHydration(port) {
       ssrMarker: "HOME!",
       clientMarker: '[data-testid="client-mounted"]',
       clientMarkerText: "client-mounted-ok",
-      interaction: { click: '[data-testid="counter"]', expect: { selector: '[data-testid="counter"]', text: "count: 1" } },
+      interaction: {
+        click: '[data-testid="counter"]',
+        expect: { selector: '[data-testid="counter"]', text: "count: 1" },
+      },
       whitelist,
     });
     await assertHydrates(browser, `${base}/about`, {
@@ -154,12 +157,15 @@ async function devPhase() {
   try {
     // oj may increment off a busy port; use the port it actually bound.
     let port = reqPort;
-    await settles(() => {
-      if (srv.exitCode != null) return true;
-      const bound = parseBoundPort(log);
-      if (bound) port = bound;
-      return Boolean(bound);
-    }, { timeoutMs: 60000, pollMs: 250 });
+    await settles(
+      () => {
+        if (srv.exitCode != null) return true;
+        const bound = parseBoundPort(log);
+        if (bound) port = bound;
+        return Boolean(bound);
+      },
+      { timeoutMs: 60000, pollMs: 250 },
+    );
     await waitUp(`http://localhost:${port}/`);
     await assertApp(port, "start-dev");
     await assertDevRouting(port);
@@ -234,7 +240,9 @@ async function assertDevRouting(port) {
   const missing = await fetch(`http://localhost:${port}/no-such-file.txt`);
   const missingBody = await missing.text();
   if (!missingBody.includes("<html") && !missingBody.includes("<!DOCTYPE")) {
-    throw new Error(`start-dev: unowned dotted GET should reach the app's SSR handler, got ${missing.status}: ${missingBody.slice(0, 80)}`);
+    throw new Error(
+      `start-dev: unowned dotted GET should reach the app's SSR handler, got ${missing.status}: ${missingBody.slice(0, 80)}`,
+    );
   }
   const results = await Promise.all([1, 2, 3, 4, 5, 6].map((i) => get(port, i % 2 ? "/" : "/about")));
   for (const r of results) if (r.status !== 200) throw new Error("start-dev: concurrent SSR requests failed");
@@ -258,7 +266,8 @@ async function assertBuildStartResilient() {
   try {
     await waitUp(`http://localhost:${port}/`);
     const home = await get(port, "/");
-    if (home.status !== 200) throw new Error(`start-dev: server did not stay up after a throwing buildStart (${home.status})`);
+    if (home.status !== 200)
+      throw new Error(`start-dev: server did not stay up after a throwing buildStart (${home.status})`);
     if (!home.body.includes("BUILDSTART_SKIPPED")) {
       throw new Error("start-dev: expected the plugin's degraded load fallback after buildStart threw");
     }
@@ -290,7 +299,9 @@ async function prodPhase() {
   }
   const port = 3098;
   const srv = spawn("node", [path.join(dist, "server.mjs")], {
-    cwd: app, stdio: "ignore", env: { ...process.env, PORT: String(port) },
+    cwd: app,
+    stdio: "ignore",
+    env: { ...process.env, PORT: String(port) },
   });
   try {
     await waitUp(`http://localhost:${port}/`);

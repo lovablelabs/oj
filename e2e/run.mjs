@@ -38,7 +38,10 @@ async function startServer(logFd) {
 }
 
 let failed = 0;
-for (const file of fs.readdirSync(here).filter((f) => f.endsWith(".test.js")).sort()) {
+for (const file of fs
+  .readdirSync(here)
+  .filter((f) => f.endsWith(".test.js"))
+  .sort()) {
   process.stdout.write(`\n${file}\n`);
   const logPath = path.join(here, `.server-${file}.log`);
   const logFd = fs.openSync(logPath, "w");

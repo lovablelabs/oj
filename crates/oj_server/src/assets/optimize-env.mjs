@@ -34,7 +34,9 @@ const warn = (msg) => process.stderr.write(`${OJ} ${msg}\n`);
 export async function run(env = null) {
   if (env) for (const [k, v] of Object.entries(env)) process.env[k] = v;
   if (env && env.OJ_APP_ROOT) {
-    try { process.chdir(env.OJ_APP_ROOT); } catch {}
+    try {
+      process.chdir(env.OJ_APP_ROOT);
+    } catch {}
   }
   return main();
 }
@@ -64,12 +66,7 @@ async function main() {
     return report([], false);
   }
 
-  const rc = await vite.resolveConfig(
-    { root, configFile: undefined, mode },
-    "serve",
-    "development",
-    "development",
-  );
+  const rc = await vite.resolveConfig({ root, configFile: undefined, mode }, "serve", "development", "development");
 
   const seeded = [];
   let failed = false;
@@ -95,11 +92,7 @@ async function main() {
     // environment (the default for server consumers without an include list):
     // the host will not run a pass either, nothing to seed.
     if (!de.depsOptimizer) continue;
-    const metadataPath = join(
-      de.config.cacheDir,
-      name === "client" ? "deps" : `deps_${name}`,
-      "_metadata.json",
-    );
+    const metadataPath = join(de.config.cacheDir, name === "client" ? "deps" : `deps_${name}`, "_metadata.json");
     try {
       await de.init();
       // Explicit optimizers (noDiscovery, the server default) run and COMMIT
@@ -126,7 +119,9 @@ async function main() {
     // Only after the commit: depsOptimizer.close() CANCELS an in-flight
     // optimization. Under node this also releases the handles a natural exit
     // waits on; the engine child exits regardless.
-    try { await de.close(); } catch {}
+    try {
+      await de.close();
+    } catch {}
   }
   if (seeded.length) {
     warn(`deps pre-optimized for environment(s): ${seeded.map((s) => s.name).join(", ")}`);
@@ -140,8 +135,7 @@ async function main() {
 function report(seeded, failed) {
   try {
     const dest =
-      process.env.OJ_PRESEED_REPORT ||
-      join(dirname(fileURLToPath(import.meta.url)), "optimize-env-report.json");
+      process.env.OJ_PRESEED_REPORT || join(dirname(fileURLToPath(import.meta.url)), "optimize-env-report.json");
     writeFileSync(dest, JSON.stringify({ seeded, failed }));
   } catch {}
 }

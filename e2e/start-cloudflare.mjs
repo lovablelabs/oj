@@ -38,7 +38,9 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oj-start-cf-"));
 const app = path.join(tmp, "app");
 const keep = !!process.env.OJ_E2E_KEEP;
-const cleanup = () => { if (!keep) fs.rmSync(tmp, { recursive: true, force: true }); };
+const cleanup = () => {
+  if (!keep) fs.rmSync(tmp, { recursive: true, force: true });
+};
 
 // The plugin and wrangler (with workerd) next to the app, so the config's
 // import resolves up from the app while the app's own node_modules stays the
@@ -49,8 +51,14 @@ function installCloudflareDeps() {
     fs.symlinkSync(path.join(path.resolve(prepared), "node_modules"), path.join(tmp, "node_modules"), "dir");
     return;
   }
-  fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }));
-  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", { cwd: tmp, stdio: "inherit" });
+  fs.writeFileSync(
+    path.join(tmp, "package.json"),
+    JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }),
+  );
+  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", {
+    cwd: tmp,
+    stdio: "inherit",
+  });
 }
 
 function makeApp() {
@@ -59,16 +67,19 @@ function makeApp() {
     fs.cpSync(path.join(fixture, f), path.join(app, f), { recursive: true });
   }
   fs.symlinkSync(path.join(fixture, "node_modules"), path.join(app, "node_modules"), "dir");
-  fs.writeFileSync(path.join(app, "wrangler.jsonc"), [
-    "{",
-    '  "name": "oj-start-fixture",',
-    '  "main": "@tanstack/react-start/server-entry",',
-    '  "compatibility_date": "2025-09-01",',
-    '  "compatibility_flags": ["nodejs_compat"],',
-    '  "vars": { "EDITION": "fixture-edition" }',
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "wrangler.jsonc"),
+    [
+      "{",
+      '  "name": "oj-start-fixture",',
+      '  "main": "@tanstack/react-start/server-entry",',
+      '  "compatibility_date": "2025-09-01",',
+      '  "compatibility_flags": ["nodejs_compat"],',
+      '  "vars": { "EDITION": "fixture-edition" }',
+      "}",
+      "",
+    ].join("\n"),
+  );
   const original = fs.readFileSync(path.join(fixture, "vite.config.ts"), "utf8");
   const withImport = original.replace(
     'import { defineConfig } from "vite";',
@@ -76,8 +87,12 @@ function makeApp() {
   );
   // Insert the Cloudflare plugin ahead of tanstackStart(...) whatever options the
   // fixture passes it.
-  const config = withImport.replace(/^(\s*)tanstackStart\(/m, '$1cloudflare({ viteEnvironment: { name: "ssr" } }),\n$1tanstackStart(');
-  if (config === original || config === withImport) throw new Error("fixture vite.config.ts changed shape; update this script");
+  const config = withImport.replace(
+    /^(\s*)tanstackStart\(/m,
+    '$1cloudflare({ viteEnvironment: { name: "ssr" } }),\n$1tanstackStart(',
+  );
+  if (config === original || config === withImport)
+    throw new Error("fixture vite.config.ts changed shape; update this script");
   fs.writeFileSync(path.join(app, "vite.config.ts"), config);
 }
 
@@ -88,15 +103,19 @@ function assertLayout() {
     if (!fs.existsSync(path.join(dist, rel))) throw new Error(`missing dist/${rel}`);
   }
   for (const rel of ["server.mjs", "worker.mjs", "server-bundle.mjs", "cf-loader.mjs", "cf-server.mjs"]) {
-    if (fs.existsSync(path.join(dist, rel))) throw new Error(`dist/${rel} written: the Cloudflare build must not carry the Node server`);
+    if (fs.existsSync(path.join(dist, rel)))
+      throw new Error(`dist/${rel} written: the Cloudflare build must not carry the Node server`);
   }
-  if (!fs.readdirSync(path.join(dist, "client", "assets")).some((f) => f.endsWith(".js"))) throw new Error("no client bundle");
+  if (!fs.readdirSync(path.join(dist, "client", "assets")).some((f) => f.endsWith(".js")))
+    throw new Error("no client bundle");
   if (!fs.readFileSync(path.join(dist, "client", ".assetsignore"), "utf8").includes("wrangler.json")) {
     throw new Error("client/.assetsignore lacks wrangler.json (the plugin's client generateBundle did not run)");
   }
 
   const wrangler = JSON.parse(fs.readFileSync(path.join(dist, "ssr", "wrangler.json"), "utf8"));
-  const expect = (cond, what) => { if (!cond) throw new Error(`dist/ssr/wrangler.json: ${what}: ${JSON.stringify(wrangler)}`); };
+  const expect = (cond, what) => {
+    if (!cond) throw new Error(`dist/ssr/wrangler.json: ${what}: ${JSON.stringify(wrangler)}`);
+  };
   expect(wrangler.name === "oj-start-fixture", "worker name");
   expect(wrangler.main === "index.js", "main is the entry chunk");
   expect(wrangler.no_bundle === true, "no_bundle");
@@ -114,7 +133,8 @@ function assertLayout() {
   // runtime provides, no Node server wrapper, no createRequire banner.
   const files = [path.join(dist, "ssr", "index.js")];
   const assets = path.join(dist, "ssr", "assets");
-  if (fs.existsSync(assets)) for (const f of fs.readdirSync(assets)) if (f.endsWith(".js")) files.push(path.join(assets, f));
+  if (fs.existsSync(assets))
+    for (const f of fs.readdirSync(assets)) if (f.endsWith(".js")) files.push(path.join(assets, f));
   const bare = new Set();
   for (const file of files) {
     const code = fs.readFileSync(file, "utf8");
@@ -128,7 +148,8 @@ function assertLayout() {
   }
   const foreign = [...bare].filter((s) => !s.startsWith("cloudflare:") && !s.startsWith("node:"));
   if (foreign.length) throw new Error(`worker bundle left non-runtime imports external: ${foreign.join(", ")}`);
-  if (!bare.has("cloudflare:workers")) throw new Error(`worker bundle does not import cloudflare:workers (externals: ${[...bare].join(", ")})`);
+  if (!bare.has("cloudflare:workers"))
+    throw new Error(`worker bundle does not import cloudflare:workers (externals: ${[...bare].join(", ")})`);
   console.log(`start-cloudflare: layout ok (externals: ${[...bare].sort().join(", ")})`);
 }
 
@@ -140,27 +161,49 @@ const get = async (route) => {
 async function runInWorkerd() {
   const bin = path.join(tmp, "node_modules", ".bin", "wrangler");
   let log = "";
-  const srv = spawn(bin, [
-    "dev", "--port", String(PORT), "--inspector-port", String(INSPECTOR_PORT), "--ip", "127.0.0.1", "--show-interactive-dev-session=false",
-  ], {
-    cwd: app,
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" },
-  });
+  const srv = spawn(
+    bin,
+    [
+      "dev",
+      "--port",
+      String(PORT),
+      "--inspector-port",
+      String(INSPECTOR_PORT),
+      "--ip",
+      "127.0.0.1",
+      "--show-interactive-dev-session=false",
+    ],
+    {
+      cwd: app,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" },
+    },
+  );
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
   const stop = () => {
-    try { process.kill(-srv.pid, "SIGTERM"); } catch {}
-    setTimeout(() => { try { process.kill(-srv.pid, "SIGKILL"); } catch {} }, 2000).unref();
+    try {
+      process.kill(-srv.pid, "SIGTERM");
+    } catch {}
+    setTimeout(() => {
+      try {
+        process.kill(-srv.pid, "SIGKILL");
+      } catch {}
+    }, 2000).unref();
   };
   try {
     let up = false;
-    await settles(async () => {
-      if (srv.exitCode != null) return true;
-      try { up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200; } catch {}
-      return up;
-    }, { timeoutMs: 120000, pollMs: 500 });
+    await settles(
+      async () => {
+        if (srv.exitCode != null) return true;
+        try {
+          up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200;
+        } catch {}
+        return up;
+      },
+      { timeoutMs: 120000, pollMs: 500 },
+    );
     if (!up) throw new Error(`wrangler dev did not serve on :${PORT}; log:\n${log.slice(-3000)}`);
     if (!/redirected Wrangler configuration/i.test(log) || !log.includes("dist/ssr/wrangler.json")) {
       throw new Error(`wrangler did not pick up the plugin's deploy redirect; log:\n${log.slice(0, 2000)}`);
@@ -189,18 +232,22 @@ async function runInWorkerd() {
     for (const [what, marker] of want) {
       if (!h.includes(marker)) throw new Error(`workerd render: missing ${what} ("${marker}")\n${h.slice(0, 1500)}`);
     }
-    if (!/<link[^>]*rel="stylesheet"[^>]*\.css/.test(h.slice(0, h.indexOf("</head>")))) throw new Error("stylesheet not linked in the SSR head");
+    if (!/<link[^>]*rel="stylesheet"[^>]*\.css/.test(h.slice(0, h.indexOf("</head>"))))
+      throw new Error("stylesheet not linked in the SSR head");
 
     const about = await get("/about");
-    if (about.status !== 200 || !about.body.includes("about-page-marker")) throw new Error(`/about did not render (${about.status})`);
+    if (about.status !== 200 || !about.body.includes("about-page-marker"))
+      throw new Error(`/about did not render (${about.status})`);
 
     // Static assets come from the Worker's `assets` directory (the client build).
     const script = h.match(/<script[^>]*src="([^"]+\.js)"/)?.[1] ?? h.match(/href="(\/assets\/[^"]+\.js)"/)?.[1];
     if (!script) throw new Error("no client script in the SSR html");
     const js = await get(script);
-    if (js.status !== 200 || !/javascript/.test(js.type)) throw new Error(`client bundle ${script}: ${js.status} ${js.type}`);
+    if (js.status !== 200 || !/javascript/.test(js.type))
+      throw new Error(`client bundle ${script}: ${js.status} ${js.type}`);
     const pub = await get("/favicon.txt");
-    if (pub.status !== 200 || !pub.body.includes("public-dir-marker")) throw new Error("publicDir file not served as a static asset");
+    if (pub.status !== 200 || !pub.body.includes("public-dir-marker"))
+      throw new Error("publicDir file not served as a static asset");
 
     console.log(`start-cloudflare: workerd render ok (${want.length} features + /about + assets + publicDir)`);
   } finally {

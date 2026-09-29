@@ -87,7 +87,11 @@ test("an environment-declaring plugin gets server.environments (built from the a
 
   try {
     const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
-    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    const seen = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
 
     // The Environment API: the host called the app's Vite and built one
     // DevEnvironment per resolved environment via its dev.createEnvironment.
@@ -368,7 +372,11 @@ test("a non-cloudflare plugin set gets oj-backed client/ssr stand-ins, not Vite-
   });
   try {
     const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
-    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    const seen = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
     assert.deepEqual(seen.envNames, ["client", "ssr"], "client and ssr are always exposed");
     assert.equal(seen.stubbed, true, "they are oj stand-ins, no Vite environment construction ran");
     assert.equal(seen.middlewaresCallable, true, "callable middlewares still provided to every app");
@@ -505,7 +513,10 @@ test("create retries failed resolutions, delete prunes, legacy hooks and hook er
     // A deleted file goes through onFileDelete and still updates its boundary.
     await invalidate("src/gone.ts", "delete");
     seen = await probe();
-    assert.ok(seen.deletes.some((f) => f.endsWith("gone.ts")), "moduleGraph.onFileDelete ran");
+    assert.ok(
+      seen.deletes.some((f) => f.endsWith("gone.ts")),
+      "moduleGraph.onFileDelete ran",
+    );
     assert.equal(seen.workerSends.length, 2);
     assert.equal(seen.workerSends[1].type, "update");
 
@@ -519,7 +530,10 @@ test("create retries failed resolutions, delete prunes, legacy hooks and hook er
 
     // Legacy handleHotUpdate: dispatched for the client environment on updates
     // only, as in Vite.
-    assert.ok(seen.legacy.some((f) => f.endsWith("errfile.ts")), "legacy hook ran for the update");
+    assert.ok(
+      seen.legacy.some((f) => f.endsWith("errfile.ts")),
+      "legacy hook ran for the update",
+    );
     assert.ok(!seen.legacy.some((f) => f.endsWith("new.ts")), "legacy hook is not called for create events");
   } finally {
     host.close();
@@ -840,11 +854,7 @@ test("detection true with nothing built prints the none-came-up warning, whateve
     for (let i = 0; i < 100 && !warning.test(host.stderr()); i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    assert.match(
-      host.stderr(),
-      warning,
-      "silent degradation to the Node SSR runner is never acceptable",
-    );
+    assert.match(host.stderr(), warning, "silent degradation to the Node SSR runner is never acceptable");
   } finally {
     host.close();
     fx.cleanup();

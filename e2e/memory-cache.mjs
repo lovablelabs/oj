@@ -34,8 +34,10 @@ try {
   }
   fs.writeFileSync(
     path.join(app, "src", "main.js"),
-    names.map((n, i) => `import { s${i} } from "./${n}";`).join("\n") + "\nexport const total = " +
-      names.map((_, i) => `s${i}.length`).join(" + ") + ";\n",
+    names.map((n, i) => `import { s${i} } from "./${n}";`).join("\n") +
+      "\nexport const total = " +
+      names.map((_, i) => `s${i}.length`).join(" + ") +
+      ";\n",
   );
 
   let out = "";
@@ -44,7 +46,10 @@ try {
   child.stderr.on("data", (d) => (out += d.toString()));
 
   const up = async () => {
-    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    return waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
   };
   if (!(await up())) throw new Error("server did not start:\n" + out);
 

@@ -30,7 +30,10 @@ fs.symlinkSync(esbuildSrc, path.join(nm, "esbuild"));
 const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
 if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(nm, "@esbuild"));
 
-fs.writeFileSync(path.join(nm, "cjs-lib", "package.json"), JSON.stringify({ name: "cjs-lib", version: "1.0.0", main: "index.js" }));
+fs.writeFileSync(
+  path.join(nm, "cjs-lib", "package.json"),
+  JSON.stringify({ name: "cjs-lib", version: "1.0.0", main: "index.js" }),
+);
 fs.writeFileSync(
   path.join(nm, "cjs-lib", "index.js"),
   `"use strict";\n` +
@@ -39,7 +42,10 @@ fs.writeFileSync(
     `function greet(n) { return "hi " + n; }\n`,
 );
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "optdep-app", version: "1.0.0" }));
-fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/main.js"></script></body></html>`);
+fs.writeFileSync(
+  path.join(app, "index.html"),
+  `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/main.js"></script></body></html>`,
+);
 fs.writeFileSync(path.join(app, "main.js"), `import { greet } from "cjs-lib";\nwindow.__RESULT = greet("world");\n`);
 
 const get = async (route) => {
@@ -51,7 +57,10 @@ let server;
 let failed = false;
 try {
   // Auto-discovery is opt-in (include-only pre-bundling is the default); this test covers the discovered path.
-  server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" } });
+  server = spawn(oj, ["dev", app, "--port", String(port)], {
+    stdio: "ignore",
+    env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" },
+  });
   await waitUp(`http://localhost:${port}/`);
 
   const main = await get("/main.js");

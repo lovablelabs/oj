@@ -30,8 +30,7 @@ const TOOLS = {
         cwd: app,
         stdio: "ignore",
       }),
-    clearCache: () =>
-      fs.rmSync(path.join(app, "node_modules", ".vite"), { recursive: true, force: true }),
+    clearCache: () => fs.rmSync(path.join(app, "node_modules", ".vite"), { recursive: true, force: true }),
   },
   "vite-fbm": {
     // Vite's experimental bundled dev mode (full bundle mode).
@@ -39,15 +38,10 @@ const TOOLS = {
     spawn: () =>
       spawn(
         process.execPath,
-        [
-          path.join(app, "node_modules", "vite", "bin", "vite.js"),
-          "--config",
-          "vite.bundled.config.mjs",
-        ],
-        { cwd: app, stdio: "ignore" }
+        [path.join(app, "node_modules", "vite", "bin", "vite.js"), "--config", "vite.bundled.config.mjs"],
+        { cwd: app, stdio: "ignore" },
       ),
-    clearCache: () =>
-      fs.rmSync(path.join(app, "node_modules", ".vite"), { recursive: true, force: true }),
+    clearCache: () => fs.rmSync(path.join(app, "node_modules", ".vite"), { recursive: true, force: true }),
   },
 };
 
@@ -83,10 +77,14 @@ async function renderOnce(browser, port) {
 // inspector), not for embedded V8, and a benchmark table should only carry
 // metrics measured identically for every row.
 function processTree(root) {
-  const rows = execSync("ps -axo pid=,ppid=,rss=").toString().trim().split("\n").map((l) => {
-    const [pid, ppid, rss] = l.trim().split(/\s+/).map(Number);
-    return { pid, ppid, rss };
-  });
+  const rows = execSync("ps -axo pid=,ppid=,rss=")
+    .toString()
+    .trim()
+    .split("\n")
+    .map((l) => {
+      const [pid, ppid, rss] = l.trim().split(/\s+/).map(Number);
+      return { pid, ppid, rss };
+    });
   const kids = new Map();
   for (const r of rows) kids.set(r.ppid, [...(kids.get(r.ppid) ?? []), r.pid]);
   const byPid = new Map(rows.map((r) => [r.pid, r.rss]));
@@ -129,11 +127,7 @@ async function measureHmr(page, marker) {
   const original = fs.readFileSync(leaf, "utf8");
   const t0 = Date.now();
   fs.writeFileSync(leaf, original.replace(/leaf-\d+-marker-\w+/, marker));
-  await page.waitForFunction(
-    (m) => document.body.innerText.includes(m),
-    marker,
-    { timeout: 30000, polling: 16 }
-  );
+  await page.waitForFunction((m) => document.body.innerText.includes(m), marker, { timeout: 30000, polling: 16 });
   return Date.now() - t0;
 }
 
@@ -197,10 +191,7 @@ async function bench(tool) {
 
 function restoreLeaf() {
   const leaf = path.join(app, "src", "components", `Comp${N - 1}.tsx`);
-  fs.writeFileSync(
-    leaf,
-    fs.readFileSync(leaf, "utf8").replace(/leaf-\d+-marker-\w+/, `leaf-${N - 1}-marker-A`)
-  );
+  fs.writeFileSync(leaf, fs.readFileSync(leaf, "utf8").replace(/leaf-\d+-marker-\w+/, `leaf-${N - 1}-marker-A`));
 }
 
 const rows = [];
@@ -212,11 +203,13 @@ for (const tool of Object.keys(TOOLS)) {
 }
 
 // again, table??
-console.log(`\n${N} components (fanout-10 tree), ${ITERS} restarts, ${HMR_EDITS} hmr edits — p50/p95, macOS ${process.arch}, ${new Date().toISOString().slice(0, 10)}`);
+console.log(
+  `\n${N} components (fanout-10 tree), ${ITERS} restarts, ${HMR_EDITS} hmr edits — p50/p95, macOS ${process.arch}, ${new Date().toISOString().slice(0, 10)}`,
+);
 console.log("tool      | cold start   | warm start   | reload       | HMR         | tree RSS | footprint");
 console.log("----------|--------------|--------------|--------------|-------------|----------|----------");
 for (const r of rows) {
   console.log(
-    `${r.tool.padEnd(9)} | ${fmt(r.cold).padEnd(12)} | ${fmt(r.warm).padEnd(12)} | ${fmt(r.reload).padEnd(12)} | ${fmt(r.hmr).padEnd(11)} | ${String(r.rssMb + "MB").padEnd(8)} | ${r.footMb}MB`
+    `${r.tool.padEnd(9)} | ${fmt(r.cold).padEnd(12)} | ${fmt(r.warm).padEnd(12)} | ${fmt(r.reload).padEnd(12)} | ${fmt(r.hmr).padEnd(11)} | ${String(r.rssMb + "MB").padEnd(8)} | ${r.footMb}MB`,
   );
 }

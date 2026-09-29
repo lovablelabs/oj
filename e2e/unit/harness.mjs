@@ -27,9 +27,7 @@ export const hasEsbuildFixture = () => fs.existsSync(esbuildSrc);
 // (rather than hard-fail) when the start-app fixture has no node_modules, the
 // same convention optimize-deps.test.mjs uses.
 export function testWithEsbuild(test) {
-  return hasEsbuildFixture()
-    ? test
-    : (name, fn) => test(name, { skip: "fixture esbuild not installed" }, () => {});
+  return hasEsbuildFixture() ? test : (name, fn) => test(name, { skip: "fixture esbuild not installed" }, () => {});
 }
 
 // Same convention for rolldown (vite 8's bundler, hoisted by the start-app
@@ -37,9 +35,7 @@ export function testWithEsbuild(test) {
 const rolldownSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/rolldown");
 export const hasRolldownFixture = () => fs.existsSync(rolldownSrc);
 export function testWithRolldown(test) {
-  return hasRolldownFixture()
-    ? test
-    : (name, fn) => test(name, { skip: "fixture rolldown not installed" }, () => {});
+  return hasRolldownFixture() ? test : (name, fn) => test(name, { skip: "fixture rolldown not installed" }, () => {});
 }
 // Symlink the fixture's rolldown into a package root's node_modules (Node
 // resolves its native bindings from the symlink's realpath, next to the real

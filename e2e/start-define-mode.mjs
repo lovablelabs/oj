@@ -72,33 +72,53 @@ async function served(args, check) {
   }
 }
 
-const must = (cond, msg) => { if (!cond) throw new Error(msg); };
+const must = (cond, msg) => {
+  if (!cond) throw new Error(msg);
+};
 
 try {
   await served([], async () => {
     const html = (await get("/")).body;
     must(html.includes("fixture-define-marker"), "default: SSR did not apply the config define");
-    must(html.includes("jsenv:development:true:default-flavor"), `default: SSR MODE/.env.development wrong:\n${html.match(/jsenv:[^<]*/)?.[0]}`);
+    must(
+      html.includes("jsenv:development:true:default-flavor"),
+      `default: SSR MODE/.env.development wrong:\n${html.match(/jsenv:[^<]*/)?.[0]}`,
+    );
     const js = await clientBundle();
-    must(js.includes("fixture-define-marker"), "default: client bundle did not apply the config define (hydration would throw)");
+    must(
+      js.includes("fixture-define-marker"),
+      "default: client bundle did not apply the config define (hydration would throw)",
+    );
     must(!/\b__FIXTURE_DEFINE__\b/.test(js), "default: client bundle still references the bare define identifier");
     must(/"MODE":\s*"development"/.test(js), "default: client import.meta.env.MODE is not development");
     must(js.includes("default-flavor"), "default: client did not get .env.development VITE_ var");
     must(!js.includes("staging-flavor"), "default: .env.staging leaked into the default mode");
     // envPrefix: a FIXTURE_ var reaches both sides, an unprefixed one neither.
-    must(html.includes(":true:custom-prefix-edition"), `default: SSR import.meta.env missed the custom envPrefix var (DEV should be true):\n${html.match(/jsenv:[^<]*/)?.[0]}`);
+    must(
+      html.includes(":true:custom-prefix-edition"),
+      `default: SSR import.meta.env missed the custom envPrefix var (DEV should be true):\n${html.match(/jsenv:[^<]*/)?.[0]}`,
+    );
     must(js.includes("custom-prefix-edition"), "default: client import.meta.env missed the custom envPrefix var");
-    must(!html.includes("must-not-leak") && !js.includes("must-not-leak"), "default: an unprefixed .env var leaked into import.meta.env");
+    must(
+      !html.includes("must-not-leak") && !js.includes("must-not-leak"),
+      "default: an unprefixed .env var leaked into import.meta.env",
+    );
     // environments.{ssr,client}.define: each bundle gets its own value.
     must(html.includes(">server-side<"), "default: SSR did not apply environments.ssr.define");
-    must(js.includes('"client-side"') && !js.includes('"server-side"'), "default: client bundle did not apply environments.client.define");
+    must(
+      js.includes('"client-side"') && !js.includes('"server-side"'),
+      "default: client bundle did not apply environments.client.define",
+    );
     must(!/\b__FIXTURE_SIDE__\b/.test(js), "default: client bundle still references the bare environment define");
     console.log("start-dev: config define reaches the client bundle; envPrefix + environment defines; default mode ok");
   });
 
   await served(["--mode", "staging"], async () => {
     const html = (await get("/")).body;
-    must(html.includes("jsenv:staging:true:staging-flavor"), `--mode staging: SSR MODE/.env.staging wrong:\n${html.match(/jsenv:[^<]*/)?.[0]}`);
+    must(
+      html.includes("jsenv:staging:true:staging-flavor"),
+      `--mode staging: SSR MODE/.env.staging wrong:\n${html.match(/jsenv:[^<]*/)?.[0]}`,
+    );
     must(html.includes("fixture-define-marker"), "--mode staging: SSR lost the config define");
     const js = await clientBundle();
     must(/"MODE":\s*"staging"/.test(js), "--mode staging: client import.meta.env.MODE is not staging");

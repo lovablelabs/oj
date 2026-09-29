@@ -92,7 +92,10 @@ createRoot(document.getElementById("root")!).render(<App />);
     `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>routes ${variant}</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>
 `,
   );
-  fs.writeFileSync(path.join(dir, "package.json"), `{ "name": "routes-${variant}", "private": true, "type": "module" }\n`);
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    `{ "name": "routes-${variant}", "private": true, "type": "module" }\n`,
+  );
   const nm = path.join(dir, "node_modules");
   fs.rmSync(nm, { recursive: true, force: true });
   fs.symlinkSync(path.join(donor, "node_modules"), nm, "dir");

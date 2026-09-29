@@ -227,7 +227,13 @@ export function Playground() {
         </div>
         <div className="play__framewrap">
           <iframe ref={frameARef} className="play__frame" data-front="true" title="oj wasm preview" />
-          <iframe ref={frameBRef} className="play__frame" data-front="false" aria-hidden="true" title="oj wasm preview" />
+          <iframe
+            ref={frameBRef}
+            className="play__frame"
+            data-front="false"
+            aria-hidden="true"
+            title="oj wasm preview"
+          />
         </div>
       </div>
     </div>

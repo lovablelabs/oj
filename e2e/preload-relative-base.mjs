@@ -31,7 +31,10 @@ fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "relbase
 fs.writeFileSync(path.join(app, "src", "util.js"), `export const util = "shared-util";\n`);
 fs.writeFileSync(path.join(app, "src", "main.css"), `body { background: url(./bg.png) no-repeat; margin: 0 }\n`);
 // Larger than assetsInlineLimit (4096), so it is emitted as a file rather than inlined.
-fs.writeFileSync(path.join(app, "src", "bg.png"), Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(5000, 1)]));
+fs.writeFileSync(
+  path.join(app, "src", "bg.png"),
+  Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(5000, 1)]),
+);
 fs.writeFileSync(path.join(app, "src", "lazy.css"), `body { color: rgb(255, 0, 0) }\n`);
 fs.writeFileSync(
   path.join(app, "src", "lazy.js"),
@@ -83,10 +86,22 @@ try {
   assert.match(rel.html, /src="\.\/assets\/main-[^"]+\.js"/, "root page script is ./assets/…");
   assert.match(rel.html, /rel="stylesheet" href="\.\/assets\/main-[^"]+\.css"/, "root page css is ./assets/…");
   assert.match(rel.nested, /src="\.\.\/assets\/nested-[^"]+\.js"/, "nested page script is ../assets/…");
-  assert.match(rel.nested, /rel="modulepreload" href="\.\.\/assets\/util-[^"]+\.js"/, "nested modulepreload is ../assets/…");
+  assert.match(
+    rel.nested,
+    /rel="modulepreload" href="\.\.\/assets\/util-[^"]+\.js"/,
+    "nested modulepreload is ../assets/…",
+  );
   assert.match(rel.mainCss, /url\("\.\/bg-[a-z0-9]+\.png"\)/, "css url() is a sibling reference");
-  assert.match(rel.main, /__vitePreload\(function\(\)\{return import\([`"']\.\/lazy-[^`"']+\.js[`"']\)\},__vite__mapDeps\(\[[\d,]+\]\),import\.meta\.url\)/, `dynamic import wrapped:\n${rel.main.slice(-400)}`);
-  assert.match(rel.main, /m\.f=\["\.\/lazy-[^"]+\.js","\.\/lazy-[^"]+\.css","\.\/util-[^"]+\.js"\]/, "deps are chunk-relative: lazy chunk, its css, shared util");
+  assert.match(
+    rel.main,
+    /__vitePreload\(function\(\)\{return import\([`"']\.\/lazy-[^`"']+\.js[`"']\)\},__vite__mapDeps\(\[[\d,]+\]\),import\.meta\.url\)/,
+    `dynamic import wrapped:\n${rel.main.slice(-400)}`,
+  );
+  assert.match(
+    rel.main,
+    /m\.f=\["\.\/lazy-[^"]+\.js","\.\/lazy-[^"]+\.css","\.\/util-[^"]+\.js"\]/,
+    "deps are chunk-relative: lazy chunk, its css, shared util",
+  );
   assert.match(rel.main, /new URL\(dep,importerUrl\)/, "relative base resolves deps against the importer");
   assert.match(rel.main, /vite:preloadError/, "preload helper dispatches vite:preloadError");
   assert.match(rel.main, /relList\.supports/, "page entry carries the modulepreload polyfill");
@@ -98,16 +113,21 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") errors.push(m.type() + ": " + m.text()); });
+  page.on("console", (m) => {
+    if (m.type() === "error" || m.type() === "warning") errors.push(m.type() + ": " + m.text());
+  });
   try {
     await page.goto(`http://localhost:${PORT}/`, { timeout: 30000 });
     try {
       await page.waitForFunction(() => window.__LAZY !== undefined, { timeout: 15000 });
     } catch (e) {
       const state = await page.evaluate(() => ({
-        lazy: window.__LAZY, links: [...document.querySelectorAll("link,script")].map((l) => l.outerHTML),
+        lazy: window.__LAZY,
+        links: [...document.querySelectorAll("link,script")].map((l) => l.outerHTML),
       }));
-      throw new Error(`lazy chunk never ran: ${e.message}\nstate: ${JSON.stringify(state)}\nerrors: ${errors.join(" | ")}`);
+      throw new Error(
+        `lazy chunk never ran: ${e.message}\nstate: ${JSON.stringify(state)}\nerrors: ${errors.join(" | ")}`,
+      );
     }
     const lazy = await page.evaluate(() => ({ color: window.__LAZY, util: window.__UTIL }));
     assert.equal(lazy.color, "rgb(255, 0, 0)", "lazy chunk css applied before the chunk executed");
@@ -124,7 +144,11 @@ try {
 
   const abs = build("/app/");
   assert.match(abs.html, /src="\/app\/assets\/main-[^"]+\.js"/, "absolute base kept");
-  assert.match(abs.main, /m\.f=\["assets\/lazy-[^"]+\.js","assets\/lazy-[^"]+\.css","assets\/util-[^"]+\.js"\]/, "deps are outDir-relative with an absolute base");
+  assert.match(
+    abs.main,
+    /m\.f=\["assets\/lazy-[^"]+\.js","assets\/lazy-[^"]+\.css","assets\/util-[^"]+\.js"\]/,
+    "deps are outDir-relative with an absolute base",
+  );
   assert.match(abs.main, /function\(dep\)\{return "\/app\/"\+dep\}/, "absolute base is prefixed in the helper");
 
   // modulePreload: false drops the polyfill.
@@ -134,8 +158,14 @@ try {
   );
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
-  const mainNoPoly = fs.readdirSync(path.join(app, "dist", "assets")).find((a) => a.startsWith("main-") && a.endsWith(".js"));
-  assert.doesNotMatch(fs.readFileSync(path.join(app, "dist", "assets", mainNoPoly), "utf8"), /relList\.supports\("modulepreload"\)\)return;for/, "modulePreload:false removes the polyfill");
+  const mainNoPoly = fs
+    .readdirSync(path.join(app, "dist", "assets"))
+    .find((a) => a.startsWith("main-") && a.endsWith(".js"));
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(app, "dist", "assets", mainNoPoly), "utf8"),
+    /relList\.supports\("modulepreload"\)\)return;for/,
+    "modulePreload:false removes the polyfill",
+  );
 
   console.log("PRELOAD-RELATIVE-BASE E2E PASSED");
 } catch (err) {

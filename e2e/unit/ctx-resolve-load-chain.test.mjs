@@ -75,7 +75,11 @@ test("ctx.resolve and ctx.load consult sibling plugins before the Rust resolver 
     const out = JSON.parse(frame.result);
     const probe = JSON.parse(out.code.match(/\/\*(\{.*\})\*\//s)[1]);
     assert.equal(probe.resolved, "\0virtual:msg", "this.resolve hits the sibling's resolveId first");
-    assert.equal(probe.loaded, "export const MSG = 'from-virtual';\n// virt-transformed", "this.load runs the sibling's load and the transform chain");
+    assert.equal(
+      probe.loaded,
+      "export const MSG = 'from-virtual';\n// virt-transformed",
+      "this.load runs the sibling's load and the transform chain",
+    );
     assert.equal(probe.selfSkipped, null, "the calling plugin's own resolveId is skipped (Vite skipSelf default)");
     assert.equal(probe.selfKept, "\0self", "skipSelf: false lets the caller resolve its own id");
     assert.equal(probe.disk, path.join(fx.root, "a.js"), "ids no plugin claims still reach the Rust resolver");

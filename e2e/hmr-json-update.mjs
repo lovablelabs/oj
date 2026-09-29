@@ -57,8 +57,11 @@ try {
     await page.goto(`http://localhost:${PORT}/`, { waitUntil: "networkidle", timeout: 30000 });
     await page.locator("h1", { hasText: "v1" }).waitFor({ timeout: 20000 });
     const btn = page.locator("button");
-    await btn.click(); await btn.click();
-    await page.evaluate(() => { window.__NOT_RELOADED = true; });
+    await btn.click();
+    await btn.click();
+    await page.evaluate(() => {
+      window.__NOT_RELOADED = true;
+    });
 
     fs.writeFileSync(DATA, JSON.stringify({ label: "v2" }));
     await page.locator("h1", { hasText: "v2" }).waitFor({ timeout: 20000 });

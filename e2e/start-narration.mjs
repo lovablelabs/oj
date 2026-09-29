@@ -41,7 +41,10 @@ const routeFile = (() => {
 })();
 
 async function up() {
-  return waitUp(`http://localhost:${port}/`).then(() => true, () => false);
+  return waitUp(`http://localhost:${port}/`).then(
+    () => true,
+    () => false,
+  );
 }
 // Deadline-based wait, retouching the probe write on the way: the watcher
 // thread may register its watches after HTTP-ready on a loaded runner, so a
@@ -73,7 +76,11 @@ try {
 
   const frames = [];
   ws = new WebSocket(`ws://localhost:${port}/__ws`);
-  ws.addEventListener("message", (e) => { try { frames.push(JSON.parse(e.data)); } catch {} });
+  ws.addEventListener("message", (e) => {
+    try {
+      frames.push(JSON.parse(e.data));
+    } catch {}
+  });
   await new Promise((res, rej) => {
     ws.addEventListener("open", () => res());
     ws.addEventListener("error", () => rej(new Error("ws connect failed")));
@@ -98,7 +105,9 @@ try {
   const touch = () => fs.writeFileSync(routeFile, probed);
   touch();
 
-  const opened = await waitFor(frames, (f) => isEvent(f, "lovable:update-progress") && f.data.done === false, { touch });
+  const opened = await waitFor(frames, (f) => isEvent(f, "lovable:update-progress") && f.data.done === false, {
+    touch,
+  });
   if (!opened) throw new Error(`no update-progress open frame; got ${JSON.stringify(frames)}`);
   const done = await waitFor(frames, (f) => isEvent(f, "lovable:update-progress") && f.data.done === true);
   if (!done) throw new Error(`no update-progress done frame; got ${JSON.stringify(frames)}`);
@@ -110,13 +119,17 @@ try {
     throw new Error(`update-progress missing required module counts: ${JSON.stringify(doneFrame)}`);
   }
   if (doneFrame.clientModules < 1) throw new Error("update-progress clientModules should be > 0 after a rebuild");
-  console.log(`update-progress:  open -> done (batch ${doneFrame.batch}, ${doneFrame.clientModules} client modules) ok`);
+  console.log(
+    `update-progress:  open -> done (batch ${doneFrame.batch}, ${doneFrame.clientModules} client modules) ok`,
+  );
   console.log("\nSTART NARRATION VERIFIED: editor boot + update frames emitted on /__ws");
 } catch (e) {
   failed = true;
   console.error("FAIL:", e.message);
 } finally {
-  try { ws?.close(); } catch {}
+  try {
+    ws?.close();
+  } catch {}
   if (srv) srv.kill("SIGKILL");
   // Undo the probe edit so the fixture stays pristine.
   try {

@@ -78,7 +78,10 @@ write("src/lib/redirected.ts", 'export const redirected: string = "redirected-ok
 // suppresses inlining, never the URL).
 fs.writeFileSync(
   path.join(app, "src/lib/hero.png"),
-  Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"),
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  ),
 );
 write(
   "src/lib/resolve-probe.ts",
@@ -104,7 +107,10 @@ write(
     "",
   ].join("\n"),
 );
-write("src/lib/wk/inline-worker.ts", 'import { n } from "./helper";\nself.onmessage = () => self.postMessage(`inline-${n}`);\n');
+write(
+  "src/lib/wk/inline-worker.ts",
+  'import { n } from "./helper";\nself.onmessage = () => self.postMessage(`inline-${n}`);\n',
+);
 write(
   "src/lib/wk/index.ts",
   [
@@ -206,7 +212,10 @@ async function served(cmd, args, opts, check) {
   srv.stderr.on("data", (d) => (stderr += d));
   const exited = new Promise((r) => srv.once("exit", r));
   try {
-    const up = await waitUp(`http://localhost:${PORT}/`, { until: () => true }).then(() => true, () => false);
+    const up = await waitUp(`http://localhost:${PORT}/`, { until: () => true }).then(
+      () => true,
+      () => false,
+    );
     must(up, `server on :${PORT} did not start\n${stderr.slice(-2000)}`);
     await check(() => stderr);
   } finally {
@@ -236,13 +245,24 @@ async function workersRunInBrowser(label) {
     page.on("pageerror", (e) => errors.push(String(e)));
     await page.goto(`http://localhost:${PORT}/about`);
     const hydrated = await page.locator("#rid").textContent();
-    must(hydrated === RESOLVED, `${label}: the hydrated page resolved differently: ${JSON.stringify(hydrated)} (errors: ${errors.join(" | ")})`);
+    must(
+      hydrated === RESOLVED,
+      `${label}: the hydrated page resolved differently: ${JSON.stringify(hydrated)} (errors: ${errors.join(" | ")})`,
+    );
     const want = "42,42,inline-41";
     const got = await page
       .waitForFunction((w) => document.querySelector("#wkrun")?.textContent === w, want, { timeout: 20000 })
       .then(() => want)
-      .catch(async () => page.locator("#wkrun").textContent().catch(() => null));
-    must(got === want, `${label}: workers answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}`);
+      .catch(async () =>
+        page
+          .locator("#wkrun")
+          .textContent()
+          .catch(() => null),
+      );
+    must(
+      got === want,
+      `${label}: workers answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}`,
+    );
     console.log(`${label}: ?worker, ?worker&inline and ?worker&url all run in the browser`);
   } finally {
     await browser.close();
@@ -271,10 +291,12 @@ const clientResolvedLikeVite = (js, label) => {
 
 try {
   await served(oj, ["dev", app, "--port", String(PORT)], {}, async (stderr) => {
-
     const { status, shown } = await rendered();
     must(status === 200, `dev /about returned ${status}\n${stderr().slice(-2000)}`);
-    must(shown === "/src/lib/wk/worker.ts|functionfunction", `dev SSR worker imports rendered ${JSON.stringify(shown)}`);
+    must(
+      shown === "/src/lib/wk/worker.ts|functionfunction",
+      `dev SSR worker imports rendered ${JSON.stringify(shown)}`,
+    );
     const worker = await fetch(`http://localhost:${PORT}/src/lib/wk/worker.ts`);
     must(worker.status === 200, `the worker URL the SSR render emitted returned ${worker.status}`);
     must(!(await worker.text()).includes(": number"), "the worker URL serves uncompiled TypeScript");
@@ -284,7 +306,8 @@ try {
     const versioned = fs.readdirSync(cache).find((d) => /^v\d+$/.test(d));
     const index = JSON.parse(fs.readFileSync(path.join(cache, versioned, "start", "client-chunks.json"), "utf8"));
     let js = "";
-    for (const f of index.files) if (f.name.endsWith(".js")) js += await (await fetch(`http://localhost:${PORT}/@oj-start/${f.name}`)).text();
+    for (const f of index.files)
+      if (f.name.endsWith(".js")) js += await (await fetch(`http://localhost:${PORT}/@oj-start/${f.name}`)).text();
     must(js.includes('"/src/lib/wk/worker.ts"'), "the dev client bundle does not carry the worker URL");
     must(/new Worker\(/.test(js), "the dev client bundle has no ?worker constructor");
     clientResolvedLikeVite(js, "start-dev");
@@ -293,43 +316,72 @@ try {
     // oj's dev asset URLs are fsBase-shaped (/@oj-start/fs<abs>), the same
     // value the client bundle renders; the fix's contract is that the import
     // resolves as ?url (a served URL) instead of loading the PNG as a module.
-    must((devPage.hero ?? "").endsWith("/src/lib/hero.png") && devPage.hero.startsWith("/"), `start-dev: ?url&no-inline rendered ${JSON.stringify(devPage.hero)}, want a served asset URL`);
+    must(
+      (devPage.hero ?? "").endsWith("/src/lib/hero.png") && devPage.hero.startsWith("/"),
+      `start-dev: ?url&no-inline rendered ${JSON.stringify(devPage.hero)}, want a served asset URL`,
+    );
     const heroRes = await fetch(`http://localhost:${PORT}${devPage.hero}`);
     must(heroRes.status === 200, `the ?url&no-inline URL returned ${heroRes.status}`);
-    console.log("start-dev: app resolveId runs in Vite's order in the client bundle (pre before core, normal only after it)");
-    console.log("start-dev: ?worker&url is the worker's dev URL, ?worker a constructor, on SSR and in the client bundle");
+    console.log(
+      "start-dev: app resolveId runs in Vite's order in the client bundle (pre before core, normal only after it)",
+    );
+    console.log(
+      "start-dev: ?worker&url is the worker's dev URL, ?worker a constructor, on SSR and in the client bundle",
+    );
 
     await workersRunInBrowser("start-dev");
 
     const failures = fs.existsSync(parseLog) ? fs.readFileSync(parseLog, "utf8").trim() : "";
     must(failures === "", `a post plugin could not this.parse:\n${failures}`);
-    console.log("start-dev ssr: an enforce:post plugin parses every TS/TSX module (TS/JSX stripped at vite:oxc's slot)");
+    console.log(
+      "start-dev ssr: an enforce:post plugin parses every TS/TSX module (TS/JSX stripped at vite:oxc's slot)",
+    );
   });
 
   // A build bundles the worker entry on its own and emits it once; the client
   // and the server render share the emitted URL.
   const out = path.join(app, "dist-e2e");
   fs.rmSync(lifecycleLog, { force: true });
-  execSync(`${JSON.stringify(oj)} build ${JSON.stringify(app)} --out ${JSON.stringify(out)}`, { stdio: ["ignore", "ignore", "inherit"] });
+  execSync(`${JSON.stringify(oj)} build ${JSON.stringify(app)} --out ${JSON.stringify(out)}`, {
+    stdio: ["ignore", "ignore", "inherit"],
+  });
   const assets = path.join(out, "client", "assets");
   const workerFile = fs.readdirSync(assets).find((f) => /^worker-[\w-]+\.js$/.test(f));
   must(workerFile, `the build emitted no worker asset: ${fs.readdirSync(assets).join(", ")}`);
   const workerCode = fs.readFileSync(path.join(assets, workerFile), "utf8");
   // The helper's 41 is inlined (a minifier folds `41 + 1` to 42).
-  must(!/\bimport\b/.test(workerCode) && /\b4[12]\b/.test(workerCode), `the emitted worker is not one bundled file with its helper inlined:\n${workerCode}`);
+  must(
+    !/\bimport\b/.test(workerCode) && /\b4[12]\b/.test(workerCode),
+    `the emitted worker is not one bundled file with its helper inlined:\n${workerCode}`,
+  );
   must(!workerCode.includes(": number"), "the emitted worker is uncompiled TypeScript");
-  await served("node", [path.join(out, "server.mjs")], { cwd: out, env: { ...process.env, PORT: String(PORT) } }, async (stderr) => {
-    const { status, shown } = await rendered();
-    must(status === 200, `built /about returned ${status}\n${stderr().slice(-2000)}`);
-    must(shown === `/assets/${workerFile}|functionfunction`, `built SSR worker imports rendered ${JSON.stringify(shown)}`);
-    const { hero } = await rendered();
-    must(/^\/assets\/hero-[\w-]+\.png$/.test(hero ?? ""), `built ?url&no-inline rendered ${JSON.stringify(hero)}, want an emitted asset URL`);
-    must(fs.existsSync(path.join(out, "client", hero)), "the no-inline asset the render references was not emitted");
-    const served = await fetch(`http://localhost:${PORT}/assets/${workerFile}`);
-    must(served.status === 200, `the emitted worker URL returned ${served.status}`);
-    await workersRunInBrowser("start build");
-  });
-  const clientJs = fs.readdirSync(assets).filter((f) => f.endsWith(".js") && f !== workerFile).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("");
+  await served(
+    "node",
+    [path.join(out, "server.mjs")],
+    { cwd: out, env: { ...process.env, PORT: String(PORT) } },
+    async (stderr) => {
+      const { status, shown } = await rendered();
+      must(status === 200, `built /about returned ${status}\n${stderr().slice(-2000)}`);
+      must(
+        shown === `/assets/${workerFile}|functionfunction`,
+        `built SSR worker imports rendered ${JSON.stringify(shown)}`,
+      );
+      const { hero } = await rendered();
+      must(
+        /^\/assets\/hero-[\w-]+\.png$/.test(hero ?? ""),
+        `built ?url&no-inline rendered ${JSON.stringify(hero)}, want an emitted asset URL`,
+      );
+      must(fs.existsSync(path.join(out, "client", hero)), "the no-inline asset the render references was not emitted");
+      const served = await fetch(`http://localhost:${PORT}/assets/${workerFile}`);
+      must(served.status === 200, `the emitted worker URL returned ${served.status}`);
+      await workersRunInBrowser("start build");
+    },
+  );
+  const clientJs = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".js") && f !== workerFile)
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("");
   must(clientJs.includes(`/assets/${workerFile}`), "the client build does not reference the emitted worker");
   clientResolvedLikeVite(clientJs, "start build");
   // The worker bundles run while the client build loads modules; the client
@@ -337,21 +389,36 @@ try {
   // before its generateBundle (Vite's worker build never runs the importer's).
   const events = fs.readFileSync(lifecycleLog, "utf8").trim().split("\n");
   const clientBefore = events.slice(0, events.indexOf("client generateBundle"));
-  must(events.includes("client generateBundle"), `no client generateBundle in the lifecycle log:\n${events.join("\n")}`);
+  must(
+    events.includes("client generateBundle"),
+    `no client generateBundle in the lifecycle log:\n${events.join("\n")}`,
+  );
   const count = (ev) => clientBefore.filter((l) => l === `client ${ev}`).length;
-  must(count("buildStart") === 1 && count("buildEnd") === 1, `a worker bundle re-ran the client container's lifecycle:\n${events.join("\n")}`);
+  must(
+    count("buildStart") === 1 && count("buildEnd") === 1,
+    `a worker bundle re-ran the client container's lifecycle:\n${events.join("\n")}`,
+  );
   console.log("start build: worker bundles leave the client container's lifecycle alone");
   console.log("start build: the worker is bundled once and emitted; client and server render the same URL");
   // ?worker&inline: the bundled worker ships inside the client as a string
   // (its helper inlined) and starts from a Blob URL, as Vite's build does;
   // no separate file is emitted for it.
-  must(fs.readdirSync(assets).every((f) => !f.startsWith("inline-worker")), "?worker&inline emitted a separate worker file");
+  must(
+    fs.readdirSync(assets).every((f) => !f.startsWith("inline-worker")),
+    "?worker&inline emitted a separate worker file",
+  );
   // The bundled worker source is a string literal in the client (the
   // minifier renames the `jsContent` binding, so match the content).
   const inlineSource = clientJs.match(/"[^"]*onmessage[^"]*"/g)?.find((t) => t.includes("inline-"));
   must(inlineSource, "the client build has no inlined worker source");
-  must(inlineSource.includes("inline-41") && !/\bimport\b/.test(inlineSource), `the inlined worker is not the bundled entry:\n${inlineSource}`);
-  must(clientJs.includes("URL.revokeObjectURL(import.meta.url)") && clientJs.includes("createObjectURL"), "the inline worker does not start from a Blob URL");
+  must(
+    inlineSource.includes("inline-41") && !/\bimport\b/.test(inlineSource),
+    `the inlined worker is not the bundled entry:\n${inlineSource}`,
+  );
+  must(
+    clientJs.includes("URL.revokeObjectURL(import.meta.url)") && clientJs.includes("createObjectURL"),
+    "the inline worker does not start from a Blob URL",
+  );
   console.log("start build: ?worker&inline ships the bundled worker inline and starts it from a Blob URL");
   console.log("\nSTART SSR WORKER URL PASSED");
 } catch (e) {

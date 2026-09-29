@@ -19,7 +19,9 @@ export function meta() {
 export default function RootLayout({ children, data }: { children: ReactNode; data: RouteData }) {
   return (
     <div data-layout="root">
-      <header data-app-header data-app-name={String(data?.app ?? "")}>oj app</header>
+      <header data-app-header data-app-name={String(data?.app ?? "")}>
+        oj app
+      </header>
       {children}
     </div>
   );

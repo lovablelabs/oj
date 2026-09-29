@@ -66,13 +66,21 @@ try {
   assert.match(readCss(entryCss[0]), /#040506/i, "statically-imported comp CSS must merge into the entry stylesheet");
 
   const html = fs.readFileSync(path.join(app, "dist", "index.html"), "utf8");
-  assert.match(html, new RegExp(entryCss[0].replace(/[.]/g, "\\$&")), "entry CSS must be linked render-blocking in HTML");
+  assert.match(
+    html,
+    new RegExp(entryCss[0].replace(/[.]/g, "\\$&")),
+    "entry CSS must be linked render-blocking in HTML",
+  );
   assert.ok(!html.includes(lazyCss[0]), "lazy CSS must NOT be linked in the HTML (loads on demand)");
 
   // The async chunk carries the self-injector referencing its own stylesheet.
   const lazyJs = assets.find((f) => f.startsWith("lazy-") && f.endsWith(".js"));
   assert.ok(lazyJs, `no lazy chunk emitted: ${assets.join(",")}`);
-  assert.match(fs.readFileSync(path.join(assetsDir, lazyJs), "utf8"), /createElement\("link"\)|createElement\('link'\)/, "lazy chunk must self-inject its stylesheet");
+  assert.match(
+    fs.readFileSync(path.join(assetsDir, lazyJs), "utf8"),
+    /createElement\("link"\)|createElement\('link'\)/,
+    "lazy chunk must self-inject its stylesheet",
+  );
 
   const srv = spawn(oj, ["preview", app, "--port", "5388"], { stdio: "ignore" });
   await waitUp("http://localhost:5388/");

@@ -24,7 +24,10 @@ fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "wrapper
 
 const preset = path.join(app, "node_modules", "oj-preset");
 fs.mkdirSync(preset, { recursive: true });
-fs.writeFileSync(path.join(preset, "package.json"), JSON.stringify({ name: "oj-preset", version: "1.0.0", type: "module", main: "index.mjs" }));
+fs.writeFileSync(
+  path.join(preset, "package.json"),
+  JSON.stringify({ name: "oj-preset", version: "1.0.0", type: "module", main: "index.mjs" }),
+);
 fs.writeFileSync(
   path.join(preset, "index.mjs"),
   `export function defineConfig(user = {}) {
@@ -39,9 +42,15 @@ fs.writeFileSync(
    }\n`,
 );
 
-fs.writeFileSync(path.join(app, "vite.config.mjs"), `import { defineConfig } from "oj-preset";\nexport default defineConfig({ plugins: [] });\n`);
+fs.writeFileSync(
+  path.join(app, "vite.config.mjs"),
+  `import { defineConfig } from "oj-preset";\nexport default defineConfig({ plugins: [] });\n`,
+);
 fs.writeFileSync(path.join(app, "src", "thing.js"), `export const V = "aliased-ok";\n`);
-fs.writeFileSync(path.join(app, "main.js"), `import { V } from "@/thing.js";\nwindow.__V = V;\nwindow.__READY = true;\n`);
+fs.writeFileSync(
+  path.join(app, "main.js"),
+  `import { V } from "@/thing.js";\nwindow.__V = V;\nwindow.__READY = true;\n`,
+);
 fs.writeFileSync(
   path.join(app, "index.html"),
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/main.js"></script></body></html>`,

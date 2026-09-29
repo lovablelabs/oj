@@ -9,8 +9,15 @@ process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
 
 // Vite's DEFAULT_CONFIG_FILES order (constants.ts): the first present wins.
 const CONFIG_FILES = [
-  "vite.config.js", "vite.config.mjs", "vite.config.ts", "vite.config.cjs", "vite.config.mts", "vite.config.cts",
-  "oj.config.ts", "oj.config.js", "oj.config.mjs",
+  "vite.config.js",
+  "vite.config.mjs",
+  "vite.config.ts",
+  "vite.config.cjs",
+  "vite.config.mts",
+  "vite.config.cts",
+  "oj.config.ts",
+  "oj.config.js",
+  "oj.config.mjs",
 ];
 
 const hookHandler = (h) => (typeof h === "function" ? h : typeof h?.handler === "function" ? h.handler : null);
@@ -25,7 +32,8 @@ function pluginError(e, plugin, id) {
   const loc = err.loc && typeof err.loc === "object" ? err.loc : null;
   const where = (loc && loc.file) || err.id || id || "";
   const line = loc ? loc.line : err.line;
-  err.message = `[plugin:${plugin?.name || "unknown"}] ${err.message}` +
+  err.message =
+    `[plugin:${plugin?.name || "unknown"}] ${err.message}` +
     (where ? `\n${where}${line != null ? `:${line}` : ""}` : "") +
     (typeof err.frame === "string" && err.frame ? `\n${err.frame}` : "");
   err.ojDecorated = true;
@@ -79,17 +87,33 @@ function globToRegExpSource(glob) {
     if (c === "*") {
       if (glob[i + 1] === "*") {
         i++;
-        if (glob[i + 1] === "/") { i++; re += "(?:.*/)?"; } else re += ".*";
+        if (glob[i + 1] === "/") {
+          i++;
+          re += "(?:.*/)?";
+        } else re += ".*";
       } else re += "[^/]*";
     } else if (c === "?") re += "[^/]";
     else if (c === "{") {
       const j = glob.indexOf("}", i);
-      if (j > i) { re += "(?:" + glob.slice(i + 1, j).split(",").map(globToRegExpSource).join("|") + ")"; i = j; }
-      else re += "\\{";
+      if (j > i) {
+        re +=
+          "(?:" +
+          glob
+            .slice(i + 1, j)
+            .split(",")
+            .map(globToRegExpSource)
+            .join("|") +
+          ")";
+        i = j;
+      } else re += "\\{";
     } else if (c === "[") {
       const j = glob.indexOf("]", i);
-      if (j > i) { let cls = glob.slice(i + 1, j); if (cls[0] === "!") cls = "^" + cls.slice(1); re += "[" + cls + "]"; i = j; }
-      else re += "\\[";
+      if (j > i) {
+        let cls = glob.slice(i + 1, j);
+        if (cls[0] === "!") cls = "^" + cls.slice(1);
+        re += "[" + cls + "]";
+        i = j;
+      } else re += "\\[";
     } else if (c === "\\" && i + 1 < glob.length) re += "\\" + glob[++i];
     else re += c.replace(/[.+^$()|]/g, "\\$&");
   }
@@ -99,14 +123,21 @@ const idGlobCache = new Map();
 function globRegExp(pat) {
   let re = idGlobCache.get(pat);
   if (!re) {
-    const glob = pat.startsWith("**") || pat.startsWith("/") ? slash(pat) : slash(join(process.env.OJ_APP_ROOT ?? process.cwd(), pat));
+    const glob =
+      pat.startsWith("**") || pat.startsWith("/")
+        ? slash(pat)
+        : slash(join(process.env.OJ_APP_ROOT ?? process.cwd(), pat));
     re = new RegExp("^" + globToRegExpSource(glob) + "$");
     idGlobCache.set(pat, re);
   }
   return re;
 }
 function matchOne(pat, id) {
-  if (pat instanceof RegExp) { const r = pat.test(slash(id)); pat.lastIndex = 0; return r; }
+  if (pat instanceof RegExp) {
+    const r = pat.test(slash(id));
+    pat.lastIndex = 0;
+    return r;
+  }
   if (typeof pat !== "string") return false;
   return globRegExp(pat).test(slash(id));
 }
@@ -116,7 +147,8 @@ function idAllowed(filter, id) {
   const inc = f && typeof f === "object" && !(f instanceof RegExp) && !Array.isArray(f) ? f.include : f;
   const exc = f && typeof f === "object" && !(f instanceof RegExp) && !Array.isArray(f) ? f.exclude : undefined;
   const asArr = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
-  const incs = asArr(inc), excs = asArr(exc);
+  const incs = asArr(inc),
+    excs = asArr(exc);
   if (excs.some((p) => matchOne(p, id))) return false;
   if (incs.length === 0) return true;
   return incs.some((p) => matchOne(p, id));
@@ -128,12 +160,17 @@ function codeAllowed(filter, code) {
   const f = filter?.code;
   if (f == null) return true;
   const one = (pat) => {
-    if (pat instanceof RegExp) { const r = pat.test(code); pat.lastIndex = 0; return r; }
+    if (pat instanceof RegExp) {
+      const r = pat.test(code);
+      pat.lastIndex = 0;
+      return r;
+    }
     return typeof pat === "string" && code.includes(pat);
   };
   const plain = f instanceof RegExp || typeof f === "string" || Array.isArray(f);
   const asArr = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
-  const incs = asArr(plain ? f : f.include), excs = asArr(plain ? undefined : f.exclude);
+  const incs = asArr(plain ? f : f.include),
+    excs = asArr(plain ? undefined : f.exclude);
   if (excs.some(one)) return false;
   return incs.length === 0 || incs.some(one);
 }
@@ -148,7 +185,10 @@ function byHook(plugins, name) {
   if (!byName) byHookMemo.set(plugins, (byName = new Map()));
   let sorted = byName.get(name);
   if (!sorted) {
-    const rank = (p) => { const h = p[name]; return h?.order === "pre" ? -1 : h?.order === "post" ? 1 : 0; };
+    const rank = (p) => {
+      const h = p[name];
+      return h?.order === "pre" ? -1 : h?.order === "post" ? 1 : 0;
+    };
     sorted = [...plugins].sort((a, b) => rank(a) - rank(b));
     byName.set(name, sorted);
   }
@@ -159,13 +199,19 @@ function applyMatches(plugin, command, mode) {
   const a = plugin.apply;
   if (!a) return true;
   if (typeof a === "function") {
-    try { return !!a({}, { command, mode }); } catch { return true; }
+    try {
+      return !!a({}, { command, mode });
+    } catch {
+      return true;
+    }
   }
   return a === command;
 }
 
 function ordered(plugins) {
-  const pre = [], normal = [], post = [];
+  const pre = [],
+    normal = [],
+    post = [];
   for (const p of plugins) {
     if (p.enforce === "pre") pre.push(p);
     else if (p.enforce === "post") post.push(p);
@@ -179,9 +225,10 @@ function makeConfigResolver(config) {
   const aliases = Array.isArray(config.resolve?.alias)
     ? config.resolve.alias.map(({ find, replacement }) => [find, replacement])
     : Object.entries(config.resolve?.alias ?? {});
-  const extensions = Array.isArray(config.resolve?.extensions) && config.resolve.extensions.length
-    ? config.resolve.extensions
-    : [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".cjs", ".cts", ".json"];
+  const extensions =
+    Array.isArray(config.resolve?.extensions) && config.resolve.extensions.length
+      ? config.resolve.extensions
+      : [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".cjs", ".cts", ".json"];
   const resolvePackage = makeResolver(root);
 
   return () => async (id, importer) => {
@@ -191,10 +238,16 @@ function makeConfigResolver(config) {
       if (typeof replacement !== "string") continue;
       if (find instanceof RegExp) {
         find.lastIndex = 0;
-        if (find.test(specifier)) { specifier = specifier.replace(find, replacement); break; }
+        if (find.test(specifier)) {
+          specifier = specifier.replace(find, replacement);
+          break;
+        }
       } else if (typeof find === "string") {
         const prefix = find.endsWith("/") ? find.slice(0, -1) : find;
-        if (specifier === prefix) { specifier = replacement; break; }
+        if (specifier === prefix) {
+          specifier = replacement;
+          break;
+        }
         if (specifier.startsWith(`${prefix}/`)) {
           specifier = join(replacement, specifier.slice(prefix.length + 1));
           break;
@@ -214,7 +267,9 @@ function makeConfigResolver(config) {
       return undefined;
     }
 
-    try { return resolvePackage(specifier); } catch {}
+    try {
+      return resolvePackage(specifier);
+    } catch {}
     // An export reachable only under the "import" condition (a package's ESM-only
     // subpath); this module lives in the app's cache dir, so Node's ESM resolver
     // walks the app's node_modules from here.
@@ -231,21 +286,42 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 async function withBuildStartLock(fn) {
   const lock = join(HERE, "buildstart.lock");
   for (;;) {
-    try { mkdirSync(lock); break; }
-    catch {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch {
       let pid = 0;
-      try { pid = Number(readFileSync(join(lock, "holder"), "utf8")); } catch {}
+      try {
+        pid = Number(readFileSync(join(lock, "holder"), "utf8"));
+      } catch {}
       let alive = false;
-      if (pid) { try { process.kill(pid, 0); alive = true; } catch {} }
+      if (pid) {
+        try {
+          process.kill(pid, 0);
+          alive = true;
+        } catch {}
+      }
       let expired = false;
-      try { expired = Date.now() - statSync(lock).mtimeMs > 300_000; } catch {}
-      if ((pid && !alive) || expired) { try { rmSync(lock, { recursive: true, force: true }); } catch {} }
-      else await new Promise((r) => setTimeout(r, 50));
+      try {
+        expired = Date.now() - statSync(lock).mtimeMs > 300_000;
+      } catch {}
+      if ((pid && !alive) || expired) {
+        try {
+          rmSync(lock, { recursive: true, force: true });
+        } catch {}
+      } else await new Promise((r) => setTimeout(r, 50));
     }
   }
-  try { writeFileSync(join(lock, "holder"), String(process.pid)); } catch {}
-  try { return await fn(); }
-  finally { try { rmSync(lock, { recursive: true, force: true }); } catch {} }
+  try {
+    writeFileSync(join(lock, "holder"), String(process.pid));
+  } catch {}
+  try {
+    return await fn();
+  } finally {
+    try {
+      rmSync(lock, { recursive: true, force: true });
+    } catch {}
+  }
 }
 
 export function findConfig(app) {
@@ -333,7 +409,9 @@ function fillResolvedServerScalars(server) {
   const corsDefault = { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/ };
   server.cors = isPlain(server.cors)
     ? { ...corsDefault, ...server.cors }
-    : (server.cors === undefined ? corsDefault : server.cors);
+    : server.cors === undefined
+      ? corsDefault
+      : server.cors;
   if (server.sourcemapIgnoreList === false) server.sourcemapIgnoreList = () => false;
   else if (server.sourcemapIgnoreList === undefined) {
     server.sourcemapIgnoreList = (id) => id.includes("node_modules");
@@ -377,7 +455,10 @@ function fillResolvedServerScalars(server) {
   if (rawAdditionalHosts && Array.isArray(server.allowedHosts) && !/[\\"']/.test(rawAdditionalHosts)) {
     server.allowedHosts = [
       ...server.allowedHosts,
-      ...rawAdditionalHosts.split(",").map((h) => h.trim()).filter(Boolean),
+      ...rawAdditionalHosts
+        .split(",")
+        .map((h) => h.trim())
+        .filter(Boolean),
     ];
   }
   // Vite strips a single trailing slash off a user `origin`.
@@ -401,25 +482,47 @@ export function withResolvedServerFs(server, root) {
       strict: rawFs.strict === undefined ? true : rawFs.strict,
       // Vite's normalizePath backslash-replaces on Windows only; POSIX
       // filenames may legally contain one.
-      allow: allow.map((d) => (process.platform === "win32" ? pathResolve(root, d).replace(/\\/g, "/") : pathResolve(root, d))),
-      deny: rawFs.deny === undefined ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"] : rawFs.deny,
+      allow: allow.map((d) =>
+        process.platform === "win32" ? pathResolve(root, d).replace(/\\/g, "/") : pathResolve(root, d),
+      ),
+      deny:
+        rawFs.deny === undefined
+          ? [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"]
+          : rawFs.deny,
     },
   });
 }
 
-export function createPluginContainer(vite, allPlugins, {
-  command = "serve", mode = command === "build" ? "production" : "development", environment = "client", config = {},
-} = {}) {
+export function createPluginContainer(
+  vite,
+  allPlugins,
+  {
+    command = "serve",
+    mode = command === "build" ? "production" : "development",
+    environment = "client",
+    config = {},
+  } = {},
+) {
   const plugins = ordered(
     allPlugins.filter(
-      (p) => (p.buildStart || p.resolveId || p.load || p.transform || p.moduleParsed || p.generateBundle || p.configResolved || p.renderChunk || p.writeBundle || p.closeBundle || p.buildEnd || p.renderStart)
-        && applyMatches(p, command, mode),
+      (p) =>
+        (p.buildStart ||
+          p.resolveId ||
+          p.load ||
+          p.transform ||
+          p.moduleParsed ||
+          p.generateBundle ||
+          p.configResolved ||
+          p.renderChunk ||
+          p.writeBundle ||
+          p.closeBundle ||
+          p.buildEnd ||
+          p.renderStart) &&
+        applyMatches(p, command, mode),
     ),
   );
 
-  const parse = typeof vite?.parseAst === "function"
-    ? (code, opts) => vite.parseAst(code, opts)
-    : () => ({});
+  const parse = typeof vite?.parseAst === "function" ? (code, opts) => vite.parseAst(code, opts) : () => ({});
 
   // Vite exposes this.environment.config with `consumer` ("client" | "server")
   // and `command` on every hook context; plugins branch on them (e.g. return an
@@ -481,9 +584,13 @@ export function createPluginContainer(vite, allPlugins, {
   // disabled); build plugins compute output paths from both.
   resolvedConfig.build = { outDir: "dist", ...resolvedConfig.build };
   if (typeof resolvedConfig.publicDir !== "string" || !isAbsolute(resolvedConfig.publicDir)) {
-    resolvedConfig.publicDir = resolvedConfig.publicDir === false
-      ? ""
-      : pathResolve(resolvedConfig.root, typeof resolvedConfig.publicDir === "string" ? resolvedConfig.publicDir : "public");
+    resolvedConfig.publicDir =
+      resolvedConfig.publicDir === false
+        ? ""
+        : pathResolve(
+            resolvedConfig.root,
+            typeof resolvedConfig.publicDir === "string" ? resolvedConfig.publicDir : "public",
+          );
   }
   // Vite's config.createResolver, for plugins that resolve through the config
   // (aliases, extensions, packages) rather than through this.resolve.
@@ -509,9 +616,15 @@ export function createPluginContainer(vite, allPlugins, {
     idToModuleMap: environmentModules,
     urlToModuleMap: modulesByUrl,
     fileToModulesMap: modulesByFile,
-    getModuleById(id) { return environmentModules.get(id); },
-    async getModuleByUrl(url) { return modulesByUrl.get(url); },
-    getModulesByFile(file) { return modulesByFile.get(file); },
+    getModuleById(id) {
+      return environmentModules.get(id);
+    },
+    async getModuleByUrl(url) {
+      return modulesByUrl.get(url);
+    },
+    getModulesByFile(file) {
+      return modulesByFile.get(file);
+    },
   };
 
   function trackEnvironmentModule(id, code) {
@@ -544,14 +657,34 @@ export function createPluginContainer(vite, allPlugins, {
       moduleGraph,
     },
     meta: { rollupVersion: "4.0.0", watchMode: command !== "build", framework: "oj" },
-    warn() {}, info() {}, debug() {},
-    error(m) { throw new Error(typeof m === "string" ? m : m?.message ?? String(m)); },
-    emitFile() { return "oj-emit-ref"; },
-    setAssetSource() {}, getFileName() { return ""; },
-    addWatchFile(id) { watchFiles.add(String(id)); }, getWatchFiles() { return [...watchFiles]; },
-    getModuleInfo(id) { return moduleInfo.get(id) ?? null; },
-    getModuleIds() { return moduleInfo.keys(); },
-    async resolve() { return null; },
+    warn() {},
+    info() {},
+    debug() {},
+    error(m) {
+      throw new Error(typeof m === "string" ? m : (m?.message ?? String(m)));
+    },
+    emitFile() {
+      return "oj-emit-ref";
+    },
+    setAssetSource() {},
+    getFileName() {
+      return "";
+    },
+    addWatchFile(id) {
+      watchFiles.add(String(id));
+    },
+    getWatchFiles() {
+      return [...watchFiles];
+    },
+    getModuleInfo(id) {
+      return moduleInfo.get(id) ?? null;
+    },
+    getModuleIds() {
+      return moduleInfo.keys();
+    },
+    async resolve() {
+      return null;
+    },
     async load(options) {
       const id = typeof options === "string" ? options : options.id;
       const code = await load(id);
@@ -567,9 +700,12 @@ export function createPluginContainer(vite, allPlugins, {
         if (ojReimplemented(plugin.name)) continue;
         const hook = hookHandler(plugin.configResolved);
         if (!hook) continue;
-        try { await hook.call(ctx, resolvedConfig); }
-        catch (error) {
-          process.stderr.write(`oj: plugin "${plugin.name || "?"}" configResolved failed (skipped): ${error?.message ?? error}\n`);
+        try {
+          await hook.call(ctx, resolvedConfig);
+        } catch (error) {
+          process.stderr.write(
+            `oj: plugin "${plugin.name || "?"}" configResolved failed (skipped): ${error?.message ?? error}\n`,
+          );
         }
       }
     })();
@@ -594,18 +730,22 @@ export function createPluginContainer(vite, allPlugins, {
         // this.resolve the same id with skipSelf re-enter each other forever.
         let skipCalls = ambientSkipCalls;
         if (options.skipSelf !== false) {
-          const prior = ambientSkipCalls ? ambientSkipCalls.findIndex((c) => c.id === source && c.importer === importer && c.plugin === plugin) : -1;
+          const prior = ambientSkipCalls
+            ? ambientSkipCalls.findIndex((c) => c.id === source && c.importer === importer && c.plugin === plugin)
+            : -1;
           if (prior !== -1) {
             skipCalls = ambientSkipCalls.slice();
             skipCalls[prior] = { ...skipCalls[prior], called: true };
           } else {
-            skipCalls = ambientSkipCalls ? [...ambientSkipCalls, { id: source, importer, plugin }] : [{ id: source, importer, plugin }];
+            skipCalls = ambientSkipCalls
+              ? [...ambientSkipCalls, { id: source, importer, plugin }]
+              : [{ id: source, importer, plugin }];
           }
         }
         const resolved = await resolveIdResult(source, importer, skipCalls, undefined, bundlerResolve);
         if (resolved) return resolved;
         if (bundlerResolve) return bundlerResolve(source, importer);
-        if (!fileResolver || source.startsWith("\0") || /^[a-z]+:/i.test(source) && !isAbsolute(source)) return null;
+        if (!fileResolver || source.startsWith("\0") || (/^[a-z]+:/i.test(source) && !isAbsolute(source))) return null;
         try {
           const file = await fileResolver(source, importer);
           return file ? { id: file } : null;
@@ -636,7 +776,8 @@ export function createPluginContainer(vite, allPlugins, {
       const phase = plan[inResolvePhase(p, "pre") ? "pre" : "post"];
       const f = hookFilter(p.resolveId);
       const ids = f && (f.id ?? f);
-      const include = ids && typeof ids === "object" && !(ids instanceof RegExp) && !Array.isArray(ids) ? ids.include : ids;
+      const include =
+        ids && typeof ids === "object" && !(ids instanceof RegExp) && !Array.isArray(ids) ? ids.include : ids;
       if (include == null) {
         phase.all = true;
         continue;
@@ -680,10 +821,19 @@ export function createPluginContainer(vite, allPlugins, {
     for (const { p, h, filter } of resolveCandidates(phase, !!(phase || bundlerResolve))) {
       // Vite merges skipCalls into the skip set: skipped on the same
       // id + importer, or outright once re-entered (`called`).
-      if (skipCalls && skipCalls.some((c) => c.plugin === p && (c.called || (c.id === id && c.importer === importer)))) continue;
+      if (skipCalls && skipCalls.some((c) => c.plugin === p && (c.called || (c.id === id && c.importer === importer))))
+        continue;
       if (!idAllowed(filter, id)) continue;
       let r;
-      try { r = await h.call(pluginContext(p, ctx, skipCalls, bundlerResolve), id, importer, { isEntry: false, ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, importer || id); }
+      try {
+        r = await h.call(pluginContext(p, ctx, skipCalls, bundlerResolve), id, importer, {
+          isEntry: false,
+          ssr: environment === "ssr",
+        });
+      } catch (e) {
+        if (ojReimplemented(p.name)) continue;
+        throw pluginError(e, p, importer || id);
+      }
       if (r != null) return typeof r === "string" ? { id: r } : { id: r.id, external: r.external };
     }
     return null;
@@ -701,7 +851,12 @@ export function createPluginContainer(vite, allPlugins, {
       const h = hookHandler(p.load);
       if (!h || !idAllowed(hookFilter(p.load), id)) continue;
       let r;
-      try { r = await h.call(pluginContext(p), id, { ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, id); }
+      try {
+        r = await h.call(pluginContext(p), id, { ssr: environment === "ssr" });
+      } catch (e) {
+        if (ojReimplemented(p.name)) continue;
+        throw pluginError(e, p, id);
+      }
       if (r != null) {
         const code = typeof r === "string" ? r : r.code;
         moduleInfo.set(id, { id, code, importedIds: [], meta: {} });
@@ -725,16 +880,25 @@ export function createPluginContainer(vite, allPlugins, {
     await initializePlugins();
     moduleInfo.set(id, { id, code, importedIds: [], meta: {} });
     trackEnvironmentModule(id, code);
-    let current = code, changed = false;
+    let current = code,
+      changed = false;
     for (const p of byHook(plugins, "transform")) {
       if (!envAllows(p, environment)) continue;
       const h = hookHandler(p.transform);
       const filter = hookFilter(p.transform);
       if (!h || !idAllowed(filter, id) || !codeAllowed(filter, current)) continue;
       let r;
-      try { r = await h.call(pluginContext(p), current, id, { ssr: environment === "ssr" }); } catch (e) { if (ojReimplemented(p.name)) continue; throw pluginError(e, p, id); }
+      try {
+        r = await h.call(pluginContext(p), current, id, { ssr: environment === "ssr" });
+      } catch (e) {
+        if (ojReimplemented(p.name)) continue;
+        throw pluginError(e, p, id);
+      }
       const next = r == null ? null : typeof r === "string" ? r : r.code;
-      if (next != null) { current = next; changed = true; }
+      if (next != null) {
+        current = next;
+        changed = true;
+      }
     }
     trackEnvironmentModule(id, current);
     await moduleParsed(id, current);
@@ -746,16 +910,24 @@ export function createPluginContainer(vite, allPlugins, {
     moduleInfo.set(id, { id, code, importedIds: [], meta: {} });
     trackEnvironmentModule(id, code);
     const ssr = environment === "ssr";
-    let current = code, changed = false;
+    let current = code,
+      changed = false;
     for (const p of byHook(plugins, "transform")) {
       if (ojReimplemented(p.name) || !envAllows(p, environment)) continue;
       const h = hookHandler(p.transform);
       const filter = hookFilter(p.transform);
       if (!h || !idAllowed(filter, id) || !codeAllowed(filter, current)) continue;
       let r;
-      try { r = await h.call(pluginContext(p), current, id, { ssr }); } catch (e) { throw pluginError(e, p, id); }
+      try {
+        r = await h.call(pluginContext(p), current, id, { ssr });
+      } catch (e) {
+        throw pluginError(e, p, id);
+      }
       const next = r == null ? null : typeof r === "string" ? r : r.code;
-      if (next != null) { current = next; changed = true; }
+      if (next != null) {
+        current = next;
+        changed = true;
+      }
     }
     trackEnvironmentModule(id, current);
     await moduleParsed(id, current);
@@ -763,15 +935,23 @@ export function createPluginContainer(vite, allPlugins, {
   }
 
   async function renderChunk(code, chunk) {
-    let current = code, changed = false;
+    let current = code,
+      changed = false;
     for (const p of plugins) {
       if (!envAllows(p, environment)) continue;
       const h = hookHandler(p.renderChunk);
       if (!h) continue;
       let result;
-      try { result = await h.call(ctx, current, chunk, { format: "es" }); } catch { continue; }
+      try {
+        result = await h.call(ctx, current, chunk, { format: "es" });
+      } catch {
+        continue;
+      }
       const next = typeof result === "string" ? result : result?.code;
-      if (next != null) { current = next; changed = true; }
+      if (next != null) {
+        current = next;
+        changed = true;
+      }
     }
     return changed ? current : null;
   }
@@ -782,7 +962,9 @@ export function createPluginContainer(vite, allPlugins, {
     for (const p of byHook(plugins, "generateBundle")) {
       const h = hookHandler(p.generateBundle);
       if (!h || !envAllows(p, environment)) continue;
-      try { await h.call(pluginContext(p, genCtx), { format: "es" }, bundle, false); } catch {}
+      try {
+        await h.call(pluginContext(p, genCtx), { format: "es" }, bundle, false);
+      } catch {}
     }
   }
 
@@ -791,7 +973,9 @@ export function createPluginContainer(vite, allPlugins, {
       if (!envAllows(p, environment)) continue;
       const h = hookHandler(p.writeBundle);
       if (!h) continue;
-      try { await h.call(ctx, { format: "es" }, bundle, true); } catch {}
+      try {
+        await h.call(ctx, { format: "es" }, bundle, true);
+      } catch {}
     }
   }
 
@@ -800,7 +984,9 @@ export function createPluginContainer(vite, allPlugins, {
       if (!envAllows(plugin, environment)) continue;
       const hook = hookHandler(plugin.closeBundle);
       if (!hook) continue;
-      try { await hook.call(ctx); } catch {}
+      try {
+        await hook.call(ctx);
+      } catch {}
     }
   }
 
@@ -809,7 +995,9 @@ export function createPluginContainer(vite, allPlugins, {
       if (!envAllows(plugin, environment)) continue;
       const hook = hookHandler(plugin.buildEnd);
       if (!hook) continue;
-      try { await hook.call(ctx, error); } catch {}
+      try {
+        await hook.call(ctx, error);
+      } catch {}
     }
   }
 
@@ -818,7 +1006,9 @@ export function createPluginContainer(vite, allPlugins, {
       if (!envAllows(plugin, environment)) continue;
       const hook = hookHandler(plugin.renderStart);
       if (!hook) continue;
-      try { await hook.call(ctx, outputOptions, inputOptions); } catch {}
+      try {
+        await hook.call(ctx, outputOptions, inputOptions);
+      } catch {}
     }
   }
 
@@ -845,8 +1035,9 @@ export function createPluginContainer(vite, allPlugins, {
         // dev server — a plugin that genuinely needed buildStart will surface as
         // its own load() output being wrong, which is strictly better than one
         // unsupported plugin taking down every other plugin's startup.
-        try { await h.call(pluginContext(p), {}); }
-        catch (e) {
+        try {
+          await h.call(pluginContext(p), {});
+        } catch (e) {
           process.stderr.write(`oj: plugin "${p.name || "?"}" buildStart failed (skipped): ${(e && e.message) || e}\n`);
         }
       }
@@ -854,7 +1045,21 @@ export function createPluginContainer(vite, allPlugins, {
   }
 
   return {
-    resolveId, resolveIdResult, resolveIdPlan, load, transform, transformUserCode, buildStart, renderChunk, generateBundle, pluginCount: plugins.length, watchFiles, writeBundle, closeBundle, buildEnd, renderStart,
+    resolveId,
+    resolveIdResult,
+    resolveIdPlan,
+    load,
+    transform,
+    transformUserCode,
+    buildStart,
+    renderChunk,
+    generateBundle,
+    pluginCount: plugins.length,
+    watchFiles,
+    writeBundle,
+    closeBundle,
+    buildEnd,
+    renderStart,
   };
 }
 
@@ -876,7 +1081,11 @@ export async function loadPluginContainer(app, opts = {}) {
   const configFile = findConfig(app);
   if (!configFile) return null;
   let vite;
-  try { vite = await importPkg(app, "vite", ["@tanstack/react-start"]); } catch { return null; }
+  try {
+    vite = await importPkg(app, "vite", ["@tanstack/react-start"]);
+  } catch {
+    return null;
+  }
   if (typeof vite?.loadConfigFromFile !== "function") return null;
   let loaded;
   try {
@@ -898,9 +1107,11 @@ export async function loadPluginContainer(app, opts = {}) {
     if (!handler || !applyMatches(plugin, command, mode)) continue;
     try {
       const partial = await handler.call(plugin, config, { command, mode });
-      if (partial) config = typeof vite.mergeConfig === "function"
-        ? vite.mergeConfig(config, partial)
-        : mergeConfigValues(config, partial);
+      if (partial)
+        config =
+          typeof vite.mergeConfig === "function"
+            ? vite.mergeConfig(config, partial)
+            : mergeConfigValues(config, partial);
     } catch (e) {
       process.stderr.write(`oj: plugin "${plugin.name || "?"}" config hook failed (skipped): ${e?.message ?? e}\n`);
     }
@@ -917,10 +1128,20 @@ export async function loadPluginContainer(app, opts = {}) {
       const handler = hookHandler(plugin.configEnvironment);
       if (!handler || !applyMatches(plugin, command, mode)) continue;
       try {
-        const partial = await handler.call(plugin, name, environmentOptions, { command, mode, isSsrTargetWebworker: false, isPreview: false });
-        if (partial) { environmentOptions = merge(environmentOptions, partial); changed = true; }
+        const partial = await handler.call(plugin, name, environmentOptions, {
+          command,
+          mode,
+          isSsrTargetWebworker: false,
+          isPreview: false,
+        });
+        if (partial) {
+          environmentOptions = merge(environmentOptions, partial);
+          changed = true;
+        }
       } catch (e) {
-        process.stderr.write(`oj: plugin "${plugin.name || "?"}" configEnvironment failed (skipped): ${e?.message ?? e}\n`);
+        process.stderr.write(
+          `oj: plugin "${plugin.name || "?"}" configEnvironment failed (skipped): ${e?.message ?? e}\n`,
+        );
       }
     }
     if (changed) config = { ...config, environments: { ...config.environments, [name]: environmentOptions } };
@@ -930,20 +1151,30 @@ export async function loadPluginContainer(app, opts = {}) {
     ...opts,
     config: { ...config, root: config.root ?? app },
   });
-  const publicDir = config.publicDir === false
-    ? false
-    : typeof config.publicDir === "string" ? config.publicDir : null;
+  const publicDir = config.publicDir === false ? false : typeof config.publicDir === "string" ? config.publicDir : null;
   const configDependencies = [configFile, ...(loaded?.dependencies ?? [])];
   // The config's `define` for this environment (top-level, then the
   // environment's own), serialized the way Vite's define plugin does
   // (handleDefineValue: strings verbatim, anything else JSON).
   const environment = opts.environment ?? "client";
-  const defines = () => Object.fromEntries(
-    Object.entries({ ...config.define, ...config.environments?.[environment]?.define })
-      .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)])
-      .filter(([, value]) => typeof value === "string"),
-  );
+  const defines = () =>
+    Object.fromEntries(
+      Object.entries({ ...config.define, ...config.environments?.[environment]?.define })
+        .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)])
+        .filter(([, value]) => typeof value === "string"),
+    );
   return { ...container, publicDir, configDependencies, defines, config };
 }
 
-export const __test = { matchOne, idAllowed, codeAllowed, byHook, applyMatches, ordered, hookHandler, hookFilter, ojReimplemented, envAllows };
+export const __test = {
+  matchOne,
+  idAllowed,
+  codeAllowed,
+  byHook,
+  applyMatches,
+  ordered,
+  hookHandler,
+  hookFilter,
+  ojReimplemented,
+  envAllows,
+};

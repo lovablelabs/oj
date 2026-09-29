@@ -29,7 +29,10 @@ try {
   fs.writeFileSync(path.join(app, "src", "main.js"), "export const v = 1;\n");
   // A plugin (configureServer-only) keeps the plugin host resident, so decide()
   // calls host.watch_files() during flush — the path that panicked.
-  fs.writeFileSync(path.join(app, "vite.config.mjs"), 'export default { plugins: [{ name: "keep-host", configureServer() {} }] };\n');
+  fs.writeFileSync(
+    path.join(app, "vite.config.mjs"),
+    'export default { plugins: [{ name: "keep-host", configureServer() {} }] };\n',
+  );
 
   srv = spawn(OJ, ["dev", "--port", String(PORT)], {
     cwd: app,
@@ -38,7 +41,10 @@ try {
     env: { ...process.env, OJ_HMR_GATE: "1", OJ_HMR_FULL_RELOAD: "false" },
   });
   const up = async () => {
-    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    return waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
   };
   if (!(await up())) throw new Error("dev server did not start");
 

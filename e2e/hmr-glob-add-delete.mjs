@@ -54,11 +54,15 @@ try {
     await page.goto(`http://localhost:${port}/`, { timeout: 30000 });
     await page.waitForFunction(() => window.__READY === true, { timeout: 10000 });
     assert.deepEqual(await page.evaluate(() => window.__KEYS), ["./pages/a.js"]);
-    await page.evaluate(() => { window.__MARK = 1; });
+    await page.evaluate(() => {
+      window.__MARK = 1;
+    });
 
     // create: the new file shows up in the glob without a reload
     fs.writeFileSync(path.join(app, "src", "pages", "b.js"), `export default "B";\n`);
-    await page.waitForFunction(() => document.getElementById("app").textContent === "./pages/a.js,./pages/b.js", { timeout: 10000 });
+    await page.waitForFunction(() => document.getElementById("app").textContent === "./pages/a.js,./pages/b.js", {
+      timeout: 10000,
+    });
     assert.equal(await page.evaluate(() => window.__MARK), 1, "create did not reload the page");
 
     // delete: the key goes away, still no reload

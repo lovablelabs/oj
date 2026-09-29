@@ -27,7 +27,16 @@ const app = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oj-rescfg-"))
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.mkdirSync(path.join(app, "node_modules", "vite"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "rescfg", version: "1.0.0", type: "module" }));
-fs.writeFileSync(path.join(app, "node_modules", "vite", "package.json"), JSON.stringify({ name: "vite", version: "8.0.0-fake", type: "module", main: "index.js", exports: { ".": "./index.js" } }));
+fs.writeFileSync(
+  path.join(app, "node_modules", "vite", "package.json"),
+  JSON.stringify({
+    name: "vite",
+    version: "8.0.0-fake",
+    type: "module",
+    main: "index.js",
+    exports: { ".": "./index.js" },
+  }),
+);
 fs.writeFileSync(
   path.join(app, "node_modules", "vite", "index.js"),
   `export async function resolveConfig(inline, command, mode) {
@@ -86,7 +95,11 @@ try {
   await waitUp(`http://localhost:${PORT}/`);
   await settles(() => fs.existsSync(path.join(marks, "resolved.json")));
   const rc = JSON.parse(fs.readFileSync(path.join(marks, "resolved.json"), "utf8"));
-  assert.equal(rc.outDir, "vite-out", "build.outDir comes from the app's resolved Vite config, not the synthesized 'dist'");
+  assert.equal(
+    rc.outDir,
+    "vite-out",
+    "build.outDir comes from the app's resolved Vite config, not the synthesized 'dist'",
+  );
   assert.equal(rc.sourcemap, true);
   assert.equal(rc.assetsDir, "static");
   assert.equal(rc.manualChunks, "object", "rollupOptions kept");
@@ -98,7 +111,10 @@ try {
   assert.deepEqual(rc.noExternal, ["some-lib"]);
   assert.equal(rc.worker, "es");
   assert.equal(rc.root, app);
-  assert.ok(rc.pluginNames.includes("inspector") && !rc.pluginNames.includes("fresh-instance-from-vite"), `oj's plugin instances are spliced in, Vite's fresh ones dropped: ${rc.pluginNames}`);
+  assert.ok(
+    rc.pluginNames.includes("inspector") && !rc.pluginNames.includes("fresh-instance-from-vite"),
+    `oj's plugin instances are spliced in, Vite's fresh ones dropped: ${rc.pluginNames}`,
+  );
   assert.equal(rc.ownDefine, "1", "oj's own instances' config hooks still apply on top");
   console.log("PLUGIN-RESOLVED-CONFIG E2E PASSED");
 } catch (err) {

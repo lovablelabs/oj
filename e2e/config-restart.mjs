@@ -26,7 +26,10 @@ fs.writeFileSync(path.join(app, "src", "main.tsx"), 'document.body.dataset.ok = 
 fs.writeFileSync(path.join(app, ".env"), "VITE_FOO=1\n");
 
 const up = async () => {
-  return waitUp(BASE).then(() => true, () => false);
+  return waitUp(BASE).then(
+    () => true,
+    () => false,
+  );
 };
 
 let stderr = "";
@@ -57,13 +60,16 @@ try {
   child.kill("SIGKILL");
   // The restarted server's short-lived children may still be flushing into
   // the app dir (the suite's ENOTEMPTY teardown class): retry the removal.
-  await settles(() => {
-    try {
-      fs.rmSync(app, { recursive: true, force: true });
-      return true;
-    } catch {
-      return false;
-    }
-  }, { timeoutMs: 5000, pollMs: 150 });
+  await settles(
+    () => {
+      try {
+        fs.rmSync(app, { recursive: true, force: true });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { timeoutMs: 5000, pollMs: 150 },
+  );
 }
 process.exit(failed ? 1 : 0);

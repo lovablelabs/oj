@@ -43,14 +43,15 @@ fs.writeFileSync(
     `export default { ...base, base: "/app/", build: { ...(base as any).build, sourcemap: true, minify: false } };\n`,
 );
 
-
 // A dist/ left by an earlier fixture build would read as "--out ignored" below;
 // the assertion is about this build writing there, so start from a clean slate.
 fs.rmSync(path.join(app, "dist"), { recursive: true, force: true });
 
 try {
   const stderr = execSync(`${oj} build ${app} --config ${config} --out ${out} 2>&1 1>/dev/null`, {
-    cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"],
+    cwd: repo,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
   });
   if (/failed to load config/.test(stderr)) {
     throw new Error("the override config did not load for the plugin containers:\n" + stderr.slice(-800));
@@ -64,7 +65,8 @@ try {
   const assets = path.join(out, "client", "assets");
   const clientJs = fs.readdirSync(assets).find((f) => /^client-.*\.js$/.test(f));
   if (!clientJs) throw new Error("no client entry chunk in outDir");
-  if (!fs.existsSync(path.join(assets, clientJs + ".map"))) throw new Error("build.sourcemap: true emitted no client .map");
+  if (!fs.existsSync(path.join(assets, clientJs + ".map")))
+    throw new Error("build.sourcemap: true emitted no client .map");
   const code = fs.readFileSync(path.join(assets, clientJs), "utf8");
   if (code.split("\n").length < 50) throw new Error("build.minify: false was ignored (client chunk is minified)");
   if (!code.includes("sourceMappingURL=")) throw new Error("client chunk has no sourceMappingURL comment");
@@ -74,7 +76,9 @@ try {
 
   const port = 6510;
   const srv = spawn("node", [path.join(out, "server.mjs")], {
-    cwd: out, stdio: "ignore", env: { ...process.env, PORT: String(port) },
+    cwd: out,
+    stdio: "ignore",
+    env: { ...process.env, PORT: String(port) },
   });
   try {
     await waitUp(`http://localhost:${port}/`);

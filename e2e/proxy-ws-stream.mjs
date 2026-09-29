@@ -32,17 +32,37 @@ function wsFrame(op, payload) {
   const len = payload.length;
   let head;
   if (len < 126) head = Buffer.from([0x80 | op, len]);
-  else { head = Buffer.alloc(4); head[0] = 0x80 | op; head[1] = 126; head.writeUInt16BE(len, 2); }
+  else {
+    head = Buffer.alloc(4);
+    head[0] = 0x80 | op;
+    head[1] = 126;
+    head.writeUInt16BE(len, 2);
+  }
   return Buffer.concat([head, payload]);
 }
 function wsParse(buf) {
-  const out = []; let off = 0;
+  const out = [];
+  let off = 0;
   while (off + 2 <= buf.length) {
-    const op = buf[off] & 0x0f; const masked = buf[off + 1] & 0x80; let len = buf[off + 1] & 0x7f; off += 2;
-    if (len === 126) { len = buf.readUInt16BE(off); off += 2; } else if (len === 127) { len = Number(buf.readBigUInt64BE(off)); off += 8; }
-    let mask; if (masked) { mask = buf.subarray(off, off + 4); off += 4; }
+    const op = buf[off] & 0x0f;
+    const masked = buf[off + 1] & 0x80;
+    let len = buf[off + 1] & 0x7f;
+    off += 2;
+    if (len === 126) {
+      len = buf.readUInt16BE(off);
+      off += 2;
+    } else if (len === 127) {
+      len = Number(buf.readBigUInt64BE(off));
+      off += 8;
+    }
+    let mask;
+    if (masked) {
+      mask = buf.subarray(off, off + 4);
+      off += 4;
+    }
     if (off + len > buf.length) break;
-    let payload = buf.subarray(off, off + len); off += len;
+    let payload = buf.subarray(off, off + len);
+    off += len;
     if (masked) payload = Buffer.from(payload.map((c, i) => c ^ mask[i % 4]));
     out.push({ op, payload });
   }
@@ -52,31 +72,52 @@ const upstream = http.createServer((req, res) => {
   if (req.url.startsWith("/api/slow")) {
     res.writeHead(200, { "content-type": "text/plain", "x-upstream": "yes" });
     res.write("first");
-    setTimeout(() => { res.write("second"); res.end(); }, 800);
+    setTimeout(() => {
+      res.write("second");
+      res.end();
+    }, 800);
     return;
   }
   if (req.url.startsWith("/api/echo")) {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", () => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ got: body, host: req.headers.host })); });
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ got: body, host: req.headers.host }));
+    });
     return;
   }
-  res.writeHead(404); res.end();
+  res.writeHead(404);
+  res.end();
 });
 function wsUpgrade(req, socket) {
   const key = req.headers["sec-websocket-key"];
-  const accept = crypto.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
-  const protos = String(req.headers["sec-websocket-protocol"] || "").split(",").map((s) => s.trim()).filter(Boolean);
-  const head = ["HTTP/1.1 101 Switching Protocols", "Upgrade: websocket", "Connection: Upgrade", `Sec-WebSocket-Accept: ${accept}`];
+  const accept = crypto
+    .createHash("sha1")
+    .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    .digest("base64");
+  const protos = String(req.headers["sec-websocket-protocol"] || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const head = [
+    "HTTP/1.1 101 Switching Protocols",
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    `Sec-WebSocket-Accept: ${accept}`,
+  ];
   if (protos.includes("chat")) head.push("Sec-WebSocket-Protocol: chat");
   socket.write(head.join("\r\n") + "\r\n\r\n");
   socket.write(wsFrame(1, Buffer.from("hello from upstream " + req.url)));
-  if (req.url.startsWith("/keep")) socket.write(wsFrame(1, Buffer.from(`host=${req.headers.host} origin=${req.headers.origin}`)));
+  if (req.url.startsWith("/keep"))
+    socket.write(wsFrame(1, Buffer.from(`host=${req.headers.host} origin=${req.headers.origin}`)));
   socket.on("data", (buf) => {
     for (const f of wsParse(buf)) {
       if (f.op === 1) socket.write(wsFrame(1, Buffer.from("echo:" + f.payload.toString())));
-      else if (f.op === 8) { socket.write(wsFrame(8, f.payload)); socket.end(); }
-      else if (f.op === 9) socket.write(wsFrame(10, f.payload));
+      else if (f.op === 8) {
+        socket.write(wsFrame(8, f.payload));
+        socket.end();
+      } else if (f.op === 9) socket.write(wsFrame(10, f.payload));
     }
   });
   socket.on("error", () => {});
@@ -144,14 +185,24 @@ await new Promise((r) => tlsUpstream.listen(TLS_UPSTREAM, r));
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-proxyws-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "proxyws-app", version: "1.0.0" }));
-fs.writeFileSync(path.join(app, "oj.config.json"), JSON.stringify({ server: { proxy: {
-  "/api": { target: `http://localhost:${UPSTREAM}`, ws: true, changeOrigin: true },
-  "/tls": { target: `https://localhost:${TLS_UPSTREAM}`, ws: true, changeOrigin: true, secure: false },
-  "/strict": { target: `https://localhost:${TLS_UPSTREAM}`, ws: true, changeOrigin: true },
-  "/keep": { target: `http://localhost:${UPSTREAM}`, ws: true, rewriteWsOrigin: true },
-} } }));
+fs.writeFileSync(
+  path.join(app, "oj.config.json"),
+  JSON.stringify({
+    server: {
+      proxy: {
+        "/api": { target: `http://localhost:${UPSTREAM}`, ws: true, changeOrigin: true },
+        "/tls": { target: `https://localhost:${TLS_UPSTREAM}`, ws: true, changeOrigin: true, secure: false },
+        "/strict": { target: `https://localhost:${TLS_UPSTREAM}`, ws: true, changeOrigin: true },
+        "/keep": { target: `http://localhost:${UPSTREAM}`, ws: true, rewriteWsOrigin: true },
+      },
+    },
+  }),
+);
 fs.writeFileSync(path.join(app, "src", "main.js"), `window.__OK = 1;\n`);
-fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`);
+fs.writeFileSync(
+  path.join(app, "index.html"),
+  `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
+);
 
 let failed = false;
 const logPath = path.join(os.tmpdir(), "oj-proxyws.log");
@@ -168,7 +219,11 @@ try {
   const first = await reader.read();
   const tFirst = Date.now() - t0;
   let text = new TextDecoder().decode(first.value);
-  for (;;) { const { value, done } = await reader.read(); if (done) break; text += new TextDecoder().decode(value); }
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += new TextDecoder().decode(value);
+  }
   assert.equal(text, "firstsecond");
   assert.ok(tFirst < 500, `first chunk took ${tFirst}ms: response was buffered`);
 
@@ -179,9 +234,27 @@ try {
 
   // handshake diagnostics: the upgrade must be answered with 101
   const hs = await new Promise((resolve) => {
-    const r = http.request({ host: "127.0.0.1", port: PORT, path: "/api/ws", headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Protocol": "chat" } });
-    r.on("upgrade", (res, socket) => { socket.destroy(); resolve({ status: res.statusCode, proto: res.headers["sec-websocket-protocol"] }); });
-    r.on("response", (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ status: res.statusCode, body: b })); });
+    const r = http.request({
+      host: "127.0.0.1",
+      port: PORT,
+      path: "/api/ws",
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Protocol": "chat",
+      },
+    });
+    r.on("upgrade", (res, socket) => {
+      socket.destroy();
+      resolve({ status: res.statusCode, proto: res.headers["sec-websocket-protocol"] });
+    });
+    r.on("response", (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve({ status: res.statusCode, body: b }));
+    });
     r.on("error", (e) => resolve({ error: String(e) }));
     r.end();
   });
@@ -192,8 +265,18 @@ try {
     const msgs = [];
     const timer = setTimeout(() => reject(new Error(`ws timeout; got ${JSON.stringify(msgs)}`)), 10000);
     ws.onopen = () => ws.send("ping-me");
-    ws.onmessage = (e) => { msgs.push(String(e.data)); if (msgs.length === 2) { clearTimeout(timer); resolve({ msgs, protocol: ws.protocol }); ws.close(); } };
-    ws.onerror = () => { clearTimeout(timer); reject(new Error("ws error")); };
+    ws.onmessage = (e) => {
+      msgs.push(String(e.data));
+      if (msgs.length === 2) {
+        clearTimeout(timer);
+        resolve({ msgs, protocol: ws.protocol });
+        ws.close();
+      }
+    };
+    ws.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error("ws error"));
+    };
   });
   assert.deepEqual(got.msgs, ["hello from upstream /api/ws?x=1", "echo:ping-me"]);
   assert.equal(got.protocol, "chat", "upstream-selected subprotocol is relayed");
@@ -208,32 +291,89 @@ try {
     const msgs = [];
     const timer = setTimeout(() => reject(new Error(`wss tunnel timeout; got ${JSON.stringify(msgs)}`)), 10000);
     ws.onopen = () => ws.send("over-tls");
-    ws.onmessage = (e) => { msgs.push(String(e.data)); if (msgs.length === 2) { clearTimeout(timer); resolve(msgs); ws.close(); } };
-    ws.onerror = () => { clearTimeout(timer); reject(new Error("wss tunnel error")); };
+    ws.onmessage = (e) => {
+      msgs.push(String(e.data));
+      if (msgs.length === 2) {
+        clearTimeout(timer);
+        resolve(msgs);
+        ws.close();
+      }
+    };
+    ws.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error("wss tunnel error"));
+    };
   });
   assert.deepEqual(tlsWs, ["hello from upstream /tls/api/ws", "echo:over-tls"]);
   const strict = await fetch(`http://localhost:${PORT}/strict/api/x`);
   assert.equal(strict.status, 502, "an unverifiable certificate is refused by default");
   const strictWs = await new Promise((resolve) => {
-    const r = http.request({ host: "127.0.0.1", port: PORT, path: "/strict/api/ws", headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==" } });
-    r.on("upgrade", (res, socket) => { socket.destroy(); resolve(res.statusCode); });
-    r.on("response", (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ status: res.statusCode, body: b })); });
+    const r = http.request({
+      host: "127.0.0.1",
+      port: PORT,
+      path: "/strict/api/ws",
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+      },
+    });
+    r.on("upgrade", (res, socket) => {
+      socket.destroy();
+      resolve(res.statusCode);
+    });
+    r.on("response", (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve({ status: res.statusCode, body: b }));
+    });
     r.on("error", (e) => resolve({ error: String(e) }));
     r.end();
   });
   assert.equal(strictWs.status, 502, `an unverifiable wss upstream is refused by default: ${JSON.stringify(strictWs)}`);
-  assert.match(strictWs.body, /invalid peer certificate|UnknownIssuer/, `refused by TLS verification, not by something else: ${strictWs.body}`);
+  assert.match(
+    strictWs.body,
+    /invalid peer certificate|UnknownIssuer/,
+    `refused by TLS verification, not by something else: ${strictWs.body}`,
+  );
 
   // Without changeOrigin the browser's Host reaches the upstream (http-proxy), and
   // rewriteWsOrigin swaps the Origin for the target's origin (Vite).
   const kept = await new Promise((resolve) => {
-    const r = http.request({ host: "127.0.0.1", port: PORT, path: "/keep/ws", headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", Origin: `http://localhost:${PORT}`, Host: `localhost:${PORT}` } });
+    const r = http.request({
+      host: "127.0.0.1",
+      port: PORT,
+      path: "/keep/ws",
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        Origin: `http://localhost:${PORT}`,
+        Host: `localhost:${PORT}`,
+      },
+    });
     r.on("upgrade", (res, socket, head) => {
       let buf = Buffer.from(head);
-      const finish = () => { const frames = wsParse(buf).filter((f) => f.op === 1).map((f) => f.payload.toString()); if (frames.length >= 2) { socket.destroy(); resolve(frames[1]); } };
+      const finish = () => {
+        const frames = wsParse(buf)
+          .filter((f) => f.op === 1)
+          .map((f) => f.payload.toString());
+        if (frames.length >= 2) {
+          socket.destroy();
+          resolve(frames[1]);
+        }
+      };
       finish();
-      socket.on("data", (d) => { buf = Buffer.concat([buf, d]); finish(); });
-      setTimeout(() => { socket.destroy(); resolve("timeout: " + buf.toString("utf8")); }, 5000);
+      socket.on("data", (d) => {
+        buf = Buffer.concat([buf, d]);
+        finish();
+      });
+      setTimeout(() => {
+        socket.destroy();
+        resolve("timeout: " + buf.toString("utf8"));
+      }, 5000);
     });
     r.on("response", (res) => resolve("status " + res.statusCode));
     r.on("error", (e) => resolve(String(e)));
@@ -245,7 +385,9 @@ try {
 } catch (err) {
   failed = true;
   console.error("PROXY-WS-STREAM E2E FAILED:", err.message);
-  try { console.error(fs.readFileSync(logPath, "utf8").split("\n").slice(-15).join("\n")); } catch {}
+  try {
+    console.error(fs.readFileSync(logPath, "utf8").split("\n").slice(-15).join("\n"));
+  } catch {}
 } finally {
   srv.kill("SIGKILL");
   upstream.close();
@@ -254,8 +396,13 @@ try {
   // The SIGKILLed server's node children flush for a beat and race the removal
   // (ENOTEMPTY); retry like proxy-target-forms.mjs / start-cloudflare-dev.mjs.
   for (let i = 0; ; i++) {
-    try { fs.rmSync(app, { recursive: true, force: true }); break; }
-    catch { if (i >= 20) break; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); }
+    try {
+      fs.rmSync(app, { recursive: true, force: true });
+      break;
+    } catch {
+      if (i >= 20) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
   }
 }
 process.exit(failed ? 1 : 0);

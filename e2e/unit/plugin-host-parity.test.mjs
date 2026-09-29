@@ -43,7 +43,10 @@ test("ConfigEnv carries isSsrBuild / isPreview and apply() sees the merged confi
        transform(code, id) { return id.endsWith("probe.js") ? JSON.stringify(seen) : null; },
      }];\n`,
   );
-  const host = spawnHost(fx, { env: { command: "build", mode: "production" }, environment: { name: "ssr", mode: "build" } });
+  const host = spawnHost(fx, {
+    env: { command: "build", mode: "production" },
+    environment: { name: "ssr", mode: "build" },
+  });
   try {
     const seen = await probe(host, fx);
     assert.deepEqual(seen.apply.env, { command: "build", mode: "production", isSsrBuild: true, isPreview: false });
@@ -115,7 +118,12 @@ test("a client dev host reports isSsrBuild false", async () => {
   );
   const host = spawnHost(fx);
   try {
-    assert.deepEqual(await probe(host, fx), { command: "serve", mode: "development", isSsrBuild: false, isPreview: false });
+    assert.deepEqual(await probe(host, fx), {
+      command: "serve",
+      mode: "development",
+      isSsrBuild: false,
+      isPreview: false,
+    });
   } finally {
     host.close();
     fx.cleanup();
@@ -200,7 +208,11 @@ test("applyToEnvironment is awaited; a returned plugin list replaces the wrapper
   try {
     assert.deepEqual(await probe(host, fx), { inner: true });
     await host.waitStderr(/Plugin "inner" defines Vite-specific hooks \(configureServer\)/);
-    assert.match(host.stderr(), /Plugin "inner" defines Vite-specific hooks \(configureServer\)/, "config-phase hooks on returned plugins are warned about");
+    assert.match(
+      host.stderr(),
+      /Plugin "inner" defines Vite-specific hooks \(configureServer\)/,
+      "config-phase hooks on returned plugins are warned about",
+    );
     const count = await host.send({ id: 2, hook: "getPluginCount", args: [] });
     assert.equal(count.result, "1");
   } finally {
@@ -277,8 +289,19 @@ test("resolveId gets Vite's options, results keep external/meta, load meta reach
     await host.send({ id: 1, hook: "load", args: ["loaded.js"] });
     await host.send({ id: 2, hook: "transform", args: ["export const l = 1;", "loaded.js"] });
     const seen = await probe(host, fx);
-    assert.deepEqual(seen.options, { attributes: { type: "json" }, custom: {}, isEntry: true, ssr: false, scan: false });
-    assert.deepEqual(seen.resolved, { id: "\0sibling", external: true, meta: { fromResolve: 1 }, moduleSideEffects: false });
+    assert.deepEqual(seen.options, {
+      attributes: { type: "json" },
+      custom: {},
+      isEntry: true,
+      ssr: false,
+      scan: false,
+    });
+    assert.deepEqual(seen.resolved, {
+      id: "\0sibling",
+      external: true,
+      meta: { fromResolve: 1 },
+      moduleSideEffects: false,
+    });
     assert.deepEqual(seen.loadOptions, { ssr: false });
     assert.deepEqual(seen.loadedMeta, { fromLoad: 2 }, "a load result's meta is on the module info in transform");
   } finally {
@@ -373,7 +396,11 @@ test("transformIndexHtml gets the page ctx (path, filename, server) and a throwi
   const host = spawnHost(fx);
   try {
     const ctx = JSON.stringify({ path: "/sub/page.html", filename: "/abs/sub/page.html", originalUrl: "/sub/" });
-    const ok = await host.send({ id: 1, hook: "transformIndexHtml", args: ["<html><head></head><body></body></html>", ctx] });
+    const ok = await host.send({
+      id: 1,
+      hook: "transformIndexHtml",
+      args: ["<html><head></head><body></body></html>", ctx],
+    });
     assert.match(ok.result, /content="\/sub\/page.html\|\/abs\/sub\/page.html\|function\|\/sub\/"/);
     const bad = await host.send({ id: 2, hook: "transformIndexHtml", args: ["<html>THROW</html>", ctx] });
     assert.equal(bad.result, undefined);
@@ -517,16 +544,8 @@ test("user cacheDir resolves from root and configEnvironment isBundled is re-cle
   const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
   try {
     const seen = await probe(host, fx);
-    assert.equal(
-      seen.cacheDir,
-      path.resolve(fx.root, "custom-cache"),
-      "a user cacheDir resolves from root like Vite",
-    );
-    assert.equal(
-      seen.clientIsBundled,
-      false,
-      "a configEnvironment-set isBundled is coerced off with bundledDev",
-    );
+    assert.equal(seen.cacheDir, path.resolve(fx.root, "custom-cache"), "a user cacheDir resolves from root like Vite");
+    assert.equal(seen.clientIsBundled, false, "a configEnvironment-set isBundled is coerced off with bundledDev");
   } finally {
     host.close();
     fx.cleanup();

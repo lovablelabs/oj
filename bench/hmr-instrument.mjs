@@ -40,16 +40,29 @@ const PROBE = `
 })();
 `;
 
-function pct(xs, p) { const s=[...xs].sort((a,b)=>a-b); return s[Math.min(s.length-1, Math.ceil(p/100*s.length)-1)]; }
+function pct(xs, p) {
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)];
+}
 const med = (xs) => pct(xs, 50);
 
 async function main() {
-  try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
-  try { execSync(`rm -rf ${app}/.oj-cache`); } catch {}
+  try {
+    execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" });
+  } catch {}
+  try {
+    execSync(`rm -rf ${app}/.oj-cache`);
+  } catch {}
   const args = ["dev", app, "--port", String(PORT)];
   const proc = spawn(OJ, args, { stdio: "ignore" });
   // wait for server
-  for (let i=0;i<600;i++){ try { const r=await fetch(`http://localhost:${PORT}/`); if(r.ok) break; } catch{} await sleep(50); }
+  for (let i = 0; i < 600; i++) {
+    try {
+      const r = await fetch(`http://localhost:${PORT}/`);
+      if (r.ok) break;
+    } catch {}
+    await sleep(50);
+  }
 
   const browser = await chromium.launch();
   const page = await browser.newPage();
@@ -61,38 +74,58 @@ async function main() {
   const rows = [];
   for (let e = 0; e < EDITS + 1; e++) {
     const marker = `marker-P${e}-${Date.now()}`;
-    await page.evaluate((m) => { window.__hmr = []; window.__fetch = []; window.__domHit = null; window.__target = m; }, marker);
+    await page.evaluate((m) => {
+      window.__hmr = [];
+      window.__fetch = [];
+      window.__domHit = null;
+      window.__target = m;
+    }, marker);
     await sleep(160); // clear watcher debounce window between edits
     const tEdit = Date.now();
     writeFileSync(leaf, orig.replace(/marker-\w+/, marker));
-    await page.waitForFunction((m) => window.__domHit && document.body.textContent.includes(m), marker, { timeout: 30000, polling: 8 });
+    await page.waitForFunction((m) => window.__domHit && document.body.textContent.includes(m), marker, {
+      timeout: 30000,
+      polling: 8,
+    });
     const d = await page.evaluate((tEdit) => {
-      const hmr = (window.__hmr||[]).filter(x => x.wall >= tEdit - 5);
+      const hmr = (window.__hmr || []).filter((x) => x.wall >= tEdit - 5);
       const ws = hmr[0];
       const dom = window.__domHit;
-      const fetches = (window.__fetch||[]).filter(f => ws && f.start >= ws.perf - 1);
+      const fetches = (window.__fetch || []).filter((f) => ws && f.start >= ws.perf - 1);
       return { ws, dom, fetches, nHmr: hmr.length };
     }, tEdit);
     if (e === 0) continue;
-    if (!d.ws || !d.dom) { rows.push(null); continue; }
+    if (!d.ws || !d.dom) {
+      rows.push(null);
+      continue;
+    }
     const serverTransport = d.ws.wall - tEdit;
     const clientApply = d.dom.perf - d.ws.perf;
     const total = d.dom.wall - tEdit;
-    const fetchMs = d.fetches.reduce((s,f)=>s+(f.end-f.start),0);
+    const fetchMs = d.fetches.reduce((s, f) => s + (f.end - f.start), 0);
     rows.push({ serverTransport, clientApply, total, fetchMs, nFetch: d.fetches.length, msg: d.ws.data });
   }
   writeFileSync(leaf, orig);
   await browser.close();
   proc.kill("SIGKILL");
-  try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
+  try {
+    execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" });
+  } catch {}
 
   const ok = rows.filter(Boolean);
-  const g = (k) => ok.map(r => r[k]);
+  const g = (k) => ok.map((r) => r[k]);
   console.log(`\napp-${N} — ${ok.length} edits, medians (ms):`);
   console.log(`  total save->paint      : ${med(g("total")).toFixed(1)}`);
-  console.log(`  server + transport     : ${med(g("serverTransport")).toFixed(1)}   (edit -> HMR msg: debounce + recompile + serialize + ws)`);
-  console.log(`  client apply           : ${med(g("clientApply")).toFixed(1)}   (HMR msg -> DOM paint: fetch + refresh + rerender)`);
+  console.log(
+    `  server + transport     : ${med(g("serverTransport")).toFixed(1)}   (edit -> HMR msg: debounce + recompile + serialize + ws)`,
+  );
+  console.log(
+    `  client apply           : ${med(g("clientApply")).toFixed(1)}   (HMR msg -> DOM paint: fetch + refresh + rerender)`,
+  );
   console.log(`    of which module fetch: ${med(g("fetchMs")).toFixed(1)}   (n=${med(g("nFetch"))} req)`);
   console.log(`  sample HMR msg         : ${ok[0]?.msg}`);
 }
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

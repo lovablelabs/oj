@@ -45,14 +45,17 @@ const get = async () => (await fetch(`${base}/`)).text();
 const stripTags = (html) => html.replace(/<[^>]*>/g, "");
 const waitFor = async (pred, timeoutMs = 30000) => {
   let html;
-  const ok = await settles(async () => {
-    try {
-      html = await get();
-      return pred(html);
-    } catch {
-      return false;
-    }
-  }, { timeoutMs, pollMs: 500 });
+  const ok = await settles(
+    async () => {
+      try {
+        html = await get();
+        return pred(html);
+      } catch {
+        return false;
+      }
+    },
+    { timeoutMs, pollMs: 500 },
+  );
   if (!ok) throw new Error("timed out waiting for a render");
   return html;
 };
@@ -90,7 +93,11 @@ try {
   if (!user.includes('data-layout="root"') || !user.includes('data-layout="users"')) {
     throw new Error("nested layouts did not compose on /users/42");
   }
-  if (!user.includes('data-app-name="oj"') || !user.includes('data-users-count="3"') || !user.includes('data-user-id="42"')) {
+  if (
+    !user.includes('data-app-name="oj"') ||
+    !user.includes('data-users-count="3"') ||
+    !user.includes('data-user-id="42"')
+  ) {
     throw new Error(`per-layout loaders did not each provide their data:\n${user}`);
   }
   console.log("ssr-dev: nested layouts + per-layout loaders ok (root, users, page each loaded)");
@@ -146,7 +153,11 @@ try {
   );
   try {
     const compiled = await (await fetch(`${base}/@ssr-module?id=${encodeURIComponent(probe)}`)).text();
-    if (!/const ssr = true/.test(compiled) || !/const dev = true/.test(compiled) || !/const mode = "development"/.test(compiled)) {
+    if (
+      !/const ssr = true/.test(compiled) ||
+      !/const dev = true/.test(compiled) ||
+      !/const mode = "development"/.test(compiled)
+    ) {
       throw new Error(`generic --ssr module not compiled as dev+ssr:\n${compiled}`);
     }
     const call = await fetch(`${base}/__oj_fn`, {
@@ -164,11 +175,7 @@ try {
   }
 
   const html = await waitFor((h) => /ssr[^0-9]*0/.test(stripTags(h)));
-  for (const needle of [
-    'src="/@oj/refresh-preamble.js"',
-    'src="/@oj/client.js"',
-    'src="/src/entry-client.tsx"',
-  ]) {
+  for (const needle of ['src="/@oj/refresh-preamble.js"', 'src="/@oj/client.js"', 'src="/src/entry-client.tsx"']) {
     if (!html.includes(needle)) throw new Error(`SSR HTML missing ${needle}`);
   }
   if (!(await fetch(`${base}/src/entry-client.tsx`)).ok) throw new Error("dev pipeline did not serve the client entry");
@@ -182,7 +189,8 @@ try {
   {
     const appAbs = path.join(repo, "playground", "src", "App.tsx");
     const ssrMod = await (await fetch(`${base}/@ssr-module?id=${encodeURIComponent(appAbs)}`)).text();
-    if (!ssrMod.includes("ssr-ran")) throw new Error("ssr env: applyToEnvironment('ssr') plugin did not run server-side");
+    if (!ssrMod.includes("ssr-ran"))
+      throw new Error("ssr env: applyToEnvironment('ssr') plugin did not run server-side");
     if (!ssrMod.includes("__ENV_CLIENT__")) throw new Error("ssr env: client-gated plugin must NOT run server-side");
     const clientMod = await (await fetch(`${base}/src/App.tsx`)).text();
     if (!clientMod.includes("client-ran")) throw new Error("client env: client plugin did not run");
@@ -192,9 +200,9 @@ try {
 
   {
     const entryAbs = path.join(repo, "playground", "src", "entry-server.tsx");
-    const resolved = await (await fetch(
-      `${base}/@ssr-resolve?importer=${encodeURIComponent(entryAbs)}&spec=virtual:plugin-greeting`,
-    )).json();
+    const resolved = await (
+      await fetch(`${base}/@ssr-resolve?importer=${encodeURIComponent(entryAbs)}&spec=virtual:plugin-greeting`)
+    ).json();
     if (resolved.external || !resolved.id || !resolved.id.includes("virtual:plugin-greeting")) {
       throw new Error("ssr resolveId did not resolve the plugin virtual module: " + JSON.stringify(resolved));
     }
@@ -240,8 +248,7 @@ try {
       throw new Error(`a real server function stopped working: ${good.status} ${greeting}`);
     }
 
-    const read = async (id) =>
-      await fetch(`${base}/@ssr-module?id=${encodeURIComponent(id)}`);
+    const read = async (id) => await fetch(`${base}/@ssr-module?id=${encodeURIComponent(id)}`);
     for (const hostile of [outside, path.join(outsideDir, "..", path.basename(outsideDir), "outside.server.mjs")]) {
       const r = await read(hostile);
       if (r.status !== 403) {
@@ -297,14 +304,14 @@ try {
       await sp.goBack();
       await sp.waitForSelector('[data-page="home"]');
       await sp.locator('a[href="/boom"]').click();
-      await sp.waitForSelector('[data-error]', { timeout: 3000 });
+      await sp.waitForSelector("[data-error]", { timeout: 3000 });
       if (!(await sp.locator("[data-error] p").textContent()).includes("request failed")) {
         throw new Error("loader error not shown as route error");
       }
       await sp.locator('[data-error] a[href="/"]').click();
       await sp.waitForSelector('[data-page="home"]');
       await sp.locator('a[href="/crash"]').click();
-      await sp.waitForSelector('[data-error]', { timeout: 3000 });
+      await sp.waitForSelector("[data-error]", { timeout: 3000 });
       if (!(await sp.locator("[data-error] p").textContent()).includes("render threw")) {
         throw new Error("render error not caught by ErrorBoundary");
       }
@@ -324,10 +331,9 @@ try {
         throw new Error("section layout remounted (state lost) on intra-section navigation");
       }
       await lp.waitForFunction(() => document.title === "User 43 - oj", { timeout: 3000 });
-      await lp.waitForFunction(
-        () => document.querySelector('meta[property="og:title"]')?.content === "User 43",
-        { timeout: 3000 },
-      );
+      await lp.waitForFunction(() => document.querySelector('meta[property="og:title"]')?.content === "User 43", {
+        timeout: 3000,
+      });
       await lp.locator('a[href="/"]').click();
       await lp.waitForSelector('[data-page="home"]');
       await lp.waitForFunction(() => document.title === "Home - oj", { timeout: 3000 });
@@ -404,7 +410,8 @@ try {
       if (!deferred.includes("deferred-streamed")) throw new Error(`deferred content lost: ${deferred}`);
       await page.evaluate(() => (window.__marker = 7));
 
-      if ((await page.locator("[data-likes]").getAttribute("data-likes")) !== "0") throw new Error("likes did not start at 0");
+      if ((await page.locator("[data-likes]").getAttribute("data-likes")) !== "0")
+        throw new Error("likes did not start at 0");
       await likeBtn.click();
       await page.waitForSelector('[data-pending="submitting"]', { timeout: 3000 });
       await page.waitForSelector('[data-likes="1"]', { timeout: 5000 });
@@ -412,7 +419,8 @@ try {
 
       await page.locator('a[href="/about"]').click();
       await page.waitForSelector('[data-page="about"]');
-      if ((await page.evaluate(() => location.pathname)) !== "/about") throw new Error("pushState did not update the URL");
+      if ((await page.evaluate(() => location.pathname)) !== "/about")
+        throw new Error("pushState did not update the URL");
       await page.waitForSelector('[data-likes="1"]', { timeout: 5000 });
       await page.goBack();
       await page.waitForSelector('[data-page="home"]');

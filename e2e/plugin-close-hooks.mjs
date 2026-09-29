@@ -41,7 +41,10 @@ export default [{
   closeBundle() { log("closeBundle"); },
 }];\n`,
 );
-const events = () => (fs.existsSync(path.join(marks, "events")) ? fs.readFileSync(path.join(marks, "events"), "utf8").trim().split("\n").filter(Boolean) : []);
+const events = () =>
+  fs.existsSync(path.join(marks, "events"))
+    ? fs.readFileSync(path.join(marks, "events"), "utf8").trim().split("\n").filter(Boolean)
+    : [];
 const reset = () => fs.rmSync(path.join(marks, "events"), { force: true });
 
 let failed = false;
@@ -53,9 +56,21 @@ try {
   const bad = spawnSync(oj, ["build", app], { encoding: "utf8" });
   assert.notEqual(bad.status, 0, "the broken build fails");
   let ev = events();
-  assert.equal(ev.filter((e) => e.startsWith("buildEnd:")).length, 1, `buildEnd ran once after the failure:\n${ev.join("\n")}`);
-  assert.match(ev.find((e) => e.startsWith("buildEnd:")), /^buildEnd:(?!ok)/, `buildEnd received the error:\n${ev.join("\n")}`);
-  assert.equal(ev.filter((e) => e === "closeBundle").length, 1, `closeBundle ran once after the failure:\n${ev.join("\n")}`);
+  assert.equal(
+    ev.filter((e) => e.startsWith("buildEnd:")).length,
+    1,
+    `buildEnd ran once after the failure:\n${ev.join("\n")}`,
+  );
+  assert.match(
+    ev.find((e) => e.startsWith("buildEnd:")),
+    /^buildEnd:(?!ok)/,
+    `buildEnd received the error:\n${ev.join("\n")}`,
+  );
+  assert.equal(
+    ev.filter((e) => e === "closeBundle").length,
+    1,
+    `closeBundle ran once after the failure:\n${ev.join("\n")}`,
+  );
 
   // A successful build: buildEnd without an error, closeBundle once.
   reset();
@@ -63,7 +78,11 @@ try {
   const good = spawnSync(oj, ["build", app], { encoding: "utf8" });
   assert.equal(good.status, 0, `the fixed build succeeds:\n${good.stderr}`);
   ev = events();
-  assert.deepEqual(ev.filter((e) => e.startsWith("buildEnd:")), ["buildEnd:ok"], `buildEnd(undefined) on success:\n${ev.join("\n")}`);
+  assert.deepEqual(
+    ev.filter((e) => e.startsWith("buildEnd:")),
+    ["buildEnd:ok"],
+    `buildEnd(undefined) on success:\n${ev.join("\n")}`,
+  );
   assert.equal(ev.filter((e) => e === "closeBundle").length, 1, `closeBundle once on success:\n${ev.join("\n")}`);
 
   // Interrupting `oj dev` runs buildEnd then closeBundle before exiting.

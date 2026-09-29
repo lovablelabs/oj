@@ -77,7 +77,13 @@ try {
   const r = spawnSync(oj, ["build", app], { encoding: "utf8" });
   assert.notEqual(r.status, 0, "build must exit non-zero when a plugin transform throws");
   assert.match(r.stderr + r.stdout, /bad-plugin/, `build error names the plugin:\n${r.stderr}`);
-  assert.ok(!fs.existsSync(path.join(app, "dist", "index.html")) || !fs.readdirSync(path.join(app, "dist", "assets")).some((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8").includes("RAW_SOURCE_MARKER")), "no output with the raw source");
+  assert.ok(
+    !fs.existsSync(path.join(app, "dist", "index.html")) ||
+      !fs
+        .readdirSync(path.join(app, "dist", "assets"))
+        .some((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8").includes("RAW_SOURCE_MARKER")),
+    "no output with the raw source",
+  );
   console.log("PLUGIN-ERROR-SURFACED E2E PASSED");
 } catch (err) {
   failed = true;

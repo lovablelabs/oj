@@ -96,21 +96,30 @@ async function session(tool, cold, browser) {
     const rss = treeRssMb(proc.pid);
     return { ms, rss };
   } finally {
-    try { execSync(`pkill -P ${proc.pid}`); } catch {}
-    try { proc.kill("SIGKILL"); } catch {}
-    try { execSync(`lsof -ti:${t.port} -sTCP:LISTEN | xargs -r kill -9`); } catch {}
+    try {
+      execSync(`pkill -P ${proc.pid}`);
+    } catch {}
+    try {
+      proc.kill("SIGKILL");
+    } catch {}
+    try {
+      execSync(`lsof -ti:${t.port} -sTCP:LISTEN | xargs -r kill -9`);
+    } catch {}
     await sleep(500);
   }
 }
 
 async function bench(tool) {
   const browser = await chromium.launch();
-  const cold = [], warm = [], rss = [];
+  const cold = [],
+    warm = [],
+    rss = [];
   try {
     for (let i = 0; i < ITERS; i++) {
       process.stderr.write(`  ${tool} cold ${i + 1}/${ITERS}\n`);
       const c = await session(tool, true, browser);
-      cold.push(c.ms); rss.push(c.rss);
+      cold.push(c.ms);
+      rss.push(c.rss);
       process.stderr.write(`  ${tool} warm ${i + 1}/${ITERS}\n`);
       const w = await session(tool, false, browser);
       warm.push(w.ms);

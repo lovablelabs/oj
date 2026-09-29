@@ -40,7 +40,10 @@ const app = path.join(ws, "packages", "web");
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.mkdirSync(path.join(ws, ".git"));
 fs.symlinkSync(nodeModules, path.join(ws, "node_modules"), "dir");
-fs.writeFileSync(path.join(ws, "package.json"), JSON.stringify({ name: "ws", private: true, workspaces: ["packages/*"] }));
+fs.writeFileSync(
+  path.join(ws, "package.json"),
+  JSON.stringify({ name: "ws", private: true, workspaces: ["packages/*"] }),
+);
 fs.writeFileSync(
   path.join(ws, "postcss.config.mjs"),
   `export default { plugins: [{ postcssPlugin: "oj-marker", Once(root) { root.append(".from-postcss { color: green; }"); } }] };\n`,
@@ -67,7 +70,11 @@ try {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
   const assets = path.join(app, "dist", "assets");
-  const built = fs.readdirSync(assets).filter((f) => f.endsWith(".css")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+  const built = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".css"))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
   assert.match(built, /\.from-postcss/, `postcss applied in build:\n${built}`);
   assert.match(built, /color:\s*red/, "sass compiled in build");
   console.log("[build] workspace postcss.config.mjs applied OK");

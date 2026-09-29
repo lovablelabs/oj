@@ -11,4 +11,7 @@ const base = "http://localhost:5199";
   if (!mod.includes("hello from plugin")) throw new Error("plugin load did not provide the module:\n" + mod);
   console.log("plugin resolveId+load: virtual:plugin-greeting ->", idUrl.split("?")[0]);
   console.log("PLUGIN resolveId/load HOOKS VERIFIED");
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

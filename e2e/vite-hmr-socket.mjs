@@ -39,11 +39,21 @@ try {
   // socket route lives at /__ws, so a root dial must still upgrade.
   const frames = [];
   const ws = new WebSocket(`ws://localhost:${port}/`, ["vite-hmr"]);
-  ws.addEventListener("message", (ev) => { try { frames.push(JSON.parse(ev.data)); } catch {} });
+  ws.addEventListener("message", (ev) => {
+    try {
+      frames.push(JSON.parse(ev.data));
+    } catch {}
+  });
   await new Promise((resolve, reject) => {
     const to = setTimeout(() => reject(new Error("vite-hmr socket did not open on /")), 8000);
-    ws.addEventListener("open", () => { clearTimeout(to); resolve(); });
-    ws.addEventListener("error", () => { clearTimeout(to); reject(new Error("vite-hmr socket errored on /")); });
+    ws.addEventListener("open", () => {
+      clearTimeout(to);
+      resolve();
+    });
+    ws.addEventListener("error", () => {
+      clearTimeout(to);
+      reject(new Error("vite-hmr socket errored on /"));
+    });
   });
 
   assert.equal(ws.protocol, "vite-hmr", "server echoes the vite-hmr subprotocol");
@@ -68,9 +78,17 @@ try {
   const pingClosed = await new Promise((resolve, reject) => {
     const to = setTimeout(() => reject(new Error("vite-ping socket did not open")), 8000);
     let opened = false;
-    ping.addEventListener("open", () => { opened = true; });
-    ping.addEventListener("close", () => { clearTimeout(to); resolve(opened); });
-    ping.addEventListener("error", () => { clearTimeout(to); reject(new Error("vite-ping socket errored")); });
+    ping.addEventListener("open", () => {
+      opened = true;
+    });
+    ping.addEventListener("close", () => {
+      clearTimeout(to);
+      resolve(opened);
+    });
+    ping.addEventListener("error", () => {
+      clearTimeout(to);
+      reject(new Error("vite-ping socket errored"));
+    });
   });
   assert.equal(pingClosed, true, "vite-ping socket opened then was closed by the server");
 

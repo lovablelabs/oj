@@ -31,7 +31,10 @@ fs.writeFileSync(
   path.join(app, "vite.config.js"),
   `export default { build: { assetsInlineLimit: 1024, rollupOptions: { output: { assetFileNames: "static/[name].[hash][extname]" } } } };\n`,
 );
-fs.writeFileSync(path.join(app, "node_modules", "normalize-fake", "package.json"), JSON.stringify({ name: "normalize-fake", style: "n.css" }));
+fs.writeFileSync(
+  path.join(app, "node_modules", "normalize-fake", "package.json"),
+  JSON.stringify({ name: "normalize-fake", style: "n.css" }),
+);
 fs.writeFileSync(path.join(app, "node_modules", "normalize-fake", "n.css"), `.norm { margin: 0; }\n`);
 fs.writeFileSync(path.join(app, "src", "vars.css"), `:root { --x: 1; }\n`);
 fs.writeFileSync(path.join(app, "src", "base", "dot.png"), Buffer.alloc(100, 7));

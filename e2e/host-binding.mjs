@@ -26,7 +26,10 @@ function lanIp() {
 }
 
 async function reachable(ip, port) {
-  return waitUp(`http://${ip}:${port}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(() => true, () => false);
+  return waitUp(`http://${ip}:${port}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(
+    () => true,
+    () => false,
+  );
 }
 
 async function probe(ip, port) {

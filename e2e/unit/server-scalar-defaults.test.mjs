@@ -14,15 +14,22 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { repo, rpcSidecar, tmpProject } from "./harness.mjs";
 
-const bridge = await import(
-  pathToFileURL(join(repo, "crates/oj_server/src/assets/start/vite-plugin-bridge.mjs")).href
-);
+const bridge = await import(pathToFileURL(join(repo, "crates/oj_server/src/assets/start/vite-plugin-bridge.mjs")).href);
 
 test("bundling container: Vite's server scalar defaults, functions included", async () => {
   let seen = null;
-  const container = bridge.createPluginContainer({}, [
-    { name: "reader", configResolved(config) { seen = config.server; } },
-  ], { command: "serve", environment: "client", config: { root: repo } });
+  const container = bridge.createPluginContainer(
+    {},
+    [
+      {
+        name: "reader",
+        configResolved(config) {
+          seen = config.server;
+        },
+      },
+    ],
+    { command: "serve", environment: "client", config: { root: repo } },
+  );
   await container.resolveId("virtual:probe", undefined);
 
   assert.equal(seen.port, 5173, "Vite's configured-port default");
@@ -52,21 +59,30 @@ test("bundling container: Vite's server scalar defaults, functions included", as
 
 test("bundling container: user values win, object forms deep-fill", async () => {
   let seen = null;
-  const container = bridge.createPluginContainer({}, [
-    { name: "reader", configResolved(config) { seen = config.server; } },
-  ], {
-    command: "serve",
-    environment: "client",
-    config: {
-      root: repo,
-      server: {
-        port: 4000,
-        cors: false,
-        warmup: { clientFiles: ["./a.js"] },
-        sourcemapIgnoreList: false,
+  const container = bridge.createPluginContainer(
+    {},
+    [
+      {
+        name: "reader",
+        configResolved(config) {
+          seen = config.server;
+        },
+      },
+    ],
+    {
+      command: "serve",
+      environment: "client",
+      config: {
+        root: repo,
+        server: {
+          port: 4000,
+          cors: false,
+          warmup: { clientFiles: ["./a.js"] },
+          sourcemapIgnoreList: false,
+        },
       },
     },
-  });
+  );
   await container.resolveId("virtual:probe", undefined);
 
   assert.equal(seen.port, 4000, "a configured port is never replaced");
@@ -78,15 +94,32 @@ test("bundling container: user values win, object forms deep-fill", async () => 
 test("bundling container: forwardConsole true and object forms resolve like Vite", async () => {
   const resolved = async (forwardConsole) => {
     let seen = null;
-    const container = bridge.createPluginContainer({}, [
-      { name: "reader", configResolved(config) { seen = config.server.forwardConsole; } },
-    ], { command: "serve", environment: "client", config: { root: repo, server: { forwardConsole } } });
+    const container = bridge.createPluginContainer(
+      {},
+      [
+        {
+          name: "reader",
+          configResolved(config) {
+            seen = config.server.forwardConsole;
+          },
+        },
+      ],
+      { command: "serve", environment: "client", config: { root: repo, server: { forwardConsole } } },
+    );
     await container.resolveId("virtual:probe", undefined);
     return seen;
   };
   assert.deepEqual(await resolved(true), { enabled: true, unhandledErrors: true, logLevels: ["error", "warn"] });
-  assert.deepEqual(await resolved({ logLevels: ["error"] }), { enabled: true, unhandledErrors: true, logLevels: ["error"] });
-  assert.deepEqual(await resolved({ unhandledErrors: false }), { enabled: false, unhandledErrors: false, logLevels: [] });
+  assert.deepEqual(await resolved({ logLevels: ["error"] }), {
+    enabled: true,
+    unhandledErrors: true,
+    logLevels: ["error"],
+  });
+  assert.deepEqual(await resolved({ unhandledErrors: false }), {
+    enabled: false,
+    unhandledErrors: false,
+    logLevels: [],
+  });
 });
 
 test("bundling container: ws/hmr compat, allowedHosts env append, origin strip", async () => {
@@ -94,9 +127,18 @@ test("bundling container: ws/hmr compat, allowedHosts env append, origin strip",
     if (env) process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = env;
     try {
       let seen = null;
-      const container = bridge.createPluginContainer({}, [
-        { name: "reader", configResolved(config) { seen = config.server; } },
-      ], { command: "serve", environment: "client", config: { root: repo, server } });
+      const container = bridge.createPluginContainer(
+        {},
+        [
+          {
+            name: "reader",
+            configResolved(config) {
+              seen = config.server;
+            },
+          },
+        ],
+        { command: "serve", environment: "client", config: { root: repo, server } },
+      );
       await container.resolveId("virtual:probe", undefined);
       return seen;
     } finally {
@@ -164,7 +206,11 @@ test("dev plugin host: the boot config's real port wins over Vite's default", as
       hook: "transform",
       args: ["", path.join(fx.root, "probe.js")],
     });
-    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    const seen = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
     assert.equal(seen.port, 5199, "oj's real configured port, never 5173");
     assert.equal(seen.strictPort, true, "oj's strictPort, not the default");
     assert.equal(seen.preTransformRequests, true);

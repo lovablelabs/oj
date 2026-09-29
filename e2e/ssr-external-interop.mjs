@@ -51,7 +51,10 @@ dep("shape-ts", {
 });
 
 w("package.json", JSON.stringify({ name: "ssr-interop", version: "1.0.0", type: "module" }));
-w("index.html", `<!doctype html><html><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`);
+w(
+  "index.html",
+  `<!doctype html><html><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`,
+);
 w("src/main.js", "export const ok = 1;\n");
 w(
   "vite.config.mjs",
@@ -60,10 +63,7 @@ w(
 // A static named import of a binding cjs-module-lexer cannot see: Vite's
 // runner normalizes this to a SyntaxError naming the binding
 // (analyzeImportedModDifference, wording copied from Node.js).
-w(
-  "src/assign-static.js",
-  'import { named } from "shape-assign";\nexport const got = named;\n',
-);
+w("src/assign-static.js", 'import { named } from "shape-assign";\nexport const got = named;\n');
 w(
   "src/entry-server.js",
   [
@@ -97,14 +97,19 @@ let log = "";
 srv.stderr.on("data", (d) => (log += d));
 try {
   let body = "";
-  await settles(async () => {
-    if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
-    try {
-      const res = await fetch(`http://localhost:${PORT}/`);
-      body = await res.text();
-      return res.status === 200 && body.includes("INTEROP:");
-    } catch { return false; }
-  }, { pollMs: 300 });
+  await settles(
+    async () => {
+      if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
+      try {
+        const res = await fetch(`http://localhost:${PORT}/`);
+        body = await res.text();
+        return res.status === 200 && body.includes("INTEROP:");
+      } catch {
+        return false;
+      }
+    },
+    { pollMs: 300 },
+  );
   const must = (cond, msg) => {
     if (!cond) throw new Error(`${msg}\nrendered: ${body.slice(0, 1500)}\n${log.slice(-1500)}`);
   };
@@ -123,10 +128,22 @@ try {
   must(shapes["shape-forwarded"].named === "fwd-named", "module.exports = require(...) must re-export named");
   must(shapes["shape-defineprop"].named === "dp-named", "defineProperty getter named export missed");
   must(shapes["shape-ts"].named === "ts-named", "TS-transpiled named export missed");
-  must(shapes["shape-assign"].named === null, "Object.assign-reassigned exports are invisible to the lexer; Vite does not synthesize them");
-  must(shapes["shape-assign"].default?.named === "assign-named", "default must be the whole module.exports (assign shape)");
-  must(shapes["shape-ts"].default?.default === "ts-default", "an __esModule external's default stays the exports object, NOT unwrapped (Vite 8 native-import semantics)");
-  must(shapes["shape-defineprop"].default?.default === "dp-default", "default stays the exports object (defineProperty shape)");
+  must(
+    shapes["shape-assign"].named === null,
+    "Object.assign-reassigned exports are invisible to the lexer; Vite does not synthesize them",
+  );
+  must(
+    shapes["shape-assign"].default?.named === "assign-named",
+    "default must be the whole module.exports (assign shape)",
+  );
+  must(
+    shapes["shape-ts"].default?.default === "ts-default",
+    "an __esModule external's default stays the exports object, NOT unwrapped (Vite 8 native-import semantics)",
+  );
+  must(
+    shapes["shape-defineprop"].default?.default === "dp-default",
+    "default stays the exports object (defineProperty shape)",
+  );
   must(
     /Named export 'named' not found|does not provide an export named 'named'/.test(shapes["assign-static"].error ?? ""),
     "VITE GAP: a static named import the lexer cannot see must fail like Node (analyzeImportedModDifference), got: " +

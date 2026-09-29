@@ -17,7 +17,10 @@ let failed = false;
 try {
   fs.mkdirSync(path.join(app, "src"), { recursive: true });
   fs.mkdirSync(path.join(app, "node_modules", "mylib"), { recursive: true });
-  fs.writeFileSync(path.join(app, "package.json"), '{"name":"preload","private":true,"dependencies":{"mylib":"1.0.0"}}');
+  fs.writeFileSync(
+    path.join(app, "package.json"),
+    '{"name":"preload","private":true,"dependencies":{"mylib":"1.0.0"}}',
+  );
   fs.writeFileSync(
     path.join(app, "node_modules", "mylib", "package.json"),
     '{"name":"mylib","version":"1.0.0","type":"module","main":"index.js"}',
@@ -31,7 +34,7 @@ try {
   // Split mylib into its own chunk that the entry statically imports.
   fs.writeFileSync(
     path.join(app, "oj.config.mjs"),
-    "export default { build: { rollupOptions: { output: { manualChunks: { vendor: [\"mylib\"] } } } } };\n",
+    'export default { build: { rollupOptions: { output: { manualChunks: { vendor: ["mylib"] } } } } };\n',
   );
 
   execFileSync(OJ, ["build", app], { stdio: "pipe" });
@@ -45,7 +48,8 @@ try {
     if (!fs.existsSync(f)) throw new Error("preloaded chunk missing on disk: " + href);
   }
   if (!links.some((h) => /vendor-/.test(h))) throw new Error("vendor chunk not preloaded: " + links.join(", "));
-  if (!/<link rel="modulepreload" href="[^"]+" crossorigin/.test(html)) throw new Error("modulepreload links lack crossorigin (Vite sets it)\n" + html);
+  if (!/<link rel="modulepreload" href="[^"]+" crossorigin/.test(html))
+    throw new Error("modulepreload links lack crossorigin (Vite sets it)\n" + html);
   console.log("chunks:             ", files.filter((f) => f.endsWith(".js")).join(", "));
   console.log("modulepreload links:", links.join(", "));
   console.log("\nMODULEPRELOAD VERIFIED: entry static-import chunks preloaded in HTML");

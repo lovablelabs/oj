@@ -19,18 +19,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
 
-const OJ_BIN =
-  process.env.OJ_BIN ||
-  "/Users/rapha/Documents/a/oj-partial-bundle/target/release/oj";
-const APP =
-  process.env.APP ||
-  "/Users/rapha/Documents/a/oj-partial-bundle/bench/pbench-app";
+const OJ_BIN = process.env.OJ_BIN || "/Users/rapha/Documents/a/oj-partial-bundle/target/release/oj";
+const APP = process.env.APP || "/Users/rapha/Documents/a/oj-partial-bundle/bench/pbench-app";
 const PORT = parseInt(process.env.PORT || "5599", 10);
 const PROXY = parseInt(process.env.PROXY || "5600", 10);
 const ITERS = parseInt(process.env.ITERS || "4", 10);
-const LATENCIES = (process.env.LATENCIES || "0,10,25,50")
-  .split(",")
-  .map((s) => parseInt(s.trim(), 10));
+const LATENCIES = (process.env.LATENCIES || "0,10,25,50").split(",").map((s) => parseInt(s.trim(), 10));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const median = (xs) => {
@@ -179,21 +173,14 @@ process.stderr.write("benchmarking partial-bundle ON...\n");
 const on = await benchMode(true);
 proxy.close();
 
-console.log(
-  `\npbench-app — median time-to-first-render / full-load, ${ITERS} iters, latency proxy in front of oj`,
-);
-console.log(
-  "latency | OFF ttfr / load (reqs)    | ON ttfr / load (reqs)     | load speedup",
-);
-console.log(
-  "--------|---------------------------|---------------------------|-------------",
-);
+console.log(`\npbench-app — median time-to-first-render / full-load, ${ITERS} iters, latency proxy in front of oj`);
+console.log("latency | OFF ttfr / load (reqs)    | ON ttfr / load (reqs)     | load speedup");
+console.log("--------|---------------------------|---------------------------|-------------");
 for (const lat of LATENCIES) {
   const o = off[lat],
     n = on[lat];
   const sx = (o.load / n.load).toFixed(2) + "x";
-  const cell = (r) =>
-    `${(r.ttfr + "/" + r.load + "ms").padEnd(14)} (${r.requests})`.padEnd(25);
+  const cell = (r) => `${(r.ttfr + "/" + r.load + "ms").padEnd(14)} (${r.requests})`.padEnd(25);
   console.log(`${(lat + "ms").padEnd(7)} | ${cell(o)} | ${cell(n)} | ${sx}`);
 }
 console.log("\nraw:", JSON.stringify({ off, on }));

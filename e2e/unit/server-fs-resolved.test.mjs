@@ -16,9 +16,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { repo, rpcSidecar, tmpProject } from "./harness.mjs";
 
-const bridge = await import(
-  pathToFileURL(join(repo, "crates/oj_server/src/assets/start/vite-plugin-bridge.mjs")).href
-);
+const bridge = await import(pathToFileURL(join(repo, "crates/oj_server/src/assets/start/vite-plugin-bridge.mjs")).href);
 
 const VITE_DENY = [".env", ".env.*", "*.{crt,pem,key,p12,pfx,cer,der}", ".npmrc", ".yarnrc.yml", "**/.git/**"];
 
@@ -32,37 +30,35 @@ test("bundling container: resolveId reading server.fs.allow.some() survives and 
   fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "web" }));
 
   try {
-  let seenConfig = null;
-  let seenAllow = null;
-  const plugins = [
-    {
-      name: "fs-allow-reader",
-      configResolved(config) {
-        seenConfig = config.server.fs;
+    let seenConfig = null;
+    let seenAllow = null;
+    const plugins = [
+      {
+        name: "fs-allow-reader",
+        configResolved(config) {
+          seenConfig = config.server.fs;
+        },
+        resolveId(id) {
+          if (!id.endsWith("?url")) return null;
+          // The incident shape: an allow-list membership check per ?url import.
+          const allowed = this.environment.config.server.fs.allow.some((dir) => id.startsWith(path.resolve(dir)));
+          seenAllow = { allowed, allow: this.environment.config.server.fs.allow };
+          return null;
+        },
       },
-      resolveId(id) {
-        if (!id.endsWith("?url")) return null;
-        // The incident shape: an allow-list membership check per ?url import.
-        const allowed = this.environment.config.server.fs.allow.some((dir) =>
-          id.startsWith(path.resolve(dir)),
-        );
-        seenAllow = { allowed, allow: this.environment.config.server.fs.allow };
-        return null;
-      },
-    },
-  ];
-  const container = bridge.createPluginContainer({}, plugins, {
-    command: "serve",
-    environment: "client",
-    config: { root: app },
-  });
-  await container.resolveId(path.join(app, "src/a.svg") + "?url", undefined);
+    ];
+    const container = bridge.createPluginContainer({}, plugins, {
+      command: "serve",
+      environment: "client",
+      config: { root: app },
+    });
+    await container.resolveId(path.join(app, "src/a.svg") + "?url", undefined);
 
-  assert.ok(seenAllow, "resolveId ran without throwing on server.fs.allow");
-  assert.equal(seenAllow.allowed, true, "a file under the workspace root is allowed");
-  assert.deepEqual(seenAllow.allow, [ws], "allow defaults to the workspace root");
-  assert.equal(seenConfig.strict, true);
-  assert.deepEqual(seenConfig.deny, VITE_DENY);
+    assert.ok(seenAllow, "resolveId ran without throwing on server.fs.allow");
+    assert.equal(seenAllow.allowed, true, "a file under the workspace root is allowed");
+    assert.deepEqual(seenAllow.allow, [ws], "allow defaults to the workspace root");
+    assert.equal(seenConfig.strict, true);
+    assert.deepEqual(seenConfig.deny, VITE_DENY);
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
   }
@@ -91,13 +87,22 @@ test("bundling container: a user allow list is kept, resolved absolute", async (
 
 test("bundling container: an EXPLICIT empty allow list stays empty (Vite's ?? semantics)", async () => {
   let seen = null;
-  const container = bridge.createPluginContainer({}, [
-    { name: "reader", configResolved(config) { seen = config.server.fs; } },
-  ], {
-    command: "serve",
-    environment: "client",
-    config: { root: repo, server: { fs: { allow: [] } } },
-  });
+  const container = bridge.createPluginContainer(
+    {},
+    [
+      {
+        name: "reader",
+        configResolved(config) {
+          seen = config.server.fs;
+        },
+      },
+    ],
+    {
+      command: "serve",
+      environment: "client",
+      config: { root: repo, server: { fs: { allow: [] } } },
+    },
+  );
   await container.resolveId("virtual:probe", undefined);
   assert.deepEqual(seen.allow, [], "allow: [] must not be broadened to the workspace root");
 });
@@ -140,7 +145,11 @@ test("dev plugin host: configResolved sees the resolved server.fs", async () => 
       hook: "transform",
       args: ["", path.join(fx.root, "probe.js")],
     });
-    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    const seen = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
     assert.equal(seen.strict, true);
     assert.equal(seen.denyHasEnv, true);
     assert.ok(Array.isArray(seen.allow) && seen.allow.length > 0, `allow present: ${JSON.stringify(seen)}`);

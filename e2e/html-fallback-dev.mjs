@@ -22,7 +22,8 @@ const port = Number(process.env.OJ_E2E_PORT || 5490);
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
-const page = (title) => `<!doctype html><html><head><title>${title}</title></head><body><h1>${title}</h1></body></html>`;
+const page = (title) =>
+  `<!doctype html><html><head><title>${title}</title></head><body><h1>${title}</h1></body></html>`;
 
 function makeApp(config) {
   const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-htmlfb-"));

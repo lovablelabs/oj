@@ -22,12 +22,15 @@ if (!fs.existsSync(oj)) {
 // macOS's default soft cap of 256 a big-app boot died in an EMFILE storm
 // that never happened under Vite. The probe holds 300 handles open at once
 // from a process started with the soft limit forced to 256.
-test("the engine runs under a Node-raised fd limit, not the inherited soft cap", { skip: process.platform === "win32" }, () => {
-  const fx = tmpProject({ prefix: "oj-fd-limit-" });
-  fx.write("package.json", JSON.stringify({ name: "fd-fx", version: "1.0.0" }));
-  fx.write(
-    "probe.mjs",
-    `import { open } from "node:fs/promises";
+test(
+  "the engine runs under a Node-raised fd limit, not the inherited soft cap",
+  { skip: process.platform === "win32" },
+  () => {
+    const fx = tmpProject({ prefix: "oj-fd-limit-" });
+    fx.write("package.json", JSON.stringify({ name: "fd-fx", version: "1.0.0" }));
+    fx.write(
+      "probe.mjs",
+      `import { open } from "node:fs/promises";
 const handles = await Promise.all(
   Array.from({ length: 300 }, () => open(${JSON.stringify(path.join(fx.root, "package.json"))})),
 );
@@ -35,15 +38,23 @@ const count = handles.length;
 await Promise.all(handles.map((h) => h.close()));
 export default count;
 `,
-  );
-  try {
-    const out = execFileSync(
-      "/bin/bash",
-      ["-c", `ulimit -Sn 256; exec "$1" js-eval "$2" --root "$3"`, "bash", oj, path.join(fx.root, "probe.mjs"), fx.root],
-      { encoding: "utf8" },
     );
-    assert.match(out, /300/, `300 concurrent open handles under a 256 soft limit: ${out}`);
-  } finally {
-    fx.cleanup();
-  }
-});
+    try {
+      const out = execFileSync(
+        "/bin/bash",
+        [
+          "-c",
+          `ulimit -Sn 256; exec "$1" js-eval "$2" --root "$3"`,
+          "bash",
+          oj,
+          path.join(fx.root, "probe.mjs"),
+          fx.root,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.match(out, /300/, `300 concurrent open handles under a 256 soft limit: ${out}`);
+    } finally {
+      fx.cleanup();
+    }
+  },
+);

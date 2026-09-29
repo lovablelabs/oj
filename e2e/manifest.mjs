@@ -41,7 +41,7 @@ try {
   // manualChunks forces a vendor chunk the entry statically imports.
   fs.writeFileSync(
     path.join(app, "oj.config.mjs"),
-    "export default { build: { manifest: true, rollupOptions: { output: { manualChunks: { vendor: [\"mylib\"] } } } } };\n",
+    'export default { build: { manifest: true, rollupOptions: { output: { manualChunks: { vendor: ["mylib"] } } } } };\n',
   );
 
   execFileSync(OJ, ["build", app], { stdio: "pipe" });
@@ -49,7 +49,8 @@ try {
   const keys = Object.keys(m);
 
   const entry = m["src/main.tsx"];
-  if (!entry || entry.isEntry !== true) throw new Error("entry not keyed by src or not isEntry:\n" + JSON.stringify(keys));
+  if (!entry || entry.isEntry !== true)
+    throw new Error("entry not keyed by src or not isEntry:\n" + JSON.stringify(keys));
 
   // The non-entry vendor chunk is now in the manifest, keyed _<filename>, no src.
   const vendorKey = keys.find((k) => /^_vendor-.*\.js$/.test(k));

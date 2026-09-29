@@ -33,8 +33,7 @@ if (!fs.existsSync(sharedDeps)) {
 }
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-runner-warm-"));
-const cleanup = () =>
-  fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+const cleanup = () => fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 fs.cpSync(fixture, app, {
   recursive: true,
   filter: (src) => !/\/(node_modules|\.oj-cache|dist)(\/|$)/.test(src),

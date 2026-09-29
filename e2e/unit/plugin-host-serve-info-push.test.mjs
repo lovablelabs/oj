@@ -112,10 +112,7 @@ test("control-token framing: forged unframed pushes are ignored, re-push stops o
 
 test("with no middleware registered the push still arrives, with a null port", async () => {
   const fx = tmpProject({ prefix: "oj-serveinfo-none-" });
-  fx.write(
-    "oj.plugins.mjs",
-    `export default [{ name: "no-middleware", transform: (code) => null }];\n`,
-  );
+  fx.write("oj.plugins.mjs", `export default [{ name: "no-middleware", transform: (code) => null }];\n`);
   const host = rpcSidecar("plugin-host.mjs", {
     args: [path.join(fx.root, "oj.plugins.mjs"), JSON.stringify({ root: fx.root })],
     env: { OJ_CACHE_ROOT: fx.root },
@@ -138,15 +135,9 @@ test("with no middleware registered the push still arrives, with a null port", a
 // initialization instead of failing on the per-call timeout.
 test("build mode sends the ojInit signal (no serve-info push exists there)", async () => {
   const fx = tmpProject({ prefix: "oj-init-build-" });
-  fx.write(
-    "oj.plugins.mjs",
-    `export default [{ name: "build-only", transform: (code) => null }];\n`,
-  );
+  fx.write("oj.plugins.mjs", `export default [{ name: "build-only", transform: (code) => null }];\n`);
   const host = rpcSidecar("plugin-host.mjs", {
-    args: [
-      path.join(fx.root, "oj.plugins.mjs"),
-      JSON.stringify({ root: fx.root, env: { command: "build" } }),
-    ],
+    args: [path.join(fx.root, "oj.plugins.mjs"), JSON.stringify({ root: fx.root, env: { command: "build" } })],
     env: { OJ_CACHE_ROOT: fx.root },
     cwd: fx.root,
   });
@@ -161,10 +152,7 @@ test("build mode sends the ojInit signal (no serve-info push exists there)", asy
 
 test("serve mode sends ojInit too, before any RPC reply", async () => {
   const fx = tmpProject({ prefix: "oj-init-serve-" });
-  fx.write(
-    "oj.plugins.mjs",
-    `export default [{ name: "plain", transform: (code) => null }];\n`,
-  );
+  fx.write("oj.plugins.mjs", `export default [{ name: "plain", transform: (code) => null }];\n`);
   const host = rpcSidecar("plugin-host.mjs", {
     args: [path.join(fx.root, "oj.plugins.mjs"), JSON.stringify({ root: fx.root })],
     env: { OJ_CACHE_ROOT: fx.root },

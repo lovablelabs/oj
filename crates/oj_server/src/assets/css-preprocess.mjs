@@ -42,7 +42,8 @@ const isFile = (p) => {
 // `less` / `style` / `main` fields for a bare package, `.less` / `.css`
 // extensions and `index.less` for a subpath. Returns an absolute file or null.
 function resolveBareLess(spec, dir, base) {
-  if (!spec || spec.startsWith(".") || spec.startsWith("/") || path.isAbsolute(spec) || /^(?:https?:)?\/\//.test(spec)) return null;
+  if (!spec || spec.startsWith(".") || spec.startsWith("/") || path.isAbsolute(spec) || /^(?:https?:)?\/\//.test(spec))
+    return null;
   if (spec.startsWith("~")) spec = spec.slice(1);
   const parts = spec.split("/");
   const pkgName = spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
@@ -122,7 +123,9 @@ async function stylus(base, css, from, opts = {}) {
   const stylus = await load(base, "stylus");
   const { paths = [], define, imports, ...rest } = opts;
   return await new Promise((resolve, reject) => {
-    const s = stylus(css).set("filename", from).set("paths", [path.dirname(from), ...paths]);
+    const s = stylus(css)
+      .set("filename", from)
+      .set("paths", [path.dirname(from), ...paths]);
     for (const [k, v] of Object.entries(rest)) s.set(k, v);
     if (define && typeof define === "object") for (const [k, v] of Object.entries(define)) s.define(k, v);
     if (Array.isArray(imports)) for (const i of imports) s.import(i);
@@ -133,7 +136,11 @@ async function stylus(base, css, from, opts = {}) {
 export async function compile(request) {
   const { base, css, from } = request;
   const opts = request.options && typeof request.options === "object" ? request.options : {};
-  const ext = String(from || "").split("?")[0].split(".").pop().toLowerCase();
+  const ext = String(from || "")
+    .split("?")[0]
+    .split(".")
+    .pop()
+    .toLowerCase();
   if (ext === "less") return less(base, css, from, opts);
   if (ext === "styl" || ext === "stylus") return stylus(base, css, from, opts);
   return css;

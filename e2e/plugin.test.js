@@ -55,15 +55,21 @@ const path = require("node:path");
     const envSsr = await page.getAttribute("[data-env-ssr]", "data-env-ssr");
     if (envSsr !== "__ENV_SSR__") throw new Error("applyToEnvironment ssr plugin should NOT run in client: " + envSsr);
     const define = await page.getAttribute("[data-define]", "data-define");
-    if (define !== "global-define|client-define") throw new Error("per-environment define wrong (expected global-define|client-define): " + define);
+    if (define !== "global-define|client-define")
+      throw new Error("per-environment define wrong (expected global-define|client-define): " + define);
     const health = await page.request.get("http://localhost:5199/__oj_health");
     const healthText = (await health.text()).trim();
     if (healthText !== "oj-plugin-mw-ok") throw new Error("configureServer middleware wrong: " + healthText);
     const parsed = (await (await page.request.get("http://localhost:5199/__oj_parsed")).text()).trim();
     if (!parsed.split(",").includes("App.tsx")) throw new Error("moduleParsed did not record App.tsx: " + parsed);
     if (errors.length) throw new Error("console errors");
-    console.log("PLUGIN transform + config + transformIndexHtml (head-prepend default + pre/post order) + enforce/apply + buildStart + this.resolve + getModuleInfo + getModuleIds + configureServer + Environment API (name+mode) + per-env define HOOKS VERIFIED");
+    console.log(
+      "PLUGIN transform + config + transformIndexHtml (head-prepend default + pre/post order) + enforce/apply + buildStart + this.resolve + getModuleInfo + getModuleIds + configureServer + Environment API (name+mode) + per-env define HOOKS VERIFIED",
+    );
   } finally {
     await browser.close();
   }
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

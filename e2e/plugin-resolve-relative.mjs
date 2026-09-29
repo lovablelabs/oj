@@ -65,7 +65,11 @@ try {
   assert.equal(ids.length, 2, `both claimed relative imports route through the plugins:\n${main}`);
 
   const remapped = await (await fetch(`http://localhost:${PORT}${ids[0]}`)).text();
-  assert.match(remapped, /REACT_SVG_COMPONENT/, `the plugin's resolveId remapped ./icon.svg?react and its load served it:\n${remapped}`);
+  assert.match(
+    remapped,
+    /REACT_SVG_COMPONENT/,
+    `the plugin's resolveId remapped ./icon.svg?react and its load served it:\n${remapped}`,
+  );
 
   const declined = await fetch(`http://localhost:${PORT}${ids[1]}`);
   assert.equal(declined.status, 200, "a declined claim still resolves");

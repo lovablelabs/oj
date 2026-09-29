@@ -52,13 +52,20 @@ try {
     const r = spawnSync(oj, ["build", app], { encoding: "utf8" });
     const out = r.stderr + r.stdout;
     assert.notEqual(r.status, 0, `build must exit non-zero when ${hook} throws:\n${out}`);
-    assert.match(out, new RegExp(`\\[plugin:boom-${hook}\\] ${hook} exploded`), `${hook} error names the plugin:\n${out}`);
+    assert.match(
+      out,
+      new RegExp(`\\[plugin:boom-${hook}\\] ${hook} exploded`),
+      `${hook} error names the plugin:\n${out}`,
+    );
   }
 
   // A plugin whose hooks all succeed still builds (the error path is not a
   // blanket failure).
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
-  fs.writeFileSync(path.join(app, "oj.plugins.mjs"), `export default [{ name: "fine", buildStart() {}, closeBundle() {} }];\n`);
+  fs.writeFileSync(
+    path.join(app, "oj.plugins.mjs"),
+    `export default [{ name: "fine", buildStart() {}, closeBundle() {} }];\n`,
+  );
   const ok = spawnSync(oj, ["build", app], { encoding: "utf8" });
   assert.equal(ok.status, 0, `healthy lifecycle hooks build fine:\n${ok.stderr}`);
 
@@ -70,13 +77,18 @@ try {
   srv.stderr.on("data", (d) => (devOut += d));
   const exit = await new Promise((resolve) => {
     const t = setTimeout(() => resolve(null), 20000);
-    srv.on("exit", (code) => { clearTimeout(t); resolve(code); });
+    srv.on("exit", (code) => {
+      clearTimeout(t);
+      resolve(code);
+    });
   });
   assert.notEqual(exit, null, `dev must exit when buildStart throws, still running after 20s:\n${devOut}`);
   assert.notEqual(exit, 0, `dev must exit non-zero when buildStart throws:\n${devOut}`);
   assert.match(devOut, /\[plugin:boom-buildStart\] buildStart exploded/, `dev error names the plugin:\n${devOut}`);
   let served = false;
-  try { served = (await fetch(`http://localhost:${PORT}/`)).ok; } catch {}
+  try {
+    served = (await fetch(`http://localhost:${PORT}/`)).ok;
+  } catch {}
   assert.equal(served, false, "no server is left listening after a failed buildStart");
 
   console.log("PLUGIN-LIFECYCLE-ERRORS E2E PASSED");

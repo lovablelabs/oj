@@ -26,7 +26,10 @@ const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-previewopts-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "previewopts", version: "1.0.0" }));
 fs.writeFileSync(path.join(app, "src", "main.js"), `window.__P = 1;\n`);
-fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head></head><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`);
+fs.writeFileSync(
+  path.join(app, "index.html"),
+  `<!doctype html><html><head></head><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`,
+);
 fs.writeFileSync(path.join(app, "about.html"), `<!doctype html><html><body>about</body></html>`);
 
 function request(p, headers = {}) {
@@ -44,7 +47,15 @@ async function startPreview(args = []) {
   const srv = spawn(oj, ["preview", app, "--port", String(PORT), ...args], { stdio: ["ignore", "pipe", "pipe"] });
   let err = "";
   srv.stderr.on("data", (d) => (err += d));
-  if (await settles(async () => { try { return Boolean((await request("/")).status); } catch { return false; } })) {
+  if (
+    await settles(async () => {
+      try {
+        return Boolean((await request("/")).status);
+      } catch {
+        return false;
+      }
+    })
+  ) {
     return srv;
   }
   throw new Error(`preview did not start: ${err}`);
@@ -61,13 +72,20 @@ let failed = false;
 let srv = null;
 try {
   // 1. spa (default) + cors/allowedHosts/headers from `server`, headers from `preview` winning.
-  build({ server: { cors: true, allowedHosts: ["ok.test"], headers: { "x-s": "s" } }, preview: { headers: { "x-p": "p" } } });
+  build({
+    server: { cors: true, allowedHosts: ["ok.test"], headers: { "x-s": "s" } },
+    preview: { headers: { "x-p": "p" } },
+  });
   srv = await startPreview();
   let r = await request("/", { origin: "http://elsewhere.test" });
   assert.equal(r.status, 200);
   assert.equal(r.headers["access-control-allow-origin"], "http://elsewhere.test", "cors: true reflects the origin");
   assert.equal(r.headers["x-p"], "p", "preview.headers applied");
-  assert.equal(r.headers["x-s"], undefined, "preview.headers replaces server.headers (Vite: preview.headers ?? server.headers)");
+  assert.equal(
+    r.headers["x-s"],
+    undefined,
+    "preview.headers replaces server.headers (Vite: preview.headers ?? server.headers)",
+  );
   r = await request("/", { host: "evil.test" });
   assert.equal(r.status, 403, "a Host outside allowedHosts is refused (DNS rebinding guard)");
   r = await request("/", { host: "ok.test" });
@@ -78,7 +96,10 @@ try {
   r = await request("/about");
   assert.match(r.body, /about/, "/about serves about.html");
   // strictPort: a second preview on the same port exits instead of moving on.
-  const clash = spawnSync(oj, ["preview", app, "--port", String(PORT), "--strictPort"], { encoding: "utf8", timeout: 20000 });
+  const clash = spawnSync(oj, ["preview", app, "--port", String(PORT), "--strictPort"], {
+    encoding: "utf8",
+    timeout: 20000,
+  });
   assert.notEqual(clash.status, 0, "--strictPort exits when the port is taken");
   assert.match(clash.stderr, /already in use/);
   srv.kill();

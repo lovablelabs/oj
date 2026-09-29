@@ -16,7 +16,7 @@ const PORT = 5332;
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-htmlenv-"));
 
 const INDEX =
-  '<!doctype html><html><head><title>%VITE_APP_TITLE%</title>' +
+  "<!doctype html><html><head><title>%VITE_APP_TITLE%</title>" +
   '<meta name="mode" content="%MODE%"><meta name="missing" content="%VITE_MISSING%">' +
   '</head><body><script type="module" src="/src/main.js"></script></body></html>';
 
@@ -32,8 +32,7 @@ try {
   const check = (html, label, mode) => {
     if (!html.includes("<title>Hello OJ</title>"))
       throw new Error(`${label}: %VITE_APP_TITLE% not substituted:\n${html}`);
-    if (!html.includes(`content="${mode}"`))
-      throw new Error(`${label}: %MODE% not substituted to ${mode}:\n${html}`);
+    if (!html.includes(`content="${mode}"`)) throw new Error(`${label}: %MODE% not substituted to ${mode}:\n${html}`);
     if (!html.includes('content="%VITE_MISSING%"'))
       throw new Error(`${label}: unknown %VITE_MISSING% should be left as-is:\n${html}`);
     console.log(`${label}: %VITE_APP_TITLE% + %MODE%=${mode} substituted, unknown left`);
@@ -42,7 +41,10 @@ try {
   // dev
   child = spawn(OJ, ["dev", "--port", String(PORT)], { cwd: app, stdio: "ignore" });
   const up = async () => {
-    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    return waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
   };
   if (!(await up())) throw new Error("dev server did not start");
   check(await (await fetch(`http://localhost:${PORT}/`)).text(), "dev", "development");

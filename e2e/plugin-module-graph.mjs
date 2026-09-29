@@ -64,14 +64,24 @@ try {
 
   const frames = [];
   const ws = new WebSocket(`ws://localhost:${PORT}/__ws`);
-  await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
+  await new Promise((r, j) => {
+    ws.onopen = r;
+    ws.onerror = j;
+  });
   ws.onmessage = (m) => frames.push(String(m.data));
 
-  assert.equal(await (await fetch(`http://localhost:${PORT}/__inv`)).text(), "invalidated", "getModuleById returned a node");
+  assert.equal(
+    await (await fetch(`http://localhost:${PORT}/__inv`)).text(),
+    "invalidated",
+    "getModuleById returned a node",
+  );
   await sleep(500);
   const after = await (await fetch(`http://localhost:${PORT}/src/a.js`)).text();
   assert.match(after, /__N = 2;/, `invalidateModule must drop the cached compile so the transform re-runs:\n${after}`);
-  assert.ok(frames.some((f) => /"type":"(update|full-reload)"/.test(f)), `invalidating a real file propagates an HMR message, got: ${frames.join(" | ")}`);
+  assert.ok(
+    frames.some((f) => /"type":"(update|full-reload)"/.test(f)),
+    `invalidating a real file propagates an HMR message, got: ${frames.join(" | ")}`,
+  );
   ws.close();
 
   // server.restart(): the process re-execs; the port comes back with fresh state.
@@ -86,7 +96,9 @@ try {
   console.error("PLUGIN-MODULE-GRAPH E2E FAILED:", err.message);
 } finally {
   srv.kill("SIGKILL");
-  try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { shell: "/bin/bash", stdio: "ignore" }); } catch {}
+  try {
+    execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { shell: "/bin/bash", stdio: "ignore" });
+  } catch {}
   await sleep(300);
   fs.rmSync(app, { recursive: true, force: true });
 }

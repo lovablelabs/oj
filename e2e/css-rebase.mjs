@@ -24,7 +24,10 @@ try {
   fs.writeFileSync(path.join(app, "src", "main.tsx"), 'import "./style.css";\ndocument.body.dataset.ok = "1";\n');
   // A real referenced asset (font/image) plus a data: url that must be left alone.
   // Larger than build.assetsInlineLimit (4kB): a smaller file would be inlined as a data URL, as in Vite.
-  fs.writeFileSync(path.join(app, "src", "img", "bg.png"), Buffer.concat([Buffer.from("PNGDATA-oj-cssrebase"), Buffer.alloc(5000, 1)]));
+  fs.writeFileSync(
+    path.join(app, "src", "img", "bg.png"),
+    Buffer.concat([Buffer.from("PNGDATA-oj-cssrebase"), Buffer.alloc(5000, 1)]),
+  );
   fs.writeFileSync(
     path.join(app, "src", "style.css"),
     ".hero{background:url(./img/bg.png)}.d{background:url(data:image/gif;base64,AA)}",

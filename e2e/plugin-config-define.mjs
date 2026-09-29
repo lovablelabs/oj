@@ -51,7 +51,11 @@ fs.writeFileSync(
 function check(code, label) {
   assert.match(code, /["'`]plugin-define["'`]/, `${label}: plugin config() define replaced:\n${code}`);
   assert.match(code, /["'`]user-define["'`]/, `${label}: user define still replaced:\n${code}`);
-  assert.match(code, /["'`]plugin-shared["'`]/, `${label}: plugin value wins over the user's for the same key (Vite mergeConfig):\n${code}`);
+  assert.match(
+    code,
+    /["'`]plugin-shared["'`]/,
+    `${label}: plugin value wins over the user's for the same key (Vite mergeConfig):\n${code}`,
+  );
   assert.match(code, /41\s*\+\s*1|42/, `${label}: non-string define values are inlined as JSON:\n${code}`);
   assert.doesNotMatch(code, /__FROM_PLUGIN__|__PLUGIN_NUM__/, `${label}: no define identifier left behind:\n${code}`);
 }
@@ -67,8 +71,11 @@ try {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const r = spawnSync(oj, ["build", app], { encoding: "utf8" });
   assert.equal(r.status, 0, `build failed:\n${r.stderr}`);
-  const js = fs.readdirSync(path.join(app, "dist", "assets")).filter((f) => f.endsWith(".js"))
-    .map((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8")).join("\n");
+  const js = fs
+    .readdirSync(path.join(app, "dist", "assets"))
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8"))
+    .join("\n");
   check(js, "build");
 
   // Slow boot: the host's top-level init (a 5s configureServer, standing in for
@@ -94,7 +101,10 @@ try {
     env: { ...process.env, OJ_PLUGIN_TIMEOUT: "2" },
   });
   try {
-    const up = await waitUp(`http://localhost:${SLOW_PORT}/`).then(() => true, () => false);
+    const up = await waitUp(`http://localhost:${SLOW_PORT}/`).then(
+      () => true,
+      () => false,
+    );
     assert.ok(up, "slow-boot dev server never came up (boot RPCs raced init instead of waiting)");
     check(await (await fetch(`http://localhost:${SLOW_PORT}/src/main.js`)).text(), "slow-boot dev");
   } finally {

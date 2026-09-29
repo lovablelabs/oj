@@ -37,7 +37,9 @@ const rm = (p) => {
     }
   }
 };
-const must = (cond, msg) => { if (!cond) throw new Error(msg); };
+const must = (cond, msg) => {
+  if (!cond) throw new Error(msg);
+};
 const dist = path.join(app, "dist");
 
 function build(args) {
@@ -50,21 +52,31 @@ const bareImports = (code, pkg) => code.match(new RegExp(`from\\s*["']${pkg}(?:/
 
 try {
   const plain = build("");
-  must(bareImports(plain, "react").length === 0 && bareImports(plain, "react-dom").length === 0,
-    "default: the Start server bundle should stay self-contained (react inlined)");
+  must(
+    bareImports(plain, "react").length === 0 && bareImports(plain, "react-dom").length === 0,
+    "default: the Start server bundle should stay self-contained (react inlined)",
+  );
 
   const external = build("--config vite.ssr-external.config.ts");
   must(bareImports(external, "react").length > 0, "ssr.external: react is not a bare import of the server bundle");
-  must(bareImports(external, "react-dom").length > 0, "ssr.external: react-dom is not a bare import of the server bundle");
+  must(
+    bareImports(external, "react-dom").length > 0,
+    "ssr.external: react-dom is not a bare import of the server bundle",
+  );
   must(!/react-dom\/cjs\/react-dom-server/.test(external), "ssr.external: react-dom's internals were still inlined");
   const size = (s) => Buffer.byteLength(s);
   must(size(external) < size(plain), `ssr.external: bundle did not shrink (${size(external)} vs ${size(plain)})`);
 
   const srv = spawn("node", [path.join(dist, "server.mjs")], {
-    cwd: app, stdio: "ignore", env: { ...process.env, PORT: String(PORT) },
+    cwd: app,
+    stdio: "ignore",
+    env: { ...process.env, PORT: String(PORT) },
   });
   try {
-    const up = await waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    const up = await waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
     must(up, `built server on :${PORT} did not start with react external`);
     const html = await (await fetch(`http://localhost:${PORT}/`)).text();
     for (const marker of ["HOME!", "server-fn-marker", "fixture-define-marker", "Alpha Widget, Beta Widget"]) {

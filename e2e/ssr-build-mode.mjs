@@ -59,15 +59,26 @@ try {
   const resolved = lines.filter((l) => l.startsWith("configResolved:"));
   // One plugin host per build environment (ssr, then client), each under the CLI mode.
   assert.ok(config.length >= 2, `config() should run in both the ssr and client hosts:\n${lines.join("\n")}`);
-  assert.deepEqual([...new Set(config)], ["config:staging:build"], `every config(env) sees mode staging:\n${lines.join("\n")}`);
-  assert.deepEqual([...new Set(resolved)], ["configResolved:staging"], `every configResolved sees mode staging:\n${lines.join("\n")}`);
+  assert.deepEqual(
+    [...new Set(config)],
+    ["config:staging:build"],
+    `every config(env) sees mode staging:\n${lines.join("\n")}`,
+  );
+  assert.deepEqual(
+    [...new Set(resolved)],
+    ["configResolved:staging"],
+    `every configResolved sees mode staging:\n${lines.join("\n")}`,
+  );
   const applies = lines.filter((l) => l.startsWith("apply:"));
   for (const a of applies) assert.match(a, /:staging$/, `environment config carries the mode: ${a}`);
 
   const server = fs.readFileSync(path.join(app, "dist", "entry-server.mjs"), "utf8");
   assert.match(server, /staging\|staging-flavor/, "ssr bundle inlines MODE and .env.staging");
-  const client = fs.readdirSync(path.join(app, "dist", "assets")).filter((f) => f.endsWith(".js"))
-    .map((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8")).join("\n");
+  const client = fs
+    .readdirSync(path.join(app, "dist", "assets"))
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8"))
+    .join("\n");
   assert.match(client, /staging\|staging-flavor/, "client bundle inlines MODE and .env.staging");
 
   console.log("SSR-BUILD-MODE E2E PASSED");

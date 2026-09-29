@@ -28,12 +28,18 @@ const w = (rel, s) => {
   fs.writeFileSync(path.join(app, rel), s);
 };
 w("package.json", JSON.stringify({ name: "ssr-hmr", version: "1.0.0", type: "module" }));
-w("index.html", `<!doctype html><html><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`);
+w(
+  "index.html",
+  `<!doctype html><html><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`,
+);
 w("src/main.js", "export const ok = 1;\n");
 w("src/dep.js", 'export const msg = "m1";\n');
 // Top-level execution counter: proves whether the runner re-executes this
 // UNTOUCHED module when a sibling is edited.
-w("src/state.js", "globalThis.__ssrExecs = (globalThis.__ssrExecs ?? 0) + 1;\nexport const execs = () => globalThis.__ssrExecs;\n");
+w(
+  "src/state.js",
+  "globalThis.__ssrExecs = (globalThis.__ssrExecs ?? 0) + 1;\nexport const execs = () => globalThis.__ssrExecs;\n",
+);
 w(
   "src/entry-server.js",
   [
@@ -57,13 +63,18 @@ const get = async () => (await fetch(`http://localhost:${PORT}/`)).text();
 const field = (body, name) => body.match(new RegExp(`${name}:([^|<"]+)`))?.[1];
 try {
   let body = "";
-  await settles(async () => {
-    if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
-    try {
-      body = await get();
-      return body.includes("msg:");
-    } catch { return false; }
-  }, { pollMs: 300 });
+  await settles(
+    async () => {
+      if (srv.exitCode !== null) throw new Error(`oj exited early\n${log.slice(-3000)}`);
+      try {
+        body = await get();
+        return body.includes("msg:");
+      } catch {
+        return false;
+      }
+    },
+    { pollMs: 300 },
+  );
   if (field(body, "msg") !== "m1") throw new Error(`first render wrong: ${body.slice(0, 300)}`);
   const execs0 = Number(field(body, "execs"));
 
@@ -79,11 +90,15 @@ try {
   // restart, and the UNTOUCHED state.js instance survives the update.
   w("src/dep.js", 'export const msg = "m2";\n');
   let after = "";
-  await settles(async () => {
-    after = await get();
-    return field(after, "msg") === "m2";
-  }, { pollMs: 250 });
-  if (field(after, "msg") !== "m2") throw new Error(`the dep edit never reached the SSR render:\n${after.slice(0, 300)}\n${log.slice(-2000)}`);
+  await settles(
+    async () => {
+      after = await get();
+      return field(after, "msg") === "m2";
+    },
+    { pollMs: 250 },
+  );
+  if (field(after, "msg") !== "m2")
+    throw new Error(`the dep edit never reached the SSR render:\n${after.slice(0, 300)}\n${log.slice(-2000)}`);
   if (srv.exitCode !== null) throw new Error("the server restarted (or died) for a source edit");
   const execs2 = Number(field(after, "execs"));
   if (execs2 !== execs0) {
