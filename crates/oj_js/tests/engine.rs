@@ -782,10 +782,8 @@ fn collect_all_garbage_counts_only_live_engines() {
 
 #[tokio::test]
 async fn idle_engines_shrink_once_and_rearm_on_work() {
-    // Node's platform runs V8's MemoryReducer off libuv timers, so Node heaps
-    // shrink after idle; deno_core never pumps the platform task queue, so an
-    // embedded engine holds its high-water pages forever. The engine's
-    // explicit idle shrink stands in: once per idle period, re-armed by real
+    // The idle backstop (moderate memory pressure, see
+    // EngineConfig::idle_shrink_after): once per idle period, re-armed by real
     // work, NOT re-armed by a Gc probe (a measurement is not activity).
     let root = app_root();
     let mut config = EngineConfig::new(root.path());

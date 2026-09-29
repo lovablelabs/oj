@@ -49,6 +49,10 @@ use deno_runtime::worker::MainWorker;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
+/// The default [`EngineConfig::idle_shrink_after`]: the order of Bun's first
+/// idle collection (10s) and V8's own MemoryReducer start delay (8s).
+pub const DEFAULT_IDLE_SHRINK_AFTER: Duration = Duration::from_secs(10);
+
 /// Configuration for a [`JsEngine`].
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -62,22 +66,20 @@ pub struct EngineConfig {
     /// Default wall-clock deadline applied to every job that does not carry
     /// its own.
     pub default_deadline: Option<Duration>,
-    /// After this long with no jobs, the engine returns memory once: a V8
-    /// `low_memory_notification` (full GC plus aggressive heap shrink — the
-    /// same path V8 takes under critical memory pressure) and, on Linux, a
-    /// process-wide `malloc_trim(0)`. Node gets the equivalent for free —
-    /// its platform runs V8's MemoryReducer as libuv-timed delayed tasks —
-    /// but deno_core never pumps the V8 platform's task queue, so under an
-    /// embedded engine the reducer NEVER runs and every isolate holds its
-    /// high-water pages forever. Deno's own answer is structural (short-lived
-    /// processes; `malloc_trim` after worker teardown, denoland/deno#26058);
-    /// a dev server's engines live for days, so the shrink is explicit here.
+    /// After this long with no jobs, the engine signals V8 moderate memory
+    /// pressure once (an incremental, footprint-reducing collection), re-armed
+    /// by the next job. The primary mechanism is V8's own MemoryReducer, which
+    /// Node runs off libuv timers and which runs here too: deno_core's
+    /// platform queues V8's delayed tasks and the engine drains them on every
+    /// wake (see the tick). The reducer only arms after a collection that grew
+    /// the heap, though, so this is the backstop for an isolate that went
+    /// quiet without one, the idle collection Bun (10s) and workerd (moderate
+    /// pressure) also run.
     ///
     /// Idle means NO JOBS: an engine serving background work inside its event
-    /// loop (the plugin host's configureServer middleware) still shrinks once
-    /// per job-quiet period, taking one full-GC pause on that traffic. That
-    /// is Node parity — its MemoryReducer full-GCs live servers whenever
-    /// allocation goes quiet — and it is bounded to once until the next job.
+    /// loop (the plugin host's configureServer middleware) still gets the
+    /// signal once per job-quiet period; moderate pressure is incremental, so
+    /// that traffic is not paused for a full collection.
     pub idle_shrink_after: Option<Duration>,
     /// Persistent V8 code-cache directory. When set, compiled bytecode for
     /// the modules an engine loads from disk (ESM, `require`d CJS, residual
@@ -94,7 +96,7 @@ impl EngineConfig {
         Self {
             root: root.into(),
             memory_limit_bytes: None,
-            idle_shrink_after: Some(Duration::from_secs(60)),
+            idle_shrink_after: Some(DEFAULT_IDLE_SHRINK_AFTER),
             default_deadline: None,
             code_cache_dir: None,
         }
@@ -536,25 +538,26 @@ fn engine_thread(
             /// heap, and the isolate is condemned: later jobs fail fast until
             /// the owner replaces the engine.
             MemoryExhausted,
-            /// No jobs for `idle_shrink_after`: return memory once. Explicit
-            /// because no embedded-engine path ever runs V8's MemoryReducer
-            /// (deno_core never pumps the platform task queue where its
-            /// delayed GC tasks live; Node's platform runs them off libuv
-            /// timers, which is why Node heaps shrink on idle and these do
-            /// not without this tick).
+            /// No jobs for `idle_shrink_after`: signal V8 moderate memory
+            /// pressure once (see [`EngineConfig::idle_shrink_after`]).
             IdleShrink,
             Closed,
         }
         let mut pending: Vec<PendingCall> = Vec::new();
         let mut last_activity = tokio::time::Instant::now();
         let mut idle_shrunk = false;
-        // The event loop drained completely (no ops, no live timers): only a
-        // new job can create work, so skip event-loop polling until one
-        // arrives and the scheduler parks instead of spinning. While the loop
-        // HAS work it is polled even with no call pending — a module may have
-        // left long-lived background work behind (the plugin host's
-        // configureServer middleware server, a Miniflare instance), and that
-        // work must keep serving between hook calls.
+        // The event loop drained completely (no ops, no live timers). It is
+        // still polled on every wake: V8 posts its own foreground work (the
+        // MemoryReducer's delayed GC tasks, incremental-marking steps) through
+        // deno_core's platform, which queues a task once it is due and wakes
+        // the waker the last poll registered; only a poll drains that queue.
+        // A drained poll registers the waker and returns, so nothing spins:
+        // the engine wakes only for a job, a due V8 task, or a timer. While
+        // the loop HAS work it is polled even with no call pending, since a
+        // module may have left long-lived background work behind (the plugin
+        // host's configureServer middleware server, a Miniflare instance).
+        // The flag now only tells the shutdown path whether a final flush is
+        // needed.
         let mut event_loop_idle = false;
         let mut eval_counter: u64 = 0;
         // Set once the heap-limit callback has fired: the isolate ran on and
@@ -596,23 +599,21 @@ fn engine_thread(
                         return std::task::Poll::Ready(Tick::IdleShrink);
                     }
                 }
-                if !event_loop_idle {
-                    match worker
-                        .js_runtime
-                        .poll_event_loop(cx, PollEventLoopOptions::default())
-                    {
-                        std::task::Poll::Ready(Ok(())) => event_loop_idle = true,
-                        std::task::Poll::Ready(Err(e)) => {
-                            return std::task::Poll::Ready(Tick::Broken(e))
-                        }
-                        std::task::Poll::Pending => {}
+                match worker
+                    .js_runtime
+                    .poll_event_loop(cx, PollEventLoopOptions::default())
+                {
+                    std::task::Poll::Ready(Ok(())) => event_loop_idle = true,
+                    std::task::Poll::Ready(Err(e)) => {
+                        return std::task::Poll::Ready(Tick::Broken(e))
                     }
-                    // The heap-limit callback runs inside the poll above, so
-                    // a mid-pump exhaustion is visible right here — the tick
-                    // never depends on a waker the terminated JS can't fire.
-                    if oom.load(Ordering::SeqCst) {
-                        return std::task::Poll::Ready(Tick::MemoryExhausted);
-                    }
+                    std::task::Poll::Pending => event_loop_idle = false,
+                }
+                // The heap-limit callback runs inside the poll above, so a
+                // mid-pump exhaustion is visible right here — the tick never
+                // depends on a waker the terminated JS can't fire.
+                if oom.load(Ordering::SeqCst) {
+                    return std::task::Poll::Ready(Tick::MemoryExhausted);
                 }
                 std::task::Poll::Pending
             })
@@ -788,16 +789,12 @@ fn engine_thread(
                     }
                 }
                 Tick::IdleShrink => {
-                    // V8's low-memory path: full GC plus aggressive heap
-                    // shrink and page decommit — what the MemoryReducer would
-                    // have done had the platform's delayed tasks ever run.
-                    worker.js_runtime.v8_isolate().low_memory_notification();
-                    // Give freed arena pages back too; vendored deno does the
-                    // same after worker teardown (denoland/deno#26058).
-                    #[cfg(target_os = "linux")]
-                    unsafe {
-                        libc::malloc_trim(0);
-                    }
+                    // Incremental and footprint-reducing: V8 drives it through
+                    // the same platform tasks the tick drains.
+                    worker
+                        .js_runtime
+                        .v8_isolate()
+                        .memory_pressure_notification(v8::MemoryPressureLevel::Moderate);
                     idle_shrinks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     idle_shrunk = true;
                 }

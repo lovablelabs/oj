@@ -7,7 +7,6 @@ repository.workspace = true
 description = "Embedded JavaScript engine: Deno runtime with Node compatibility over the app's node_modules"
 
 [dependencies]
-libc.workspace = true
 deno_core = { version = "0.412", features = ["v8"] }
 # oj-maintained forks (napi finalizer-registry patch, see the workspace
 # manifest); the dependency keys keep `use deno_runtime::`/`use deno_napi::`
