@@ -26,11 +26,9 @@ pub fn compile_dep(
 ) -> Result<CompileOutput, CompileError> {
     if has_module_syntax(path, source_text) {
         let opts = crate::CompileOptions {
-            dev: true,
             refresh: false,
             sourcemap: false,
-            ssr: false,
-            jsx: crate::JsxConfig::default(),
+            ..crate::CompileOptions::dev()
         };
         crate::compile_module(path, source_text, &opts, Some(resolve))
     } else {

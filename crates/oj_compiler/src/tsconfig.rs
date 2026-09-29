@@ -10,7 +10,10 @@
 //! `useDefineForClassFields` wins, otherwise the `target` decides (`esnext`
 //! or ES2022+ mean define semantics, anything else — including no target —
 //! means assignment semantics), and NO tsconfig means the transform defaults
-//! (define semantics). Only that one option is consumed here today.
+//! (define semantics). Only that one option is consumed here today; rolldown's
+//! merge also maps `verbatimModuleSyntax`/`preserveValueImports` (type-import
+//! elision), `experimentalDecorators` and the `jsx*` family — of those,
+//! `verbatimModuleSyntax` is the consequential open gap (audit VI P2).
 
 use std::path::Path;
 use std::sync::OnceLock;

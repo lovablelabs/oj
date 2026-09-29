@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod start_codegen;
 
-pub const CACHE_FORMAT: u32 = 5;
+// 6: HotMeta semantics changed (acceptExports is a partial accept, no longer
+// self_accept) and CachedModule grew import_bindings; older entries would
+// deserialize with the old meaning.
+pub const CACHE_FORMAT: u32 = 6;
 
 pub const CACHE_ROOT_VERSION: u32 = 1;
 
