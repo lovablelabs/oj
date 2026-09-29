@@ -307,14 +307,18 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
 // container binds nothing, so Vite's configured-port default (5173) is the
 // honest resolved value here, as in `vite build`.
 function fillResolvedServerScalars(server) {
+  // `host` is deliberately NOT filled: Vite overrides its own default with
+  // undefined ("do not set here to detect whether host is set or not",
+  // server/index.ts) so plugins can tell an explicit host apart.
   const defaults = {
     port: 5173,
     strictPort: false,
-    host: "localhost",
     allowedHosts: [],
     open: false,
     middlewareMode: false,
     preTransformRequests: true,
+    perEnvironmentStartEndDuringDev: false,
+    perEnvironmentWatchChangeDuringDev: false,
     headers: {},
   };
   for (const k of Object.keys(defaults)) {
@@ -331,6 +335,21 @@ function fillResolvedServerScalars(server) {
   if (server.sourcemapIgnoreList === false) server.sourcemapIgnoreList = () => false;
   else if (server.sourcemapIgnoreList === undefined) {
     server.sourcemapIgnoreList = (id) => id.includes("node_modules");
+  }
+  // Vite resolves `forwardConsole` to { enabled, unhandledErrors, logLevels }
+  // (resolveForwardConsoleOptions). An unset value takes Vite's disabled
+  // shape (its default is agent-detection, but oj does not forward console,
+  // so advertising agent-enabled would lie); explicit user values resolve
+  // exactly as Vite resolves them.
+  const fc = server.forwardConsole;
+  if (fc === undefined || fc === false) {
+    server.forwardConsole = { enabled: false, unhandledErrors: false, logLevels: [] };
+  } else if (fc === true) {
+    server.forwardConsole = { enabled: true, unhandledErrors: true, logLevels: ["error", "warn"] };
+  } else if (fc !== null && typeof fc === "object" && typeof fc.enabled !== "boolean") {
+    const unhandledErrors = fc.unhandledErrors ?? true;
+    const logLevels = fc.logLevels ?? [];
+    server.forwardConsole = { enabled: unhandledErrors || logLevels.length > 0, unhandledErrors, logLevels };
   }
   return server;
 }

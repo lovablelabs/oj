@@ -27,8 +27,17 @@ test("bundling container: Vite's server scalar defaults, functions included", as
 
   assert.equal(seen.port, 5173, "Vite's configured-port default");
   assert.equal(seen.strictPort, false);
-  assert.equal(seen.host, "localhost");
+  // Vite deliberately leaves an unset host undefined so plugins can detect
+  // an explicit one (server/index.ts "do not set here...").
+  assert.equal(seen.host, undefined);
   assert.equal(seen.middlewareMode, false);
+  assert.equal(seen.perEnvironmentStartEndDuringDev, false);
+  assert.equal(seen.perEnvironmentWatchChangeDuringDev, false);
+  assert.deepEqual(
+    seen.forwardConsole,
+    { enabled: false, unhandledErrors: false, logLevels: [] },
+    "unset forwardConsole resolves to Vite's disabled shape (oj does not forward)",
+  );
   assert.equal(seen.preTransformRequests, true);
   assert.equal(seen.open, false);
   assert.deepEqual(seen.allowedHosts, []);
@@ -64,6 +73,20 @@ test("bundling container: user values win, object forms deep-fill", async () => 
   assert.equal(seen.cors, false, "a non-object cors value is carried as-is");
   assert.deepEqual(seen.warmup, { clientFiles: ["./a.js"], ssrFiles: [] }, "warmup deep-fills like mergeWithDefaults");
   assert.equal(seen.sourcemapIgnoreList("/x/node_modules/y.js"), false, "false resolves to a constant-false function");
+});
+
+test("bundling container: forwardConsole true and object forms resolve like Vite", async () => {
+  const resolved = async (forwardConsole) => {
+    let seen = null;
+    const container = bridge.createPluginContainer({}, [
+      { name: "reader", configResolved(config) { seen = config.server.forwardConsole; } },
+    ], { command: "serve", environment: "client", config: { root: repo, server: { forwardConsole } } });
+    await container.resolveId("virtual:probe", undefined);
+    return seen;
+  };
+  assert.deepEqual(await resolved(true), { enabled: true, unhandledErrors: true, logLevels: ["error", "warn"] });
+  assert.deepEqual(await resolved({ logLevels: ["error"] }), { enabled: true, unhandledErrors: true, logLevels: ["error"] });
+  assert.deepEqual(await resolved({ unhandledErrors: false }), { enabled: false, unhandledErrors: false, logLevels: [] });
 });
 
 test("dev plugin host: the boot config's real port wins over Vite's default", async () => {
