@@ -3,7 +3,17 @@
 
 import http from "node:http";
 import https from "node:https";
-import { existsSync, fstatSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, stat as fsStat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
@@ -1958,6 +1968,66 @@ async function loadAppVite() {
 // Build real Vite DevEnvironments from the app's installed Vite so plugins that
 // use the Environment API (e.g. @cloudflare/vite-plugin, which subclasses
 // vite.DevEnvironment) run. oj does not depend on Vite; it loads the app's copy.
+// TWIN COPY: keep byte-identical with the sibling in optimize-env.mjs.
+// Fold the discovered-deps ledger into every environment's
+// optimizeDeps.include. Vite's configHash covers `include` SORTED and DEDUPED
+// (optimizer/index.ts getConfigHash), so the preseed child and the host must
+// apply the SAME SET or the child-seeded metadata is rejected as stale;
+// set-union keeps the two symmetric. A stale entry (dep since removed) only
+// costs Vite's "present in optimizeDeps.include" warning.
+function foldDiscoveredDeps(rc, ledgerPath) {
+  if (!ledgerPath) return;
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+  } catch {
+    return;
+  }
+  for (const [name, ids] of Object.entries(ledger ?? {})) {
+    const env = rc.environments?.[name];
+    if (!env || !Array.isArray(ids) || ids.length === 0) continue;
+    const optimizeDeps = (env.optimizeDeps ??= {});
+    const merged = new Set(optimizeDeps.include ?? []);
+    for (const id of ids) if (typeof id === "string") merged.add(id);
+    optimizeDeps.include = [...merged];
+  }
+}
+
+// Deps only the RUNTIME discovers (a plugin injecting scanner-invisible
+// imports; Cloudflare's unenv polyfills are the recurring case) land here and
+// get folded into optimizeDeps.include on the next boot by both the preseed
+// child and buildEnvironments — so the in-host discovery optimize (whose
+// commit ends in the plugin's server.restart()) fires at most once per app,
+// ever. Capped, debounced, written atomically.
+const discoveredDeps = { byEnv: new Map(), timer: null, loaded: false };
+function recordDiscoveredDep(ledgerPath, envName, id) {
+  if (typeof id !== "string" || id.startsWith("/") || id.startsWith(".")) return;
+  if (!discoveredDeps.loaded) {
+    discoveredDeps.loaded = true;
+    try {
+      for (const [n, ids] of Object.entries(JSON.parse(readFileSync(ledgerPath, "utf8")) ?? {})) {
+        if (Array.isArray(ids)) discoveredDeps.byEnv.set(n, new Set(ids));
+      }
+    } catch {}
+  }
+  const ids = discoveredDeps.byEnv.get(envName) ?? new Set();
+  discoveredDeps.byEnv.set(envName, ids);
+  if (ids.has(id) || ids.size >= 200) return;
+  ids.add(id);
+  clearTimeout(discoveredDeps.timer);
+  discoveredDeps.timer = setTimeout(() => {
+    const out = {};
+    for (const [n, set] of discoveredDeps.byEnv) out[n] = [...set].sort();
+    try {
+      mkdirSync(dirname(ledgerPath), { recursive: true });
+      const tmp = `${ledgerPath}.tmp-${process.pid}`;
+      writeFileSync(tmp, JSON.stringify(out, null, 2));
+      renameSync(tmp, ledgerPath);
+    } catch {}
+  }, 500);
+  if (discoveredDeps.timer.unref) discoveredDeps.timer.unref();
+}
+
 async function buildEnvironments(server) {
   const vite = await loadAppVite();
   if (!vite || typeof vite.resolveConfig !== "function") return undefined;
@@ -1989,6 +2059,9 @@ async function buildEnvironments(server) {
     // makes the client env bundled from these fields, and the manifest plugin
     // bound to these environments reads them at load time.
     coerceBundledDevOff(rc);
+    // BEFORE the environments are built: include must be in the config the
+    // optimizer hashes, or the preseed child's metadata cannot validate.
+    foldDiscoveredDeps(rc, initial.discoveredDepsPath);
   } catch (e) {
     process.stderr.write(`${OJ} plugin host: vite.resolveConfig failed: ${(e && e.message) || e}\n`);
     return undefined;
@@ -2031,6 +2104,15 @@ async function buildEnvironments(server) {
         }
       } catch (e) {
         process.stderr.write(`${OJ} plugin host: env.init(${name}) failed: ${(e && e.message) || e}\n`);
+      }
+      const ledgerPath = initial.discoveredDepsPath;
+      if (ledgerPath && ei?.depsOptimizer && typeof ei.depsOptimizer.registerMissingImport === "function") {
+        const optimizer = ei.depsOptimizer;
+        const original = optimizer.registerMissingImport.bind(optimizer);
+        optimizer.registerMissingImport = (id, ...rest) => {
+          recordDiscoveredDep(ledgerPath, name, id);
+          return original(id, ...rest);
+        };
       }
     }),
   );

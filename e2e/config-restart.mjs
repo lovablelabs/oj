@@ -24,6 +24,22 @@ fs.writeFileSync(
 );
 fs.writeFileSync(path.join(app, "src", "main.tsx"), 'document.body.dataset.ok = "1";\n');
 fs.writeFileSync(path.join(app, ".env"), "VITE_FOO=1\n");
+// A plugin-spawned long-lived child (the workerd shape): the restart assert
+// below proves the self-restart reaps it.
+fs.writeFileSync(
+  path.join(app, "oj.plugins.mjs"),
+  `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+export default [{
+  name: "test:child-spawner",
+  configureServer() {
+    // Not process.execPath: inside oj's embedded engine that is the oj
+    // binary itself, which exits instantly on -e.
+    const child = spawn("sleep", ["300"], { stdio: "ignore" });
+    writeFileSync(new URL("./child.pid", import.meta.url), String(child.pid));
+  },
+}];\n`,
+);
 
 const up = async () => {
   return waitUp(BASE).then(
@@ -49,6 +65,30 @@ try {
   const restarted = await settles(() => /restarting dev server/i.test(stderr));
   if (!restarted) throw new Error("no restart log after .env change:\n" + stderr);
   console.log("restart triggered:  yes");
+
+  // The self-restart is an exec: same pid, sockets closed via CLOEXEC — but a
+  // plugin-spawned runtime (miniflare's workerd) used to SURVIVE it as a
+  // stranded frozen child holding its whole footprint. restart_process() now
+  // kills every descendant first.
+  const childPid = Number(fs.readFileSync(path.join(app, "child.pid"), "utf8"));
+  const childDead = await settles(
+    () => {
+      try {
+        process.kill(childPid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    },
+    { timeoutMs: 15000 },
+  );
+  if (!childDead) {
+    try {
+      process.kill(childPid, "SIGKILL");
+    } catch {}
+    throw new Error(`plugin-spawned child ${childPid} survived the self-restart`);
+  }
+  console.log("descendants killed: yes");
 
   if (!(await up())) throw new Error("server did not come back after restart");
   console.log("server recovered:   yes");

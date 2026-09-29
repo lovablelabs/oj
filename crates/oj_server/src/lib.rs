@@ -912,6 +912,13 @@ impl DevServer {
             "env": { "command": "serve", "mode": dev_mode },
             "environment": { "name": "client", "mode": host_env_mode },
             "pluginsFormat": plugins_format,
+            // Runtime-DISCOVERED optimizer deps (a plugin injecting scanner-
+            // invisible imports, e.g. Cloudflare's unenv polyfills) get
+            // recorded here by the host and folded into optimizeDeps.include
+            // by BOTH the preseed child and buildEnvironments, so the seeded
+            // metadata's configHash matches and the next cold boot never
+            // re-optimizes in-host (which ended in server.restart()).
+            "discoveredDepsPath": oj_cache::cache_root(&root).join("discovered-deps.json").to_string_lossy(),
             "ojStartMode": is_start,
         });
         if plugins_format == "vite" {
@@ -1368,6 +1375,18 @@ impl DevServer {
             });
         }
         spawn_watcher(Arc::clone(&state));
+        // Idle memory return (see idle_trim): stamp boot as activity so the
+        // boot froth itself gets trimmed a minute after a request-less start.
+        idle_trim::touch(now_millis() as u64);
+        tokio::spawn(async {
+            let mut tick = tokio::time::interval(Duration::from_secs(15));
+            loop {
+                tick.tick().await;
+                if idle_trim::due(now_millis() as u64) {
+                    idle_trim::trim();
+                }
+            }
+        });
         let (client_files, ssr_files) = oj_config::server_warmup_files(&config);
         if !client_files.is_empty() || !ssr_files.is_empty() {
             let state = Arc::clone(&state);
@@ -1430,7 +1449,15 @@ impl DevServer {
             .route("/__ws", get(ws_upgrade))
             .route("/__hmr_flush", post(hmr_flush))
             .route("/__hmr_gate", get(hmr_gate_status))
-            .fallback(serve_fallback);
+            .fallback(serve_fallback)
+            // Every request stamps activity for the idle-trim state machine
+            // (an atomic store; ordering among layers is irrelevant).
+            .layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| async {
+                    idle_trim::touch(now_millis() as u64);
+                    next.run(req).await
+                },
+            ));
         // `server.hmr.path`: the client dials this path instead of /__ws (Vite
         // serves its socket at base + hmr.path).
         if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
@@ -8254,8 +8281,105 @@ fn is_tsconfig_file(path: &Path) -> bool {
 /// Re-exec the current binary with the same arguments so a fresh process
 /// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
 /// dev port is released as the image is replaced. Does not return on success.
+/// Linux-only idle memory return: glibc never gives freed arena pages back to
+/// the OS on its own, and a cold boot's native churn (in-host rolldown
+/// optimizer passes, first compiles) leaves large freed-but-resident arenas
+/// that V8's MemoryReducer (#270) cannot touch — it only returns V8 heap.
+/// Once the server has been request-idle for a minute, return them with one
+/// `malloc_trim(0)` per busy period. macOS's allocator decays on its own and
+/// musl has no malloc_trim, so the call is glibc-gated; the bookkeeping runs
+/// everywhere so the state machine stays tested on every platform.
+mod idle_trim {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static LAST_ACTIVITY_MS: AtomicU64 = AtomicU64::new(0);
+    static TRIMMED: AtomicBool = AtomicBool::new(false);
+    pub const IDLE_AFTER_MS: u64 = 60_000;
+
+    pub fn touch(now_ms: u64) {
+        LAST_ACTIVITY_MS.store(now_ms, Ordering::Relaxed);
+        TRIMMED.store(false, Ordering::Relaxed);
+    }
+
+    /// Whether a trim should run NOW: at most one per busy-to-idle transition.
+    pub fn due(now_ms: u64) -> bool {
+        let last = LAST_ACTIVITY_MS.load(Ordering::Relaxed);
+        if last == 0 || now_ms.saturating_sub(last) < IDLE_AFTER_MS {
+            return false;
+        }
+        !TRIMMED.swap(true, Ordering::Relaxed)
+    }
+
+    pub fn trim() {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    }
+}
+
+/// Kill every descendant process before a self-restart `exec`: the exec keeps
+/// our pid (so one-shot children's parent-death watchdogs never fire) and
+/// closes sockets via CLOEXEC, but kills nothing — a plugin-spawned runtime
+/// (miniflare's workerd per environment) would survive as a stranded frozen
+/// child holding its whole footprint next to the fresh boot's own copy.
+fn kill_descendants() {
+    fn children_of(pid: u32) -> Vec<u32> {
+        std::process::Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|l| l.trim().parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    let mut queue = children_of(std::process::id());
+    let mut all: Vec<u32> = Vec::new();
+    while let Some(pid) = queue.pop() {
+        if all.contains(&pid) {
+            continue;
+        }
+        all.push(pid);
+        queue.extend(children_of(pid));
+    }
+    // Depth-last order: found parents-first, kill children-first so nothing
+    // respawns what we already reaped.
+    for pid in all.iter().rev() {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(*pid as i32, libc::SIGKILL);
+        }
+    }
+    if !all.is_empty() {
+        eprintln!("oj: restart killed {} child process(es)", all.len());
+    }
+    // Reap what was just killed: the exec'd image never waitpids inherited
+    // corpses, so without this every restart leaves zombies behind (and a
+    // liveness probe mistakes a corpse for a survivor). Only DIRECT children
+    // are ours to reap; killed grandchildren reparent to init.
+    #[cfg(unix)]
+    {
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            let reaped = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
+            if reaped > 0 {
+                continue;
+            }
+            if reaped < 0 || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 fn restart_process() -> ! {
     eprintln!("{} config/env changed — restarting dev server", oj_brand());
+    kill_descendants();
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // In-process plugin hosts chdir the whole process to their app root, so a
@@ -9759,6 +9883,24 @@ export default [{{
         for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
             assert!(!is_restart_trigger(Path::new(f)), "{f}");
         }
+    }
+
+    #[test]
+    fn idle_trim_fires_once_per_busy_period() {
+        idle_trim::touch(1_000);
+        assert!(!idle_trim::due(1_000), "not idle yet");
+        assert!(
+            !idle_trim::due(1_000 + idle_trim::IDLE_AFTER_MS - 1),
+            "just under the threshold"
+        );
+        assert!(idle_trim::due(1_000 + idle_trim::IDLE_AFTER_MS), "idle now");
+        assert!(
+            !idle_trim::due(1_000 + idle_trim::IDLE_AFTER_MS * 2),
+            "one trim per idle period"
+        );
+        idle_trim::touch(500_000);
+        assert!(!idle_trim::due(500_001), "activity resets the machine");
+        assert!(idle_trim::due(500_000 + idle_trim::IDLE_AFTER_MS));
     }
 
     #[test]

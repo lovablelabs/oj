@@ -20,7 +20,7 @@
 // environment finding new deps) still runs inside the host; intercepting
 // every such path would mean owning Vite's optimizer scheduling.
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -40,6 +40,33 @@ export async function run(env = null) {
   }
   return main();
 }
+
+// TWIN COPY: keep byte-identical with the sibling in optimize-env.mjs.
+// Fold the discovered-deps ledger into every environment's
+// optimizeDeps.include. Vite's configHash covers `include` SORTED and DEDUPED
+// (optimizer/index.ts getConfigHash), so the preseed child and the host must
+// apply the SAME SET or the child-seeded metadata is rejected as stale;
+// set-union keeps the two symmetric. A stale entry (dep since removed) only
+// costs Vite's "present in optimizeDeps.include" warning.
+function foldDiscoveredDeps(rc, ledgerPath) {
+  if (!ledgerPath) return;
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+  } catch {
+    return;
+  }
+  for (const [name, ids] of Object.entries(ledger ?? {})) {
+    const env = rc.environments?.[name];
+    if (!env || !Array.isArray(ids) || ids.length === 0) continue;
+    const optimizeDeps = (env.optimizeDeps ??= {});
+    const merged = new Set(optimizeDeps.include ?? []);
+    for (const id of ids) if (typeof id === "string") merged.add(id);
+    optimizeDeps.include = [...merged];
+  }
+}
+
+export { foldDiscoveredDeps };
 
 async function main() {
   const root = process.env.OJ_APP_ROOT ?? process.cwd();
@@ -67,6 +94,7 @@ async function main() {
   }
 
   const rc = await vite.resolveConfig({ root, configFile: undefined, mode }, "serve", "development", "development");
+  foldDiscoveredDeps(rc, process.env.OJ_DISCOVERED_DEPS);
 
   const seeded = [];
   let failed = false;
