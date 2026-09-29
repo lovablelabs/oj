@@ -5,18 +5,16 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-- Idle engines now return memory the way Node does: V8's MemoryReducer (the delayed GC tasks V8 posts after a collection that grew the heap) runs for every embedded engine. The engine left those tasks queued and unrun once its event loop drained, so an idle isolate kept its high-water heap until the next job; Node's platform runs the same tasks off libuv timers.
-
-## [Unreleased]
+## [0.2.14] - 2026-09-29
 
 ### Fixed
 
 - A plugin-driven `server.restart()` (and any config/.env restart) now kills and reaps every descendant process before the re-exec: a plugin-spawned runtime (e.g. a worker) used to survive the exec as a stranded frozen child holding its whole footprint beside the fresh boot's own copy.
-- Optimizer deps that only the runtime discovers (a plugin injecting scanner-invisible imports) are recorded and folded into `optimizeDeps.include` by both the pre-optimize child and the plugin host on the next boot, so the in-host discovery optimize — and the restart some plugins issue after it — fires at most once per app instead of on every cold boot.
+- Optimizer deps that only the runtime discovers (a plugin injecting scanner-invisible imports) are recorded and folded into `optimizeDeps.include` by both the pre-optimize child and the plugin host on the next boot, so the in-host discovery optimize (and the restart some plugins issue after it) fires at most once per app instead of on every cold boot.
+
+### Changed
+
+- Idle engines now return memory the way Node does: V8's MemoryReducer (the delayed GC tasks V8 posts after a collection that grew the heap) runs for every embedded engine. The engine left those tasks queued and unrun once its event loop drained, so an idle isolate kept its high-water heap until the next job; Node's platform runs the same tasks off libuv timers.
 
 ## [0.2.13] - 2026-09-29
 
