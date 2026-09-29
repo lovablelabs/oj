@@ -1,4 +1,6 @@
 /target
+# the pinned oxfmt binary (tools/fetch-oxfmt.sh)
+/.tools/
 /reference/
 node_modules/
 .DS_Store
