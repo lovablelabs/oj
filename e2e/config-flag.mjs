@@ -54,10 +54,7 @@ try {
   const base = await htmlWith(["dev", app, "--port", "5491"], 5491);
   assert.ok(!/window\.__OVR = 1/.test(base), "root config has no override plugin");
 
-  const overridden = await htmlWith(
-    ["dev", app, "--port", "5492", "--config", ".config/vite.config.mjs"],
-    5492,
-  );
+  const overridden = await htmlWith(["dev", app, "--port", "5492", "--config", ".config/vite.config.mjs"], 5492);
   assert.match(overridden, /window\.__OVR = 1/, "--config loads plugins from the override config");
 
   // A --config that names a file that does not exist is an error (Vite: "Could
@@ -65,7 +62,11 @@ try {
   const { spawnSync } = await import("node:child_process");
   const missing = spawnSync(oj, ["build", app, "--config", ".config/nope.config.mjs"], { cwd: app, encoding: "utf8" });
   assert.notEqual(missing.status, 0, "build with a missing --config must fail");
-  assert.match(missing.stderr + missing.stdout, /failed to load config from .*nope\.config\.mjs/, `missing --config error:\n${missing.stderr}`);
+  assert.match(
+    missing.stderr + missing.stdout,
+    /failed to load config from .*nope\.config\.mjs/,
+    `missing --config error:\n${missing.stderr}`,
+  );
 
   console.log("CONFIG-FLAG E2E PASSED");
 } catch (err) {

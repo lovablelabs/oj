@@ -65,7 +65,11 @@ try {
   });
   ws.addEventListener("message", (e) => {
     let m;
-    try { m = JSON.parse(e.data); } catch { return; }
+    try {
+      m = JSON.parse(e.data);
+    } catch {
+      return;
+    }
     if (m.type === "custom" && m.event === "exec:run") {
       const value = eval(m.data.code);
       ws.send(JSON.stringify({ type: "custom", event: "exec:result", data: { requestId: m.data.requestId, value } }));

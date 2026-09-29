@@ -61,7 +61,11 @@ test("config and configResolved expose config.plugins and build defaults", async
       hook: "transform",
       args: ["", path.join(fx.root, "probe.js")],
     });
-    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    const seen = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
     // The build-applicable plugins are visible (oj also injects a vite:css-post shim).
     assert.ok(seen.configPlugins >= 3, "the config hook sees the flat plugin array");
     assert.ok(seen.resolvedPlugins >= 3, "configResolved sees the plugin array too");

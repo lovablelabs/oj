@@ -17,16 +17,22 @@ const APP = require("path").join(__dirname, "..", "playground") + "/src/App.tsx"
     const deco = await h1.evaluate((el) => getComputedStyle(el).textDecorationLine);
     if (deco !== "underline") throw new Error("tailwind utility not applied: " + deco);
     const btn = page.locator("button");
-    await btn.click(); await btn.click();
+    await btn.click();
+    await btn.click();
 
     fs.writeFileSync(APP, original.replace('className="underline"', 'className="underline italic"'));
-    await page.waitForFunction(
-      () => getComputedStyle(document.querySelector("h1")).fontStyle === "italic",
-      { timeout: 15000 }
-    );
+    await page.waitForFunction(() => getComputedStyle(document.querySelector("h1")).fontStyle === "italic", {
+      timeout: 15000,
+    });
     const text = await btn.textContent();
-    console.log("underline:", deco, "| italic after edit: yes | counter:", text.trim(),
-                "| errors:", errors.length ? errors : "none");
+    console.log(
+      "underline:",
+      deco,
+      "| italic after edit: yes | counter:",
+      text.trim(),
+      "| errors:",
+      errors.length ? errors : "none",
+    );
     if (!text.includes("Clicks: 2")) throw new Error("STATE LOST");
     if (errors.length) throw new Error("console errors");
     console.log("TAILWIND SIDECAR VERIFIED");
@@ -34,4 +40,7 @@ const APP = require("path").join(__dirname, "..", "playground") + "/src/App.tsx"
     fs.writeFileSync(APP, original);
     await browser.close();
   }
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

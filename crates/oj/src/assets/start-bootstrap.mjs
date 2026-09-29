@@ -21,7 +21,9 @@ export function init(env) {
   // The node runner ran with cwd = the app root; keep that for cwd-relative
   // plugin filters and app code reading relative paths.
   if (env && env.OJ_APP_ROOT) {
-    try { process.chdir(env.OJ_APP_ROOT); } catch {}
+    try {
+      process.chdir(env.OJ_APP_ROOT);
+    } catch {}
   }
   return true;
 }

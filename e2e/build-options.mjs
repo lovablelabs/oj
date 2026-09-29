@@ -97,7 +97,9 @@ try {
     fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
     fs.writeFileSync(path.join(app, "oj.config.json"), JSON.stringify({ build: { outDir: outside } }));
     execSync(`${oj} build ${app}`, { stdio: ["ignore", "pipe", "pipe"] });
-  } catch (e) { throw new Error("outside build failed: " + e.stderr); }
+  } catch (e) {
+    throw new Error("outside build failed: " + e.stderr);
+  }
   stderr = execSync(`${oj} build ${app} 2>&1 1>/dev/null`, { shell: "/bin/sh" }).toString();
   assert.ok(fs.existsSync(path.join(outside, "stale.txt")), "outDir outside root is not emptied by default");
   assert.match(stderr, /not inside project root/, "warns about the un-emptied outDir");

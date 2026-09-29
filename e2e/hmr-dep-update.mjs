@@ -34,7 +34,10 @@ fs.writeFileSync(
     `createRoot(document.getElementById("root")!).render(<App />);\n`,
 );
 // App (boundary) -> hooks.ts (not a boundary) -> label.ts (not a boundary, edited)
-fs.writeFileSync(path.join(app, "src", "hooks.ts"), `import { label } from "./label";\nexport const useLabel = () => label;\n`);
+fs.writeFileSync(
+  path.join(app, "src", "hooks.ts"),
+  `import { label } from "./label";\nexport const useLabel = () => label;\n`,
+);
 const LABEL = path.join(app, "src", "label.ts");
 fs.writeFileSync(LABEL, `export const label = "v1";\n`);
 fs.writeFileSync(
@@ -60,8 +63,11 @@ try {
     await page.goto(`http://localhost:${PORT}/`, { waitUntil: "networkidle", timeout: 30000 });
     await page.locator("h1", { hasText: "v1" }).waitFor({ timeout: 20000 });
     const btn = page.locator("button");
-    await btn.click(); await btn.click();
-    await page.evaluate(() => { window.__NOT_RELOADED = true; });
+    await btn.click();
+    await btn.click();
+    await page.evaluate(() => {
+      window.__NOT_RELOADED = true;
+    });
 
     fs.writeFileSync(LABEL, `export const label = "v2";\n`);
     await page.locator("h1", { hasText: "v2" }).waitFor({ timeout: 20000 });

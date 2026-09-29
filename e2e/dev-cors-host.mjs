@@ -50,7 +50,16 @@ async function withServer(config, fn) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
   try {
-    await settles(async () => { try { return Boolean((await req("/")).status); } catch { return false; } }, { pollMs: 200 });
+    await settles(
+      async () => {
+        try {
+          return Boolean((await req("/")).status);
+        } catch {
+          return false;
+        }
+      },
+      { pollMs: 200 },
+    );
     await fn();
   } finally {
     srv.kill("SIGKILL");
@@ -70,7 +79,15 @@ try {
     assert.equal(r.headers[ACAO], "http://app.localhost:1234", "*.localhost origin reflected");
     r = await req("/src/main.js", { Origin: "http://evil.com" });
     assert.equal(r.headers[ACAO], undefined, "foreign origin gets no CORS header");
-    r = await req("/src/main.js", { Origin: "http://localhost:1234", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-custom" }, "OPTIONS");
+    r = await req(
+      "/src/main.js",
+      {
+        Origin: "http://localhost:1234",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "x-custom",
+      },
+      "OPTIONS",
+    );
     assert.equal(r.status, 204, "preflight is answered");
     assert.match(r.headers["access-control-allow-methods"], /GET/);
     assert.equal(r.headers["access-control-allow-headers"], "x-custom");
@@ -81,7 +98,14 @@ try {
     assert.equal(r.status, 200);
     r = await req("/", { Host: "evil.com" });
     assert.equal(r.status, 403, "foreign Host is blocked (DNS rebinding)");
-    r = await req("/__ws", { Host: `localhost:${PORT}`, Origin: "http://evil.com", Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==" });
+    r = await req("/__ws", {
+      Host: `localhost:${PORT}`,
+      Origin: "http://evil.com",
+      Connection: "Upgrade",
+      Upgrade: "websocket",
+      "Sec-WebSocket-Version": "13",
+      "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+    });
     assert.equal(r.status, 403, "ws upgrade from a foreign Origin is refused");
   });
 
@@ -96,15 +120,18 @@ try {
     assert.equal(r.status, 403, "unlisted Host is still blocked");
   });
 
-  await withServer({ server: { cors: { origin: "http://foo.test", credentials: true }, allowedHosts: true } }, async () => {
-    let r = await req("/src/main.js", { Origin: "http://foo.test" });
-    assert.equal(r.headers[ACAO], "http://foo.test");
-    assert.equal(r.headers["access-control-allow-credentials"], "true");
-    r = await req("/src/main.js", { Origin: "http://localhost:1234" });
-    assert.equal(r.headers[ACAO], undefined, "an explicit origin list replaces the localhost default");
-    r = await req("/", { Host: "anything.example" });
-    assert.equal(r.status, 200, "allowedHosts:true disables the check");
-  });
+  await withServer(
+    { server: { cors: { origin: "http://foo.test", credentials: true }, allowedHosts: true } },
+    async () => {
+      let r = await req("/src/main.js", { Origin: "http://foo.test" });
+      assert.equal(r.headers[ACAO], "http://foo.test");
+      assert.equal(r.headers["access-control-allow-credentials"], "true");
+      r = await req("/src/main.js", { Origin: "http://localhost:1234" });
+      assert.equal(r.headers[ACAO], undefined, "an explicit origin list replaces the localhost default");
+      r = await req("/", { Host: "anything.example" });
+      assert.equal(r.status, 200, "allowedHosts:true disables the check");
+    },
+  );
   console.log("DEV-CORS-HOST E2E PASSED");
 } catch (err) {
   failed = true;

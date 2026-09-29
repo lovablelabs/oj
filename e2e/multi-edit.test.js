@@ -17,7 +17,8 @@ const APP = path.join(__dirname, "..", "playground", "src", "App.tsx");
     await page.waitForSelector("h1");
     await page.waitForTimeout(500);
     const btn = page.locator("button");
-    await btn.click(); await btn.click();
+    await btn.click();
+    await btn.click();
 
     fs.writeFileSync(APP, original.replace("oj playground", "oj playground EDIT1"));
     await page.waitForSelector("h1:has-text('EDIT1')", { timeout: 10000 });
@@ -34,4 +35,7 @@ const APP = path.join(__dirname, "..", "playground", "src", "App.tsx");
     fs.writeFileSync(APP, original);
     await browser.close();
   }
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

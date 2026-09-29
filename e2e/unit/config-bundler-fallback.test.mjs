@@ -19,19 +19,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  bootHost,
-  configMonorepoFixture,
-  linkRolldown,
-  runExtract,
-  testWithRolldown,
-  tmpProject,
-} from "./harness.mjs";
+import { bootHost, configMonorepoFixture, linkRolldown, runExtract, testWithRolldown, tmpProject } from "./harness.mjs";
 
 const testRolldown = testWithRolldown(test);
 
-const rolldownMonorepoFixture = () =>
-  configMonorepoFixture({ prefix: "oj-cfg-rd-", bundler: "rolldown" });
+const rolldownMonorepoFixture = () => configMonorepoFixture({ prefix: "oj-cfg-rd-", bundler: "rolldown" });
 
 testRolldown("vite-extract bundles a TS config with rolldown when esbuild is absent", () => {
   const fx = rolldownMonorepoFixture();
@@ -155,17 +147,19 @@ export default {
   }
 });
 
-testRolldown("rolldown nested under the vite package resolves (a vite without loadConfigFromFile falls through)", async () => {
-  // The unhoisted shape: rolldown is vite's dependency, not the app's, so the
-  // fallback's resolver must reach node_modules/vite/node_modules/rolldown.
-  // The stub vite has no loadConfigFromFile, exercising the same fall-through
-  // an old vite takes.
-  const fx = tmpProject({ prefix: "oj-cfg-nested-" });
-  fx.pkg("vite", "index.mjs", { "index.mjs": `export const version = "0.0.0-stub";\n` });
-  linkRolldown(path.join(fx.root, "node_modules", "vite"));
-  fx.write(
-    "vite.config.ts",
-    `const marker: string = "/nested-rolldown/";
+testRolldown(
+  "rolldown nested under the vite package resolves (a vite without loadConfigFromFile falls through)",
+  async () => {
+    // The unhoisted shape: rolldown is vite's dependency, not the app's, so the
+    // fallback's resolver must reach node_modules/vite/node_modules/rolldown.
+    // The stub vite has no loadConfigFromFile, exercising the same fall-through
+    // an old vite takes.
+    const fx = tmpProject({ prefix: "oj-cfg-nested-" });
+    fx.pkg("vite", "index.mjs", { "index.mjs": `export const version = "0.0.0-stub";\n` });
+    linkRolldown(path.join(fx.root, "node_modules", "vite"));
+    fx.write(
+      "vite.config.ts",
+      `const marker: string = "/nested-rolldown/";
 export default {
   plugins: [{
     name: "nested-probe",
@@ -175,21 +169,22 @@ export default {
   }],
 };
 `,
-  );
-  const appFx = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts") };
-  const { host, cleanup } = bootHost(appFx, { prefix: "oj-cfg-nested-host-" });
-  try {
-    const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
-    assert.equal(count.result, "1", `TS config did not load; stderr:\n${host.stderr()}`);
-    const res = await host.send({ id: 2, hook: "getPluginConfig", args: [] });
-    assert.equal(JSON.parse(res.result).define?.__NESTED__, '"/nested-rolldown/"');
-    assert.doesNotMatch(host.stderr(), /Cannot find module/);
-  } finally {
-    host.close();
-    cleanup();
-    fx.cleanup();
-  }
-});
+    );
+    const appFx = { appRoot: fx.root, configPath: path.join(fx.root, "vite.config.ts") };
+    const { host, cleanup } = bootHost(appFx, { prefix: "oj-cfg-nested-host-" });
+    try {
+      const count = await host.send({ id: 1, hook: "getPluginCount", args: [] });
+      assert.equal(count.result, "1", `TS config did not load; stderr:\n${host.stderr()}`);
+      const res = await host.send({ id: 2, hook: "getPluginConfig", args: [] });
+      assert.equal(JSON.parse(res.result).define?.__NESTED__, '"/nested-rolldown/"');
+      assert.doesNotMatch(host.stderr(), /Cannot find module/);
+    } finally {
+      host.close();
+      cleanup();
+      fx.cleanup();
+    }
+  },
+);
 
 testRolldown("the bundler vite declares wins over a hoisted impostor", async () => {
   // A rolldown-vite app with a (broken, here) esbuild hoisted next to it —

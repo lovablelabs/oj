@@ -24,7 +24,10 @@ function scaffold(config) {
     path.join(app, "index.html"),
     `<!doctype html><html><head><link rel="stylesheet" href="/src/page.css"></head><body><script type="module" src="/src/main.js"></script></body></html>`,
   );
-  fs.writeFileSync(path.join(app, "src", "main.js"), `import "./app.css";\nimport("./lazy.js").then((m) => m.run());\n`);
+  fs.writeFileSync(
+    path.join(app, "src", "main.js"),
+    `import "./app.css";\nimport("./lazy.js").then((m) => m.run());\n`,
+  );
   fs.writeFileSync(path.join(app, "src", "lazy.js"), `export function run() { document.body.textContent = "lazy"; }\n`);
   fs.writeFileSync(path.join(app, "src", "app.css"), `.a { background: url(./big.png); }\n`);
   fs.writeFileSync(path.join(app, "src", "page.css"), `.p { color: red; }\n`);
@@ -65,17 +68,40 @@ function check(label, ok, detail) {
   try {
     const files = build(app);
     const hashed = files.filter((f) => f !== "index.html");
-    check("every hashed output is under static/", hashed.length > 0 && hashed.every((f) => f.startsWith("static/")), files.join(", "));
-    check("lazy chunk under static/", hashed.some((f) => /^static\/lazy-[^/]+\.js$/.test(f)), files.join(", "));
+    check(
+      "every hashed output is under static/",
+      hashed.length > 0 && hashed.every((f) => f.startsWith("static/")),
+      files.join(", "),
+    );
+    check(
+      "lazy chunk under static/",
+      hashed.some((f) => /^static\/lazy-[^/]+\.js$/.test(f)),
+      files.join(", "),
+    );
     check("stylesheets under static/", hashed.filter((f) => f.endsWith(".css")).length >= 1, files.join(", "));
-    check("url() asset under static/", hashed.some((f) => /^static\/big-[^/]+\.png$/.test(f)), files.join(", "));
+    check(
+      "url() asset under static/",
+      hashed.some((f) => /^static\/big-[^/]+\.png$/.test(f)),
+      files.join(", "),
+    );
     check("nothing under assets/", !files.some((f) => f.startsWith("assets/")), files.join(", "));
     const html = fs.readFileSync(path.join(app, "dist", "index.html"), "utf8");
-    check("html references /static/", /\/static\/main-[^"']+\.js/.test(html) && /\/static\/[^"']+\.css/.test(html), html);
-    const css = hashed.filter((f) => f.endsWith(".css")).map((f) => fs.readFileSync(path.join(app, "dist", f), "utf8")).join("\n");
+    check(
+      "html references /static/",
+      /\/static\/main-[^"']+\.js/.test(html) && /\/static\/[^"']+\.css/.test(html),
+      html,
+    );
+    const css = hashed
+      .filter((f) => f.endsWith(".css"))
+      .map((f) => fs.readFileSync(path.join(app, "dist", f), "utf8"))
+      .join("\n");
     check("css url() points at /static/", /url\("?\/static\/big-[^)"]+\.png"?\)/.test(css), css);
     const manifest = JSON.parse(fs.readFileSync(path.join(app, "dist", ".vite", "manifest.json"), "utf8"));
-    check("manifest file paths start with static/", Object.values(manifest).every((e) => e.file.startsWith("static/")), JSON.stringify(manifest));
+    check(
+      "manifest file paths start with static/",
+      Object.values(manifest).every((e) => e.file.startsWith("static/")),
+      JSON.stringify(manifest),
+    );
   } finally {
     fs.rmSync(app, { recursive: true, force: true });
   }
@@ -86,8 +112,15 @@ function check(label, ok, detail) {
   const app = scaffold(`export default { base: "./", build: { assetsDir: "" } };\n`);
   try {
     const files = build(app);
-    check("hashed outputs at the outDir root", files.every((f) => !f.includes("/")), files.join(", "));
-    const css = files.filter((f) => f.endsWith(".css")).map((f) => fs.readFileSync(path.join(app, "dist", f), "utf8")).join("\n");
+    check(
+      "hashed outputs at the outDir root",
+      files.every((f) => !f.includes("/")),
+      files.join(", "),
+    );
+    const css = files
+      .filter((f) => f.endsWith(".css"))
+      .map((f) => fs.readFileSync(path.join(app, "dist", f), "utf8"))
+      .join("\n");
     check("relative css url() is a sibling", /url\("?\.\/big-[^)"]+\.png"?\)/.test(css), css);
   } finally {
     fs.rmSync(app, { recursive: true, force: true });
@@ -99,7 +132,11 @@ function check(label, ok, detail) {
   const app = scaffold(`export default {};\n`);
   try {
     const files = build(app);
-    check("default assetsDir is assets/", files.filter((f) => f !== "index.html").every((f) => f.startsWith("assets/")), files.join(", "));
+    check(
+      "default assetsDir is assets/",
+      files.filter((f) => f !== "index.html").every((f) => f.startsWith("assets/")),
+      files.join(", "),
+    );
   } finally {
     fs.rmSync(app, { recursive: true, force: true });
   }

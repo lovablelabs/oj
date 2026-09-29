@@ -83,7 +83,7 @@ export const shimProbeRoute = createRoute({
 const routeTreePath = path.join(app, "src", "routeTree.ts");
 const routeTree = fs
   .readFileSync(routeTreePath, "utf8")
-  .replace('import { rootRoute }', 'import { shimProbeRoute } from "./routes/shim-probe";\nimport { rootRoute }')
+  .replace("import { rootRoute }", 'import { shimProbeRoute } from "./routes/shim-probe";\nimport { rootRoute }')
   .replace("requestUrlRoute]", "requestUrlRoute, shimProbeRoute]");
 if (!routeTree.includes("shimProbeRoute]")) throw new Error("could not register the test route");
 fs.writeFileSync(routeTreePath, routeTree);
@@ -109,11 +109,13 @@ server.stderr.on("data", (d) => (log += d));
 try {
   let body;
   let status = 0;
-  await waitUp(`http://127.0.0.1:${port}/shim-probe`, { until: async (res) => {
-    status = res.status;
-    body = await res.text();
-    return status === 200 || status === 500;
-  } }).catch(() => {});
+  await waitUp(`http://127.0.0.1:${port}/shim-probe`, {
+    until: async (res) => {
+      status = res.status;
+      body = await res.text();
+      return status === 200 || status === 500;
+    },
+  }).catch(() => {});
   // SSR runs on the server where node:crypto is real, so canSign is true;
   // the point is that the CLIENT graph (same module) linked and serves.
   if (status !== 200 || !body.includes("canSign:true") || !body.includes("events:npm-events")) {

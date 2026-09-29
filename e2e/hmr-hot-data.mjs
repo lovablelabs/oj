@@ -70,7 +70,9 @@ try {
 
   const seen = await counts();
   if (JSON.stringify(seen) !== "[0,1,2]") {
-    throw new Error(`hot.data did not persist across swaps: each new instance saw ${JSON.stringify(seen)}, want [0,1,2]`);
+    throw new Error(
+      `hot.data did not persist across swaps: each new instance saw ${JSON.stringify(seen)}, want [0,1,2]`,
+    );
   }
   const reloaded = await page.evaluate(() => !window.__NO_RELOAD);
   if (reloaded) throw new Error("a self-accepting module edit reloaded the page");

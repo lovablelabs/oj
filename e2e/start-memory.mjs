@@ -30,7 +30,9 @@ if (!installed) {
 }
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
-const must = (cond, msg) => { if (!cond) throw new Error(msg); };
+const must = (cond, msg) => {
+  if (!cond) throw new Error(msg);
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rm = (p) => {
   for (let i = 0; ; i++) {
@@ -54,8 +56,7 @@ let log = "";
 srv.stdout.on("data", (d) => (log += d));
 srv.stderr.on("data", (d) => (log += d));
 const rebuilds = () => (log.match(/oj start: rebuilt, /g) || []).length;
-const rssMb = () =>
-  Number(execSync(`ps -o rss= -p ${srv.pid}`).toString().trim()) / 1024;
+const rssMb = () => Number(execSync(`ps -o rss= -p ${srv.pid}`).toString().trim()) / 1024;
 
 try {
   await waitUp(`http://localhost:${PORT}/`);
@@ -97,11 +98,11 @@ try {
   const avgTail = tail.reduce((a, b) => a + b, 0) / tail.length;
   must(
     avgTail < 15,
-    `dev server retains memory per rebundle: last-3-edit average ${avgTail.toFixed(1)}MB/edit (samples ${samples.map((s) => s.toFixed(0)).join(", ")} MB)`
+    `dev server retains memory per rebundle: last-3-edit average ${avgTail.toFixed(1)}MB/edit (samples ${samples.map((s) => s.toFixed(0)).join(", ")} MB)`,
   );
   must(
     samples[samples.length - 1] - samples[0] < 100,
-    `dev server grew ${(samples[samples.length - 1] - samples[0]).toFixed(0)}MB over ${EDITS - 1} rebundles`
+    `dev server grew ${(samples[samples.length - 1] - samples[0]).toFixed(0)}MB over ${EDITS - 1} rebundles`,
   );
   console.log("START MEMORY E2E PASSED");
 } finally {

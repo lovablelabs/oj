@@ -77,7 +77,10 @@ async function withServer(app, port, fn) {
   srv.stderr.on("data", (d) => (log += d));
   try {
     let up = false;
-    up = await waitUp(`http://localhost:${port}/`).then(() => true, () => false);
+    up = await waitUp(`http://localhost:${port}/`).then(
+      () => true,
+      () => false,
+    );
     if (!up) throw new Error(`server did not start on ${port}:\n${log}`);
     await fn(`http://localhost:${port}`);
   } finally {
@@ -126,9 +129,17 @@ async function get(url, headers = {}) {
       const json = await get(`${origin}/data.json`);
       check("public data.json served verbatim", json.status === 200 && json.body === JSON_SRC, JSON.stringify(json));
       const html = await get(`${origin}/page.html`);
-      check("public page.html served without dev script injection", html.status === 200 && html.body === HTML, JSON.stringify(html));
+      check(
+        "public page.html served without dev script injection",
+        html.status === 200 && html.body === HTML,
+        JSON.stringify(html),
+      );
       const mod = await get(`${origin}/logo.svg?url`);
-      check("?url on a public asset is still a module", mod.status === 200 && /export default "\/logo\.svg"/.test(mod.body), JSON.stringify(mod));
+      check(
+        "?url on a public asset is still a module",
+        mod.status === 200 && /export default "\/logo\.svg"/.test(mod.body),
+        JSON.stringify(mod),
+      );
     });
   } finally {
     rmApp(app);
@@ -156,7 +167,11 @@ async function get(url, headers = {}) {
       const sw = await get(`${origin}/sw.js`);
       check("publicDir false hides public/sw.js", sw.status === 404, JSON.stringify(sw));
       const main = await get(`${origin}/src/main.js`);
-      check("root modules still compile with publicDir false", main.status === 200 && /__LOGO/.test(main.body), JSON.stringify(main));
+      check(
+        "root modules still compile with publicDir false",
+        main.status === 200 && /__LOGO/.test(main.body),
+        JSON.stringify(main),
+      );
     });
   } finally {
     rmApp(app);

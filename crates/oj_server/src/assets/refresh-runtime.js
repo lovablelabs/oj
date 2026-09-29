@@ -1,233 +1,229 @@
 /*! Copyright (c) Meta Platforms, Inc. and affiliates. **/
 
-const REACT_FORWARD_REF_TYPE = Symbol.for('react.forward_ref')
-const REACT_MEMO_TYPE = Symbol.for('react.memo')
+const REACT_FORWARD_REF_TYPE = Symbol.for("react.forward_ref");
+const REACT_MEMO_TYPE = Symbol.for("react.memo");
 
-let allFamiliesByID = new Map()
-let allFamiliesByType = new WeakMap()
-let allSignaturesByType = new WeakMap()
+let allFamiliesByID = new Map();
+let allFamiliesByType = new WeakMap();
+let allSignaturesByType = new WeakMap();
 
-const updatedFamiliesByType = new WeakMap()
+const updatedFamiliesByType = new WeakMap();
 
-let pendingUpdates = []
+let pendingUpdates = [];
 
-const helpersByRendererID = new Map()
+const helpersByRendererID = new Map();
 
-const helpersByRoot = new Map()
+const helpersByRoot = new Map();
 
-const mountedRoots = new Set()
-const failedRoots = new Set()
+const mountedRoots = new Set();
+const failedRoots = new Set();
 
-let rootElements = new WeakMap()
-let isPerformingRefresh = false
+let rootElements = new WeakMap();
+let isPerformingRefresh = false;
 
 function computeFullKey(signature) {
   if (signature.fullKey !== null) {
-    return signature.fullKey
+    return signature.fullKey;
   }
 
-  let fullKey = signature.ownKey
-  let hooks
+  let fullKey = signature.ownKey;
+  let hooks;
   try {
-    hooks = signature.getCustomHooks()
+    hooks = signature.getCustomHooks();
   } catch (err) {
-    signature.forceReset = true
-    signature.fullKey = fullKey
-    return fullKey
+    signature.forceReset = true;
+    signature.fullKey = fullKey;
+    return fullKey;
   }
 
   for (let i = 0; i < hooks.length; i++) {
-    const hook = hooks[i]
-    if (typeof hook !== 'function') {
-      signature.forceReset = true
-      signature.fullKey = fullKey
-      return fullKey
+    const hook = hooks[i];
+    if (typeof hook !== "function") {
+      signature.forceReset = true;
+      signature.fullKey = fullKey;
+      return fullKey;
     }
-    const nestedHookSignature = allSignaturesByType.get(hook)
+    const nestedHookSignature = allSignaturesByType.get(hook);
     if (nestedHookSignature === undefined) {
-      continue
+      continue;
     }
-    const nestedHookKey = computeFullKey(nestedHookSignature)
+    const nestedHookKey = computeFullKey(nestedHookSignature);
     if (nestedHookSignature.forceReset) {
-      signature.forceReset = true
+      signature.forceReset = true;
     }
-    fullKey += '\n---\n' + nestedHookKey
+    fullKey += "\n---\n" + nestedHookKey;
   }
 
-  signature.fullKey = fullKey
-  return fullKey
+  signature.fullKey = fullKey;
+  return fullKey;
 }
 
 function haveEqualSignatures(prevType, nextType) {
-  const prevSignature = allSignaturesByType.get(prevType)
-  const nextSignature = allSignaturesByType.get(nextType)
+  const prevSignature = allSignaturesByType.get(prevType);
+  const nextSignature = allSignaturesByType.get(nextType);
 
   if (prevSignature === undefined && nextSignature === undefined) {
-    return true
+    return true;
   }
   if (prevSignature === undefined || nextSignature === undefined) {
-    return false
+    return false;
   }
   if (computeFullKey(prevSignature) !== computeFullKey(nextSignature)) {
-    return false
+    return false;
   }
   if (nextSignature.forceReset) {
-    return false
+    return false;
   }
 
-  return true
+  return true;
 }
 
 function isReactClass(type) {
-  return type.prototype && type.prototype.isReactComponent
+  return type.prototype && type.prototype.isReactComponent;
 }
 
 function canPreserveStateBetween(prevType, nextType) {
   if (isReactClass(prevType) || isReactClass(nextType)) {
-    return false
+    return false;
   }
   if (haveEqualSignatures(prevType, nextType)) {
-    return true
+    return true;
   }
-  return false
+  return false;
 }
 
 function resolveFamily(type) {
-  return updatedFamiliesByType.get(type)
+  return updatedFamiliesByType.get(type);
 }
 
 function getProperty(object, property) {
   try {
-    return object[property]
+    return object[property];
   } catch (err) {
-    return undefined
+    return undefined;
   }
 }
 
 function performReactRefresh() {
   if (pendingUpdates.length === 0) {
-    return null
+    return null;
   }
   if (isPerformingRefresh) {
-    return null
+    return null;
   }
 
-  isPerformingRefresh = true
+  isPerformingRefresh = true;
   try {
-    const staleFamilies = new Set()
-    const updatedFamilies = new Set()
+    const staleFamilies = new Set();
+    const updatedFamilies = new Set();
 
-    const updates = pendingUpdates
-    pendingUpdates = []
+    const updates = pendingUpdates;
+    pendingUpdates = [];
     updates.forEach(([family, nextType]) => {
-      const prevType = family.current
-      updatedFamiliesByType.set(prevType, family)
-      updatedFamiliesByType.set(nextType, family)
-      family.current = nextType
+      const prevType = family.current;
+      updatedFamiliesByType.set(prevType, family);
+      updatedFamiliesByType.set(nextType, family);
+      family.current = nextType;
 
       if (canPreserveStateBetween(prevType, nextType)) {
-        updatedFamilies.add(family)
+        updatedFamilies.add(family);
       } else {
-        staleFamilies.add(family)
+        staleFamilies.add(family);
       }
-    })
+    });
 
     const update = {
       updatedFamilies,
       staleFamilies,
-    }
+    };
 
     helpersByRendererID.forEach((helpers) => {
-      helpers.setRefreshHandler(resolveFamily)
-    })
+      helpers.setRefreshHandler(resolveFamily);
+    });
 
-    let didError = false
-    let firstError = null
+    let didError = false;
+    let firstError = null;
 
-    const failedRootsSnapshot = new Set(failedRoots)
-    const mountedRootsSnapshot = new Set(mountedRoots)
-    const helpersByRootSnapshot = new Map(helpersByRoot)
+    const failedRootsSnapshot = new Set(failedRoots);
+    const mountedRootsSnapshot = new Set(mountedRoots);
+    const helpersByRootSnapshot = new Map(helpersByRoot);
 
     failedRootsSnapshot.forEach((root) => {
-      const helpers = helpersByRootSnapshot.get(root)
+      const helpers = helpersByRootSnapshot.get(root);
       if (helpers === undefined) {
-        throw new Error(
-          'Could not find helpers for a root. This is a bug in React Refresh.',
-        )
+        throw new Error("Could not find helpers for a root. This is a bug in React Refresh.");
       }
       if (!failedRoots.has(root)) {
       }
       if (rootElements === null) {
-        return
+        return;
       }
       if (!rootElements.has(root)) {
-        return
+        return;
       }
-      const element = rootElements.get(root)
+      const element = rootElements.get(root);
       try {
-        helpers.scheduleRoot(root, element)
+        helpers.scheduleRoot(root, element);
       } catch (err) {
         if (!didError) {
-          didError = true
-          firstError = err
+          didError = true;
+          firstError = err;
         }
       }
-    })
+    });
     mountedRootsSnapshot.forEach((root) => {
-      const helpers = helpersByRootSnapshot.get(root)
+      const helpers = helpersByRootSnapshot.get(root);
       if (helpers === undefined) {
-        throw new Error(
-          'Could not find helpers for a root. This is a bug in React Refresh.',
-        )
+        throw new Error("Could not find helpers for a root. This is a bug in React Refresh.");
       }
       if (!mountedRoots.has(root)) {
       }
       try {
-        helpers.scheduleRefresh(root, update)
+        helpers.scheduleRefresh(root, update);
       } catch (err) {
         if (!didError) {
-          didError = true
-          firstError = err
+          didError = true;
+          firstError = err;
         }
       }
-    })
+    });
     if (didError) {
-      throw firstError
+      throw firstError;
     }
-    return update
+    return update;
   } finally {
-    isPerformingRefresh = false
+    isPerformingRefresh = false;
   }
 }
 
 export function register(type, id) {
   if (type === null) {
-    return
+    return;
   }
-  if (typeof type !== 'function' && typeof type !== 'object') {
-    return
+  if (typeof type !== "function" && typeof type !== "object") {
+    return;
   }
 
   if (allFamiliesByType.has(type)) {
-    return
+    return;
   }
-  let family = allFamiliesByID.get(id)
+  let family = allFamiliesByID.get(id);
   if (family === undefined) {
-    family = { current: type }
-    allFamiliesByID.set(id, family)
+    family = { current: type };
+    allFamiliesByID.set(id, family);
   } else {
-    pendingUpdates.push([family, type])
+    pendingUpdates.push([family, type]);
   }
-  allFamiliesByType.set(type, family)
+  allFamiliesByType.set(type, family);
 
-  if (typeof type === 'object' && type !== null) {
-    switch (getProperty(type, '$$typeof')) {
+  if (typeof type === "object" && type !== null) {
+    switch (getProperty(type, "$$typeof")) {
       case REACT_FORWARD_REF_TYPE:
-        register(type.render, id + '$render')
-        break
+        register(type.render, id + "$render");
+        break;
       case REACT_MEMO_TYPE:
-        register(type.type, id + '$type')
-        break
+        register(type.type, id + "$type");
+        break;
     }
   }
 }
@@ -239,24 +235,24 @@ function setSignature(type, key, forceReset, getCustomHooks) {
       ownKey: key,
       fullKey: null,
       getCustomHooks: getCustomHooks || (() => []),
-    })
+    });
   }
-  if (typeof type === 'object' && type !== null) {
-    switch (getProperty(type, '$$typeof')) {
+  if (typeof type === "object" && type !== null) {
+    switch (getProperty(type, "$$typeof")) {
       case REACT_FORWARD_REF_TYPE:
-        setSignature(type.render, key, forceReset, getCustomHooks)
-        break
+        setSignature(type.render, key, forceReset, getCustomHooks);
+        break;
       case REACT_MEMO_TYPE:
-        setSignature(type.type, key, forceReset, getCustomHooks)
-        break
+        setSignature(type.type, key, forceReset, getCustomHooks);
+        break;
     }
   }
 }
 
 function collectCustomHooksForSignature(type) {
-  const signature = allSignaturesByType.get(type)
+  const signature = allSignaturesByType.get(type);
   if (signature !== undefined) {
-    computeFullKey(signature)
+    computeFullKey(signature);
   }
 }
 
@@ -266,9 +262,9 @@ export function injectIntoGlobalHook(globalObject) {
   // its dev client entry (which calls this), where oj's preamble is not injected.
   globalObject.__oj_refresh_installed__ = true;
 
-  let hook = globalObject.__REACT_DEVTOOLS_GLOBAL_HOOK__
+  let hook = globalObject.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   if (hook === undefined) {
-    let nextID = 0
+    let nextID = 0;
     globalObject.__REACT_DEVTOOLS_GLOBAL_HOOK__ = hook = {
       renderers: new Map(),
       supportsFiber: true,
@@ -276,254 +272,219 @@ export function injectIntoGlobalHook(globalObject) {
       onScheduleFiberRoot: (id, root, children) => {},
       onCommitFiberRoot: (id, root, maybePriorityLevel, didError) => {},
       onCommitFiberUnmount() {},
-    }
+    };
   }
 
   if (hook.isDisabled) {
-    console['warn'](
-      'Something has shimmed the React DevTools global hook (__REACT_DEVTOOLS_GLOBAL_HOOK__). ' +
-        'Fast Refresh is not compatible with this shim and will be disabled.',
-    )
-    return
+    console["warn"](
+      "Something has shimmed the React DevTools global hook (__REACT_DEVTOOLS_GLOBAL_HOOK__). " +
+        "Fast Refresh is not compatible with this shim and will be disabled.",
+    );
+    return;
   }
 
-  const oldInject = hook.inject
+  const oldInject = hook.inject;
   hook.inject = function (injected) {
-    const id = oldInject.apply(this, arguments)
-    if (
-      typeof injected.scheduleRefresh === 'function' &&
-      typeof injected.setRefreshHandler === 'function'
-    ) {
-      helpersByRendererID.set(id, injected)
+    const id = oldInject.apply(this, arguments);
+    if (typeof injected.scheduleRefresh === "function" && typeof injected.setRefreshHandler === "function") {
+      helpersByRendererID.set(id, injected);
     }
-    return id
-  }
+    return id;
+  };
 
   hook.renderers.forEach((injected, id) => {
-    if (
-      typeof injected.scheduleRefresh === 'function' &&
-      typeof injected.setRefreshHandler === 'function'
-    ) {
-      helpersByRendererID.set(id, injected)
+    if (typeof injected.scheduleRefresh === "function" && typeof injected.setRefreshHandler === "function") {
+      helpersByRendererID.set(id, injected);
     }
-  })
+  });
 
-  const oldOnCommitFiberRoot = hook.onCommitFiberRoot
-  const oldOnScheduleFiberRoot = hook.onScheduleFiberRoot || (() => {})
+  const oldOnCommitFiberRoot = hook.onCommitFiberRoot;
+  const oldOnScheduleFiberRoot = hook.onScheduleFiberRoot || (() => {});
   hook.onScheduleFiberRoot = function (id, root, children) {
     if (!isPerformingRefresh) {
-      failedRoots.delete(root)
+      failedRoots.delete(root);
       if (rootElements !== null) {
-        rootElements.set(root, children)
+        rootElements.set(root, children);
       }
     }
-    return oldOnScheduleFiberRoot.apply(this, arguments)
-  }
+    return oldOnScheduleFiberRoot.apply(this, arguments);
+  };
   hook.onCommitFiberRoot = function (id, root, maybePriorityLevel, didError) {
-    const helpers = helpersByRendererID.get(id)
+    const helpers = helpersByRendererID.get(id);
     if (helpers !== undefined) {
-      helpersByRoot.set(root, helpers)
+      helpersByRoot.set(root, helpers);
 
-      const current = root.current
-      const alternate = current.alternate
+      const current = root.current;
+      const alternate = current.alternate;
 
       if (alternate !== null) {
         const wasMounted =
-          alternate.memoizedState != null &&
-          alternate.memoizedState.element != null &&
-          mountedRoots.has(root)
+          alternate.memoizedState != null && alternate.memoizedState.element != null && mountedRoots.has(root);
 
-        const isMounted =
-          current.memoizedState != null && current.memoizedState.element != null
+        const isMounted = current.memoizedState != null && current.memoizedState.element != null;
 
         if (!wasMounted && isMounted) {
-          mountedRoots.add(root)
-          failedRoots.delete(root)
+          mountedRoots.add(root);
+          failedRoots.delete(root);
         } else if (wasMounted && isMounted) {
         } else if (wasMounted && !isMounted) {
-          mountedRoots.delete(root)
+          mountedRoots.delete(root);
           if (didError) {
-            failedRoots.add(root)
+            failedRoots.add(root);
           } else {
-            helpersByRoot.delete(root)
+            helpersByRoot.delete(root);
           }
         } else if (!wasMounted && !isMounted) {
           if (didError) {
-            failedRoots.add(root)
+            failedRoots.add(root);
           }
         }
       } else {
-        mountedRoots.add(root)
+        mountedRoots.add(root);
       }
     }
 
-    return oldOnCommitFiberRoot.apply(this, arguments)
-  }
+    return oldOnCommitFiberRoot.apply(this, arguments);
+  };
 }
 
 export function createSignatureFunctionForTransform() {
-  let savedType
-  let hasCustomHooks
-  let didCollectHooks = false
+  let savedType;
+  let hasCustomHooks;
+  let didCollectHooks = false;
   return function (type, key, forceReset, getCustomHooks) {
-    if (typeof key === 'string') {
+    if (typeof key === "string") {
       if (!savedType) {
-        savedType = type
-        hasCustomHooks = typeof getCustomHooks === 'function'
+        savedType = type;
+        hasCustomHooks = typeof getCustomHooks === "function";
       }
-      if (
-        type != null &&
-        (typeof type === 'function' || typeof type === 'object')
-      ) {
-        setSignature(type, key, forceReset, getCustomHooks)
+      if (type != null && (typeof type === "function" || typeof type === "object")) {
+        setSignature(type, key, forceReset, getCustomHooks);
       }
-      return type
+      return type;
     } else {
       if (!didCollectHooks && hasCustomHooks) {
-        didCollectHooks = true
-        collectCustomHooksForSignature(savedType)
+        didCollectHooks = true;
+        collectCustomHooksForSignature(savedType);
       }
     }
-  }
+  };
 }
 
 function isLikelyComponentType(type) {
   switch (typeof type) {
-    case 'function': {
+    case "function": {
       if (type.prototype != null) {
         if (type.prototype.isReactComponent) {
-          return true
+          return true;
         }
-        const ownNames = Object.getOwnPropertyNames(type.prototype)
-        if (ownNames.length > 1 || ownNames[0] !== 'constructor') {
-          return false
+        const ownNames = Object.getOwnPropertyNames(type.prototype);
+        if (ownNames.length > 1 || ownNames[0] !== "constructor") {
+          return false;
         }
 
         if (type.prototype.__proto__ !== Object.prototype) {
-          return false
+          return false;
         }
       }
-      const name = type.name || type.displayName
-      return typeof name === 'string' && /^[A-Z]/.test(name)
+      const name = type.name || type.displayName;
+      return typeof name === "string" && /^[A-Z]/.test(name);
     }
-    case 'object': {
+    case "object": {
       if (type != null) {
-        switch (getProperty(type, '$$typeof')) {
+        switch (getProperty(type, "$$typeof")) {
           case REACT_FORWARD_REF_TYPE:
           case REACT_MEMO_TYPE:
-            return true
+            return true;
           default:
-            return false
+            return false;
         }
       }
-      return false
+      return false;
     }
     default: {
-      return false
+      return false;
     }
   }
 }
 
 function isCompoundComponent(type) {
-  if (!isPlainObject(type)) return false
+  if (!isPlainObject(type)) return false;
   for (const key in type) {
-    if (!isLikelyComponentType(type[key])) return false
+    if (!isLikelyComponentType(type[key])) return false;
   }
-  return true
+  return true;
 }
 
 function isPlainObject(obj) {
   return (
-    Object.prototype.toString.call(obj) === '[object Object]' &&
+    Object.prototype.toString.call(obj) === "[object Object]" &&
     (obj.constructor === Object || obj.constructor === undefined)
-  )
+  );
 }
 
 export function registerExportsForReactRefresh(filename, moduleExports) {
   for (const key in moduleExports) {
-    if (key === '__esModule') continue
-    const exportValue = moduleExports[key]
+    if (key === "__esModule") continue;
+    const exportValue = moduleExports[key];
     if (isLikelyComponentType(exportValue)) {
-      register(exportValue, filename + ' export ' + key)
+      register(exportValue, filename + " export " + key);
     } else if (isCompoundComponent(exportValue)) {
       for (const subKey in exportValue) {
-        register(
-          exportValue[subKey],
-          filename + ' export ' + key + '-' + subKey,
-        )
+        register(exportValue[subKey], filename + " export " + key + "-" + subKey);
       }
     }
   }
 }
 
 function debounce(fn, delay) {
-  let handle
+  let handle;
   return () => {
-    clearTimeout(handle)
-    handle = setTimeout(fn, delay)
-  }
+    clearTimeout(handle);
+    handle = setTimeout(fn, delay);
+  };
 }
 
-const hooks = []
+const hooks = [];
 window.__registerBeforePerformReactRefresh = (cb) => {
-  hooks.push(cb)
-}
+  hooks.push(cb);
+};
 export const enqueueUpdate = debounce(async () => {
-  if (hooks.length) await Promise.all(hooks.map((cb) => cb()))
-  performReactRefresh()
-}, 16)
+  if (hooks.length) await Promise.all(hooks.map((cb) => cb()));
+  performReactRefresh();
+}, 16);
 
-export function validateRefreshBoundaryAndEnqueueUpdate(
-  id,
-  prevExports,
-  nextExports,
-) {
-  const ignoredExports = window.__getReactRefreshIgnoredExports?.({ id }) ?? []
-  if (
-    predicateOnExport(
-      ignoredExports,
-      prevExports,
-      (key) => key in nextExports,
-    ) !== true
-  ) {
-    return 'Could not Fast Refresh (export removed)'
+export function validateRefreshBoundaryAndEnqueueUpdate(id, prevExports, nextExports) {
+  const ignoredExports = window.__getReactRefreshIgnoredExports?.({ id }) ?? [];
+  if (predicateOnExport(ignoredExports, prevExports, (key) => key in nextExports) !== true) {
+    return "Could not Fast Refresh (export removed)";
   }
-  if (
-    predicateOnExport(
-      ignoredExports,
-      nextExports,
-      (key) => key in prevExports,
-    ) !== true
-  ) {
-    return 'Could not Fast Refresh (new export)'
+  if (predicateOnExport(ignoredExports, nextExports, (key) => key in prevExports) !== true) {
+    return "Could not Fast Refresh (new export)";
   }
 
-  let hasExports = false
-  const allExportsAreComponentsOrUnchanged = predicateOnExport(
-    ignoredExports,
-    nextExports,
-    (key, value) => {
-      hasExports = true
-      if (isLikelyComponentType(value)) return true
-      if (isCompoundComponent(value)) return true
-      return prevExports[key] === nextExports[key]
-    },
-  )
+  let hasExports = false;
+  const allExportsAreComponentsOrUnchanged = predicateOnExport(ignoredExports, nextExports, (key, value) => {
+    hasExports = true;
+    if (isLikelyComponentType(value)) return true;
+    if (isCompoundComponent(value)) return true;
+    return prevExports[key] === nextExports[key];
+  });
   if (hasExports && allExportsAreComponentsOrUnchanged === true) {
-    enqueueUpdate()
+    enqueueUpdate();
   } else {
-    return `Could not Fast Refresh ("${allExportsAreComponentsOrUnchanged}" export is incompatible). Learn more at __README_URL__#consistent-components-exports`
+    return `Could not Fast Refresh ("${allExportsAreComponentsOrUnchanged}" export is incompatible). Learn more at __README_URL__#consistent-components-exports`;
   }
 }
 
 function predicateOnExport(ignoredExports, moduleExports, predicate) {
   for (const key in moduleExports) {
-    if (ignoredExports.includes(key)) continue
-    if (!predicate(key, moduleExports[key])) return key
+    if (ignoredExports.includes(key)) continue;
+    if (!predicate(key, moduleExports[key])) return key;
   }
-  return true
+  return true;
 }
 
-export const __hmr_import = (module) => import( module)
+export const __hmr_import = (module) => import(module);
 
-export default { injectIntoGlobalHook }
+export default { injectIntoGlobalHook };

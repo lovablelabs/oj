@@ -6,7 +6,15 @@ import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from "nod
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { viteEnvDefine, envPrefixes, environmentDefines, makeResolver, importPkg, resolveOjRolldown, ssrExternalRule } from "../../crates/oj_server/src/assets/start/resolve-pkg.mjs";
+import {
+  viteEnvDefine,
+  envPrefixes,
+  environmentDefines,
+  makeResolver,
+  importPkg,
+  resolveOjRolldown,
+  ssrExternalRule,
+} from "../../crates/oj_server/src/assets/start/resolve-pkg.mjs";
 
 test("viteEnvDefine builds import.meta.env with the standard flags", () => {
   process.env.VITE_ONLY_FOR_TEST = "hello";
@@ -35,11 +43,19 @@ test("viteEnvDefine reflects ssr and production", () => {
 // Vite: `envPrefix` decides which vars reach import.meta.env; DEV/PROD follow
 // NODE_ENV even in a development mode (`NODE_ENV=production vite dev` is PROD).
 test("viteEnvDefine honors envPrefix (OJ_ENV_PREFIX) and NODE_ENV over mode", () => {
-  const source = { NODE_ENV: "production", VITE_A: "a", APP_B: "b", SECRET_C: "c", OJ_ENV_PREFIX: JSON.stringify(["VITE_", "APP_"]) };
+  const source = {
+    NODE_ENV: "production",
+    VITE_A: "a",
+    APP_B: "b",
+    SECRET_C: "c",
+    OJ_ENV_PREFIX: JSON.stringify(["VITE_", "APP_"]),
+  };
   assert.deepEqual(envPrefixes(source), ["VITE_", "APP_"]);
   assert.deepEqual(envPrefixes({}), ["VITE_"]);
   assert.deepEqual(envPrefixes({ OJ_ENV_PREFIX: "not json" }), ["VITE_"]);
-  const env = JSON.parse(viteEnvDefine({ mode: "development", env: source, prefixes: envPrefixes(source) })["import.meta.env"]);
+  const env = JSON.parse(
+    viteEnvDefine({ mode: "development", env: source, prefixes: envPrefixes(source) })["import.meta.env"],
+  );
   assert.equal(env.MODE, "development");
   assert.equal(env.DEV, false);
   assert.equal(env.PROD, true);
@@ -52,7 +68,10 @@ test("viteEnvDefine honors envPrefix (OJ_ENV_PREFIX) and NODE_ENV over mode", ()
 });
 
 test("environmentDefines reads the per-environment define maps oj hands over", () => {
-  const source = { OJ_DEFINE_CLIENT: JSON.stringify({ __SIDE__: '"client"' }), OJ_DEFINE_SSR: JSON.stringify({ __SIDE__: '"server"' }) };
+  const source = {
+    OJ_DEFINE_CLIENT: JSON.stringify({ __SIDE__: '"client"' }),
+    OJ_DEFINE_SSR: JSON.stringify({ __SIDE__: '"server"' }),
+  };
   assert.deepEqual(environmentDefines("client", source), { __SIDE__: '"client"' });
   assert.deepEqual(environmentDefines("ssr", source), { __SIDE__: '"server"' });
   assert.deepEqual(environmentDefines("client", {}), {});
@@ -102,7 +121,10 @@ test("makeResolver reaches a dep two hops deep (transitive through a transitive)
     writeFileSync(join(root, "package.json"), '{"name":"app","dependencies":{"anchor":"1.0.0"}}');
     const anchorDir = join(root, "node_modules", "anchor");
     mkdirSync(anchorDir, { recursive: true });
-    writeFileSync(join(anchorDir, "package.json"), '{"name":"anchor","main":"index.js","dependencies":{"mid":"1.0.0"}}');
+    writeFileSync(
+      join(anchorDir, "package.json"),
+      '{"name":"anchor","main":"index.js","dependencies":{"mid":"1.0.0"}}',
+    );
     writeFileSync(join(anchorDir, "index.js"), "module.exports = {};");
     const midDir = join(anchorDir, "node_modules", "mid");
     mkdirSync(midDir, { recursive: true });
@@ -195,7 +217,7 @@ test("importPkg reaches a transitive dep through a preferred anchor", async () =
     writePkg(root, "anchor", { "package.json": '{"name":"anchor"}' });
     writePkg(root, join("anchor", "node_modules", "dep"), {
       "package.json": '{"name":"dep","main":"index.js"}',
-      "index.js": 'module.exports = { ok: true };',
+      "index.js": "module.exports = { ok: true };",
     });
     const mod = await importPkg(root, "dep", ["anchor"]);
     assert.equal(mod.ok, true);
@@ -207,10 +229,13 @@ test("importPkg reaches a transitive dep through a preferred anchor", async () =
 test("tailwind engine module resolves Tailwind v4 dependencies beneath the Vite plugin", async () => {
   const root = mkdtempSync(join(tmpdir(), "oj-tailwind-strict-layout-"));
   try {
-    writeFileSync(join(root, "package.json"), JSON.stringify({
-      name: "synthetic-app",
-      dependencies: { "@tailwindcss/vite": "1.0.0" },
-    }));
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "synthetic-app",
+        dependencies: { "@tailwindcss/vite": "1.0.0" },
+      }),
+    );
     writePkg(root, "@tailwindcss/vite", {
       "package.json": JSON.stringify({
         name: "@tailwindcss/vite",
@@ -222,7 +247,8 @@ test("tailwind engine module resolves Tailwind v4 dependencies beneath the Vite 
     const anchor = join(root, "node_modules", "@tailwindcss", "vite");
     writePkg(anchor, "@tailwindcss/node", {
       "package.json": '{"name":"@tailwindcss/node","type":"module","main":"index.mjs"}',
-      "index.mjs": "export async function compile(source) { return { build(tokens) { return source + tokens.join(','); } }; }",
+      "index.mjs":
+        "export async function compile(source) { return { build(tokens) { return source + tokens.join(','); } }; }",
     });
     writePkg(anchor, "@tailwindcss/oxide", {
       "package.json": '{"name":"@tailwindcss/oxide","type":"module","main":"index.mjs"}',
@@ -270,7 +296,11 @@ test("ssrExternalRule keeps explicit ssr.external deps out of the Start server b
     assert.equal(listed("@scope/other", undefined, false), false);
     assert.equal(listed("./react", undefined, false), false, "relative ids are never external");
     assert.equal(listed("\0virtual:react", undefined, false), false);
-    assert.equal(listed("/abs/node_modules/react/index.js", undefined, true), false, "resolved paths are left to the bundle");
+    assert.equal(
+      listed("/abs/node_modules/react/index.js", undefined, true),
+      false,
+      "resolved paths are left to the bundle",
+    );
     assert.equal(listed("installed", undefined, false), false, "an installed dep not listed is bundled");
 
     const all = ssrExternalRule(root, { OJ_SSR_EXTERNALS: JSON.stringify({ externalAll: true, external: [] }) });

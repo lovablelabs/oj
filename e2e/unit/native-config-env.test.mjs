@@ -111,9 +111,8 @@ test("a Berry yarn.lock presents yarn 4, not classic", () => {
 });
 
 test("a real package manager's agent is never overridden", () => {
-  const seen = envSeenByPlugins(
-    { npm_config_user_agent: "pnpm/9.12.0 npm/? node/v24.17.0 darwin arm64" },
-    (fx) => fx.write("package-lock.json", "{}"),
+  const seen = envSeenByPlugins({ npm_config_user_agent: "pnpm/9.12.0 npm/? node/v24.17.0 darwin arm64" }, (fx) =>
+    fx.write("package-lock.json", "{}"),
   );
   assert.equal(seen.userAgent, "pnpm/9.12.0 npm/? node/v24.17.0 darwin arm64");
 });

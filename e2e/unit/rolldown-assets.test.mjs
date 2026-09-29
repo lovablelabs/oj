@@ -138,7 +138,10 @@ test("emit does not compile plain CSS (no markers)", async () => {
     mkdirSync(join(base, "styles"), { recursive: true });
     writeFileSync(join(base, "styles", "plain.css"), ".x{color:blue}");
     let called = 0;
-    const emit = contentHashEmitter(join(base, "client"), async () => { called++; return ""; });
+    const emit = contentHashEmitter(join(base, "client"), async () => {
+      called++;
+      return "";
+    });
     const url = await emit(join(base, "styles", "plain.css"));
     const out = readFileSync(join(base, "client", "assets", url.slice("/assets/".length)), "utf8");
     assert.equal(called, 0);
@@ -152,8 +155,16 @@ test("the Rolldown adapter forwards build completion only to its active containe
   const completed = [];
   const failure = new Error("synthetic bundle failure");
   const adapter = makeVitePlugins({
-    container: { buildEnd(error) { completed.push({ environment: "active", error }); } },
-    fallback: { buildEnd(error) { completed.push({ environment: "fallback", error }); } },
+    container: {
+      buildEnd(error) {
+        completed.push({ environment: "active", error });
+      },
+    },
+    fallback: {
+      buildEnd(error) {
+        completed.push({ environment: "fallback", error });
+      },
+    },
   });
 
   await adapter.buildEnd(failure);
@@ -166,8 +177,16 @@ test("the Rolldown adapter forwards render initialization only to its active con
   const output = { format: "es" };
   const input = { input: "/synthetic/entry.ts" };
   const adapter = makeVitePlugins({
-    container: { renderStart(...options) { rendered.push({ environment: "active", options }); } },
-    fallback: { renderStart(...options) { rendered.push({ environment: "fallback", options }); } },
+    container: {
+      renderStart(...options) {
+        rendered.push({ environment: "active", options });
+      },
+    },
+    fallback: {
+      renderStart(...options) {
+        rendered.push({ environment: "fallback", options });
+      },
+    },
   });
 
   await adapter.renderStart(output, input);

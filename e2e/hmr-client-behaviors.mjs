@@ -32,18 +32,26 @@ const w = (rel, s) => fs.writeFileSync(path.join(app, rel), s);
 w("package.json", JSON.stringify({ name: "hmr-client", version: "1.0.0" }));
 w(".env", "VITE_FOO=1\n");
 w("style.css", `h1 { color: rgb(1, 2, 3); }\n`);
-w("src/main.tsx", `import { createRoot } from "react-dom/client";\nimport { App } from "./App";\ncreateRoot(document.getElementById("root")!).render(<App />);\n`);
+w(
+  "src/main.tsx",
+  `import { createRoot } from "react-dom/client";\nimport { App } from "./App";\ncreateRoot(document.getElementById("root")!).render(<App />);\n`,
+);
 // a <-> b cycle (barrel style), both below App
 w("src/a.ts", `import { fromB } from "./b";\nexport const label = "v1";\nexport const viaB = () => fromB();\n`);
 w("src/b.ts", `import { label } from "./a";\nexport const fromB = () => label + "!";\n`);
 w("src/Lazy.tsx", `export default function Lazy() { return <p>lazy</p>; }\n`);
-w("src/App.tsx",
+w(
+  "src/App.tsx",
   `import { useState } from "react";\nimport { viaB } from "./a";\n` +
-  `export function App() {\n  const [n, setN] = useState(0);\n` +
-  `  // never called: Lazy stays unloaded in the browser but is in the server graph\n` +
-  `  (window as any).__loadLazy = () => import("./Lazy");\n` +
-  `  return (<div><h1>{viaB()}</h1><button onClick={() => setN(n + 1)}>Clicks: {n}</button></div>);\n}\n`);
-w("index.html", `<!doctype html><html><head><title>t</title><link rel="stylesheet" href="/style.css"></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`);
+    `export function App() {\n  const [n, setN] = useState(0);\n` +
+    `  // never called: Lazy stays unloaded in the browser but is in the server graph\n` +
+    `  (window as any).__loadLazy = () => import("./Lazy");\n` +
+    `  return (<div><h1>{viaB()}</h1><button onClick={() => setN(n + 1)}>Clicks: {n}</button></div>);\n}\n`,
+);
+w(
+  "index.html",
+  `<!doctype html><html><head><title>t</title><link rel="stylesheet" href="/style.css"></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`,
+);
 
 let failed = false;
 const logFd = fs.openSync(path.join(repo, "playground", ".e2e-hmr-client.log"), "w");
@@ -87,20 +95,32 @@ try {
     step("frames");
     // 3. frame shapes: css-update inside an UpdatePayload, ErrorPayload with err
     w("style.css", `h1 { color: rgb(4, 5, 6); }\n`);
-    await page.waitForFunction(() => getComputedStyle(document.querySelector("h1")).color === "rgb(4, 5, 6)", { timeout: 20000 });
-    const css = await page.evaluate(() => window.__frames.find((f) => f.type === "update" && f.updates.some((u) => u.type === "css-update")));
-    assert.ok(css, `no UpdatePayload with a css-update entry: ${JSON.stringify(await page.evaluate(() => window.__frames))}`);
+    await page.waitForFunction(() => getComputedStyle(document.querySelector("h1")).color === "rgb(4, 5, 6)", {
+      timeout: 20000,
+    });
+    const css = await page.evaluate(() =>
+      window.__frames.find((f) => f.type === "update" && f.updates.some((u) => u.type === "css-update")),
+    );
+    assert.ok(
+      css,
+      `no UpdatePayload with a css-update entry: ${JSON.stringify(await page.evaluate(() => window.__frames))}`,
+    );
     const entry = css.updates.find((u) => u.type === "css-update");
     assert.equal(entry.path, "/style.css");
     assert.equal(entry.acceptedPath, "/style.css");
     assert.equal(typeof entry.timestamp, "number");
-    const js = await page.evaluate(() => window.__frames.find((f) => f.type === "update" && f.updates.some((u) => u.type === "js-update")));
+    const js = await page.evaluate(() =>
+      window.__frames.find((f) => f.type === "update" && f.updates.some((u) => u.type === "js-update")),
+    );
     assert.ok(js && js.updates[0].acceptedPath, "js-update entries carry type and acceptedPath");
     step("error frame");
     w("src/b.ts", `import { label } from "./a";\nexport const fromB = () => label + ;\n`);
     await page.waitForFunction(() => window.__frames.some((f) => f.type === "error"), { timeout: 20000 });
     const err = await page.evaluate(() => window.__frames.find((f) => f.type === "error"));
-    assert.ok(err.err && typeof err.err.message === "string" && err.err.message.length > 0, `ErrorPayload shape: ${JSON.stringify(err)}`);
+    assert.ok(
+      err.err && typeof err.err.message === "string" && err.err.message.length > 0,
+      `ErrorPayload shape: ${JSON.stringify(err)}`,
+    );
     assert.equal(err.message, undefined, "legacy top-level message is gone");
     await page.locator('[role="dialog"]').waitFor({ timeout: 10000 });
     w("src/b.ts", `import { label } from "./a";\nexport const fromB = () => label + "#";\n`);
@@ -120,7 +140,15 @@ try {
 } catch (err) {
   failed = true;
   console.error("HMR-CLIENT-BEHAVIORS E2E FAILED:", err.message);
-  try { console.error(fs.readFileSync(path.join(repo, "playground", ".e2e-hmr-client.log"), "utf8").split("\n").slice(-25).join("\n")); } catch {}
+  try {
+    console.error(
+      fs
+        .readFileSync(path.join(repo, "playground", ".e2e-hmr-client.log"), "utf8")
+        .split("\n")
+        .slice(-25)
+        .join("\n"),
+    );
+  } catch {}
 } finally {
   srv.kill("SIGKILL");
   await sleep(300);

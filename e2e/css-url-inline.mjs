@@ -25,10 +25,16 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-cssurl-"));
 fs.mkdirSync(path.join(app, "src", "assets"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "cssurl-app", version: "1.0.0" }));
-fs.writeFileSync(path.join(app, "vite.config.js"), `export default { resolve: { alias: { "@": ${JSON.stringify(path.join(app, "src"))} } } };\n`);
+fs.writeFileSync(
+  path.join(app, "vite.config.js"),
+  `export default { resolve: { alias: { "@": ${JSON.stringify(path.join(app, "src"))} } } };\n`,
+);
 fs.writeFileSync(path.join(app, "src", "a.scss"), `$c: red;\n.a { color: $c; }\n`);
 fs.writeFileSync(path.join(app, "src", "b.css"), `.b {\n  color: blue;\n}\n`);
-fs.writeFileSync(path.join(app, "src", "assets", "logo.svg"), `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>`);
+fs.writeFileSync(
+  path.join(app, "src", "assets", "logo.svg"),
+  `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>`,
+);
 fs.writeFileSync(
   path.join(app, "src", "main.js"),
   `import aUrl from "./a.scss?url";\nimport bInline from "./b.css?inline";\nimport logo from "@/assets/logo.svg";\n` +
@@ -54,14 +60,18 @@ try {
   assert.match(directCss, /color:\s*red/, `?direct is compiled sass:\n${directCss}`);
   assert.doesNotMatch(directCss, /\$c/, "sass variable left in ?direct output");
   // A <link href="/src/a.scss"> request (sec-fetch-dest: style) also gets compiled css.
-  const linked = await (await fetch(`http://localhost:${PORT}/src/a.scss`, { headers: { "sec-fetch-dest": "style" } })).text();
+  const linked = await (
+    await fetch(`http://localhost:${PORT}/src/a.scss`, { headers: { "sec-fetch-dest": "style" } })
+  ).text();
   assert.match(linked, /color:\s*red/, `link request not compiled:\n${linked}`);
 
   const bInline = await (await fetch(`http://localhost:${PORT}/src/b.css?inline`)).text();
   assert.match(bInline, /export default "\.b\{color:blue\}|export default ".b \{/, `css ?inline in dev:\n${bInline}`);
 
   // The svg module fetched the way the browser fetches an import (no image dest).
-  const logoMod = await (await fetch(`http://localhost:${PORT}/src/assets/logo.svg`, { headers: { "sec-fetch-dest": "script" } })).text();
+  const logoMod = await (
+    await fetch(`http://localhost:${PORT}/src/assets/logo.svg`, { headers: { "sec-fetch-dest": "script" } })
+  ).text();
   assert.match(logoMod, /export default "\/src\/assets\/logo\.svg"/, `svg import is not a URL module:\n${logoMod}`);
   // ...while an <img> request still gets the image.
   const img = await fetch(`http://localhost:${PORT}/src/assets/logo.svg`, { headers: { "sec-fetch-dest": "image" } });
@@ -74,13 +84,23 @@ try {
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
   const assets = path.join(app, "dist", "assets");
   const files = fs.readdirSync(assets);
-  const js = fs.readFileSync(path.join(assets, files.find((f) => f.startsWith("main-") && f.endsWith(".js"))), "utf8");
+  const js = fs.readFileSync(
+    path.join(
+      assets,
+      files.find((f) => f.startsWith("main-") && f.endsWith(".js")),
+    ),
+    "utf8",
+  );
   const cssFile = files.find((f) => f.startsWith("a-") && f.endsWith(".css"));
   assert.ok(cssFile, `compiled a.css asset emitted for ?url: ${files}`);
   const css = fs.readFileSync(path.join(assets, cssFile), "utf8");
   assert.match(css, /color:\s*red/, `?url asset is compiled sass:\n${css}`);
   assert.doesNotMatch(css, /\$c/, "sass source shipped as the ?url asset");
-  assert.match(js, new RegExp(cssFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "main chunk references the css asset url");
+  assert.match(
+    js,
+    new RegExp(cssFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    "main chunk references the css asset url",
+  );
   assert.match(js, /\.b\{color:(blue|#00f)\}/, `?inline is compiled css text in the build:\n${js}`);
   assert.doesNotMatch(js, /application\/octet-stream/, "css ?inline shipped as an octet-stream data URI");
   assert.match(js, /data:image\/svg\+xml|assets\/logo-/, "aliased svg is an asset url in the build");

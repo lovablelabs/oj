@@ -132,7 +132,11 @@ test("two plugins mutually resolving the same id with skipSelf terminate (Vite s
     const importer = path.join(fx.root, "main.js");
     const frame = await drive(host, fx, { id: 1, hook: "resolveId", args: ["asset.css?url", importer] });
     assert.equal(frame.error, undefined, `resolveId must not fail: ${frame.error}; stderr:\n${host.stderr()}`);
-    assert.equal(frame.result, "\0url:" + path.join(fx.root, "asset.css"), "the outer call still resolves through the chain");
+    assert.equal(
+      frame.result,
+      "\0url:" + path.join(fx.root, "asset.css"),
+      "the outer call still resolves through the chain",
+    );
     const c = await counts(host, fx);
     assert.equal(c.stubs, 1, "the issuing plugin is skipped for its own id across the whole nested chain");
     assert.equal(c.protection, 1, "the sibling runs once, and its nested resolve skips both");
@@ -147,7 +151,11 @@ test("a skipCalls entry is scoped to its issued id: the issuer still answers dee
   fx.write("oj.plugins.mjs", rewritePlugins);
   const host = hostFor(fx);
   try {
-    const frame = await drive(host, fx, { id: 1, hook: "resolveId", args: ["alias:one", path.join(fx.root, "main.js")] });
+    const frame = await drive(host, fx, {
+      id: 1,
+      hook: "resolveId",
+      args: ["alias:one", path.join(fx.root, "main.js")],
+    });
     assert.equal(frame.error, undefined, `resolveId must not fail: ${frame.error}; stderr:\n${host.stderr()}`);
     assert.equal(frame.result, "\0one:\0two:\0three", "`a` answers alias:three inside the chain it started");
   } finally {

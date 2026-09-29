@@ -43,13 +43,17 @@ test("an orphaned plugin host stuck in a boot await reaps itself (ppid watchdog)
     console.log("HOST=" + c.pid);
     setInterval(() => {}, 60_000);
   `;
-  const parent = spawn(process.execPath, [
-    "-e",
-    parentScript,
-    asset("plugin-host.mjs"),
-    path.join(fx.root, "oj.plugins.mjs"),
-    JSON.stringify({ config: { root: fx.root } }),
-  ], { cwd: fx.root, env: { ...process.env, OJ_CACHE_ROOT: fx.root }, stdio: ["ignore", "pipe", "pipe"] });
+  const parent = spawn(
+    process.execPath,
+    [
+      "-e",
+      parentScript,
+      asset("plugin-host.mjs"),
+      path.join(fx.root, "oj.plugins.mjs"),
+      JSON.stringify({ config: { root: fx.root } }),
+    ],
+    { cwd: fx.root, env: { ...process.env, OJ_CACHE_ROOT: fx.root }, stdio: ["ignore", "pipe", "pipe"] },
+  );
   try {
     const hostPid = await new Promise((resolve, reject) => {
       let buf = "";

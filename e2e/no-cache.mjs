@@ -37,7 +37,11 @@ function moduleCacheEntries() {
   let n = 0;
   const walk = (dir) => {
     let ents;
-    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try {
+      ents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
@@ -47,7 +51,6 @@ function moduleCacheEntries() {
   walk(root);
   return n;
 }
-
 
 // Run oj (optionally with --no-cache), request the module, give the async cache
 // writer time to flush, and return how many module cache entries exist after.
@@ -69,9 +72,15 @@ async function runAndCount({ noCache }) {
     await sleep(300);
     return moduleCacheEntries();
   } finally {
-    try { execSync(`pkill -P ${proc.pid}`); } catch {}
-    try { proc.kill("SIGKILL"); } catch {}
-    try { execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs -r kill -9`); } catch {}
+    try {
+      execSync(`pkill -P ${proc.pid}`);
+    } catch {}
+    try {
+      proc.kill("SIGKILL");
+    } catch {}
+    try {
+      execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs -r kill -9`);
+    } catch {}
     await sleep(500);
   }
 }

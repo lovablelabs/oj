@@ -64,10 +64,26 @@ function check(label, ok, detail) {
 }
 
 function checkExports(mode, styles, theme, css) {
-  check(`${mode}: camelCase adds the converted key next to the original`, styles["my-button"] && styles.myButton === styles["my-button"], JSON.stringify(styles));
-  check(`${mode}: generateScopedName pattern`, /^my-button__[A-Za-z0-9_-]+$/.test(styles["my-button"] ?? ""), JSON.stringify(styles));
-  check(`${mode}: composes from another module file`, typeof styles.wide === "string" && styles.wide.split(" ").length === 2 && /^base__/.test(styles.wide.split(" ")[1]), JSON.stringify(styles));
-  check(`${mode}: globalModulePaths file exports no locals`, theme && Object.keys(theme).length === 0, JSON.stringify(theme));
+  check(
+    `${mode}: camelCase adds the converted key next to the original`,
+    styles["my-button"] && styles.myButton === styles["my-button"],
+    JSON.stringify(styles),
+  );
+  check(
+    `${mode}: generateScopedName pattern`,
+    /^my-button__[A-Za-z0-9_-]+$/.test(styles["my-button"] ?? ""),
+    JSON.stringify(styles),
+  );
+  check(
+    `${mode}: composes from another module file`,
+    typeof styles.wide === "string" && styles.wide.split(" ").length === 2 && /^base__/.test(styles.wide.split(" ")[1]),
+    JSON.stringify(styles),
+  );
+  check(
+    `${mode}: globalModulePaths file exports no locals`,
+    theme && Object.keys(theme).length === 0,
+    JSON.stringify(theme),
+  );
   check(`${mode}: globalModulePaths file is unscoped in the CSS`, /\.theme-dark\s*{/.test(css), css);
 }
 
@@ -80,7 +96,10 @@ function checkExports(mode, styles, theme, css) {
   srv.stderr.on("data", (d) => (log += d));
   try {
     let up = false;
-    up = await waitUp(`http://localhost:${port}/`).then(() => true, () => false);
+    up = await waitUp(`http://localhost:${port}/`).then(
+      () => true,
+      () => false,
+    );
     if (!up) throw new Error(`dev server did not start:\n${log}`);
     const wrapper = await (await fetch(`http://localhost:${port}/src/app.module.css?import`)).text();
     const map = wrapper.match(/export default (\{.*?\});?\s*$/m);
@@ -102,11 +121,27 @@ function checkExports(mode, styles, theme, css) {
   check("build succeeds", r.status === 0, `${r.stdout}\n${r.stderr}`);
   if (r.status === 0) {
     const assets = path.join(app, "dist", "assets");
-    const js = fs.readdirSync(assets).filter((f) => f.endsWith(".js")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
-    const css = fs.readdirSync(assets).filter((f) => f.endsWith(".css")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+    const js = fs
+      .readdirSync(assets)
+      .filter((f) => f.endsWith(".js"))
+      .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+      .join("\n");
+    const css = fs
+      .readdirSync(assets)
+      .filter((f) => f.endsWith(".css"))
+      .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+      .join("\n");
     check("build: myButton camelCase key is in the chunk", /myButton/.test(js), js.slice(0, 400));
-    check("build: scoped name follows the pattern", /my-button__[A-Za-z0-9_-]+/.test(js) && /\.my-button__/.test(css), css);
-    check("build: composes value has two classes", /wide"?:["'`]wide__[^"'` ]+ base__[^"'` ]+["'`]/.test(js), js.slice(-400));
+    check(
+      "build: scoped name follows the pattern",
+      /my-button__[A-Za-z0-9_-]+/.test(js) && /\.my-button__/.test(css),
+      css,
+    );
+    check(
+      "build: composes value has two classes",
+      /wide"?:["'`]wide__[^"'` ]+ base__[^"'` ]+["'`]/.test(js),
+      js.slice(-400),
+    );
     check("build: globalModulePaths file is unscoped", /\.theme-dark{/.test(css), css);
   }
 }

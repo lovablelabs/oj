@@ -33,7 +33,7 @@ try {
     path.join(app, "src", "entry.js"),
     'import { virt } from "virtual:gate-info";\nimport { special } from "./data.special.js";\nconsole.log("gate", virt, special);\n',
   );
-  fs.writeFileSync(path.join(app, "src", "data.special.js"), "export const special = \"placeholder\";\n");
+  fs.writeFileSync(path.join(app, "src", "data.special.js"), 'export const special = "placeholder";\n');
   fs.writeFileSync(
     path.join(app, "oj.plugins.mjs"),
     `export default [
@@ -115,7 +115,7 @@ try {
   // tell: the host's own per-plugin filters produce identical bytes). The
   // skip line races the child's stderr pipe, so poll for it briefly.
   const skipRe = /hook gate skipped transform for .*data\.special\.js/;
-  for (const t1 = Date.now(); !skipRe.test(stderr) && Date.now() - t1 < 5000; ) {
+  for (const t1 = Date.now(); !skipRe.test(stderr) && Date.now() - t1 < 5000;) {
     await new Promise((r) => setTimeout(r, 50));
   }
   assert.match(stderr, skipRe, "gate skipped the unclaimed module");

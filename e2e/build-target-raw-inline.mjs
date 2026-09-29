@@ -23,7 +23,10 @@ fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "rt-app"
 fs.writeFileSync(path.join(app, "src", "note.txt"), "hello-raw-content");
 fs.writeFileSync(
   path.join(app, "src", "dot.png"),
-  Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"),
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  ),
 );
 fs.writeFileSync(
   path.join(app, "src", "main.js"),

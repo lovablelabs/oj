@@ -22,7 +22,10 @@ const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-gbfid-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "gb-app", version: "1.0.0" }));
 fs.writeFileSync(path.join(app, "src", "dep.js"), `export const dep = 42;\n`);
-fs.writeFileSync(path.join(app, "src", "entry.js"), `import { dep } from "./dep.js";\nexport const v = dep;\nconsole.log(v);\n`);
+fs.writeFileSync(
+  path.join(app, "src", "entry.js"),
+  `import { dep } from "./dep.js";\nexport const v = dep;\nconsole.log(v);\n`,
+);
 fs.writeFileSync(path.join(app, "src", "keep.js"), `export const keep = "keep-chunk-body";\n`);
 fs.writeFileSync(path.join(app, "src", "gone.js"), `export const gone = "gone-chunk-body";\n`);
 fs.writeFileSync(

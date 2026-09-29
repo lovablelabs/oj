@@ -32,7 +32,10 @@ const w = (rel, s) => {
 w("package.json", JSON.stringify({ name: "map-leak", version: "1.0.0", type: "module" }));
 w("index.html", `<!doctype html><html><body><script type="module" src="/src/main.js"></script></body></html>`);
 w("src/main.js", 'import { evil } from "evil-dep";\nwindow.__evil = evil;\n');
-w("node_modules/evil-dep/package.json", JSON.stringify({ name: "evil-dep", version: "1.0.0", main: "index.js", type: "module" }));
+w(
+  "node_modules/evil-dep/package.json",
+  JSON.stringify({ name: "evil-dep", version: "1.0.0", main: "index.js", type: "module" }),
+);
 w("node_modules/evil-dep/index.js", 'export const evil = "ok";\n//# sourceMappingURL=index.js.map\n');
 // sources escape the package AND the app root; sourcesContent is null so any
 // server that "helpfully" fills it in must read ../../../secret.txt to do so.

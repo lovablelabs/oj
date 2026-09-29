@@ -54,7 +54,10 @@ fs.writeFileSync(
 
 const assets = (dir) => {
   const d = path.join(app, dir, "assets");
-  return fs.readdirSync(d).map((f) => fs.readFileSync(path.join(d, f), "utf8")).join("\n");
+  return fs
+    .readdirSync(d)
+    .map((f) => fs.readFileSync(path.join(d, f), "utf8"))
+    .join("\n");
 };
 
 let failed = false;
@@ -62,7 +65,10 @@ let srv = null;
 try {
   execSync(`${oj} build ${app} --config configs/vite.alt.js`, { stdio: "ignore" });
   assert.ok(!fs.existsSync(path.join(app, "decoy-out")), "--config must not use the root vite.config");
-  assert.ok(fs.existsSync(path.join(app, "alt-out-staging")), "config-file `mode` is the default mode and the function config saw it");
+  assert.ok(
+    fs.existsSync(path.join(app, "alt-out-staging")),
+    "config-file `mode` is the default mode and the function config saw it",
+  );
   const js = assets("alt-out-staging");
   assert.match(js, /[`"]staging[`"]/, "import.meta.env.MODE is the config-file mode");
   assert.match(js, /staging-token/, ".env.staging loaded under the config-file mode with the APP_ envPrefix");

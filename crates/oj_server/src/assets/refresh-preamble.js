@@ -10,4 +10,3 @@ window.process ??= { env: { NODE_ENV: "development" } };
 window.global ??= window;
 window.setImmediate ??= (fn, ...args) => setTimeout(fn, 0, ...args);
 window.clearImmediate ??= (id) => clearTimeout(id);
-

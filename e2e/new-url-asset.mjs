@@ -24,12 +24,15 @@ try {
     path.join(app, "index.html"),
     '<!doctype html><html><head></head><body><script type="module" src="/src/main.js"></script></body></html>',
   );
-  fs.writeFileSync(path.join(app, "src", "logo.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>\n");
+  fs.writeFileSync(path.join(app, "src", "logo.svg"), '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n');
   fs.writeFileSync(path.join(app, "src", "main.js"), 'export const u = new URL("./logo.svg", import.meta.url).href;\n');
 
   child = spawn(OJ, ["dev", "--port", String(PORT)], { cwd: app, stdio: "ignore" });
   const up = async () => {
-    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    return waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
   };
   if (!(await up())) throw new Error("dev server did not start");
 
@@ -45,7 +48,9 @@ try {
   // The hoisted ?url import must resolve to the served asset path.
   const m = mod.match(/from\s*["']([^"']*logo\.svg\?url[^"']*)["']/);
   if (m) {
-    const urlMod = await (await fetch(`http://localhost:${PORT}${m[1].startsWith("/") ? m[1] : "/src/" + m[1]}`)).text();
+    const urlMod = await (
+      await fetch(`http://localhost:${PORT}${m[1].startsWith("/") ? m[1] : "/src/" + m[1]}`)
+    ).text();
     if (!urlMod.includes("logo")) throw new Error(`?url module did not resolve the asset:\n${urlMod}`);
     console.log("dev: ?url module resolves the asset path");
   }

@@ -39,8 +39,15 @@ try {
 
   const frames = [];
   const ws = new WebSocket(`ws://localhost:${port}/__ws`);
-  ws.addEventListener("message", (ev) => { try { frames.push(JSON.parse(ev.data)); } catch {} });
-  await new Promise((res, rej) => { ws.addEventListener("open", res); ws.addEventListener("error", rej); });
+  ws.addEventListener("message", (ev) => {
+    try {
+      frames.push(JSON.parse(ev.data));
+    } catch {}
+  });
+  await new Promise((res, rej) => {
+    ws.addEventListener("open", res);
+    ws.addEventListener("error", rej);
+  });
 
   // seed the module into the graph, then edit it; with hmr off no reload frame
   // should be broadcast.

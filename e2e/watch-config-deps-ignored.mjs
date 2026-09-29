@@ -33,14 +33,21 @@ fs.writeFileSync(
   `import { ignored } from "./config-helper.mjs";\nexport default { server: { watch: { ignored } } };\n`,
 );
 fs.writeFileSync(path.join(app, "src", "generated", "out.js"), `export const g = 1;\n`);
-fs.writeFileSync(path.join(app, "src", "main.js"), `import { g } from "./generated/out.js";\ndocument.title = "v" + g;\nif (import.meta.hot) import.meta.hot.accept();\n`);
+fs.writeFileSync(
+  path.join(app, "src", "main.js"),
+  `import { g } from "./generated/out.js";\ndocument.title = "v" + g;\nif (import.meta.hot) import.meta.hot.accept();\n`,
+);
 fs.writeFileSync(path.join(app, "packages", "lib", "node_modules", "dep", "index.js"), `export default 1;\n`);
 fs.writeFileSync(
   path.join(app, "index.html"),
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
 );
 
-const up = () => waitUp(`http://localhost:${port}/`).then(() => true, () => false);
+const up = () =>
+  waitUp(`http://localhost:${port}/`).then(
+    () => true,
+    () => false,
+  );
 
 let failed = false;
 const log = path.join(app, "server.log");
@@ -56,7 +63,11 @@ try {
 
   const frames = [];
   const ws = new WebSocket(`ws://localhost:${port}/__ws`);
-  ws.addEventListener("message", (ev) => { try { frames.push(JSON.parse(ev.data)); } catch {} });
+  ws.addEventListener("message", (ev) => {
+    try {
+      frames.push(JSON.parse(ev.data));
+    } catch {}
+  });
   await new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve);
     ws.addEventListener("error", () => reject(new Error("socket errored")));
@@ -78,7 +89,10 @@ try {
 
   // 3. a normal edit still updates (the watcher is alive)
   n = frames.length;
-  fs.writeFileSync(path.join(app, "src", "main.js"), `import { g } from "./generated/out.js";\ndocument.title = "w" + g;\nif (import.meta.hot) import.meta.hot.accept();\n`);
+  fs.writeFileSync(
+    path.join(app, "src", "main.js"),
+    `import { g } from "./generated/out.js";\ndocument.title = "w" + g;\nif (import.meta.hot) import.meta.hot.accept();\n`,
+  );
   await settles(() => frames.length !== n);
   assert.ok(frames.length > n && frames[frames.length - 1].type === "update", "a source edit still hot updates");
 
@@ -91,7 +105,9 @@ try {
 } catch (err) {
   failed = true;
   console.error("WATCH-CONFIG-DEPS-IGNORED E2E FAILED:", err.message);
-  try { console.error(fs.readFileSync(log, "utf8").split("\n").slice(-20).join("\n")); } catch {}
+  try {
+    console.error(fs.readFileSync(log, "utf8").split("\n").slice(-20).join("\n"));
+  } catch {}
 } finally {
   srv.kill("SIGKILL");
   await sleep(300);

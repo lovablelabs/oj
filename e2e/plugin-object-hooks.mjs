@@ -67,8 +67,15 @@ try {
   await waitUp(`http://localhost:${PORT}/`);
 
   assert.equal(read("config-order"), "first-then-second", "config order:post ran before the normal hook");
-  assert.deepEqual(JSON.parse(read("configResolved")), { first: "1", second: "2" }, "configResolved object form saw both config results");
-  assert.ok(fs.existsSync(path.join(marks, "env-client")) && fs.existsSync(path.join(marks, "env-ssr")), "configEnvironment ran per environment");
+  assert.deepEqual(
+    JSON.parse(read("configResolved")),
+    { first: "1", second: "2" },
+    "configResolved object form saw both config results",
+  );
+  assert.ok(
+    fs.existsSync(path.join(marks, "env-client")) && fs.existsSync(path.join(marks, "env-ssr")),
+    "configEnvironment ran per environment",
+  );
 
   const mw = await fetch(`http://localhost:${PORT}/__objhook`);
   assert.equal(await mw.text(), "middleware-ok", "configureServer object form registered its middleware");
@@ -89,7 +96,10 @@ try {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
   assert.ok(fs.existsSync(path.join(marks, "buildStart")), "buildStart object form ran in the build");
-  const built = fs.readdirSync(path.join(app, "dist", "assets")).map((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8")).join("\n");
+  const built = fs
+    .readdirSync(path.join(app, "dist", "assets"))
+    .map((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8"))
+    .join("\n");
   assert.match(built, /TRANSFORMED a\.js/, "build applied the glob-filtered transform");
   console.log("PLUGIN-OBJECT-HOOKS E2E PASSED");
 } catch (err) {

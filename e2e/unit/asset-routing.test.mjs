@@ -94,9 +94,7 @@ it("?url resolves to the dev fs route in dev mode", async () => {
     "logo.png": "PNGDATA",
     "entry.js": 'import url from "./logo.png?url"; export { url };',
   };
-  const { text } = await bundle(files, () => [
-    assetsPlugin({ mode: "dev", server: false, fsBase: "/@oj-start/fs" }),
-  ]);
+  const { text } = await bundle(files, () => [assetsPlugin({ mode: "dev", server: false, fsBase: "/@oj-start/fs" })]);
   assert.match(text, /\/@oj-start\/fs[^"']*logo\.png/, "dev ?url should point at the fs route");
   assert.doesNotMatch(text, /\/assets\/logo\.png/, "dev should not emit a hashed /assets url");
 });
@@ -114,7 +112,10 @@ it("css import is a no-op module and records the url (dev client)", async () => 
     assetsPlugin({ mode: "dev", server: false, fsBase: "/@oj-start/fs", cssUrls }),
   ]);
   assert.doesNotMatch(client.text, /createElement\("link"\)/, "dev client must not inject a link");
-  assert.ok(cssUrls.some((u) => u.startsWith("/@oj-start/fs") && u.endsWith("styles.css")), `recorded: ${cssUrls}`);
+  assert.ok(
+    cssUrls.some((u) => u.startsWith("/@oj-start/fs") && u.endsWith("styles.css")),
+    `recorded: ${cssUrls}`,
+  );
 });
 
 it("prod client css import emits the stylesheet but injects no link", async () => {
@@ -126,17 +127,18 @@ it("prod client css import emits the stylesheet but injects no link", async () =
   const spyEmit = async (abs) => (emitted.push(abs), "/assets/" + basename(abs));
   const out = await bundle(files, () => [assetsPlugin({ mode: "prod", server: false, emit: spyEmit })]);
   assert.doesNotMatch(out.text, /createElement\("link"\)/, "prod client must not inject a link");
-  assert.ok(emitted.some((p) => p.endsWith("styles.css")), "css still emitted in prod");
+  assert.ok(
+    emitted.some((p) => p.endsWith("styles.css")),
+    "css still emitted in prod",
+  );
 });
 
 it("routes virtual: ids and .mdx through the plugin container", async () => {
   const files = {
     "doc.mdx": "# Title\nmdx body",
-    "entry.js": [
-      'import { info } from "virtual:info";',
-      'import Doc from "./doc.mdx";',
-      "export { info, Doc };",
-    ].join("\n"),
+    "entry.js": ['import { info } from "virtual:info";', 'import Doc from "./doc.mdx";', "export { info, Doc };"].join(
+      "\n",
+    ),
   };
   const { text } = await bundle(files, (dir) => [
     makeVitePlugins({ container: stubContainer(), appRoot: dir, mode: "prod", emit }),

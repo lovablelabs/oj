@@ -37,7 +37,10 @@ fs.writeFileSync(
   JSON.stringify({ name: "@acme/tokens", version: "1.0.0", main: "index.js", sass: "src/index.scss" }),
 );
 fs.writeFileSync(path.join(app, "node_modules", "@acme", "tokens", "src", "index.scss"), `$space: 7px;\n`);
-fs.writeFileSync(path.join(app, "node_modules", "@acme", "tokens", "src", "_mixins.scss"), `@mixin pad { padding: 9px; }\n`);
+fs.writeFileSync(
+  path.join(app, "node_modules", "@acme", "tokens", "src", "_mixins.scss"),
+  `@mixin pad { padding: 9px; }\n`,
+);
 fs.writeFileSync(
   path.join(app, "src", "a.scss"),
   `@use "theme";\n@use "@acme/tokens" as t;\n@use "~@acme/tokens/src/mixins";\n` +
@@ -70,7 +73,11 @@ try {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
   const assets = path.join(app, "dist", "assets");
-  const css = fs.readdirSync(assets).filter((f) => f.endsWith(".css")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+  const css = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".css"))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
   expectCompiled(css, "build");
   console.log("[build] preprocessorOptions + node_modules sass resolution OK");
   console.log("CSS-PREPROCESSOR-OPTIONS E2E PASSED");

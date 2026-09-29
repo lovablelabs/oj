@@ -61,7 +61,10 @@ function check(label, ok, detail) {
   const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   try {
     let up = false;
-    up = await waitUp(`http://localhost:${port}/`).then(() => true, () => false);
+    up = await waitUp(`http://localhost:${port}/`).then(
+      () => true,
+      () => false,
+    );
     check("dev server starts", up, "no response on 6308");
     if (up) {
       const main = await (await fetch(`http://localhost:${port}/`)).text();

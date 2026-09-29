@@ -63,11 +63,22 @@ try {
 
   // A bare specifier no package or plugin answers fails the same way (Vite
   // does not ship the bare name for the browser to reject with its own error).
-  fs.writeFileSync(path.join(app, "src", "Bare.tsx"), `import missing from "not-installed-pkg";\nexport const bare = missing;\n`);
+  fs.writeFileSync(
+    path.join(app, "src", "Bare.tsx"),
+    `import missing from "not-installed-pkg";\nexport const bare = missing;\n`,
+  );
   const bareRes = await fetch(`http://localhost:${PORT}/src/Bare.tsx`);
   const bareBody = await bareRes.text();
-  assert.equal(bareRes.status, 500, `expected 500 for an unresolvable bare import, got ${bareRes.status}:\n${bareBody}`);
-  assert.match(bareBody, /Failed to resolve import "not-installed-pkg" from "src\/Bare\.tsx"\. Does the file exist\?/, bareBody);
+  assert.equal(
+    bareRes.status,
+    500,
+    `expected 500 for an unresolvable bare import, got ${bareRes.status}:\n${bareBody}`,
+  );
+  assert.match(
+    bareBody,
+    /Failed to resolve import "not-installed-pkg" from "src\/Bare\.tsx"\. Does the file exist\?/,
+    bareBody,
+  );
   assert.match(bareBody, /src\/Bare\.tsx:1:22/, `error does not point at the bare specifier:\n${bareBody}`);
   console.log("bare import error:    yes");
   // Make it valid again so the failed-importer retry below has one module to

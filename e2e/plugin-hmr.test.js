@@ -24,4 +24,7 @@ const FILE = path.join(__dirname, "..", "playground", "src", "hmr-demo.tsx");
     fs.writeFileSync(FILE, original);
     await browser.close();
   }
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

@@ -42,10 +42,18 @@ try {
   const onConnect = new Promise((res, rej) => {
     const t = setTimeout(() => rej(new Error("missing on-connect frames")), 6000);
     ws.addEventListener("message", (e) => {
-      let m; try { m = JSON.parse(e.data); } catch { return; }
+      let m;
+      try {
+        m = JSON.parse(e.data);
+      } catch {
+        return;
+      }
       if (m.type === "custom" && (m.event === "lovable:dev-server-mode" || m.event === "lovable:boot-progress")) {
         frames[m.event] = m.data;
-        if (frames["lovable:dev-server-mode"] && frames["lovable:boot-progress"]) { clearTimeout(t); res(); }
+        if (frames["lovable:dev-server-mode"] && frames["lovable:boot-progress"]) {
+          clearTimeout(t);
+          res();
+        }
       }
     });
   });
@@ -63,7 +71,9 @@ try {
   try {
     await page.goto(`http://localhost:${port}/`, { timeout: 30000 });
     await page.waitForFunction(() => window.__READY === true, { timeout: 10000 });
-    await page.evaluate(() => { window.__MARK = "kept"; });
+    await page.evaluate(() => {
+      window.__MARK = "kept";
+    });
     assert.equal(await page.title(), "v1");
 
     // edit while gated: HMR must be HELD (no reload, title unchanged, marker intact)

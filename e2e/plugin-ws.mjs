@@ -51,7 +51,11 @@ try {
     const timer = setTimeout(() => rej(new Error("timed out waiting for server:hello on connection")), 8000);
     ws.addEventListener("message", (e) => {
       let m;
-      try { m = JSON.parse(e.data); } catch { return; }
+      try {
+        m = JSON.parse(e.data);
+      } catch {
+        return;
+      }
       if (m.type === "custom" && m.event === "server:hello") {
         clearTimeout(timer);
         res(m.data);
@@ -68,7 +72,11 @@ try {
     const timer = setTimeout(() => rej(new Error("timed out waiting for server:pong")), 8000);
     ws.addEventListener("message", (e) => {
       let m;
-      try { m = JSON.parse(e.data); } catch { return; }
+      try {
+        m = JSON.parse(e.data);
+      } catch {
+        return;
+      }
       if (m.type === "custom" && m.event === "server:pong") {
         clearTimeout(timer);
         res(m.data);
@@ -90,7 +98,11 @@ try {
     const timer = setTimeout(() => rej(new Error("timed out waiting for server:pong over vite-hmr")), 8000);
     vws.addEventListener("message", (e) => {
       let m;
-      try { m = JSON.parse(e.data); } catch { return; }
+      try {
+        m = JSON.parse(e.data);
+      } catch {
+        return;
+      }
       if (m.type === "custom" && m.event === "server:pong") {
         clearTimeout(timer);
         res(m.data);

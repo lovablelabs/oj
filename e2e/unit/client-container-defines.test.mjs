@@ -20,16 +20,19 @@ const installed = existsSync(join(fixture, "node_modules/vite"));
 
 const app = mkdtempSync(join(tmpdir(), "oj-client-defines-"));
 writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", type: "module" }));
-writeFileSync(join(app, "vite.config.mjs"), [
-  "export default {",
-  '  define: { __TOP__: JSON.stringify("top"), __OVERRIDE__: "false", __NUMBER__: 42, __OBJ__: { a: 1 } },',
-  "  environments: {",
-  '    client: { define: { __CLIENT_ONLY__: "true", __OVERRIDE__: "true" } },',
-  '    ssr: { define: { __SERVER_ONLY__: "true" } },',
-  "  },",
-  '  plugins: [{ name: "adds-define", config() { return { define: { __FROM_HOOK__: JSON.stringify("hook") } }; } }],',
-  "};",
-].join("\n"));
+writeFileSync(
+  join(app, "vite.config.mjs"),
+  [
+    "export default {",
+    '  define: { __TOP__: JSON.stringify("top"), __OVERRIDE__: "false", __NUMBER__: 42, __OBJ__: { a: 1 } },',
+    "  environments: {",
+    '    client: { define: { __CLIENT_ONLY__: "true", __OVERRIDE__: "true" } },',
+    '    ssr: { define: { __SERVER_ONLY__: "true" } },',
+    "  },",
+    '  plugins: [{ name: "adds-define", config() { return { define: { __FROM_HOOK__: JSON.stringify("hook") } }; } }],',
+    "};",
+  ].join("\n"),
+);
 if (installed) symlinkSync(join(fixture, "node_modules"), join(app, "node_modules"), "dir");
 process.on("exit", () => rmSync(app, { recursive: true, force: true }));
 

@@ -37,7 +37,6 @@ if (!installed) {
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
-
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oj-start-cf-dev-"));
 const app = path.join(tmp, "app");
 const keep = !!process.env.OJ_E2E_KEEP;
@@ -61,8 +60,14 @@ function installCloudflareDeps() {
     fs.symlinkSync(path.join(path.resolve(prepared), "node_modules"), path.join(tmp, "node_modules"), "dir");
     return;
   }
-  fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }));
-  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", { cwd: tmp, stdio: "inherit" });
+  fs.writeFileSync(
+    path.join(tmp, "package.json"),
+    JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }),
+  );
+  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", {
+    cwd: tmp,
+    stdio: "inherit",
+  });
 }
 
 function makeApp() {
@@ -71,23 +76,30 @@ function makeApp() {
     fs.cpSync(path.join(fixture, f), path.join(app, f), { recursive: true });
   }
   fs.symlinkSync(path.join(fixture, "node_modules"), path.join(app, "node_modules"), "dir");
-  fs.writeFileSync(path.join(app, "wrangler.jsonc"), [
-    "{",
-    '  "name": "oj-start-fixture",',
-    '  "main": "@tanstack/react-start/server-entry",',
-    '  "compatibility_date": "2025-09-01",',
-    '  "compatibility_flags": ["nodejs_compat"],',
-    '  "vars": { "EDITION": "fixture-edition" }',
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "wrangler.jsonc"),
+    [
+      "{",
+      '  "name": "oj-start-fixture",',
+      '  "main": "@tanstack/react-start/server-entry",',
+      '  "compatibility_date": "2025-09-01",',
+      '  "compatibility_flags": ["nodejs_compat"],',
+      '  "vars": { "EDITION": "fixture-edition" }',
+      "}",
+      "",
+    ].join("\n"),
+  );
   const original = fs.readFileSync(path.join(fixture, "vite.config.ts"), "utf8");
   const withImport = original.replace(
     'import { defineConfig } from "vite";',
     'import { defineConfig } from "vite";\nimport { cloudflare } from "@cloudflare/vite-plugin";',
   );
-  const config = withImport.replace(/^(\s*)tanstackStart\(/m, '$1cloudflare({ viteEnvironment: { name: "ssr" } }),\n$1tanstackStart(');
-  if (config === original || config === withImport) throw new Error("fixture vite.config.ts changed shape; update this script");
+  const config = withImport.replace(
+    /^(\s*)tanstackStart\(/m,
+    '$1cloudflare({ viteEnvironment: { name: "ssr" } }),\n$1tanstackStart(',
+  );
+  if (config === original || config === withImport)
+    throw new Error("fixture vite.config.ts changed shape; update this script");
   fs.writeFileSync(path.join(app, "vite.config.ts"), config);
   // The dev worker path runs the app through the app's OWN Vite pipeline into
   // workerd, where the full fixture index route does not run even under
@@ -101,49 +113,55 @@ function makeApp() {
   // worker-render path is proven to HYDRATE, not just to emit SSR HTML. The
   // counter is pure client state (no server call), so it does not trip the CF
   // slim-app server-fn limitation.
-  fs.writeFileSync(path.join(app, "src", "routes", "index.tsx"), [
-    'import { createRoute, useLoaderData } from "@tanstack/react-router";',
-    'import { useEffect, useState } from "react";',
-    'import { rootRoute } from "./__root";',
-    'import { getGreeting } from "../server/data";',
-    'import { shout } from "#lib/format";',
-    "",
-    "export const indexRoute = createRoute({",
-    "  getParentRoute: () => rootRoute,",
-    '  path: "/",',
-    "  loader: async () => await getGreeting(),",
-    "  component: Index,",
-    "});",
-    "",
-    "function Index() {",
-    "  const data = useLoaderData({ from: indexRoute.id });",
-    "  const [mounted, setMounted] = useState(false);",
-    "  const [count, setCount] = useState(0);",
-    "  useEffect(() => setMounted(true), []);",
-    "  return (",
-    "    <main>",
-    '      <h1 className="fixture-heading">{shout("home")}</h1>',
-    '      <p data-testid="server-fn">{data.message} / edition={data.edition}</p>',
-    '      {mounted ? <span data-testid="client-mounted">client-mounted-ok</span> : null}',
-    '      <button data-testid="counter" onClick={() => setCount((c) => c + 1)}>count: {count}</button>',
-    "    </main>",
-    "  );",
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "routes", "index.tsx"),
+    [
+      'import { createRoute, useLoaderData } from "@tanstack/react-router";',
+      'import { useEffect, useState } from "react";',
+      'import { rootRoute } from "./__root";',
+      'import { getGreeting } from "../server/data";',
+      'import { shout } from "#lib/format";',
+      "",
+      "export const indexRoute = createRoute({",
+      "  getParentRoute: () => rootRoute,",
+      '  path: "/",',
+      "  loader: async () => await getGreeting(),",
+      "  component: Index,",
+      "});",
+      "",
+      "function Index() {",
+      "  const data = useLoaderData({ from: indexRoute.id });",
+      "  const [mounted, setMounted] = useState(false);",
+      "  const [count, setCount] = useState(0);",
+      "  useEffect(() => setMounted(true), []);",
+      "  return (",
+      "    <main>",
+      '      <h1 className="fixture-heading">{shout("home")}</h1>',
+      '      <p data-testid="server-fn">{data.message} / edition={data.edition}</p>',
+      '      {mounted ? <span data-testid="client-mounted">client-mounted-ok</span> : null}',
+      '      <button data-testid="counter" onClick={() => setCount((c) => c + 1)}>count: {count}</button>',
+      "    </main>",
+      "  );",
+      "}",
+      "",
+    ].join("\n"),
+  );
   // The fixture reads the wrangler var through `@cloudflare/vite-plugin/server`,
   // an alias oj itself provides; in the plugin's own worker pipeline the real
   // API is the `cloudflare:workers` env import.
-  fs.writeFileSync(path.join(app, "src", "server", "data.ts"), [
-    'import { createServerFn } from "@tanstack/react-start";',
-    'import { env } from "cloudflare:workers";',
-    "",
-    'export const getGreeting = createServerFn({ method: "GET" }).handler(async () => {',
-    "  const edition = (env as unknown as Record<string, unknown>).EDITION ?? \"unknown\";",
-    '  return { message: "server-fn-marker", edition: String(edition) };',
-    "});",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "server", "data.ts"),
+    [
+      'import { createServerFn } from "@tanstack/react-start";',
+      'import { env } from "cloudflare:workers";',
+      "",
+      'export const getGreeting = createServerFn({ method: "GET" }).handler(async () => {',
+      '  const edition = (env as unknown as Record<string, unknown>).EDITION ?? "unknown";',
+      '  return { message: "server-fn-marker", edition: String(edition) };',
+      "});",
+      "",
+    ].join("\n"),
+  );
 }
 
 const get = async (route) => {
@@ -170,24 +188,38 @@ async function runDev() {
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
   const stop = () => {
-    try { process.kill(-srv.pid, "SIGTERM"); } catch {}
-    setTimeout(() => { try { process.kill(-srv.pid, "SIGKILL"); } catch {} }, 2000).unref();
+    try {
+      process.kill(-srv.pid, "SIGTERM");
+    } catch {}
+    setTimeout(() => {
+      try {
+        process.kill(-srv.pid, "SIGKILL");
+      } catch {}
+    }, 2000).unref();
   };
   try {
     // Read the port oj actually bound before probing it (it may increment off a
     // busy REQ_PORT), so a stale server never fools the probes or the browser.
-    await settles(() => {
-      if (srv.exitCode != null) return true;
-      const bound = parseBoundPort(log);
-      if (bound) PORT = bound;
-      return Boolean(bound);
-    }, { timeoutMs: 60000, pollMs: 250 });
+    await settles(
+      () => {
+        if (srv.exitCode != null) return true;
+        const bound = parseBoundPort(log);
+        if (bound) PORT = bound;
+        return Boolean(bound);
+      },
+      { timeoutMs: 60000, pollMs: 250 },
+    );
     let up = false;
-    await settles(async () => {
-      if (srv.exitCode != null) return true;
-      try { up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200; } catch {}
-      return up;
-    }, { timeoutMs: 120000, pollMs: 500 });
+    await settles(
+      async () => {
+        if (srv.exitCode != null) return true;
+        try {
+          up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200;
+        } catch {}
+        return up;
+      },
+      { timeoutMs: 120000, pollMs: 500 },
+    );
     if (!up) throw new Error(`oj dev did not serve on :${PORT}; log:\n${log.slice(-4000)}`);
 
     // The document must have rendered in the worker (the wrangler var proves
@@ -225,7 +257,10 @@ async function runDev() {
           ssrMarker: "server-fn-marker",
           clientMarker: '[data-testid="client-mounted"]',
           clientMarkerText: "client-mounted-ok",
-          interaction: { click: '[data-testid="counter"]', expect: { selector: '[data-testid="counter"]', text: "count: 1" } },
+          interaction: {
+            click: '[data-testid="counter"]',
+            expect: { selector: '[data-testid="counter"]', text: "count: 1" },
+          },
           whitelist: [/favicon\.ico/, "cloudflare:workers", "/_serverFn/", "createServerFn"],
         });
         console.log("start-cloudflare-dev: browser hydration ok (worker render mounts + counter interaction)");
@@ -245,22 +280,24 @@ async function runDev() {
         await browser.close();
       }
     } else {
-      console.log("start-cloudflare-dev: playwright not installed locally; skipped the browser hydration pass (CI runs it)");
+      console.log(
+        "start-cloudflare-dev: playwright not installed locally; skipped the browser hydration pass (CI runs it)",
+      );
     }
 
     // The edit loop: change the route, require the next document to be fresh.
     const target = path.join(app, "src", "routes", "about.tsx");
-    fs.writeFileSync(
-      target,
-      fs.readFileSync(target, "utf8").replace("about-page-marker", "about-page-edited-marker"),
-    );
+    fs.writeFileSync(target, fs.readFileSync(target, "utf8").replace("about-page-marker", "about-page-edited-marker"));
     const t0 = Date.now();
     let fresh = null;
-    await settles(async () => {
-      const res = await get("/about");
-      if (res.status === 200 && res.body.includes("about-page-edited-marker")) fresh = Date.now() - t0;
-      return fresh != null;
-    }, { timeoutMs: 20000 });
+    await settles(
+      async () => {
+        const res = await get("/about");
+        if (res.status === 200 && res.body.includes("about-page-edited-marker")) fresh = Date.now() - t0;
+        return fresh != null;
+      },
+      { timeoutMs: 20000 },
+    );
     if (fresh == null) {
       throw new Error(`/about still stale 20s after the edit; log tail:\n${log.slice(-4000)}`);
     }
@@ -270,10 +307,7 @@ async function runDev() {
     // fires promptly, so the next document is fresh well under the ~4.6s the
     // old serialized loop took.
     const indexTarget = path.join(app, "src", "routes", "index.tsx");
-    fs.writeFileSync(
-      indexTarget,
-      fs.readFileSync(indexTarget, "utf8").replace('shout("home")', 'shout("home-rapid")'),
-    );
+    fs.writeFileSync(indexTarget, fs.readFileSync(indexTarget, "utf8").replace('shout("home")', 'shout("home-rapid")'));
     await new Promise((r) => setTimeout(r, 300));
     fs.writeFileSync(
       target,
@@ -285,20 +319,26 @@ async function runDev() {
     // rebundle here, so a loaded box can take a while even though the prompt
     // invalidate usually lands well under a second. The measured elapsed ms is
     // printed below, so the fast path stays visible in the logs.
-    await settles(async () => {
-      const res = await get("/about");
-      if (res.status === 200 && res.body.includes("about-page-rapid-marker")) rapid = Date.now() - t1;
-      return rapid != null;
-    }, { timeoutMs: 15000, pollMs: 50 });
+    await settles(
+      async () => {
+        const res = await get("/about");
+        if (res.status === 200 && res.body.includes("about-page-rapid-marker")) rapid = Date.now() - t1;
+        return rapid != null;
+      },
+      { timeoutMs: 15000, pollMs: 50 },
+    );
     if (rapid == null) {
       throw new Error(`/about still stale 15s after the rapid second edit; log tail:\n${log.slice(-4000)}`);
     }
 
     // The coalesced rebundle must not lose the first edit either.
-    const firstEditFresh = await settles(async () => {
-      const res = await get("/");
-      return res.status === 200 && res.body.includes("HOME-RAPID!");
-    }, { timeoutMs: 10000 });
+    const firstEditFresh = await settles(
+      async () => {
+        const res = await get("/");
+        return res.status === 200 && res.body.includes("HOME-RAPID!");
+      },
+      { timeoutMs: 10000 },
+    );
     if (!firstEditFresh) {
       throw new Error(`/ never picked up the first rapid edit; log tail:\n${log.slice(-4000)}`);
     }
@@ -325,7 +365,9 @@ async function runDev() {
     const regenReceived = () => /routeTree\.gen\.ts matched no module/.test(log);
     await settles(() => regenSent() && regenReceived(), { touch: touchExtra });
     if (!regenSent()) {
-      throw new Error(`no post-regen worker invalidate for routeTree.gen.ts within 45s of a new route file; log tail:\n${log.slice(-4000)}`);
+      throw new Error(
+        `no post-regen worker invalidate for routeTree.gen.ts within 45s of a new route file; log tail:\n${log.slice(-4000)}`,
+      );
     }
     if (!regenReceived) {
       throw new Error(`the plugin host never received the routeTree.gen.ts invalidate; log tail:\n${log.slice(-4000)}`);
@@ -384,8 +426,14 @@ function spawnSlowDev(port, extraEnv) {
   srv.stdout.on("data", (d) => (state.log += d));
   srv.stderr.on("data", (d) => (state.log += d));
   const stop = async () => {
-    try { process.kill(-srv.pid, "SIGTERM"); } catch {}
-    setTimeout(() => { try { process.kill(-srv.pid, "SIGKILL"); } catch {} }, 2000).unref();
+    try {
+      process.kill(-srv.pid, "SIGTERM");
+    } catch {}
+    setTimeout(() => {
+      try {
+        process.kill(-srv.pid, "SIGKILL");
+      } catch {}
+    }, 2000).unref();
     // Let the SIGTERM land before the next phase (or cleanup) touches the tree.
     await new Promise((r) => setTimeout(r, 500));
   };
@@ -395,14 +443,17 @@ function spawnSlowDev(port, extraEnv) {
   };
   const waitForDoc = async (route, marker, what, timeoutMs = 60000) => {
     let doc = null;
-    await settles(async () => {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}${route}`);
-        const body = await res.text();
-        if (res.status === 200 && body.includes(marker)) doc = body;
-      } catch {}
-      return doc != null;
-    }, { timeoutMs, pollMs: 500 });
+    await settles(
+      async () => {
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}${route}`);
+          const body = await res.text();
+          if (res.status === 200 && body.includes(marker)) doc = body;
+        } catch {}
+        return doc != null;
+      },
+      { timeoutMs, pollMs: 500 },
+    );
     if (doc != null) return doc;
     throw new Error(`${what}; log tail:\n${state.log.slice(-4000)}`);
   };
@@ -425,7 +476,9 @@ async function runSlowBootGatedDev() {
       "the forwarding line never printed on the init-gated slow boot",
     );
     if (/host came up after boot/.test(state.log)) {
-      throw new Error(`init gating must make the slow boot block, not activate late; log tail:\n${state.log.slice(-4000)}`);
+      throw new Error(
+        `init gating must make the slow boot block, not activate late; log tail:\n${state.log.slice(-4000)}`,
+      );
     }
     if (/still initializing after \d+s running/.test(state.log)) {
       throw new Error(`boot RPCs must not blow their deadline under init gating; log tail:\n${state.log.slice(-4000)}`);
@@ -452,10 +505,7 @@ async function runSlowBootDegradedDev() {
   try {
     // The degraded window opened: oj said so out loud (finding-6 semantics —
     // the warning keys off the host never initializing, not config text).
-    await waitForLog(
-      /plugin host did not finish initializing within 2s/,
-      "the init-deadline warning never printed",
-    );
+    await waitForLog(/plugin host did not finish initializing within 2s/, "the init-deadline warning never printed");
 
     // An edit DURING the degraded window: no middleware port exists yet, so no
     // invalidate can be sent — the post-activation resync must cover it.

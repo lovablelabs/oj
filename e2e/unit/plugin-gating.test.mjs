@@ -2,11 +2,27 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { __test, createPluginContainer, findConfig, loadPluginContainer } from "../../crates/oj_server/src/assets/start/vite-plugin-bridge.mjs";
+import {
+  __test,
+  createPluginContainer,
+  findConfig,
+  loadPluginContainer,
+} from "../../crates/oj_server/src/assets/start/vite-plugin-bridge.mjs";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-const { matchOne, idAllowed, codeAllowed, byHook, applyMatches, ordered, hookHandler, hookFilter, ojReimplemented, envAllows } = __test;
+const {
+  matchOne,
+  idAllowed,
+  codeAllowed,
+  byHook,
+  applyMatches,
+  ordered,
+  hookHandler,
+  hookFilter,
+  ojReimplemented,
+  envAllows,
+} = __test;
 
 test("matchOne: RegExp tests, string is a picomatch-style glob (Vite pluginFilter)", () => {
   assert.ok(matchOne(/\.mdx$/, "/a/b.mdx"));
@@ -51,7 +67,16 @@ test("applyMatches: no apply -> always; string vs command; function form", () =>
   assert.ok(!applyMatches({ apply: "build" }, "serve"));
   assert.ok(applyMatches({ apply: (_c, { command }) => command === "serve" }, "serve"));
   assert.ok(!applyMatches({ apply: (_c, { command }) => command === "build" }, "serve"));
-  assert.ok(applyMatches({ apply: () => { throw new Error("x"); } }, "serve"));
+  assert.ok(
+    applyMatches(
+      {
+        apply: () => {
+          throw new Error("x");
+        },
+      },
+      "serve",
+    ),
+  );
 });
 
 test("ordered: pre first, normal next, post last (stable within a band)", () => {
@@ -67,9 +92,14 @@ test("ordered: pre first, normal next, post last (stable within a band)", () => 
 
 test("ojReimplemented: skips React / Vite built-ins / TanStack; keeps app plugins", () => {
   for (const n of [
-    "vite:react-babel", "vite:react-refresh", "vite:esbuild", "vite:import-glob",
-    "tanstack-start-core::server-fn:client", "tanstack:router-generator",
-    "tanstack-router:code-splitter:compile-reference-file", "@tanstack/react-start",
+    "vite:react-babel",
+    "vite:react-refresh",
+    "vite:esbuild",
+    "vite:import-glob",
+    "tanstack-start-core::server-fn:client",
+    "tanstack:router-generator",
+    "tanstack-router:code-splitter:compile-reference-file",
+    "@tanstack/react-start",
   ]) {
     assert.ok(ojReimplemented(n), `expected ${n} to be oj-reimplemented`);
   }
@@ -87,7 +117,16 @@ test("envAllows: applyToEnvironment gates per environment (the ssr-stub-scopes r
   const clientOnly = { applyToEnvironment: (env) => env.name === "client" };
   assert.ok(envAllows(clientOnly, "client"));
   assert.ok(!envAllows(clientOnly, "ssr"));
-  assert.ok(envAllows({ applyToEnvironment: () => { throw new Error("x"); } }, "client"));
+  assert.ok(
+    envAllows(
+      {
+        applyToEnvironment: () => {
+          throw new Error("x");
+        },
+      },
+      "client",
+    ),
+  );
 });
 
 test("envAllows: passes env.config.consumer (@vitejs/plugin-react reads it)", () => {
@@ -129,12 +168,10 @@ test("generateBundle honors environment consumer gates", async () => {
     },
   };
 
-  await createPluginContainer({}, [plugin], { environment: "client" })
-    .generateBundle((asset) => emitted.push(asset));
+  await createPluginContainer({}, [plugin], { environment: "client" }).generateBundle((asset) => emitted.push(asset));
   assert.deepEqual(emitted, []);
 
-  await createPluginContainer({}, [plugin], { environment: "ssr" })
-    .generateBundle((asset) => emitted.push(asset));
+  await createPluginContainer({}, [plugin], { environment: "ssr" }).generateBundle((asset) => emitted.push(asset));
   assert.equal(emitted.length, 1);
   assert.equal(emitted[0].fileName, "server-manifest.json");
 });
@@ -162,8 +199,10 @@ test("plugin container preserves an explicitly disabled Vite public directory", 
     writeFileSync(join(root, "package.json"), '{"name":"synthetic-app"}');
     writeFileSync(join(root, "vite.config.mjs"), "export default {};\n");
     writeFileSync(join(vite, "package.json"), '{"name":"vite","type":"module","main":"./index.mjs"}');
-    writeFileSync(join(vite, "index.mjs"),
-      "export async function loadConfigFromFile() { return { config: { plugins: [], publicDir: false } }; }\n");
+    writeFileSync(
+      join(vite, "index.mjs"),
+      "export async function loadConfigFromFile() { return { config: { plugins: [], publicDir: false } }; }\n",
+    );
 
     assert.equal((await loadPluginContainer(root)).publicDir, false);
   } finally {
@@ -175,7 +214,9 @@ test("plugin container preserves an explicitly disabled Vite public directory", 
 test("plugin hooks receive the configured Vite mode", async () => {
   const plugin = {
     name: "synthetic-mode-transform",
-    transform() { return `export default ${JSON.stringify(this.environment.config.mode)};`; },
+    transform() {
+      return `export default ${JSON.stringify(this.environment.config.mode)};`;
+    },
   };
 
   const staging = createPluginContainer({}, [plugin], { command: "serve", mode: "staging" });
@@ -227,10 +268,14 @@ test("transform hooks receive the active SSR environment option", async () => {
 // PR #41
 test("buildStart runs plugins whose only hook initializes generated sources", async () => {
   let initialized = 0;
-  const container = createPluginContainer({}, [{
-    name: "synthetic-source-generator",
-    buildStart() { initialized++; },
-  }]);
+  const container = createPluginContainer({}, [
+    {
+      name: "synthetic-source-generator",
+      buildStart() {
+        initialized++;
+      },
+    },
+  ]);
 
   await container.buildStart();
   await container.buildStart();
@@ -294,10 +339,7 @@ test("plugin hooks can inspect loaded and transformed module metadata", async ()
   ]);
 
   assert.equal(await container.load(dependencyId), dependencyCode);
-  assert.equal(
-    await container.transform("export default 1;", "/app.ts"),
-    "export const value = 42;:0:true:true:true",
-  );
+  assert.equal(await container.transform("export default 1;", "/app.ts"), "export const value = 42;:0:true:true:true");
 });
 
 // PR #65
@@ -319,10 +361,7 @@ test("plugin hook contexts load virtual dependency modules", async () => {
     },
   ]);
 
-  assert.equal(
-    await container.transform("", "/app.ts"),
-    'export default "export const value = 42;";',
-  );
+  assert.equal(await container.transform("", "/app.ts"), 'export default "export const value = 42;";');
 });
 
 // PR #63
@@ -365,7 +404,9 @@ test("transform hook code filters gate both transform entry points", async () =>
     name: "synthetic-selective-transform",
     transform: {
       filter: { id: /\.tsx$/, code: { include: /@enabled/, exclude: /@disabled/ } },
-      handler(code) { return `${code}\ntransformed();`; },
+      handler(code) {
+        return `${code}\ntransformed();`;
+      },
     },
   };
   const container = createPluginContainer({}, [plugin]);
@@ -383,14 +424,12 @@ test("transform hooks honor per-hook pre and post ordering", async () => {
     name,
     transform: {
       ...(order ? { order } : {}),
-      handler(code) { return `${code}${name};`; },
+      handler(code) {
+        return `${code}${name};`;
+      },
     },
   });
-  const container = createPluginContainer({}, [
-    plugin("post", "post"),
-    plugin("normal"),
-    plugin("pre", "pre"),
-  ]);
+  const container = createPluginContainer({}, [plugin("post", "post"), plugin("normal"), plugin("pre", "pre")]);
 
   assert.equal(await container.transform("", "/app.ts"), "pre;normal;post;");
   assert.equal(await container.transformUserCode("", "/app.ts"), "pre;normal;post;");
@@ -445,7 +484,9 @@ test("plugin config hooks initialize state and merge nested configuration", asyn
     writeFileSync(join(root, "package.json"), '{"name":"synthetic-app"}');
     writeFileSync(join(root, "vite.config.mjs"), "export default {};\n");
     writeFileSync(join(vite, "package.json"), '{"name":"vite","type":"module","main":"./index.mjs"}');
-    writeFileSync(join(vite, "index.mjs"), `
+    writeFileSync(
+      join(vite, "index.mjs"),
+      `
       export async function loadConfigFromFile() {
         let observed;
         return {
@@ -482,7 +523,8 @@ test("plugin config hooks initialize state and merge nested configuration", asyn
           },
         };
       }
-    `);
+    `,
+    );
 
     const container = await loadPluginContainer(root, { command: "serve", mode: "staging" });
 
@@ -510,8 +552,20 @@ test("per-hook order applies to resolveId and load, not only transform", async (
   const seen = [];
   const plugin = (name, order) => ({
     name,
-    resolveId: { ...(order ? { order } : {}), handler(id) { seen.push(`resolve:${name}`); return null; } },
-    load: { ...(order ? { order } : {}), handler() { seen.push(`load:${name}`); return null; } },
+    resolveId: {
+      ...(order ? { order } : {}),
+      handler(id) {
+        seen.push(`resolve:${name}`);
+        return null;
+      },
+    },
+    load: {
+      ...(order ? { order } : {}),
+      handler() {
+        seen.push(`load:${name}`);
+        return null;
+      },
+    },
   });
   const container = createPluginContainer({}, [plugin("post", "post"), plugin("normal"), plugin("pre", "pre")]);
   await container.resolveId("virtual:x", "/app.ts");
@@ -522,7 +576,15 @@ test("per-hook order applies to resolveId and load, not only transform", async (
 test("module info carries meta and moduleParsed sees the same record", async () => {
   let parsed;
   const container = createPluginContainer({}, [
-    { name: "observer", moduleParsed(info) { parsed = info; }, transform() { return "changed();"; } },
+    {
+      name: "observer",
+      moduleParsed(info) {
+        parsed = info;
+      },
+      transform() {
+        return "changed();";
+      },
+    },
   ]);
   await container.transform("orig();", "/app.ts");
   assert.deepEqual(parsed, { id: "/app.ts", code: "changed();", importedIds: [], meta: {} });
@@ -531,9 +593,33 @@ test("module info carries meta and moduleParsed sees the same record", async () 
 test("config and configResolved hooks skip the plugins oj reimplements", async () => {
   const ran = [];
   const container = createPluginContainer({}, [
-    { name: "tanstack-start-core:config", configResolved() { ran.push("tanstack"); }, transform() { return null; } },
-    { name: "vite:react-babel", configResolved() { ran.push("vite"); }, transform() { return null; } },
-    { name: "app-plugin", configResolved() { ran.push("app"); }, transform() { return null; } },
+    {
+      name: "tanstack-start-core:config",
+      configResolved() {
+        ran.push("tanstack");
+      },
+      transform() {
+        return null;
+      },
+    },
+    {
+      name: "vite:react-babel",
+      configResolved() {
+        ran.push("vite");
+      },
+      transform() {
+        return null;
+      },
+    },
+    {
+      name: "app-plugin",
+      configResolved() {
+        ran.push("app");
+      },
+      transform() {
+        return null;
+      },
+    },
   ]);
   await container.transform("x", "/app.ts");
   assert.deepEqual(ran, ["app"]);
@@ -547,7 +633,9 @@ test("config hooks see the command's default mode when none is given", async () 
     writeFileSync(join(root, "package.json"), '{"name":"synthetic-app"}');
     writeFileSync(join(root, "vite.config.mjs"), "export default {};\n");
     writeFileSync(join(vite, "package.json"), '{"name":"vite","type":"module","main":"./index.mjs"}');
-    writeFileSync(join(vite, "index.mjs"), `
+    writeFileSync(
+      join(vite, "index.mjs"),
+      `
       export async function loadConfigFromFile() {
         let seen;
         return { config: { plugins: [{
@@ -556,7 +644,8 @@ test("config hooks see the command's default mode when none is given", async () 
           transform() { return "export default " + JSON.stringify(seen) + ";"; },
         }] } };
       }
-    `);
+    `,
+    );
     const build = await loadPluginContainer(root, { command: "build" });
     assert.equal(await build.transform("", "/a.ts"), 'export default "build:production";');
     const serve = await loadPluginContainer(root, { command: "serve" });
@@ -661,11 +750,7 @@ test("writeBundle observes emitted chunks after generation in the client environ
   await container.generateBundle(() => {});
   await container.writeBundle(bundle);
 
-  assert.deepEqual(lifecycle, [
-    "generate",
-    "pre:client:entry();",
-    "post:es:assets/chunk.js,assets/entry.js:true",
-  ]);
+  assert.deepEqual(lifecycle, ["generate", "pre:client:entry();", "post:es:assets/chunk.js,assets/entry.js:true"]);
 });
 
 // PR #83
@@ -674,7 +759,9 @@ test("closeBundle runs finalizer-only plugins in their matching environment", as
   const plugin = {
     name: "synthetic-build-finalizer",
     applyToEnvironment: (environment) => environment.name === "client",
-    closeBundle() { finalized.push(this.environment.name); },
+    closeBundle() {
+      finalized.push(this.environment.name);
+    },
   };
 
   const client = createPluginContainer({}, [plugin], { command: "build", environment: "client" });
@@ -689,16 +776,26 @@ test("closeBundle runs finalizer-only plugins in their matching environment", as
 
 test("closeBundle supports object-form finalizers and continues past failed hooks", async () => {
   const finalized = [];
-  const container = createPluginContainer({}, [
-    {
-      name: "synthetic-failed-finalizer",
-      closeBundle() { throw new Error("synthetic finalizer failure"); },
-    },
-    {
-      name: "synthetic-object-finalizer",
-      closeBundle: { handler() { finalized.push(this.environment.config.consumer); } },
-    },
-  ], { command: "build", environment: "ssr" });
+  const container = createPluginContainer(
+    {},
+    [
+      {
+        name: "synthetic-failed-finalizer",
+        closeBundle() {
+          throw new Error("synthetic finalizer failure");
+        },
+      },
+      {
+        name: "synthetic-object-finalizer",
+        closeBundle: {
+          handler() {
+            finalized.push(this.environment.config.consumer);
+          },
+        },
+      },
+    ],
+    { command: "build", environment: "ssr" },
+  );
 
   await container.closeBundle();
 
@@ -706,10 +803,7 @@ test("closeBundle supports object-form finalizers and continues past failed hook
 });
 
 test("production Start builds close both environment plugin containers", () => {
-  const source = readFileSync(
-    new URL("../../crates/oj_server/src/assets/start/build.mjs", import.meta.url),
-    "utf8",
-  );
+  const source = readFileSync(new URL("../../crates/oj_server/src/assets/start/build.mjs", import.meta.url), "utf8");
 
   assert.match(source, /await clientContainer\?\.closeBundle\(\)/);
   assert.match(source, /await serverContainer\?\.closeBundle\(\)/);
@@ -722,7 +816,9 @@ test("buildEnd runs completion-only plugins in their matching environment", asyn
   const plugin = {
     name: "synthetic-build-completion",
     applyToEnvironment: (environment) => environment.name === "ssr",
-    buildEnd(error) { completed.push({ environment: this.environment.name, error }); },
+    buildEnd(error) {
+      completed.push({ environment: this.environment.name, error });
+    },
   };
 
   const client = createPluginContainer({}, [plugin], { command: "build", environment: "client" });
@@ -737,16 +833,26 @@ test("buildEnd runs completion-only plugins in their matching environment", asyn
 
 test("buildEnd supports object-form hooks and continues past failed callbacks", async () => {
   const completed = [];
-  const container = createPluginContainer({}, [
-    {
-      name: "synthetic-failed-completion",
-      buildEnd() { throw new Error("synthetic completion failure"); },
-    },
-    {
-      name: "synthetic-object-completion",
-      buildEnd: { handler(error) { completed.push({ consumer: this.environment.config.consumer, error }); } },
-    },
-  ], { command: "build", environment: "client" });
+  const container = createPluginContainer(
+    {},
+    [
+      {
+        name: "synthetic-failed-completion",
+        buildEnd() {
+          throw new Error("synthetic completion failure");
+        },
+      },
+      {
+        name: "synthetic-object-completion",
+        buildEnd: {
+          handler(error) {
+            completed.push({ consumer: this.environment.config.consumer, error });
+          },
+        },
+      },
+    ],
+    { command: "build", environment: "client" },
+  );
 
   await container.buildEnd();
 
@@ -778,16 +884,26 @@ test("renderStart runs output-only plugins with their environment and bundle opt
 
 test("renderStart supports object-form hooks and continues past failed initializers", async () => {
   const rendered = [];
-  const container = createPluginContainer({}, [
-    {
-      name: "synthetic-failed-render",
-      renderStart() { throw new Error("synthetic render failure"); },
-    },
-    {
-      name: "synthetic-object-render",
-      renderStart: { handler(output) { rendered.push({ consumer: this.environment.config.consumer, output }); } },
-    },
-  ], { command: "build", environment: "client" });
+  const container = createPluginContainer(
+    {},
+    [
+      {
+        name: "synthetic-failed-render",
+        renderStart() {
+          throw new Error("synthetic render failure");
+        },
+      },
+      {
+        name: "synthetic-object-render",
+        renderStart: {
+          handler(output) {
+            rendered.push({ consumer: this.environment.config.consumer, output });
+          },
+        },
+      },
+    ],
+    { command: "build", environment: "client" },
+  );
   const output = { format: "es" };
 
   await container.renderStart(output, {});
@@ -813,8 +929,10 @@ test("generateBundle receives and can mutate actual emitted chunks", async () =>
     },
   };
 
-  await createPluginContainer({}, [plugin], { command: "build" })
-    .generateBundle((asset) => emitted.push(asset), bundle);
+  await createPluginContainer({}, [plugin], { command: "build" }).generateBundle(
+    (asset) => emitted.push(asset),
+    bundle,
+  );
 
   assert.deepEqual(emitted, [{ type: "asset", fileName: "report.txt", source: "chunks:2" }]);
   assert.equal(bundle["assets/entry.js"].code, "/* generated */entry();");
@@ -858,17 +976,20 @@ test("plugin hooks inspect environment modules by ID, URL, and shared source fil
   await container.load(first);
   await container.load(second);
 
-  assert.equal(await container.transform("export default 1;", "/synthetic/entry.ts"), JSON.stringify({
-    sameModule: true,
-    environment: "client",
-    file,
-    loadedCode: `export default ${JSON.stringify(first)};`,
-    fileVariants: 2,
-    includesBoth: true,
-    currentCode: "export default 1;",
-    missingId: true,
-    missingFile: true,
-  }));
+  assert.equal(
+    await container.transform("export default 1;", "/synthetic/entry.ts"),
+    JSON.stringify({
+      sameModule: true,
+      environment: "client",
+      file,
+      loadedCode: `export default ${JSON.stringify(first)};`,
+      fileVariants: 2,
+      includesBoth: true,
+      currentCode: "export default 1;",
+      missingId: true,
+      missingFile: true,
+    }),
+  );
 });
 
 test("client and SSR plugin environments maintain independent module graphs", async () => {
@@ -886,10 +1007,13 @@ test("client and SSR plugin environments maintain independent module graphs", as
 
   assert.equal(await client.transform("browser", "/shared.ts"), "client:browser");
   assert.equal(await ssr.transformUserCode("server", "/shared.ts"), "ssr:server");
-  assert.deepEqual(observed.map(({ environment, code }) => ({ environment, code })), [
-    { environment: "client", code: "browser" },
-    { environment: "ssr", code: "server" },
-  ]);
+  assert.deepEqual(
+    observed.map(({ environment, code }) => ({ environment, code })),
+    [
+      { environment: "client", code: "browser" },
+      { environment: "ssr", code: "server" },
+    ],
+  );
   assert.notEqual(observed[0].graph, observed[1].graph);
 });
 
@@ -908,31 +1032,42 @@ test("plugin environment exposes a resolver for aliases, configured extensions, 
     writeFileSync(join(packageDirectory, "package.json"), '{"name":"synthetic-package","main":"index.js"}');
     writeFileSync(join(packageDirectory, "index.js"), "module.exports = 3;");
 
-    const container = createPluginContainer({}, [{
-      name: "synthetic-config-resolver",
-      async transform() {
-        const resolve = this.environment.config.createResolver();
-        const importer = join(source, "entry.ts");
-        return JSON.stringify(await Promise.all([
-          resolve("@/components/card", importer),
-          resolve("./theme", importer),
-          resolve("synthetic-package", importer),
-          resolve("./missing", importer),
-        ]));
+    const container = createPluginContainer(
+      {},
+      [
+        {
+          name: "synthetic-config-resolver",
+          async transform() {
+            const resolve = this.environment.config.createResolver();
+            const importer = join(source, "entry.ts");
+            return JSON.stringify(
+              await Promise.all([
+                resolve("@/components/card", importer),
+                resolve("./theme", importer),
+                resolve("synthetic-package", importer),
+                resolve("./missing", importer),
+              ]),
+            );
+          },
+        },
+      ],
+      {
+        config: {
+          root,
+          resolve: { alias: { "@": source }, extensions: [".widget", ".tsx", ".js"] },
+        },
       },
-    }], {
-      config: {
-        root,
-        resolve: { alias: { "@": source }, extensions: [".widget", ".tsx", ".js"] },
-      },
-    });
+    );
 
-    assert.equal(await container.transform("", join(source, "entry.ts")), JSON.stringify([
-      join(components, "card.tsx"),
-      join(source, "theme.widget"),
-      join(packageDirectory, "index.js"),
-      null,
-    ]));
+    assert.equal(
+      await container.transform("", join(source, "entry.ts")),
+      JSON.stringify([
+        join(components, "card.tsx"),
+        join(source, "theme.widget"),
+        join(packageDirectory, "index.js"),
+        null,
+      ]),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -940,12 +1075,18 @@ test("plugin environment exposes a resolver for aliases, configured extensions, 
 
 test("plugin environment preserves an existing configured resolver", async () => {
   const existing = () => async (id) => `/configured/${id}`;
-  const container = createPluginContainer({}, [{
-    name: "synthetic-existing-resolver",
-    async transform() {
-      return this.environment.config.createResolver()("entry");
-    },
-  }], { config: { createResolver: existing } });
+  const container = createPluginContainer(
+    {},
+    [
+      {
+        name: "synthetic-existing-resolver",
+        async transform() {
+          return this.environment.config.createResolver()("entry");
+        },
+      },
+    ],
+    { config: { createResolver: existing } },
+  );
 
   assert.equal(await container.transform("", "/entry.ts"), "/configured/entry");
 });

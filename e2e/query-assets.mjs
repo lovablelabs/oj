@@ -24,7 +24,10 @@ fs.writeFileSync(path.join(app, "src", "note.txt"), `hello-raw-content`);
 fs.writeFileSync(path.join(app, "src", "data.json"), `{"k":42}`);
 fs.writeFileSync(
   path.join(app, "src", "add.wasm"),
-  Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 7, 1, 0x60, 2, 0x7f, 0x7f, 1, 0x7f, 3, 2, 1, 0, 7, 7, 1, 3, 0x61, 0x64, 0x64, 0, 0, 10, 9, 1, 7, 0, 0x20, 0, 0x20, 1, 0x6a, 0x0b]),
+  Buffer.from([
+    0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 7, 1, 0x60, 2, 0x7f, 0x7f, 1, 0x7f, 3, 2, 1, 0, 7, 7, 1, 3, 0x61, 0x64, 0x64, 0,
+    0, 10, 9, 1, 7, 0, 0x20, 0, 0x20, 1, 0x6a, 0x0b,
+  ]),
 );
 fs.writeFileSync(
   path.join(app, "src", "main.js"),
@@ -54,7 +57,12 @@ async function check(port) {
   try {
     await page.goto(`http://localhost:${port}/`, { timeout: 30000 });
     await page.waitForFunction(() => window.__SUM !== undefined, { timeout: 10000 });
-    const r = await page.evaluate(() => ({ url: window.__PICURL, raw: window.__RAW, inline: window.__INLINE, sum: window.__SUM }));
+    const r = await page.evaluate(() => ({
+      url: window.__PICURL,
+      raw: window.__RAW,
+      inline: window.__INLINE,
+      sum: window.__SUM,
+    }));
     const bad = [];
     if (r.url !== "/src/pic.svg") bad.push(`?url ${r.url}`);
     if (r.raw !== "hello-raw-content") bad.push(`?raw ${r.raw}`);

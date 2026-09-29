@@ -52,7 +52,10 @@ try {
   console.log("VITE-BUILD-MANIFEST-IN-BUNDLE E2E PASSED");
 } catch (err) {
   failed = true;
-  console.error("VITE-BUILD-MANIFEST-IN-BUNDLE E2E FAILED:", (err.stderr && err.stderr.toString()) || err.message || err);
+  console.error(
+    "VITE-BUILD-MANIFEST-IN-BUNDLE E2E FAILED:",
+    (err.stderr && err.stderr.toString()) || err.message || err,
+  );
 } finally {
   fs.rmSync(app, { recursive: true, force: true });
 }

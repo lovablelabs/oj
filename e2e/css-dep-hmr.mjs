@@ -61,8 +61,10 @@ try {
       throw new Error(`${label}: wanted ${want}, still ${await color(sel)}`);
     }
   };
-  if ((await color(".box")) !== "rgb(10, 20, 30)") throw new Error(`initial @import color wrong: ${await color(".box")}`);
-  if ((await color(".sbox")) !== "rgb(40, 50, 60)") throw new Error(`initial sass color wrong: ${await color(".sbox")}`);
+  if ((await color(".box")) !== "rgb(10, 20, 30)")
+    throw new Error(`initial @import color wrong: ${await color(".box")}`);
+  if ((await color(".sbox")) !== "rgb(40, 50, 60)")
+    throw new Error(`initial sass color wrong: ${await color(".sbox")}`);
 
   // Edit the @import-ED file: the importing stylesheet must recompile + swap.
   w("src/part.css", ".box { color: rgb(11, 22, 33); }\n");

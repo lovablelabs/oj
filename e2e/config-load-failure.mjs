@@ -13,12 +13,19 @@ const project = fs.mkdtempSync(path.join(os.tmpdir(), "oj-config-failure-"));
 
 try {
   fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({ type: "module" }));
-  fs.writeFileSync(path.join(project, "index.html"), '<html><body><script type="module" src="/main.js"></script></body></html>');
+  fs.writeFileSync(
+    path.join(project, "index.html"),
+    '<html><body><script type="module" src="/main.js"></script></body></html>',
+  );
   fs.writeFileSync(path.join(project, "main.js"), 'document.body.textContent = "ready";');
   fs.writeFileSync(path.join(project, "vite.config.mjs"), 'import "missing-config-plugin"; export default {};\n');
 
   const build = spawnSync(binary, ["build", project], { cwd: root, encoding: "utf8" });
-  assert.notEqual(build.status, 0, `a broken Vite config must fail instead of being ignored:\n${build.stdout}\n${build.stderr}`);
+  assert.notEqual(
+    build.status,
+    0,
+    `a broken Vite config must fail instead of being ignored:\n${build.stdout}\n${build.stderr}`,
+  );
   assert.match(`${build.stdout}\n${build.stderr}`, /missing-config-plugin/);
 
   console.log("CONFIG-LOAD-FAILURE E2E PASSED");

@@ -11,16 +11,17 @@ const CSS = require("path").join(__dirname, "..", "playground") + "/styles.css";
   try {
     await page.goto("http://localhost:5199/", { waitUntil: "networkidle" });
     await page.waitForSelector("h1");
-    await page.evaluate(() => { window.__marker = 1; });
+    await page.evaluate(() => {
+      window.__marker = 1;
+    });
     fs.writeFileSync(CSS, original + "\nbody { background: rgb(240, 240, 255); }\n");
     await page.waitForFunction(
       () => [...document.querySelectorAll("link[rel=stylesheet]")].some((l) => l.href.includes("?t=")),
-      { timeout: 5000 }
+      { timeout: 5000 },
     );
-    await page.waitForFunction(
-      () => getComputedStyle(document.body).backgroundColor === "rgb(240, 240, 255)",
-      { timeout: 5000 }
-    );
+    await page.waitForFunction(() => getComputedStyle(document.body).backgroundColor === "rgb(240, 240, 255)", {
+      timeout: 5000,
+    });
     const marker = await page.evaluate(() => window.__marker);
     console.log("css applied without reload:", marker === 1 ? "yes" : "NO — page reloaded");
     if (marker !== 1) process.exit(1);
@@ -29,4 +30,7 @@ const CSS = require("path").join(__dirname, "..", "playground") + "/styles.css";
     fs.writeFileSync(CSS, original);
     await browser.close();
   }
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

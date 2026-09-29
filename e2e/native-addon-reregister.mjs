@@ -33,9 +33,7 @@ try {
   fs.rmSync(app, { recursive: true, force: true });
   process.exit(0);
 }
-const rolldown = JSON.parse(
-  fs.readFileSync(path.join(app, "node_modules", "rolldown", "package.json"), "utf8"),
-);
+const rolldown = JSON.parse(fs.readFileSync(path.join(app, "node_modules", "rolldown", "package.json"), "utf8"));
 if (rolldown.version !== "1.0.3") {
   // vite 8.0.16 pins rolldown 1.0.3 exactly, a napi-rs 3.9-era binding that
   // dies on re-registration (so does 1.1.0; 1.1.5 survives). A different
@@ -59,9 +57,7 @@ const out = spawnSync(oj, ["build"], { cwd: app, encoding: "utf8", timeout: 180_
 if (out.status !== 0) {
   console.error(out.stdout ?? "");
   console.error(out.stderr ?? "");
-  throw new Error(
-    `oj build died re-registering the rolldown binding: status ${out.status}, signal ${out.signal}`,
-  );
+  throw new Error(`oj build died re-registering the rolldown binding: status ${out.status}, signal ${out.signal}`);
 }
 if (!fs.existsSync(path.join(app, "dist", "index.html"))) {
   throw new Error("oj build reported success but wrote no dist/index.html");

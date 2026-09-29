@@ -16,7 +16,10 @@ const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-less-bare-"));
-fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "less-bare", version: "1.0.0", type: "module" }));
+fs.writeFileSync(
+  path.join(app, "package.json"),
+  JSON.stringify({ name: "less-bare", version: "1.0.0", type: "module" }),
+);
 try {
   execSync("npm install less --no-audit --no-fund --loglevel=error", { cwd: app, stdio: "ignore" });
 } catch {
@@ -28,12 +31,24 @@ try {
 // A fake dependency shaped like bootstrap's less distribution.
 const pkg = path.join(app, "node_modules", "fakeless");
 fs.mkdirSync(path.join(pkg, "less", "mixins"), { recursive: true });
-fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "fakeless", version: "1.0.0", less: "less/entry.less", main: "index.js" }));
-fs.writeFileSync(path.join(pkg, "less", "entry.less"), `@import "./mixins/vars";\n.from-entry { color: @entry-color; }\n`);
-fs.writeFileSync(path.join(pkg, "less", "mixins", "vars.less"), `@entry-color: rgb(1, 2, 3);\n@sub-color: rgb(4, 5, 6);\n`);
+fs.writeFileSync(
+  path.join(pkg, "package.json"),
+  JSON.stringify({ name: "fakeless", version: "1.0.0", less: "less/entry.less", main: "index.js" }),
+);
+fs.writeFileSync(
+  path.join(pkg, "less", "entry.less"),
+  `@import "./mixins/vars";\n.from-entry { color: @entry-color; }\n`,
+);
+fs.writeFileSync(
+  path.join(pkg, "less", "mixins", "vars.less"),
+  `@entry-color: rgb(1, 2, 3);\n@sub-color: rgb(4, 5, 6);\n`,
+);
 const scoped = path.join(app, "node_modules", "@acme", "theme");
 fs.mkdirSync(scoped, { recursive: true });
-fs.writeFileSync(path.join(scoped, "package.json"), JSON.stringify({ name: "@acme/theme", version: "1.0.0", style: "theme.css" }));
+fs.writeFileSync(
+  path.join(scoped, "package.json"),
+  JSON.stringify({ name: "@acme/theme", version: "1.0.0", style: "theme.css" }),
+);
 fs.writeFileSync(path.join(scoped, "theme.css"), `.from-scoped { color: rgb(7, 8, 9); }\n`);
 
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
@@ -61,7 +76,11 @@ const r = spawnSync(oj, ["build", app], { cwd: repo, encoding: "utf8" });
 check("build succeeds with bare less imports", r.status === 0, `${r.stdout}\n${r.stderr}`);
 if (r.status === 0) {
   const assets = path.join(app, "dist", "assets");
-  const css = fs.readdirSync(assets).filter((f) => f.endsWith(".css")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+  const css = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".css"))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
   check("package `less` field entry compiled", /\.from-entry\{color:#010203\}/.test(css), css);
   check("~pkg subpath with .less added compiled", /\.uses-sub\{color:#040506\}/.test(css), css);
   check("scoped package `style` field (css) compiled", /\.from-scoped\{color:#070809\}/.test(css), css);

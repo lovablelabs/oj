@@ -1,54 +1,79 @@
 // SPDX-License-Identifier: MIT
-import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { once } from 'node:events';
-import { repo, tmpProject } from './unit/harness.mjs';
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { once } from "node:events";
+import { repo, tmpProject } from "./unit/harness.mjs";
 import { settles } from "./util.mjs";
 
-const fx = tmpProject({ prefix: 'oj-config-adoption-', linkEsbuild: true });
+const fx = tmpProject({ prefix: "oj-config-adoption-", linkEsbuild: true });
 let child;
-let log = '';
+let log = "";
 const waitFor = async (predicate) => {
-  const ok = await settles(async () => {
-    if (child.exitCode !== null) throw new Error(log);
-    return predicate();
-  }, { timeoutMs: 10000, pollMs: 50 });
+  const ok = await settles(
+    async () => {
+      if (child.exitCode !== null) throw new Error(log);
+      return predicate();
+    },
+    { timeoutMs: 10000, pollMs: 50 },
+  );
   if (!ok) throw new Error(`timed out\n${log}`);
 };
 try {
-  fx.write('index.html', '<html><head></head><body></body></html>');
-  fx.write('src/warm.js', 'export const warmed = 1;');
-  fx.write('src/skip.js', 'export const skipped = 1;');
-  fx.write('secret.private', 'private-content');
-  fx.write('vite.config.mjs', `
+  fx.write("index.html", "<html><head></head><body></body></html>");
+  fx.write("src/warm.js", "export const warmed = 1;");
+  fx.write("src/skip.js", "export const skipped = 1;");
+  fx.write("secret.private", "private-content");
+  fx.write(
+    "vite.config.mjs",
+    `
     import { appendFileSync } from 'node:fs';
     export default {
       server: { fs: { deny: ['**/*.private'] }, warmup: { clientFiles: ['./src/*.js', '!./src/skip.js'] } },
       plugins: [{ name: 'warmup-probe', transform(code, id) {
-        if (id.endsWith('/warm.js') || id.endsWith('/skip.js')) appendFileSync(${JSON.stringify(join(fx.root, 'transformed'))}, id + '\\n');
+        if (id.endsWith('/warm.js') || id.endsWith('/skip.js')) appendFileSync(${JSON.stringify(join(fx.root, "transformed"))}, id + '\\n');
         return null;
       } }]
     };
-  `);
+  `,
+  );
   // detached: the dev server's engine children share its process group, so
   // teardown can group-kill whatever outlives the graceful exit (they write
   // .oj-cache and race the rm otherwise -- the ENOTEMPTY class).
-  child = spawn(join(repo, 'target/debug/oj'), ['dev', fx.root, '--port', '15391', '--lazy'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-  child.stdout.on('data', d => { log += d; });
-  child.stderr.on('data', d => { log += d; });
-  await waitFor(async () => { try { return (await fetch('http://127.0.0.1:15391/')).ok; } catch { return false; } });
-  assert.equal((await fetch('http://127.0.0.1:15391/secret.private')).status, 403);
-  await waitFor(() => existsSync(join(fx.root, 'transformed')));
-  const transformed = readFileSync(join(fx.root, 'transformed'), 'utf8');
+  child = spawn(join(repo, "target/debug/oj"), ["dev", fx.root, "--port", "15391", "--lazy"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+  child.stdout.on("data", (d) => {
+    log += d;
+  });
+  child.stderr.on("data", (d) => {
+    log += d;
+  });
+  await waitFor(async () => {
+    try {
+      return (await fetch("http://127.0.0.1:15391/")).ok;
+    } catch {
+      return false;
+    }
+  });
+  assert.equal((await fetch("http://127.0.0.1:15391/secret.private")).status, 403);
+  await waitFor(() => existsSync(join(fx.root, "transformed")));
+  const transformed = readFileSync(join(fx.root, "transformed"), "utf8");
   assert.match(transformed, /warm\.js/);
   assert.doesNotMatch(transformed, /skip\.js/);
-  console.log('Vite config: deny rules and lazy warmup honored');
+  console.log("Vite config: deny rules and lazy warmup honored");
 } finally {
-  if (child && child.exitCode === null) { const exited = once(child, 'exit'); child.kill('SIGTERM'); await exited; }
+  if (child && child.exitCode === null) {
+    const exited = once(child, "exit");
+    child.kill("SIGTERM");
+    await exited;
+  }
   // The parent exited; engine children may still be flushing. Group-kill the
   // stragglers before rm walks the tree.
-  try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {}
   fx.cleanup();
 }

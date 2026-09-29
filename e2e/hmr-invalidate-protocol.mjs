@@ -30,7 +30,10 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-invalidate-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "invalidate-app", version: "1.0.0" }));
-fs.writeFileSync(path.join(app, "src", "main.js"), `import "./child.js";\nif (import.meta.hot) import.meta.hot.accept();\n`);
+fs.writeFileSync(
+  path.join(app, "src", "main.js"),
+  `import "./child.js";\nif (import.meta.hot) import.meta.hot.accept();\n`,
+);
 const child = (v) => `export const v = ${v};\nif (import.meta.hot) import.meta.hot.accept();\n`;
 fs.writeFileSync(path.join(app, "src", "child.js"), child(1));
 fs.writeFileSync(
@@ -50,11 +53,21 @@ try {
 
   const frames = [];
   ws = new WebSocket(`ws://localhost:${port}/__ws`);
-  ws.addEventListener("message", (ev) => { try { frames.push(JSON.parse(ev.data)); } catch {} });
+  ws.addEventListener("message", (ev) => {
+    try {
+      frames.push(JSON.parse(ev.data));
+    } catch {}
+  });
   await new Promise((resolve, reject) => {
     const to = setTimeout(() => reject(new Error("socket did not open")), 8000);
-    ws.addEventListener("open", () => { clearTimeout(to); resolve(); });
-    ws.addEventListener("error", () => { clearTimeout(to); reject(new Error("socket errored")); });
+    ws.addEventListener("open", () => {
+      clearTimeout(to);
+      resolve();
+    });
+    ws.addEventListener("error", () => {
+      clearTimeout(to);
+      reject(new Error("socket errored"));
+    });
   });
   const send = (o) => ws.send(JSON.stringify(o));
   const last = () => frames[frames.length - 1];
@@ -76,7 +89,11 @@ try {
   // child invalidates itself (Vite's custom event shape): the update escalates
   // to its importer with the full Vite entry shape.
   n = frames.length;
-  send({ type: "custom", event: "vite:invalidate", data: { path: "/src/child.js", message: "m", firstInvalidatedBy: "/src/child.js" } });
+  send({
+    type: "custom",
+    event: "vite:invalidate",
+    data: { path: "/src/child.js", message: "m", firstInvalidatedBy: "/src/child.js" },
+  });
   await waitFor(() => frames.length > n, "invalidate answer");
   assert.equal(last().type, "update", `invalidate answers with an update, got ${JSON.stringify(last())}`);
   const entry = last().updates[0];
@@ -88,7 +105,11 @@ try {
 
   // The same invalidate again for the same update is ignored.
   n = frames.length;
-  send({ type: "custom", event: "vite:invalidate", data: { path: "/src/child.js", firstInvalidatedBy: "/src/child.js" } });
+  send({
+    type: "custom",
+    event: "vite:invalidate",
+    data: { path: "/src/child.js", firstInvalidatedBy: "/src/child.js" },
+  });
   await sleep(600);
   assert.equal(frames.length, n, "repeated invalidate for one update produces nothing");
 
@@ -98,7 +119,11 @@ try {
   fs.writeFileSync(path.join(app, "src", "child.js"), child(3));
   await waitFor(() => frames.length > n && last().type === "update", "child update 2");
   n = frames.length;
-  send({ type: "custom", event: "vite:invalidate", data: { path: "/src/child.js", firstInvalidatedBy: "/src/main.js" } });
+  send({
+    type: "custom",
+    event: "vite:invalidate",
+    data: { path: "/src/child.js", firstInvalidatedBy: "/src/main.js" },
+  });
   await waitFor(() => frames.length > n, "circular invalidate answer");
   assert.equal(last().type, "full-reload", `circular invalidate reloads, got ${JSON.stringify(last())}`);
   assert.equal(last().reason, "circular import invalidate");
@@ -106,7 +131,10 @@ try {
 
   // An edited page names itself; triggeredBy is the absolute file.
   n = frames.length;
-  fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head><title>t2</title></head><body><script type="module" src="/src/main.js"></script></body></html>`);
+  fs.writeFileSync(
+    path.join(app, "index.html"),
+    `<!doctype html><html><head><title>t2</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
+  );
   await waitFor(() => frames.length > n && last().type === "full-reload", "html full-reload");
   assert.equal(last().path, "/index.html");
   assert.equal(fs.realpathSync(last().triggeredBy), fs.realpathSync(path.join(app, "index.html")));
@@ -116,7 +144,9 @@ try {
   failed = true;
   console.error("HMR-INVALIDATE-PROTOCOL E2E FAILED:", err.message);
 } finally {
-  try { ws?.close(); } catch {}
+  try {
+    ws?.close();
+  } catch {}
   srv.kill("SIGKILL");
   await sleep(300);
   fs.rmSync(app, { recursive: true, force: true });

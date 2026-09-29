@@ -26,7 +26,9 @@ const URL = "http://localhost:5199/";
     await page.goto(URL, { waitUntil: "networkidle" });
     await page.waitForSelector("h1:has-text('oj playground')", { timeout: 15000 });
 
-    await page.evaluate(() => { window.__no_reload_marker = 42; });
+    await page.evaluate(() => {
+      window.__no_reload_marker = 42;
+    });
 
     const button = page.locator("button");
     await button.click();
@@ -57,4 +59,7 @@ const URL = "http://localhost:5199/";
     fs.writeFileSync(APP, original);
     await browser.close();
   }
-})().catch((err) => { console.error("FAIL:", err.message); process.exit(1); });
+})().catch((err) => {
+  console.error("FAIL:", err.message);
+  process.exit(1);
+});

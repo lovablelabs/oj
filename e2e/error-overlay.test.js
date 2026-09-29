@@ -38,4 +38,7 @@ const DIALOG = 'div[role="dialog"][aria-label="Build error"]';
     fs.writeFileSync(APP, original);
     await browser.close();
   }
-})().catch((err) => { console.error("FAIL:", err.message); process.exit(1); });
+})().catch((err) => {
+  console.error("FAIL:", err.message);
+  process.exit(1);
+});

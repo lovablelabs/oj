@@ -99,14 +99,22 @@ try {
   assert.match(inline, /^export default "/, `?inline exports a string:\n${inline}`);
   const inlineCss = JSON.parse(inline.replace(/^export default /, "").replace(/;\s*$/, ""));
   assert.match(inlineCss, /--v:\s*1/, `?inline has the aliased import inlined:\n${inlineCss}`);
-  assert.match(inlineCss, /\.imported\s*\{[^}]*(#010203|rgb\(1,\s*2,\s*3\))/, `?inline went through PostCSS:\n${inlineCss}`);
+  assert.match(
+    inlineCss,
+    /\.imported\s*\{[^}]*(#010203|rgb\(1,\s*2,\s*3\))/,
+    `?inline went through PostCSS:\n${inlineCss}`,
+  );
   assert.doesNotMatch(inlineCss, /MAGIC|@import/, "?inline skipped the pipeline");
   assert.match(inlineCss, /url\(["']?\/src\/img\.png/, "?inline rewrites aliased urls like the wrapper");
   const inlineScss = await (await fetch(`http://localhost:${PORT}/src/ui/theme.scss?inline`)).text();
   assert.match(inlineScss, /#abcdef/, `?inline applies scss additionalData:\n${inlineScss}`);
   assert.match(inlineScss, /#123456/, "?inline resolves the sass alias");
   const inlineMod = await (await fetch(`http://localhost:${PORT}/src/ui/btn.module.css?inline`)).text();
-  assert.match(inlineMod, /^export default "[^]*btn-module_button_/, `?inline of a css module is its css:\n${inlineMod}`);
+  assert.match(
+    inlineMod,
+    /^export default "[^]*btn-module_button_/,
+    `?inline of a css module is its css:\n${inlineMod}`,
+  );
   assert.doesNotMatch(inlineMod, /export const/, "?inline of a css module must not export the class map");
   const mod = await (await fetch(`http://localhost:${PORT}/src/ui/btn.module.css`)).text();
   assert.match(mod, /export const button = "btn-module_button_[A-Za-z0-9_-]+";/, `css module named export:\n${mod}`);
@@ -129,20 +137,31 @@ try {
   assert.match(built, /--v:\s*1/, "aliased @import inlined in build");
   assert.match(built, /\.root-abs/, "root-absolute @import inlined in build");
   assert.match(built, /#123456/, "sass alias in build");
-  assert.doesNotMatch(built, /@\/img\.png|url\(["']?\/src\/img\.png/, `alias and root-absolute urls rewritten to the emitted asset:\n${built}`);
+  assert.doesNotMatch(
+    built,
+    /@\/img\.png|url\(["']?\/src\/img\.png/,
+    `alias and root-absolute urls rewritten to the emitted asset:\n${built}`,
+  );
   const refs = built.match(new RegExp(img.replace(/\./g, "\\."), "g")) || [];
   assert.ok(refs.length >= 1, `css references the emitted asset:\n${built}`);
   assert.match(built, /url\(["']?\/pub\.png/, "public url kept in build");
   assert.match(built, /\.hack\{color:red\}/, `hack dropped, rule kept in build:\n${built}`);
   // `import { button }` from a CSS module bundles (rolldown would reject a
   // missing named export) and carries the scoped class.
-  const js = files.filter((f) => f.endsWith(".js")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+  const js = files
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
   assert.match(js, /btn-module_button_[A-Za-z0-9_-]+/, `named css module export bundled:\n${js.slice(0, 400)}`);
   assert.match(built, /\.btn-module_button_[A-Za-z0-9_-]+\{color:red\}/, "css module rules in the stylesheet");
   assert.match(built, /\.imported\{color:#010203\}/, `@imported rules went through PostCSS in the build:\n${built}`);
   assert.match(built, /border-color:#abcdef/, "scss additionalData in build");
   assert.doesNotMatch(built, /MAGIC/, "postcss marker left in the build css");
-  assert.match(js, /\.imported\{color:#010203\}/, `?inline in the build carries the postcss-processed css:\n${js.slice(0, 400)}`);
+  assert.match(
+    js,
+    /\.imported\{color:#010203\}/,
+    `?inline in the build carries the postcss-processed css:\n${js.slice(0, 400)}`,
+  );
   console.log("[build] alias + root-absolute + error recovery + css module named exports OK");
   console.log("CSS-VITE-PARITY E2E PASSED");
 } catch (err) {

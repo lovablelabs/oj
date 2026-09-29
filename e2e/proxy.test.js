@@ -27,4 +27,7 @@ const http = require("node:http");
     await browser.close();
     backend.close();
   }
-})().catch((e) => { console.error("FAIL:", e.message); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL:", e.message);
+  process.exit(1);
+});

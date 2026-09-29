@@ -59,21 +59,33 @@ try {
     await about.goto(`http://localhost:${port}/about.html`, { timeout: 30000 });
     await about.waitForFunction(() => window.__READY === true, { timeout: 10000 });
     assert.equal(await bg(home), "rgb(1, 2, 3)", "stylesheet applied on load");
-    await home.evaluate(() => { window.__MARK = 1; });
+    await home.evaluate(() => {
+      window.__MARK = 1;
+    });
 
     // 1. prune: drop the css import; the <style> goes away, no reload.
     fs.writeFileSync(path.join(app, "src", "main.js"), withoutCss);
-    await home.waitForFunction(() => getComputedStyle(document.body).backgroundColor === "rgba(0, 0, 0, 0)", { timeout: 10000 });
+    await home.waitForFunction(() => getComputedStyle(document.body).backgroundColor === "rgba(0, 0, 0, 0)", {
+      timeout: 10000,
+    });
     assert.equal(await home.evaluate(() => window.__MARK), 1, "prune did not reload the page");
-    assert.equal(await home.evaluate(() => document.querySelectorAll("style[data-oj-id]").length), 0, "style tag removed");
+    assert.equal(
+      await home.evaluate(() => document.querySelectorAll("style[data-oj-id]").length),
+      0,
+      "style tag removed",
+    );
 
     // Re-adding the import re-runs the (stamped) stylesheet module.
     fs.writeFileSync(path.join(app, "src", "main.js"), withCss);
-    await home.waitForFunction(() => getComputedStyle(document.body).backgroundColor === "rgb(1, 2, 3)", { timeout: 10000 });
+    await home.waitForFunction(() => getComputedStyle(document.body).backgroundColor === "rgb(1, 2, 3)", {
+      timeout: 10000,
+    });
     assert.equal(await home.evaluate(() => window.__MARK), 1, "re-import did not reload the page");
 
     // 2. html reload scope: editing about.html reloads only the about tab.
-    await about.evaluate(() => { window.__MARK = 1; });
+    await about.evaluate(() => {
+      window.__MARK = 1;
+    });
     fs.writeFileSync(path.join(app, "about.html"), html("about v2", "/src/about.js"));
     await about.waitForFunction(() => document.title === "about v2", { timeout: 10000 });
     await sleep(500);

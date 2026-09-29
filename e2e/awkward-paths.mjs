@@ -47,7 +47,10 @@ async function get(port, urlPath) {
 }
 
 async function reachable(port) {
-  return waitUp(`http://127.0.0.1:${port}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(() => true, () => false);
+  return waitUp(`http://127.0.0.1:${port}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(
+    () => true,
+    () => false,
+  );
 }
 
 // Every spelling of "read a file outside the app" that a browser or a script

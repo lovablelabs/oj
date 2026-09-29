@@ -35,10 +35,7 @@ function mergeConfigLite(defaults, overrides, rootPath = "") {
     }
     if (existing == null) merged[key] = value;
     else if (Array.isArray(existing) || Array.isArray(value)) {
-      merged[key] = [
-        ...(Array.isArray(existing) ? existing : [existing]),
-        ...(Array.isArray(value) ? value : [value]),
-      ];
+      merged[key] = [...(Array.isArray(existing) ? existing : [existing]), ...(Array.isArray(value) ? value : [value])];
     } else if (isPlainObject(existing) && isPlainObject(value)) {
       // As in Vite: an `environments.<name>` node restarts path tracking, so
       // `environments.ssr.resolve.noExternal` merges like `resolve.noExternal`.
@@ -248,8 +245,7 @@ function resolvePkg(spec) {
   return null;
 }
 
-const absDeps = (deps) =>
-  (deps ?? []).filter((d) => typeof d === "string").map((d) => resolve(appRoot, d));
+const absDeps = (deps) => (deps ?? []).filter((d) => typeof d === "string").map((d) => resolve(appRoot, d));
 
 // Vite's `externalize-deps` config-bundling plugin, mirrored (one copy lives
 // in vite-extract.mjs, its twin in plugin-host.mjs; both assets are
@@ -468,9 +464,13 @@ async function bundleViteConfigFile(configPath, appRoot) {
   } catch {}
   // The bundlers are vite's dependencies, not usually the app's own.
   const resolveSpec = (spec) => {
-    try { return req.resolve(spec); } catch {}
+    try {
+      return req.resolve(spec);
+    } catch {}
     if (vitePkgDir) {
-      try { return req.resolve(spec, { paths: [vitePkgDir] }); } catch {}
+      try {
+        return req.resolve(spec, { paths: [vitePkgDir] });
+      } catch {}
     }
     return null;
   };
@@ -801,7 +801,9 @@ async function loadConfig() {
     try {
       m = await import(pathToFileURL(out).href);
     } finally {
-      try { unlinkSync(out); } catch {}
+      try {
+        unlinkSync(out);
+      } catch {}
     }
     const config = typeof m.default === "function" ? await m.default({ command, mode }) : m.default;
     return { config, raw: config, deps: absDeps(bundled.deps) };
@@ -824,7 +826,11 @@ function relativeImportDeps(entry) {
     if (seen.has(file)) continue;
     seen.add(file);
     let src;
-    try { src = readFileSync(file, "utf8"); } catch { continue; }
+    try {
+      src = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
     for (const m of src.matchAll(spec)) {
       const dep = resolve(dirname(file), m[1]);
       if (!seen.has(dep) && existsSync(dep)) stack.push(dep);
@@ -843,9 +849,7 @@ function aliasKeyFromRegex(source) {
   return s.replace(/\/$/, "");
 }
 function aliasDirFromReplacement(replacement) {
-  return replacement
-    .replace(/[\\/]\$\d+$/, "")
-    .replace(/[\\/]index\.[a-z]+$/i, "");
+  return replacement.replace(/[\\/]\$\d+$/, "").replace(/[\\/]index\.[a-z]+$/i, "");
 }
 
 const VITE_CLIENT_ALIAS = /^\^\\\/\?@vite\\\/(env|client)$/;
@@ -853,9 +857,7 @@ const VITE_CLIENT_ALIAS = /^\^\\\/\?@vite\\\/(env|client)$/;
 function extractAlias(alias) {
   const out = {};
   if (!alias) return out;
-  const entries = Array.isArray(alias)
-    ? alias.map((e) => [e.find, e.replacement])
-    : Object.entries(alias);
+  const entries = Array.isArray(alias) ? alias.map((e) => [e.find, e.replacement]) : Object.entries(alias);
   for (const [find, replacement] of entries) {
     if (typeof replacement !== "string") continue;
     if (typeof find === "string") {
@@ -905,10 +907,14 @@ function extractProxy(proxy) {
       // needs http-proxy (bundled into Vite, usually not resolvable), so be
       // honest that it applies only when http-proxy is available.
       if (typeof v.bypass === "function") {
-        warn(`server.proxy["${ctx}"].bypass is a function; applied by the plugin host proxy, not the built-in fallback proxy`);
+        warn(
+          `server.proxy["${ctx}"].bypass is a function; applied by the plugin host proxy, not the built-in fallback proxy`,
+        );
       }
       if (typeof v.configure === "function") {
-        warn(`server.proxy["${ctx}"].configure is a function; applied only when http-proxy is resolvable (the built-in fallback proxy cannot run it)`);
+        warn(
+          `server.proxy["${ctx}"].configure is a function; applied only when http-proxy is resolvable (the built-in fallback proxy cannot run it)`,
+        );
       }
       out[ctx] = entry;
     }
@@ -984,11 +990,13 @@ function extractBuild(b) {
   if (b.license && b.license !== false) out.license = true;
   // Resolved defaults (cssTarget = target, commonjsOptions = { include:
   // [/node_modules/], extensions: [".js", ".cjs"] }) are not user choices.
-  if (b.cssTarget !== undefined && JSON.stringify(b.cssTarget) !== JSON.stringify(b.target)) out.cssTarget = b.cssTarget;
+  if (b.cssTarget !== undefined && JSON.stringify(b.cssTarget) !== JSON.stringify(b.target))
+    out.cssTarget = b.cssTarget;
   const cjs = b.commonjsOptions;
   if (cjs && typeof cjs === "object") {
     const extra = Object.keys(cjs).filter((k) => k !== "include" && k !== "extensions");
-    const defaultInclude = Array.isArray(cjs.include) && cjs.include.length === 1 && String(cjs.include[0]) === "/node_modules/";
+    const defaultInclude =
+      Array.isArray(cjs.include) && cjs.include.length === 1 && String(cjs.include[0]) === "/node_modules/";
     const defaultExt = JSON.stringify(cjs.extensions) === JSON.stringify([".js", ".cjs"]);
     if (extra.length || !defaultInclude || !defaultExt) out.commonjsOptions = {};
   }
@@ -996,12 +1004,14 @@ function extractBuild(b) {
     const lib = {};
     const e = b.lib.entry;
     const isStrList = (v) => Array.isArray(v) && v.every((s) => typeof s === "string");
-    const isStrMap = (v) => v && typeof v === "object" && !Array.isArray(v) && Object.values(v).every((s) => typeof s === "string");
+    const isStrMap = (v) =>
+      v && typeof v === "object" && !Array.isArray(v) && Object.values(v).every((s) => typeof s === "string");
     if (typeof e === "string" || isStrList(e) || isStrMap(e)) lib.entry = e;
     if (typeof b.lib.name === "string") lib.name = b.lib.name;
     if (isStrList(b.lib.formats)) lib.formats = b.lib.formats;
     if (typeof b.lib.fileName === "string") lib.fileName = b.lib.fileName;
-    else if (typeof b.lib.fileName === "function") warn("build.lib.fileName is a function and cannot be applied; the default file name is used");
+    else if (typeof b.lib.fileName === "function")
+      warn("build.lib.fileName is a function and cannot be applied; the default file name is used");
     if (typeof b.lib.cssFileName === "string") lib.cssFileName = b.lib.cssFileName;
     if (lib.entry) out.lib = lib;
     else warn("build.lib.entry is required when build.lib is set");
@@ -1023,7 +1033,6 @@ function markFunctions(v) {
   }
   return v;
 }
-
 
 const JSX_ESBUILD_KEYS = ["jsx", "jsxImportSource", "jsxFactory", "jsxFragment"];
 function extractOxc(oxc) {
@@ -1093,9 +1102,7 @@ function extractSsr(ssr, ssrEnvironment) {
 const declaresRunnerEnvironment = (cfg) =>
   !!cfg &&
   typeof cfg === "object" &&
-  Object.values(cfg.environments ?? {}).some(
-    (e) => e && e.dev && typeof e.dev.createEnvironment === "function",
-  );
+  Object.values(cfg.environments ?? {}).some((e) => e && e.dev && typeof e.dev.createEnvironment === "function");
 
 // Plugins whose `config` hooks this out-of-band re-run must not execute: the
 // exact rule the Start loader applies when IT re-runs config hooks on fresh
@@ -1171,8 +1178,7 @@ async function detectSsrRunnerBacked(raw, configEnv, merge = mergeConfigLite) {
     }
   });
   const enforceRank = (p) => (p.enforce === "pre" ? -1 : p.enforce === "post" ? 1 : 0);
-  const hookRank = (h) =>
-    h && typeof h === "object" ? (h.order === "pre" ? -1 : h.order === "post" ? 1 : 0) : 0;
+  const hookRank = (h) => (h && typeof h === "object" ? (h.order === "pre" ? -1 : h.order === "post" ? 1 : 0) : 0);
   // Vite's getSortedPluginsByHook walks the enforce-sorted plugin list and
   // splices `order: "pre"` hooks to the very FRONT of the result (and "post"
   // to the very back): the hook's own order is PRIMARY, enforce only orders
@@ -1182,9 +1188,7 @@ async function detectSsrRunnerBacked(raw, configEnv, merge = mergeConfigLite) {
     const withHook = list
       .map((p, i) => ({ p, i, hook: p[hookName] }))
       .filter((e) => e.hook && (typeof e.hook === "function" || typeof e.hook.handler === "function"));
-    withHook.sort(
-      (a, b) => hookRank(a.hook) - hookRank(b.hook) || enforceRank(a.p) - enforceRank(b.p) || a.i - b.i,
-    );
+    withHook.sort((a, b) => hookRank(a.hook) - hookRank(b.hook) || enforceRank(a.p) - enforceRank(b.p) || a.i - b.i);
     return withHook;
   };
   let conf = { ...raw, plugins: list };
@@ -1230,9 +1234,7 @@ async function detectSsrRunnerBacked(raw, configEnv, merge = mergeConfigLite) {
           isSsrTargetWebworker: conf.ssr?.target === "webworker" && name === "ssr",
         });
       } catch (e) {
-        warn(
-          `configEnvironment hook of plugin "${p.name ?? "?"}" failed during extraction: ${(e && e.message) || e}`,
-        );
+        warn(`configEnvironment hook of plugin "${p.name ?? "?"}" failed during extraction: ${(e && e.message) || e}`);
         continue;
       }
       if (res) environments[name] = merge(environments[name], res);
@@ -1279,9 +1281,7 @@ function extractServerFlags(s, legacy, appType) {
     if (s.warmup && typeof s.warmup === "object") {
       const warmup = {};
       for (const key of ["clientFiles", "ssrFiles"]) {
-        const files = Array.isArray(s.warmup[key])
-          ? s.warmup[key].filter((x) => typeof x === "string")
-          : [];
+        const files = Array.isArray(s.warmup[key]) ? s.warmup[key].filter((x) => typeof x === "string") : [];
         if (files.length) warmup[key] = files;
       }
       // The resolved default is empty arrays on every config; only user lists
@@ -1383,7 +1383,7 @@ function warnUnsupported(c) {
   if (!c || typeof c !== "object") return;
   if (c.build?.terserOptions) warn("build.terserOptions is not applied (oj minifies with oxc)");
   if (c.esbuild?.jsx === "preserve" || c.oxc?.jsx === "preserve") {
-    warn("jsx: \"preserve\" is not supported; JSX is compiled with the automatic runtime");
+    warn('jsx: "preserve" is not supported; JSX is compiled with the automatic runtime');
   }
   if (c.esbuild && typeof c.esbuild === "object") {
     const rest = Object.keys(c.esbuild).filter((k) => !JSX_ESBUILD_KEYS.includes(k));
@@ -1413,7 +1413,16 @@ function warnUnsupported(c) {
   }
 }
 
-export { detectSsrRunnerBacked, extractAlias, extractOptimizeDeps, extractProxy, extractResolve, extractSsr, mergeConfigLite, warnUnsupported };
+export {
+  detectSsrRunnerBacked,
+  extractAlias,
+  extractOptimizeDeps,
+  extractProxy,
+  extractResolve,
+  extractSsr,
+  mergeConfigLite,
+  warnUnsupported,
+};
 
 /// Evaluates the app's vite.config and returns the extracted values. Called by
 /// oj through a short-lived JS engine in an `oj engine-job` child process (one
@@ -1448,60 +1457,57 @@ export async function extract(input) {
   } catch {}
   observedConfigReads.clear();
   observedReadsTruncated = false;
-try {
-  installConfigReadRecorder();
-  const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
-  const c = config ?? {};
-  warnUnsupported(raw ?? c);
-  // Extraction is the single runner-backed detection authority (the plugin
-  // host and every Rust consumer read what it publishes). On the resolveConfig
-  // path the sentinel decided inside Vite's own hook run; otherwise the port
-  // runs the RAW config's fresh plugin instances (no resolved-config hooks ran
-  // in this process then). Vite's mode rule (config.ts): an explicit inline
-  // mode wins, else the config file's own. isSsrBuild: Vite computes it from
-  // the INLINE config BEFORE the file loads (`config = inlineConfig`;
-  // `isSsrBuild: command === "build" && !!config.build?.ssr`) and never
-  // recomputes it, so a build.ssr that only the config FILE sets is invisible
-  // to config hooks under Vite too; oj has no inline build.ssr at extraction
-  // time, so it is false for serve AND build.
-  const ssrRunnerBacked =
-    typeof runnerBacked === "boolean"
-      ? runnerBacked
-      : await detectSsrRunnerBacked(
-          raw,
-          {
-            command,
-            mode: modeExplicit ? mode : typeof raw?.mode === "string" ? raw.mode : mode,
-            isSsrBuild: false,
-          },
-          merge ?? mergeConfigLite,
-        );
-  let ssr = extractSsr(c.ssr, c.environments?.ssr);
-  let resolveOut = extractResolve(c.resolve);
-  if (raw == null) {
-    // No raw config means detection could not run: the resolved ssr.resolve
-    // conditions may describe a plugin's foreign runtime (workerd) that Node
-    // consumers must never adopt undetected. Correctness over completeness:
-    // withhold the sugar (loadConfig already warned) and let defaults stand.
-    if (ssr) {
-      delete ssr.resolve;
-      if (Object.keys(ssr).length === 0) ssr = null;
+  try {
+    installConfigReadRecorder();
+    const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
+    const c = config ?? {};
+    warnUnsupported(raw ?? c);
+    // Extraction is the single runner-backed detection authority (the plugin
+    // host and every Rust consumer read what it publishes). On the resolveConfig
+    // path the sentinel decided inside Vite's own hook run; otherwise the port
+    // runs the RAW config's fresh plugin instances (no resolved-config hooks ran
+    // in this process then). Vite's mode rule (config.ts): an explicit inline
+    // mode wins, else the config file's own. isSsrBuild: Vite computes it from
+    // the INLINE config BEFORE the file loads (`config = inlineConfig`;
+    // `isSsrBuild: command === "build" && !!config.build?.ssr`) and never
+    // recomputes it, so a build.ssr that only the config FILE sets is invisible
+    // to config hooks under Vite too; oj has no inline build.ssr at extraction
+    // time, so it is false for serve AND build.
+    const ssrRunnerBacked =
+      typeof runnerBacked === "boolean"
+        ? runnerBacked
+        : await detectSsrRunnerBacked(
+            raw,
+            {
+              command,
+              mode: modeExplicit ? mode : typeof raw?.mode === "string" ? raw.mode : mode,
+              isSsrBuild: false,
+            },
+            merge ?? mergeConfigLite,
+          );
+    let ssr = extractSsr(c.ssr, c.environments?.ssr);
+    let resolveOut = extractResolve(c.resolve);
+    if (raw == null) {
+      // No raw config means detection could not run: the resolved ssr.resolve
+      // conditions may describe a plugin's foreign runtime (workerd) that Node
+      // consumers must never adopt undetected. Correctness over completeness:
+      // withhold the sugar (loadConfig already warned) and let defaults stand.
+      if (ssr) {
+        delete ssr.resolve;
+        if (Object.keys(ssr).length === 0) ssr = null;
+      }
+      // Same rule for the resolved TOP-LEVEL conditions: that list is Vite's
+      // client-environment fill (browser-bearing, possibly plugin-extended) and
+      // the Node consumers would adopt it with no detection to gate it — no
+      // foreign conditions may reach them undetected on this path either.
+      if (resolveOut) {
+        delete resolveOut.conditions;
+        delete resolveOut.externalConditions;
+        if (Object.keys(resolveOut).length === 0) resolveOut = null;
+      }
     }
-    // Same rule for the resolved TOP-LEVEL conditions: that list is Vite's
-    // client-environment fill (browser-bearing, possibly plugin-extended) and
-    // the Node consumers would adopt it with no detection to gate it — no
-    // foreign conditions may reach them undetected on this path either.
-    if (resolveOut) {
-      delete resolveOut.conditions;
-      delete resolveOut.externalConditions;
-      if (Object.keys(resolveOut).length === 0) resolveOut = null;
-    }
-  }
-  recordEnvFilesForMode(
-    typeof c.mode === "string" ? c.mode : mode,
-    typeof c.envDir === "string" ? c.envDir : null,
-  );
-  return {
+    recordEnvFilesForMode(typeof c.mode === "string" ? c.mode : mode, typeof c.envDir === "string" ? c.envDir : null);
+    return {
       __ok: true,
       __stderr: chunks.join(""),
       // Config imports plus the config-shaped files (.json/.jsonc/.toml,
@@ -1516,20 +1522,15 @@ try {
       port: typeof c.server?.port === "number" ? c.server.port : null,
       host: typeof c.server?.host === "string" ? c.server.host : null,
       hmr: c.server?.hmr === false ? false : null,
-      fsAllow: Array.isArray(c.server?.fs?.allow)
-        ? c.server.fs.allow.filter((x) => typeof x === "string")
-        : null,
+      fsAllow: Array.isArray(c.server?.fs?.allow) ? c.server.fs.allow.filter((x) => typeof x === "string") : null,
       fsStrict: typeof c.server?.fs?.strict === "boolean" ? c.server.fs.strict : null,
       define: c.define && typeof c.define === "object" ? c.define : null,
       alias: extractAlias(c.resolve?.alias),
       headers: stringMap(c.server?.headers),
       proxy: extractProxy(c.server?.proxy),
       rollupOptions: markFunctions(c.build?.rolldownOptions ?? c.build?.rollupOptions ?? null),
-      assetsInlineLimit:
-        typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
-      dedupe: Array.isArray(c.resolve?.dedupe)
-        ? c.resolve.dedupe.filter((x) => typeof x === "string")
-        : null,
+      assetsInlineLimit: typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
+      dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
       optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
       build: extractBuild(c.build),
       oxc: extractOxc(c.oxc),
@@ -1552,11 +1553,11 @@ try {
       preview: extractPreview(c.preview),
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
-  };
-} catch (e) {
-  emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);
-  // A config that failed to evaluate is not a config with no values: __ok
-  // stays false and the caller refuses to serve defaults under it.
-  return { __ok: false, __stderr: chunks.join("") };
-}
+    };
+  } catch (e) {
+    emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);
+    // A config that failed to evaluate is not a config with no values: __ok
+    // stays false and the caller refuses to serve defaults under it.
+    return { __ok: false, __stderr: chunks.join("") };
+  }
 }

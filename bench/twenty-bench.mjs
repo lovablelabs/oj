@@ -25,17 +25,16 @@ const TOOLS = {
   oj: {
     port: 5411,
     spawn: () => spawn(OJ_BIN, ["dev", APP, "--port", "5411"], { cwd: APP_ROOT, stdio: "ignore" }),
-    clearCache: () =>
-      fs.rmSync(path.join(APP_ROOT, APP, ".oj-cache"), { recursive: true, force: true }),
+    clearCache: () => fs.rmSync(path.join(APP_ROOT, APP, ".oj-cache"), { recursive: true, force: true }),
   },
   vite: {
     port: 5412,
     spawn: () =>
-      spawn(
-        process.execPath,
-        [path.join(APP_ROOT, "node_modules/vite/bin/vite.js"), "--port", "5412"],
-        { cwd: path.join(APP_ROOT, APP), stdio: "ignore", env: { ...process.env } },
-      ),
+      spawn(process.execPath, [path.join(APP_ROOT, "node_modules/vite/bin/vite.js"), "--port", "5412"], {
+        cwd: path.join(APP_ROOT, APP),
+        stdio: "ignore",
+        env: { ...process.env },
+      }),
     clearCache: () => {
       for (const d of ["node_modules/.vite", "node_modules/.vite/packages/twenty-front"])
         fs.rmSync(path.join(APP_ROOT, d), { recursive: true, force: true });
@@ -105,21 +104,30 @@ async function session(tool, cold, browser) {
     const rss = treeRssMb(proc.pid);
     return { ms, rss };
   } finally {
-    try { execSync(`pkill -P ${proc.pid}`); } catch {}
-    try { proc.kill("SIGKILL"); } catch {}
-    try { execSync(`lsof -ti:${t.port} -sTCP:LISTEN | xargs -r kill -9`); } catch {}
+    try {
+      execSync(`pkill -P ${proc.pid}`);
+    } catch {}
+    try {
+      proc.kill("SIGKILL");
+    } catch {}
+    try {
+      execSync(`lsof -ti:${t.port} -sTCP:LISTEN | xargs -r kill -9`);
+    } catch {}
     await sleep(700);
   }
 }
 
 async function bench(tool) {
   const browser = await chromium.launch();
-  const cold = [], warm = [], rss = [];
+  const cold = [],
+    warm = [],
+    rss = [];
   try {
     for (let i = 0; i < ITERS; i++) {
       process.stderr.write(`  ${tool} cold ${i + 1}/${ITERS}\n`);
       const c = await session(tool, true, browser);
-      cold.push(c.ms); rss.push(c.rss);
+      cold.push(c.ms);
+      rss.push(c.rss);
       process.stderr.write(`  ${tool} warm ${i + 1}/${ITERS}\n`);
       const w = await session(tool, false, browser);
       warm.push(w.ms);

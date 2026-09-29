@@ -32,7 +32,10 @@ fs.writeFileSync(
     `  "^/search\\\\?q=": "http://localhost:${BACKEND}",\n` +
     `} } };\n`,
 );
-fs.writeFileSync(path.join(app, "index.html"), `<!doctype html><html><head><title>t</title></head><body>INDEX</body></html>`);
+fs.writeFileSync(
+  path.join(app, "index.html"),
+  `<!doctype html><html><head><title>t</title></head><body>INDEX</body></html>`,
+);
 
 const backend = http.createServer((req, res) => res.end("BACKEND:" + req.url));
 
@@ -61,8 +64,13 @@ try {
   // The SIGKILLed server's node children flush for a beat and race the removal
   // (ENOTEMPTY); retry like proxy-target-forms.mjs / start-cloudflare-dev.mjs.
   for (let i = 0; ; i++) {
-    try { fs.rmSync(app, { recursive: true, force: true }); break; }
-    catch { if (i >= 20) break; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); }
+    try {
+      fs.rmSync(app, { recursive: true, force: true });
+      break;
+    } catch {
+      if (i >= 20) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
   }
 }
 process.exit(failed ? 1 : 0);

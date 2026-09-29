@@ -48,14 +48,26 @@ fs.writeFileSync(
 // constructor never lets a client set it).
 function upgrade(pathname, headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request(
-      { host: "localhost", port, path: pathname, headers: {
-        Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13",
-        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", ...headers,
-      } },
-    );
-    req.on("upgrade", (res, socket) => { socket.destroy(); resolve(res.statusCode); });
-    req.on("response", (res) => { res.resume(); resolve(res.statusCode); });
+    const req = http.request({
+      host: "localhost",
+      port,
+      path: pathname,
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        ...headers,
+      },
+    });
+    req.on("upgrade", (res, socket) => {
+      socket.destroy();
+      resolve(res.statusCode);
+    });
+    req.on("response", (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
     req.on("error", reject);
     req.end();
   });
@@ -84,7 +96,11 @@ try {
   assert.equal(await upgrade("/__ws", origin), 401, "the default path is guarded too");
   assert.equal(await upgrade("/__ws"), 101, "a non-browser client (no Origin) connects without a token");
   assert.equal(await upgrade("/", { ...origin, "Sec-WebSocket-Protocol": "vite-ping" }), 101, "vite-ping is exempt");
-  assert.equal(await upgrade("/", { ...origin, "Sec-WebSocket-Protocol": "vite-hmr" }), 401, "a vite-hmr browser dial needs the token");
+  assert.equal(
+    await upgrade("/", { ...origin, "Sec-WebSocket-Protocol": "vite-hmr" }),
+    401,
+    "a vite-hmr browser dial needs the token",
+  );
   assert.equal(await upgrade(`/?token=${token}`, { ...origin, "Sec-WebSocket-Protocol": "vite-hmr" }), 101);
 
   const browser = await chromium.launch();
@@ -100,11 +116,14 @@ try {
 
     // overlay:false: a compile error logs but shows no dialog.
     fs.writeFileSync(path.join(app, "src", "main.js"), `document.title = "v3"; const = ;\n`);
-    await page.waitForFunction(
-      () => performance.getEntriesByType("resource").length >= 0, { timeout: 1000 },
-    ).catch(() => {});
+    await page
+      .waitForFunction(() => performance.getEntriesByType("resource").length >= 0, { timeout: 1000 })
+      .catch(() => {});
     await settles(() => logs.some((l) => l.includes("Internal Server Error")));
-    assert.ok(logs.some((l) => l.includes("Internal Server Error")), `error logged to the console: ${logs.join(" | ")}`);
+    assert.ok(
+      logs.some((l) => l.includes("Internal Server Error")),
+      `error logged to the console: ${logs.join(" | ")}`,
+    );
     assert.equal(await page.locator('[role="dialog"]').count(), 0, "no overlay when hmr.overlay is false");
 
     // The custom element is registered and usable by framework runtimes.

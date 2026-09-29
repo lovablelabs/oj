@@ -95,7 +95,11 @@ try {
 
   const failing = spawnSync(oj, ["build", app], { encoding: "utf8", env: { ...process.env, OJ_TEST_HTML_THROW: "1" } });
   assert.notEqual(failing.status, 0, "a throwing transformIndexHtml fails the build");
-  assert.match(failing.stderr + failing.stdout, /\[plugin:html-ctx\] no html for you/, `the build error names the plugin:\n${failing.stderr}`);
+  assert.match(
+    failing.stderr + failing.stdout,
+    /\[plugin:html-ctx\] no html for you/,
+    `the build error names the plugin:\n${failing.stderr}`,
+  );
   console.log("PLUGIN-HTML-CTX E2E PASSED");
 } catch (err) {
   failed = true;

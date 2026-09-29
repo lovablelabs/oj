@@ -26,13 +26,11 @@ function app(label, { tsrConfig } = {}) {
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "app", type: "module" }));
   writeFileSync(
     join(dir, "src", "routes", "__root.tsx"),
-    'import { createRootRoute } from "@tanstack/react-router";\n' +
-      "export const Route = createRootRoute();\n",
+    'import { createRootRoute } from "@tanstack/react-router";\n' + "export const Route = createRootRoute();\n",
   );
   writeFileSync(
     join(dir, "src", "routes", "index.tsx"),
-    'import { createFileRoute } from "@tanstack/react-router";\n' +
-      'export const Route = createFileRoute("/")({});\n',
+    'import { createFileRoute } from "@tanstack/react-router";\n' + 'export const Route = createFileRoute("/")({});\n',
   );
   if (tsrConfig) writeFileSync(join(dir, "tsr.config.json"), JSON.stringify(tsrConfig));
   return dir;

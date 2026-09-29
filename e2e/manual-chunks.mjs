@@ -21,14 +21,20 @@ const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-mc-"));
 const pkg = (name, body) => {
   const dir = path.join(app, "node_modules", name);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", module: "index.js", main: "index.js" }));
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    JSON.stringify({ name, version: "1.0.0", module: "index.js", main: "index.js" }),
+  );
   fs.writeFileSync(path.join(dir, "index.js"), body);
 };
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "mc-app", version: "1.0.0" }));
 pkg("dep-a", `export const a = "DEP_A_MARKER_" + 42;`);
 pkg("dep-b", `export const b = "DEP_B_MARKER_" + 7;`);
-fs.writeFileSync(path.join(app, "src", "main.js"), `import { a } from "dep-a";\nimport { b } from "dep-b";\nwindow.__V = a + b;\n`);
+fs.writeFileSync(
+  path.join(app, "src", "main.js"),
+  `import { a } from "dep-a";\nimport { b } from "dep-b";\nwindow.__V = a + b;\n`,
+);
 fs.writeFileSync(
   path.join(app, "index.html"),
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
@@ -60,7 +66,9 @@ try {
   page.on("pageerror", (e) => errors.push(String(e)));
   try {
     await page.goto("http://localhost:5382/", { timeout: 30000 });
-    const v = await page.waitForFunction(() => window.__V, { timeout: 10000 }).then(() => page.evaluate(() => window.__V));
+    const v = await page
+      .waitForFunction(() => window.__V, { timeout: 10000 })
+      .then(() => page.evaluate(() => window.__V));
     assert.equal(v, "DEP_A_MARKER_42DEP_B_MARKER_7", "split chunks did not link at runtime");
     assert.equal(errors.length, 0, `page errors: ${errors.join("|")}`);
   } finally {

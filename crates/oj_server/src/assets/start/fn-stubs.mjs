@@ -12,11 +12,15 @@ function make(clientImpl, serverImpl) {
 export function createIsomorphicFn() {
   return make(undefined, undefined);
 }
-export const createServerOnlyFn = (fn) => (...a) => {
-  if (isServerRuntime) return fn(...a);
-  throw new Error("createServerOnlyFn: called on the client");
-};
-export const createClientOnlyFn = (fn) => (...a) => {
-  if (!isServerRuntime) return fn(...a);
-  throw new Error("createClientOnlyFn: called on the server");
-};
+export const createServerOnlyFn =
+  (fn) =>
+  (...a) => {
+    if (isServerRuntime) return fn(...a);
+    throw new Error("createServerOnlyFn: called on the client");
+  };
+export const createClientOnlyFn =
+  (fn) =>
+  (...a) => {
+    if (!isServerRuntime) return fn(...a);
+    throw new Error("createClientOnlyFn: called on the server");
+  };

@@ -30,13 +30,18 @@ const write = (rel, text) => {
   fs.mkdirSync(path.dirname(path.join(app, rel)), { recursive: true });
   fs.writeFileSync(path.join(app, rel), text);
 };
-write("package.json", JSON.stringify({ name: "reqcond-app", version: "1.0.0", dependencies: { "dual-fn": "1.0.0", "cjs-user": "1.0.0" } }));
+write(
+  "package.json",
+  JSON.stringify({ name: "reqcond-app", version: "1.0.0", dependencies: { "dual-fn": "1.0.0", "cjs-user": "1.0.0" } }),
+);
 write(
   "node_modules/dual-fn/package.json",
   JSON.stringify({
     name: "dual-fn",
     version: "1.0.0",
-    exports: { ".": { development: { import: "./esm.js", require: "./cjs.js" }, import: "./esm.js", require: "./cjs.js" } },
+    exports: {
+      ".": { development: { import: "./esm.js", require: "./cjs.js" }, import: "./esm.js", require: "./cjs.js" },
+    },
   }),
 );
 write("node_modules/dual-fn/esm.js", `export default function fn() { return "ESM_BUILD"; }\n`);
@@ -50,7 +55,10 @@ write(
   "src/main.js",
   `import { kind, value } from "cjs-user";\nimport esmFn from "dual-fn";\nwindow.__R = { kind, value, esm: esmFn() };\n`,
 );
-write("index.html", `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`);
+write(
+  "index.html",
+  `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
+);
 
 let failed = false;
 let srv = null;
@@ -61,13 +69,21 @@ try {
 
   // The ESM importer keeps the `import` condition.
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
-  assert.match(main, /from\s+"\/node_modules\/dual-fn\/esm\.js[^"]*"/, `app import should pick the ESM build:\n${main}`);
+  assert.match(
+    main,
+    /from\s+"\/node_modules\/dual-fn\/esm\.js[^"]*"/,
+    `app import should pick the ESM build:\n${main}`,
+  );
   const userUrl = main.match(/from\s+"(\/node_modules\/cjs-user\/index\.js[^"]*)"/)?.[1];
   assert.ok(userUrl, `cjs-user not rewritten to its served URL:\n${main}`);
 
   // The CJS requirer resolves with the `require` condition.
   const user = await (await fetch(`http://localhost:${PORT}${userUrl}`)).text();
-  assert.match(user, /from\s+"\/node_modules\/dual-fn\/cjs\.js[^"]*"/, `require("dual-fn") should pick the CJS build:\n${user}`);
+  assert.match(
+    user,
+    /from\s+"\/node_modules\/dual-fn\/cjs\.js[^"]*"/,
+    `require("dual-fn") should pick the CJS build:\n${user}`,
+  );
   assert.doesNotMatch(user, /dual-fn\/esm\.js/, `require("dual-fn") picked the ESM build:\n${user}`);
 
   // And at runtime the requirer sees `module.exports` itself, not a namespace.

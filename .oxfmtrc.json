@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 120,
+  "ignorePatterns": [
+    "reference/**",
+    "crates/oj_deno_*/**",
+    "e2e/fixtures/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.gen.ts",
+    "target*/**"
+  ]
+}

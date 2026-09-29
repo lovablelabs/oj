@@ -30,8 +30,10 @@ fs.writeFileSync(
 );
 fs.writeFileSync(path.join(app, "dep.tsx"), `export const dep = 7;\n`);
 fs.writeFileSync(path.join(app, "unused.tsx"), `export const unused = 99;\n`);
-fs.writeFileSync(path.join(app, "main.tsx"), `import { dep } from "./dep";\nexport const value = dep + 1;\nconsole.log(value);\n`);
-
+fs.writeFileSync(
+  path.join(app, "main.tsx"),
+  `import { dep } from "./dep";\nexport const value = dep + 1;\nconsole.log(value);\n`,
+);
 
 // Run oj, collect stdout, request the entry + main, and report whether the eager
 // crawl ran (it prints "eager graph ready").
@@ -53,9 +55,15 @@ async function run({ lazy }) {
     await settles(() => /eager graph ready/.test(out), { timeoutMs: 3000, pollMs: 150 });
     return out;
   } finally {
-    try { execSync(`pkill -P ${proc.pid}`); } catch {}
-    try { proc.kill("SIGKILL"); } catch {}
-    try { execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs -r kill -9`); } catch {}
+    try {
+      execSync(`pkill -P ${proc.pid}`);
+    } catch {}
+    try {
+      proc.kill("SIGKILL");
+    } catch {}
+    try {
+      execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs -r kill -9`);
+    } catch {}
     await sleep(500);
   }
 }
@@ -66,10 +74,7 @@ try {
   assert.match(defaultOut, /eager graph ready/, "default must run the eager crawl");
 
   const lazyOut = await run({ lazy: true });
-  assert.ok(
-    !/eager graph ready/.test(lazyOut),
-    `--lazy must NOT run the eager crawl:\n${lazyOut}`,
-  );
+  assert.ok(!/eager graph ready/.test(lazyOut), `--lazy must NOT run the eager crawl:\n${lazyOut}`);
 
   console.log("PASS lazy-flag");
 } catch (e) {

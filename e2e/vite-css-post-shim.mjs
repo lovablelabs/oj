@@ -52,7 +52,11 @@ try {
 
   const cssDir = path.join(app, "dist", "assets");
   const css = fs.existsSync(cssDir)
-    ? fs.readdirSync(cssDir).filter((f) => f.endsWith(".css")).map((f) => fs.readFileSync(path.join(cssDir, f), "utf8")).join("\n")
+    ? fs
+        .readdirSync(cssDir)
+        .filter((f) => f.endsWith(".css"))
+        .map((f) => fs.readFileSync(path.join(cssDir, f), "utf8"))
+        .join("\n")
     : "";
 
   assert.ok(css.includes(".gen"), "CSS handed to the vite:css-post shim reached the output stylesheet");

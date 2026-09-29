@@ -9,9 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { asset, repo } from "./harness.mjs";
@@ -26,19 +24,14 @@ function app(label, { pkg } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "oj-tree-footer-" + label + "-"));
   mkdirSync(join(dir, "src", "routes"), { recursive: true });
   symlinkSync(join(fixture, "node_modules"), join(dir, "node_modules"), "dir");
-  writeFileSync(
-    join(dir, "package.json"),
-    JSON.stringify({ name: "app", type: "module", ...pkg }),
-  );
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "app", type: "module", ...pkg }));
   writeFileSync(
     join(dir, "src", "routes", "__root.tsx"),
-    'import { createRootRoute } from "@tanstack/react-router";\n' +
-      "export const Route = createRootRoute();\n",
+    'import { createRootRoute } from "@tanstack/react-router";\n' + "export const Route = createRootRoute();\n",
   );
   writeFileSync(
     join(dir, "src", "routes", "index.tsx"),
-    'import { createFileRoute } from "@tanstack/react-router";\n' +
-      'export const Route = createFileRoute("/")({});\n',
+    'import { createFileRoute } from "@tanstack/react-router";\n' + 'export const Route = createFileRoute("/")({});\n',
   );
   return dir;
 }

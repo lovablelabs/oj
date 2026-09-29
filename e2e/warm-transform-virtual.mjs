@@ -77,9 +77,15 @@ function startOj() {
   return proc;
 }
 async function stopOj(proc) {
-  try { execSync(`pkill -P ${proc.pid}`); } catch {}
-  try { proc.kill("SIGKILL"); } catch {}
-  try { execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs -r kill -9`); } catch {}
+  try {
+    execSync(`pkill -P ${proc.pid}`);
+  } catch {}
+  try {
+    proc.kill("SIGKILL");
+  } catch {}
+  try {
+    execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs -r kill -9`);
+  } catch {}
   await sleep(500);
 }
 

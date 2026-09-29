@@ -43,17 +43,24 @@ const keep = !!process.env.OJ_E2E_KEEP;
 const cleanup = () => {
   if (keep) return;
   for (let i = 0; ; i++) {
-    try { return fs.rmSync(tmp, { recursive: true, force: true }); }
-    catch (e) {
+    try {
+      return fs.rmSync(tmp, { recursive: true, force: true });
+    } catch (e) {
       if (i >= 20) return;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
     }
   }
 };
 
-fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "proxy-forms", private: true, type: "module" }));
+fs.writeFileSync(
+  path.join(tmp, "package.json"),
+  JSON.stringify({ name: "proxy-forms", private: true, type: "module" }),
+);
 fs.symlinkSync(path.join(fixture, "node_modules"), path.join(tmp, "node_modules"), "dir");
-fs.writeFileSync(path.join(tmp, "index.html"), "<!doctype html><html><head><title>t</title></head><body>home</body></html>");
+fs.writeFileSync(
+  path.join(tmp, "index.html"),
+  "<!doctype html><html><head><title>t</title></head><body>home</body></html>",
+);
 fs.writeFileSync(path.join(tmp, "served.html"), "<!doctype html><html><body>SERVED-LOCALLY</body></html>");
 fs.writeFileSync(
   path.join(tmp, "vite.config.ts"),

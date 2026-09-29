@@ -23,10 +23,7 @@ const port = 5291;
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-lingui-"));
-fs.writeFileSync(
-  path.join(app, "package.json"),
-  JSON.stringify({ name: "lingui-shim-app", version: "1.0.0" }),
-);
+fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "lingui-shim-app", version: "1.0.0" }));
 fs.writeFileSync(
   path.join(app, "index.html"),
   `<!doctype html><html><head><title>lingui</title></head><body><div id="root"></div><script type="module" src="/main.js"></script></body></html>`,

@@ -35,7 +35,11 @@ function fakeRuntime(name) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, "package.json"),
-    JSON.stringify({ name, version: "1.0.0", exports: { "./jsx-runtime": "./jsx-runtime.js", "./jsx-dev-runtime": "./jsx-dev-runtime.js" } }),
+    JSON.stringify({
+      name,
+      version: "1.0.0",
+      exports: { "./jsx-runtime": "./jsx-runtime.js", "./jsx-dev-runtime": "./jsx-dev-runtime.js" },
+    }),
   );
   const body = `export const Fragment = Symbol("${name}");\nexport const jsx = (t, p) => ({ from: "${name}", t, p });\n`;
   fs.writeFileSync(path.join(dir, "jsx-runtime.js"), body + `export const jsxs = jsx;\n`);
@@ -62,7 +66,11 @@ const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" })
 try {
   await waitUp(`http://localhost:${PORT}/`);
   const appJs = await (await fetch(`http://localhost:${PORT}/src/App.jsx`)).text();
-  assert.match(appJs, /@fake\/emotion\/jsx-dev-runtime/, `dev App.jsx does not import the configured source:\n${appJs}`);
+  assert.match(
+    appJs,
+    /@fake\/emotion\/jsx-dev-runtime/,
+    `dev App.jsx does not import the configured source:\n${appJs}`,
+  );
   assert.doesNotMatch(appJs, /["/]react\/jsx/, "dev App.jsx still imports react's runtime");
   const pragmaJs = await (await fetch(`http://localhost:${PORT}/src/Pragma.jsx`)).text();
   assert.match(pragmaJs, /@fake\/solid\/jsx-dev-runtime/, `dev pragma did not win:\n${pragmaJs}`);
@@ -72,7 +80,11 @@ try {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
   const assets = path.join(app, "dist", "assets");
-  const built = fs.readdirSync(assets).filter((f) => f.endsWith(".js")).map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
+  const built = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
   assert.match(built, /@fake\/emotion/, "build did not use the configured importSource");
   assert.match(built, /@fake\/solid/, "build did not honor the file pragma");
   assert.doesNotMatch(built, /react\/jsx-runtime/, "build still references react's runtime");

@@ -61,16 +61,22 @@ try {
       () => getComputedStyle(document.querySelector("h1")).textDecorationLine === "underline",
       { timeout: 20000 },
     );
-    assert.equal(await page.evaluate(() => document.querySelectorAll("link[rel=stylesheet]").length), 0, "no <link>: css is JS-imported");
+    assert.equal(
+      await page.evaluate(() => document.querySelectorAll("link[rel=stylesheet]").length),
+      0,
+      "no <link>: css is JS-imported",
+    );
     const btn = page.locator("button");
-    await btn.click(); await btn.click();
-    await page.evaluate(() => { window.__NOT_RELOADED = true; });
+    await btn.click();
+    await btn.click();
+    await page.evaluate(() => {
+      window.__NOT_RELOADED = true;
+    });
 
     fs.writeFileSync(APP, appSrc("underline italic"));
-    await page.waitForFunction(
-      () => getComputedStyle(document.querySelector("h1")).fontStyle === "italic",
-      { timeout: 20000 },
-    );
+    await page.waitForFunction(() => getComputedStyle(document.querySelector("h1")).fontStyle === "italic", {
+      timeout: 20000,
+    });
     assert.equal(await page.evaluate(() => window.__NOT_RELOADED), true, "page was reloaded");
     assert.match(await btn.textContent(), /Clicks: 2/, "component state lost");
     assert.equal(errors.length, 0, `page errors: ${errors.join("|")}`);

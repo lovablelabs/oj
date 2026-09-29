@@ -121,7 +121,7 @@ export const esmRelativeRoute = createRoute({
 const routeTreePath = path.join(app, "src", "routeTree.ts");
 const routeTree = fs
   .readFileSync(routeTreePath, "utf8")
-  .replace('import { rootRoute }', 'import { esmRelativeRoute } from "./routes/esm-relative";\nimport { rootRoute }')
+  .replace("import { rootRoute }", 'import { esmRelativeRoute } from "./routes/esm-relative";\nimport { rootRoute }')
   .replace("requestUrlRoute]", "requestUrlRoute, esmRelativeRoute]");
 if (!routeTree.includes("esmRelativeRoute]")) throw new Error("could not register the test route");
 fs.writeFileSync(routeTreePath, routeTree);
@@ -137,11 +137,13 @@ server.stderr.on("data", (d) => (log += d));
 try {
   let body;
   let status = 0;
-  await waitUp(`http://127.0.0.1:${port}/esm-relative`, { until: async (res) => {
-    status = res.status;
-    body = await res.text();
-    return status === 200 || status === 500;
-  } }).catch(() => {});
+  await waitUp(`http://127.0.0.1:${port}/esm-relative`, {
+    until: async (res) => {
+      status = res.status;
+      body = await res.text();
+      return status === 200 || status === 500;
+    },
+  }).catch(() => {});
   if (status !== 200 || !body.includes("greet:hi-esm-4:dir-esm:exp-entry:idx-entry:sugar-entry")) {
     console.error(log.slice(-4000));
     throw new Error(

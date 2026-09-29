@@ -75,8 +75,14 @@ function installCloudflareDeps() {
     fs.symlinkSync(path.join(path.resolve(prepared), "node_modules"), path.join(tmp, "node_modules"), "dir");
     return;
   }
-  fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }));
-  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", { cwd: tmp, stdio: "inherit" });
+  fs.writeFileSync(
+    path.join(tmp, "package.json"),
+    JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }),
+  );
+  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", {
+    cwd: tmp,
+    stdio: "inherit",
+  });
 }
 
 function makeApp() {
@@ -85,16 +91,19 @@ function makeApp() {
     fs.cpSync(path.join(fixture, f), path.join(app, f), { recursive: true });
   }
   fs.symlinkSync(path.join(fixture, "node_modules"), path.join(app, "node_modules"), "dir");
-  fs.writeFileSync(path.join(app, "wrangler.jsonc"), [
-    "{",
-    '  "name": "oj-bundleddev-fixture",',
-    '  "main": "@tanstack/react-start/server-entry",',
-    '  "compatibility_date": "2025-09-01",',
-    '  "compatibility_flags": ["nodejs_compat"],',
-    '  "vars": { "EDITION": "fixture-edition" }',
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "wrangler.jsonc"),
+    [
+      "{",
+      '  "name": "oj-bundleddev-fixture",',
+      '  "main": "@tanstack/react-start/server-entry",',
+      '  "compatibility_date": "2025-09-01",',
+      '  "compatibility_flags": ["nodejs_compat"],',
+      '  "vars": { "EDITION": "fixture-edition" }',
+      "}",
+      "",
+    ].join("\n"),
+  );
   const original = fs.readFileSync(path.join(fixture, "vite.config.ts"), "utf8");
   const withImport = original.replace(
     'import { defineConfig } from "vite";',
@@ -110,7 +119,10 @@ function makeApp() {
     /export default defineConfig\(\{/,
     "export default defineConfig({\n  experimental: { bundledDev: true },\n  server: { fs: { strict: false } },",
   );
-  const config = withBundledDev.replace(/^(\s*)tanstackStart\(/m, '$1cloudflare({ viteEnvironment: { name: "ssr" } }),\n$1tanstackStart(');
+  const config = withBundledDev.replace(
+    /^(\s*)tanstackStart\(/m,
+    '$1cloudflare({ viteEnvironment: { name: "ssr" } }),\n$1tanstackStart(',
+  );
   if (config === original || config === withImport || config === withBundledDev) {
     throw new Error("fixture vite.config.ts changed shape; update this script");
   }
@@ -127,32 +139,35 @@ function makeApp() {
   // The counter button proves event handlers attached post-hydration: it starts
   // at 0 server-side and only increments once the client runtime is live and its
   // onClick is wired (the interaction step of the shared hydration gate).
-  fs.writeFileSync(path.join(app, "src", "routes", "index.tsx"), [
-    'import { createRoute } from "@tanstack/react-router";',
-    'import { useEffect, useState } from "react";',
-    'import { rootRoute } from "./__root";',
-    'import { shout } from "#lib/format";',
-    "",
-    "export const indexRoute = createRoute({",
-    "  getParentRoute: () => rootRoute,",
-    '  path: "/",',
-    "  component: Index,",
-    "});",
-    "",
-    "function Index() {",
-    "  const [mounted, setMounted] = useState(false);",
-    "  const [count, setCount] = useState(0);",
-    "  useEffect(() => setMounted(true), []);",
-    "  return (",
-    "    <main>",
-    '      <h1 className="fixture-heading">{shout("home")}</h1>',
-    '      {mounted ? <span data-testid="client-mounted">client-mounted-ok</span> : null}',
-    '      <button data-testid="counter" onClick={() => setCount((c) => c + 1)}>count: {count}</button>',
-    "    </main>",
-    "  );",
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "routes", "index.tsx"),
+    [
+      'import { createRoute } from "@tanstack/react-router";',
+      'import { useEffect, useState } from "react";',
+      'import { rootRoute } from "./__root";',
+      'import { shout } from "#lib/format";',
+      "",
+      "export const indexRoute = createRoute({",
+      "  getParentRoute: () => rootRoute,",
+      '  path: "/",',
+      "  component: Index,",
+      "});",
+      "",
+      "function Index() {",
+      "  const [mounted, setMounted] = useState(false);",
+      "  const [count, setCount] = useState(0);",
+      "  useEffect(() => setMounted(true), []);",
+      "  return (",
+      "    <main>",
+      '      <h1 className="fixture-heading">{shout("home")}</h1>',
+      '      {mounted ? <span data-testid="client-mounted">client-mounted-ok</span> : null}',
+      '      <button data-testid="counter" onClick={() => setCount((c) => c + 1)}>count: {count}</button>',
+      "    </main>",
+      "  );",
+      "}",
+      "",
+    ].join("\n"),
+  );
 }
 
 const req = async (route, { timeoutMs } = {}) => {
@@ -190,30 +205,44 @@ async function run() {
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
   const stop = () => {
-    try { process.kill(-srv.pid, "SIGTERM"); } catch {}
-    setTimeout(() => { try { process.kill(-srv.pid, "SIGKILL"); } catch {} }, 2000).unref();
+    try {
+      process.kill(-srv.pid, "SIGTERM");
+    } catch {}
+    setTimeout(() => {
+      try {
+        process.kill(-srv.pid, "SIGKILL");
+      } catch {}
+    }, 2000).unref();
   };
   try {
     // Read the port oj actually bound before probing it: it may have incremented
     // off REQ_PORT, and probing REQ_PORT would then hit a stale server.
-    await settles(() => {
-      if (srv.exitCode != null) return true;
-      const bound = parseBoundPort(log);
-      if (bound) PORT = bound;
-      return Boolean(bound);
-    }, { timeoutMs: 60000, pollMs: 250 });
+    await settles(
+      () => {
+        if (srv.exitCode != null) return true;
+        const bound = parseBoundPort(log);
+        if (bound) PORT = bound;
+        return Boolean(bound);
+      },
+      { timeoutMs: 60000, pollMs: 250 },
+    );
     let up = false;
     let lastStatus = "no response";
-    await settles(async () => {
-      if (srv.exitCode != null) return true;
-      try {
-        const r = await fetch(`http://127.0.0.1:${PORT}/`);
-        lastStatus = String(r.status);
-        up = r.status === 200;
-        if (!up) lastStatus = `${r.status}: ${(await r.text()).slice(0, 300)}`;
-      } catch (e) { lastStatus = `fetch error: ${(e && e.message) || e}`; }
-      return up;
-    }, { timeoutMs: 120000, pollMs: 500 });
+    await settles(
+      async () => {
+        if (srv.exitCode != null) return true;
+        try {
+          const r = await fetch(`http://127.0.0.1:${PORT}/`);
+          lastStatus = String(r.status);
+          up = r.status === 200;
+          if (!up) lastStatus = `${r.status}: ${(await r.text()).slice(0, 300)}`;
+        } catch (e) {
+          lastStatus = `fetch error: ${(e && e.message) || e}`;
+        }
+        return up;
+      },
+      { timeoutMs: 120000, pollMs: 500 },
+    );
     if (!up) throw new Error(`oj dev did not serve 200 on :${PORT} (last: ${lastStatus}); log:\n${log.slice(-4000)}`);
 
     const home = await req("/");
@@ -276,14 +305,20 @@ async function run() {
 
     // ---- FIXED TREE: assert the standard entry + hydration + warning. ----
     if (!home.body.includes(STANDARD_ENTRY)) {
-      throw new Error(`/: references neither ${BUNDLED_ENTRY} nor the standard entry ${STANDARD_ENTRY}\n${home.body.slice(0, 1500)}`);
+      throw new Error(
+        `/: references neither ${BUNDLED_ENTRY} nor the standard entry ${STANDARD_ENTRY}\n${home.body.slice(0, 1500)}`,
+      );
     }
-    console.log(`bundledDev-coerce: / references the standard dev client entry (${STANDARD_ENTRY}), not ${BUNDLED_ENTRY}`);
+    console.log(
+      `bundledDev-coerce: / references the standard dev client entry (${STANDARD_ENTRY}), not ${BUNDLED_ENTRY}`,
+    );
 
     // The standard dev client entry must actually serve.
     const entry = await req(`/@id/${STANDARD_ENTRY}`);
     if (entry.status !== 200) {
-      throw new Error(`the standard dev client entry did not serve 200 (got ${entry.status})\n${entry.body.slice(0, 800)}`);
+      throw new Error(
+        `the standard dev client entry did not serve 200 (got ${entry.status})\n${entry.body.slice(0, 800)}`,
+      );
     }
     console.log("bundledDev-coerce: the standard dev client entry serves 200");
 
@@ -320,16 +355,23 @@ async function run() {
           ssrMarker: "HOME!",
           clientMarker: '[data-testid="client-mounted"]',
           clientMarkerText: "client-mounted-ok",
-          interaction: { click: '[data-testid="counter"]', expect: { selector: '[data-testid="counter"]', text: "count: 1" } },
+          interaction: {
+            click: '[data-testid="counter"]',
+            expect: { selector: '[data-testid="counter"]', text: "count: 1" },
+          },
           deadlineMs: 30000,
           whitelist: HYDRATION_WHITELIST,
         });
-        console.log("bundledDev-coerce: headless Chromium HYDRATED (marker + counter interaction) — client runtime is live");
+        console.log(
+          "bundledDev-coerce: headless Chromium HYDRATED (marker + counter interaction) — client runtime is live",
+        );
       } finally {
         await browser.close();
       }
     } else {
-      console.log("bundledDev-coerce: playwright not installed locally; ran the HTTP-level assertions and skipped the browser hydration check (CI runs it)");
+      console.log(
+        "bundledDev-coerce: playwright not installed locally; ran the HTTP-level assertions and skipped the browser hydration check (CI runs it)",
+      );
     }
   } finally {
     stop();

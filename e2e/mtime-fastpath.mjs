@@ -35,7 +35,10 @@ try {
 
   const get = async () => (await fetch(`http://localhost:${PORT}/src/mod.js`)).text();
   const up = async () => {
-    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    return waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
   };
   if (!(await up())) throw new Error("server did not start:\n" + out);
 

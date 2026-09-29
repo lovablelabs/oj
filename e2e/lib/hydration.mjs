@@ -65,16 +65,18 @@ export function collectBrowserErrors(page) {
     if (type === "error" || type === "warning") consoleMessages.push({ type, text: m.text() });
   });
   page.on("pageerror", (e) => pageErrors.push((e && e.message) || String(e)));
-  page.on("requestfailed", (r) =>
-    requestFailures.push({ url: r.url(), error: r.failure()?.errorText ?? "unknown" }),
-  );
+  page.on("requestfailed", (r) => requestFailures.push({ url: r.url(), error: r.failure()?.errorText ?? "unknown" }));
   page.on("response", (r) => {
     if (r.status() >= 400 && isModuleUrl(r.url())) {
       // Capture the body the BROWSER actually got (a re-fetch can return a
       // different result on a flaky module); async, resolves before the assert.
       const entry = { status: r.status(), url: r.url(), body: "" };
       badResponses.push(entry);
-      r.text().then((t) => { entry.body = t.replace(/\s+/g, " ").trim().slice(0, 600); }).catch(() => {});
+      r.text()
+        .then((t) => {
+          entry.body = t.replace(/\s+/g, " ").trim().slice(0, 600);
+        })
+        .catch(() => {});
     }
   });
 
@@ -271,9 +273,7 @@ export async function assertHydrates(browser, url, opts = {}) {
     }
     if (pageErrs.length) failures.push("page error(s):\n" + pageErrs.map((s) => "  " + s).join("\n"));
     if (consoleErrs.length) {
-      failures.push(
-        "console error(s):\n" + consoleErrs.map((m) => `  [${m.type}] ${m.text}`).join("\n"),
-      );
+      failures.push("console error(s):\n" + consoleErrs.map((m) => `  [${m.type}] ${m.text}`).join("\n"));
     }
   } finally {
     await page.close();

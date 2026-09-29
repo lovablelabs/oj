@@ -12,13 +12,24 @@ function callArgsStart(code, from) {
   let i = from;
   while (i < code.length && /\s/.test(code[i])) i++;
   if (code[i] === "<") {
-    let depth = 0, str = "";
+    let depth = 0,
+      str = "";
     for (; i < code.length; i++) {
       const c = code[i];
-      if (str) { if (c === "\\") i++; else if (c === str) str = ""; continue; }
+      if (str) {
+        if (c === "\\") i++;
+        else if (c === str) str = "";
+        continue;
+      }
       if (c === '"' || c === "'" || c === "`") str = c;
       else if (c === "<") depth++;
-      else if (c === ">") { depth--; if (depth === 0) { i++; break; } }
+      else if (c === ">") {
+        depth--;
+        if (depth === 0) {
+          i++;
+          break;
+        }
+      }
     }
     while (i < code.length && /\s/.test(code[i])) i++;
   }
@@ -41,8 +52,18 @@ function globToRegExp(absGlob, flags = "") {
       re += "[^/]";
     } else if (c === "{") {
       const end = absGlob.indexOf("}", i);
-      if (end === -1) { re += "\\{"; continue; }
-      re += "(?:" + absGlob.slice(i + 1, end).split(",").map((s) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|") + ")";
+      if (end === -1) {
+        re += "\\{";
+        continue;
+      }
+      re +=
+        "(?:" +
+        absGlob
+          .slice(i + 1, end)
+          .split(",")
+          .map((s) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&"))
+          .join("|") +
+        ")";
       i = end;
     } else if ("+^$.()|[]\\".includes(c)) {
       re += "\\" + c;
@@ -55,7 +76,11 @@ function globToRegExp(absGlob, flags = "") {
 
 function walk(dir, out) {
   let entries;
-  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
   for (const e of entries) {
     const p = dir + sep + e.name;
     if (e.isDirectory()) walk(p, out);
@@ -82,7 +107,9 @@ function matchPattern(absGlob, exhaustive = false, caseSensitive = true) {
   // Vite: `caseSensitive: false` matches with nocase (an `Icon.svg` pattern
   // finds `icon.svg`).
   const re = globToRegExp(absGlob, caseSensitive ? "" : "i");
-  const explicitHidden = absGlob.slice(base.length + 1).split("/")
+  const explicitHidden = absGlob
+    .slice(base.length + 1)
+    .split("/")
     .filter((part) => part.startsWith("."))
     .map((part) => globToRegExp(part));
   const all = [];
@@ -126,13 +153,20 @@ function normalizeOptions(opts) {
     }
     if (FORCE_DEFAULT_AS.includes(out.as)) {
       if (out.import && out.import !== "default" && out.import !== "*") {
-        throw new Error(`Option "import" can only be "default" or "*" when "as" is "${out.as}", but got "${out.import}"`);
+        throw new Error(
+          `Option "import" can only be "default" or "*" when "as" is "${out.as}", but got "${out.import}"`,
+        );
       }
       out.import = "default";
     }
     out.query = out.as;
   }
-  if (typeof out.base === "string" && out.base[0] !== "/" && !out.base.startsWith("./") && !out.base.startsWith("../")) {
+  if (
+    typeof out.base === "string" &&
+    out.base[0] !== "/" &&
+    !out.base.startsWith("./") &&
+    !out.base.startsWith("../")
+  ) {
     throw new Error(`Option "base" must start with '/', './' or '../', but got "${out.base}"`);
   }
   return out;
@@ -142,26 +176,41 @@ export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? 
   if (!code.includes("import.meta.glob")) return code;
   const fileDir = dirname(filePath);
   const prelude = [];
-  let g = 0, out = "", last = 0, m;
+  let g = 0,
+    out = "",
+    last = 0,
+    m;
   GLOB_HEAD.lastIndex = 0;
   while ((m = GLOB_HEAD.exec(code))) {
     const argsStart = callArgsStart(code, GLOB_HEAD.lastIndex);
     if (argsStart === -1) continue;
-    let i = argsStart, depth = 1, str = "";
+    let i = argsStart,
+      depth = 1,
+      str = "";
     for (; i < code.length && depth > 0; i++) {
       const c = code[i];
-      if (str) { if (c === "\\") i++; else if (c === str) str = ""; continue; }
+      if (str) {
+        if (c === "\\") i++;
+        else if (c === str) str = "";
+        continue;
+      }
       if (c === '"' || c === "'" || c === "`") str = c;
       else if (c === "(") depth++;
       else if (c === ")") depth--;
     }
     const argsSrc = code.slice(argsStart, i - 1);
     let args;
-    try { args = new Function("return [" + argsSrc + "]")(); } catch { continue; }
+    try {
+      args = new Function("return [" + argsSrc + "]")();
+    } catch {
+      continue;
+    }
     GLOB_HEAD.lastIndex = i;
     const patterns = (Array.isArray(args[0]) ? args[0] : [args[0]]).filter((p) => typeof p === "string");
     let opts;
-    try { opts = normalizeOptions(args[1] && typeof args[1] === "object" ? args[1] : {}); } catch (e) {
+    try {
+      opts = normalizeOptions(args[1] && typeof args[1] === "object" ? args[1] : {});
+    } catch (e) {
       throw new Error(`${e.message} (import.meta.glob in ${filePath})`);
     }
     const includes = patterns.filter((p) => !p.startsWith("!"));
@@ -172,14 +221,13 @@ export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? 
     const isRelative = patterns.every((p) => ".!".includes(p[0]));
     const match = (p) => matchPattern(absGlobOf(p, fileDir, root, base), exhaustive, caseSensitive);
     const exclude = new Set(excludes.flatMap(match));
-    const files = [...new Set(includes.flatMap(match))]
-      .filter((f) => !exclude.has(f) && f !== filePath)
-      .sort();
-    let query = typeof opts.query === "string"
-      ? opts.query
-      : opts.query && typeof opts.query === "object"
-        ? `?${new URLSearchParams(opts.query)}`
-        : "";
+    const files = [...new Set(includes.flatMap(match))].filter((f) => !exclude.has(f) && f !== filePath).sort();
+    let query =
+      typeof opts.query === "string"
+        ? opts.query
+        : opts.query && typeof opts.query === "object"
+          ? `?${new URLSearchParams(opts.query)}`
+          : "";
     if (query && query[0] !== "?") query = `?${query}`;
     // `import: '*'` is the whole namespace, like no `import` at all.
     const importName = typeof opts.import === "string" && opts.import !== "*" ? opts.import : null;
@@ -190,11 +238,13 @@ export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? 
       const key = JSON.stringify(keyOf(f, { fileDir, root, base, isRelative }));
       if (opts.eager) {
         const id = `__oj_glob${g}_${idx}`;
-        prelude.push(wantDefault
-          ? `import ${id} from ${JSON.stringify(spec)};`
-          : importName
-            ? `import { ${importName} as ${id} } from ${JSON.stringify(spec)};`
-            : `import * as ${id} from ${JSON.stringify(spec)};`);
+        prelude.push(
+          wantDefault
+            ? `import ${id} from ${JSON.stringify(spec)};`
+            : importName
+              ? `import { ${importName} as ${id} } from ${JSON.stringify(spec)};`
+              : `import * as ${id} from ${JSON.stringify(spec)};`,
+        );
         return `${key}: ${id}`;
       }
       const imp = wantDefault

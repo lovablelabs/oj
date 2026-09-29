@@ -11,19 +11,43 @@ const APP = process.env.OJ_APP_ROOT ?? process.cwd();
 const CLIENT_DIR = join(dirname(fileURLToPath(import.meta.url)), "client");
 
 function stripJsonc(s) {
-  let out = "", i = 0, inStr = false, q = "";
+  let out = "",
+    i = 0,
+    inStr = false,
+    q = "";
   while (i < s.length) {
-    const c = s[i], n = s[i + 1];
+    const c = s[i],
+      n = s[i + 1];
     if (inStr) {
       out += c;
-      if (c === "\\") { out += n ?? ""; i += 2; continue; }
+      if (c === "\\") {
+        out += n ?? "";
+        i += 2;
+        continue;
+      }
       if (c === q) inStr = false;
-      i++; continue;
+      i++;
+      continue;
     }
-    if (c === '"' || c === "'") { inStr = true; q = c; out += c; i++; continue; }
-    if (c === "/" && n === "/") { while (i < s.length && s[i] !== "\n") i++; continue; }
-    if (c === "/" && n === "*") { i += 2; while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) i++; i += 2; continue; }
-    out += c; i++;
+    if (c === '"' || c === "'") {
+      inStr = true;
+      q = c;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === "/" && n === "/") {
+      while (i < s.length && s[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && n === "*") {
+      i += 2;
+      while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += c;
+    i++;
   }
   return out;
 }
@@ -42,7 +66,10 @@ function parseWranglerTomlVars(text) {
   let inVars = false;
   for (const line of text.split("\n")) {
     const t = line.trim();
-    if (t.startsWith("[")) { inVars = t === "[vars]"; continue; }
+    if (t.startsWith("[")) {
+      inVars = t === "[vars]";
+      continue;
+    }
     const m = inVars && t.match(/^([A-Za-z_][\w]*)\s*=\s*"([^"]*)"/);
     if (m) vars[m[1]] = m[2];
   }

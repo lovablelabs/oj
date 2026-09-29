@@ -32,14 +32,26 @@ fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.mkdirSync(path.join(app, "node_modules", "fake-dep"), { recursive: true });
 fs.mkdirSync(linked, { recursive: true });
 fs.mkdirSync(path.dirname(outside), { recursive: true });
-fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "dep-load-app", version: "1.0.0", dependencies: { "fake-dep": "1.0.0", "@ws/ui": "1.0.0" } }));
-fs.writeFileSync(path.join(app, "node_modules", "fake-dep", "package.json"), JSON.stringify({ name: "fake-dep", version: "1.0.0", main: "index.js", type: "module" }));
+fs.writeFileSync(
+  path.join(app, "package.json"),
+  JSON.stringify({ name: "dep-load-app", version: "1.0.0", dependencies: { "fake-dep": "1.0.0", "@ws/ui": "1.0.0" } }),
+);
+fs.writeFileSync(
+  path.join(app, "node_modules", "fake-dep", "package.json"),
+  JSON.stringify({ name: "fake-dep", version: "1.0.0", main: "index.js", type: "module" }),
+);
 fs.writeFileSync(path.join(app, "node_modules", "fake-dep", "index.js"), `export const WHO = "FROM_DISK";\n`);
-fs.writeFileSync(path.join(linked, "package.json"), JSON.stringify({ name: "@ws/ui", version: "1.0.0", main: "index.js", type: "module" }));
+fs.writeFileSync(
+  path.join(linked, "package.json"),
+  JSON.stringify({ name: "@ws/ui", version: "1.0.0", main: "index.js", type: "module" }),
+);
 fs.writeFileSync(path.join(linked, "index.js"), `export const UI = "__UI_MARKER__";\n`);
 fs.mkdirSync(path.join(app, "node_modules", "@ws"), { recursive: true });
 fs.symlinkSync(linked, path.join(app, "node_modules", "@ws", "ui"), "dir");
-fs.writeFileSync(path.join(path.dirname(outside), "package.json"), JSON.stringify({ name: "shared", version: "1.0.0", type: "module" }));
+fs.writeFileSync(
+  path.join(path.dirname(outside), "package.json"),
+  JSON.stringify({ name: "shared", version: "1.0.0", type: "module" }),
+);
 fs.writeFileSync(outside, `export const OUTSIDE = "outside-root";\n`);
 fs.writeFileSync(
   path.join(app, "src", "main.js"),

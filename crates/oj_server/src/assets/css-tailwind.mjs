@@ -31,12 +31,16 @@ function depsOf(pkgJsonPath) {
 // "<name>/package.json" subpath is the fast path; some packages don't expose it
 // through their exports map, so fall back to resolving the entry and walking up.
 function pkgJsonOf(req, name) {
-  try { return req.resolve(name + "/package.json"); } catch {}
+  try {
+    return req.resolve(name + "/package.json");
+  } catch {}
   try {
     let dir = dirname(req.resolve(name));
     for (let i = 0; i < 16; i++) {
       const cand = join(dir, "package.json");
-      try { if (JSON.parse(readFileSync(cand, "utf8")).name === name) return cand; } catch {}
+      try {
+        if (JSON.parse(readFileSync(cand, "utf8")).name === name) return cand;
+      } catch {}
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -50,11 +54,15 @@ function pkgJsonOf(req, name) {
 // `anchors` package the app does depend on.
 function resolvePkg(base, spec, anchors = []) {
   const req = createRequire(pathToFileURL(join(base, "package.json")).href);
-  try { return req.resolve(spec); } catch {}
+  try {
+    return req.resolve(spec);
+  } catch {}
   for (const anchor of anchors) {
     const pj = pkgJsonOf(req, anchor);
     if (!pj) continue;
-    try { return createRequire(pathToFileURL(pj).href).resolve(spec); } catch {}
+    try {
+      return createRequire(pathToFileURL(pj).href).resolve(spec);
+    } catch {}
   }
   return null;
 }

@@ -66,7 +66,11 @@ test("configureServer sees client/ssr environments, an addressable httpServer an
   try {
     const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js"), ""] });
     assert.equal(res.error, undefined, `configureServer must not throw: ${res.error}\n${host.stderr()}`);
-    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    const seen = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
     assert.deepEqual(seen.envNames, ["client", "ssr"], "client and ssr are always present");
     assert.equal(seen.clientConsumer, "client");
     assert.equal(seen.ssrConsumer, "server", "the ssr environment's config is tagged consumer: server");
@@ -141,7 +145,11 @@ test("configureServer can wrap server.bindCLIShortcuts like the Cloudflare short
   try {
     const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js"), ""] });
     assert.equal(res.error, undefined, `${res.error}\n${host.stderr()}`);
-    const seen = JSON.parse(JSON.parse(res.result).code.replace(/^export default /, "").replace(/;$/, ""));
+    const seen = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
     assert.equal(seen.wrapped, true, `configureServer ran to completion\n${host.stderr()}`);
     assert.doesNotMatch(host.stderr(), /configureServer\(shortcuts-wrapper\) skipped/);
   } finally {

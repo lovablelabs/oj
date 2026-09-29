@@ -74,7 +74,11 @@ async function observe(extraConfig) {
 viteTest("TS/JSX is stripped at vite:oxc's slot: pre hooks see it, normal and post parse JS", async () => {
   const seen = await observe({});
   assert.deepEqual(seen.pre, { hasTs: true, hasJsx: true, parses: false }, "an enforce:pre plugin sees the raw source");
-  assert.deepEqual(seen.orderPre, { hasTs: true, hasJsx: true, parses: false }, "an order:pre hook runs before the strip");
+  assert.deepEqual(
+    seen.orderPre,
+    { hasTs: true, hasJsx: true, parses: false },
+    "an order:pre hook runs before the strip",
+  );
   assert.deepEqual(seen.normal, { hasTs: false, hasJsx: false, parses: true }, "a normal plugin gets JS");
   assert.deepEqual(seen.post, { hasTs: false, hasJsx: false, parses: true }, "a post plugin gets JS it can this.parse");
 });

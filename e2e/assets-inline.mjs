@@ -22,10 +22,16 @@ const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-inline-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "inline-app", version: "1.0.0" }));
 fs.writeFileSync(path.join(app, "src", "small.svg"), `<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>`);
-fs.writeFileSync(path.join(app, "src", "big.svg"), `<svg xmlns="http://www.w3.org/2000/svg">${"<rect/>".repeat(900)}</svg>`);
+fs.writeFileSync(
+  path.join(app, "src", "big.svg"),
+  `<svg xmlns="http://www.w3.org/2000/svg">${"<rect/>".repeat(900)}</svg>`,
+);
 fs.writeFileSync(
   path.join(app, "src", "dot.png"),
-  Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"),
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  ),
 );
 // A CRLF-formatted SVG: what git hands a Windows checkout. Inlining used to
 // leave the CR in the emitted string literal, which does not parse.
@@ -60,7 +66,10 @@ let failed = false;
 try {
   build();
   let files = assets();
-  assert.ok(files.some((f) => f.startsWith("big-") && f.endsWith(".svg")), "big.svg emitted (over limit)");
+  assert.ok(
+    files.some((f) => f.startsWith("big-") && f.endsWith(".svg")),
+    "big.svg emitted (over limit)",
+  );
   assert.ok(!files.some((f) => f.startsWith("small-") && f.endsWith(".svg")), "small.svg inlined (under limit)");
   assert.ok(!files.some((f) => f.endsWith(".png")), "png inlined (under limit)");
 
@@ -97,8 +106,14 @@ try {
   fs.writeFileSync(path.join(app, "oj.config.json"), JSON.stringify({ build: { assetsInlineLimit: 0 } }));
   build();
   files = assets();
-  assert.ok(files.some((f) => f.startsWith("small-")) && files.some((f) => f.endsWith(".png")), "limit 0 emits every asset");
-  assert.ok(files.some((f) => f.endsWith(".bmp")), "limit 0 emits the bmp too");
+  assert.ok(
+    files.some((f) => f.startsWith("small-")) && files.some((f) => f.endsWith(".png")),
+    "limit 0 emits every asset",
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(".bmp")),
+    "limit 0 emits the bmp too",
+  );
 
   console.log("ASSETS-INLINE E2E PASSED");
 } catch (err) {

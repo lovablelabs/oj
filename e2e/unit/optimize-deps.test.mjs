@@ -25,10 +25,14 @@ process.exit(0);
 `;
 const runOptimize = (cfg) =>
   JSON.parse(
-    execFileSync("node", ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, typeof cfg === "string" ? cfg : JSON.stringify(cfg)], {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-    }),
+    execFileSync(
+      "node",
+      ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, typeof cfg === "string" ? cfg : JSON.stringify(cfg)],
+      {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      },
+    ),
   );
 const esbuildSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/esbuild");
 
@@ -140,7 +144,10 @@ it("optimize-deps: resolves tsconfig `paths` with /* and externalizes a dep's CS
     "f.woff2": "not-a-real-font",
   });
   fs.mkdirSync(path.join(root, "src"), { recursive: true });
-  fs.writeFileSync(path.join(root, "src", "aliased.js"), `import { greet } from "defprop";\nexport const v = greet("z");\n`);
+  fs.writeFileSync(
+    path.join(root, "src", "aliased.js"),
+    `import { greet } from "defprop";\nexport const v = greet("z");\n`,
+  );
   fs.writeFileSync(
     path.join(root, "entry.js"),
     `import { v } from "@/aliased";\nimport { ok } from "uikit";\nexport const out = v + ok;\n`,
@@ -223,7 +230,9 @@ it("optimize-deps: does NOT auto-discover by default; only the include list is p
   assert.equal(Object.keys(gated).length, 0, `default must not auto-discover; got ${Object.keys(gated).join(", ")}`);
 
   // The explicit include list is always pre-bundled, even without autoDiscover.
-  const included = runOptimize(JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], include: ["plaincjs"] })).metadata;
+  const included = runOptimize(
+    JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], include: ["plaincjs"] }),
+  ).metadata;
   assert.deepEqual(Object.keys(included), ["plaincjs"], "explicit include is pre-bundled");
 
   fs.rmSync(root, { recursive: true, force: true });
@@ -261,7 +270,10 @@ it("optimize-deps: expands include globs like Vite and honors needsInterop", asy
   // A real ESM dep: interop is only forced through optimizeDeps.needsInterop.
   const esm = path.join(root, "node_modules", "esmlib");
   fs.mkdirSync(esm, { recursive: true });
-  fs.writeFileSync(path.join(esm, "package.json"), JSON.stringify({ name: "esmlib", version: "1.0.0", type: "module", main: "index.js" }));
+  fs.writeFileSync(
+    path.join(esm, "package.json"),
+    JSON.stringify({ name: "esmlib", version: "1.0.0", type: "module", main: "index.js" }),
+  );
   fs.writeFileSync(path.join(esm, "index.js"), `export const named = 1;\nexport default { named };\n`);
   fs.writeFileSync(path.join(root, "entry.js"), `export const out = 1;\n`);
   const outDir = path.join(root, ".oj-cache", "deps");
@@ -272,7 +284,15 @@ it("optimize-deps: expands include globs like Vite and honors needsInterop", asy
   const globbed = run({ include: ["plainglob/*.js", "exportsglob/icons/*"] });
   assert.deepEqual(
     Object.keys(globbed).sort(),
-    ["exportsglob", "exportsglob/icons/moon", "exportsglob/icons/sun", "plainglob", "plainglob/alpha.js", "plainglob/beta.js", "plainglob/index.js"],
+    [
+      "exportsglob",
+      "exportsglob/icons/moon",
+      "exportsglob/icons/sun",
+      "plainglob",
+      "plainglob/alpha.js",
+      "plainglob/beta.js",
+      "plainglob/index.js",
+    ],
     "the package itself plus every subpath the glob matches",
   );
   for (const m of Object.values(globbed)) assert.ok(fs.existsSync(path.join(outDir, m.file)), `missing ${m.file}`);
@@ -295,18 +315,31 @@ it("optimize-deps: resolve.dedupe bundles the root copy; entries are globs", asy
 
   const esmPkg = (dir, name, code) => {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js" }));
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js" }),
+    );
     fs.writeFileSync(path.join(dir, "index.js"), code);
   };
   // `shared` exists twice: at the root and nested under `consumer`.
   esmPkg(path.join(root, "node_modules", "shared"), "shared", `export const copy = "ROOT_COPY";\n`);
-  esmPkg(path.join(root, "node_modules", "consumer"), "consumer", `import { copy } from "shared";\nexport const via = copy;\n`);
-  esmPkg(path.join(root, "node_modules", "consumer", "node_modules", "shared"), "shared", `export const copy = "NESTED_COPY";\n`);
+  esmPkg(
+    path.join(root, "node_modules", "consumer"),
+    "consumer",
+    `import { copy } from "shared";\nexport const via = copy;\n`,
+  );
+  esmPkg(
+    path.join(root, "node_modules", "consumer", "node_modules", "shared"),
+    "shared",
+    `export const copy = "NESTED_COPY";\n`,
+  );
   fs.mkdirSync(path.join(root, "src", "pages"), { recursive: true });
-  fs.writeFileSync(path.join(root, "src", "pages", "home.js"), `import { via } from "consumer";\nexport const out = via;\n`);
+  fs.writeFileSync(
+    path.join(root, "src", "pages", "home.js"),
+    `import { via } from "consumer";\nexport const out = via;\n`,
+  );
   const outDir = path.join(root, ".oj-cache", "deps");
-  const run = (extra) =>
-    runOptimize(JSON.stringify({ root, outDir, ...extra })).metadata;
+  const run = (extra) => runOptimize(JSON.stringify({ root, outDir, ...extra })).metadata;
 
   // Node resolution alone picks the nested copy; resolve.dedupe re-resolves the
   // bare import from the project root (Vite: dedupe -> basedir = root).

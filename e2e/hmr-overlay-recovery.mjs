@@ -63,7 +63,9 @@ try {
     assert.equal(await page.locator("h1").count(), 0, "app rendered despite the compile error");
     console.log("startup overlay:     yes");
 
-    await page.evaluate(() => { window.__OJ_STALE_PAGE = true; });
+    await page.evaluate(() => {
+      window.__OJ_STALE_PAGE = true;
+    });
     fs.writeFileSync(LEAF, GOOD);
     // Recovery is a reload (the page's modules never loaded), not a silent drop.
     await page.locator("p", { hasText: "leaf ok" }).waitFor({ timeout: 20000 });
@@ -72,7 +74,9 @@ try {
     console.log("recovered by reload: yes");
 
     // A later edit on the running page is a normal hot update, not a reload.
-    await page.evaluate(() => { window.__OJ_LIVE_PAGE = true; });
+    await page.evaluate(() => {
+      window.__OJ_LIVE_PAGE = true;
+    });
     fs.writeFileSync(LEAF, GOOD.replace("leaf ok", "leaf v2"));
     await page.locator("p", { hasText: "leaf v2" }).waitFor({ timeout: 20000 });
     assert.equal(await page.evaluate(() => window.__OJ_LIVE_PAGE), true, "second edit reloaded the page");

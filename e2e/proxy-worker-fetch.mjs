@@ -73,8 +73,14 @@ function installCloudflareDeps() {
     fs.symlinkSync(path.join(path.resolve(prepared), "node_modules"), path.join(tmp, "node_modules"), "dir");
     return;
   }
-  fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }));
-  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", { cwd: tmp, stdio: "inherit" });
+  fs.writeFileSync(
+    path.join(tmp, "package.json"),
+    JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }),
+  );
+  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", {
+    cwd: tmp,
+    stdio: "inherit",
+  });
 }
 
 function makeApp() {
@@ -87,185 +93,215 @@ function makeApp() {
   fs.cpSync(path.join(fixture, "src", "ssr-entry.ts"), path.join(app, "src", "ssr-entry.ts"));
   // A tiny src/lib so package.json's `#lib/*` import map still resolves.
   fs.mkdirSync(path.join(app, "src", "lib"), { recursive: true });
-  fs.writeFileSync(path.join(app, "src", "lib", "format.ts"), 'export const shout = (s: string) => s.toUpperCase() + "!";\n');
+  fs.writeFileSync(
+    path.join(app, "src", "lib", "format.ts"),
+    'export const shout = (s: string) => s.toUpperCase() + "!";\n',
+  );
 
-  fs.writeFileSync(path.join(app, "wrangler.jsonc"), [
-    "{",
-    '  "name": "oj-proxy-fixture",',
-    '  "main": "@tanstack/react-start/server-entry",',
-    '  "compatibility_date": "2025-09-01",',
-    '  "compatibility_flags": ["nodejs_compat"],',
-    '  "vars": { "EDITION": "fixture-edition" }',
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "wrangler.jsonc"),
+    [
+      "{",
+      '  "name": "oj-proxy-fixture",',
+      '  "main": "@tanstack/react-start/server-entry",',
+      '  "compatibility_date": "2025-09-01",',
+      '  "compatibility_flags": ["nodejs_compat"],',
+      '  "vars": { "EDITION": "fixture-edition" }',
+      "}",
+      "",
+    ].join("\n"),
+  );
 
   // ONE proxy, the app's real config: a FUNCTION rewrite that strips `/go-api`.
   // The upstream only answers the stripped `/data`, so the function must be
   // applied (Vite honours it; oj's old Rust-only proxy dropped it).
-  fs.writeFileSync(path.join(app, "vite.config.ts"), [
-    'import { tanstackStart } from "@tanstack/react-start/plugin/vite";',
-    'import react from "@vitejs/plugin-react";',
-    'import { defineConfig } from "vite";',
-    'import { cloudflare } from "@cloudflare/vite-plugin";',
-    "",
-    "export default defineConfig({",
-    "  server: {",
-    "    proxy: {",
-    '      "/go-api": {',
-    `        target: "http://127.0.0.1:${UPSTREAM}",`,
-    "        changeOrigin: true,",
-    "        ws: false,",
-    '        rewrite: (p) => p.replace(/^\\/go-api/, ""),',
-    "      },",
-    "    },",
-    "  },",
-    "  plugins: [",
-    '    cloudflare({ viteEnvironment: { name: "ssr" } }),',
-    '    tanstackStart({ server: { entry: "ssr-entry" } }),',
-    "    react(),",
-    "  ],",
-    "});",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "vite.config.ts"),
+    [
+      'import { tanstackStart } from "@tanstack/react-start/plugin/vite";',
+      'import react from "@vitejs/plugin-react";',
+      'import { defineConfig } from "vite";',
+      'import { cloudflare } from "@cloudflare/vite-plugin";',
+      "",
+      "export default defineConfig({",
+      "  server: {",
+      "    proxy: {",
+      '      "/go-api": {',
+      `        target: "http://127.0.0.1:${UPSTREAM}",`,
+      "        changeOrigin: true,",
+      "        ws: false,",
+      '        rewrite: (p) => p.replace(/^\\/go-api/, ""),',
+      "      },",
+      "    },",
+      "  },",
+      "  plugins: [",
+      '    cloudflare({ viteEnvironment: { name: "ssr" } }),',
+      '    tanstackStart({ server: { entry: "ssr-entry" } }),',
+      "    react(),",
+      "  ],",
+      "});",
+      "",
+    ].join("\n"),
+  );
 
-  fs.writeFileSync(path.join(app, "src", "routes", "__root.tsx"), [
-    'import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";',
-    "",
-    "export const rootRoute = createRootRoute({",
-    '  head: () => ({ meta: [{ title: "oj proxy fixture" }] }),',
-    "  component: RootComponent,",
-    "});",
-    "",
-    "function RootComponent() {",
-    "  return (",
-    '    <html lang="en">',
-    "      <head>",
-    "        <HeadContent />",
-    "      </head>",
-    "      <body>",
-    "        <Outlet />",
-    "        <Scripts />",
-    "      </body>",
-    "    </html>",
-    "  );",
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "routes", "__root.tsx"),
+    [
+      'import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";',
+      "",
+      "export const rootRoute = createRootRoute({",
+      '  head: () => ({ meta: [{ title: "oj proxy fixture" }] }),',
+      "  component: RootComponent,",
+      "});",
+      "",
+      "function RootComponent() {",
+      "  return (",
+      '    <html lang="en">',
+      "      <head>",
+      "        <HeadContent />",
+      "      </head>",
+      "      <body>",
+      "        <Outlet />",
+      "        <Scripts />",
+      "      </body>",
+      "    </html>",
+      "  );",
+      "}",
+      "",
+    ].join("\n"),
+  );
 
-  fs.writeFileSync(path.join(app, "src", "server", "data.ts"), [
-    'import { createServerFn } from "@tanstack/react-start";',
-    'import { env } from "cloudflare:workers";',
-    "",
-    'export const getGreeting = createServerFn({ method: "GET" }).handler(async () => {',
-    "  const edition = (env as unknown as Record<string, unknown>).EDITION ?? \"unknown\";",
-    '  return { message: "server-fn-marker", edition: String(edition) };',
-    "});",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "server", "data.ts"),
+    [
+      'import { createServerFn } from "@tanstack/react-start";',
+      'import { env } from "cloudflare:workers";',
+      "",
+      'export const getGreeting = createServerFn({ method: "GET" }).handler(async () => {',
+      '  const edition = (env as unknown as Record<string, unknown>).EDITION ?? "unknown";',
+      '  return { message: "server-fn-marker", edition: String(edition) };',
+      "});",
+      "",
+    ].join("\n"),
+  );
 
   // The control route: renders in the worker (the wrangler var proves it) and
   // completes normally, so a wedged `/wedge` is visibly a `/wedge`-only stall.
-  fs.writeFileSync(path.join(app, "src", "routes", "index.tsx"), [
-    'import { createRoute, useLoaderData } from "@tanstack/react-router";',
-    'import { rootRoute } from "./__root";',
-    'import { getGreeting } from "../server/data";',
-    'import { shout } from "#lib/format";',
-    "",
-    "export const indexRoute = createRoute({",
-    "  getParentRoute: () => rootRoute,",
-    '  path: "/",',
-    "  loader: async () => await getGreeting(),",
-    "  component: Index,",
-    "});",
-    "",
-    "function Index() {",
-    "  const data = useLoaderData({ from: indexRoute.id });",
-    "  return (",
-    "    <main>",
-    '      <h1>{shout("home")}</h1>',
-    '      <p data-testid="server-fn">{data.message} / edition={data.edition}</p>',
-    "    </main>",
-    "  );",
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "routes", "index.tsx"),
+    [
+      'import { createRoute, useLoaderData } from "@tanstack/react-router";',
+      'import { rootRoute } from "./__root";',
+      'import { getGreeting } from "../server/data";',
+      'import { shout } from "#lib/format";',
+      "",
+      "export const indexRoute = createRoute({",
+      "  getParentRoute: () => rootRoute,",
+      '  path: "/",',
+      "  loader: async () => await getGreeting(),",
+      "  component: Index,",
+      "});",
+      "",
+      "function Index() {",
+      "  const data = useLoaderData({ from: indexRoute.id });",
+      "  return (",
+      "    <main>",
+      '      <h1>{shout("home")}</h1>',
+      '      <p data-testid="server-fn">{data.message} / edition={data.edition}</p>',
+      "    </main>",
+      "  );",
+      "}",
+      "",
+    ].join("\n"),
+  );
 
   // The wedge route: a page route (so it hydrates) whose loader calls a server
   // function that, inside the worker, fetches the same-origin `/go-api/data`.
   // With the proxy that reaches the upstream (stripped to `/data`); without it
   // the fetch loops back into the worker and hits the hanging `/go-api` route.
-  fs.writeFileSync(path.join(app, "src", "routes", "wedge.tsx"), [
-    'import { createRoute, useLoaderData } from "@tanstack/react-router";',
-    'import { createServerFn } from "@tanstack/react-start";',
-    'import { getRequestUrl } from "@tanstack/react-start/server";',
-    'import { rootRoute } from "./__root";',
-    "",
-    'const fetchViaProxy = createServerFn({ method: "GET" }).handler(async () => {',
-    "  const base = getRequestUrl();",
-    '  const res = await fetch(new URL("/go-api/data", base));',
-    "  const json = (await res.json()) as { ok?: boolean; path?: string };",
-    "  return { ok: json.ok === true, path: String(json.path ?? '') };",
-    "});",
-    "",
-    "export const wedgeRoute = createRoute({",
-    "  getParentRoute: () => rootRoute,",
-    '  path: "/wedge",',
-    "  loader: async () => await fetchViaProxy(),",
-    "  component: Wedge,",
-    "});",
-    "",
-    "function Wedge() {",
-    "  const data = useLoaderData({ from: wedgeRoute.id });",
-    "  return (",
-    "    <main>",
-    '      <div id="wedge-result">ok:{String(data.ok)} path:{data.path}</div>',
-    "    </main>",
-    "  );",
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "routes", "wedge.tsx"),
+    [
+      'import { createRoute, useLoaderData } from "@tanstack/react-router";',
+      'import { createServerFn } from "@tanstack/react-start";',
+      'import { getRequestUrl } from "@tanstack/react-start/server";',
+      'import { rootRoute } from "./__root";',
+      "",
+      'const fetchViaProxy = createServerFn({ method: "GET" }).handler(async () => {',
+      "  const base = getRequestUrl();",
+      '  const res = await fetch(new URL("/go-api/data", base));',
+      "  const json = (await res.json()) as { ok?: boolean; path?: string };",
+      "  return { ok: json.ok === true, path: String(json.path ?? '') };",
+      "});",
+      "",
+      "export const wedgeRoute = createRoute({",
+      "  getParentRoute: () => rootRoute,",
+      '  path: "/wedge",',
+      "  loader: async () => await fetchViaProxy(),",
+      "  component: Wedge,",
+      "});",
+      "",
+      "function Wedge() {",
+      "  const data = useLoaderData({ from: wedgeRoute.id });",
+      "  return (",
+      "    <main>",
+      '      <div id="wedge-result">ok:{String(data.ok)} path:{data.path}</div>',
+      "    </main>",
+      "  );",
+      "}",
+      "",
+    ].join("\n"),
+  );
 
   // The hanging `/go-api/*` route: reached ONLY when the proxy is missing and
   // the worker's outbound fetch is misrouted back into the worker. It never
   // answers, standing in for the real bug's never-closing SSR stream. With the
   // proxy in the middleware stack this route is never reached.
-  fs.writeFileSync(path.join(app, "src", "routes", "go-api.tsx"), [
-    'import { createRoute } from "@tanstack/react-router";',
-    'import { rootRoute } from "./__root";',
-    "",
-    "export const goApiRoute = createRoute({",
-    "  getParentRoute: () => rootRoute,",
-    '  path: "/go-api/$",',
-    "  server: {",
-    "    handlers: {",
-    "      // Never resolves: the misrouted request stalls here (the wedge).",
-    "      GET: () => new Promise<Response>(() => {}),",
-    "    },",
-    "  },",
-    "});",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "routes", "go-api.tsx"),
+    [
+      'import { createRoute } from "@tanstack/react-router";',
+      'import { rootRoute } from "./__root";',
+      "",
+      "export const goApiRoute = createRoute({",
+      "  getParentRoute: () => rootRoute,",
+      '  path: "/go-api/$",',
+      "  server: {",
+      "    handlers: {",
+      "      // Never resolves: the misrouted request stalls here (the wedge).",
+      "      GET: () => new Promise<Response>(() => {}),",
+      "    },",
+      "  },",
+      "});",
+      "",
+    ].join("\n"),
+  );
 
-  fs.writeFileSync(path.join(app, "src", "routeTree.ts"), [
-    'import { rootRoute } from "./routes/__root";',
-    'import { indexRoute } from "./routes/index";',
-    'import { wedgeRoute } from "./routes/wedge";',
-    'import { goApiRoute } from "./routes/go-api";',
-    "",
-    "export const routeTree = rootRoute.addChildren([indexRoute, wedgeRoute, goApiRoute]);",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "routeTree.ts"),
+    [
+      'import { rootRoute } from "./routes/__root";',
+      'import { indexRoute } from "./routes/index";',
+      'import { wedgeRoute } from "./routes/wedge";',
+      'import { goApiRoute } from "./routes/go-api";',
+      "",
+      "export const routeTree = rootRoute.addChildren([indexRoute, wedgeRoute, goApiRoute]);",
+      "",
+    ].join("\n"),
+  );
 
-  fs.writeFileSync(path.join(app, "src", "router.tsx"), [
-    'import { createRouter } from "@tanstack/react-router";',
-    'import { routeTree } from "./routeTree";',
-    "",
-    "export function getRouter() {",
-    "  return createRouter({ routeTree, defaultPreload: \"intent\", scrollRestoration: true });",
-    "}",
-    "",
-  ].join("\n"));
+  fs.writeFileSync(
+    path.join(app, "src", "router.tsx"),
+    [
+      'import { createRouter } from "@tanstack/react-router";',
+      'import { routeTree } from "./routeTree";',
+      "",
+      "export function getRouter() {",
+      '  return createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });',
+      "}",
+      "",
+    ].join("\n"),
+  );
 }
 
 // The upstream: answers ONLY the stripped `/data` (proving the rewrite ran) and
@@ -304,23 +340,38 @@ async function run() {
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
   const stop = () => {
-    try { process.kill(-srv.pid, "SIGTERM"); } catch {}
-    setTimeout(() => { try { process.kill(-srv.pid, "SIGKILL"); } catch {} }, 2000).unref();
+    try {
+      process.kill(-srv.pid, "SIGTERM");
+    } catch {}
+    setTimeout(() => {
+      try {
+        process.kill(-srv.pid, "SIGKILL");
+      } catch {}
+    }, 2000).unref();
   };
   try {
     let up = false;
-    await settles(async () => {
-      if (srv.exitCode != null) return true;
-      try { up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200; } catch {}
-      return up;
-    }, { timeoutMs: 120000, pollMs: 500 });
+    await settles(
+      async () => {
+        if (srv.exitCode != null) return true;
+        try {
+          up = (await fetch(`http://127.0.0.1:${PORT}/`)).status === 200;
+        } catch {}
+        return up;
+      },
+      { timeoutMs: 120000, pollMs: 500 },
+    );
     if (!up) throw new Error(`oj dev did not serve on :${PORT}; log:\n${log.slice(-4000)}`);
 
     // Control: the worker renders `/` (the wrangler var proves the worker path
     // is active, so the wedge really is a worker-originated fetch).
     const home = await fetchText(`http://127.0.0.1:${PORT}/`, 15000);
     assert.equal(home.status, 200, `/ returned ${home.status}`);
-    assert.match(home.body, /fixture-edition/, `/ did not render on the worker (no wrangler var):\n${home.body.slice(0, 800)}`);
+    assert.match(
+      home.body,
+      /fixture-edition/,
+      `/ did not render on the worker (no wrangler var):\n${home.body.slice(0, 800)}`,
+    );
 
     // DEFECT 1 (worker path): `/wedge` must resolve fast with the proxied,
     // stripped result. Before the fix it wedges (the fetch loops into the
@@ -329,7 +380,9 @@ async function run() {
     try {
       wedge = await fetchText(`http://127.0.0.1:${PORT}/wedge`, 15000);
     } catch (e) {
-      throw new Error(`/wedge wedged (worker-originated /go-api fetch not proxied): ${e}\nlog tail:\n${log.slice(-3000)}`);
+      throw new Error(
+        `/wedge wedged (worker-originated /go-api fetch not proxied): ${e}\nlog tail:\n${log.slice(-3000)}`,
+      );
     }
     assert.equal(wedge.status, 200, `/wedge returned ${wedge.status}`);
     // React separates interpolated text with <!-- --> comment nodes in SSR
@@ -351,11 +404,18 @@ async function run() {
     }
     assert.equal(direct.status, 200, `/go-api/data returned ${direct.status}`);
     assert.match(direct.body, /"ok":true/, `/go-api/data did not proxy to the upstream:\n${direct.body.slice(0, 400)}`);
-    assert.match(direct.body, /"path":"\/data"/, `/go-api/data was not stripped to /data:\n${direct.body.slice(0, 400)}`);
+    assert.match(
+      direct.body,
+      /"path":"\/data"/,
+      `/go-api/data was not stripped to /data:\n${direct.body.slice(0, 400)}`,
+    );
 
     // The rewrite FUNCTION ran: the upstream only ever saw the stripped path,
     // never an unstripped `/go-api/...`.
-    assert.ok(upstreamPaths.includes("/data"), `upstream never received the stripped /data; saw ${JSON.stringify(upstreamPaths)}`);
+    assert.ok(
+      upstreamPaths.includes("/data"),
+      `upstream never received the stripped /data; saw ${JSON.stringify(upstreamPaths)}`,
+    );
     assert.ok(
       !upstreamPaths.some((p) => p.startsWith("/go-api")),
       `upstream received an UNSTRIPPED path (rewrite function dropped): ${JSON.stringify(upstreamPaths)}`,
@@ -391,7 +451,9 @@ async function run() {
       console.log("proxy-worker-fetch: /wedge reached interactive in a browser (SSR stream closed, not wedged)");
     }
 
-    console.log("proxy-worker-fetch: worker-originated + browser-direct /go-api proxied and stripped, /wedge not wedged");
+    console.log(
+      "proxy-worker-fetch: worker-originated + browser-direct /go-api proxied and stripped, /wedge not wedged",
+    );
   } finally {
     stop();
   }

@@ -287,8 +287,12 @@ export class ErrorOverlay extends HTMLElement {
     card.append(bar, body);
     backdrop.appendChild(card);
     // Dismiss on backdrop click only, so text inside the card stays selectable.
-    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) this.close(); });
-    this._onKey = (ev) => { if (ev.key === "Escape") this.close(); };
+    backdrop.addEventListener("click", (ev) => {
+      if (ev.target === backdrop) this.close();
+    });
+    this._onKey = (ev) => {
+      if (ev.key === "Escape") this.close();
+    };
     window.addEventListener("keydown", this._onKey);
     root.appendChild(backdrop);
   }

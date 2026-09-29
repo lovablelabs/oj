@@ -36,7 +36,10 @@ try {
   child.stderr.on("data", (d) => (out += d.toString()));
 
   const up = async () => {
-    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    return waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
   };
   if (!(await up())) throw new Error("server did not start:\n" + out);
   await new Promise((r) => setTimeout(r, 1500)); // let the host spawn+die settle
@@ -46,7 +49,9 @@ try {
 
   // No plugin-host.mjs process should be resident for this app.
   let resident = "";
-  try { resident = execSync(`pgrep -fl "plugin-host.mjs" || true`, { encoding: "utf8" }); } catch {}
+  try {
+    resident = execSync(`pgrep -fl "plugin-host.mjs" || true`, { encoding: "utf8" });
+  } catch {}
   if (resident.includes(app) || new RegExp(path.basename(app)).test(resident)) {
     throw new Error("plugin-host still resident for the app:\n" + resident);
   }

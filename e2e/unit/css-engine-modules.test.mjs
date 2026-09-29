@@ -97,10 +97,7 @@ test("css-preprocess.mjs compiles by extension and threads options", async () =>
     const untouched = await compile({ base, css: ".y {}", from: join(base, "a.css") });
     assert.equal(untouched, ".y {}");
 
-    await assert.rejects(
-      compile({ base, css: "d = 1", from: join(base, "b.styl") }),
-      /OJ_MISSING_PACKAGE stylus/,
-    );
+    await assert.rejects(compile({ base, css: "d = 1", from: join(base, "b.styl") }), /OJ_MISSING_PACKAGE stylus/);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

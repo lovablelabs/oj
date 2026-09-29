@@ -74,8 +74,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // out the clock.
 let serverLog = "";
 const server = spawn(oj, ["dev", www, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
-server.stdout.on("data", (d) => { serverLog += d; });
-server.stderr.on("data", (d) => { serverLog += d; });
+server.stdout.on("data", (d) => {
+  serverLog += d;
+});
+server.stderr.on("data", (d) => {
+  serverLog += d;
+});
 let up = false;
 const deadline = Date.now() + 60_000;
 while (!up && Date.now() < deadline && server.exitCode === null) {
@@ -106,10 +110,16 @@ try {
 
   // first render through blob import map + esm.sh react
   let h1 = null;
-  await settles(async () => {
-    h1 = await front().locator("h1").textContent({ timeout: 1000 }).catch(() => null);
-    return h1 && h1.includes("juice stand");
-  }, { timeoutMs: 60000, pollMs: 500 });
+  await settles(
+    async () => {
+      h1 = await front()
+        .locator("h1")
+        .textContent({ timeout: 1000 })
+        .catch(() => null);
+      return h1 && h1.includes("juice stand");
+    },
+    { timeoutMs: 60000, pollMs: 500 },
+  );
   if (!h1 || !h1.includes("juice stand")) bad.push(`preview h1: ${h1}`);
 
   // css module class applied; state updates on click
@@ -117,23 +127,37 @@ try {
   if (!cls || !cls.includes("squeeze")) bad.push(`button class: ${cls}`);
   await front().locator("button").click();
   await front().locator("button").click();
-  const tally = await front().locator("p").last().textContent().catch(() => null);
+  const tally = await front()
+    .locator("p")
+    .last()
+    .textContent()
+    .catch(() => null);
   if (!tally?.includes("2 glasses")) bad.push(`tally after 2 clicks: ${tally}`);
 
   // linked stylesheet inlined into the document
-  const bg = await front().locator("body").evaluate((el) => getComputedStyle(el).backgroundColor);
+  const bg = await front()
+    .locator("body")
+    .evaluate((el) => getComputedStyle(el).backgroundColor);
   if (bg !== "rgb(255, 248, 240)") bad.push(`body background: ${bg}`);
 
   // live edit round trip (insertText: keyboard.type fights cm autoclose)
   await page.click(".play__tab >> text=global.css");
   await page.click(".play__cm .cm-content");
   await page.keyboard.press(selectAll);
-  await page.keyboard.insertText("body { background: rgb(10, 20, 30); color: white } main { max-width: 26rem; margin: 3rem auto }");
+  await page.keyboard.insertText(
+    "body { background: rgb(10, 20, 30); color: white } main { max-width: 26rem; margin: 3rem auto }",
+  );
   let newBg = null;
-  await settles(async () => {
-    newBg = await front().locator("body").evaluate((el) => getComputedStyle(el).backgroundColor).catch(() => null);
-    return newBg === "rgb(10, 20, 30)";
-  }, { pollMs: 500 });
+  await settles(
+    async () => {
+      newBg = await front()
+        .locator("body")
+        .evaluate((el) => getComputedStyle(el).backgroundColor)
+        .catch(() => null);
+      return newBg === "rgb(10, 20, 30)";
+    },
+    { pollMs: 500 },
+  );
   if (newBg !== "rgb(10, 20, 30)") bad.push(`background after edit: ${newBg}`);
 
   // a missing import raises the strip and keeps the last good preview
@@ -142,19 +166,32 @@ try {
   await page.keyboard.press(selectAll);
   await page.keyboard.insertText("import Broken from './nope';\nexport default function App(){ return <Broken /> }");
   await page.waitForSelector(".play__errors", { timeout: 10000 }).catch(() => bad.push("error strip never appeared"));
-  const errText = await page.locator(".play__error").first().textContent().catch(() => "");
+  const errText = await page
+    .locator(".play__error")
+    .first()
+    .textContent()
+    .catch(() => "");
   if (!errText.includes("nope")) bad.push(`error text: ${errText}`);
-  const staleH1 = await front().locator("h1").textContent().catch(() => null);
+  const staleH1 = await front()
+    .locator("h1")
+    .textContent()
+    .catch(() => null);
   if (!staleH1 || !staleH1.includes("juice stand")) bad.push(`preview lost during error: ${staleH1}`);
 
   // recovery clears the strip and updates the preview
   await page.keyboard.press(selectAll);
   await page.keyboard.insertText("export default function App(){ return <h1>fixed!</h1> }");
   let fixed = null;
-  await settles(async () => {
-    fixed = await front().locator("h1").textContent().catch(() => null);
-    return fixed === "fixed!";
-  }, { pollMs: 500 });
+  await settles(
+    async () => {
+      fixed = await front()
+        .locator("h1")
+        .textContent()
+        .catch(() => null);
+      return fixed === "fixed!";
+    },
+    { pollMs: 500 },
+  );
   if (fixed !== "fixed!") bad.push(`h1 after fix: ${fixed}`);
   if ((await page.locator(".play__errors").count()) !== 0) bad.push("error strip still visible after fix");
 
@@ -163,18 +200,30 @@ try {
   await page.keyboard.insertText("export default function App(){ return <h1>burst 0</h1> }");
   let blanks = 0;
   for (let i = 1; i <= 8; i++) {
-    await front().locator("h1").waitFor({ timeout: 3000 }).catch(() => {});
+    await front()
+      .locator("h1")
+      .waitFor({ timeout: 3000 })
+      .catch(() => {});
     await page.keyboard.press(selectAll);
     await page.keyboard.insertText(`export default function App(){ return <h1>burst ${i}</h1> }`);
-    const seen = await front().locator("h1").count().catch(() => 0);
+    const seen = await front()
+      .locator("h1")
+      .count()
+      .catch(() => 0);
     if (seen === 0) blanks++;
     await sleep(150);
   }
   let last = null;
-  await settles(async () => {
-    last = await front().locator("h1").textContent().catch(() => null);
-    return last === "burst 8";
-  }, { pollMs: 500 });
+  await settles(
+    async () => {
+      last = await front()
+        .locator("h1")
+        .textContent()
+        .catch(() => null);
+      return last === "burst 8";
+    },
+    { pollMs: 500 },
+  );
   if (last !== "burst 8") bad.push(`h1 after burst: ${last}`);
   if (blanks > 0) bad.push(`front pane was empty ${blanks} time(s) during burst typing`);
 } finally {
@@ -186,4 +235,6 @@ if (bad.length) {
   console.log("FAIL wasm-playground\n" + bad.map((b) => "  - " + b).join("\n"));
   process.exit(1);
 }
-console.log("PASS wasm-playground: boot, render, css modules, clicks, inline css, live edit, error strip, recovery, burst typing");
+console.log(
+  "PASS wasm-playground: boot, render, css modules, clicks, inline css, live edit, error strip, recovery, burst typing",
+);

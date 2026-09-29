@@ -28,14 +28,26 @@ const dataUri = (abs) => {
   const buf = readFileSync(abs);
   const mime =
     {
-      ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-      ".webp": "image/webp", ".avif": "image/avif", ".svg": "image/svg+xml", ".ico": "image/x-icon",
-      ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".avif": "image/avif",
+      ".svg": "image/svg+xml",
+      ".ico": "image/x-icon",
+      ".woff": "font/woff",
+      ".woff2": "font/woff2",
+      ".ttf": "font/ttf",
+      ".otf": "font/otf",
     }[extname(abs).toLowerCase()] || "application/octet-stream";
   return `data:${mime};base64,${buf.toString("base64")}`;
 };
 
-const makeUrlFor = ({ mode, fsBase, emit }) => async (abs) => (mode === "dev" ? fsBase + abs : emit(abs));
+const makeUrlFor =
+  ({ mode, fsBase, emit }) =>
+  async (abs) =>
+    mode === "dev" ? fsBase + abs : emit(abs);
 
 // A worker's URL, Vite's worker plugin load. Unbundled dev: the file's URL on
 // the dev pipeline (fileToUrl: root-relative, `/@fs` outside the root), which
@@ -44,11 +56,13 @@ const makeUrlFor = ({ mode, fsBase, emit }) => async (abs) => (mode === "dev" ? 
 // pipeline; oj's pipeline serves the compiled module without the marker
 // (verified in-browser by e2e/start-ssr-worker-url.mjs). A build: the worker
 // entry bundled on its own (bundleWorkerEntry) and emitted once.
-const makeWorkerUrlFor = ({ mode, root, emit }) => async (abs) => {
-  if (mode !== "dev") return emit.worker(abs);
-  const rel = root ? relative(root, abs) : null;
-  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? "/" + rel.split(sep).join("/") : "/@fs" + abs;
-};
+const makeWorkerUrlFor =
+  ({ mode, root, emit }) =>
+  async (abs) => {
+    if (mode !== "dev") return emit.worker(abs);
+    const rel = root ? relative(root, abs) : null;
+    return rel && !rel.startsWith("..") && !isAbsolute(rel) ? "/" + rel.split(sep).join("/") : "/@fs" + abs;
+  };
 
 // Vite's `?worker&inline` in a bundled environment (worker.ts load): the
 // bundled worker ships inside the importer as a string and starts from a Blob
@@ -100,7 +114,8 @@ function assetTagFor(source, mode) {
   const worker = WORKER_RE.exec(source);
   // Vite's worker load: a bundled environment checks `&inline` before `&url`;
   // unbundled dev ignores `&inline`.
-  if (worker) return worker[1] + (mode !== "dev" && INLINE_RE.test(source) ? "-inline" : URL_RE.test(source) ? "-url" : "");
+  if (worker)
+    return worker[1] + (mode !== "dev" && INLINE_RE.test(source) ? "-inline" : URL_RE.test(source) ? "-url" : "");
   if (RAW_RE.test(source)) return "raw";
   // Vite's shouldInline: `no-inline` wins, then `inline` (even with `url`),
   // the order the SSR host's split_asset_query uses, so both sides agree.
@@ -159,7 +174,12 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
           return js(`export default ${JSON.stringify(await workerUrlFor(v.path))};`);
         }
         if (v.tag === "worker-inline" || v.tag === "sharedworker-inline") {
-          return js(inlineWorkerModule(v.tag === "sharedworker-inline" ? "SharedWorker" : "Worker", await emit.workerCode(v.path)));
+          return js(
+            inlineWorkerModule(
+              v.tag === "sharedworker-inline" ? "SharedWorker" : "Worker",
+              await emit.workerCode(v.path),
+            ),
+          );
         }
         if (v.tag === "worker" || v.tag === "sharedworker") {
           const ctor = v.tag === "sharedworker" ? "SharedWorker" : "Worker";
@@ -225,7 +245,15 @@ const matchesAny = (res, id) =>
 // buildStart/buildEnd/renderStart belong to the build that owns it, not to a
 // bundle it triggers mid-build (Vite's bundleWorkerEntry runs its own worker
 // plugin instances, never the importer's lifecycle).
-export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fsBase = "/@oj-start/fs", emit, lifecycle = true } = {}) {
+export function makeVitePlugins({
+  container,
+  fallback,
+  appRoot,
+  mode = "dev",
+  fsBase = "/@oj-start/fs",
+  emit,
+  lifecycle = true,
+} = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
   const warnedVirtual = new Set();
   // The app plugins' resolveId, in Vite's order around its core resolver: a
@@ -325,7 +353,8 @@ export function makeVitePlugins({ container, fallback, appRoot, mode = "dev", fs
           // TS, never JSX); plugin-loaded code keeps a tolerant superset --
           // tsx when the id is TS-family (types AND jsx parse), jsx otherwise
           // (the pre-existing default: a load() may return JSX for any id).
-          const diskType = { mts: "ts", cts: "ts", ts: "ts", tsx: "tsx", jsx: "jsx", mjs: "js", cjs: "js", js: "js" }[ext] ?? "js";
+          const diskType =
+            { mts: "ts", cts: "ts", ts: "ts", tsx: "tsx", jsx: "jsx", mjs: "js", cjs: "js", js: "js" }[ext] ?? "js";
           const typed = ["ts", "mts", "cts", "tsx"].includes(ext) ? "tsx" : "jsx";
           if (code == null && file && isAbsolute(file) && existsSync(file)) {
             return { code: readFileSync(file, "utf8"), moduleType: diskType };
@@ -421,20 +450,18 @@ const SHIM_STREAM =
   "module.exports={Readable,Writable,Duplex,Transform,PassThrough,Stream};";
 const SHIM_PUNYCODE =
   "const id=(s)=>s;" +
-  "module.exports={toUnicode:id,toASCII:id,encode:id,decode:id,ucs2:{decode:()=>[],encode:()=>\"\"}};";
+  'module.exports={toUnicode:id,toASCII:id,encode:id,decode:id,ucs2:{decode:()=>[],encode:()=>""}};';
 // Vite's builtin set is node's `builtinModules`, which carries the bare
 // subpaths (`fs/promises`, `timers/promises`, `path/posix`, ...): a shared
 // module spelling one of those without the `node:` prefix is the same failure
 // family as the crypto shape. The union with the legacy hand list keeps
 // deprecated aliases a runtime's `builtinModules` may not report.
-const LEGACY_BUILTINS =
-  ("assert buffer child_process cluster console constants crypto dgram dns domain events fs http http2 " +
-    "https module net os path perf_hooks process punycode querystring readline repl stream stream/web " +
-    "string_decoder sys timers tls tty url util v8 vm worker_threads zlib async_hooks").split(" ");
-const BARE_BUILTIN_NAMES = new Set([
-  ...builtinModules.filter((n) => !n.includes(":")),
-  ...LEGACY_BUILTINS,
-]);
+const LEGACY_BUILTINS = (
+  "assert buffer child_process cluster console constants crypto dgram dns domain events fs http http2 " +
+  "https module net os path perf_hooks process punycode querystring readline repl stream stream/web " +
+  "string_decoder sys timers tls tty url util v8 vm worker_threads zlib async_hooks"
+).split(" ");
+const BARE_BUILTIN_NAMES = new Set([...builtinModules.filter((n) => !n.includes(":")), ...LEGACY_BUILTINS]);
 export const BARE_BUILTINS = new RegExp(`^(${[...BARE_BUILTIN_NAMES].join("|")})$`);
 export function shimSource(spec, production) {
   const name = spec.replace(/^node:/, "");
@@ -483,9 +510,7 @@ export function nodeBuiltinShims({ production = false } = {}) {
       filter: { id: /^\0oj-node-shim:/ },
       handler(id) {
         const v = parseV(id);
-        return v && v.tag === "node-shim"
-          ? { code: shimSource(v.path, production), moduleType: "js" }
-          : null;
+        return v && v.tag === "node-shim" ? { code: shimSource(v.path, production), moduleType: "js" } : null;
       },
     },
   };
@@ -505,7 +530,7 @@ export function pnpmStorePaths(workspaceRoot) {
 
 export function workspaceRoot(app) {
   let best = app;
-  for (let cur = app; ; ) {
+  for (let cur = app; ;) {
     const parent = dirname(cur);
     if (parent === cur) break;
     if (existsSync(join(parent, "node_modules"))) best = parent;
@@ -550,16 +575,24 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
 
   async function rewriteCss(css, dir) {
     const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
-    let out = "", last = 0, m;
+    let out = "",
+      last = 0,
+      m;
     while ((m = re.exec(css))) {
       out += css.slice(last, m.index);
       last = m.index + m[0].length;
       const t = m[2].trim();
-      if (/^(data:|https?:|\/\/|#|\/)/.test(t)) { out += m[0]; continue; }
+      if (/^(data:|https?:|\/\/|#|\/)/.test(t)) {
+        out += m[0];
+        continue;
+      }
       const clean = t.replace(/[?#].*$/, "");
       const suffix = t.slice(clean.length);
       const abs = resolve(dir, clean);
-      if (!existsSync(abs)) { out += m[0]; continue; }
+      if (!existsSync(abs)) {
+        out += m[0];
+        continue;
+      }
       out += `url(${JSON.stringify((await emit(abs)) + suffix)})`;
     }
     return out + css.slice(last);

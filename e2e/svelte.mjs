@@ -67,10 +67,9 @@ async function mode(label, args, port, build, hmr) {
     if (hmr) {
       await page.evaluate(() => (window.__SURVIVE = "yes"));
       fs.writeFileSync(path.join(app, "src", "App.svelte"), appSvelte("clicks"));
-      await page.waitForFunction(
-        () => document.getElementById("btn")?.textContent?.startsWith("clicks:"),
-        { timeout: 10000 },
-      );
+      await page.waitForFunction(() => document.getElementById("btn")?.textContent?.startsWith("clicks:"), {
+        timeout: 10000,
+      });
       const survived = await page.evaluate(() => window.__SURVIVE);
       if (survived !== "yes") throw new Error("HMR did a full reload instead of a hot swap");
     }

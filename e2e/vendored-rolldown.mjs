@@ -28,16 +28,15 @@ const fixture = path.join(repo, "e2e", "fixtures", "start-app");
 
 // The one version pin lives in flake.nix (rolldownVersion); installing a
 // literal here would keep CI proving the old version after a flake bump.
-const rolldownVersion = /rolldownVersion = "([^"]+)"/.exec(
-  fs.readFileSync(path.join(repo, "flake.nix"), "utf8"),
-)?.[1];
+const rolldownVersion = /rolldownVersion = "([^"]+)"/.exec(fs.readFileSync(path.join(repo, "flake.nix"), "utf8"))?.[1];
 if (!rolldownVersion) throw new Error("rolldownVersion not found in flake.nix");
 
 // npm's failure is only a SKIP when it is network-shaped; a resolver or
 // peer-dep failure must fail the run, or this guard goes silently green.
 // Specific codes only: npm's advice text mentions the word "network" in
 // plenty of non-network failures (ERESOLVE included), so no bare substring.
-const NETWORK_ERR = /ENOTFOUND|ETIMEDOUT|ERR_SOCKET_TIMEOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EPROTO|ERR_TLS|fetch failed|Bad Gateway|Gateway Timeout|Service Unavailable|Internal Server Error/;
+const NETWORK_ERR =
+  /ENOTFOUND|ETIMEDOUT|ERR_SOCKET_TIMEOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EPROTO|ERR_TLS|fetch failed|Bad Gateway|Gateway Timeout|Service Unavailable|Internal Server Error/;
 function npmInstall(cwd, ...pkgs) {
   try {
     execSync(`npm install ${pkgs.join(" ")} --no-audit --no-fund --no-package-lock --loglevel=error`, {

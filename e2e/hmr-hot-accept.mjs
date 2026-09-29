@@ -33,23 +33,34 @@ const w = (rel, s) => fs.writeFileSync(path.join(app, rel), s);
 w("package.json", JSON.stringify({ name: "hot-accept", version: "1.0.0" }));
 w("src/util.js", `export const value = "u1";\n`);
 w("src/other.js", `export const other = "o1";\n`);
-w("src/store.js",
+w(
+  "src/store.js",
   `window.__storeRuns = (window.__storeRuns || 0) + 1;\nexport const s = "s1";\n` +
-  `if (import.meta.hot) {\n  import.meta.hot.dispose(() => { window.__storeDisposed = (window.__storeDisposed || 0) + 1; });\n` +
-  `  import.meta.hot.accept((m) => { window.__storeAccepted = m.s; });\n}\n`);
-w("src/main.js",
+    `if (import.meta.hot) {\n  import.meta.hot.dispose(() => { window.__storeDisposed = (window.__storeDisposed || 0) + 1; });\n` +
+    `  import.meta.hot.accept((m) => { window.__storeAccepted = m.s; });\n}\n`,
+);
+w(
+  "src/main.js",
   `import { value } from "./util.js";\nimport { other } from "./other.js";\nimport "./store.js";\n` +
-  `window.__util = value; window.__other = other; window.__READY = true;\n` +
-  `if (import.meta.hot) {\n  import.meta.hot.accept("./util.js", (m) => { window.__util = m.value; });\n` +
-  `  import.meta.hot.accept(["./other.js", "./util.js"], ([o, u]) => { window.__arr = [o && o.other, u && u.value]; });\n}\n`);
-w("index.html", `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`);
+    `window.__util = value; window.__other = other; window.__READY = true;\n` +
+    `if (import.meta.hot) {\n  import.meta.hot.accept("./util.js", (m) => { window.__util = m.value; });\n` +
+    `  import.meta.hot.accept(["./other.js", "./util.js"], ([o, u]) => { window.__arr = [o && o.other, u && u.value]; });\n}\n`,
+);
+w(
+  "index.html",
+  `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
+);
 
 let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 try {
   await waitUp(`http://localhost:${PORT}/`);
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
-  assert.match(main, /createHotContext\("\/src\/main\.js"\)/, `hot context injected for a module using import.meta.hot:\n${main}`);
+  assert.match(
+    main,
+    /createHotContext\("\/src\/main\.js"\)/,
+    `hot context injected for a module using import.meta.hot:\n${main}`,
+  );
   assert.match(main, /accept\("\/src\/util\.js"/, "accept dep specifier rewritten to its served url");
   const util = await (await fetch(`http://localhost:${PORT}/src/util.js`)).text();
   assert.doesNotMatch(util, /createHotContext/, "a module not using import.meta.hot gets no context");
@@ -61,7 +72,9 @@ try {
   try {
     await page.goto(`http://localhost:${PORT}/`, { timeout: 30000 });
     await page.waitForFunction(() => window.__READY === true, { timeout: 20000 });
-    await page.evaluate(() => { window.__NOT_RELOADED = true; });
+    await page.evaluate(() => {
+      window.__NOT_RELOADED = true;
+    });
 
     // dep accept: editing util updates main's binding through the callback
     w("src/util.js", `export const value = "u2";\n`);
@@ -74,12 +87,18 @@ try {
     await page.waitForFunction(() => Array.isArray(window.__arr) && window.__arr[0] === "o2", { timeout: 20000 });
 
     // self accept: store is re-imported, dispose ran, callback got new exports
-    w("src/store.js",
+    w(
+      "src/store.js",
       `window.__storeRuns = (window.__storeRuns || 0) + 1;\nexport const s = "s2";\n` +
-      `if (import.meta.hot) {\n  import.meta.hot.dispose(() => { window.__storeDisposed = (window.__storeDisposed || 0) + 1; });\n` +
-      `  import.meta.hot.accept((m) => { window.__storeAccepted = m.s; });\n}\n`);
+        `if (import.meta.hot) {\n  import.meta.hot.dispose(() => { window.__storeDisposed = (window.__storeDisposed || 0) + 1; });\n` +
+        `  import.meta.hot.accept((m) => { window.__storeAccepted = m.s; });\n}\n`,
+    );
     await page.waitForFunction(() => window.__storeAccepted === "s2", { timeout: 20000 });
-    const st = await page.evaluate(() => ({ runs: window.__storeRuns, disposed: window.__storeDisposed, reloaded: window.__NOT_RELOADED !== true }));
+    const st = await page.evaluate(() => ({
+      runs: window.__storeRuns,
+      disposed: window.__storeDisposed,
+      reloaded: window.__NOT_RELOADED !== true,
+    }));
     assert.equal(st.runs, 2, "store executed exactly twice");
     assert.equal(st.disposed, 1, "dispose ran once before replacement");
     assert.equal(st.reloaded, false, "page never reloaded");

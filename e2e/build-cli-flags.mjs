@@ -26,7 +26,10 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "oj-cliflags-"));
 const app = path.join(base, "app");
 fs.mkdirSync(path.join(app, "src"), { recursive: true });
-fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "cliflags", version: "1.0.0", type: "module" }));
+fs.writeFileSync(
+  path.join(app, "package.json"),
+  JSON.stringify({ name: "cliflags", version: "1.0.0", type: "module" }),
+);
 fs.writeFileSync(
   path.join(app, "index.html"),
   `<!doctype html><html><head><link rel="stylesheet" href="/src/linked.css"></head><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>`,
@@ -45,7 +48,10 @@ fs.writeFileSync(
     ``,
   ].join("\n"),
 );
-fs.writeFileSync(path.join(app, "src", "lib.js"), `export function used() { return "u"; }\nexport function unusedExport() { return "UNUSED_EXPORT_MARKER"; }\n`);
+fs.writeFileSync(
+  path.join(app, "src", "lib.js"),
+  `export function used() { return "u"; }\nexport function unusedExport() { return "UNUSED_EXPORT_MARKER"; }\n`,
+);
 fs.writeFileSync(path.join(app, "src", "lazy.js"), `export const lazy = "lazy-chunk-marker";\n`);
 fs.writeFileSync(path.join(app, "src", "style.css"), `.a {\n  color: red;\n  margin: 0px;\n}\n`);
 fs.writeFileSync(path.join(app, "src", "linked.css"), `body {\n  padding: 0px;\n}\n`);
@@ -97,8 +103,16 @@ try {
   assert.ok(!main.includes("usedFunction"), "the default build minifies (mangles) identifiers");
   assert.ok(!readCss(dist).includes("\n  color"), "CSS is minified by default");
   const html0 = fs.readFileSync(path.join(dist, "index.html"), "utf8");
-  assert.match(html0, /<script type="module" src="\/assets\/main-[^"]+\.js" crossorigin>/, "entry script carries crossorigin (Vite)");
-  assert.match(html0, /<link rel="stylesheet" href="\/assets\/main-[^"]+\.css" crossorigin \/>/, "injected stylesheet link carries crossorigin");
+  assert.match(
+    html0,
+    /<script type="module" src="\/assets\/main-[^"]+\.js" crossorigin>/,
+    "entry script carries crossorigin (Vite)",
+  );
+  assert.match(
+    html0,
+    /<link rel="stylesheet" href="\/assets\/main-[^"]+\.css" crossorigin \/>/,
+    "injected stylesheet link carries crossorigin",
+  );
   console.log("ok: defaults (no manifest, minified js + css, import.meta.hot gone, crossorigin tags)");
 
   // Reporter: every output file with a gzip column; a low chunkSizeWarningLimit
@@ -114,9 +128,26 @@ try {
 
   // 2. Every build flag at once, with --outDir and --base.
   const out1 = path.join(base, "out1");
-  ok(["--outDir", out1, "--base", "/app/", "--assetsDir", "static", "--minify", "false", "--sourcemap", "inline", "--manifest", "--assetsInlineLimit", "10"]);
+  ok([
+    "--outDir",
+    out1,
+    "--base",
+    "/app/",
+    "--assetsDir",
+    "static",
+    "--minify",
+    "false",
+    "--sourcemap",
+    "inline",
+    "--manifest",
+    "--assetsInlineLimit",
+    "10",
+  ]);
   const list = files(out1);
-  assert.ok(list.some((f) => f.startsWith("static/main-") && f.endsWith(".js")), `--assetsDir static: ${list.join(", ")}`);
+  assert.ok(
+    list.some((f) => f.startsWith("static/main-") && f.endsWith(".js")),
+    `--assetsDir static: ${list.join(", ")}`,
+  );
   assert.ok(!list.some((f) => f.startsWith("assets/")), "nothing lands under the default assets/ dir");
   const html = fs.readFileSync(path.join(out1, "index.html"), "utf8");
   assert.match(html, /src="\/app\/static\/main-[^"]+\.js"/, "--base prefixes the script src");
@@ -133,7 +164,10 @@ try {
   assert.ok(entry && entry.isEntry, "entry row keyed by source path");
   assert.match(entry.file, /^static\/main-/);
   assert.deepEqual(entry.css.length, 1, "entry lists its stylesheet");
-  assert.ok(Array.isArray(entry.assets) && entry.assets.length === 1 && /^static\/big-.*\.png$/.test(entry.assets[0]), `entry.assets lists the imported png: ${JSON.stringify(entry.assets)}`);
+  assert.ok(
+    Array.isArray(entry.assets) && entry.assets.length === 1 && /^static\/big-.*\.png$/.test(entry.assets[0]),
+    `entry.assets lists the imported png: ${JSON.stringify(entry.assets)}`,
+  );
   assert.equal(manifest["src/big.png"]?.file, entry.assets[0], "asset row keyed by its original file name");
   assert.equal(manifest["src/big.png"]?.src, "src/big.png");
   assert.equal(manifest["src/style.css"]?.file, entry.css[0], "css row keyed by its source path");
@@ -151,7 +185,10 @@ try {
   const main2 = readMain(out2);
   assert.ok(main2.includes("staging-env"), "-m selects .env.staging");
   assert.ok(!main2.includes("usedFunction"), "js still minified");
-  assert.ok(readCss(out2).includes("\n  color: red;"), "-c config's cssMinify: false leaves CSS readable while js minifies");
+  assert.ok(
+    readCss(out2).includes("\n  color: red;"),
+    "-c config's cssMinify: false leaves CSS readable while js minifies",
+  );
   console.log("ok: --manifest <name>, --out alias, -m, -c, --app");
 
   // 4. --watch is a clear error, not a silent full build.
@@ -170,7 +207,10 @@ try {
   // 6. build.manifest / build.assetsDir from the config file.
   ok([], { build: { manifest: "meta/manifest.json", assetsDir: "s/t" } });
   assert.ok(fs.existsSync(path.join(dist, "meta", "manifest.json")), "build.manifest string names the file");
-  assert.ok(files(dist).some((f) => f.startsWith("s/t/main-")), "build.assetsDir nests output directories");
+  assert.ok(
+    files(dist).some((f) => f.startsWith("s/t/main-")),
+    "build.assetsDir nests output directories",
+  );
   console.log("ok: build.manifest / build.assetsDir from config");
 } catch (e) {
   failed = true;

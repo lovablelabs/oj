@@ -55,7 +55,10 @@ import events from "events";
 export const tier = events.EventEmitter ? getTier() : 0;
 `,
 );
-fs.writeFileSync(path.join(uiLib, "index.cjs.js"), `const { getTier } = require("gpu-lib");\nexports.tier = getTier();\n`);
+fs.writeFileSync(
+  path.join(uiLib, "index.cjs.js"),
+  `const { getTier } = require("gpu-lib");\nexports.tier = getTier();\n`,
+);
 
 // A browserify-style polyfill squatting on a builtin's name, as transitive
 // installs commonly leave behind. It exports nothing usable.
@@ -104,7 +107,7 @@ export const gpuTierRoute = createRoute({
 const routeTreePath = path.join(app, "src", "routeTree.ts");
 const routeTree = fs
   .readFileSync(routeTreePath, "utf8")
-  .replace('import { rootRoute }', 'import { gpuTierRoute } from "./routes/gpu-tier";\nimport { rootRoute }')
+  .replace("import { rootRoute }", 'import { gpuTierRoute } from "./routes/gpu-tier";\nimport { rootRoute }')
   .replace("requestUrlRoute]", "requestUrlRoute, gpuTierRoute]");
 if (!routeTree.includes("gpuTierRoute]")) throw new Error("could not register the test route");
 fs.writeFileSync(routeTreePath, routeTree);
@@ -120,11 +123,13 @@ server.stderr.on("data", (d) => (log += d));
 try {
   let body;
   let status = 0;
-  await waitUp(`http://127.0.0.1:${port}/gpu-tier`, { until: async (res) => {
-    status = res.status;
-    body = await res.text();
-    return status === 200 || status === 500;
-  } }).catch(() => {});
+  await waitUp(`http://127.0.0.1:${port}/gpu-tier`, {
+    until: async (res) => {
+      status = res.status;
+      body = await res.text();
+      return status === 200 || status === 500;
+    },
+  }).catch(() => {});
   if (status !== 200 || !body.includes("tier:3")) {
     console.error(log.slice(-4000));
     throw new Error(

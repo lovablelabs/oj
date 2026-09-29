@@ -61,10 +61,7 @@ testEsbuild("the plugin host loads the same config and the ../pkg plugin is acti
 testEsbuild("a tsconfig-paths-aliased TS import is bundled, runs, and is watched", () => {
   const fx = monorepoFixture();
   try {
-    fx.write(
-      "app/tsconfig.json",
-      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }),
-    );
+    fx.write("app/tsconfig.json", JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }));
     // An enum proves the file was transpiled, not just re-exported: Node could
     // never import the raw .ts.
     fx.write(
@@ -134,8 +131,7 @@ testEsbuild("a data: URL import in the config loads", () => {
   const fx = monorepoFixture();
   try {
     const dataUrl =
-      "data:text/javascript;base64," +
-      Buffer.from(`export default "/from-data-url/";`).toString("base64");
+      "data:text/javascript;base64," + Buffer.from(`export default "/from-data-url/";`).toString("base64");
     fx.write(
       "app/vite.config.ts",
       `import dataBase from ${JSON.stringify(dataUrl)};

@@ -144,7 +144,7 @@ try {
     'import { special } from "./data.special.js";\nimport { other } from "./other.js";\nconsole.log(special, other);\n',
   );
   fs.writeFileSync(path.join(app2, "src", "data.special.js"), 'export const special = "placeholder";\n');
-  fs.writeFileSync(path.join(app2, "src", "other.js"), 'export const other = 1;\n');
+  fs.writeFileSync(path.join(app2, "src", "other.js"), "export const other = 1;\n");
   fs.writeFileSync(
     path.join(app2, "index.html"),
     `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/entry.js"></script></body></html>`,
@@ -232,9 +232,18 @@ try {
   fs.rmSync(app2, { recursive: true, force: true });
 
   const parsed = fs.readFileSync(path.join(dist, "module-parsed.txt"), "utf8").split("\n").filter(Boolean);
-  assert.ok(parsed.some((id) => id.endsWith("entry.js")), "moduleParsed saw the entry");
-  assert.ok(parsed.some((id) => id.includes("gate-info")), "moduleParsed saw the virtual module");
-  assert.ok(parsed.some((id) => id.endsWith(".special")), "moduleParsed saw the plugin-loaded module");
+  assert.ok(
+    parsed.some((id) => id.endsWith("entry.js")),
+    "moduleParsed saw the entry",
+  );
+  assert.ok(
+    parsed.some((id) => id.includes("gate-info")),
+    "moduleParsed saw the virtual module",
+  );
+  assert.ok(
+    parsed.some((id) => id.endsWith(".special")),
+    "moduleParsed saw the plugin-loaded module",
+  );
 
   console.log("PLUGIN HOOK GATING BUILD VERIFIED");
 } catch (e) {

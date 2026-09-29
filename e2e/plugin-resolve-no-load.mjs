@@ -46,7 +46,10 @@ fs.writeFileSync(
 const port = 5493;
 const base = `http://127.0.0.1:${port}`;
 async function reachable() {
-  return waitUp(`${base}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(() => true, () => false);
+  return waitUp(`${base}/`, { init: () => ({ signal: AbortSignal.timeout(1500) }) }).then(
+    () => true,
+    () => false,
+  );
 }
 
 let failed = false;

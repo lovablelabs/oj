@@ -13,24 +13,37 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 async function coldOnce(app, browser) {
-  try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
+  try {
+    execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" });
+  } catch {}
   rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   const log = "/tmp/oj-lazy.log";
   const proc = spawn("sh", ["-c", `'${OJ}' dev '${app}' --port ${PORT} > ${log} 2>&1`]);
   const t0 = Date.now();
   const page = await browser.newPage();
   for (;;) {
-    try { await page.goto(`http://localhost:${PORT}/`, { timeout: 2000 }); break; }
-    catch { await sleep(30); if (Date.now() - t0 > 60000) throw new Error("no server"); }
+    try {
+      await page.goto(`http://localhost:${PORT}/`, { timeout: 2000 });
+      break;
+    } catch {
+      await sleep(30);
+      if (Date.now() - t0 > 60000) throw new Error("no server");
+    }
   }
   await page.waitForSelector("[data-done]", { timeout: 60000 });
   const cold = Date.now() - t0;
   await sleep(400); // let the background crawl finish + log
   let crawl = "?";
-  try { crawl = (readFileSync(log, "utf8").match(/eager graph ready: (\d+) modules in ([\d.]+\w+)/) || []).slice(1).join(" in "); } catch {}
+  try {
+    crawl = (readFileSync(log, "utf8").match(/eager graph ready: (\d+) modules in ([\d.]+\w+)/) || [])
+      .slice(1)
+      .join(" in ");
+  } catch {}
   await page.close();
   proc.kill("SIGKILL");
-  try { execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" }); } catch {}
+  try {
+    execSync(`lsof -ti:${PORT} -sTCP:LISTEN | xargs kill -9`, { stdio: "ignore" });
+  } catch {}
   await sleep(300);
   return { cold, crawl };
 }
@@ -46,8 +59,13 @@ async function main() {
       colds.push(r.cold);
       crawl = r.crawl;
     }
-    console.log(`routes-${variant.padEnd(5)}  cold(spawn->painted) median ${med(colds)}ms  min ${Math.min(...colds)}ms  | eager crawl: ${crawl}`);
+    console.log(
+      `routes-${variant.padEnd(5)}  cold(spawn->painted) median ${med(colds)}ms  min ${Math.min(...colds)}ms  | eager crawl: ${crawl}`,
+    );
   }
   await browser.close();
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

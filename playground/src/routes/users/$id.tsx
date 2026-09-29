@@ -9,10 +9,7 @@ export function loader({ params }: LoaderArgs) {
 
 // Title + Open Graph title from the route param.
 export function meta({ params }: LoaderArgs) {
-  return [
-    { title: `User ${params.id} - oj` },
-    { property: "og:title", content: `User ${params.id}` },
-  ];
+  return [{ title: `User ${params.id} - oj` }, { property: "og:title", content: `User ${params.id}` }];
 }
 
 export default function User({ data, params }: { data: RouteData; params: Record<string, string> }) {

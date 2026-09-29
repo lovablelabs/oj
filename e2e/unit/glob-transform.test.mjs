@@ -55,7 +55,10 @@ test("glob wildcards omit hidden paths unless explicitly requested", () => {
     // `exhaustive: true` is Vite's dot: true plus node_modules included.
     mkdirSync(join(dir, "content", "node_modules"), { recursive: true });
     writeFileSync(join(dir, "content", "node_modules", "dep.md"), "dep");
-    const exhaustive = transformGlob('const modules = import.meta.glob("./content/**/*.md", { exhaustive: true });', join(dir, "index.ts"));
+    const exhaustive = transformGlob(
+      'const modules = import.meta.glob("./content/**/*.md", { exhaustive: true });',
+      join(dir, "index.ts"),
+    );
     assert.match(exhaustive, /\.hidden\.md/);
     assert.match(exhaustive, /\.draft\/nested\.md/);
     assert.match(exhaustive, /node_modules\/dep\.md/);
@@ -241,7 +244,10 @@ test("the rewrite adds no lines (source maps and stack traces stay aligned)", ()
     const out = transformGlob(code, join(dir, "index.ts"));
     const lines = out.split("\n");
     assert.equal(lines.length, code.split("\n").length, out);
-    assert.match(lines[0], /^import \* as __oj_glob0_0 from "\.\/content\/a\.md"; import \* as __oj_glob0_1 from "\.\/content\/b\.md"; \/\/ header$/);
+    assert.match(
+      lines[0],
+      /^import \* as __oj_glob0_0 from "\.\/content\/a\.md"; import \* as __oj_glob0_1 from "\.\/content\/b\.md"; \/\/ header$/,
+    );
     assert.match(lines[1], /^const eager = \{"\.\/content\/a\.md": __oj_glob0_0, "\.\/content\/b\.md": __oj_glob0_1$/);
     assert.match(lines[4], /^\} as Record<string, unknown>;$/);
     assert.match(lines[5], /^const lazy = \{.*\};$/);
@@ -292,18 +298,40 @@ test("root-relative patterns resolve against the project root with /-keys", () =
 test("as option maps to a query (raw/url force the default import)", () => {
   const dir = fixture();
   try {
-    const raw = transformGlob('const m = import.meta.glob("./content/*.md", { as: "raw", eager: true });', join(dir, "index.ts"), dir);
+    const raw = transformGlob(
+      'const m = import.meta.glob("./content/*.md", { as: "raw", eager: true });',
+      join(dir, "index.ts"),
+      dir,
+    );
     assert.match(raw, /^import __oj_glob0_0 from "\.\/content\/a\.md\?raw";/);
-    const url = transformGlob('const m = import.meta.glob("./content/*.md", { as: "url" });', join(dir, "index.ts"), dir);
+    const url = transformGlob(
+      'const m = import.meta.glob("./content/*.md", { as: "url" });',
+      join(dir, "index.ts"),
+      dir,
+    );
     assert.match(url, /import\("\.\/content\/a\.md\?url"\)\.then\(\(m\) => m\.default\)/);
-    const bare = transformGlob('const m = import.meta.glob("./content/*.md", { query: "raw" });', join(dir, "index.ts"), dir);
+    const bare = transformGlob(
+      'const m = import.meta.glob("./content/*.md", { query: "raw" });',
+      join(dir, "index.ts"),
+      dir,
+    );
     assert.match(bare, /import\("\.\/content\/a\.md\?raw"\)/);
     assert.throws(
-      () => transformGlob('const m = import.meta.glob("./content/*.md", { as: "raw", query: "?x" });', join(dir, "index.ts"), dir),
+      () =>
+        transformGlob(
+          'const m = import.meta.glob("./content/*.md", { as: "raw", query: "?x" });',
+          join(dir, "index.ts"),
+          dir,
+        ),
       /"as" and "query" cannot be used together/,
     );
     assert.throws(
-      () => transformGlob('const m = import.meta.glob("./content/*.md", { as: "raw", import: "named" });', join(dir, "index.ts"), dir),
+      () =>
+        transformGlob(
+          'const m = import.meta.glob("./content/*.md", { as: "raw", import: "named" });',
+          join(dir, "index.ts"),
+          dir,
+        ),
       /can only be "default" or "\*"/,
     );
   } finally {
@@ -317,7 +345,11 @@ test("caseSensitive: false matches regardless of case; the importer itself is sk
     writeFileSync(join(dir, "content", "Upper.MD"), "# u");
     const strict = transformGlob('const m = import.meta.glob("./content/*.md");', join(dir, "index.ts"), dir);
     assert.doesNotMatch(strict, /Upper\.MD/);
-    const loose = transformGlob('const m = import.meta.glob("./content/*.md", { caseSensitive: false });', join(dir, "index.ts"), dir);
+    const loose = transformGlob(
+      'const m = import.meta.glob("./content/*.md", { caseSensitive: false });',
+      join(dir, "index.ts"),
+      dir,
+    );
     assert.match(loose, /"\.\/content\/Upper\.MD":/);
     assert.match(loose, /"\.\/content\/a\.md":/);
     writeFileSync(join(dir, "pages", "index.ts"), "");

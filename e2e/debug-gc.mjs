@@ -26,7 +26,10 @@ write("package.json", JSON.stringify({ name: "debug-gc-app", version: "1.0.0" })
 // A plugin, so the client plugin host spawns and the gc reaches a real engine.
 write("oj.plugins.mjs", `export default [{ name: "noop", transform() { return null; } }];\n`);
 write("src/main.js", `document.body.textContent = "ok";\n`);
-write("index.html", `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`);
+write(
+  "index.html",
+  `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
+);
 
 async function boot(port, env) {
   const childEnv = { ...process.env, ...env };
@@ -64,12 +67,15 @@ try {
   proc = await boot(5464, { OJ_DEBUG_MEM: "1" });
   await fetch(`http://localhost:5464/src/main.js`); // nudge the plugin host awake
   let collected = 0;
-  await settles(async () => {
-    const res = await fetch(`http://localhost:5464/@oj/debug/gc`);
-    if (res.status !== 200) throw new Error(`enabled: expected 200, got ${res.status}`);
-    ({ collected } = await res.json());
-    return collected !== 0;
-  }, { pollMs: 250 });
+  await settles(
+    async () => {
+      const res = await fetch(`http://localhost:5464/@oj/debug/gc`);
+      if (res.status !== 200) throw new Error(`enabled: expected 200, got ${res.status}`);
+      ({ collected } = await res.json());
+      return collected !== 0;
+    },
+    { pollMs: 250 },
+  );
   if (collected < 1) throw new Error("gc never ran in a live engine");
   // A browser page's cross-origin fetch (Origin header present) is refused:
   // the endpoint is for local probes only.

@@ -9,19 +9,25 @@ function depsOf(pkgJsonPath) {
   try {
     const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
     return Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies });
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 // Locate a dependency's own package.json from `req`'s vantage point. The
 // "<name>/package.json" subpath is the fast path; some packages don't expose it
 // through their exports map, so fall back to resolving the entry and walking up.
 function pkgJsonOf(req, name) {
-  try { return req.resolve(name + "/package.json"); } catch {}
+  try {
+    return req.resolve(name + "/package.json");
+  } catch {}
   try {
     let dir = dirname(req.resolve(name));
     for (let i = 0; i < 16; i++) {
       const cand = join(dir, "package.json");
-      try { if (JSON.parse(readFileSync(cand, "utf8")).name === name) return cand; } catch {}
+      try {
+        if (JSON.parse(readFileSync(cand, "utf8")).name === name) return cand;
+      } catch {}
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -34,7 +40,9 @@ export function makeResolver(root) {
   const appRequire = createRequire(pathToFileURL(root + "/package.json").href);
   const directDeps = depsOf(root + "/package.json");
   return function resolvePkg(spec, preferred = []) {
-    try { return appRequire.resolve(spec); } catch {}
+    try {
+      return appRequire.resolve(spec);
+    } catch {}
     // A transitive dependency is not resolvable from the app root under a
     // strict (pnpm) layout, so walk the dependency graph breadth-first,
     // re-anchoring resolution at each package we reach until `spec` resolves.
@@ -50,7 +58,9 @@ export function makeResolver(root) {
         if (seen.has(pj)) continue;
         seen.add(pj);
         const req = createRequire(pathToFileURL(pj).href);
-        try { return req.resolve(spec); } catch {}
+        try {
+          return req.resolve(spec);
+        } catch {}
         for (const d of depsOf(pj)) {
           const dpj = pkgJsonOf(req, d);
           if (dpj && !seen.has(dpj)) next.push(dpj);
@@ -126,10 +136,9 @@ export async function importOjRolldown(root, preferred = []) {
     // (never a mutation): the throw may be a primitive or a frozen object.
     const msg = err?.message ?? String(err);
     if (vendored && !`${msg}`.includes("OJ_VENDORED_ROLLDOWN")) {
-      throw new Error(
-        `oj: the vendored rolldown (OJ_VENDORED_ROLLDOWN=${vendored}) failed to load: ${msg}`,
-        { cause: err },
-      );
+      throw new Error(`oj: the vendored rolldown (OJ_VENDORED_ROLLDOWN=${vendored}) failed to load: ${msg}`, {
+        cause: err,
+      });
     }
     throw err;
   }
@@ -140,7 +149,9 @@ export async function importOjRolldown(root, preferred = []) {
 /// runtime; a file's own `@jsx*` pragma comments still win inside oxc.
 export function jsxTransformOptions(development) {
   let cfg = {};
-  try { cfg = JSON.parse(process.env.OJ_JSX || "{}") || {}; } catch {}
+  try {
+    cfg = JSON.parse(process.env.OJ_JSX || "{}") || {};
+  } catch {}
   const classic = cfg.runtime === "classic";
   const out = { runtime: classic ? "classic" : "automatic" };
   if (development != null) out.development = development;
@@ -159,7 +170,13 @@ export function envPrefixes(env = process.env) {
   return ["VITE_"];
 }
 
-export function viteEnvDefine({ ssr = false, mode = "development", env: envSource = process.env, base = "/", prefixes = envPrefixes() } = {}) {
+export function viteEnvDefine({
+  ssr = false,
+  mode = "development",
+  env: envSource = process.env,
+  base = "/",
+  prefixes = envPrefixes(),
+} = {}) {
   // Vite: DEV/PROD follow NODE_ENV (isProduction), MODE is the mode itself.
   const nodeEnv = envSource.NODE_ENV || (mode === "production" ? "production" : "development");
   const env = { MODE: mode, DEV: nodeEnv !== "production", PROD: nodeEnv === "production", SSR: !!ssr, BASE_URL: base };
@@ -171,7 +188,11 @@ export function viteEnvDefine({ ssr = false, mode = "development", env: envSourc
 // oj): applied on top of the shared `define` for that environment's bundle.
 export function environmentDefines(name, env = process.env) {
   const raw = name === "ssr" ? env.OJ_DEFINE_SSR : name === "client" ? env.OJ_DEFINE_CLIENT : null;
-  try { return JSON.parse(raw || "{}") || {}; } catch { return {}; }
+  try {
+    return JSON.parse(raw || "{}") || {};
+  } catch {
+    return {};
+  }
 }
 
 // Vite's `ssr.external` for the Start production server bundle (OJ_SSR_EXTERNALS
@@ -182,7 +203,9 @@ export function environmentDefines(name, env = process.env) {
 // ssrExternal leaves it out of the server build.
 export function ssrExternalRule(appRoot, env = process.env) {
   let cfg = null;
-  try { cfg = JSON.parse(env.OJ_SSR_EXTERNALS || "null"); } catch {}
+  try {
+    cfg = JSON.parse(env.OJ_SSR_EXTERNALS || "null");
+  } catch {}
   const names = new Set(Array.isArray(cfg?.external) ? cfg.external : []);
   const all = cfg?.externalAll === true;
   if (!names.size && !all) return () => false;
@@ -206,9 +229,10 @@ const SRC_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 export function emptyVirtualStub(appRoot, resolvedId) {
   const original = resolvedId.replace(/^\0/, "");
   const re = new RegExp(
-    `import\\s+(?:type\\s+)?[^;{]*\\{([^}]*)\\}[^;]*?from\\s*["']${
-      original.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    }["']`,
+    `import\\s+(?:type\\s+)?[^;{]*\\{([^}]*)\\}[^;]*?from\\s*["']${original.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    )}["']`,
     "g",
   );
   const names = new Set();

@@ -57,7 +57,10 @@ try {
 
   child = spawn(OJ, ["dev", "--port", String(PORT)], { cwd: app, stdio: "ignore" });
   const up = async () => {
-    return waitUp(`http://localhost:${PORT}/`).then(() => true, () => false);
+    return waitUp(`http://localhost:${PORT}/`).then(
+      () => true,
+      () => false,
+    );
   };
   if (!(await up())) throw new Error("dev server did not start");
 

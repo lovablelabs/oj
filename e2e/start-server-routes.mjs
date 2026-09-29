@@ -40,7 +40,9 @@ const rm = (p) => {
     }
   }
 };
-const must = (cond, msg) => { if (!cond) throw new Error(msg); };
+const must = (cond, msg) => {
+  if (!cond) throw new Error(msg);
+};
 
 async function assertServerRoutes(port, label) {
   // 6 MB of random bytes: not valid UTF-8, well past any small-body path.
@@ -50,19 +52,29 @@ async function assertServerRoutes(port, label) {
     headers: { "content-type": "application/octet-stream" },
     body: blob,
   });
-  must(res.status === 200, `${label}: POST /api/export.csv returned ${res.status} (dotted non-GET must reach the server route)`);
-  must(res.headers.get("x-body-bytes") === String(blob.length), `${label}: the server route saw ${res.headers.get("x-body-bytes")} body bytes, want ${blob.length}`);
+  must(
+    res.status === 200,
+    `${label}: POST /api/export.csv returned ${res.status} (dotted non-GET must reach the server route)`,
+  );
+  must(
+    res.headers.get("x-body-bytes") === String(blob.length),
+    `${label}: the server route saw ${res.headers.get("x-body-bytes")} body bytes, want ${blob.length}`,
+  );
   const echoed = Buffer.from(await res.arrayBuffer());
   must(echoed.equals(blob), `${label}: echoed body differs from what was sent (binary body mangled)`);
   const cookies = res.headers.getSetCookie();
-  must(cookies.length === 2 && cookies[0].startsWith("first=1") && cookies[1].startsWith("second=2"),
-    `${label}: expected two set-cookie headers, got ${JSON.stringify(cookies)}`);
+  must(
+    cookies.length === 2 && cookies[0].startsWith("first=1") && cookies[1].startsWith("second=2"),
+    `${label}: expected two set-cookie headers, got ${JSON.stringify(cookies)}`,
+  );
 
   // An unowned dotted PUT is the app's too: its router answers (an HTML 404
   // here), not the dev server's method/route rejection.
   const put = await fetch(`http://localhost:${port}/files/a.b`, { method: "PUT", body: "x" });
-  must((put.headers.get("content-type") || "").includes("text/html"),
-    `${label}: PUT /files/a.b should reach the app (got ${put.status} ${put.headers.get("content-type")})`);
+  must(
+    (put.headers.get("content-type") || "").includes("text/html"),
+    `${label}: PUT /files/a.b should reach the app (got ${put.status} ${put.headers.get("content-type")})`,
+  );
   console.log(`${label}: dotted POST server route + binary echo + 2 set-cookie + dotted PUT ok`);
 
   // Behind a proxy that already set x-forwarded-host (a preview or a tunnel),
@@ -74,9 +86,15 @@ async function assertServerRoutes(port, label) {
   });
   must(viaProxy.status === 200, `${label}: GET /api/request-url behind a proxy returned ${viaProxy.status}`);
   const seen = await viaProxy.json();
-  must(seen.url.startsWith(`http://localhost:${port}/api/request-url`), `${label}: request.url should use the server's own host, got ${seen.url}`);
+  must(
+    seen.url.startsWith(`http://localhost:${port}/api/request-url`),
+    `${label}: request.url should use the server's own host, got ${seen.url}`,
+  );
   must(seen.host === `localhost:${port}`, `${label}: Host should be the server's own, got ${seen.host}`);
-  must(seen.forwardedHost === "preview.example.com", `${label}: x-forwarded-host should pass through, got ${seen.forwardedHost}`);
+  must(
+    seen.forwardedHost === "preview.example.com",
+    `${label}: x-forwarded-host should pass through, got ${seen.forwardedHost}`,
+  );
   console.log(`${label}: proxied request keeps Host and passes x-forwarded-host through`);
 
   // The fixture configures its own Start server entry (src/ssr-entry.ts, a
@@ -84,7 +102,10 @@ async function assertServerRoutes(port, label) {
   // the configured entry; so must oj, in dev and in the prod server bundle.
   for (const route of ["/", "/api/request-url"]) {
     const res = await fetch(`http://localhost:${port}${route}`);
-    must(res.headers.get("x-server-entry") === "fixture", `${label}: ${route} did not go through the configured server entry (x-server-entry=${res.headers.get("x-server-entry")})`);
+    must(
+      res.headers.get("x-server-entry") === "fixture",
+      `${label}: ${route} did not go through the configured server entry (x-server-entry=${res.headers.get("x-server-entry")})`,
+    );
   }
   console.log(`${label}: configured tanstackStart server.entry wraps the handler`);
 }
@@ -105,24 +126,40 @@ async function prodPhase() {
   rm(path.join(app, ".oj-cache"));
   execSync(`${oj} build ${app}`, { cwd: repo, stdio: ["ignore", "ignore", "inherit"] });
   const server = fs.readFileSync(path.join(app, "dist", "server.mjs"), "utf8");
-  must(server.includes("getSetCookie") && server.includes("Readable.fromWeb"),
-    "prod: dist/server.mjs should stream responses and keep every set-cookie");
+  must(
+    server.includes("getSetCookie") && server.includes("Readable.fromWeb"),
+    "prod: dist/server.mjs should stream responses and keep every set-cookie",
+  );
   // environments.{ssr,client}.define reach the matching prod bundle (Vite's
   // define plugin reads environment.config.define per build).
   const chunks = path.join(app, "dist", "chunks");
-  const serverBundle = [path.join(app, "dist", "server-bundle.mjs"), ...(fs.existsSync(chunks) ? fs.readdirSync(chunks).map((f) => path.join(chunks, f)) : [])]
-    .filter((f) => f.endsWith(".mjs")).map((f) => fs.readFileSync(f, "utf8")).join("\n");
+  const serverBundle = [
+    path.join(app, "dist", "server-bundle.mjs"),
+    ...(fs.existsSync(chunks) ? fs.readdirSync(chunks).map((f) => path.join(chunks, f)) : []),
+  ]
+    .filter((f) => f.endsWith(".mjs"))
+    .map((f) => fs.readFileSync(f, "utf8"))
+    .join("\n");
   // (the minifier may emit either quote style for the string literal)
   const lit = (s) => new RegExp(`["'\`]${s}["'\`]`);
-  must(lit("server-side").test(serverBundle) && !lit("client-side").test(serverBundle),
-    "prod: server bundle did not apply environments.ssr.define");
+  must(
+    lit("server-side").test(serverBundle) && !lit("client-side").test(serverBundle),
+    "prod: server bundle did not apply environments.ssr.define",
+  );
   const assets = path.join(app, "dist", "client", "assets");
-  const clientJs = fs.readdirSync(assets).filter((f) => f.endsWith(".js"))
-    .map((f) => fs.readFileSync(path.join(assets, f), "utf8")).join("\n");
-  must(lit("client-side").test(clientJs) && !lit("server-side").test(clientJs),
-    "prod: client bundle did not apply environments.client.define");
+  const clientJs = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
+  must(
+    lit("client-side").test(clientJs) && !lit("server-side").test(clientJs),
+    "prod: client bundle did not apply environments.client.define",
+  );
   const srv = spawn("node", [path.join(app, "dist", "server.mjs")], {
-    cwd: app, stdio: "ignore", env: { ...process.env, PORT: String(PROD_PORT) },
+    cwd: app,
+    stdio: "ignore",
+    env: { ...process.env, PORT: String(PROD_PORT) },
   });
   try {
     await waitUp(`http://localhost:${PROD_PORT}/`);
