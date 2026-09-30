@@ -62,13 +62,18 @@ pub(crate) fn engine_thread(
         }
     };
     rt.block_on(async move {
-        let mut scheduler = match Scheduler::boot(config, module_host, hooks) {
+        let mut scheduler = match Scheduler::boot(config, module_host) {
             Ok(scheduler) => scheduler,
             Err(e) => {
                 let _ = ready.send(Err(e));
                 return;
             }
         };
+        // Bridge globals and the heap-cap callback are installed only now,
+        // with the scheduler at its final address: V8 callback registration
+        // must come after the last move of the worker.
+        let capped = scheduler.config.memory_limit_bytes.is_some();
+        scheduler.isolate.install(hooks, capped);
         if ready.send(Ok(scheduler.isolate.handle())).is_err() {
             return;
         }
@@ -119,13 +124,12 @@ impl Scheduler {
     fn boot(
         config: EngineConfig,
         module_host: Option<ModuleHost>,
-        hooks: Option<EngineHooks>,
     ) -> Result<Scheduler, EngineError> {
         let root_url = deno_path_util::url_from_directory_path(&config.root)
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         // Never loaded; MainWorker only needs a main-module identity.
         let main_module = root_url.join("__oj_engine_main__.mjs").unwrap();
-        let isolate = Isolate::boot(&config, &main_module, module_host, hooks)?;
+        let isolate = Isolate::boot(&config, &main_module, module_host)?;
         Ok(Scheduler {
             isolate,
             config,
@@ -195,7 +199,7 @@ impl Scheduler {
                 Poll::Ready(Err(e)) => return Poll::Ready(Tick::Broken(e)),
                 Poll::Pending => self.event_loop_idle = false,
             }
-            if self.isolate.take_oom() {
+            if self.isolate.oom_pending() {
                 return Poll::Ready(Tick::MemoryExhausted);
             }
             Poll::Pending
@@ -287,6 +291,7 @@ impl Scheduler {
     }
 
     fn memory_exhausted(&mut self) {
+        let _ = self.isolate.take_oom();
         // With nothing parked the OOM would otherwise vanish: say it.
         if self.calls.is_empty() {
             eprintln!(
