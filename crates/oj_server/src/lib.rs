@@ -8398,6 +8398,47 @@ pub fn capture_startup_cwd() {
     }
 }
 
+/// Workspace packages linked into any `node_modules` from the root upward: a
+/// symlink whose real path is outside the root and not inside a node_modules.
+fn linked_package_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut dir = Some(root);
+    while let Some(d) = dir {
+        if let Ok(entries) = std::fs::read_dir(d.join("node_modules")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let candidates: Vec<PathBuf> =
+                    if entry.file_name().to_string_lossy().starts_with('@') {
+                        std::fs::read_dir(&path)
+                            .map(|scoped| scoped.flatten().map(|e| e.path()).collect())
+                            .unwrap_or_default()
+                    } else {
+                        vec![path]
+                    };
+                for candidate in candidates {
+                    if !std::fs::symlink_metadata(&candidate)
+                        .is_ok_and(|m| m.file_type().is_symlink())
+                    {
+                        continue;
+                    }
+                    let Ok(real) = std::fs::canonicalize(&candidate) else {
+                        continue;
+                    };
+                    if real.starts_with(root)
+                        || real.components().any(|c| c.as_os_str() == "node_modules")
+                        || out.contains(&real)
+                    {
+                        continue;
+                    }
+                    out.push(real);
+                }
+            }
+        }
+        dir = d.parent();
+    }
+    out
+}
+
 fn spawn_watcher(state: Arc<ServerState>) {
     std::thread::spawn(move || {
         use notify::{RecursiveMode, Watcher};
@@ -8423,19 +8464,26 @@ fn spawn_watcher(state: Arc<ServerState>) {
             )
         };
         let mut watched_any = false;
-        if let Ok(entries) = std::fs::read_dir(&state.root) {
-            for entry in entries.flatten() {
-                if ignore(&entry.file_name()) {
-                    continue;
-                }
-                let path = entry.path();
-                let mode = if path.is_dir() {
-                    RecursiveMode::Recursive
-                } else {
-                    RecursiveMode::NonRecursive
-                };
-                if watcher.watch(&path, mode).is_ok() {
-                    watched_any = true;
+        // Linked workspace packages (a monorepo's `@acme/shared` symlinked into
+        // node_modules) are app source served through /@fs, so watch their
+        // entries too -- Vite watches every served file outside the root.
+        let mut watch_roots = vec![state.root.clone()];
+        watch_roots.extend(linked_package_dirs(&state.root));
+        for watch_root in &watch_roots {
+            if let Ok(entries) = std::fs::read_dir(watch_root) {
+                for entry in entries.flatten() {
+                    if ignore(&entry.file_name()) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    let mode = if path.is_dir() {
+                        RecursiveMode::Recursive
+                    } else {
+                        RecursiveMode::NonRecursive
+                    };
+                    if watcher.watch(&path, mode).is_ok() {
+                        watched_any = true;
+                    }
                 }
             }
         }
@@ -9694,6 +9742,30 @@ export default [{{
             app,
             "a deno.jsonc with comments is skipped like Vite"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_package_dirs_finds_workspace_symlinks_only() {
+        // repo/
+        //   packages/shared          <- workspace package (linked, watched)
+        //   store/node_modules/dep   <- a store copy (pnpm-style, not watched)
+        //   app/node_modules/@acme/shared -> ../../../packages/shared
+        //   app/node_modules/dep          -> ../../store/node_modules/dep
+        //   app/node_modules/plain        (a real directory, not a link)
+        let repo = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(repo.path()).unwrap();
+        let shared = repo.join("packages/shared");
+        let store_dep = repo.join("store/node_modules/dep");
+        let app = repo.join("app");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(&store_dep).unwrap();
+        std::fs::create_dir_all(app.join("node_modules/@acme")).unwrap();
+        std::fs::create_dir_all(app.join("node_modules/plain")).unwrap();
+        std::os::unix::fs::symlink(&shared, app.join("node_modules/@acme/shared")).unwrap();
+        std::os::unix::fs::symlink(&store_dep, app.join("node_modules/dep")).unwrap();
+
+        assert_eq!(linked_package_dirs(&app), vec![shared]);
     }
 
     #[test]
