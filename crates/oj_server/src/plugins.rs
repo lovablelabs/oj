@@ -2013,7 +2013,7 @@ impl PluginHost {
         let rpc_handler: oj_js::RpcHandler = {
             let resolver = std::sync::Arc::clone(&resolver);
             let root = root.clone();
-            std::sync::Arc::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
+            Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
         };
         let mut engine_config = oj_js::EngineConfig::new(&root);
         engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));

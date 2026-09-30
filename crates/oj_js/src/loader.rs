@@ -185,7 +185,7 @@ impl ModuleLoader for EngineModuleLoader {
                 let requested_dr = as_deno_resolver_requested_module_type(&requested);
                 let loaded = loader
                     .load(
-                        Cow::Owned(specifier.clone()),
+                        Cow::Borrowed(&specifier),
                         referrer.as_ref(),
                         &requested_dr,
                         None,

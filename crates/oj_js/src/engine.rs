@@ -264,24 +264,30 @@ impl EngineRegistry {
     /// how many acknowledged having RUN it within `wait` (shared across
     /// engines). Blocking: async callers go through spawn_blocking.
     pub fn collect_garbage(&self, wait: Duration) -> usize {
-        let senders: Vec<mpsc::WeakUnboundedSender<Job>> = lock(&self.engines).clone();
-        let mut acks = Vec::new();
-        for weak in &senders {
-            let Some(tx) = weak.upgrade() else { continue };
-            let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-            if tx.send(Job::Gc { reply: ack_tx }).is_ok() {
-                acks.push(ack_rx);
-            }
-        }
+        // One shared ack channel: every engine acks into it and the acks are
+        // counted, so there is nothing to allocate per engine. Sends are
+        // non-blocking (unbounded), so holding the registry lock across the
+        // fan-out is fine.
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let sent = lock(&self.engines)
+            .iter()
+            .filter_map(mpsc::WeakUnboundedSender::upgrade)
+            .filter(|tx| {
+                tx.send(Job::Gc {
+                    reply: ack_tx.clone(),
+                })
+                .is_ok()
+            })
+            .count();
+        drop(ack_tx);
         let deadline = std::time::Instant::now() + wait;
-        let mut collected = 0usize;
-        for rx in acks {
-            let left = deadline
-                .saturating_duration_since(std::time::Instant::now())
-                .max(Duration::from_millis(1));
-            if rx.recv_timeout(left).is_ok() {
-                collected += 1;
+        let mut collected = 0;
+        while collected < sent {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() || ack_rx.recv_timeout(left).is_err() {
+                break;
             }
+            collected += 1;
         }
         collected
     }
