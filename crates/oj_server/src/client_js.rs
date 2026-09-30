@@ -4,7 +4,10 @@ pub(crate) fn js(body: impl IntoResponse) -> Response {
     ([(header::CONTENT_TYPE, "text/javascript")], body).into_response()
 }
 
-pub(crate) async fn serve_client_js(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+pub(crate) async fn serve_client_js(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> Response {
     // Browsers refetch /@oj/client.js on every reload; the body is fixed for
     // the server's lifetime, so a matching validator saves the transfer.
     cached_js_response(
@@ -14,9 +17,8 @@ pub(crate) async fn serve_client_js(State(state): State<Arc<ServerState>>, heade
     )
 }
 
-/// A cached, immutable-for-this-process JS body: 304 on a matching validator,
-/// otherwise the bytes verbatim (the header tuple overwrites the
-/// `application/octet-stream` that `Bytes` would set).
+/// A cached, immutable-for-this-process JS body: 304 on a matching validator, else the
+/// bytes verbatim (the header tuple overwrites the octet-stream type `Bytes` would set).
 pub(crate) fn cached_js_response(headers: &HeaderMap, etag: String, body: Bytes) -> Response {
     if headers
         .get(header::IF_NONE_MATCH)
@@ -57,9 +59,8 @@ pub(crate) fn hmr_socket_path(hmr: Option<&oj_config::HmrOptions>) -> String {
     }
 }
 
-/// Fill the client's `__HMR_*__` / `__WS_TOKEN__` placeholders the way Vite's
-/// clientInjections does: JSON literals, `null` where the config is silent so
-/// the client falls back to the page's own location.
+/// Fill the client's `__HMR_*__` / `__WS_TOKEN__` placeholders (Vite's clientInjections):
+/// JSON literals, `null` where the config is silent so the client uses the page's location.
 pub(crate) fn render_client_js(
     template: &str,
     hmr: Option<&oj_config::HmrOptions>,
@@ -69,9 +70,8 @@ pub(crate) fn render_client_js(
     let lit = |v: serde_json::Value| v.to_string();
     let protocol = hmr.and_then(|h| h.protocol.clone());
     let hostname = hmr.and_then(|h| h.host.clone());
-    // Vite: `ws.clientPort -> ws.port -> the page's port`; oj's socket shares
-    // the dev server port, so only clientPort (the browser-facing port behind a
-    // proxy) moves the dial.
+    // Vite: `ws.clientPort -> ws.port -> the page's port`; oj's socket shares the
+    // dev server port, so only clientPort (browser-facing, behind a proxy) moves the dial.
     let port = hmr.and_then(|h| h.client_port);
     let overlay = hmr.and_then(|h| h.overlay).unwrap_or(true);
     template
@@ -83,9 +83,8 @@ pub(crate) fn render_client_js(
         .replace("__WS_TOKEN__", &lit(token.into()))
 }
 
-/// A fresh random token for this process (Vite: `crypto.randomBytes(9)`, as
-/// base64url). rustls' provider RNG is already linked; a hash of process-unique
-/// state is the fallback if it ever fails.
+/// A fresh random token for this process (Vite: `crypto.randomBytes(9)` base64url).
+/// rustls' provider RNG, with a hash of process-unique state as the fallback.
 pub(crate) fn new_ws_token() -> String {
     let mut bytes = [0u8; 16];
     let filled = rustls::crypto::aws_lc_rs::default_provider()
@@ -103,11 +102,14 @@ pub(crate) fn new_ws_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Vite's ws `shouldHandle`: a request carrying `Origin` comes from a browser
-/// and must present the token (`hasValidToken`); requests without one are
-/// allowed, since a client that can send them can already make plain HTTP
-/// requests to the server. `vite-ping` never carries data and is exempt.
-pub(crate) fn ws_token_rejected(check: bool, token: &str, headers: &HeaderMap, query: Option<&str>) -> bool {
+/// Vite's ws `shouldHandle`: a request carrying `Origin` (a browser) must present the
+/// token; Origin-less clients could already make plain HTTP requests, so they pass.
+pub(crate) fn ws_token_rejected(
+    check: bool,
+    token: &str,
+    headers: &HeaderMap,
+    query: Option<&str>,
+) -> bool {
     if !check || !headers.contains_key(header::ORIGIN) {
         return false;
     }

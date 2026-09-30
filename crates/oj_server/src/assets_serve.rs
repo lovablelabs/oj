@@ -62,11 +62,8 @@ pub(crate) async fn asset_module(file: &Path, url: &str, kind: &str) -> Result<S
     }
 }
 
-/// `import css from "./x.css?inline"`: the compiled stylesheet as a string. It
-/// is the output of the same pipeline a plain stylesheet import runs (plugin
-/// transforms, Sass/Less/Stylus with additionalData and loadPaths, PostCSS or
-/// Tailwind, @import inlining, url() rebasing), as Vite's `?inline` is the css
-/// of the same transform; a CSS module inlines its css, not its class map.
+/// `?inline`: the compiled stylesheet as a string, output of the same pipeline a
+/// plain css import runs (Vite parity); a CSS module inlines css, not its class map.
 pub(crate) async fn inline_css_module(
     state: &Arc<ServerState>,
     file: &Path,

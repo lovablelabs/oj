@@ -1,5 +1,3 @@
-use super::*;
-
 #[inline]
 pub fn cobalt(s: &str) -> String {
     use std::io::IsTerminal;
@@ -54,9 +52,8 @@ pub fn boot_phase(label: &str) {
     eprintln!("[oj-phase] {ms} {label}");
 }
 
-/// Vite's `server.open`: launch the system browser at the served url once the
-/// listener is bound. `BROWSER=none` disables it and any other `BROWSER` value
-/// names the command to run (the `open` package's convention Vite follows).
+/// Vite's `server.open`: launch the browser once bound. `BROWSER=none` disables,
+/// any other `BROWSER` value names the command (the `open` package's convention).
 pub fn open_browser(url: &str) {
     let browser = std::env::var("BROWSER")
         .ok()
@@ -86,9 +83,8 @@ pub fn open_browser(url: &str) {
     }
 }
 
-/// A `lovable:boot-progress` custom HMR frame (editor boot narration). Shape
-/// mirrors web/shared/lib/preview/bootProgress.ts; ssrModules + clientModules
-/// are required non-negative ints or the editor drops the frame.
+/// A `lovable:boot-progress` custom HMR frame (editor boot narration).
+/// ssrModules + clientModules must be non-negative ints or the editor drops the frame.
 pub fn boot_progress_frame(
     ssr_modules: usize,
     client_modules: usize,
@@ -108,9 +104,8 @@ pub fn boot_progress_frame(
     .to_string()
 }
 
-/// A `lovable:update-progress` custom HMR frame (editor prompt / steady-state
-/// narration). Shape mirrors web/shared/lib/preview/updateProgress.ts; batch is
-/// monotonic and trigger is one of "flush" | "watch" | "restart".
+/// A `lovable:update-progress` custom HMR frame (editor narration).
+/// batch is monotonic; trigger is one of "flush" | "watch" | "restart".
 pub fn update_progress_frame(
     batch: u64,
     trigger: &str,

@@ -375,9 +375,8 @@ fn content_changes_ignore_attribute_only_events_unless_the_mtime_moved() {
         )))
         .add_path(file.clone())
     };
-    let access = || {
-        notify::Event::new(notify::EventKind::Access(AccessKind::Read)).add_path(file.clone())
-    };
+    let access =
+        || notify::Event::new(notify::EventKind::Access(AccessKind::Read)).add_path(file.clone());
     // A never-seen file with an OLD mtime: the relatime atime storm shape.
     let old_mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
     std::fs::File::options()
@@ -447,9 +446,8 @@ fn content_changes_ignore_attribute_only_events_unless_the_mtime_moved() {
         vec![file.clone()],
         "a vanished file is a change"
     );
-    let removed =
-        notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::File))
-            .add_path(file.clone());
+    let removed = notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::File))
+        .add_path(file.clone());
     assert_eq!(changes.changed_paths(&removed), vec![file.clone()]);
     let _ = std::fs::remove_dir_all(&dir);
 }

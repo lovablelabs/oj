@@ -78,7 +78,11 @@ pub(crate) async fn vite_hmr_upgrade(
     }
 }
 
-pub(crate) fn hmr_socket(upgrade: WebSocketUpgrade, state: Arc<ServerState>, vite: bool) -> Response {
+pub(crate) fn hmr_socket(
+    upgrade: WebSocketUpgrade,
+    state: Arc<ServerState>,
+    vite: bool,
+) -> Response {
     let upgrade = if vite {
         upgrade.protocols(["vite-hmr"])
     } else {
@@ -133,11 +137,8 @@ pub(crate) fn hmr_socket(upgrade: WebSocketUpgrade, state: Arc<ServerState>, vit
     })
 }
 
-/// A plugin drove `server.moduleGraph.invalidateModule(...)` or `server.restart()`
-/// from the host. Invalidation drops the module's compiled output (so its next
-/// request recompiles, re-running plugin transforms) and, for a file in the app,
-/// propagates an HMR update exactly as a change to that file would; a virtual id
-/// only loses its cache, as in Vite (plugins push their own ws message then).
+/// Host-driven invalidateModule/restart. Invalidation drops compiled output and,
+/// for an app file, propagates HMR like an edit; a virtual id only loses its cache (Vite parity).
 pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &serde_json::Value) {
     match ev.get("action").and_then(|a| a.as_str()) {
         Some("restart") => {
@@ -193,8 +194,7 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
             let (dirty, targets) = {
                 let mut graph = state.graph.lock().unwrap();
                 // Only a self-accepting module an update touched, once per update
-                // (Vite's lastHMRInvalidationReceived); its importers are stamped
-                // so the boundary's re-fetch sees the invalidated module's version.
+                // (Vite's lastHMRInvalidationReceived); importers are stamped too.
                 let Some(dirty) = graph.accept_invalidation(Path::new(path), timestamp) else {
                     println!("oj: invalidate {path} ignored (no pending update)");
                     return;
@@ -208,9 +208,8 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
                 }
             }
             match targets {
-                // The invalidate came back around to the module that started the
-                // chain: no importer can hot update it, so reload (Vite's
-                // 'circular import invalidate').
+                // The chain came back to the module that started it: no importer
+                // can hot update it, so reload (Vite's 'circular import invalidate').
                 Ok(targets)
                     if first_invalidated_by.is_some_and(|first| {
                         targets
@@ -259,19 +258,14 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
     }
 }
 
-/// The id a module's hot context and Fast Refresh registration use: its url with
-/// oj's HMR cache-busting `t=<timestamp>` removed but every other query kept, so a
-/// `?tsr-shared=1` variant stays a distinct module while the id is stable across
-/// updates. It must match the clean path the server names in its update messages;
-/// a timestamped id would never match, so accept callbacks would never fire.
-/// Mirrors Vite's `removeTimestampQuery`.
+/// Hot-context/Fast Refresh id: the url minus oj's `t=<timestamp>`, other query kept.
+/// Must match the clean path in update messages or accepts never fire (Vite removeTimestampQuery).
 pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
     let Some((base, query)) = url.split_once('?') else {
         return url.to_string();
     };
-    // oj's HMR timestamp is `now_millis()`: exactly 13 digits. Match only that,
-    // as Vite's `timestampRE` (`/\bt=\d{13}&?\b/`) does, so a user's own short or
-    // non-numeric `t=` query is never mistaken for it and stripped.
+    // The timestamp is exactly 13 digits (now_millis); match only that, as Vite's
+    // `timestampRE` does, so a user's own `t=` query is never stripped.
     let kept: Vec<&str> = query
         .split('&')
         .filter(|kv| {
@@ -285,12 +279,8 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
     }
 }
 
-/// Append the HMR timestamp to a served module url when its module has one. Only
-/// modules served as JS are stamped (compilable sources, JSON, and stylesheet
-/// wrappers, which Vite's importAnalysis also stamps so an edited data file or
-/// CSS module is re-fetched rather than read from the browser's module cache):
-/// asset (`?url`, `?raw`) and oj-internal (`/@oj-deps/`, `/@fs/`, `/@id/`, ...)
-/// urls are left alone, since deps never take part in HMR.
+/// Append the HMR timestamp to a served module url. Only JS-served modules (compilable,
+/// JSON, style wrappers) are stamped per Vite's importAnalysis; asset and oj-internal urls never.
 pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
     if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
         return url.to_string();
@@ -313,23 +303,19 @@ pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
     }
 }
 
-/// `ctx_predefined`: the served body already carries the hot-context banner
-/// (serve_compiled prepends it when the module reads `import.meta.hot`
-/// itself). The glue must then REUSE `import.meta.hot` — as Vite's refresh
-/// footer reuses the import-analysis banner — never re-import: an import
-/// binding is a lexical declaration, and a second
-/// `import {{ createHotContext as __oj_createHotContext }}` in the same
-/// module scope is a SyntaxError that kills the whole module.
-pub(crate) fn hot_glue(url: &str, query: Option<&str>, is_boundary: bool, ctx_predefined: bool) -> String {
+/// `ctx_predefined`: the body already carries the hot-context banner; the glue must
+/// then REUSE `import.meta.hot`, never re-import: a second createHotContext import in one module scope is a SyntaxError.
+pub(crate) fn hot_glue(
+    url: &str,
+    query: Option<&str>,
+    is_boundary: bool,
+    ctx_predefined: bool,
+) -> String {
     if !is_boundary {
         return String::new();
     }
-    // serve_compiled keys modules per full url, so `url` usually already carries
-    // its query and `query` repeats it; it can also arrive clean with the query
-    // separate. Either way the self-import must name exactly the module being
-    // served (keeping its `t=` so the browser dedupes to the running instance) and
-    // must never re-append a query the url already has. Doing so once per edit
-    // grew the url without bound (`?t=X?t=Y...`) until hyper answered 414.
+    // The self-import must name exactly the served url (keeping `t=` so the browser dedupes)
+    // and never re-append a query the url already has: per-edit re-appends grew the url until hyper answered 414.
     let self_specifier = match query {
         Some(q) if !q.is_empty() && !url.contains('?') => format!("{url}?{q}"),
         _ => url.to_string(),
@@ -364,13 +350,8 @@ function $RefreshSig$() {{ return RefreshRuntime.createSignatureFunctionForTrans
     )
 }
 
-/// Vite's `ErrorPayload` (`{type:'error', err:{message, stack, id, loc, frame, plugin}}`).
-/// oj's messages are "title\n<file>:<line>:<col>...\nframe" style text; the file
-/// location is lifted into `id`/`loc` so a Vite-protocol overlay shows it.
-/// Broadcast an error frame to the connected clients, or hold it for the next
-/// one when none is connected yet (Vite's ws server does the same: a page whose
-/// first module request 500s has not opened its socket by then, and without the
-/// buffered frame it would show a blank page instead of the overlay).
+/// Broadcast a Vite `ErrorPayload` frame, or hold it for the next client when none
+/// is connected yet (a page whose first module request 500s has no socket open; without the buffered frame, blank page).
 pub(crate) fn send_error(state: &ServerState, message: &str) {
     let frame = error_frame(message);
     if state.reload_tx.receiver_count() == 0 {
@@ -413,11 +394,8 @@ pub(crate) fn update_entry(kind: &str, path: &str, timestamp: u64) -> serde_json
     })
 }
 
-/// The `js-update` entry for a graph boundary: stylesheet boundaries are named by
-/// their module wrapper (`?import`); `isWithinCircularImport` and
-/// `firstInvalidatedBy` are carried like Vite's `Update` so the client can reset
-/// the page when a re-import inside a cycle fails and escalate a repeated
-/// `hot.invalidate` instead of looping.
+/// The `js-update` entry for a boundary: stylesheet boundaries are named by their
+/// `?import` wrapper; carries `isWithinCircularImport` and `firstInvalidatedBy` like Vite's `Update`.
 pub(crate) fn update_entry_for(
     target: &oj_graph::UpdateTarget,
     timestamp: u64,
@@ -442,10 +420,13 @@ pub(crate) fn update_entry_for(
     entry
 }
 
-/// Vite's `FullReloadPayload`: `path` is the edited page (`/about.html`) so the
-/// client reloads only tabs showing it, or `*` for every page; `triggeredBy` is
-/// the absolute file. oj's `reason` is kept for its own log and tooling.
-pub(crate) fn full_reload_frame(reason: &str, page: Option<&str>, triggered_by: Option<&Path>) -> String {
+/// Vite's `FullReloadPayload`: `path` is the edited page or `*` for every page;
+/// `triggeredBy` the absolute file. oj's `reason` feeds its own log and tooling.
+pub(crate) fn full_reload_frame(
+    reason: &str,
+    page: Option<&str>,
+    triggered_by: Option<&Path>,
+) -> String {
     let mut frame = serde_json::json!({
         "type": "full-reload",
         "reason": reason,
@@ -467,9 +448,8 @@ pub(crate) struct HmrGate {
     pub(crate) full_reload: bool,
     pub(crate) max_hold: Duration,
     pub(crate) inner: Mutex<GateInner>,
-    /// A page reload the Start server is holding for the flush (the editor's
-    /// gate plugin's `heldReload`: a bundled dev server's reload is one event,
-    /// not a set of hot updates).
+    /// A page reload the Start server is holding for the flush (the editor gate
+    /// plugin's `heldReload`: one event, not a set of hot updates).
     pub(crate) held_reload: std::sync::atomic::AtomicBool,
 }
 
@@ -586,11 +566,8 @@ impl HmrGate {
     }
 }
 
-/// The HMR gate as the Start server sees it: hold the page reload a rebuild
-/// would send until the editor flushes (`POST /__hmr_flush`) or the hold cap
-/// releases it, like the editor's Vite gate plugin holds a bundled dev server's
-/// `full-reload`. Without it every write under `src/` reloaded the preview at
-/// once, gate or not.
+/// The HMR gate for the Start server: hold the reload a rebuild would send until
+/// the editor flushes (`POST /__hmr_flush`) or the hold cap releases it.
 #[derive(Clone)]
 pub struct HmrGateHandle {
     pub(crate) state: Arc<ServerState>,
@@ -637,14 +614,8 @@ pub(crate) async fn hmr_gate_status(State(state): State<Arc<ServerState>>) -> Re
     }
 }
 
-/// Which paths of a watcher event count as a content change, by chokidar's
-/// rule: the data changed, or the modification time moved since this watcher
-/// last saw the file. An attribute-only event whose mtime is unchanged (or the
-/// first such event for a path, with nothing to compare against) is not a
-/// change. On Linux the first read of a file after it was written updates its
-/// atime under relatime, and inotify reports that as an attribute change, so a
-/// rebuild that reads every source file looked like an edit of every source
-/// file and triggered another rebuild, until the atimes settled.
+/// Watcher-event paths that count as content changes, per chokidar: data changed or
+/// mtime moved. Filters Linux relatime atime noise, where a rebuild's reads of every source looked like edits and re-triggered the rebuild.
 pub struct ContentChanges {
     mtimes: std::collections::HashMap<PathBuf, std::time::SystemTime>,
 }
@@ -689,9 +660,8 @@ impl ContentChanges {
         };
         match self.mtimes.insert(p.to_path_buf(), mtime) {
             Some(prev) => prev != mtime,
-            // No baseline to compare against (there is no initial scan): a
-            // fresh mtime is a touch/utimes change that must count once, an old
-            // one is the relatime atime noise this filter exists to ignore.
+            // No baseline (no initial scan): a fresh mtime is a touch that must
+            // count once, an old one is the relatime noise this filter ignores.
             None => mtime
                 .elapsed()
                 .map(|age| age < std::time::Duration::from_secs(10))
@@ -700,9 +670,6 @@ impl ContentChanges {
     }
 }
 
-// Async because it is reached both from the watcher thread (via block_on) and
-// from the async /__hmr_flush handler; using block_on here panicked ("runtime
-// within a runtime") when the gate flushed on an async worker thread.
 pub(crate) fn parse_hmr_filter(raw: &str) -> Option<Vec<PathBuf>> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
     if v.get("action")?.as_str()? != "filter" {
@@ -716,8 +683,8 @@ pub(crate) fn parse_hmr_filter(raw: &str) -> Option<Vec<PathBuf>> {
     )
 }
 
-/// `created`: the paths the watcher reported as newly created among `paths`
-/// (the rest are edits, or removals when the file is gone).
+/// `created`: watcher-reported new paths among `paths` (the rest are edits, or
+/// removals). Async, not block_on: also reached from async handlers, and block_on inside panicked (runtime within a runtime).
 pub(crate) async fn decide(
     state: &ServerState,
     paths: &[PathBuf],
@@ -763,11 +730,8 @@ pub(crate) async fn decide(
         }
     }
 
-    // A file appearing on disk may be the one a module failed to import: Vite
-    // adds `_hasResolveFailedErrorModules` to a `create` event's module set so
-    // those importers are re-processed (hmr.ts). notify does not tell a create
-    // from a modify reliably, so a file that exists but is not in the graph is
-    // taken as new; the importers then go through the loop as changed files.
+    // A created file may be one a module failed to import: re-process those importers
+    // (Vite's `_hasResolveFailedErrorModules`); notify can't tell create from modify, so exists-but-not-in-graph counts as new.
     let mut paths: Vec<PathBuf> = paths.to_vec();
     let new_file = paths.iter().any(|p| {
         p.is_file()
@@ -787,9 +751,8 @@ pub(crate) async fn decide(
             paths.push(state.root.join(url.trim_start_matches('/')));
         }
     }
-    // A file created or deleted under an `import.meta.glob` pattern changes
-    // what the importer expands to: recompile and update the importer as if it
-    // had been edited (Vite's importMetaGlob hotUpdate on create/delete).
+    // A file created/deleted under an `import.meta.glob` pattern re-expands the
+    // importer: update it as if edited (Vite's importMetaGlob hotUpdate).
     let glob_importers: Vec<String> = {
         let globs = state.glob_importers.lock().unwrap();
         if globs.is_empty() {
@@ -841,9 +804,8 @@ pub(crate) async fn decide(
 
         if let Some(host) = &state.plugins {
             let file = path.display().to_string();
-            // Vite's watcher hands plugins the change kind (hmr.ts HotUpdateOptions
-            // type): a new file is "create" (chokidar add), an edit "update", and
-            // a removed file still reaches watchChange / hotUpdate as "delete".
+            // Vite hands plugins the change kind: "create" (chokidar add),
+            // "update", and a removed file still reaches the hooks as "delete".
             let change_type = if !path.exists() {
                 "delete"
             } else if created.contains(path)
@@ -862,15 +824,11 @@ pub(crate) async fn decide(
             // The ssr environment's plugin instances (Vite dispatches hotUpdate
             // and watchChange to every environment) when that host is up.
             let ssr_host = state.plugins_ssr.get().and_then(|h| h.clone());
-            // Pre-init fast-skip: this dispatch path is serial, and each hook
-            // toward a still-initializing lazy host would await a full
-            // per-call init window — on a wedged init that froze every save's
-            // HMR for 2× the window, forever. Skip both hooks and queue a
-            // watchChange catch-up instead (replayed at the host's init by
-            // spawn_ssr_watch_catch_up); a healthy slow boot still gets
-            // post-init events normally. The re-check after queuing closes
-            // the race where init lands between the decision and the push —
-            // the catch-up task may have already drained.
+            // Pre-init fast-skip: each hook toward a still-initializing lazy host
+            // would await a full per-call init window on this serial path (a wedged
+            // init froze every save's HMR). Queue a watchChange catch-up instead,
+            // replayed at host init; the re-check after queuing closes the race
+            // where init lands between the decision and the push.
             let ssr_host = match ssr_host {
                 Some(ssr)
                     if !ssr.is_initialized()
@@ -883,11 +841,9 @@ pub(crate) async fn decide(
                     None
                 }
                 Some(ssr) if state.plugins_watch_change || state.plugins_hot_update => {
-                    // Initialized: flush any queued catch-up events FIRST —
-                    // under the queue's order lock, blocking while the
-                    // catch-up task is mid-replay — so a stale queued
-                    // watchChange can never land after this newer live event
-                    // for the same file. Empty-queue cost is one lock check.
+                    // Initialized: replay queued catch-up events FIRST, under the
+                    // queue's order lock, so a stale queued watchChange never
+                    // lands after this newer live event for the same file.
                     replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
                     Some(ssr)
                 }
@@ -937,9 +893,8 @@ pub(crate) async fn decide(
                     .handle_hot_update(&file, ts, change_type, &modules_json)
                     .await
                 {
-                    // Vite (hmr.ts): a throwing hotUpdate is logged and sent to
-                    // the client as an error payload (the overlay), and no update
-                    // is dispatched for that file.
+                    // Vite (hmr.ts): a throwing hotUpdate is logged, sent as an
+                    // error payload, and no update is dispatched for that file.
                     Err(e) => {
                         eprintln!("oj: hotUpdate failed for {file}: {e}");
                         messages.push(error_frame(&e));
@@ -1003,9 +958,8 @@ pub(crate) async fn decide(
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if is_style_ext(ext) {
             let url = url_of(&state.root, path);
-            // A stylesheet nothing imports is loaded by a `<link>` (serving it
-            // compiled registers it in the graph, with no importers): swap the
-            // link rather than dispatching a JS update it has no handler for.
+            // A stylesheet nothing imports is loaded by a `<link>`: swap the link
+            // rather than dispatching a JS update it has no handler for.
             let link_loaded = {
                 let g = state.graph.lock().unwrap();
                 match g.node(Path::new(&url)) {
@@ -1020,9 +974,8 @@ pub(crate) async fn decide(
             }
         }
         if ext == "html" {
-            // Vite names the edited page (`path: '/about.html'`) so only the tab
-            // showing it reloads; the reason keeps the absolute path oj's own
-            // tooling reads.
+            // Vite names the edited page so only the tab showing it reloads; the
+            // reason keeps the absolute path oj's own tooling reads.
             let page = url_of(&state.root, path);
             println!("oj: change {} -> full-reload", path.display());
             messages.push(full_reload_frame(
@@ -1041,12 +994,8 @@ pub(crate) async fn decide(
             continue;
         }
         let targets = state.graph.lock().unwrap().update_targets(Path::new(&url));
-        // A changed stylesheet may also be inlined into OTHER sheets (@import,
-        // sass @use), which record it among their imports: each such importer
-        // must hot-swap itself too. Vite dispatches both because the file-only
-        // dep entry exists next to the real module; oj keeps one node per path
-        // (self-accepting when the sheet is also served directly), so the walk
-        // stops there and the css importers are seeded explicitly.
+        // A changed stylesheet may also be inlined into OTHER sheets (@import, sass @use):
+        // each importer must hot-swap too; oj keeps one node per path, so css importers are seeded explicitly.
         let targets = targets.and_then(|mut targets| {
             if is_style_ext(ext) {
                 let css_importers: Vec<PathBuf> = {
@@ -1062,9 +1011,8 @@ pub(crate) async fn decide(
                         .unwrap_or_default()
                 };
                 for importer in css_importers {
-                    // A css importer that cannot reach a boundary (a css
-                    // module whose component importer does not accept) needs
-                    // the same full reload the direct walk would force.
+                    // A css importer that cannot reach a boundary needs the
+                    // same full reload the direct walk would force.
                     targets.extend(state.graph.lock().unwrap().update_targets(&importer)?);
                 }
                 targets.sort();
@@ -1077,10 +1025,8 @@ pub(crate) async fn decide(
                 let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
                 println!("oj: change {url} -> update {boundaries:?}");
                 let timestamp = now_millis() as u64;
-                // Stamp the invalidated chain so re-fetched importers point at the
-                // new versions of their (unchanged-on-disk) dependencies, and drop
-                // those importers' mtime fast-path keys so they recompile with the
-                // stamps rather than serving the cached code.
+                // Stamp the invalidated chain so re-fetched importers point at new versions
+                // of unchanged deps; drop their mtime fast-path keys so they recompile with the stamps.
                 let dirty = state
                     .graph
                     .lock()

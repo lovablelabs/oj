@@ -1,17 +1,7 @@
 use super::*;
 
-/// The upstream url for a matched proxy entry: the target joined with the
-/// (rewritten) request path and the original query. Applies the `{from,to}`
-/// string rewrite form only; the FUNCTION rewrite form is honored by the Node
-/// proxy (the browser path delegates there when a plugin host is running).
-/// Delegate a request to the single Vite-shaped proxy in the plugin host's
-/// middleware stack: stream the body there, stream the reply back. If the host's
-/// proxy declined (`x-oj-fallthrough` — a `bypass` that returned a string and
-/// fell through, or a JS-RegExp non-match on an uncompilable context), serve the
-/// possibly-rewritten url through normal oj routing instead of returning the
-/// host's 404. The re-routed request carries no body (it was streamed to the
-/// host): this covers the realistic GET bypass rewrite; a non-GET fallthrough
-/// re-route loses its body.
+/// Delegate a matched request to the Vite-shaped proxy in the plugin host. On
+/// `x-oj-fallthrough`, re-route the (possibly rewritten) url natively, bodyless.
 pub(crate) async fn delegate_to_node_proxy(
     next: axum::middleware::Next,
     port: u16,
@@ -28,10 +18,8 @@ pub(crate) async fn delegate_to_node_proxy(
         Ok(resp) => {
             if resp.headers().contains_key("x-oj-fallthrough") {
                 let mut parts = parts;
-                // Re-route only to an origin-form path (starts with a single
-                // `/`): a `bypass` returning an absolute or protocol-relative
-                // URL must never be fed to native routing — treat that as
-                // no-rewrite and serve the original path.
+                // Re-route only origin-form paths; an absolute or
+                // protocol-relative bypass URL must never hit native routing.
                 if let Some(uri) = resp
                     .headers()
                     .get("x-oj-rewritten-url")
@@ -54,7 +42,11 @@ pub(crate) async fn delegate_to_node_proxy(
     }
 }
 
-pub(crate) fn proxy_target(entry: &oj_config::ProxyEntry, path: &str, query: Option<&str>) -> String {
+pub(crate) fn proxy_target(
+    entry: &oj_config::ProxyEntry,
+    path: &str,
+    query: Option<&str>,
+) -> String {
     let mut fwd_path = path.to_string();
     if let Some((from, to)) = entry.rewrite() {
         if let Some(stripped) = from.strip_prefix('^') {
@@ -80,65 +72,50 @@ pub(crate) async fn proxy_middleware(
     next: axum::middleware::Next,
 ) -> Response {
     let path = req.uri().path().to_string();
-    // Vite matches contexts against `req.url`, path and query together, so a
-    // `^` regex context can key off a query parameter.
+    // Vite matches contexts against path plus query, so a `^` regex context
+    // can key off a query parameter.
     let url = match req.uri().query() {
         Some(q) => format!("{path}?{q}"),
         None => path.clone(),
     };
     let matched = select_proxy(&state.proxy, &state.proxy_regex, &url);
     let Some((prefix, entry)) = matched else {
-        // No context matched. A `^`-context oj's regex engine could not compile
-        // (a JS RegExp using lookaround/backreference/alternation) never matches
-        // on this browser-facing path and is served natively — oj's pre-existing
-        // behavior, with a loud one-time warning at startup (proxy_context_regex).
-        // The worker path still proxies such a context (the Node proxy holds the
-        // full JS RegExp); full JS-regex-context support for the browser path is
-        // a deferred follow-up rather than an unsound approximation here.
+        // A `^` context oj's regex engine cannot compile never matches here
+        // (warned once at startup); the worker path still proxies it.
         return next.run(req).await;
     };
     let prefix = prefix.to_string();
     let entry = entry.clone();
 
-    // A WebSocket upgrade on a `ws: true` entry is tunneled message by message
-    // by the Rust proxy: the inbound listener owns the browser's upgrade, and
-    // the worker's outbound fetch is never a ws upgrade, so the single Node
-    // proxy need not handle upgrades — nothing regresses.
+    // `ws: true` upgrades are tunneled by the Rust proxy; the Node proxy never
+    // handles upgrades (a worker's outbound fetch is never one).
     if entry.ws() && is_websocket_upgrade(req.headers()) {
         let target = proxy_target(&entry, &path, req.uri().query());
         return proxy_websocket(state, req, Some(&entry), &target).await;
     }
 
-    // `ws: false` (Vite's default): the upgrade belongs to the shared
-    // httpServer's `upgrade` listeners, so relay it to the plugin middleware
-    // server as a real upgrade. vite-hmr/vite-ping stay with oj's own
-    // endpoint (this middleware wraps outside vite_hmr_upgrade).
+    // `ws: false` (Vite default): relay the upgrade to the plugin middleware
+    // server's `upgrade` listeners; vite-hmr/vite-ping stay with oj's endpoint.
     if is_websocket_upgrade(req.headers()) && vite_ws_subprotocol(req.headers()).is_none() {
         if let Some(port) = state.plugin_serve.mw_port() {
             return relay_upgrade_to_plugin_middleware(state, req, port).await;
         }
     }
 
-    // The single, Vite-shaped proxy lives in the plugin host's middleware stack.
-    // Whenever a plugin host is running, delegate the matched request there so
-    // the browser path and the worker's outbound fetch share ONE proxy, with the
-    // app's real config (function `rewrite`, `configure`, `bypass`) intact. The
-    // ORIGINAL unstripped path is forwarded; the Node proxy re-matches and
-    // rewrites it. The request body streams through, so uploads are not capped;
-    // a `bypass` that returned a string (host proxy falls through) is served via
-    // normal routing at the rewritten url rather than returning the host's 404.
+    // With a plugin host running, browser and worker share ONE Vite-shaped proxy
+    // there (function rewrite/configure/bypass intact); the ORIGINAL unstripped
+    // path is forwarded and re-matched by the Node proxy.
     if let Some(port) = state.plugin_serve.mw_port() {
         return delegate_to_node_proxy(next, port, req).await;
     }
 
-    // Fallback: no plugin host (a plain `oj dev` app with `server.proxy`, or the
-    // brief boot window before the middleware port is known). The Rust proxy
-    // forwards directly, applying the `{from,to}` string rewrite form.
+    // Fallback (no plugin host, or the boot window before the middleware port
+    // is known): the Rust proxy forwards directly with the {from,to} rewrite.
     let target = proxy_target(&entry, &path, req.uri().query());
     let method = req.method().clone();
     let req_headers = req.headers().clone();
-    // Small bodies are buffered so their Content-Length is preserved; a chunked
-    // or large body streams through, so uploads are not capped by a buffer.
+    // Buffer small bodies to preserve Content-Length; stream chunked or large
+    // bodies so uploads are not capped.
     let content_length = req_headers
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -179,8 +156,7 @@ pub(crate) async fn proxy_middleware(
         Ok(resp) => {
             let status = resp.status();
             let headers = resp.headers().clone();
-            // Stream the upstream body: server-sent events and long-polling
-            // responses reach the browser chunk by chunk instead of at the end.
+            // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
             let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
             *response.status_mut() = status;
             for (name, value) in headers.iter() {
@@ -199,11 +175,8 @@ pub(crate) async fn proxy_middleware(
     }
 }
 
-/// The compiled pattern of a `server.proxy` context that starts with `^` (Vite:
-/// `new RegExp(context)`); `None` for a plain prefix context. A pattern that
-/// does not compile is reported once and then behaves as a prefix, which for a
-/// `^...` string never matches, the same as Vite throwing at startup would leave
-/// it unreachable.
+/// Compiled `^` proxy context (Vite: `new RegExp(context)`); `None` for prefixes.
+/// An uncompilable pattern warns once and then never matches.
 pub(crate) fn proxy_context_regex(context: &str) -> Option<regex::Regex> {
     if !context.starts_with('^') {
         return None;
@@ -231,9 +204,8 @@ pub fn proxy_context_matches(context: &str, url: &str) -> bool {
     url.starts_with(context)
 }
 
-/// The proxy entry for a request url. Vite takes the first matching context in
-/// config order; oj's config is a sorted map, so the most specific plain prefix
-/// wins and a regex context applies when no prefix matches.
+/// The proxy entry for a url: longest matching plain prefix wins, a regex
+/// context applies when no prefix matches (oj's config is a sorted map).
 pub(crate) fn select_proxy<'a>(
     entries: &'a [(String, oj_config::ProxyEntry)],
     regexes: &[Option<regex::Regex>],
@@ -260,7 +232,6 @@ pub fn is_websocket_upgrade(h: &HeaderMap) -> bool {
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
-/// The upstream WebSocket url for a proxy target (`http://` targets become `ws://`).
 /// The http(s) origin of a ws(s) target url, for `rewriteWsOrigin`.
 pub(crate) fn ws_target_origin(url: &str) -> String {
     let (scheme, rest) = match url.split_once("://") {
@@ -304,10 +275,8 @@ pub(crate) fn ws_forwardable_header(name: &header::HeaderName) -> bool {
 }
 
 impl ServerState {
-    /// The rustls config for a proxied `wss://` target, built once: the platform
-    /// trust store (what reqwest verifies with for the HTTP side), or no
-    /// certificate check at all when the proxy entry says `secure: false`
-    /// (http-proxy's `secure`), for self-signed dev backends.
+    /// rustls config for a proxied `wss://` target, built once: platform trust
+    /// store, or no certificate check when the entry says `secure: false`.
     fn proxy_tls_config(
         &self,
         secure: bool,
@@ -383,9 +352,8 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCertificate {
     }
 }
 
-/// A browser upgrade no Rust endpoint claims: hand it to the plugin
-/// middleware server as a real upgrade, so configureServer `upgrade`
-/// listeners fire like on Vite's shared httpServer.
+/// Hand an unclaimed browser upgrade to the plugin middleware server so
+/// configureServer `upgrade` listeners fire (Vite shared-httpServer parity).
 pub(crate) async fn relay_upgrade_to_plugin_middleware(
     state: Arc<ServerState>,
     req: axum::extract::Request,
@@ -400,9 +368,8 @@ pub(crate) async fn relay_upgrade_to_plugin_middleware(
     proxy_websocket(state, req, None, &target).await
 }
 
-/// `server.proxy` with `ws: true`: accept the browser's WebSocket, open one to
-/// the target with the same path, query, subprotocols and cookies, and relay
-/// messages both ways until either side closes (Vite: http-proxy `ws`).
+/// `ws: true`: accept the browser's WebSocket, open one to the target with the
+/// same path/query/subprotocols/cookies, relay both ways (Vite: http-proxy `ws`).
 pub(crate) async fn proxy_websocket(
     state: Arc<ServerState>,
     req: axum::extract::Request,
@@ -418,9 +385,8 @@ pub(crate) async fn proxy_websocket(
         Err(rejection) => return rejection.into_response(),
     };
     let url = ws_target_url(target);
-    // tungstenite takes a ready-made request as-is: the handshake headers have
-    // to be present (it generates them only for a bare url), then the browser's
-    // remaining headers (cookies, origin, subprotocols) ride along.
+    // tungstenite takes a ready-made request as-is: handshake headers must be
+    // set explicitly (it generates them only for a bare url).
     let target_uri: axum::http::Uri = match url.parse() {
         Ok(u) => u,
         Err(e) => {
@@ -431,7 +397,7 @@ pub(crate) async fn proxy_websocket(
                 .into_response()
         }
     };
-    // host:port without any userinfo, the same authority the dial below uses.
+    // host:port without userinfo, the same authority the dial below uses.
     let target_host = match (target_uri.host(), target_uri.port_u16()) {
         (Some(h), Some(p)) => format!("{h}:{p}"),
         (Some(h), None) => h.to_string(),
@@ -479,9 +445,8 @@ pub(crate) async fn proxy_websocket(
                 .into_response()
         }
     };
-    // `wss://` targets: tungstenite dials TCP and TLS itself, given a rustls
-    // config (system trust store, or any certificate when the entry says
-    // `secure: false`), as http-proxy does for a `wss:` target.
+    // `wss://`: tungstenite dials TCP and TLS itself with the rustls config
+    // (`secure: false` accepts any certificate), as http-proxy does.
     let connector = if url.starts_with("wss://") {
         match state.proxy_tls_config(entry.is_none_or(|e| e.secure())) {
             Ok(cfg) => Some(tokio_tungstenite::Connector::Rustls(cfg)),
@@ -498,13 +463,8 @@ pub(crate) async fn proxy_websocket(
     };
     let connect =
         tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector);
-    // No oj-side deadline, matching Vite: its plugin `upgrade` listeners
-    // share the http server, so an upgrade nobody claims simply dangles until
-    // the CLIENT gives up — the client owns the patience. Here the dangle is
-    // this pending dial (the middleware server accepted TCP but no listener
-    // answered the handshake); hyper aborts this future when the client
-    // disconnects, so the dangling cost is one socket and one parked task per
-    // waiting client, the same surface Vite exposes.
+    // No oj-side deadline, matching Vite: an unclaimed upgrade dangles until
+    // the client gives up; hyper aborts this future on client disconnect.
     let connected = connect.await;
     let (upstream, upstream_resp) = match connected {
         Ok(pair) => pair,

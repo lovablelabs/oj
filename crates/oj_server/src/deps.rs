@@ -6,12 +6,9 @@ pub(crate) fn partial_bundle_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("OJ_PARTIAL_BUNDLE").is_ok_and(|v| !v.is_empty() && v != "0"))
 }
 
-// The URL oj serves a resolved bare dependency from. With partial bundling on, a
-// CommonJS package under node_modules is served as a single `/@oj-pkg` bundle
-// (keyed by its entry path, so every reference to the same entry — the app's
-// import and other packages' requires — collapses to one shared bundle);
-// everything else keeps its normal per-file URL. Both the importer-interop and
-// specifier-rewrite paths route through here so a dep never gets two URLs.
+// The URL a resolved bare dep is served from: partial bundling serves a CJS package
+// as one shared `/@oj-pkg` bundle keyed by entry path, everything else per-file.
+// Both the interop and specifier-rewrite paths route here so a dep never gets two URLs.
 pub(crate) fn dep_serve_url(resolved: &Path, root: &Path) -> String {
     if partial_bundle_enabled()
         && resolved.components().any(|c| c.as_os_str() == "node_modules")
@@ -40,9 +37,8 @@ pub(crate) fn dep_cache_control(versioned: bool) -> &'static str {
     }
 }
 
-/// A prebundled dep response: strong ETag over the bytes with a 304 on a matching
-/// If-None-Match (Vite's send() does the same for every transformed module), and
-/// the immutable cache policy when the URL is versioned.
+/// Prebundled dep response: strong ETag with 304 on If-None-Match (Vite's send()),
+/// immutable cache policy when the URL is versioned.
 pub(crate) fn dep_response(headers: &HeaderMap, versioned: bool, bytes: Vec<u8>) -> Response {
     let etag = format!("\"{}\"", &blake3::hash(&bytes).to_hex()[..16]);
     let cache_control = dep_cache_control(versioned).to_string();
@@ -70,11 +66,8 @@ pub(crate) fn dep_response(headers: &HeaderMap, versioned: bool, bytes: Vec<u8>)
 
 pub(crate) const OPTIONAL_PEER_PREFIX: &str = "/@oj-optional-peer/";
 
-/// Vite's optionalPeerDepId (resolve.ts tryNodeResolve): a bare import that does
-/// not resolve, made from inside a dependency (never from the app root), whose
-/// nearest package.json lists the package under `peerDependencies` with
-/// `peerDependenciesMeta[pkg].optional`, resolves to a stub module id carrying
-/// the peer and the parent names. The stub errors only when evaluated.
+/// Vite's optionalPeerDepId: an unresolved bare import from inside a dep whose
+/// nearest package.json marks it an optional peer gets a stub that errors only on eval.
 pub(crate) fn optional_peer_dep_url(root: &Path, dir: &Path, spec: &str) -> Option<String> {
     if !is_bare_specifier(spec) || spec.is_empty() || is_node_builtin(spec) || spec.contains('\0') {
         return None;
@@ -127,10 +120,8 @@ pub(crate) fn optional_peer_dep_url(root: &Path, dir: &Path, spec: &str) -> Opti
     None
 }
 
-/// The module `/@oj-optional-peer/<hex>` serves (Vite's optional peer stub in
-/// rolldownDepPlugin): evaluating it throws `Could not resolve "peer" imported by
-/// "parent". Is it installed?`, so the failure names both packages instead of the
-/// browser's generic unresolved-specifier error for the whole importer chain.
+/// The module `/@oj-optional-peer/<hex>` serves (Vite's optional peer stub):
+/// evaluating it throws an error naming both the peer and the parent package.
 pub(crate) fn optional_peer_dep_stub(hex: &str) -> Option<String> {
     let decoded = hex_decode(hex)?;
     let (peer, parent) = decoded.split_once('\n')?;

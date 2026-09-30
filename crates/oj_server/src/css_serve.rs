@@ -18,7 +18,11 @@ pub(crate) async fn serve_css_direct(state: &Arc<ServerState>, file: &Path, url:
     }
 }
 
-pub(crate) async fn serve_css_wrapper(state: &Arc<ServerState>, file: &Path, url: &str) -> Response {
+pub(crate) async fn serve_css_wrapper(
+    state: &Arc<ServerState>,
+    file: &Path,
+    url: &str,
+) -> Response {
     let (_, module) = match ensure_module(state, file, url).await {
         Ok(pair) => pair,
         Err(err) => {
@@ -26,18 +30,15 @@ pub(crate) async fn serve_css_wrapper(state: &Arc<ServerState>, file: &Path, url
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {err}")).into_response();
         }
     };
-    // A CSS module exports its class map as the default plus a named export
-    // per identifier-safe class (Vite's dataToEsm with namedExports).
-    // A module file compiled unscoped (css.modules global mode) still exports
-    // its (empty) class map, as Vite does.
+    // CSS module: class map as default plus a named export per identifier-safe
+    // class (Vite's dataToEsm); an unscoped module file still exports its (empty) map.
     let exports = if module.css_exports.is_empty() && !oj_css::is_css_module(url) {
         "export default void 0;\n".to_string()
     } else {
         oj_css::css_modules_esm(&module.css_exports)
     };
     // Plain stylesheets self-accept; a CSS module does not (its exports change
-    // on edit), so the importing component is the boundary, as in Vite's css
-    // plugin (`modulesCode || 'import.meta.hot.accept()'`).
+    // on edit), so the importing component is the boundary (Vite's css plugin).
     let accept = if module.is_boundary {
         "import.meta.hot.accept(() => {});\n"
     } else {
@@ -66,11 +67,8 @@ pub fn has_postcss_config(root: &Path) -> bool {
     find_postcss_config(root).is_some()
 }
 
-/// The PostCSS config that applies to `root`, found the way postcss-load-config
-/// does (what Vite uses): `postcss.config.{js,mjs,cjs,ts,mts,cts}`, `.postcssrc`,
-/// `.postcssrc.{json,js,mjs,cjs,ts,mts,cts}` or a `package.json` with a
-/// `postcss` key, searched from `root` up to the workspace root (nearest wins).
-/// The tailwind engine module receives the path per request.
+/// The PostCSS config applying to `root`, found the way postcss-load-config does:
+/// config files or a package.json `postcss` key, from `root` up to the workspace root (nearest wins).
 pub fn find_postcss_config(root: &Path) -> Option<PathBuf> {
     const NAMES: &[&str] = &[
         "postcss.config.js",
@@ -131,14 +129,10 @@ pub(crate) fn is_preprocessor(url: &str) -> bool {
     sidecar::is_less(url) || sidecar::is_stylus(url)
 }
 
-// Whether a module served from node_modules or /@fs/ is a dependency (routed to
-// the dep/CJS-interop path) rather than app/workspace source. A TS/JSX-extension
-// file is always source and must be transpiled, even outside the root: monorepo
-// packages reached through a resolve.alias are served via /@fs/ but are source.
-/// A dependency module: JS under a `node_modules` directory (by url, or by the
-/// real path an `/@fs/` url names). A linked workspace package realpaths outside
-/// node_modules and is source, as in Vite's optimizer, so plugins and the
-/// source compile path apply to it.
+/// A dependency module (dep/CJS-interop path): JS under node_modules, by url or
+/// by the real path an /@fs/ url names. TS/JSX-extension files are always source,
+/// even outside the root; a linked workspace package realpaths outside
+/// node_modules and is source, as in Vite's optimizer.
 pub(crate) fn is_dep_module(url: &str, file: &Path) -> bool {
     let src_ext = matches!(
         file.extension().and_then(|e| e.to_str()),

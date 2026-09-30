@@ -5,14 +5,14 @@ pub(crate) type DirCache = std::collections::HashMap<
     std::sync::Arc<std::collections::HashMap<std::ffi::OsString, bool>>,
 >;
 
-// Whether any of a cached module's imports is a plugin-served virtual — a
-// filesystem-path import (not an oj-internal `/@…` route or an external URL)
-// with no file on disk. Such a module's transform produced in-memory state
-// (e.g. wyw-in-js's extracted CSS) that a warm start would lose, so it must be
-// re-transformed. Import URLs are either root-relative (`/src/x.ts`) or absolute
-// (`/Users/…/x.wyw-in-js.css`); check both interpretations before concluding a
-// path is virtual.
-pub(crate) fn imports_a_plugin_virtual(imports: &[String], root: &Path, dir_cache: &Mutex<DirCache>) -> bool {
+// Whether a cached module imports a plugin-served virtual: a filesystem-path import
+// with no file on disk, checked both root-relative and absolute. Such a module's
+// transform produced in-memory plugin state a warm start loses, so re-transform it.
+pub(crate) fn imports_a_plugin_virtual(
+    imports: &[String],
+    root: &Path,
+    dir_cache: &Mutex<DirCache>,
+) -> bool {
     imports.iter().any(|imp| {
         let p = imp.split('?').next().unwrap_or(imp);
         if !p.starts_with('/') || p.starts_with("/@") || p.contains("://") {
@@ -61,10 +61,8 @@ pub(crate) fn rewrite_specifier(
     css_import_marker: bool,
 ) -> Option<String> {
     if spec.starts_with('/') {
-        // A root-relative URL (/src/x) is already servable. But a plugin can emit an
-        // absolute filesystem path under root -- TanStack's dev client entry, and the
-        // router code-splitter's `?tsr-shared=1` imports -- so rewrite that to its
-        // root-relative URL (preserving any query), as Vite's import analysis does.
+        // A root-relative URL is already servable, but a plugin can emit an absolute
+        // fs path under root: rewrite it to its URL, preserving the query (Vite parity).
         let (base, query) = match spec.split_once('?') {
             Some((b, q)) => (b, Some(q)),
             None => (spec, None),
@@ -74,9 +72,8 @@ pub(crate) fn rewrite_specifier(
             let url = if p.starts_with(root) {
                 url_of(root, p)
             } else {
-                // An absolute path OUTSIDE root (a plugin pointing into a sibling
-                // monorepo package): serve it through /@fs like Vite's FS_PREFIX
-                // and allow its package so the fs guard lets it through.
+                // An absolute path OUTSIDE root: serve through /@fs (Vite's
+                // FS_PREFIX) and allow its package for the fs guard.
                 fs_allow.lock().unwrap().insert(package_root(p));
                 dep_serve_url(p, root)
             };
@@ -150,10 +147,8 @@ pub(crate) fn rewrite_specifier(
     }
 
     match resolver.resolve(dir, spec) {
-        // A node_modules dependency routes through `dep_serve_url` even when it
-        // sits under the app root (the common layout), so partial bundling can
-        // collapse it. `dep_serve_url` returns the plain per-file URL when partial
-        // bundling is off or the file isn't bundleable, so this is a no-op then.
+        // A node_modules dep routes through `dep_serve_url` even under the app root
+        // so partial bundling can collapse it (per-file URL no-op when off).
         Ok(resolved)
             if resolved
                 .components()
@@ -179,23 +174,18 @@ pub(crate) fn rewrite_specifier(
             Some(dep_serve_url(&resolved, root))
         }
         Err(err) if err.ignored => {
-            // The package maps this specifier to `false` for the browser (a
-            // package.json `browser` field, e.g. typescript's `fs`/`crypto`/
-            // `source-map-support`). Vite serves an empty module here; do the
-            // same so the importing dep still loads instead of 404ing.
+            // The package's `browser` field maps this specifier to false: serve an
+            // empty module like Vite so the importing dep still loads.
             Some("/@oj-empty".to_string())
         }
         Err(err) => {
-            // A dependency's missing OPTIONAL peer (peerDependenciesMeta.optional)
-            // resolves to a module that errors when evaluated, naming both sides,
-            // instead of the bare specifier failing the whole importer chain at
-            // link time (Vite's optionalPeerDepId).
+            // A missing OPTIONAL peer resolves to a stub that errors when evaluated,
+            // naming both sides (Vite's optionalPeerDepId), not a link-time failure.
             if let Some(url) = optional_peer_dep_url(root, dir, spec) {
                 return Some(url);
             }
-            // Plugin-provided ids (virtual: modules, \0-prefixed) are expected
-            // to miss the on-disk resolver; the caller's plugin fallback serves
-            // them, so a "cannot resolve" line here is just misleading noise.
+            // virtual:/\0 ids are expected to miss the disk resolver (the plugin
+            // fallback serves them), so a "cannot resolve" line is noise.
             let plugin_virtual = spec.starts_with("virtual:") || spec.starts_with('\0');
             if !(spec.starts_with("./")
                 || spec.starts_with("../")
@@ -216,10 +206,8 @@ pub(crate) fn url_of(root: &Path, file: &Path) -> String {
     }
 }
 
-/// A `./` or `../` import that neither exists on disk nor resolves (with the
-/// configured extensions and index files). The query is dropped first: an
-/// unknown query on an existing file is a legitimate specifier the browser
-/// requests as-is, not a missing module.
+/// A `./` or `../` import that neither exists nor resolves. The query is dropped
+/// first: an unknown query on an existing file is not a missing module.
 pub(crate) fn relative_import_missing(dir: &Path, resolver: &OjResolver, spec: &str) -> bool {
     if !(spec.starts_with("./") || spec.starts_with("../")) {
         return false;
@@ -228,11 +216,8 @@ pub(crate) fn relative_import_missing(dir: &Path, resolver: &OjResolver, spec: &
     !normalize(&dir.join(base)).is_file() && resolver.resolve(dir, base).is_err_and(|e| !e.ignored)
 }
 
-/// A bare import (`some-pkg`, `@scope/pkg/sub`) the resolver cannot find and that
-/// nothing else answers: not a node builtin (browser-externalized), not a
-/// plugin-style virtual id (`virtual:`, `\0`), not a URL or data: import, and not
-/// a package that maps the id to `false` (served empty). Vite's importAnalysis
-/// fails the importer for these.
+/// A bare import the resolver cannot find and nothing else answers (builtin,
+/// virtual id, data:, browser-false mapping): Vite's importAnalysis fails these.
 pub(crate) fn bare_import_unresolved(dir: &Path, resolver: &OjResolver, spec: &str) -> bool {
     if !is_bare_specifier(spec)
         || spec.is_empty()
@@ -254,11 +239,14 @@ pub(crate) fn is_unresolved_import_error(err: &str) -> bool {
     err.contains(UNRESOLVED_IMPORT_MARK)
 }
 
-/// Vite's import-analysis error for a missing import ("Failed to resolve import
-/// "./x" from "src/a.tsx". Does the file exist?"), in oj's `title\nfile:line:col
-/// message\nframe` shape so the overlay lifts the location out of it. The
-/// position is where the specifier is quoted in the (plugin-transformed) source.
-pub(crate) fn unresolved_import_error(root: &Path, file: &Path, source: &str, spec: &str) -> String {
+/// Vite's missing-import error in oj's `title\nfile:line:col message\nframe` shape;
+/// the position is where the specifier is quoted in the (plugin-transformed) source.
+pub(crate) fn unresolved_import_error(
+    root: &Path,
+    file: &Path,
+    source: &str,
+    spec: &str,
+) -> String {
     let rel = file
         .strip_prefix(root)
         .unwrap_or(file)

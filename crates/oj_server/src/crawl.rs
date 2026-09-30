@@ -33,9 +33,8 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
                 if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
                     continue;
                 }
-                // A sass partial is not an entry by sass's own convention: it
-                // reaches the graph as its importer's dep edge, and compiling
-                // it standalone (importer-provided mixins missing) only logs.
+                // A sass partial is not an entry: it reaches the graph via its
+                // importer, and a standalone compile lacks importer-provided mixins.
                 if matches!(ext, "scss" | "sass")
                     && file
                         .file_name()

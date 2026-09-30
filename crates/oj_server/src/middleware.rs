@@ -1,10 +1,7 @@
 use super::*;
 
-/// Vite's `server.allowedHosts` (middlewares/hostCheck.ts, server/ws.ts): a
-/// request whose `Host` names something other than localhost, an IP literal, the
-/// configured host, or an allowed host is refused with 403 so a malicious page
-/// cannot reach the dev server through DNS rebinding. WebSocket upgrades apply
-/// the same rule to `Origin`.
+/// Vite's `server.allowedHosts`: a Host outside localhost/IP/configured/allowed
+/// gets 403 (DNS-rebinding guard); ws upgrades apply the same rule to Origin.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HostPolicy {
     pub(crate) allow_all: bool,
@@ -113,10 +110,8 @@ pub(crate) async fn host_check_middleware(
     next.run(req).await
 }
 
-/// Vite's `server.cors` (the `cors` package behind it). Unset: only localhost
-/// origins (Vite's `defaultAllowedOrigins`); `true`: reflect any origin;
-/// `false`: no CORS headers; an object: exact origins, methods, headers,
-/// credentials, max-age.
+/// Vite's `server.cors`. Unset: localhost origins only; `true`: reflect any
+/// origin; `false`: no CORS headers; object: exact origins/methods/headers.
 #[derive(Debug, Clone)]
 pub(crate) struct CorsPolicy {
     origin: CorsOrigin,

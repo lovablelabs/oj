@@ -1,8 +1,7 @@
 use super::*;
 
-/// `server.watch.ignored` entries as globs. Vite hands them to chokidar, which
-/// matches absolute paths; a relative pattern is kept as written (for
-/// root-relative matching) and rooted at the project (for absolute paths).
+/// `server.watch.ignored` as globs (chokidar matches absolute paths): a relative
+/// pattern is kept as written and also rooted at the project.
 pub(crate) fn watch_ignored_patterns(root: &Path, ignored: &[String]) -> Vec<glob::Pattern> {
     let mut out = Vec::new();
     for raw in ignored {
@@ -37,9 +36,8 @@ pub(crate) fn is_watch_ignored(patterns: &[glob::Pattern], root: &Path, path: &P
     })
 }
 
-/// A file the config imported (the extractor reports them, like Vite's
-/// `configFileDependencies`): its change restarts the server too. Packages
-/// under node_modules are left out, as in Vite.
+/// A file the config imported (Vite's `configFileDependencies`): its change
+/// restarts the server too; node_modules packages are left out, as in Vite.
 pub(crate) fn is_config_dependency(path: &Path) -> bool {
     let deps = plugins::config_dependencies();
     if deps.is_empty() {
@@ -77,19 +75,16 @@ pub(crate) fn is_restart_trigger(path: &Path) -> bool {
     )
 }
 
-/// True for tsconfig files whose change must re-run the tsconfig-aware
-/// transform (Vite: any `/tsconfig.json` plus every .json its resolution
-/// cache loaded; the name pattern covers the `extends` bases like
-/// tsconfig.base.json without tracking cache membership).
+/// Tsconfig files whose change re-runs the tsconfig-aware transform; the name
+/// pattern covers `extends` bases like tsconfig.base.json (Vite parity).
 pub(crate) fn is_tsconfig_file(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
         n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json"))
     })
 }
 
-/// Re-exec the current binary with the same arguments so a fresh process
-/// re-reads config and .env. Rust sets CLOEXEC on the listening socket, so the
-/// dev port is released as the image is replaced. Does not return on success.
+/// Registry of spawned children, SIGKILLed and reaped before the restart
+/// re-exec so the fresh image inherits no survivors or zombies.
 pub(crate) mod child_groups {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -100,17 +95,14 @@ pub(crate) mod child_groups {
         CHILDREN.lock().unwrap().push((pid, own_group));
     }
 
-    /// The fork reports a child it reaped or now owns the kill for; retiring
-    /// the entry here is what keeps a later sweep from ever aiming at a
-    /// recycled pid.
+    /// Retiring a reaped (or fork-owned) child keeps a later sweep from ever
+    /// aiming at a recycled pid.
     pub fn unregister(pid: u32) {
         CHILDREN.lock().unwrap().retain(|(p, _)| *p != pid);
     }
 
     /// SIGKILL every registered child (its whole group when it leads one) and
-    /// reap the corpses, so an exec'd image inherits neither survivors nor
-    /// zombies. Drains in rounds: a child spawned while the sweep runs lands
-    /// in the emptied registry and is taken by the next round.
+    /// reap. Drains in rounds so a child spawned mid-sweep is taken next round.
     pub fn kill_all() -> usize {
         let mut killed = 0usize;
         #[cfg(unix)]
@@ -121,12 +113,10 @@ pub(crate) mod child_groups {
             }
             for (pid, own_group) in &children {
                 let pid_i = *pid as i32;
-                // Never trust a stale entry: an own-group child still leads
-                // its group iff getpgid(pid) == pid, and a direct child must
-                // still exist. (The fork retires reaped children, so stale
-                // entries are rare; this is the second lock against pid
-                // recycling. A recycled pid that happens to lead its own new
-                // group remains a theoretical TOCTOU.)
+                // Verify before signaling (second lock against pid recycling):
+                // an own-group child must still lead its group (getpgid == pid),
+                // a direct child must still exist; a recycled pid leading its
+                // own new group remains a theoretical TOCTOU.
                 let target = if *own_group {
                     if unsafe { libc::getpgid(pid_i) } != pid_i {
                         continue;
@@ -142,9 +132,8 @@ pub(crate) mod child_groups {
                     killed += 1;
                 }
             }
-            // Reap OUR direct children only, each with a small bound — a
-            // per-pid wait can never stall on some unrelated live child the
-            // way a waitpid(-1) sweep did.
+            // Reap OUR direct children only, each with a small bound; a
+            // waitpid(-1) sweep stalled on unrelated live children.
             for (pid, _) in &children {
                 let deadline = Instant::now() + Duration::from_millis(200);
                 loop {
@@ -169,9 +158,8 @@ pub(crate) fn restart_process() -> ! {
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // In-process plugin hosts chdir the whole process to their app root, so a
-    // bare re-exec would resolve relative CLI args (`oj dev ./web`) against
-    // the wrong directory. Restart from where oj was launched.
+    // In-process plugin hosts chdir the process to their app root; restart from
+    // the launch dir so relative CLI args (`oj dev ./web`) resolve correctly.
     let launch_dir = STARTUP_CWD.get().filter(|d| d.is_dir());
     #[cfg(unix)]
     {
@@ -220,12 +208,9 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
                 return;
             }
         };
-        // Watch each top-level entry except node_modules/.oj-cache/dist/.git
-        // rather than the whole root: those dirs are huge and, in the case of
-        // .oj-cache, rewritten by oj on every compile -- recursively watching
-        // them floods the watcher (notably Linux inotify) with self-inflicted
-        // events. Skipping them at watch time is more robust than filtering
-        // after the fact.
+        // Watch top-level entries except node_modules/.oj-cache/dist/.git:
+        // recursively watching those floods inotify with self-inflicted events
+        // (.oj-cache is rewritten on every compile).
         let ignore = |name: &std::ffi::OsStr| {
             matches!(
                 name.to_str(),
@@ -249,8 +234,7 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
                 }
             }
         }
-        // Fall back to a recursive root watch only if nothing else could be
-        // watched (e.g. an otherwise-empty root).
+        // Fall back to a recursive root watch only if nothing else could be watched.
         if !watched_any {
             if let Err(err) = watcher.watch(&state.root, RecursiveMode::Recursive) {
                 eprintln!("oj: cannot watch {}: {err}", state.root.display());
@@ -263,10 +247,8 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(10);
-        // Paths this watcher has already reported once. FSEvents keeps a file's
-        // "created" flag on later events for a while, so a Create for a path seen
-        // before is an edit (chokidar tracks the same distinction by its own
-        // state, emitting `add` once and `change` after).
+        // FSEvents keeps a file's "created" flag on later events for a while, so
+        // a Create for a path seen before is an edit (chokidar: add once, change after).
         let mut seen_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         let mut changes = ContentChanges::new();
         loop {
@@ -279,9 +261,8 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
             if first_paths.is_empty() {
                 continue;
             }
-            // Which of the debounced paths the watcher saw come into existence:
-            // Vite's watcher tells plugins "create" for those (hotUpdate /
-            // watchChange type), "update" for edits and "delete" for removals.
+            // Debounced paths the watcher saw come into existence: plugins get
+            // "create" for those, "update" for edits, "delete" for removals.
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
             if matches!(first.kind, notify::EventKind::Create(_)) {
                 created.extend(first_paths.iter().cloned());
@@ -310,19 +291,16 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
             }
             created.retain(|p| !seen_paths.contains(p));
             seen_paths.extend(paths.iter().cloned());
-            // A config or .env change can't be hot-applied (config is read once at
-            // startup), so restart the process to pick it up — matching Vite.
+            // Config/.env can't be hot-applied (read once at startup): restart, as Vite does.
             if paths
                 .iter()
                 .any(|p| is_restart_trigger(p) || is_config_dependency(p))
             {
                 restart_process();
             }
-            // Vite's reloadOnTsconfigChange: a tsconfig change clears the
-            // tsconfig cache, invalidates every module graph and forces a full
-            // reload ("the nuclear option"). The compile key folds the
-            // class-field semantics in, so cleared discovery alone makes stale
-            // persistent-cache entries unreachable.
+            // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
+            // key folds class-field semantics in, so stale persistent-cache entries
+            // become unreachable once discovery is cleared.
             if paths.iter().any(|p| is_tsconfig_file(p)) {
                 oj_compiler::tsconfig::clear_cache();
                 state.mtime_keys.lock().unwrap().clear();

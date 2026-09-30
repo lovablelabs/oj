@@ -10,11 +10,8 @@ pub(crate) async fn ensure_module(
             .split_once('?')
             .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "react"));
     let is_svelte = file.extension().and_then(|e| e.to_str()) == Some("svelte");
-    // A plain `.svg` (no explicit `?url`/`?raw`) reaches here when a transform
-    // plugin might componentize it (vite-plugin-svgr). Route it through the transform
-    // pipeline instead of short-circuiting to a URL asset; the svgr transform decides
-    // per its own include filter, and an svg it does not match falls back to a URL
-    // asset after the transform runs.
+    // A plain `.svg` with a transform plugin active may be componentized (svgr):
+    // route it through the transform pipeline; unmatched svg falls back to a URL asset.
     let svgr_candidate = !react_svg
         && state.plugins_have_transform
         && file.extension().and_then(|e| e.to_str()) == Some("svg")
@@ -65,19 +62,10 @@ pub(crate) async fn ensure_module(
 
     let is_dep_early = is_dep_module(url, file);
 
-    // Vite runs plugin `load` hooks before the filesystem read (its fs read is the
-    // last-resort `vite:load-fallback` plugin), so a plugin can replace an on-disk
-    // file's contents. The i18n-dev plugin relies on this: its `load` collapses the
-    // generated 8k-line message barrel (`_index.js`) into a handful of grouped
-    // virtual modules, so the browser fetches a few groups instead of thousands of
-    // individual re-exported files. oj mirrors the ordering here: give a matching
-    // plugin `load` the first say, fall back to the disk read when none loads. It is
-    // gated to app source (deps in node_modules never need it) and reached only on a
-    // cold module (the mtime cache above short-circuits warm ones), so it adds no
-    // per-request RPC on the warm path, and nothing at all when no plugin has `load`.
-    // An `optimizeDeps.exclude`d package is one Vite never pre-bundles, so its
-    // files go through every plugin's `load`/`transform` there like app source;
-    // the other deps stand in for Vite's pre-bundled ones, which no plugin sees.
+    // Vite parity: plugin `load` runs before the fs read, so a plugin can replace an
+    // on-disk file. Gated to app source plus optimizeDeps.exclude'd deps (those go
+    // through plugin hooks in Vite too; pre-bundled deps never do), and reached only
+    // on a cold module, so the warm path pays no per-request RPC.
     let dep_wants_load = is_dep_early
         && (pkg_bundle::is_excluded(file) || {
             let path = file.to_string_lossy();
@@ -152,9 +140,8 @@ pub(crate) async fn ensure_module(
     let is_server = is_server_module(file) && !is_dep_early;
 
     let mode = if is_server { "server" } else { "dev" };
-    // Fold the newest HMR stamp among this module's imports into the key: after a
-    // dependency updates, the (unchanged) importer must recompile so its import of
-    // that dependency carries the new `?t=`, or the browser keeps the stale one.
+    // Fold the newest HMR stamp among imports into the key: an unchanged importer
+    // must recompile after a dep update so its import carries the new `?t=`.
     let imports_stamp = state
         .graph
         .lock()
@@ -165,11 +152,8 @@ pub(crate) async fn ensure_module(
     } else {
         mode.to_string()
     };
-    // The tsconfig's class-field semantics change the transform output for the
-    // same source, so they are part of the key: a tsconfig edit (which clears
-    // the discovery cache) then misses both the memory and persistent caches
-    // instead of resurrecting stale code. Decided ONCE here and handed to the
-    // compile, which may run on a synthetic path (`x.svg` -> `x.svg.tsx`).
+    // tsconfig class-field semantics change the output, so they are part of the key.
+    // Decided ONCE here; the compile may run on a synthetic path (`x.svg` -> `x.svg.tsx`).
     let class_field_semantics = oj_compiler::tsconfig::class_field_set_semantics(file);
     if class_field_semantics {
         mode_key.push_str("+setcf");
@@ -198,17 +182,10 @@ pub(crate) async fn ensure_module(
         register_in_graph(state, url, &module);
         return Ok((key, module));
     }
-    // The persistent (cross-restart) cache holds post-plugin-transform code. A
-    // transform can append an import to a plugin-served *virtual* whose content
-    // lives only in the plugin's in-memory state: wyw-in-js records each module's
-    // extracted CSS in a `cssLookup` its `load` hook serves, and the cached code
-    // still `import`s that `.wyw-in-js.css` id. On a warm start the transform
-    // never re-runs, so that map is empty and the import 404s. Detect it
-    // precisely — a cached module whose imports include a filesystem path with no
-    // file on disk depends on such a virtual — and re-run the transform for just
-    // those. Modules whose imports are all real files (svgr on disk, plain
-    // source, deps) keep the fast persistent cache (Vite has no cross-restart
-    // transform cache at all; this preserves oj's where it is sound).
+    // Cached post-transform code may import a plugin-served virtual whose content
+    // lives only in plugin memory (wyw-in-js cssLookup) and 404s on a warm start:
+    // re-run the transform for cached modules whose imports name a filesystem path
+    // with no file on disk; all-real-file modules keep the fast persistent cache.
     if let Some(module) = state
         .persistent_cache
         .then(|| state.cache.get(&key))
@@ -262,8 +239,8 @@ pub(crate) async fn ensure_module(
                 .any(|re| re.is_match(&source)));
     let source = match &state.plugins {
         Some(host) if state.plugins_have_transform && (!is_dep || dep_wants_transform) => {
-            // Pass the id WITH its query (e.g. `?tsr-shared=1`), like Vite: the router
-            // code-splitter emits a different variant per query, keyed off the id.
+            // Pass the id WITH its query, like Vite: the router code-splitter
+            // emits a different variant per query, keyed off the id.
             let transform_id = match url.split_once('?') {
                 Some((_, q)) => format!("{}?{}", file.display(), q),
                 None => file.to_string_lossy().into_owned(),
@@ -326,12 +303,9 @@ pub(crate) async fn ensure_module(
         source
     };
 
-    // PostCSS runs on the preprocessor OUTPUT (Vite orders Sass before PostCSS),
-    // so a Sass file is compiled here first when a PostCSS config applies; the
-    // compile step below then skips Sass for it.
-    // Every file this stylesheet pulls in (@import targets, sass loads): Vite
-    // records them in the module graph so a dependency edit hot-updates the
-    // importing sheet (vite:css addWatchFile -> css-post file-only entries).
+    // Vite orders Sass before PostCSS, so compile Sass here first when a PostCSS
+    // config applies; the compile step below then skips Sass. Pulled-in files
+    // (@import targets, sass loads) are collected for the module graph.
     let mut css_deps: Vec<PathBuf> = Vec::new();
     let mut sass_precompiled = false;
     let source = if state.has_postcss && oj_css::is_sass(url) {
@@ -367,9 +341,8 @@ pub(crate) async fn ensure_module(
         || file.extension().and_then(|e| e.to_str()) == Some("css");
     let mut imports_inlined = false;
     let source = if state.has_postcss && css_like {
-        // postcss-import is the first plugin of Vite's PostCSS chain, so the
-        // rules of an @imported stylesheet go through the user's plugins too:
-        // inline before the PostCSS pass, not after it.
+        // postcss-import is first in Vite's PostCSS chain: inline @imports before
+        // the PostCSS pass so imported rules go through the user's plugins too.
         let source = oj_css::inline_imports_collecting(
             &source,
             file,
@@ -393,10 +366,8 @@ pub(crate) async fn ensure_module(
     } else {
         source
     };
-    // The svgr plugin transform (if any) has run by now. If a plain `.svg` candidate
-    // is still raw markup, the plugin did not match it (not in its include list), so
-    // serve it as a URL asset like Vite; otherwise it is now component code compiled
-    // as `.svg.tsx` below.
+    // An svg candidate still raw after the plugin transform was not matched by svgr:
+    // serve it as a URL asset like Vite; otherwise compile it as `.svg.tsx` below.
     let svgr_componentized = svgr_candidate && !source.trim_start().starts_with('<');
     if svgr_candidate && !svgr_componentized {
         let clean = url.split('?').next().unwrap_or(url);
@@ -514,12 +485,8 @@ pub(crate) async fn ensure_module(
             };
             let output =
                 oj_css::compile_css_dev(&url_owned, &css_src, css_dev_sourcemap, &resolve)?;
-            // The pulled-in files enter the graph as this sheet's imports (Vite's
-            // file-only entries via addWatchFile): an edit to one hot-updates
-            // this sheet, and its stamp folds into the compile key so the sheet
-            // recompiles instead of serving the cached css.
-            // Sass sometimes registers the sheet itself as a dep (Vite filters
-            // it too, css.ts); a self-edge would be a bogus import cycle.
+            // Pulled-in files enter the graph as this sheet's imports so a dep edit
+            // hot-updates it; filter the sheet itself (a self-edge is a bogus cycle).
             let mut dep_imports: Vec<String> = css_deps
                 .iter()
                 .filter(|p| p.starts_with(&root) && **p != file_owned)
@@ -527,9 +494,8 @@ pub(crate) async fn ensure_module(
                 .collect();
             dep_imports.sort();
             dep_imports.dedup();
-            // A CSS module exports its class map, which changes on edit, so it
-            // cannot self-accept (Vite's css-analysis): the update climbs to the
-            // importing component, whose re-import fetches the new exports.
+            // A CSS module's class map changes on edit, so it cannot self-accept
+            // (Vite's css-analysis): the update climbs to the importing component.
             let is_css_module = output.exports.is_some();
             return Ok(CachedModule {
                 is_boundary: !is_css_module,
@@ -545,10 +511,8 @@ pub(crate) async fn ensure_module(
                 import_bindings: Vec::new(),
             });
         }
-        // The first relative import nothing on disk satisfies. Vite's import
-        // analysis fails the transform for it ("Failed to resolve import ...");
-        // shipping the specifier unchanged would only surface as a 404 in the
-        // browser, with no overlay and no recovery when the file is created.
+        // First unresolvable relative import: Vite's import analysis fails the
+        // transform for it; shipping it unchanged would only 404 with no overlay.
         let unresolved: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
         let rewrite_with = |spec: &str, resolver: &OjResolver| {
             if spec == "virtual:oj-routes" {
@@ -557,10 +521,8 @@ pub(crate) async fn ensure_module(
             if virtual_ids.contains(spec) {
                 return Some(format!("/@virtual/{spec}"));
             }
-            // Vite runs the plugins' resolveId before its own resolver for every
-            // import. A relative / absolute import a plugin's resolveId filter
-            // claims goes to the plugins first (`./icon.svg?react` remaps); the
-            // /@id/ route falls back to the disk resolver when they decline.
+            // Vite runs plugins' resolveId before its own resolver: a non-bare import
+            // a filter claims goes to /@id/, which falls back to disk on decline.
             if !is_bare_specifier(spec) && resolve_id_res.iter().any(|re| re.is_match(spec)) {
                 return Some(format!(
                     "/@id/{}?importer={}",
@@ -579,20 +541,15 @@ pub(crate) async fn ensure_module(
             if let Some(url) =
                 rewrite_specifier(&root, &dir, resolver, &fs_allow, &dir_cache, spec, true)
             {
-                // `.svg` resolves to `<url>?url` (asset). When a transform plugin is
-                // active (vite-plugin-svgr), leave the svg unmarked instead so it
-                // routes through the compile path and svgr can componentize it, as
-                // Vite does (it marks svg imports `?import`, not `?url`); an svg svgr
-                // does not match falls back to a URL asset there.
+                // With a transform plugin active, leave `.svg` unmarked (not `?url`) so
+                // it routes through compile and svgr can componentize it (Vite parity).
                 if svgr_active {
                     if let Some(base) = url.strip_suffix(".svg?url") {
                         return Some(format!("{base}.svg"));
                     }
                 }
-                // Vite's importAnalysis appends `?t=<lastHMRTimestamp>` to an import
-                // of a module an HMR update invalidated, so the re-fetched importer
-                // loads the dependency's new version instead of the browser's cached
-                // instance (only boundaries are named in the update itself).
+                // Vite's importAnalysis appends `?t=<lastHMRTimestamp>` to imports of
+                // HMR-invalidated modules so the importer loads the new version.
                 let stamp = hmr_state
                     .graph
                     .lock()
@@ -607,10 +564,8 @@ pub(crate) async fn ensure_module(
                     hex_encode(&importer_abs)
                 ));
             }
-            // A bare specifier no plugin can claim (there is no plugin fallback
-            // here) fails the same way: Vite's importAnalysis errors for it
-            // instead of shipping the bare name for the browser to reject. SSR
-            // keeps Vite's `if (ssr) return [url, null]`: Node reports it.
+            // An unclaimable bare specifier fails like Vite's importAnalysis instead
+            // of shipping the bare name; SSR keeps `if (ssr) return [url, null]`.
             if !is_dep
                 && !is_server
                 && (relative_import_missing(&dir, resolver, spec)
@@ -623,15 +578,11 @@ pub(crate) async fn ensure_module(
             None
         };
         let mut rewrite = |spec: &str| rewrite_with(spec, &resolver);
-        // The import specifiers whose named imports must read off the CJS
-        // value (module.exports) instead of linking as ESM bindings, shared
-        // by app source and served ESM deps (an ESM dep importing an
-        // unbundled UMD sibling, the proj4 -> geographiclib-geodesic shape,
-        // strict-links the same way app source does).
+        // Specifiers whose named imports must read off the CJS value (module.exports)
+        // instead of linking as ESM bindings; shared by app source and served ESM deps.
         let cjs_interop_url = |spec: &str| {
-            // node builtins are browser-externalized to a stub with no
-            // named exports; interop so `import { X } from "node:..."`
-            // reads X off it (undefined) instead of failing to link.
+            // Builtins are browser-externalized to a stub with no named exports;
+            // interop so named imports read undefined instead of failing to link.
             if is_node_builtin(spec) {
                 return Some(format!("/@id/{}", hex_encode(spec)));
             }
@@ -643,28 +594,22 @@ pub(crate) async fn ensure_module(
             if let Some(m) = dep_map.get(spec).filter(|m| m.needs_interop) {
                 return Some(m.url.clone());
             }
-            // A directly-served bare CJS dep (not pre-bundled): rewrite
-            // `import { x } from "dep"` to read x off the default export,
-            // so runtime-assigned CJS exports resolve. Vite pre-bundles
-            // these; oj interops at the importer instead. Restricted to
-            // node_modules so aliased app source (`~/x`, `@/x`, which
-            // is_bare_specifier also matches) is never treated as a dep.
+            // Directly-served bare CJS dep: interop at the importer (Vite pre-bundles
+            // these). node_modules-only so aliased app source is never treated as a dep.
             if is_bare_specifier(spec) && dep_map.get(spec).is_none() {
                 if let Ok(resolved) = resolver.resolve(&dir, spec) {
                     let in_node_modules = resolved
                         .components()
                         .any(|c| c.as_os_str() == "node_modules");
-                    // optimizeDeps.needsInterop forces the interop
-                    // rewrite even when static analysis reads the dep
-                    // as ESM (its real exports only appear at runtime).
+                    // optimizeDeps.needsInterop forces the interop rewrite even
+                    // when static analysis reads the dep as ESM.
                     if in_node_modules
                         && (is_cjs_dep_file(&resolved)
                             || pkg_bundle::needs_forced_interop(&resolved))
                     {
                         fs_allow.lock().unwrap().insert(package_root(&resolved));
-                        // With partial bundling on this is the /@oj-pkg
-                        // bundle URL, which exports __cjs_exports too, so
-                        // the destructured interop still reads names off it.
+                        // With partial bundling this is the /@oj-pkg bundle URL, which
+                        // exports __cjs_exports too, so the interop still reads off it.
                         return Some(dep_serve_url(&resolved, &root));
                     }
                 }
@@ -673,13 +618,8 @@ pub(crate) async fn ensure_module(
         };
         let output = if is_dep {
             if oj_compiler::cjs::has_module_syntax_pub(&file_owned, &source) {
-                // Gated on a cheap bare-import scan: deps overwhelmingly
-                // import their own relative files, and the rewrite would
-                // otherwise add a second full parse to every served ESM dep.
-                // The scan finds the bare specifiers without a parse; the
-                // rewrite (a full parse) runs only when one of them actually
-                // maps to an interop URL, so a dep file whose bare imports
-                // are all ESM peers (react, tslib) skips it entirely.
+                // Gated on a cheap bare-import scan: the interop rewrite (a full
+                // parse) runs only when a bare specifier maps to an interop URL.
                 let dep_interop = if oj_compiler::interop::bare_import_specifiers(&source)
                     .iter()
                     .any(|spec| cjs_interop_url(spec).is_some())
@@ -698,10 +638,8 @@ pub(crate) async fn ensure_module(
             } else {
                 let dep_interop = interop_node_builtins(&source, &file_owned);
                 let dep_src = dep_interop.as_deref().unwrap_or(&source);
-                // A CommonJS dep's `require()`s resolve with the `require`
-                // condition (Vite's getConditions for a requirer), so a dual
-                // package hands it its CJS build (`module.exports = fn`), not
-                // the ESM one the interop would wrap as `{ default: fn }`.
+                // A CJS dep's `require()`s resolve with the `require` condition (Vite's
+                // getConditions), so a dual package hands it its CJS build, not the ESM one.
                 oj_compiler::cjs::compile_dep(
                     &file_owned,
                     &url_owned,
@@ -725,8 +663,8 @@ pub(crate) async fn ensure_module(
                 oj_compiler::CompileOptions::dev()
             };
             opts.jsx = jsx_config;
-            // The cache key already folded this decision (from the original
-            // path); the compile must never re-derive it from a synthetic one.
+            // The key already folded this decision (from the original path); the
+            // compile must never re-derive it from a synthetic one.
             opts.class_field_set_semantics = Some(class_field_semantics);
             oj_compiler::compile_module_with_maps(
                 &file_owned,
@@ -773,9 +711,8 @@ pub(crate) async fn ensure_module(
             if is_unresolved_import_error(&err) {
                 let clean = url.split('?').next().unwrap_or(url).to_string();
                 state.resolve_failed.lock().unwrap().insert(clean);
-                // Vite clears the importer's isSelfAccepting here (#9534) so the
-                // update a later `create` triggers climbs to a boundary the page
-                // did load rather than stopping at a module it never evaluated.
+                // Vite clears the importer's isSelfAccepting here (#9534) so the update
+                // a later `create` triggers climbs to a boundary the page did load.
                 state
                     .graph
                     .lock()
@@ -863,10 +800,8 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
         .collect();
     let pruned = graph.set_imports(Path::new(url), &local_imports);
     if !pruned.is_empty() {
-        // Dependencies this module dropped that nothing imports any more: the
-        // client runs their `hot.prune` callbacks (a stylesheet removes its
-        // <style>), and they are stamped so a later re-import re-runs them, as
-        // Vite's handlePrunedModules does after importAnalysis.
+        // Dropped deps nothing imports any more: the client runs their `hot.prune`
+        // callbacks, stamped so a re-import re-runs them (Vite's handlePrunedModules).
         graph.stamp_pruned(&pruned, now_millis() as u64);
         let paths: Vec<String> = pruned.iter().map(|p| p.display().to_string()).collect();
         println!("oj: prune {paths:?}");
@@ -921,9 +856,8 @@ pub(crate) fn compile_fs_deny(user: &[String]) -> Vec<(glob::Pattern, bool)> {
         .collect()
 }
 
-/// Expands `{a,b}` groups the way picomatch/Vite treat them; the `glob` crate
-/// has no brace support, so `*.{key,pem}` (Vite's own default deny shape)
-/// would otherwise compile to a literal that matches nothing.
+/// Expands `{a,b}` groups (picomatch/Vite semantics); the `glob` crate has no
+/// brace support, so Vite's default deny shape would match nothing.
 pub(crate) fn expand_braces(pattern: &str) -> Vec<String> {
     let Some(open) = pattern.find('{') else {
         return vec![pattern.to_string()];
@@ -949,11 +883,8 @@ pub(crate) fn path_is_denied(file: &Path, root: &Path, deny: &[(glob::Pattern, b
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // Match case-insensitively: a deny list is a security control, and on a
-    // case-insensitive filesystem (macOS, Windows) `.ENV` opens the same bytes
-    // as `.env`, so a case-sensitive glob would leak the file. Denying a
-    // superset on case-sensitive filesystems is the safe direction. Other
-    // options stay at glob's defaults, so only case behavior changes.
+    // The deny list is a security control: match case-insensitively so `.ENV` on a
+    // case-insensitive filesystem cannot leak; a superset deny elsewhere is safe.
     let opts = glob::MatchOptions {
         case_sensitive: false,
         ..glob::MatchOptions::new()
@@ -971,16 +902,8 @@ pub(crate) fn path_is_denied(file: &Path, root: &Path, deny: &[(glob::Pattern, b
     false
 }
 
-// The browser stamps every request with Sec-Fetch-Dest describing what it will
-// do with the bytes: `style` (<link rel=stylesheet>), `image` (<img>), `font`
-// (@font-face), media. Those want the raw resource. A JS `import` fetches the
-// module with dest `script`/`empty`/worker, which wants the JS-module form: a
-// style-injecting module for CSS, a URL-exporting module for an asset. Vite draws
-// the same line; a `.css` reached from JS is served as JS, not text/css.
-/// An asset url requested by a module import: Vite marks those `?import`, and a
-/// browser sets `sec-fetch-dest: script` for an `import` of the url. Anything
-/// else (a fetch(), curl, the Start proxy, an <img>) gets the file's bytes, as
-/// Vite's static middleware serves them.
+/// A url requested by a module import (Vite's `?import` marker, or the browser's
+/// `sec-fetch-dest: script`) gets the JS-module form; anything else gets raw bytes.
 pub(crate) fn wants_module_import(headers: &HeaderMap, query: Option<&str>) -> bool {
     query.is_some_and(|q| q.split('&').any(|kv| kv == "import"))
         || headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) == Some("script")
@@ -993,24 +916,17 @@ pub(crate) fn wants_raw_resource(headers: &HeaderMap) -> bool {
     )
 }
 
-// Assets that, when imported from JS, resolve to a URL-exporting module (Vite's
-// default asset handling, case-insensitive). svg is excluded here: it is routed
-// through the compile path so vite-plugin-svgr can componentize it, falling back
-// to a URL module there.
+// Assets that resolve to a URL-exporting module when imported from JS. svg is
+// excluded: it routes through compile so svgr can componentize it.
 pub fn is_importable_asset_ext(ext: &str) -> bool {
     oj_compiler::assets::is_asset_ext(ext) && !ext.eq_ignore_ascii_case("svg")
 }
 
-// Node core modules. When one reaches the browser graph (usually via config-time
-// tooling a dep drags along), Vite serves a browser-externalized stub rather than
-// 404ing the whole module chain; oj does the same so the app still mounts. Pub:
-// the Start module host also consults it, because on the SSR side a builtin
-// outranks an installed polyfill package of the same name (Vite's fetchModule
-// checks isBuiltin before resolving), exactly as Node itself behaves.
+// Node core modules get a browser-externalized stub (Vite parity). Pub: the Start
+// host checks builtins before resolving on the SSR side, as Node itself does.
 pub fn is_node_builtin(spec: &str) -> bool {
-    // Vite's isNodeBuiltin: anything under the `node:` scheme is a builtin (this
-    // covers node:sqlite, node:sea, node:test and whatever Node adds next); the
-    // list below is `module.builtinModules` for the bare (scheme-less) names.
+    // Vite's isNodeBuiltin: anything under the `node:` scheme is a builtin; the
+    // list below is `module.builtinModules` for the scheme-less names.
     if spec.starts_with("node:") {
         return true;
     }
@@ -1065,18 +981,12 @@ pub fn is_node_builtin(spec: &str) -> bool {
     )
 }
 
-// Vite's searchForWorkspaceRoot: walk up from the app root and stop at the first
-// workspace marker (pnpm-workspace.yaml / lerna.json, or a package.json with a
-// `workspaces` field); otherwise searchForPackageRoot, the NEAREST ancestor with
-// a package.json (the root itself, normally). `.git` is deliberately not a
-// marker (Vite comments it out): a project nested somewhere inside a repository
-// must not expose the whole repository over /@fs by default. oj seeds
-// server.fs.allow with this, matching Vite's default.
+// Vite's searchForWorkspaceRoot: first workspace marker walking up, else NEAREST
+// ancestor package.json. `.git` is deliberately not a marker (would expose the
+// whole repository over /@fs). Seeds server.fs.allow, matching Vite's default.
 pub(crate) fn workspace_root(root: &Path) -> PathBuf {
-    // Vite's hasWorkspacePackageJSON / hasWorkspaceDenoJSON: the PARSED field,
-    // truthy by JS rules — a dependency literally named "workspaces" must not
-    // widen the served root, and a deno.jsonc counts only while it is also
-    // valid JSON (Vite skips full JSONC parsing).
+    // Vite parity: the PARSED field, truthy by JS rules; a dep literally named
+    // "workspaces" must not widen the root, and deno.jsonc must be valid JSON.
     let field_truthy = |file: &Path, field: &str| -> bool {
         let Ok(txt) = std::fs::read_to_string(file) else {
             return false;
@@ -1118,16 +1028,9 @@ pub(crate) fn workspace_root(root: &Path) -> PathBuf {
     }
 }
 
-// Rewrite `import { X } from "node:builtin"` to read X off the browser-externalized
-// stub (undefined) instead of a native named import that fails to link, matching
-// Vite's importAnalysis interop for browser-external modules. Returns None when the
-// source imports no node builtins. Applied on every compile path so deps and app
-// source interop consistently.
-// Pre-resolve a module's static imports (same resolver ctx.resolve uses) into a
-// {spec: id|null} JSON map, handed to the plugin transform so a plugin's per-import
-// `this.resolve` is a local lookup instead of a host round-trip. This is what keeps
-// import-protection's transform (a resolve per import) from being thousands of IPC
-// round-trips per page.
+// Pre-resolve a module's static imports into a {spec: id|null} JSON map for the
+// plugin transform, so per-import `this.resolve` is a local lookup, not an IPC
+// round-trip (thousands per page for import-protection otherwise).
 pub(crate) fn resolved_imports_json(
     resolver: &OjResolver,
     fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
@@ -1137,17 +1040,15 @@ pub(crate) fn resolved_imports_json(
     let dir = file.parent().unwrap_or(file);
     let mut map = serde_json::Map::new();
     for spec in oj_compiler::imports(source, file) {
-        // Node builtins never resolve to a file (they're browser-externalized via
-        // interop); skip them so the resolver doesn't log a "cannot resolve" warning
-        // per app module. A plugin's this.resolve falls back to the host for these.
+        // Builtins never resolve to a file; skip to avoid a resolver warning per
+        // module. A plugin's this.resolve falls back to the host for these.
         if is_node_builtin(&spec) {
             continue;
         }
         let val = match resolver.resolve(dir, &spec) {
             Ok(p) => {
-                // The map hands these ids to the plugin transform; if the transform
-                // keeps the import, the browser fetches it from /@fs, so allow-list
-                // its package root now (rewrite_specifier does the same on its path).
+                // If the transform keeps the import, the browser fetches it from
+                // /@fs, so allow-list its package root now.
                 if p.components().any(|c| c.as_os_str() == "node_modules") || !p.starts_with(dir) {
                     fs_allow.lock().unwrap().insert(package_root(&p));
                 }
@@ -1160,9 +1061,8 @@ pub(crate) fn resolved_imports_json(
     serde_json::Value::Object(map).to_string()
 }
 
-/// A stable, per-file condition (the bare star re-export of a CJS dep) would
-/// otherwise re-warn on every recompile: HMR invalidations, cache misses,
-/// restarts. Once per distinct message, like Vite's deduping logger.
+/// Warn once per distinct message (Vite's deduping logger); a stable per-file
+/// condition would otherwise re-warn on every recompile.
 pub(crate) fn warn_interop_once(msg: String) {
     static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();

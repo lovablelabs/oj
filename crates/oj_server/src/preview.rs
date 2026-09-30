@@ -139,11 +139,8 @@ pub(crate) fn preview_rel(path: &str, base: &str) -> Option<String> {
     })
 }
 
-/// Vite's html fallback for an extensionless preview request: a page's own
-/// `index.html` (`/nested/` and `/nested`), then `<path>.html`, then the SPA
-/// root `index.html`. Multi-page builds put pages in subdirectories, so serving
-/// the root page for `/nested/` would load the wrong page (and, with a relative
-/// base, break its `./assets/` URLs).
+/// Extensionless preview fallback: the page's own `index.html`, then
+/// `<path>.html`, then (SPA only) the root index.html; never the wrong page.
 pub(crate) fn preview_html_fallback(dir: &Path, rel: &str, spa: bool) -> Option<PathBuf> {
     let rel = rel.trim_end_matches('/');
     if !rel.is_empty() {
@@ -191,8 +188,7 @@ pub(crate) async fn preview_serve(State(state): State<Arc<PreviewState>>, uri: U
         return (StatusCode::NOT_FOUND, format!("oj: not found: {rel}")).into_response();
     };
 
-    // Build assets carry a content hash in their name, so they can be cached
-    // forever; HTML is unhashed and must revalidate.
+    // Hashed build assets cache forever; unhashed HTML must revalidate.
     let cache_control = if rel.starts_with(assets_prefix.as_str()) {
         "public, max-age=31536000, immutable"
     } else if ctype.starts_with("text/html") {

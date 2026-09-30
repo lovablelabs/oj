@@ -1,8 +1,7 @@
 use super::*;
 
-/// How the SSR pipeline resolved an import: a module it serves (through
-/// `/@ssr-module` or [`SsrBridge::load_module`]), or an external the runner
-/// imports from node_modules with its own Node resolution.
+/// How the SSR pipeline resolved an import: a module it serves, or an external
+/// the runner imports from node_modules with its own Node resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SsrResolution {
     Module(String),
@@ -27,10 +26,8 @@ impl std::fmt::Display for SsrModuleError {
     }
 }
 
-/// In-process access to the SSR resolve/load pipeline behind `/@ssr-resolve`
-/// and `/@ssr-module`, for the embedded SSR module runner. Both entry points
-/// share one implementation, so the HTTP endpoints and the runner can never
-/// drift apart.
+/// In-process access to the `/@ssr-resolve` / `/@ssr-module` pipeline for the
+/// embedded runner; HTTP endpoints and runner share one implementation.
 #[derive(Clone)]
 pub struct SsrBridge {
     pub(crate) state: Arc<ServerState>,
@@ -47,11 +44,8 @@ impl SsrBridge {
         ssr_module_inner(&self.state, id, false).await
     }
 
-    /// Resolution for the in-process Start module host: unlike [`resolve`],
-    /// a hit inside node_modules keeps its RESOLVED path, so the host can
-    /// hand the engine the exact file the Vite-style resolver picked
-    /// (mainFields, extension probing, exports conditions) instead of
-    /// re-resolving the bare specifier with plain Node semantics.
+    /// Like [`resolve`], but a node_modules hit keeps its RESOLVED path so the
+    /// Start host uses the Vite-picked file, not a Node re-resolution.
     pub async fn resolve_start(
         &self,
         importer: &str,
@@ -81,10 +75,8 @@ impl SsrBridge {
         }
     }
 
-    /// The plugin-transform + compile tail on a source the caller pre-read
-    /// (or pre-rewrote); `from_plugin` marks virtual content. `run_plugins:
-    /// false` skips the plugin transform chain (the caller already ran it,
-    /// e.g. an mdx compile) and only applies the dev-ssr compile.
+    /// Plugin-transform + compile tail on a pre-read source; `run_plugins:
+    /// false` skips the plugin chain and applies only the dev-ssr compile.
     pub async fn transform_module(
         &self,
         id: &str,
@@ -111,9 +103,8 @@ impl SsrBridge {
     }
 }
 
-/// How the Start module host's resolution landed: a module the pipeline serves
-/// (an app fs path or a plugin virtual id), a resolved dependency file inside
-/// node_modules, or a bare specifier left to Node semantics.
+/// Start host resolution: a served module (fs path or virtual id), a resolved
+/// node_modules file, or a bare specifier left to Node semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartResolution {
     Module(String),
@@ -237,9 +228,8 @@ pub(crate) async fn ssr_module_inner(
     ssr_transform_source(state, id, source, from_plugin, runner).await
 }
 
-/// The plugin-transform + dev-ssr-compile tail of the SSR module pipeline, on
-/// a source the caller already has (the fs read, a plugin `load()` override,
-/// or a pre-rewritten Start module).
+/// Plugin-transform + dev-ssr-compile tail of the SSR module pipeline, on a
+/// source the caller already has.
 pub(crate) async fn ssr_transform_source(
     state: &Arc<ServerState>,
     id: &str,
@@ -248,9 +238,8 @@ pub(crate) async fn ssr_transform_source(
     runner: bool,
 ) -> Result<String, SsrModuleError> {
     let source = match ssr_plugin_host(state).await {
-        // The same per-plugin filter gate the client path runs: an SSR module
-        // no plugin's filter can claim skips the isolate RPC (and the import
-        // pre-resolution that only exists to feed it).
+        // Same filter gate as the client path: an unclaimed module skips the
+        // isolate RPC and the import pre-resolution that only feeds it.
         Some(host) if host.hook_wants_transform(id, &source) => {
             let resolved =
                 resolved_imports_json(&state.resolver, &state.fs_allow, &source, Path::new(id));
@@ -288,9 +277,8 @@ pub(crate) fn ssr_compile_source(
     } else {
         PathBuf::from(id)
     };
-    // Dev SSR modules compile as dev + ssr (Vite's importAnalysis injects
-    // `SSR: true` and the dev env), so `import.meta.env.SSR` is true and
-    // `DEV`/`MODE` match the client; Fast Refresh stays off on the server.
+    // Compile as dev + ssr so `import.meta.env.SSR` is true and `DEV`/`MODE`
+    // match the client; Fast Refresh stays off on the server.
     let mut opts = dev_compile_opts(state);
     opts.refresh = false;
     opts.ssr = true;
@@ -323,30 +311,28 @@ pub(crate) async fn ssr_module(
     }
 }
 
-pub(crate) async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<PluginHost>> {
+pub(crate) async fn ssr_plugin_host(
+    state: &Arc<ServerState>,
+) -> Option<std::sync::Arc<PluginHost>> {
     let host = state
         .plugins_ssr
         .get_or_init(|| async {
             let file = match plugins::plugin_source(&state.root)? {
                 plugins::PluginSource::OjPlugins(p) | plugins::PluginSource::ViteConfig(p) => p,
             };
-            // Lazy spawn (first SSR request): the short init-wait policy, so a
-            // wedged init cannot block the watcher thread's watchChange /
-            // hotUpdate dispatch or SSR transforms for the long init deadline.
+            // Lazy spawn with the short init-wait policy: a wedged init must
+            // not block watcher dispatch or SSR transforms.
             match PluginHost::spawn_lazy(&state.root, &file, &state.ssr_plugin_config).await {
                 Ok(host) => {
                     eprintln!("oj ssr: plugins (ssr environment) from {}", file.display());
-                    // The catch-up half of the watcher's pre-init fast-skip:
-                    // events skipped while this host initializes replay at
-                    // its init (see SsrWatchQueue).
+                    // Catch-up half of the watcher's pre-init fast-skip
+                    // (see SsrWatchQueue).
                     spawn_ssr_watch_catch_up(
                         std::sync::Arc::clone(&host),
                         Arc::clone(&state.ssr_watch),
                     );
-                    // The ssr environment's per-environment define
-                    // (`environments.ssr.define` from the resolved config,
-                    // plus config()-hook deltas) layers over the shared
-                    // define for SSR compiles.
+                    // `environments.ssr.define` (plus config()-hook deltas)
+                    // layers over the shared define for SSR compiles.
                     let ssr_defines = host.config_defines().await;
                     if !ssr_defines.is_empty() {
                         oj_compiler::merge_import_meta_env_ssr(ssr_defines);
@@ -361,25 +347,20 @@ pub(crate) async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::syn
         })
         .await
         .clone();
-    // Every consumer acquires the host here (the SSR gates and the Start
-    // bridge alike), so this is the one seam where the plan can be primed
-    // before any gated dispatch; a no-op once the plan is live.
+    // Every consumer acquires the host here, so prime the hook plan at this
+    // one seam before any gated dispatch; a no-op once live.
     if let Some(h) = &host {
         h.prime_hook_plan().await;
     }
     host
 }
 
-/// Watcher events (file, change type) the lazily spawned SSR host could not
-/// take yet: the watcher fast-skips a pre-init host — dispatching would
-/// serially burn a full per-call init window per hook per save on a wedged
-/// init — and queues the event here for a watchChange catch-up replay at the
-/// host's init (see `spawn_ssr_watch_catch_up`). The backlog dedups by file
-/// (the latest change type wins), so it is bounded by the files edited during
-/// the window. `order` serializes EVERY watchChange dispatch toward that host
-/// — the catch-up replay and the watcher's live post-init dispatch alike, the
-/// live path draining the backlog first — so a stale queued event can never
-/// land after a newer live event for the same file.
+/// Watcher events the pre-init lazy SSR host could not take yet: the watcher
+/// fast-skips and queues them here for a watchChange replay at init. The
+/// backlog dedups by file (latest change type wins). `order` serializes EVERY
+/// watchChange dispatch toward the host, replay and live alike (live drains
+/// the backlog first), so a stale queued event never lands after a newer live
+/// event for the same file.
 #[derive(Default)]
 pub(crate) struct SsrWatchQueue {
     pub(crate) backlog: Mutex<Vec<(String, String)>>,
@@ -388,10 +369,8 @@ pub(crate) struct SsrWatchQueue {
     logged: std::sync::atomic::AtomicBool,
 }
 
-/// Records a watcher event the pre-init lazy SSR host cannot take yet (the
-/// watcher's fast-skip; see [`SsrWatchQueue`]): deduped by file, the latest
-/// change type winning — a delete after an update is what the replay must
-/// report.
+/// Record a skipped watcher event (see [`SsrWatchQueue`]): deduped by file,
+/// latest change type wins (a delete after an update must replay as delete).
 pub(crate) fn note_ssr_watch_skip(queue: &SsrWatchQueue, file: &str, change_type: &str) {
     {
         let mut b = queue.backlog.lock().unwrap();
@@ -408,15 +387,11 @@ pub(crate) fn note_ssr_watch_skip(queue: &SsrWatchQueue, file: &str, change_type
     }
 }
 
-/// Replays the skipped events as `watchChange` toward the (now initialized)
-/// SSR host — the invalidation notice its plugins missed while pre-init; the
-/// late hotUpdate half is deliberately not replayed (its result steers no
-/// client update on the ssr environment, and the client updates already
-/// happened through oj's own pipeline). The whole replay holds the queue's
-/// order lock: a live dispatcher flushing the backlog before its own newer
-/// event blocks here until an in-flight replay has fully drained, so queued
-/// (older) events always reach the host before live (newer) ones. Loops: a
-/// skip racing the drain lands in a later batch instead of being lost.
+/// Replay skipped events as `watchChange` to the initialized host; hotUpdate
+/// is deliberately not replayed (client updates already went through oj's own
+/// pipeline). Holds the order lock for the whole replay so queued (older)
+/// events reach the host before live (newer) ones; the loop catches a skip
+/// racing the drain.
 pub(crate) async fn replay_ssr_watch_backlog(host: &PluginHost, queue: &SsrWatchQueue) {
     let _order = queue.order.lock().await;
     loop {
@@ -439,11 +414,12 @@ pub(crate) async fn replay_ssr_watch_backlog(host: &PluginHost, queue: &SsrWatch
     }
 }
 
-/// Waits for the lazy SSR host's init and replays the watcher backlog then; a
-/// host that dies pre-init keeps the wait alive while it may still be revived
-/// (a revive resets `initialized` and the fresh generation's init replays the
-/// backlog), and only a permanent death — no respawns left — releases it.
-pub(crate) fn spawn_ssr_watch_catch_up(host: std::sync::Arc<PluginHost>, queue: Arc<SsrWatchQueue>) {
+/// Wait for the lazy host's init, then replay the watcher backlog. A pre-init
+/// death keeps the wait alive while revivable; only permanent death releases it.
+pub(crate) fn spawn_ssr_watch_catch_up(
+    host: std::sync::Arc<PluginHost>,
+    queue: Arc<SsrWatchQueue>,
+) {
     tokio::spawn(async move {
         let mut init = host.initialized_updates();
         let mut gone = host.host_gone_updates();
@@ -457,8 +433,7 @@ pub(crate) fn spawn_ssr_watch_catch_up(host: std::sync::Arc<PluginHost>, queue: 
             tokio::select! {
                 changed = init.changed() => { if changed.is_err() { return; } }
                 changed = gone.changed() => { if changed.is_err() { return; } }
-                // Permanent death makes no watch change of its own (the final
-                // failed revive is silent): re-check slowly.
+                // Permanent death makes no watch change of its own: re-check slowly.
                 _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
             }
         }

@@ -50,8 +50,8 @@ impl MemoryCache {
         self.total = 0;
     }
 
-    /// (entries, accounted bytes, code bytes, map bytes) — the deterministic
-    /// footprint split behind /@oj/debug/mem.
+    /// (entries, accounted bytes, code bytes, map bytes): the footprint
+    /// split behind /@oj/debug/mem.
     pub(crate) fn stats(&self) -> (usize, usize, usize, usize) {
         let mut code = 0;
         let mut map = 0;

@@ -375,8 +375,7 @@ fn decode_at_id_handles_hex_and_raw_vite_ids() {
 #[test]
 fn parse_hmr_filter_reads_filter_module_urls() {
     let seeds =
-        parse_hmr_filter(r#"{"action":"filter","modules":["/src/a.tsx","/src/b.tsx"]}"#)
-            .unwrap();
+        parse_hmr_filter(r#"{"action":"filter","modules":["/src/a.tsx","/src/b.tsx"]}"#).unwrap();
     assert_eq!(
         seeds,
         vec![PathBuf::from("/src/a.tsx"), PathBuf::from("/src/b.tsx")]
@@ -1681,8 +1680,7 @@ fn csp_nonce_stamps_scripts_styles_and_preload_links_once() {
 
 #[test]
 fn html_entries_read_module_scripts_with_any_quoting() {
-    let root =
-        std::env::temp_dir().join(format!("oj-html-entries-quoting-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("oj-html-entries-quoting-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
         root.join("index.html"),

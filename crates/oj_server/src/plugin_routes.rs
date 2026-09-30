@@ -1,14 +1,7 @@
 use super::*;
 
-// Rollup's contract, which the rest of this host follows: `resolveId` returning a
-// path means that file IS the module, and a `load` returning nothing means read it
-// from disk. Only the second half was implemented, so a plugin that maps a
-// specifier to a path without also serving its bytes -- which is what a resolver
-// plugin is -- got a 404 for every module it resolved correctly.
-//
-// Redirecting to the file's normal dep URL rather than reading it here keeps every
-// downstream behaviour identical to any other dependency: the fs.allow check,
-// partial bundling, and the specifier rewriting applied inside the served file.
+// Rollup contract: a resolveId path IS the module, an empty `load` means read
+// from disk. Redirect to the normal dep URL so fs.allow/bundling/rewriting apply.
 pub(crate) fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Option<Response> {
     let resolved = Path::new(id);
     if !resolved.is_absolute() || !resolved.is_file() {
@@ -100,12 +93,8 @@ pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> 
     }
 }
 
-/// Vite's browser-externalized module for a node builtin that reaches the client
-/// graph (optimizer rolldownDepPlugin `browser-external` load): a Proxy whose
-/// property reads console.warn `Module "fs" has been externalized for browser
-/// compatibility. Cannot access "fs.readFileSync" in client code.` and yield
-/// undefined, so the app still mounts and the developer learns which dep pulled
-/// the builtin in. Skips the keys bundlers, interop helpers and devtools poke.
+/// Vite's browser-externalized node builtin: a Proxy whose property reads warn
+/// and yield undefined, skipping keys bundlers/interop helpers/devtools poke.
 pub(crate) fn browser_external_stub_source(spec: &str) -> String {
     let id = serde_json::Value::String(spec.to_string());
     format!(
@@ -133,10 +122,13 @@ pub(crate) fn browser_external_stub(spec: &str) -> Response {
         .into_response()
 }
 
-pub(crate) async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, importer: &str) -> Response {
-    // A plugin may polyfill a node builtin (vite-plugin-node-polyfills), so the
-    // host gets first refusal; with no host, or when no plugin claims it, the
-    // builtin is browser-externalized like Vite does.
+pub(crate) async fn serve_plugin_id(
+    state: &Arc<ServerState>,
+    spec: &str,
+    importer: &str,
+) -> Response {
+    // A plugin may polyfill a node builtin, so the host gets first refusal;
+    // otherwise the builtin is browser-externalized like Vite.
     let Some(host) = &state.plugins else {
         if is_node_builtin(spec) {
             return browser_external_stub(spec);
@@ -146,9 +138,8 @@ pub(crate) async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, import
     let id = match host.resolve_id(spec, importer).await {
         Ok(Some(id)) => id,
         Ok(None) => {
-            // A relative / absolute import routed here for a plugin's resolveId
-            // filter that then declined it: Vite's own resolver takes over, so
-            // resolve it against the importer like the native path would have.
+            // The plugin's resolveId declined a relative/absolute import:
+            // resolve it against the importer like the native path would.
             if !is_bare_specifier(spec) {
                 let (base, query) = spec.split_once('?').unwrap_or((spec, ""));
                 let dir = Path::new(importer)
@@ -170,10 +161,8 @@ pub(crate) async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, import
             if is_node_builtin(spec) {
                 return browser_external_stub(spec);
             }
-            // No plugin claimed the bare id the importer deferred here: this is
-            // Vite's "Failed to resolve import" for that importer (500 + overlay
-            // naming the import site), not a bare 404 the browser reports as a
-            // generic module error.
+            // No plugin claimed the deferred bare id: Vite's "Failed to resolve
+            // import" (500 + overlay naming the import site), not a bare 404.
             if is_bare_specifier(spec) && !importer.is_empty() {
                 let importer_file = Path::new(importer);
                 let source = std::fs::read_to_string(importer_file).unwrap_or_default();
@@ -212,10 +201,8 @@ pub(crate) async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, import
             {
                 return Some(u);
             }
-            // A plugin-loaded virtual can import another plugin virtual (the i18n
-            // message groups import their `virtual:i18n-facade/*` counterpart). Route
-            // bare specifiers back through the plugin like the on-disk compile path
-            // does, instead of leaving `virtual:...` for the browser to fetch and fail.
+            // A plugin virtual can import another plugin virtual: route bare
+            // specifiers back through the plugin, never `virtual:...` to the browser.
             if is_bare_specifier(s) {
                 return Some(format!(
                     "/@id/{}?importer={}",
@@ -254,20 +241,14 @@ pub(crate) async fn serve_plugin_id(state: &Arc<ServerState>, spec: &str, import
     }
 }
 
-// A plugin can `load` a module whose id is neither an on-disk file nor a bare
-// specifier: wyw-in-js/linaria appends `import "<abs>.wyw-in-js.css"` to each
-// transformed module and serves that absolute-path id from its own `load` hook,
-// keeping the extracted CSS in memory. On a disk miss, consult the plugin
-// container (resolveId -> load) before giving up. CSS a plugin returns is
-// wrapped as a style-injecting JS module, matching Vite's `vite:css` handling of
-// a `.css` import reached from JS (so the browser gets text/javascript, not a
-// text/css module script the strict MIME check rejects).
-// Serve a `/@oj-pkg/<hex>` package bundle: one request covering a CommonJS
-// package's whole internal file graph (oj-native partial bundling). A package
-// that can't be bundled in v1 (ESM entry, unsupported files) falls back to the
-// entry's normal per-file compiled output, served at this same URL so the
-// importer's interop (which reads __cjs_exports) still resolves.
-pub(crate) async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versioned: bool) -> Response {
+// Serve a `/@oj-pkg/<hex>` bundle (a CJS package's whole internal graph). An
+// unbundleable package falls back to per-file output at this SAME url so the
+// importer's interop (__cjs_exports) still resolves.
+pub(crate) async fn serve_pkg_bundle(
+    state: &Arc<ServerState>,
+    path: &str,
+    versioned: bool,
+) -> Response {
     let js = |code: Bytes| {
         (
             [
@@ -278,9 +259,8 @@ pub(crate) async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versi
         )
             .into_response()
     };
-    // A chunk emitted by a previous rolldown fallback (a code-split sibling, or
-    // the entry re-served). These paths aren't decodable entry hexes, so they
-    // must be checked before entry_from_url.
+    // Chunks from a previous rolldown fallback aren't decodable entry hexes,
+    // so check them before entry_from_url.
     if let Some(code) = pkg_rolldown::cached_chunk(path) {
         return js(code);
     }
@@ -292,9 +272,8 @@ pub(crate) async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versi
     };
     let resolver = Arc::clone(&state.resolver);
     let root = state.root.clone();
-    // Known-hard packages (e.g. object-inspect) produce a concatenator bundle
-    // that builds but breaks at runtime, so they never bail into the fallback.
-    // Force those straight through rolldown, bypassing the concatenator.
+    // Known-hard packages produce a concatenator bundle that builds but breaks
+    // at runtime: force them straight through rolldown.
     if pkg_rolldown::enabled() && pkg_rolldown::is_forced(&entry) {
         if let Some(code) = pkg_rolldown::build(&entry, &state.root, Arc::clone(&resolver)).await {
             return js(code);
@@ -313,8 +292,8 @@ pub(crate) async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versi
             js(code)
         }
         Ok(pkg_bundle::BundleOutcome::Fallback) => {
-            // The concatenator bailed. Before serving per-file, try bundling this
-            // one package with rolldown (the robust path, Vite-style), if enabled.
+            // Concatenator bailed: try rolldown for this one package before
+            // serving per-file.
             if pkg_rolldown::enabled() {
                 if let Some(code) =
                     pkg_rolldown::build(&entry, &state.root, Arc::clone(&resolver)).await
@@ -339,7 +318,10 @@ pub(crate) async fn serve_pkg_bundle(state: &Arc<ServerState>, path: &str, versi
     }
 }
 
-pub(crate) async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &Uri) -> Option<Response> {
+pub(crate) async fn serve_plugin_load_fallback(
+    state: &Arc<ServerState>,
+    uri: &Uri,
+) -> Option<Response> {
     let host = state.plugins.as_ref()?;
     let spec = uri.path().to_string();
     let id = match host.resolve_id(&spec, "").await {
@@ -389,10 +371,8 @@ pub(crate) async fn serve_plugin_load_fallback(state: &Arc<ServerState>, uri: &U
             {
                 return Some(u);
             }
-            // A plugin-loaded virtual can import another plugin virtual (the i18n
-            // message groups import their `virtual:i18n-facade/*` counterpart). Route
-            // bare specifiers back through the plugin like the on-disk compile path
-            // does, instead of leaving `virtual:...` for the browser to fetch and fail.
+            // A plugin virtual can import another plugin virtual: route bare
+            // specifiers back through the plugin, never `virtual:...` to the browser.
             if is_bare_specifier(s) {
                 return Some(format!(
                     "/@id/{}?importer={}",
@@ -432,9 +412,8 @@ pub(crate) fn is_bare_specifier(spec: &str) -> bool {
     !spec.starts_with('.') && !spec.starts_with('/') && !spec.contains("://")
 }
 
-// The lingui macro entrypoints. Their transform is done by @lingui/swc-plugin
-// (an SWC WASM plugin oj cannot run); left untransformed they drag the babel
-// macro toolchain into the browser. oj serves a runtime identity shim instead.
+// lingui macro entrypoints are normally compiled by @lingui/swc-plugin, which
+// oj cannot run; oj serves a runtime identity shim instead.
 pub(crate) fn is_lingui_macro_specifier(spec: &str) -> bool {
     matches!(
         spec,
@@ -442,16 +421,8 @@ pub(crate) fn is_lingui_macro_specifier(spec: &str) -> bool {
     )
 }
 
-// Whether a resolved dependency file is CommonJS (no ESM syntax), i.e. it will
-// be served through wrap_cjs with `default` = module.exports. Used to decide
-// whether a bare `import { x } from "cjs-dep"` needs importer-side interop
-// (rewriting the named import to a property read off the default), since a CJS
-// dep whose named exports are assigned at runtime (e.g. file-saver's `saveAs`)
-// exposes no static ESM named bindings. Cached: a file's module kind is stable.
-// A node_modules JS-family file that partial bundling should try to collapse
-// into one `/@oj-pkg` bundle, whether it's CommonJS or ESM. (`.css`/`.json`/asset
-// deps stay per-file; the builder itself falls back if a JS package can't be
-// bundled safely.)
+// A node_modules JS-family file partial bundling should try to collapse into
+// one `/@oj-pkg` bundle; css/json/asset deps stay per-file.
 pub(crate) fn is_bundleable_dep_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
@@ -465,9 +436,8 @@ pub(crate) fn is_cjs_dep_file(path: &Path) -> bool {
     if let Some(&v) = cache.lock().unwrap().get(path) {
         return v;
     }
-    // Only JavaScript files can be CommonJS. A `.css`/`.json`/asset dep has no
-    // ES-module syntax either, but it is not CJS — treating it as one routes it
-    // to the CJS interop / package-bundle path and serves raw CSS as JS.
+    // Only JS files can be CJS: a css/json/asset dep has no ESM syntax either,
+    // but routing it to CJS interop would serve raw CSS as JS.
     let is_js = matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("js" | "cjs" | "jsx")

@@ -33,9 +33,8 @@ pub(crate) fn hex_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-// oj hex-encodes its own /@id/ links, but a Vite plugin's client entry ships a
-// raw /@id/<id> URL (Vite's convention: \0 shown as __x00__). Decode hex when the
-// segment is valid hex, else fall back to the raw id so both forms resolve.
+// oj hex-encodes its own /@id/ links, but a Vite plugin ships raw /@id/<id> URLs
+// (\0 as __x00__): decode hex when valid, else fall back so both forms resolve.
 pub(crate) fn decode_at_id(seg: &str) -> String {
     if let Some(s) = hex_decode(seg) {
         return s;
@@ -86,15 +85,10 @@ pub(crate) fn now_millis() -> u128 {
         .as_millis()
 }
 
-
-// The single gate for serving an absolute (`/@fs`) path. Decide on the
-// canonical target so neither `..` traversal nor a symlink can escape an
-// allow-listed root (component-wise `starts_with` on a raw path does not
-// collapse `..`, and does not follow symlinks): require the real path to be
-// inside a root and not denied. A path that cannot be canonicalized (missing,
-// or a broken symlink) is refused. On success, return the ORIGINAL candidate,
-// not the canonical path, so a caller running with `preserveSymlinks` keeps the
-// module identity it asked for; both resolve to the same bytes.
+// The single gate for serving an absolute (`/@fs`) path: the CANONICAL path must be
+// inside an allowed root and not denied (raw `starts_with` collapses neither `..` nor
+// symlinks); uncanonicalizable paths are refused. Returns the ORIGINAL candidate so a
+// `preserveSymlinks` caller keeps the module identity it asked for.
 pub(crate) fn fs_gate(state: &ServerState, candidate: &Path) -> Option<PathBuf> {
     let real = std::fs::canonicalize(candidate).ok()?;
     // Vite's isFileLoadingAllowed: `server.fs.strict: false` skips the allow
@@ -102,8 +96,7 @@ pub(crate) fn fs_gate(state: &ServerState, candidate: &Path) -> Option<PathBuf> 
     let allowed = !state.fs_strict || {
         let allow = state.fs_allow.lock().unwrap();
         allow.iter().any(|root| {
-            // Fast path: roots are normally already canonical (the resolver
-            // realpaths them). Fall back to canonicalizing the root so a
+            // Roots are normally already canonical; fall back to canonicalizing so a
             // symlinked or /var-vs-/private/var root still matches.
             real.starts_with(root)
                 || std::fs::canonicalize(root)

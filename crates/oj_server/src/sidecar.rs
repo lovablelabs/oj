@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! Classification of stylesheets and components that need a JS-toolchain
-//! compile (Tailwind/PostCSS, Less, Stylus, Svelte). These predicates gate the
-//! lazy spawn of the in-process engines in [`crate::css_engine`]: a plain app
-//! never boots one.
+//! Classification of stylesheets/components needing a JS-toolchain compile
+//! (Tailwind/PostCSS, Less, Stylus, Svelte); gates the lazy engine spawn in
+//! [`crate::css_engine`], so a plain app never boots one.
 
 #[inline]
 pub fn is_svelte(url: &str) -> bool {

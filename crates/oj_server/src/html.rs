@@ -1,13 +1,15 @@
 use super::*;
 
-/// `url`: the page's request path (Vite's ctx.path); `file`: the html on disk
-/// (ctx.filename). A throwing transformIndexHtml fails the request with the
-/// plugin error (Vite's indexHtml middleware lets it reach the error
-/// middleware) instead of serving the untransformed page.
-pub(crate) async fn serve_html(state: &ServerState, bytes: Vec<u8>, url: &str, file: &Path) -> Response {
+/// `url` is the request path (ctx.path), `file` the html on disk (ctx.filename).
+/// A throwing transformIndexHtml fails the request (Vite parity), not served raw.
+pub(crate) async fn serve_html(
+    state: &ServerState,
+    bytes: Vec<u8>,
+    url: &str,
+    file: &Path,
+) -> Response {
     let mut raw = String::from_utf8_lossy(&bytes).into_owned();
-    // %VITE_*% / import.meta.env substitution (Vite's htmlEnvHook), a pre-hook
-    // before any plugin transformIndexHtml.
+    // %VITE_*% substitution (Vite htmlEnvHook) runs before transformIndexHtml.
     raw = oj_env::replace_html_env(&raw, &state.html_env);
     if let Some(host) = &state.plugins {
         let ctx = serde_json::json!({
@@ -36,10 +38,8 @@ pub(crate) async fn serve_html(state: &ServerState, bytes: Vec<u8>, url: &str, f
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
-/// Vite's `html.cspNonce` (injectNonceAttributeTagHook + injectCspNonceMetaTagHook):
-/// every `<script>`, `<style>` and stylesheet/modulepreload/preload `<link>`
-/// without a `nonce` gets `nonce="<nonce>"`, and `<head>` gets a
-/// `<meta property="csp-nonce" nonce="<nonce>">` the runtime reads back.
+/// Vite's `html.cspNonce`: nonce every script/style and stylesheet/modulepreload/
+/// preload link without one, plus a `csp-nonce` meta the runtime reads back.
 pub fn inject_csp_nonce(html: &str, nonce: &str) -> String {
     let mut out = String::with_capacity(html.len() + 256);
     let mut rest = html;
@@ -109,10 +109,8 @@ pub(crate) async fn serve_index_html(state: &ServerState) -> Response {
     }
 }
 
-/// The html file Vite's htmlFallback middleware rewrites an unmatched path to:
-/// a trailing slash asks for that directory's `index.html`, anything else for
-/// the `.html` sibling. An explicit `.html` request is left alone (it either
-/// exists, and was found already, or is a 404).
+/// Vite htmlFallback rewrite target: trailing slash means the directory's
+/// `index.html`, else the `.html` sibling; explicit `.html` is left alone.
 pub(crate) fn html_fallback_candidate(rel: &str) -> Option<String> {
     if rel.is_empty() || rel.ends_with(".html") {
         return None;
@@ -178,10 +176,8 @@ pub(crate) async fn serve_fallback(
         .unwrap_or_else(|| (StatusCode::NOT_FOUND, "oj: not found").into_response())
 }
 
-/// The href a graph module is preloaded under: the exact URL its importer names,
-/// so the preload and the import share one cache entry. A stylesheet is the
-/// `?import` module; an optimized dep or package bundle carries the same
-/// `?v=<version>` its import URLs do (the graph keys them without the query).
+/// The preload href: the exact URL the importer names (`?import` for styles,
+/// `?v=<version>` for deps) so preload and import share one cache entry.
 pub(crate) fn preload_href(path: &str, version: &str) -> String {
     if is_style_url(path) {
         format!("{path}?import")
@@ -264,10 +260,8 @@ pub(crate) fn html_entries(root: &Path) -> Vec<String> {
     entries
 }
 
-/// The value of attribute `name` in an opening tag (`<script type=...`),
-/// whether double-quoted, single-quoted or unquoted, with optional spaces
-/// around `=`; attribute names match case-insensitively and as whole words
-/// (`data-src` is not `src`).
+/// Value of attribute `name` in an opening tag: double/single/unquoted, spaces
+/// around `=`, case-insensitive whole-word names (`data-src` is not `src`).
 pub(crate) fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let bytes = tag.as_bytes();
     let mut i = tag.find(char::is_whitespace)?;

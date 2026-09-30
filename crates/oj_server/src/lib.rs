@@ -28,29 +28,29 @@ pub use preseed::PACKAGE_MANAGER_LOCKFILES;
 pub mod sidecar;
 pub mod svgr;
 mod util;
-pub use util::*;
+use util::*;
 mod plugin_routes;
-pub use plugin_routes::*;
+use plugin_routes::*;
 mod ui;
 pub use ui::*;
 mod client_js;
-pub use client_js::*;
+use client_js::*;
 mod assets_serve;
-pub use assets_serve::*;
+use assets_serve::*;
 mod rewrite;
-pub use rewrite::*;
+use rewrite::*;
 mod deps;
-pub use deps::*;
+use deps::*;
 mod module_pipeline;
 pub use module_pipeline::*;
 mod memory_cache;
-pub use memory_cache::*;
+use memory_cache::*;
 mod serve;
-pub use serve::*;
+use serve::*;
 mod crawl;
-pub use crawl::*;
+use crawl::*;
 mod debug;
-pub use debug::*;
+use debug::*;
 mod css_serve;
 pub use css_serve::*;
 mod plugin_mw;
@@ -66,17 +66,15 @@ pub use ssr::*;
 mod middleware;
 mod preview;
 mod proxy;
-use middleware::*;
-pub use preview::*;
-pub use proxy::*;
 use css_engine::CssEngine;
+use middleware::*;
 use oj_graph::{HmrDecision, ModuleGraph};
 use oj_resolver::OjResolver;
 use plugins::PluginHost;
+pub use preview::*;
+pub use proxy::*;
 use sidecar::is_tailwind_css;
 use tokio::sync::broadcast;
-
-
 
 const CLIENT_JS: &str = include_str!("assets/client.js");
 pub const OJ_ROUTES_JS: &str = include_str!("assets/oj-routes.js");
@@ -84,9 +82,8 @@ const SERVER_FN_JS: &str = include_str!("assets/server-fn.js");
 const LINGUI_MACRO_SHIM_JS: &str = include_str!("assets/lingui-macro-shim.mjs");
 const REFRESH_RUNTIME_JS: &str = include_str!("assets/refresh-runtime.js");
 const REFRESH_PREAMBLE_JS: &str = include_str!("assets/refresh-preamble.js");
-// Probed in Vite's DEFAULT_EXTENSIONS order (js before ts, .mts included) so the
-// extensionless quick path agrees with the resolver; .cts/.svelte trail as
-// compilable-but-not-default-probed.
+// Vite's DEFAULT_EXTENSIONS probe order (js before ts) so the extensionless
+// quick path agrees with the resolver; .cts/.svelte are compilable, not probed.
 const COMPILABLE: &[&str] = &["mjs", "js", "mts", "ts", "jsx", "tsx", "cts", "svelte"];
 
 const START_ASSETS: &[(&str, &str)] = &[
@@ -158,16 +155,8 @@ const START_ASSETS: &[(&str, &str)] = &[
     ),
 ];
 
-
-/// The persistent V8 code-cache directory for embedded engines
-/// (`oj_js::EngineConfig::code_cache_dir`): compiled bytecode for the app's
-/// toolchain, reused across engine spawns and one-shot children — the
-/// engine-side analog of NODE_COMPILE_CACHE. Keyed by the engine's ABI
-/// (`oj_js::engine_abi_key`, the V8 version), NOT the oj version: per-entry
-/// source hashes already invalidate changed scripts, so an oj release keeps
-/// the warm cache instead of cold-starting every engine, and only a V8
-/// upgrade (whose bytecode the new V8 would reject anyway) rotates the
-/// directory.
+/// Persistent V8 code-cache dir for embedded engines, keyed by the V8 ABI and
+/// NOT the oj version: per-entry source hashes already invalidate changed scripts.
 pub fn engine_code_cache_dir(root: &Path) -> PathBuf {
     oj_cache::cache_root(root)
         .join("code-cache")
@@ -261,8 +250,7 @@ struct ServerState {
     graph: Mutex<ModuleGraph>,
     resolver: Arc<OjResolver>,
     /// `resolver` with the `require` condition in place of `import`, for the
-    /// `require()` specifiers of a directly-served CommonJS dep (Vite parity:
-    /// getConditions pushes `require` when resolving for a requirer).
+    /// `require()` specifiers of a directly-served CommonJS dep (Vite's getConditions).
     require_resolver: Arc<OjResolver>,
     ssr_resolver: Arc<OjResolver>,
     cache: PersistentCache,
@@ -299,9 +287,8 @@ struct ServerState {
     /// For `server.proxy` entries with `secure: false`: accepts any certificate.
     /// Built on first use, so projects that never opt in pay nothing.
     http_insecure: std::sync::OnceLock<reqwest::Client>,
-    /// rustls client configs for proxied `wss://` targets, built once per server
-    /// (the platform verifier loads the trust store; sessions resume across
-    /// reconnects): index 0 verifies, index 1 is `secure: false`.
+    /// rustls client configs for proxied `wss://` targets, built once per server:
+    /// index 0 verifies, index 1 is `secure: false`.
     proxy_tls: [std::sync::OnceLock<Result<std::sync::Arc<rustls::ClientConfig>, String>>; 2],
     virtual_modules: std::collections::BTreeMap<String, String>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
@@ -319,7 +306,7 @@ struct ServerState {
     plugin_serve: Arc<PluginServe>,
     plugins_ssr: tokio::sync::OnceCell<Option<std::sync::Arc<PluginHost>>>,
     /// Watcher events the lazily spawned SSR host could not take yet, plus
-    /// the dispatch-order lock — see [`SsrWatchQueue`].
+    /// the dispatch-order lock; see [`SsrWatchQueue`].
     ssr_watch: Arc<SsrWatchQueue>,
     ssr_plugin_config: String,
     plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
@@ -342,59 +329,45 @@ struct ServerState {
     rt: tokio::runtime::Handle,
     base: Option<String>,
     optimized: Arc<optimize::OptimizedDeps>,
-    /// An error frame broadcast while no client was connected (a compile error
-    /// hit by the page's first module requests, before its socket opened) is
-    /// kept and delivered to the next client, like Vite's ws `bufferedError`.
+    /// An error frame broadcast while no client was connected is kept and
+    /// delivered to the next client (Vite's ws `bufferedError`).
     buffered_error: Mutex<Option<String>>,
     /// Modules whose last transform failed on an unresolvable relative import
-    /// (Vite's `_hasResolveFailedErrorModules`): a file appearing on disk
-    /// re-processes them so the overlay clears once the missing file exists.
+    /// (Vite's `_hasResolveFailedErrorModules`): a file appearing on disk re-processes them.
     resolve_failed: Mutex<std::collections::HashSet<String>>,
     /// `assets/client.js` with the `server.hmr` options and the socket token
     /// filled in (Vite's clientInjections), rendered once at startup.
     client_js: Bytes,
     /// Validator for `/@oj/client.js` (fixed per process).
     client_js_etag: String,
-    /// Per module url, the `import.meta.glob` patterns it expands (absolute):
-    /// a file created or deleted under one changes the expansion, so the module
-    /// is recompiled and hot updated (Vite's importMetaGlob hotUpdate).
+    /// Per module url, the `import.meta.glob` patterns it expands (absolute): a file
+    /// created or deleted under one recompiles + hot-updates the module (Vite parity).
     glob_importers: Mutex<HashMap<String, Vec<glob::Pattern>>>,
     /// Vite's `appType` (`spa` | `mpa` | `custom`): whether an unmatched
     /// navigation falls back to `index.html`, and whether html is served at all.
     app_type: String,
-    /// Vite's `server.watch.ignored` as compiled globs (each pattern both as
-    /// written and rooted at the project); a change matching one is dropped
-    /// before HMR or restart handling.
+    /// Vite's `server.watch.ignored` as compiled globs (each pattern as written and
+    /// rooted at the project); a matching change is dropped before HMR or restart handling.
     watch_ignored: Vec<glob::Pattern>,
-    /// Per-process secret a browser page must present as `?token=` to open the
-    /// HMR socket (Vite's `webSocketToken`): another origin's page cannot read
-    /// update frames or push invalidations. Non-browser clients (no `Origin`)
-    /// connect freely, as in Vite.
+    /// Per-process secret a browser page must present as `?token=` to open the HMR
+    /// socket (Vite's `webSocketToken`); non-browser clients (no `Origin`) connect freely.
     ws_token: String,
     ws_token_check: bool,
 }
 
-/// Live view of how the plugin host serves requests: the configureServer
-/// middleware port and whether runner-backed Vite DevEnvironments serve the
-/// documents. Boot fills it from the host's initial serve info; a host whose
-/// init outlives the boot deadlines fills it late — the host pushes
-/// `{ ojServeInfo }` when ready and [`spawn_late_plugin_serve`] flips this —
-/// so the request paths read it per request instead of snapshotting it at boot.
+/// Live plugin-host serve state (configureServer middleware port + whether runner-backed
+/// DevEnvironments serve the documents), read per request: a host whose init outlives the
+/// boot deadlines fills it late via [`spawn_late_plugin_serve`].
 #[derive(Default)]
 pub struct PluginServe {
-    /// One packed snapshot, so every reader gets (port, runner_environments)
-    /// from the same write: low 16 bits = the middleware's loopback port
-    /// (0 = none yet), bit 16 = runner environments serve the documents.
+    /// One packed snapshot so every reader gets (port, runner_environments) from the same
+    /// write: low 16 bits = middleware loopback port (0 = none), bit 16 = runner envs.
     state: std::sync::atomic::AtomicU32,
-    /// The activation handler: runs synchronously inside `set` BEFORE a late
-    /// activation becomes visible to readers (start_dev marks its fallback
-    /// runner dirty here), so no request can observe the flipped mode while
-    /// the catch-up is still unarmed.
+    /// The activation handler: runs synchronously inside `set` BEFORE a late activation
+    /// becomes visible, so no request can observe the flipped mode while the catch-up is unarmed.
     on_activate: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-    /// Whether a LATE activation happened (a `set` flipping no-middleware to
-    /// middleware after the boot fill). Set before the handler runs, so a
-    /// caller registering its handler late can catch an activation that beat
-    /// the registration by checking this afterwards (see `set_on_activate`).
+    /// Whether a LATE activation happened. Set before the handler runs, so a late
+    /// registrar can still catch an activation that beat it (see `set_on_activate`).
     late_activated: std::sync::atomic::AtomicBool,
 }
 
@@ -419,9 +392,8 @@ impl PluginServe {
         }
     }
     fn from_info(info: &plugins::ServeInfo) -> Self {
-        // The boot fill: not an activation (no reader existed before this
-        // value), so it must not count as `late_activated` — a caller's
-        // post-registration catch-up check is only for post-boot flips.
+        // The boot fill is not an activation (no reader existed before this
+        // value), so it must not count as `late_activated`.
         let s = Self::default();
         s.state
             .store(Self::pack(info), std::sync::atomic::Ordering::SeqCst);
@@ -429,10 +401,8 @@ impl PluginServe {
     }
     fn set(&self, info: &plugins::ServeInfo) {
         let packed = Self::pack(info);
-        // A late activation (no middleware -> middleware up) runs the handler
-        // first: a reader that sees the new mode finds the catch-up armed. The
-        // flag is set before the handler, so a handler registered a moment too
-        // late is caught by the registrar's `activated_late` check instead.
+        // A late activation runs the handler first: a reader seeing the new mode finds
+        // the catch-up armed. The flag precedes the handler for late registrars.
         if packed & 0xFFFF != 0 && self.mw_port().is_none() {
             self.late_activated
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -448,17 +418,15 @@ impl PluginServe {
         self.state
             .store(packed, std::sync::atomic::Ordering::SeqCst);
     }
-    /// Register the activation handler (see `on_activate`). At most one; a
-    /// registration after activation is never called, so callers registering
-    /// late must check `activated_late` afterwards and run their catch-up
-    /// inline when it is set.
+    /// Register the activation handler (see `on_activate`). At most one; a registration
+    /// after activation is never called, so late callers must check `activated_late` after.
     pub fn set_on_activate(&self, hook: Box<dyn Fn() + Send + Sync>) {
         *self
             .on_activate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
-    /// Whether a late (post-boot) activation already happened — the check for
+    /// Whether a late (post-boot) activation already happened: the check for
     /// a caller whose `set_on_activate` may have lost the race with it.
     pub fn activated_late(&self) -> bool {
         self.late_activated
@@ -471,43 +439,26 @@ impl PluginServe {
             p => u16::try_from(p).ok(),
         }
     }
-    /// Runner-backed Vite DevEnvironments serve the documents (the
-    /// Environment-API path, today the Cloudflare plugin): the Start path may
-    /// keep its SSR runner cold.
+    /// Runner-backed Vite DevEnvironments serve the documents (the Environment-API
+    /// path): the Start path may keep its SSR runner cold.
     pub fn runner_environments(&self) -> bool {
         self.state.load(std::sync::atomic::Ordering::SeqCst) & RUNNER_ENVS_BIT != 0
     }
 }
 
-/// Waits for the plugin host's late `{ ojServeInfo }` push and flips the shared
-/// [`PluginServe`] when it arrives, so a host whose init outlives the boot
-/// deadlines still activates the middleware path. Activation is a transition,
-/// not just a flag flip: `PluginServe::set` runs the registered activation
-/// handler first (start_dev re-arms its fallback runner there), and this task
-/// then sends one catch-up resync that full-reloads every runner-backed
-/// environment — covering all edits missed while the path was down. A host
-/// that never finishes initializing within the init deadline gets a loud
-/// warning instead of degrading silently.
-///
-/// The task outlives activations: a host revived after a wedge boots a fresh
-/// middleware server on a fresh port and pushes new serve info (the revive
-/// resets the watch to None first), and this same task re-points the
-/// forwarding and re-runs the catch-up resync for the edits the dead window
-/// swallowed. It exits only when the host is gone with no revives left.
+/// Flips [`PluginServe`] on the host's late `{ ojServeInfo }` push: `set` runs the
+/// activation handler, then one catch-up resync full-reloads runner-backed environments
+/// for edits missed while down. Survives revives; exits only when the host is gone for good.
 fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>) {
     tokio::spawn(async move {
         let mut updates = host.serve_info_updates();
         let mut gone = host.host_gone_updates();
         let mut warned = false;
-        // What was last applied, so a spurious wake re-applies nothing while
-        // a revived generation's genuinely new info re-activates. (A revive
-        // that lands on the SAME port is applied too when the None reset was
-        // observed; an unobserved reset with an identical port only costs the
-        // catch-up resync — forwarding already points at the new server.)
+        // Last applied info: a spurious wake re-applies nothing, while a revived
+        // generation's new info re-activates (the revive resets the watch to None first).
         let mut applied: Option<(Option<u16>, bool)> = None;
-        // Permanent death makes no watch change of its own (the final failed
-        // revive is silent), so a slow re-check bounds how long the task can
-        // pin the host after it.
+        // Permanent death makes no watch change of its own, so a slow re-check
+        // bounds how long the task can pin the host after it.
         let mut recheck = tokio::time::interval_at(
             tokio::time::Instant::now() + std::time::Duration::from_secs(60),
             std::time::Duration::from_secs(60),
@@ -527,13 +478,8 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                     println!(
                         "  plugin middleware: forwarding unmatched requests to :{p} (host came up after boot)"
                     );
-                    // The catch-up: edits made while the path was down were
-                    // never invalidated into the worker environments. The ack
-                    // means only "enqueued" (the host answers on enqueue so a
-                    // busy queue can't time the client out); "resynced" is
-                    // claimed only on the host's completion push — baseline
-                    // snapshotted BEFORE the enqueue so a fast completion is
-                    // never missed.
+                    // The ack means only "enqueued"; "resynced" is claimed only on the
+                    // host's completion push, baseline snapshotted BEFORE the enqueue.
                     let mut done = host.resync_done_updates();
                     let baseline = *done.borrow_and_update();
                     if resync_plugin_mw_with_retry(p).await {
@@ -549,13 +495,8 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                                 "oj: warning: the worker environment resync was enqueued but did not complete within {}s (invalidate queue stuck?); edits made while the plugin middleware was down may be stale until the next edit or a restart",
                                 bound.as_secs()
                             );
-                            // The warning is bounded, the queue is not: keep
-                            // the receiver alive so a resync that drains LATE
-                            // is reported with its true delay instead of the
-                            // warning reading as permanent staleness. The
-                            // host dying ends the wait (this task's Arc pins
-                            // the sender, so changed() alone can never see
-                            // the death).
+                            // Keep the receiver alive so a LATE drain is reported with its
+                            // true delay; the gone watch ends the wait (this Arc pins the sender).
                             let host = std::sync::Arc::clone(&host);
                             tokio::spawn(async move {
                                 let mut done = done;
@@ -581,11 +522,8 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                     }
                 }
             }
-            // A death only ends the task when no revive is left; a revivable
-            // host keeps it watching for the next generation's push. This
-            // task's own Arc<PluginHost> keeps the push channel's sender
-            // alive, so `updates.changed()` alone can never observe the host
-            // dying — the gone watch and the slow re-check bound the wait.
+            // A death ends the task only when no revive is left. This task's own Arc keeps
+            // the sender alive, so `updates.changed()` alone can never observe the death.
             if *gone.borrow_and_update() && !host.can_revive() {
                 if applied.is_none() {
                     eprintln!("oj: warning: the plugin host exited before initializing; plugin-served routes will not activate");
@@ -647,7 +585,7 @@ pub struct BuiltApp {
     pub plugin_serve: Arc<PluginServe>,
     pub root: PathBuf,
     pub started: Instant,
-    /// Sender for the `/__ws` broadcast — the channel the editor reads
+    /// Sender for the `/__ws` broadcast: the channel the editor reads
     /// HMR + narration frames from. The start path pushes narration here.
     pub reload_tx: broadcast::Sender<String>,
     /// The client plugin host, for the shutdown hooks (buildEnd, closeBundle).
@@ -676,9 +614,8 @@ pub async fn bind_dev_listener(
                     .as_ref()
                     .map(|a| a.ip().to_string())
                     .unwrap_or_else(|_| host.to_string());
-                // The plugin hosts' stub httpServer emits "listening" on this
-                // (Vite parity: the event means the socket really accepts,
-                // and address() reports the real bind).
+                // Plugin hosts' stub httpServer emits "listening" on this (Vite parity:
+                // the socket really accepts, address() reports the real bind).
                 plugins::dev_listener_bound(bound, &interface);
                 return Ok((listener, bound));
             }
@@ -774,8 +711,7 @@ impl DevServer {
                 &env_prefix_refs,
             );
             // Vite defines process.env.NODE_ENV in dev too (nodeEnv = NODE_ENV || mode);
-            // without it, library code that reads it throws a ReferenceError in dev.
-            // DEV/PROD follow it as well: `NODE_ENV=production vite dev` is PROD.
+            // DEV/PROD follow it: `NODE_ENV=production vite dev` is PROD.
             let node_env = oj_env::resolve_node_env(
                 std::env::var("NODE_ENV").ok().as_deref(),
                 &env,
@@ -801,9 +737,8 @@ impl DevServer {
                     defines.push((key.to_string(), node_env_json.clone()));
                 }
             }
-            // Later entries win, and the oxc replacer refuses duplicate keys
-            // outright (which would silently disable every define), so the
-            // list is deduped keeping the last occurrence.
+            // The oxc replacer refuses duplicate keys outright (silently disabling
+            // every define), so dedupe keeping the last occurrence.
             dedup_defines_last_wins(defines)
         };
         let digest_defines = |defines: &[(String, String)]| {
@@ -820,24 +755,20 @@ impl DevServer {
         let mut html_env = oj_env::html_env_map(&defines);
         let mut env_defines_digest = digest_defines(&defines);
         oj_compiler::set_import_meta_env(defines);
-        // `environments.ssr.define` layers over the shared define for SSR
-        // compiles only (Vite's per-environment define): kept out of the
-        // client list so a key defined differently per side (a
-        // "client"/"server" marker) does not leak across.
+        // `environments.ssr.define` layers over the shared define for SSR compiles only
+        // (Vite's per-environment define): a per-side key must not leak across.
         oj_compiler::set_import_meta_env_ssr(dedup_defines_last_wins(
             oj_config::environment_defines(&config, "ssr"),
         ));
 
-        // BEFORE any engine boots: children spawned by plugin hooks register
-        // here (forked deno_process spawn hook, own process group each) so
-        // restarts and shutdown can kill whole plugin-spawned trees.
+        // BEFORE any engine boots: plugin-hook children register here (own process
+        // group each) so restarts and shutdown can kill whole plugin-spawned trees.
         deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
-        // The on-disk module cache is experimental and off by default. Opt in
-        // with `oj dev --enable-cache` (or OJ_ENABLE_CACHE=1); `--no-cache`
-        // (or OJ_NO_CACHE=1) forces it off even when otherwise enabled.
+        // On-disk module cache: experimental, off by default (--enable-cache /
+        // OJ_ENABLE_CACHE=1); --no-cache / OJ_NO_CACHE=1 forces it off.
         let env_flag = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty() && v != "0");
         let cache_enabled = self.enable_cache || env_flag("OJ_ENABLE_CACHE");
         let cache_forced_off = self.no_cache || env_flag("OJ_NO_CACHE");
@@ -854,9 +785,8 @@ impl DevServer {
             .map(|(ctx, _)| proxy_context_regex(ctx))
             .collect();
 
-        // TanStack Start owns its module graph and SSR; oj runs the plugin host
-        // only to host configureServer middleware (the editor dev-server bridge),
-        // in start mode so the framework plugins' lifecycle hooks are tolerated.
+        // TanStack Start owns its module graph and SSR; oj runs the plugin host only
+        // for configureServer middleware, in start mode so lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
         let plugin_src = plugins::plugin_source(&root);
         let (plugins_path, plugins_format, plugins_label) = match plugin_src {
@@ -870,9 +800,8 @@ impl DevServer {
             None => (None, "oj", String::new()),
         };
 
-        // The environment.mode the host hands buildEnvironments, which passes
-        // it to vite.resolveConfig verbatim: the deps pre-seed child must
-        // resolve with the SAME string or its cache hashes cannot match.
+        // Handed to buildEnvironments and vite.resolveConfig verbatim: the deps
+        // pre-seed child must resolve with the SAME string or cache hashes cannot match.
         let host_env_mode = "dev";
         let mut plugin_cfg = serde_json::json!({
             "config": {
@@ -881,52 +810,34 @@ impl DevServer {
                 "mode": dev_mode,
                 "command": "serve",
                 "define": config.define,
-                // `proxy` too: for an oj-config-format app (no vite.config the
-                // host can load) this is the only place the host learns the
-                // app's `server.proxy`, so the single Node proxy can cover it.
-                // The {from,to} rewrite form crosses fine; a FUNCTION rewrite
-                // (vite-format only) rides the host's own loaded config instead.
-                // `strictPort` too: the resolved config plugins read carries
-                // oj's real values, not Vite's defaults.
+                // For an oj-config-format app this is the only place the host learns
+                // `server.proxy` ({from,to} rewrites cross; a FUNCTION rewrite rides the
+                // host's own loaded config). strictPort etc: plugins read oj's real values.
                 "server": { "port": port, "strictPort": strict_port, "host": server_cfg.host, "proxy": server_cfg.proxy },
-                // `{}` rather than null when the config has none: the host deep-merges
-                // this over the user's Vite-resolved config, and a null would erase
-                // its environments (and their per-environment `define`).
+                // `{}` rather than null: the host deep-merges this over the user's resolved
+                // config, and null would erase its environments (and per-environment define).
                 "environments": config.environments.clone().unwrap_or_default(),
             },
             "env": { "command": "serve", "mode": dev_mode },
             "environment": { "name": "client", "mode": host_env_mode },
             "pluginsFormat": plugins_format,
-            // Per-environment optimizer include extension, snapshotted by the
-            // preseed child from Vite's own prior _metadata.json (deps a
-            // plugin injects at runtime, e.g. Cloudflare's unenv polyfills,
-            // land there on commit). BOTH the child and buildEnvironments
-            // fold this same snapshot into optimizeDeps.include so the
-            // seeded metadata's configHash matches — the next cold boot then
-            // never re-optimizes in-host (which ended in server.restart()).
+            // Optimizer include snapshot from Vite's prior _metadata.json: BOTH the preseed
+            // child and buildEnvironments fold it into optimizeDeps.include so the seeded
+            // configHash matches and a cold boot never re-optimizes in-host (server.restart()).
             "preseedIncludePath": oj_cache::cache_root(&root).join("preseed-include.json").to_string_lossy(),
             "ojStartMode": is_start,
         });
         if plugins_format == "vite" {
-            // The extractor already evaluated the config (boot fails hard when
-            // a present vite.config does not extract); its verdict rides the
-            // spawn payload. The host treats TRUE as authoritative and
-            // sufficient (a host-side hook failure cannot lose the path), while
-            // FALSE falls through to the host's own declaration check — a
-            // degraded or stale verdict can then never silently disable the
-            // worker path the host itself can see declared. Omitted for oj
-            // plugin files, where no extraction ran.
+            // The extractor's verdict rides the spawn payload: TRUE is authoritative, FALSE
+            // falls through to the host's own declaration check; omitted for oj plugin files.
             plugin_cfg["runnerBacked"] = serde_json::json!(oj_config::ssr_runner_backed(&config));
         }
         let plugin_config = plugin_cfg.to_string();
         plugin_cfg["environment"]["name"] = serde_json::json!("ssr");
         let ssr_plugin_config = plugin_cfg.to_string();
-        // Optimizer quarantine: a runner-backed config boots the app's real
-        // Vite DevEnvironments inside the in-process plugin host, and a cold
-        // deps cache then runs Vite's dep optimizer — a rolldown build whose
-        // native retention is process-scoped — inside oj. Pre-seed the caches
-        // in a one-shot child first, so the host finds them warm and never
-        // builds in-process (see preseed.rs for the gate and the known gaps).
+        // Optimizer quarantine: a cold deps cache would run Vite's dep optimizer (rolldown,
+        // process-scoped native retention) inside oj; pre-seed in a one-shot child so the
+        // host finds the caches warm and never builds in-process (see preseed.rs).
         if plugins_path.is_some()
             && plugins_format == "vite"
             && oj_config::ssr_runner_backed(&config)
@@ -937,16 +848,9 @@ impl DevServer {
         let plugin_host = match plugins_path {
             Some(file) => match PluginHost::spawn(&root, &file, &plugin_config).await {
                 Ok(host) => {
-                    // Every remaining plugin may be one oj reimplements natively
-                    // (e.g. @vitejs/plugin-react -> oj does JSX/refresh in oxc). If
-                    // nothing is left after that filtering, the host is an idle
-                    // Node process sitting on the per-request/HMR path -- drop it
-                    // and serve natively. Dropping the Arc kills the process.
-                    // EXCEPT when `server.proxy` is configured: the single proxy
-                    // lives in the host's middleware stack, and a FUNCTION rewrite
-                    // (or `configure`/`bypass`) has no other place to run — keep
-                    // the already-spawned host so the proxy always has a Node home
-                    // instead of the Rust fallback silently forwarding unstripped.
+                    // Nothing left after native filtering = an idle Node process on the hot
+                    // path: drop it (dropping the Arc kills the process). EXCEPT with
+                    // `server.proxy`: a function rewrite/configure/bypass needs a Node home.
                     let keep_for_proxy = server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
                     let plugin_count = host.plugin_count().await;
                     if plugin_count == 0 && !keep_for_proxy {
@@ -954,9 +858,7 @@ impl DevServer {
                         println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
                         None
                     } else if plugin_count == 0 {
-                        // Kept only to host the single `server.proxy` (no plugins
-                        // to build): the middleware stack runs the proxy so a
-                        // function rewrite / configure / bypass has a Node home.
+                        // Kept only to host `server.proxy` in the middleware stack.
                         println!(
                             "  plugins: {plugins_label} (none active; host kept for server.proxy)"
                         );
@@ -990,12 +892,8 @@ impl DevServer {
         if let Some(p) = plugin_serve.mw_port() {
             println!("  plugin middleware: forwarding unmatched requests to :{p}");
         } else if let Some(host) = &plugin_host {
-            // No middleware port yet: either no plugin registered one, or the
-            // host's init outlived the boot deadlines (many plugins, Miniflare
-            // inside configureServer). The host pushes its serve info when its
-            // init completes — activate the middleware path then, catch the
-            // worker environments up, and never degrade silently: a host that
-            // never finishes initializing gets a loud warning.
+            // No middleware port yet: the host's init may outlive the boot deadlines.
+            // Activate on its late serve-info push; never degrade silently.
             spawn_late_plugin_serve(Arc::clone(&plugin_serve), Arc::clone(host));
         }
         if let Some(host) = &plugin_host {
@@ -1023,9 +921,8 @@ impl DevServer {
             Some(host) => host.has_module_parsed().await,
             None => false,
         };
-        // The tagger (and other jsx-override/configureServer plugins) have no
-        // transform hook, so the per-module transform RPC is a wasted full-source
-        // stdio round-trip; skip it when nothing consumes it.
+        // No transform hook (the tagger case) makes the per-module transform RPC a
+        // wasted full-source stdio round-trip; skip it when nothing consumes it.
         let plugins_have_transform = match &plugin_host {
             Some(host) => host.has_transform().await,
             None => false,
@@ -1061,10 +958,8 @@ impl DevServer {
                 .collect(),
             None => Vec::new(),
         };
-        // Prime the per-plugin filter plan (the hook_wants_* gates read it
-        // live from the host): what the coarse has_* flags above cannot
-        // express, so a filtered hook's RPC is skipped for the app modules
-        // its filter can never claim.
+        // Prime the per-plugin filter plan (hook_wants_* gates read it live): a filtered
+        // hook's RPC is skipped for app modules its filter can never claim.
         if let Some(host) = &plugin_host {
             let _ = host.build_hook_plan().await;
         }
@@ -1136,9 +1031,8 @@ impl DevServer {
         }
         let hmr_ws_path = hmr_socket_path(hmr_options.as_ref());
         let ws_token = new_ws_token();
-        // An external editor attaches to the socket from a browser page in gated
-        // mode, so the token is not demanded there (as with Vite's
-        // legacy.skipWebSocketTokenCheck).
+        // In gated mode an external editor attaches from a browser page, so the token
+        // is not demanded there (as with Vite's legacy.skipWebSocketTokenCheck).
         let ws_token_check = hmr_gate.is_none()
             && config
                 .legacy
@@ -1203,13 +1097,9 @@ impl DevServer {
             ssr_resolver: Arc::new(OjResolver::with_settings(
                 &root,
                 oj_resolver::ResolveSettings {
-                    // This resolver feeds the unbundled Node SSR path.
-                    // Conditions never cross runtimes: a runner-backed ssr
-                    // environment's list (browser + workerd from the
-                    // Cloudflare plugin, via the ssr.resolve sugar) describes
-                    // workerd, so this Node consumer takes Vite's Node server
-                    // defaults instead; otherwise the environment's own list
-                    // applies verbatim, as under Vite.
+                    // Feeds the unbundled Node SSR path. Conditions never cross runtimes:
+                    // a runner-backed ssr environment's list describes workerd, so this
+                    // Node consumer takes Vite's Node server defaults instead.
                     conditions: if oj_config::ssr_runner_backed(&config) {
                         oj_config::node_server_conditions(&config, true)
                     } else {
@@ -1245,9 +1135,7 @@ impl DevServer {
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new({
                 // Vite: `allow: raw?.fs?.allow ?? [searchForWorkspaceRoot(root)]`. The
-                // workspace root is the DEFAULT, not an addition: a user allow list
-                // replaces it (so it can narrow serving), and without one workspace
-                // packages (shared UI, fonts) are served without per-package entries.
+                // workspace root is the DEFAULT, not an addition: a user allow list replaces it.
                 match server_cfg.fs.as_ref().and_then(|f| f.allow.as_ref()) {
                     Some(allow) => allow
                         .iter()
@@ -1371,11 +1259,8 @@ impl DevServer {
                         eprintln!("oj: warmup {url}: {error}");
                     }
                 }
-                // SSR dev compiles are not cached anywhere (each /@ssr-module
-                // request re-transforms), so per-file warmup requests would be
-                // thrown away. The durable warm-up is the SSR plugin host
-                // itself: spawning it (and priming its hook plan) here moves
-                // the multi-second sidecar boot off the first real request.
+                // SSR dev compiles are not cached (each /@ssr-module re-transforms); the
+                // durable warm-up is spawning the SSR plugin host off the first request.
                 if !ssr_files.is_empty() {
                     if let Some(host) = ssr_plugin_host(&state).await {
                         let _ = host.build_hook_plan().await;
@@ -1384,12 +1269,8 @@ impl DevServer {
             });
         }
         if self.lazy {
-            // Lazy mode (Vite's default): no eager graph crawl. Modules are
-            // compiled on demand as the browser requests them, so the first
-            // paint only pays for the first route's modules instead of the whole
-            // graph up front. Mark the crawl "done" immediately so preload
-            // injection and chunk assembly never block waiting for a crawl that
-            // will not run; the module graph still fills in per request.
+            // Lazy mode (Vite's default): compile on demand. Mark the crawl "done" so
+            // preload injection and chunk assembly never block on a crawl that will not run.
             let _ = crawl_tx.send(true);
         } else {
             spawn_crawl(Arc::clone(&state), crawl_tx);
@@ -1406,11 +1287,8 @@ impl DevServer {
                 get(|| async { js(REFRESH_PREAMBLE_JS) }),
             )
             .route("/@oj/routes.js", get(serve_oj_routes))
-            // OJ_DEBUG_MEM=1: force a full V8 collection in every live
-            // engine, so memory probes measure retained heap instead of
-            // whatever V8 has not bothered to collect yet (issue #202's
-            // GC-before-measuring point, symmetric with probing a Node
-            // server through its inspector). 404 unless enabled.
+            // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
+            // probes measure retained heap (issue #202). 404 unless enabled.
             .route("/@oj/debug/gc", get(debug_gc))
             .route("/@oj/debug/mem", get(debug_mem_stats))
             .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
@@ -1429,9 +1307,8 @@ impl DevServer {
         if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
             app = app.route(&hmr_ws_path, get(ws_upgrade));
         }
-        // Layer order is reversed at request time (the last layer added runs
-        // first). Vite's middleware sequence is cors, then host validation,
-        // then proxy: proxied requests must not bypass either gate.
+        // Layer order is reversed at request time (last added runs first). Vite's
+        // sequence is cors, host validation, proxy: proxied requests bypass neither gate.
         if !state.proxy.is_empty() {
             app = app.layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
@@ -1498,10 +1375,8 @@ impl DevServer {
 }
 
 pub fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
-    // Patterns are root-relative (Vite's warmup semantics). Exclusions match
-    // against the ROOT-RELATIVE path of each walked file, so a './' spelled in
-    // either side (or a root containing glob metacharacters) can never make a
-    // positive and a negative pattern disagree about the same file.
+    // Patterns are root-relative (Vite's warmup semantics). Exclusions match the
+    // ROOT-RELATIVE walked path, so './' spellings never split positive vs negative.
     let normalize = |p: &str| p.trim_start_matches("./").to_string();
     let mut files = std::collections::BTreeSet::new();
     let mut excluded = Vec::new();
@@ -1535,18 +1410,14 @@ pub fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Vite's dev server close runs the plugin container's `buildEnd` then
-/// `closeBundle` (pluginContainer.close), so plugins that hold resources or
-/// write summaries on shutdown get to. oj has no graceful drain (HMR sockets
-/// would hold it open), so the hooks run on the signal and the process exits
-/// with the shell's conventional code; a hung plugin is cut off after a bound.
+/// Vite parity: close runs `buildEnd` then `closeBundle`. oj has no graceful drain, so
+/// the hooks run on the signal (bounded) and the process exits with the shell's code.
 async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
     #[cfg(unix)]
     let code = {
         use tokio::signal::unix::{signal, SignalKind};
-        // SIGHUP too: own-group children no longer share the terminal's
-        // session, so a closed terminal/SSH drop must be forwarded like ^C
-        // or every plugin runtime is orphaned.
+        // SIGHUP too: own-group children no longer share the terminal's session, so a
+        // closed terminal/SSH drop must be forwarded like ^C or plugin runtimes orphan.
         match (
             signal(SignalKind::terminate()),
             signal(SignalKind::hangup()),
@@ -1579,12 +1450,10 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
         .await;
     }
     // Own-group children no longer sit in the terminal's foreground group, so
-    // the signal that ends oj never reaches them — forward it.
+    // the signal that ends oj never reaches them; forward it.
     child_groups::kill_all();
     std::process::exit(code);
 }
-
-
 
 pub fn resolve_host(host: Option<&str>) -> std::net::IpAddr {
     match host {
@@ -1593,8 +1462,6 @@ pub fn resolve_host(host: Option<&str>) -> std::net::IpAddr {
         Some(h) => h.parse().unwrap_or([127, 0, 0, 1].into()),
     }
 }
-
-
 
 async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
     let root = state.root.clone();
@@ -1672,9 +1539,7 @@ async fn resolve_jsx_overrides(
     overrides
 }
 
-
-
-#[cfg(test)]
-mod tests;
 #[cfg(test)]
 mod adapter_tests;
+#[cfg(test)]
+mod tests;

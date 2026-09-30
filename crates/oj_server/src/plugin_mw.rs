@@ -30,11 +30,8 @@ pub(crate) async fn forward_to_plugin_middleware(
     }
     let status = resp.status();
     let resp_headers = resp.headers().clone();
-    // Stream the worker/plugin response through instead of buffering it. TanStack
-    // Start streams its dehydrated data (queryStream + deferred promises) into the
-    // HTML; buffering with resp.bytes() withholds the whole document until the SSR
-    // stream closes, so the client's hydration never sees it progressively. Vite
-    // pipes the worker Response body through (Readable.fromWeb); this is the same.
+    // Stream the response through (Vite pipes it): TanStack Start streams
+    // dehydrated data into the HTML; buffering breaks progressive hydration.
     let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
     *response.status_mut() = status;
     for (name, value) in resp_headers.iter() {
@@ -46,14 +43,8 @@ pub(crate) async fn forward_to_plugin_middleware(
     Some(response)
 }
 
-// Forward a GET to a plugin's configureServer middleware; returns None when the
-// middleware falls through (x-oj-fallthrough), so the caller can fall back to
-// SSR. Used by the TanStack start path, where GET requests are otherwise
-// SSR'd and would never reach editor endpoints (the dev-server bridge).
-// Tell a plugin's configureServer middleware server that source files changed,
-// so it can invalidate the DevEnvironments' module graphs and send targeted
-// HMR updates (the Cloudflare-plugin HMR path). Each change carries Vite's
-// watcher event type: "update" | "create" | "delete". Fire-and-forget.
+// Tell the plugin middleware server that files changed so it can invalidate
+// module graphs and send HMR; type is "update" | "create" | "delete". Fire-and-forget.
 pub async fn notify_plugin_mw_invalidate(port: u16, changes: &[(String, &'static str)]) {
     let client = plugin_mw_client();
     let changes: Vec<serde_json::Value> = changes
@@ -71,9 +62,8 @@ pub async fn notify_plugin_mw_invalidate(port: u16, changes: &[(String, &'static
 
 pub(crate) fn plugin_mw_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    // The endpoint answers only after the plugin hotUpdate hooks ran, and the
-    // settled-batch call blocks the watcher thread: a hung hook must not
-    // freeze rebuilds for the session, so the request is bounded.
+    // Bounded: the settled-batch call blocks the watcher thread, and a hung
+    // hotUpdate hook must not freeze rebuilds for the session.
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -82,18 +72,12 @@ pub(crate) fn plugin_mw_client() -> &'static reqwest::Client {
     })
 }
 
-/// Tell the plugin middleware to resynchronize: invalidate every runner-backed
-/// DevEnvironment's whole module graph and send a full-reload, bypassing the
-/// per-change dedup. Sent on late activation, covering every edit made while
-/// the middleware path was down (the watcher had no port to invalidate).
-/// Returns whether the middleware acknowledged the ENQUEUE: the host answers
-/// the moment the resync is on its serialized invalidate queue (guaranteed to
-/// run after everything already queued), so the ACK is fast even behind a
-/// slow queue. 202-style semantics: the ACK means only "enqueued", never
-/// "ran" — the host pushes `{ ojResyncDone }` when the resync EXECUTES, and
-/// the caller claims "resynced" only on that completion signal
-/// ([`await_resync_completion`]); a queue that never drains warns instead of
-/// logging success.
+/// Full resync: invalidate every runner-backed DevEnvironment's graph and
+/// full-reload, bypassing per-change dedup; sent on late activation to cover
+/// edits made while the middleware path was down. Returns whether the ENQUEUE
+/// was acked (202 semantics, ack means "queued" never "ran"): the host pushes
+/// `{ ojResyncDone }` when the resync EXECUTES, and only that completion
+/// justifies a "resynced" claim ([`await_resync_completion`]).
 pub async fn notify_plugin_mw_resync(port: u16) -> bool {
     match plugin_mw_client()
         .post(format!("http://127.0.0.1:{port}/__oj_invalidate"))
@@ -107,13 +91,9 @@ pub async fn notify_plugin_mw_resync(port: u16) -> bool {
     }
 }
 
-/// [`notify_plugin_mw_resync`] with a few backed-off retries: the resync races
-/// the host's middleware server settling in, and a transient failure must not
-/// leave the degraded window's edits silently stale. The host ACKs on enqueue
-/// and coalesces duplicates (a pending resync absorbs them), so retrying is
-/// safe — it can never stack full-reloads — and a client timeout means only
-/// "enqueue unconfirmed", which the next attempt settles either way. `false`
-/// after the last attempt — the caller then warns instead of logging success.
+/// [`notify_plugin_mw_resync`] with backed-off retries: the host coalesces
+/// duplicate resyncs, so retrying never stacks full-reloads; `false` after the
+/// last attempt makes the caller warn instead of logging success.
 pub async fn resync_plugin_mw_with_retry(port: u16) -> bool {
     for delay in [
         std::time::Duration::ZERO,
@@ -130,12 +110,8 @@ pub async fn resync_plugin_mw_with_retry(port: u16) -> bool {
     false
 }
 
-/// Waits for the host's resync-executed signal — the `{ ojResyncDone }`
-/// counter moving past the `baseline` snapshotted BEFORE the enqueue (so a
-/// completion racing ahead of this wait is never missed, and one push may
-/// answer several coalesced enqueues) — bounded, so a stuck invalidate queue
-/// turns into a caller warning rather than an eternal wait or a false
-/// "resynced" claim off the enqueue ack.
+/// Wait, bounded, for `{ ojResyncDone }` to pass the pre-enqueue `baseline`;
+/// a completion racing ahead is never missed, one push may answer coalesced enqueues.
 pub async fn await_resync_completion(
     done: &mut tokio::sync::watch::Receiver<u64>,
     baseline: u64,
@@ -155,19 +131,8 @@ pub async fn await_resync_completion(
     .unwrap_or(false)
 }
 
-// Method+body version of forward_get_to_plugin_mw, for the /_serverFn/ path so
-// server functions reach a Cloudflare plugin's worker (Miniflare) like documents
-// do, instead of running in the Node runner without the real runtime/bindings.
-/// Proxy one request to a loopback HTTP service (the plugin middleware server or
-/// the Start SSR runner) and stream its response back. Bodies are passed as
-/// bytes, so binary uploads and responses survive; the original `Host` travels
-/// as `x-oj-host` (see `loopback_request_headers`) so the service can build the
-/// app's own absolute URLs.
-/// Stream the response through instead of buffering it: TanStack Start streams
-/// its dehydrated data (queryStream + deferred promises) into the HTML, and
-/// buffering withholds the whole document until the SSR stream closes, so the
-/// client's hydration never sees it progressively. Vite pipes the Response body
-/// through (Readable.fromWeb); this is the same.
+/// Proxy one request to a loopback service and stream the response back
+/// (buffering breaks progressive hydration); Host travels as `x-oj-host`.
 pub async fn proxy_to_loopback(
     port: u16,
     method: &str,
@@ -178,16 +143,11 @@ pub async fn proxy_to_loopback(
     proxy_to_loopback_streaming(port, method, path_and_query, headers, body.map(Body::from)).await
 }
 
-/// The headers a request forwarded to a loopback service (the plugin middleware
-/// server, the Start SSR runner) carries. hyper writes the loopback `Host`
-/// itself, so the browser's `Host` travels as `x-oj-host` and the service
-/// rebuilds `Host` from it. Only the first `Host` is taken: Node discards
-/// duplicate `Host` headers and keeps the first, so a joined value would never
-/// reach an app under Vite. A proxy's own `x-forwarded-host` passes through
-/// untouched, as under Vite where the app reads it next to the dev server's
-/// `Host`; sending it as `x-forwarded-host` too made Node join the two into
-/// `proxy-host, localhost:port`, which no URL parser accepts. An incoming
-/// `x-oj-host` is dropped so a client cannot spoof it.
+/// Headers forwarded to a loopback service: hyper writes the loopback `Host`
+/// itself, so the browser's `Host` travels as `x-oj-host` (first value only,
+/// Node semantics). A proxy's `x-forwarded-host` passes through untouched as
+/// under Vite; duplicating it made Node join values into an unparseable URL.
+/// An incoming `x-oj-host` is dropped so a client cannot spoof it.
 pub fn loopback_request_headers(
     headers: &HeaderMap,
 ) -> Vec<(header::HeaderName, header::HeaderValue)> {

@@ -2,27 +2,8 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! Optimizer quarantine: pre-seed Vite's per-environment deps caches in a
-//! one-shot child so the plugin host never runs a dep optimization — a
-//! rolldown `build()` whose napi binding retains native memory at PROCESS
-//! scope (only exit releases it) — inside oj's own process.
-//!
-//! A runner-backed config makes the host build the app's real Vite
-//! DevEnvironments; a cold cache then makes Vite optimize in-host. The child
-//! (`oj start-script` + `optimize-env.mjs`) runs the SAME optimization with
-//! the app's own Vite, so the cache it writes is hash-identical to what the
-//! in-host check expects; the host then loads it and skips its pass.
-//!
-//! Cold/warm is decided without imitating Vite's hashes: Vite's own code (in
-//! the child) does all hash work, and Rust only detects change since the last
-//! seed — the extraction cache freshness (config inputs), a lockfile stamp
-//! (Rust-to-Rust comparison), and a digest of each seeded metadata file. Every
-//! failure mode of this gate leans cold, whose only cost is running the child,
-//! which performs Vite's exact check anyway.
-//!
-//! Known gaps, on purpose: a mid-session re-optimization (lockfile edit while
-//! serving, a discovery environment finding new deps) still runs in-host, and
-//! `optimizeDeps.force` re-optimizes in-host regardless of any seed. Both
-//! degrade to today's behavior, never to breakage.
+//! one-shot child (rolldown's napi build retains native memory until process
+//! exit) so the plugin host loads a hash-identical cache and skips its own pass.
 
 use std::path::{Path, PathBuf};
 
@@ -41,14 +22,11 @@ fn stamp_key() -> String {
     )
 }
 
-/// The manager-identifying lockfiles, in Vite's own lockfileFormats order
-/// (optimizer/index.ts), with the manager each one implies and a
-/// representative version: (path, manager, version). Most specific first:
-/// bun before yarn because a bun install can be configured to ALSO emit a
-/// yarn.lock, never the reverse; rush is pnpm under the hood; the yarn
-/// version split is classic (yarn.lock) vs berry (its node_modules state
-/// file). Shared with the `npm_config_user_agent` preset in the oj binary so
-/// this mapping and the change-stamp below can never drift apart silently.
+/// Manager-identifying lockfiles in Vite's lockfileFormats order: (path, manager,
+/// representative version). Most specific first: bun before yarn (a bun install
+/// can also emit yarn.lock, never the reverse); rush is pnpm; yarn splits classic
+/// vs berry. Shared with the npm_config_user_agent preset so this mapping and the
+/// change-stamp below can never drift apart silently.
 pub const PACKAGE_MANAGER_LOCKFILES: &[(&str, &str, &str)] = &[
     ("node_modules/.pnpm/lock.yaml", "pnpm", "9.0.0"),
     ("pnpm-lock.yaml", "pnpm", "9.0.0"),
@@ -61,12 +39,8 @@ pub const PACKAGE_MANAGER_LOCKFILES: &[(&str, &str, &str)] = &[
     ("package-lock.json", "npm", "10.0.0"),
 ];
 
-/// Files that stand in for "the installed dependency tree changed". A
-/// superset of Vite's own lockfile lookup on purpose (everything in
-/// [`PACKAGE_MANAGER_LOCKFILES`] plus formats with no manager mapping):
-/// this stamp is only compared against itself, so extra sensitivity can at
-/// worst re-run the child (which then performs Vite's exact freshness check
-/// and exits).
+/// "Dependency tree changed" markers, a deliberate superset of Vite's lookup:
+/// the stamp is only compared to itself, so extra sensitivity at worst re-runs the child.
 const LOCKFILE_CANDIDATES: &[&str] = &[
     "node_modules/.pnpm/lock.yaml",
     "node_modules/.package-lock.json",
@@ -125,10 +99,8 @@ fn stamp_path(root: &Path) -> PathBuf {
     oj_cache::cache_root(root).join(STAMP_FILE)
 }
 
-/// Whether the last seed still covers this boot: same oj/script, same
-/// dependency tree, and every seeded metadata file untouched since (the
-/// in-host optimizer rewriting one — a mid-session re-optimization — reads
-/// as cold, so the next boot re-seeds and self-heals the stamp).
+/// Whether the last seed covers this boot: same oj/script, same dependency tree,
+/// every seeded metadata untouched (an in-host rewrite reads cold and self-heals next boot).
 pub(crate) fn stamp_is_warm(root: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(stamp_path(root)) else {
         return false;
@@ -226,10 +198,8 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
     let report = cache.join(REPORT_FILE);
     let _ = std::fs::remove_file(&report);
     let exe = std::env::current_exe()?;
-    // The one-shot `oj start-script` child (the client-rebundle pattern): a
-    // fresh embedded engine in a process of its own, whose exit is what
-    // releases rolldown's native retention. The env pairs travel on stdin
-    // (argv would print values in `ps`).
+    // One-shot `oj start-script` child: its exit releases rolldown's native
+    // retention. Env pairs travel on stdin (argv would print values in `ps`).
     let mut child = tokio::process::Command::new(exe)
         .arg("start-script")
         .env("OJ_PARENT_PID", std::process::id().to_string())
@@ -253,9 +223,8 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
                 "OJ_PRESEED_REPORT".into(),
                 report.to_string_lossy().into_owned(),
             ),
-            // Include-extension snapshot (see lib.rs preseedIncludePath):
-            // this child writes it from Vite's prior metadata, then both it
-            // and the host fold the same file into optimizeDeps.include.
+            // Include-extension snapshot (lib.rs preseedIncludePath): the child
+            // writes it; both it and the host fold it into optimizeDeps.include.
             (
                 "OJ_PRESEED_INCLUDE".into(),
                 oj_cache::cache_root(root)
@@ -288,10 +257,8 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
     parse_report(&raw).ok_or_else(|| anyhow::anyhow!("child reported an incomplete seed"))
 }
 
-/// Pre-seed the deps caches Vite would otherwise build inside the plugin
-/// host. Called only for runner-backed vite configs, before the host spawns.
-/// Failure is never fatal: the host's own optimizer remains the fallback
-/// (correctness over memory), with one warning.
+/// Pre-seed the deps caches for runner-backed vite configs, before the host
+/// spawns. Failure is never fatal: the host's own optimizer remains the fallback.
 pub(crate) async fn preseed_server_deps(root: &Path, env_mode: &str) {
     if std::env::var("OJ_NO_DEPS_PRESEED").is_ok_and(|v| !v.is_empty() && v != "0") {
         return;
@@ -322,10 +289,8 @@ pub(crate) async fn preseed_server_deps(root: &Path, env_mode: &str) {
 mod tests {
     use super::*;
 
-    // The trigger's cold side: no stamp, a bad key, a moved lockfile, or a
-    // touched metadata file each read as cold; the warm side needs all of
-    // them intact. Cold is always safe (the child performs Vite's own exact
-    // check), so these pin the sensitivity, not just the happy path.
+    // No stamp, a bad key, a moved lockfile, or touched metadata each read as
+    // cold; cold is always safe, so these pin the sensitivity.
     #[test]
     fn stamp_warm_requires_key_lockstamp_and_metadata() {
         let dir = tempfile::tempdir().unwrap();
@@ -411,9 +376,8 @@ mod tests {
         assert_eq!(lockfile_stamp(bare.path()), "none");
     }
 
-    // The child's report is trusted only when whole: a failed or malformed
-    // report yields no seed list, so no stamp is written and the next boot
-    // stays cold.
+    // A failed or malformed report yields no seed list, so no stamp is written
+    // and the next boot stays cold.
     #[test]
     fn report_parsing_rejects_failed_or_malformed() {
         assert!(parse_report("{\"seeded\":[],\"failed\":true}").is_none());

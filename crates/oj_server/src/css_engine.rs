@@ -2,10 +2,8 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! In-process CSS toolchain: Tailwind/PostCSS, Less/Stylus and Svelte compiles
-//! run on an embedded JS engine ([`oj_js::JsEngine`]) resolving the app's own
-//! node_modules, replacing the former node sidecar processes. One lazily
-//! spawned engine per kind, so a plain app pays for nothing and a Tailwind
-//! scan never queues behind a Svelte compile.
+//! run on embedded JS engines resolving the app's own node_modules (replacing
+//! the node sidecars). One lazily spawned engine per kind.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -28,25 +26,17 @@ const SVELTE_JS: &str = include_str!("assets/svelte-compile.mjs");
 /// package itself, so the host prints the "is X installed?" hint.
 const MISSING_PACKAGE_MARKER: &str = "OJ_MISSING_PACKAGE ";
 
-/// One CSS compile kind (tailwind/postcss, less/stylus, or svelte) backed by
-/// its own engine. Spawn lazily: the engine thread and V8 isolate exist only
-/// once a request of that kind arrives.
-///
-/// The isolate carries the same heap cap as the plugin host (the toolchains
-/// it runs are app-controlled JS, and Tailwind's config loader is a known
-/// per-compile module leak), and the cap degrades the same way: the running
-/// compile fails with the memory-limit error while the engine is replaced
-/// with a fresh one, so the NEXT compile runs on a clean heap instead of the
-/// doubled-cap heap the unwind left behind. Callers hold this struct in
-/// once-cells; the swap lives inside so every one of them heals.
+/// One CSS compile kind (tailwind/postcss, less/stylus, or svelte) on its own
+/// lazily spawned engine. The isolate carries the plugin host's heap cap
+/// (Tailwind's config loader is a known per-compile module leak): a memory-limit
+/// failure fails the running compile and swaps in a fresh engine, so the NEXT
+/// compile runs on a clean heap. Callers hold this struct in once-cells; the
+/// swap lives inside so every one of them heals.
 pub struct CssEngine {
     /// Generation-stamped so concurrent memory-limit failures revive once.
     /// Compiles hold the read guard across the whole engine call on purpose:
-    /// the alternative (clone an Arc<JsEngine> under a short lock and call
-    /// outside it) lets a replaced engine's isolate be dropped from an async
-    /// context by whichever compile finishes last. The cost is that a
-    /// straggler compile can hold revive's write lock out until its own
-    /// deadline; acceptable for compiles that are normally sub-second.
+    /// cloning an Arc under a short lock would let a replaced engine's isolate
+    /// be dropped from an async context by whichever compile finishes last.
     engine: tokio::sync::RwLock<(u64, JsEngine)>,
     root: PathBuf,
     script: String,
@@ -54,10 +44,8 @@ pub struct CssEngine {
     kind: &'static str,
     deadline: Duration,
     memory_limit_bytes: usize,
-    /// Plugin-host parity for the replacement engine too: bounded attempts
-    /// with spacing, so an app that legitimately needs more heap than the cap
-    /// degrades to failing compiles instead of booting a fresh V8 isolate per
-    /// keystroke forever.
+    /// Plugin-host parity: bounded revive attempts with spacing, so an app that
+    /// outgrows the cap fails compiles instead of respawning isolates forever.
     revive_attempts: std::sync::atomic::AtomicU32,
     last_revive: std::sync::Mutex<Option<std::time::Instant>>,
     /// The PostCSS config path `find_postcss_config` located, handed to the
@@ -110,10 +98,8 @@ impl CssEngine {
         .await
     }
 
-    /// `memory_limit_bytes` is a plain usize on purpose: `EngineConfig`'s
-    /// own field is an Option whose None means uncapped, and an uncapped CSS
-    /// engine is the bug this struct exists to prevent — the type makes it
-    /// unwritable here. Production callers pass [`shared_memory_limit`].
+    /// A plain usize on purpose: `EngineConfig`'s None means uncapped, the bug
+    /// this struct exists to prevent. Production callers pass [`shared_memory_limit`].
     async fn spawn(
         root: &Path,
         name: &str,
@@ -164,13 +150,8 @@ impl CssEngine {
             .map_err(|e| EngineError::Boot(e.to_string()))?
     }
 
-    /// Replaces the engine after a memory-limit (or closed-engine) failure,
-    /// unless another failing call already did: the generation stamp makes
-    /// concurrent losers no-ops. The failing call still reports its error;
-    /// only the NEXT compile runs on the fresh heap — plugin-host semantics,
-    /// including its attempt limit and spacing (an app whose compile
-    /// legitimately outgrows the cap fails its compiles instead of respawning
-    /// isolates per keystroke forever).
+    /// Replace the engine after a memory-limit/closed failure; the generation
+    /// stamp makes concurrent losers no-ops. Attempt limit and spacing match the plugin host.
     async fn revive(&self, seen_generation: u64, trigger: &EngineError) {
         use std::sync::atomic::Ordering;
         let attempts = self.revive_attempts.load(Ordering::SeqCst);
@@ -229,9 +210,8 @@ impl CssEngine {
         self.request(css, from, options, true).await
     }
 
-    /// Compiles from an absolute file path (the build and the Start host know
-    /// the file, not a served url). `dev` reaches the svelte compiler's
-    /// `dev`/`hmr` flags.
+    /// Compiles from an absolute file path (build and Start host know the file,
+    /// not a url). `dev` reaches the svelte compiler's `dev`/`hmr` flags.
     pub async fn compile_path(
         &self,
         css: &str,
@@ -285,9 +265,8 @@ impl CssEngine {
     }
 }
 
-/// The one heap cap for every embedded engine: the plugin host's Node-parity
-/// resolution (OJ_PLUGIN_MEMORY_MB, then NODE_OPTIONS --max-old-space-size,
-/// then 4096MB).
+/// The one heap cap for every embedded engine: OJ_PLUGIN_MEMORY_MB, then
+/// NODE_OPTIONS --max-old-space-size, then 4096MB.
 fn shared_memory_limit() -> usize {
     crate::plugins::plugin_host_memory_mb() * 1024 * 1024
 }
@@ -467,11 +446,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_blown_heap_fails_the_compile_and_the_next_one_runs_fresh() {
-        // The engine carries the plugin host's heap cap; a toolchain that
-        // eats the whole heap (Tailwind's per-compile config-module leak is
-        // the production shape) must fail THAT compile with the memory-limit
-        // error and leave a fresh engine behind, not a wedged doubled-cap
-        // isolate that grows to the node's ceiling.
+        // A toolchain that eats the whole heap must fail THAT compile with the
+        // memory-limit error and leave a fresh engine, not a wedged doubled-cap isolate.
         let root = app_root();
         stub_less(
             root.path(),

@@ -110,10 +110,8 @@ pub(crate) async fn serve_path(
                 if let Some(resp) = serve_plugin_load_fallback(&state, &uri).await {
                     return resp;
                 }
-                // Vite's htmlFallback: `/dir/` serves `dir/index.html` and `/page`
-                // serves `page.html` when they exist; only appType `spa` then
-                // falls back to the root index.html, and `custom` serves no html
-                // of its own.
+                // Vite's htmlFallback: `/dir/` serves dir/index.html, `/page` serves
+                // page.html; only appType `spa` then falls back to the root index.html.
                 if state.app_type != "custom" && accepts_html_fallback(&headers) {
                     if let Some(page) = html_fallback_candidate(rel)
                         .and_then(|c| locate(&state.root, state.public_dir.as_deref(), &c))
@@ -139,10 +137,8 @@ pub(crate) async fn serve_path(
     }
 
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-    // A publicDir file is served verbatim, never through the compile pipeline
-    // (Vite's servePublicMiddleware runs before transform): a public service
-    // worker or vendored script keeps its bytes. Only an explicit asset query
-    // (`?url`, `?raw`, `?inline`) still yields a module.
+    // A publicDir file is served verbatim, never compiled (Vite's servePublicMiddleware
+    // runs before transform); only an explicit asset query still yields a module.
     let in_public = state
         .public_dir
         .as_deref()
@@ -177,9 +173,8 @@ pub(crate) async fn serve_path(
         let direct = q.is_some_and(|q| q.split('&').any(|kv| kv == "direct"));
         let import_query = q.is_some_and(|q| q.split('&').any(|kv| kv == "import"));
         if direct || (wants_raw_resource(&headers) && !import_query) {
-            // `<link href>`, `fetch()` of a `?url` stylesheet, or `?direct`: the
-            // compiled CSS text (Sass/Less/PostCSS/Tailwind applied), not the
-            // preprocessor source and not the JS wrapper.
+            // `<link href>`, fetch() of a `?url` stylesheet, or `?direct`: compiled
+            // CSS text, not the preprocessor source and not the JS wrapper.
             return serve_css_direct(&state, &file, &url).await;
         }
         return serve_css_wrapper(&state, &file, &url).await;
@@ -199,12 +194,8 @@ pub(crate) async fn serve_path(
         let url = format!("{}?react", url_of(&state.root, &file));
         return serve_compiled(&state, &file, &url, None, &headers).await;
     }
-    // A plain `.svg` import (no `?react`, no `?url`) goes through the compile path so
-    // a configured `vite-plugin-svgr` can turn it into a React component (this app
-    // sets svgrOptions.exportType "default" + an include list, so every matching svg
-    // is imported as `import Icon from "./x.svg"`). serve_compiled runs the svgr
-    // transform; svgs the plugin does not match fall back to a URL asset there. A raw
-    // browser request (the Accept header wants the image) still serves the file.
+    // A plain `.svg` import goes through the compile path so a configured svgr can
+    // componentize it; unmatched svgs fall back to a URL asset there.
     if ext.eq_ignore_ascii_case("svg")
         && query_asset_kind(uri.query()).is_none()
         && !wants_raw_resource(&headers)
@@ -326,12 +317,8 @@ pub(crate) async fn serve_compiled(
     query: Option<&str>,
     headers: &HeaderMap,
 ) -> Response {
-    // Key and transform per full url incl. query: the same file yields different
-    // modules per query (TanStack router `?tsr-shared`/`?tsr-split` variants), so
-    // the query must reach ensure_module's cache key and the plugin transform id.
-    // The HMR cache-buster `t=<timestamp>` is not part of the module's identity,
-    // though: it is stripped so a re-fetched module keys (and registers in the
-    // graph) as itself, and freshness comes from the graph's HMR stamps instead.
+    // Key and transform per full url incl. query (the same file yields per-query
+    // variants), but the HMR `t=` buster is stripped: not part of module identity.
     let base_url = url;
     let url_with_query = match query {
         Some(q) => strip_hmr_timestamp(&format!("{url}?{q}")),
@@ -373,10 +360,8 @@ pub(crate) async fn serve_compiled(
     if module.kind != "svelte" {
         let ctx_predefined = module.hot.is_some();
         if ctx_predefined {
-            // The module reads import.meta.hot itself: define the context before
-            // its body runs. The refresh glue below then REUSES it (its own
-            // import would re-declare `__oj_createHotContext` — a SyntaxError
-            // that kills the module).
+            // The module reads import.meta.hot itself: define the context before its
+            // body runs; the refresh glue below REUSES it (a re-declare is a SyntaxError).
             let full = match query {
                 Some(q) if !q.is_empty() => format!("{base_url}?{q}"),
                 _ => base_url.to_string(),
