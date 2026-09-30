@@ -334,6 +334,9 @@ struct ServerState {
     /// compares across dev server restarts.
     started_at_ms: u64,
     hmr_enabled: bool,
+    /// The CLI's `--config` file (resolved against root), for the lazily
+    /// spawned SSR host's plugin-source pick.
+    config_file: Option<PathBuf>,
     /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
     /// Start, addon keeper); every long-lived spawn joins it.
     engine_registry: oj_js::EngineRegistry,
@@ -746,14 +749,15 @@ impl DevServer {
             .canonicalize()
             .with_context(|| format!("app root not found: {}", self.root.display()))?;
 
-        if let Some(cfg) = &self.config {
-            let cfg = if cfg.is_absolute() {
+        // The CLI's --config, resolved against the app root; threaded to every
+        // config read instead of parked in a global.
+        let config_file: Option<PathBuf> = self.config.as_ref().map(|cfg| {
+            if cfg.is_absolute() {
                 cfg.clone()
             } else {
                 root.join(cfg)
-            };
-            plugins::set_vite_config_override(cfg);
-        }
+            }
+        });
 
         boot_phase("build_app begin");
         prepare_cache_root(&root);
@@ -764,8 +768,14 @@ impl DevServer {
             .unwrap_or_else(|| "development".to_string());
         let mut config =
             oj_config::load_with(&root, "serve", &dev_mode).map_err(|e| anyhow::anyhow!("{e}"))?;
-        plugins::adopt_vite_config_values(&mut config, &root, "serve", &dev_mode)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        plugins::adopt_vite_config_values(
+            &mut config,
+            &root,
+            config_file.as_deref(),
+            "serve",
+            &dev_mode,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
         boot_phase("vite config values adopted");
 
         // Feed optimizeDeps.include/exclude/needsInterop into partial bundling so
@@ -880,7 +890,7 @@ impl DevServer {
         // only to host configureServer middleware (the editor dev-server bridge),
         // in start mode so the framework plugins' lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
-        let plugin_src = plugins::plugin_source(&root);
+        let plugin_src = plugins::plugin_source(&root, config_file.as_deref());
         let (plugins_path, plugins_format, plugins_label) = match plugin_src {
             Some(plugins::PluginSource::OjPlugins(p)) => {
                 let label = p.file_name().unwrap().to_string_lossy().into_owned();
@@ -1222,6 +1232,7 @@ impl DevServer {
         };
         let state = Arc::new(ServerState {
             persistent_cache,
+            config_file: config_file.clone(),
             engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
@@ -2159,7 +2170,7 @@ async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<Plug
     let host = state
         .plugins_ssr
         .get_or_init(|| async {
-            let file = match plugins::plugin_source(&state.root)? {
+            let file = match plugins::plugin_source(&state.root, state.config_file.as_deref())? {
                 plugins::PluginSource::OjPlugins(p) | plugins::PluginSource::ViteConfig(p) => p,
             };
             // Lazy spawn (first SSR request): the short init-wait policy, so a

@@ -94,16 +94,12 @@ pub enum PluginSource {
     ViteConfig(std::path::PathBuf),
 }
 
-static VITE_CONFIG_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-pub fn set_vite_config_override(path: std::path::PathBuf) {
-    let _ = VITE_CONFIG_OVERRIDE.set(path);
-}
-
+/// `config` is the CLI's `--config` file (already resolved against the app
+/// root); named, it replaces Vite's default probe entirely.
 #[inline]
-pub fn vite_config_file(root: &Path) -> Option<std::path::PathBuf> {
-    if let Some(p) = VITE_CONFIG_OVERRIDE.get() {
-        return p.is_file().then(|| p.clone());
+pub fn vite_config_file(root: &Path, config: Option<&Path>) -> Option<std::path::PathBuf> {
+    if let Some(p) = config {
+        return p.is_file().then(|| p.to_path_buf());
     }
     // Vite's DEFAULT_CONFIG_FILES order (constants.ts): the first that exists
     // wins, so a root with several config files picks the same one Vite does.
@@ -121,14 +117,14 @@ pub fn vite_config_file(root: &Path) -> Option<std::path::PathBuf> {
 }
 
 #[inline]
-pub fn plugin_source(root: &Path) -> Option<PluginSource> {
-    if VITE_CONFIG_OVERRIDE.get().is_some() {
-        return vite_config_file(root).map(PluginSource::ViteConfig);
+pub fn plugin_source(root: &Path, config: Option<&Path>) -> Option<PluginSource> {
+    if config.is_some() {
+        return vite_config_file(root, config).map(PluginSource::ViteConfig);
     }
     if let Some(p) = plugins_file(root) {
         return Some(PluginSource::OjPlugins(p));
     }
-    vite_config_file(root).map(PluginSource::ViteConfig)
+    vite_config_file(root, config).map(PluginSource::ViteConfig)
 }
 
 #[derive(Debug, Default)]
@@ -430,14 +426,20 @@ fn run_engine_job_subprocess(
 /// branches on both, so a build must be extracted as a build: evaluating it as
 /// `serve`/`development` silently picks the dev branch of `base`, `define`,
 /// `build.outDir` and friends in production output.
-pub fn extract_vite_values(root: &Path, command: &str, mode: &str) -> Option<ViteValues> {
-    extract_vite_values_with(root, command, mode, true)
+pub fn extract_vite_values(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+) -> Option<ViteValues> {
+    extract_vite_values_with(root, config, command, mode, true)
 }
 
 /// `mode_explicit`: false when `mode` is only the command's default (no CLI
 /// `--mode`), which lets a `mode` named in the config file win, as in Vite.
 fn extract_vite_values_with(
     root: &Path,
+    config: Option<&Path>,
     command: &str,
     mode: &str,
     mode_explicit: bool,
@@ -453,7 +455,7 @@ fn extract_vite_values_with(
         format!("{mode}@default")
     };
     let mode_key = mode_key.as_str();
-    let vite = vite_config_file(root)?;
+    let vite = vite_config_file(root, config)?;
     let store = extraction_store(root);
     if let Some(hit) = store.lookup(&vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
@@ -726,17 +728,18 @@ fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
 pub fn adopt_vite_config_values(
     config: &mut oj_config::OjConfig,
     root: &Path,
+    config_file: Option<&Path>,
     command: &str,
     mode: &str,
 ) -> Result<(), String> {
-    let Some(v) = extract_vite_values(root, command, mode) else {
+    let Some(v) = extract_vite_values(root, config_file, command, mode) else {
         // No vite.config is fine: nothing to adopt. A vite.config that exists but
         // failed to evaluate is not: Vite fails hard here ("failed to load config
         // from ..."), and silently carrying on would build or serve with defaults
         // the app never asked for. An explicit oj.plugins file takes precedence over
         // vite.config (the extractor skips it then), so only the vite path is an
         // error. The extractor has already printed the underlying cause to stderr.
-        if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
+        if let Some(named) = config_file {
             if !named.is_file() {
                 return Err(format!(
                     "failed to load config from {}: --config names a file that does not exist",
@@ -745,7 +748,7 @@ pub fn adopt_vite_config_values(
             }
         }
         if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root) {
+            if let Some(path) = vite_config_file(root, config_file) {
                 return Err(format!("failed to load config from {}", path.display()));
             }
         }
@@ -761,13 +764,14 @@ pub fn adopt_vite_config_values(
 pub fn adopt_vite_config_values_default_mode(
     config: &mut oj_config::OjConfig,
     root: &Path,
+    config_file: Option<&Path>,
     command: &str,
     mode: &str,
 ) -> Result<(), String> {
-    let Some(v) = extract_vite_values_with(root, command, mode, false) else {
+    let Some(v) = extract_vite_values_with(root, config_file, command, mode, false) else {
         // Same rule as `adopt_vite_config_values`: a present vite.config that
         // failed to evaluate is an error, a missing one is nothing to adopt.
-        if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
+        if let Some(named) = config_file {
             if !named.is_file() {
                 return Err(format!(
                     "failed to load config from {}: --config names a file that does not exist",
@@ -776,7 +780,7 @@ pub fn adopt_vite_config_values_default_mode(
             }
         }
         if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root) {
+            if let Some(path) = vite_config_file(root, config_file) {
                 return Err(format!("failed to load config from {}", path.display()));
             }
         }
@@ -3231,7 +3235,7 @@ mod vite_values_tests {
             std::fs::create_dir_all(&root).unwrap();
             let path = root.join(format!("vite.config.{extension}"));
             std::fs::write(&path, "module.exports = {};").unwrap();
-            assert_eq!(vite_config_file(&root), Some(path));
+            assert_eq!(vite_config_file(&root, None), Some(path));
             std::fs::remove_dir_all(&root).unwrap();
         }
     }
@@ -4423,13 +4427,13 @@ export default [{
         }
         for ext in order {
             assert_eq!(
-                vite_config_file(&root),
+                vite_config_file(&root, None),
                 Some(root.join(format!("vite.config.{ext}"))),
                 "with every later format present, .{ext} wins"
             );
             std::fs::remove_file(root.join(format!("vite.config.{ext}"))).unwrap();
         }
-        assert_eq!(vite_config_file(&root), None);
+        assert_eq!(vite_config_file(&root, None), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4963,7 +4967,7 @@ mod engine_extraction_tests {
         let _g = lock();
         let dir = app(r#"export default { base: "/app/", server: { port: 5199 } };"#);
         let root = dir.path();
-        let v = extract_vite_values_with(root, "serve", "development", true)
+        let v = extract_vite_values_with(root, None, "serve", "development", true)
             .expect("a valid config extracts");
         assert_eq!(v.base.as_deref(), Some("/app/"));
         assert_eq!(v.port, Some(5199));
@@ -4994,7 +4998,7 @@ mod engine_extraction_tests {
         let dir = app("throw new Error('config exploded');\nexport default {};");
         let root = dir.path();
         assert!(
-            extract_vite_values_with(root, "serve", "development", true).is_none(),
+            extract_vite_values_with(root, None, "serve", "development", true).is_none(),
             "a config that fails to evaluate must never parse as empty values"
         );
         assert!(
@@ -5005,7 +5009,7 @@ mod engine_extraction_tests {
         );
         // ...and the adopt seam surfaces it as the load error Vite gives.
         let mut config = oj_config::OjConfig::default();
-        let err = adopt_vite_config_values(&mut config, root, "serve", "development")
+        let err = adopt_vite_config_values(&mut config, root, None, "serve", "development")
             .expect_err("a present-but-broken vite.config is an error");
         assert!(err.contains("failed to load config"), "{err}");
     }
@@ -5021,7 +5025,7 @@ export default { base };"#);
             "export const base = \"/dep/\";\n",
         )
         .unwrap();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/dep/"));
         let hit = extraction_store(root)
             .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -5047,7 +5051,7 @@ export default { base: a.base + b.base };"#);
         let root = dir.path();
         std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
         std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
-        let result = extract_vite_values_with(root, "serve", "development", true);
+        let result = extract_vite_values_with(root, None, "serve", "development", true);
         std::env::remove_var("OJ_OBSERVED_READS_MAX");
         let v = result.expect("the result is still served");
         assert_eq!(v.base.as_deref(), Some("/a/b"));
@@ -5066,7 +5070,7 @@ export default { base: a.base + b.base };"#);
         let dir = app("await new Promise(() => {});\nexport default {};");
         let root = dir.path();
         let started = std::time::Instant::now();
-        let result = extract_vite_values_with(root, "serve", "development", true);
+        let result = extract_vite_values_with(root, None, "serve", "development", true);
         std::env::remove_var("OJ_EXTRACT_TIMEOUT");
         assert!(result.is_none(), "a wedged config evaluation is a failure");
         assert!(
@@ -5085,7 +5089,7 @@ export default { base: a.base + b.base };"#);
         let dir = app("setInterval(() => {}, 1000);\nexport default { base: \"/live/\" };");
         let root = dir.path();
         let started = std::time::Instant::now();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/live/"));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
@@ -5101,7 +5105,7 @@ process.stderr.write("direct stderr write\n");
 console.log("stdout is swallowed");
 export default { base: "/loud/" };"#);
         let root = dir.path();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/loud/"));
         let hit = extraction_store(root)
             .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -5124,7 +5128,7 @@ export default { base: "/loud/" };"#);
         let dir = app(r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
 export default { base: "/env/" };"#);
         let root = dir.path();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/env/"));
         assert!(
             std::env::var("OJ_EXTRACT_LEAK_PROBE").is_err(),
@@ -5168,7 +5172,7 @@ export default { base: "/env/" };"#);
             "import { port } from \"./shared\";\nexport default { base: \"/ts/\" as const, server: { port } };\n",
         )
         .unwrap();
-        let v = extract_vite_values_with(root, "serve", "development", true)
+        let v = extract_vite_values_with(root, None, "serve", "development", true)
             .expect("the TS config loads through the esbuild fallback");
         assert_eq!(v.base.as_deref(), Some("/ts/"));
         assert_eq!(v.port, Some(5321));

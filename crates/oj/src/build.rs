@@ -2226,6 +2226,7 @@ fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, json: &str)
 }
 
 async fn user_plugin_host(
+    config_file: Option<&Path>,
     root: &Path,
     base: &str,
     define: &serde_json::Value,
@@ -2233,7 +2234,8 @@ async fn user_plugin_host(
     env_name: &str,
     mode: &str,
 ) -> Option<Arc<PluginHost>> {
-    let (file, plugins_format, label) = match oj_server::plugins::plugin_source(root)? {
+    let (file, plugins_format, label) = match oj_server::plugins::plugin_source(root, config_file)?
+    {
         oj_server::plugins::PluginSource::OjPlugins(p) => {
             let label = p.file_name().unwrap().to_string_lossy().into_owned();
             (p, "oj", label)
@@ -2309,9 +2311,9 @@ pub struct CliOptions {
     /// `--ssrManifest [name]`
     pub ssr_manifest: Option<String>,
     pub watch: bool,
+    /// `--config`, resolved against the app root.
+    pub config: Option<PathBuf>,
 }
-
-static CLI_OPTIONS: std::sync::OnceLock<CliOptions> = std::sync::OnceLock::new();
 
 /// Vite's cac turns `--flag` into `true` and `--flag false` into `false`; a
 /// bare `--manifest` selects the default file name.
@@ -2326,13 +2328,7 @@ fn cli_bool_or_str(v: &str) -> oj_config::BoolOrString {
 /// Layer the CLI options over a loaded config. Every build stage that reloads
 /// the config (SSR, client entry, server functions) applies the same layer, so
 /// `--base` and friends reach each of them.
-fn apply_cli_options(config: &mut oj_config::OjConfig) {
-    if let Some(cli) = CLI_OPTIONS.get() {
-        apply_cli_options_from(config, cli);
-    }
-}
-
-fn apply_cli_options_from(config: &mut oj_config::OjConfig, cli: &CliOptions) {
+fn apply_cli_options(config: &mut oj_config::OjConfig, cli: &CliOptions) {
     if let Some(base) = &cli.base {
         config.base = Some(base.clone());
     }
@@ -2424,7 +2420,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         bail!("oj build --watch is not supported yet; run `oj build` again after changes, or use `oj dev`");
     }
     let ssr = cli.ssr.clone();
-    let _ = CLI_OPTIONS.set(cli);
 
     // Vite: `mode = inlineConfig.mode || config.mode || "production"`; when the
     // config file itself names a mode and the CLI did not, the config is loaded
@@ -2436,6 +2431,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         oj_server::plugins::adopt_vite_config_values_default_mode(
             &mut config,
             &root,
+            cli.config.as_deref(),
             "build",
             &mode_owned,
         )
@@ -2444,14 +2440,26 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             mode_owned = m;
             config = oj_config::load_with(&root, "build", &mode_owned)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            oj_server::plugins::adopt_vite_config_values(&mut config, &root, "build", &mode_owned)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            oj_server::plugins::adopt_vite_config_values(
+                &mut config,
+                &root,
+                cli.config.as_deref(),
+                "build",
+                &mode_owned,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
         }
     } else {
-        oj_server::plugins::adopt_vite_config_values(&mut config, &root, "build", &mode_owned)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        oj_server::plugins::adopt_vite_config_values(
+            &mut config,
+            &root,
+            cli.config.as_deref(),
+            "build",
+            &mode_owned,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
     }
-    apply_cli_options(&mut config);
+    apply_cli_options(&mut config, &cli);
     warn_unsupported_build_options(&config);
     let mode: &str = &mode_owned;
     let build_cfg = config.build.clone().unwrap_or_default();
@@ -2487,6 +2495,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             sourcemap,
             build_cfg.prerender.clone(),
             empty_out_dir,
+            &cli,
         )
         .await;
     }
@@ -2615,6 +2624,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         Arc::new(Mutex::new(std::collections::HashSet::new()));
     let css_split = css_code_split_of(&config);
     let plugin_host = user_plugin_host(
+        cli.config.as_deref(),
         &root,
         &base,
         &serde_json::json!(config.define),
@@ -3826,6 +3836,7 @@ pub(crate) async fn build_ssr(
     entry: &str,
     mode: &str,
     sourcemap: oj_config::Sourcemap,
+    cli: &CliOptions,
 ) -> anyhow::Result<()> {
     use rolldown::{IsExternal, Platform};
 
@@ -3846,9 +3857,15 @@ pub(crate) async fn build_ssr(
 
     let mut config =
         oj_config::load_with(root, "build", mode).map_err(|e| anyhow::anyhow!("{e}"))?;
-    oj_server::plugins::adopt_vite_config_values(&mut config, root, "build", mode)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    apply_cli_options(&mut config);
+    oj_server::plugins::adopt_vite_config_values(
+        &mut config,
+        root,
+        cli.config.as_deref(),
+        "build",
+        mode,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    apply_cli_options(&mut config, cli);
     let loaded_env = oj_env::load(&env_dir_of(root, &config), mode);
     let env_prefixes = env_prefixes_of(&config);
     let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
@@ -3856,6 +3873,7 @@ pub(crate) async fn build_ssr(
     let is_production = node_env == "production";
     let ssr_base = config.base.clone().unwrap_or_else(|| "/".into());
     let plugin_host = user_plugin_host(
+        cli.config.as_deref(),
         root,
         &ssr_base,
         &serde_json::json!(config.define),
@@ -4055,13 +4073,24 @@ fn has_server_modules(root: &Path) -> bool {
     walk(&root.join("src"))
 }
 
-async fn build_server_fns(root: &Path, out_dir: &Path, mode: &str) -> anyhow::Result<()> {
+async fn build_server_fns(
+    root: &Path,
+    out_dir: &Path,
+    mode: &str,
+    cli: &CliOptions,
+) -> anyhow::Result<()> {
     use rolldown::{IsExternal, Platform};
     let mut config =
         oj_config::load_with(root, "build", mode).map_err(|e| anyhow::anyhow!("{e}"))?;
-    oj_server::plugins::adopt_vite_config_values(&mut config, root, "build", mode)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    apply_cli_options(&mut config);
+    oj_server::plugins::adopt_vite_config_values(
+        &mut config,
+        root,
+        cli.config.as_deref(),
+        "build",
+        mode,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    apply_cli_options(&mut config, cli);
     let node_env = oj_env::resolve_node_env(
         shell_node_env().as_deref(),
         &oj_env::load(&env_dir_of(root, &config), mode),
@@ -4354,19 +4383,20 @@ pub(crate) async fn build_ssr_app(
     sourcemap: oj_config::Sourcemap,
     prerender: Option<Vec<String>>,
     empty_out_dir: Option<bool>,
+    cli: &CliOptions,
 ) -> anyhow::Result<()> {
     prepare_out_dir(root, out_dir, empty_out_dir)?;
 
-    build_ssr(root, out_dir, entry, mode, sourcemap).await?;
+    build_ssr(root, out_dir, entry, mode, sourcemap, cli).await?;
 
     let Some(client_entry) = derive_client_entry(root, entry) else {
         println!("oj build (ssr): server bundle only (no *-client sibling to hydrate)");
         return Ok(());
     };
     let (js, css) =
-        build_client_entry(root, out_dir, &client_entry, mode, minify, sourcemap).await?;
+        build_client_entry(root, out_dir, &client_entry, mode, minify, sourcemap, cli).await?;
 
-    build_server_fns(root, out_dir, mode).await?;
+    build_server_fns(root, out_dir, mode, cli).await?;
     if has_server_modules(root) {
         println!(
             "  {:>9}  _oj_server_fns.mjs",
@@ -4426,6 +4456,7 @@ async fn build_client_entry(
     mode: &str,
     minify: bool,
     sourcemap: oj_config::Sourcemap,
+    cli: &CliOptions,
 ) -> anyhow::Result<(String, Option<String>)> {
     let entry_import = if entry.starts_with('.') {
         entry.to_string()
@@ -4441,9 +4472,15 @@ async fn build_client_entry(
 
     let mut config =
         oj_config::load_with(root, "build", mode).map_err(|e| anyhow::anyhow!("{e}"))?;
-    oj_server::plugins::adopt_vite_config_values(&mut config, root, "build", mode)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    apply_cli_options(&mut config);
+    oj_server::plugins::adopt_vite_config_values(
+        &mut config,
+        root,
+        cli.config.as_deref(),
+        "build",
+        mode,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    apply_cli_options(&mut config, cli);
     let loaded_env = oj_env::load(&env_dir_of(root, &config), mode);
     let env_prefixes = env_prefixes_of(&config);
     let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
@@ -4452,6 +4489,7 @@ async fn build_client_entry(
     let client_base = normalize_base(config.base.as_deref().unwrap_or("/"));
     let assets_dir = oj_config::build_assets_dir(&config);
     let plugin_host = user_plugin_host(
+        cli.config.as_deref(),
         root,
         &client_base,
         &serde_json::json!(config.define),
@@ -6343,6 +6381,7 @@ mod tests {
             "server.js",
             "production",
             oj_config::Sourcemap::Off,
+            &CliOptions::default(),
         )
         .await
         .expect("ssr build");
@@ -6620,6 +6659,7 @@ mod tests {
             "server.js",
             "staging",
             oj_config::Sourcemap::Off,
+            &CliOptions::default(),
         )
         .await
         .expect("ssr build");
@@ -6785,7 +6825,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        apply_cli_options_from(&mut config, &cli);
+        apply_cli_options(&mut config, &cli);
         assert_eq!(config.base.as_deref(), Some("/app/"));
         let b = config.build.as_ref().unwrap();
         assert_eq!(b.out_dir.as_deref(), Some("build-out"));
