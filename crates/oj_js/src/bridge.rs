@@ -1,26 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! The JS→Rust bridge for a hooked engine (the in-process plugin host):
-//! a push channel and a synchronous ctx-RPC callback, installed as plain
-//! globals on the worker before any module runs.
+//! The JS→Rust bridge for a hooked engine (the in-process plugin host),
+//! installed as plain globals on the worker before any module runs:
+//! `globalThis.__oj_post(json)` delivers parsed JSON on the engine's
+//! [`EngineHooks::post`] channel; `globalThis.__oj_rpc(method, argsJson)`
+//! calls [`EngineHooks::rpc`] synchronously ON the isolate thread and returns
+//! the result's JSON text (or `null`, or throws with the handler's error).
 //!
-//! `globalThis.__oj_post(json)` parses the string and delivers it on the
-//! engine's [`EngineHooks::post`] channel — the in-process replacement for a
-//! sidecar's control-plane stdout pushes. A value return cannot be spliced by
-//! a plugin's `console.log`, so none of the line-framing (control tokens,
-//! re-push-until-ACK) survives the move.
-//!
-//! `globalThis.__oj_rpc(method, argsJson)` calls [`EngineHooks::rpc`]
-//! synchronously ON the isolate thread and returns the result's JSON text (or
-//! `null`, or throws with the handler's error). The handlers oj installs are
-//! plain synchronous functions (resolver lookups, a file read + compile), so
-//! a sync op keeps the whole reverse-RPC reply machinery out of the protocol.
-//!
-//! Both callbacks find their state in thread-locals: the crate's invariant is
-//! one isolate per thread, so the thread IS the engine identity, and no
-//! deno_core extension (with its snapshot/ops-visibility constraints) is
-//! needed.
+//! Both callbacks find their state in thread-locals: one isolate per thread
+//! is the crate's invariant, so the thread IS the engine identity, and no
+//! deno_core extension is needed.
 
 use std::cell::RefCell;
 use std::sync::Arc;

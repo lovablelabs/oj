@@ -2,15 +2,11 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! The module-host seam: a pluggable, async authority the engine consults
-//! before its own byonm loader.
-//!
-//! A [`ModuleHost`] resolves import specifiers and serves module code — the
-//! role oj's dev server plays for SSR modules (transform pipelines, virtual
-//! modules, invalidation via version-stamped specifiers). Implementations are
-//! ordinary async code: the engine's loader lives inside the isolate thread's
-//! current-thread runtime, so it never awaits host futures directly. Instead
-//! every call is spawned onto the tokio runtime the engine was created from
-//! (see [`HostBridge`]) and the reply travels back over a channel.
+//! before its own byonm loader. A [`ModuleHost`] resolves import specifiers
+//! and serves module code — the role oj's dev server plays for SSR modules.
+//! Host futures never run on the isolate thread; every call is spawned onto
+//! the tokio runtime the engine was created from (see [`HostBridge`]) and the
+//! reply travels back over a channel.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -63,13 +59,11 @@ pub trait ModuleHost: Send + Sync + 'static {
 }
 
 /// Runs [`ModuleHost`] futures on the runtime the engine was spawned from and
-/// ferries replies to the engine thread.
-///
-/// deno_core's `ModuleLoader::resolve` is synchronous and runs on the isolate
-/// thread while its event loop is being polled, so `resolve_blocking` parks
-/// that thread on a plain channel (never `block_on`); the host future runs
-/// elsewhere, on the multi-thread runtime, so this cannot self-deadlock.
-/// `load` is consulted from the loader's async path and awaits normally.
+/// ferries replies to the engine thread. deno_core's `ModuleLoader::resolve`
+/// is synchronous on the isolate thread, so `resolve_blocking` parks that
+/// thread on a plain channel (never `block_on`) while the host future runs on
+/// the multi-thread runtime — it cannot self-deadlock. `load` is async and
+/// awaits normally.
 #[derive(Clone)]
 pub(crate) struct HostBridge {
     runtime: tokio::runtime::Handle,

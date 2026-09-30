@@ -1,25 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! Persistent V8 code cache for the engine: compiled-bytecode blobs for the
-//! modules an engine loads from disk (an app's toolchain — a bundler's JS
-//! wrapper, a config's plugin graph — is megabytes of JS re-parsed by every
-//! one-shot child otherwise). One file per module under a caller-chosen
-//! directory (version-keyed by the caller), `[u64 source hash][data]`, so a
-//! changed source misses instead of executing stale bytecode. Reads and
-//! writes are best-effort: a broken or read-only cache only costs the speedup.
-//!
-//! Serves all three compile paths:
-//! - ES modules: the loader attaches [`deno_core::SourceCodeCacheInfo`] to
-//!   each `ModuleSource` and persists through `code_cache_ready`.
-//! - CJS (`require`): deno_runtime's eval-context callbacks, wired through
-//!   `WorkerServiceOptions::v8_code_cache` ([`CodeCache`] below).
-//! - Residual lazy ext scripts: the loader's `get_code_cache` hook.
-//!
-//! The same store also backs deno_resolver's [`NodeAnalysisCache`]: CJS
-//! export analysis parses every CommonJS module with swc before any V8
-//! compile exists to cache, so on a big toolchain the analysis is a repeat
-//! cost of its own.
+//! Persistent V8 code cache: one file per on-disk module,
+//! `[u64 source hash][data]`, so a changed source misses instead of executing
+//! stale bytecode. Best-effort: a broken or read-only cache only costs the
+//! speedup. Serves all three compile paths — ES modules (the loader's
+//! `SourceCodeCacheInfo` + `code_cache_ready`), CJS `require`
+//! (`WorkerServiceOptions::v8_code_cache`), and residual lazy ext scripts
+//! (`get_code_cache`) — plus deno_resolver's [`NodeAnalysisCache`], whose swc
+//! CJS-export analysis is a repeat cost of its own.
 
 use std::hash::Hasher;
 use std::path::PathBuf;
@@ -35,16 +24,12 @@ pub struct FsCodeCache {
     dir: PathBuf,
 }
 
-/// The compatibility key callers should partition persistent engine caches by
-/// (`EngineConfig::code_cache_dir`): the V8 version, which is the bytecode
-/// ABI. Keying on the embedder's own release version cold-started every
-/// engine on every version bump; a release that upgrades no engine crate now
-/// keeps the whole warm cache. Correctness never rests on this key: each
-/// entry embeds its source hash (below), V8 itself rejects cached data from a
-/// different V8 build or flag set, and the CJS-analysis entries fail
-/// deserialization on a shape change -- all graceful misses. The key is
-/// housekeeping, keeping incompatible generations from mixing in one
-/// directory as dead weight.
+/// The key callers partition persistent engine caches by: the V8 version,
+/// which is the bytecode ABI. Keying on the embedder's release version
+/// cold-started every engine on every version bump. Correctness never rests
+/// on this key — entries embed a source hash and V8 rejects foreign
+/// bytecode — it only keeps incompatible generations from piling up as dead
+/// weight.
 pub fn engine_abi_key() -> String {
     format!("v8-{}", deno_core::v8::VERSION_STRING)
 }
@@ -69,14 +54,12 @@ impl FsCodeCache {
         hash64(source)
     }
 
-    /// The entry key strips the volatile cache-busting params (`v`, `t`) from
-    /// the specifier: a host-served module carries `?v=N`, bumped on every
-    /// edit, so keying on the raw URL wrote one permanently unreachable entry
-    /// per edit (measured tens of GB on long-lived checkouts) and never hit.
-    /// Keyed per module instead, an edit overwrites in place — the embedded
-    /// source hash already guards staleness — and an unedited module hits
-    /// across restarts. Intent params (`?url`, `?raw`) stay in the key: their
-    /// compiled forms differ.
+    /// The entry key strips the volatile cache-busting params (`v`, `t`):
+    /// keying on the raw URL wrote one unreachable entry per edit (tens of GB
+    /// on long-lived checkouts). An edit overwrites in place — the embedded
+    /// source hash guards staleness — and an unedited module hits across
+    /// restarts. Intent params (`?url`, `?raw`) stay: their compiled forms
+    /// differ.
     fn entry_key(specifier: &Url) -> u64 {
         if specifier.query().is_none() && specifier.fragment().is_none() {
             return hash64(specifier.as_str().as_bytes());
@@ -126,12 +109,10 @@ impl FsCodeCache {
         if std::fs::create_dir_all(&self.dir).is_err() {
             return;
         }
-        // Atomic publish: a concurrent reader sees either the old entry or
-        // the new one, never a torn half-write. The tmp name carries a
-        // process-wide sequence beside the pid: worker threads share this
-        // cache within one process (a pool compiling the same hot module
-        // races), so a pid-only suffix would let two threads write the same
-        // tmp path and rename a torn file into place.
+        // Atomic publish: write-then-rename, so a concurrent reader never
+        // sees a torn half-write. The tmp name carries a process-wide
+        // sequence beside the pid: worker threads share this cache, and a
+        // pid-only suffix let two threads rename a torn file into place.
         static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp = path.with_extension(format!("tmp{}-{seq}", std::process::id()));
@@ -151,11 +132,9 @@ impl FsCodeCache {
         self.put_entry(specifier, Self::kind_suffix(kind), source_hash, data);
     }
 
-    /// Removes torn-write leftovers (`.tmp*` files) older than `max_age` —
-    /// Vite's boot hygiene for its deps cache (cleanupDepsCacheStaleDirs,
-    /// 24h), applied to this cache's atomic-publish temp files. Live tmp
-    /// files from a concurrent engine are younger than any sane age and
-    /// survive.
+    /// Removes torn-write leftovers (`.tmp*` files) older than `max_age`:
+    /// Vite's deps-cache boot hygiene (cleanupDepsCacheStaleDirs, 24h). Live
+    /// tmp files from a concurrent engine are younger and survive.
     pub fn sweep_stale_tmp(&self, max_age: std::time::Duration) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return;

@@ -229,11 +229,9 @@ impl ModuleLoader for EngineModuleLoader {
         Some(path.is_file())
     }
 
-    /// Persists freshly compiled bytecode. Reached from both cached compile
-    /// paths that ride the loader — ES modules (`load` supplied the
-    /// `SourceCodeCacheInfo`) and residual ext scripts (`get_code_cache`
-    /// did) — and `hash` is the source hash the supplier computed, so the
-    /// entry validates against exactly the source it was compiled from.
+    /// Persists freshly compiled bytecode for both loader-riding compile
+    /// paths (`load`'s ESM info, `get_code_cache`'s ext scripts); `hash` is
+    /// the supplier's source hash, so get and put always agree on it.
     fn code_cache_ready(
         &self,
         module_specifier: ModuleSpecifier,
