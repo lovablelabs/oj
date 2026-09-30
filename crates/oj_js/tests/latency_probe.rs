@@ -121,8 +121,8 @@ fn probe_call_round_trip() {
             let calls: Vec<_> = (0..256)
                 .map(|_| engine.call("mod.mjs", "park", vec![10.into()], deadline))
                 .collect();
-            for call in calls {
-                call.await.unwrap();
+            for result in deno_core::futures::future::join_all(calls).await {
+                result.unwrap();
             }
             let wall = t0.elapsed().as_millis();
             println!("256 concurrent 10ms-parked calls (deadline {deadline:?}): {wall}ms wall");
