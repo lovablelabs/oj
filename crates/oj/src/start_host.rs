@@ -1483,6 +1483,7 @@ impl ScriptEngine {
 fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::EngineError> {
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
+    config.registry = Some(host.bridge.engine_registry());
     JsEngine::spawn(config, Some(Arc::clone(host) as Arc<dyn ModuleHost>), None)
 }
 

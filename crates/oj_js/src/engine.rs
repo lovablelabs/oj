@@ -97,8 +97,14 @@ impl JsEngine {
         };
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
+        // Unbounded on purpose: every caller awaits its reply before it can
+        // send again, so queue depth is bounded by caller concurrency; a
+        // capacity would only add an artificial stall. The scheduler polls
+        // the receiver inside its tick, which rules out std::sync::mpsc.
         let (tx, rx) = mpsc::unbounded_channel();
-        ENGINES.lock().unwrap().push(tx.downgrade());
+        if let Some(registry) = &config.registry {
+            registry.register(&tx);
+        }
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("oj-js-engine".into())
@@ -225,41 +231,63 @@ impl Drop for JsEngine {
     }
 }
 
-/// Every live engine's job sender, registered WEAK at spawn: the process-wide
-/// fan-out for the memory-probing GC reaches every engine, including ones
-/// added later, without a hand-enumerated field list. Weak is load-bearing:
-/// an engine thread exits when its job channel closes and `JsEngine::drop`
-/// JOINS that thread, so a strong sender here would deadlock every drop.
-static ENGINES: Mutex<Vec<mpsc::WeakUnboundedSender<Job>>> = Mutex::new(Vec::new());
+/// The engines a memory probe can fan a GC over. A cloneable handle the
+/// embedder owns (oj: one per dev server, behind its debug endpoint); engines
+/// join through [`crate::EngineConfig::registry`], so respawns and revives
+/// re-register themselves without the owner keeping a list.
+///
+/// Senders are held WEAK: an engine thread exits when its job channel closes
+/// and `JsEngine::drop` JOINS that thread, so a strong sender here would
+/// deadlock every drop. A plain mutexed Vec on purpose — a handful of
+/// entries, touched at spawn and probe time only — pruned on register so
+/// respawn churn cannot grow it past the live set.
+#[derive(Clone, Default)]
+pub struct EngineRegistry {
+    engines: Arc<Mutex<Vec<mpsc::WeakUnboundedSender<Job>>>>,
+}
 
-/// Force a full V8 collection in every live engine and return how many
-/// acknowledged having RUN it within `wait` (shared across engines). Blocking:
-/// async callers go through spawn_blocking.
-pub fn collect_all_garbage(wait: Duration) -> usize {
-    let senders: Vec<mpsc::WeakUnboundedSender<Job>> = ENGINES.lock().unwrap().clone();
-    let mut acks = Vec::new();
-    for weak in &senders {
-        let Some(tx) = weak.upgrade() else { continue };
-        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-        if tx.send(Job::Gc { reply: ack_tx }).is_ok() {
-            acks.push(ack_rx);
-        }
+impl std::fmt::Debug for EngineRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EngineRegistry({} slots)", lock(&self.engines).len())
     }
-    let deadline = std::time::Instant::now() + wait;
-    let mut collected = 0usize;
-    for rx in acks {
-        let left = deadline
-            .saturating_duration_since(std::time::Instant::now())
-            .max(Duration::from_millis(1));
-        if rx.recv_timeout(left).is_ok() {
-            collected += 1;
-        }
+}
+
+impl EngineRegistry {
+    pub fn new() -> EngineRegistry {
+        EngineRegistry::default()
     }
-    ENGINES
-        .lock()
-        .unwrap()
-        .retain(|weak| weak.upgrade().is_some_and(|tx| !tx.is_closed()));
-    collected
+
+    fn register(&self, tx: &mpsc::UnboundedSender<Job>) {
+        let mut engines = lock(&self.engines);
+        engines.retain(|weak| weak.upgrade().is_some_and(|tx| !tx.is_closed()));
+        engines.push(tx.downgrade());
+    }
+
+    /// Force a full V8 collection in every registered live engine and return
+    /// how many acknowledged having RUN it within `wait` (shared across
+    /// engines). Blocking: async callers go through spawn_blocking.
+    pub fn collect_garbage(&self, wait: Duration) -> usize {
+        let senders: Vec<mpsc::WeakUnboundedSender<Job>> = lock(&self.engines).clone();
+        let mut acks = Vec::new();
+        for weak in &senders {
+            let Some(tx) = weak.upgrade() else { continue };
+            let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+            if tx.send(Job::Gc { reply: ack_tx }).is_ok() {
+                acks.push(ack_rx);
+            }
+        }
+        let deadline = std::time::Instant::now() + wait;
+        let mut collected = 0usize;
+        for rx in acks {
+            let left = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .max(Duration::from_millis(1));
+            if rx.recv_timeout(left).is_ok() {
+                collected += 1;
+            }
+        }
+        collected
+    }
 }
 
 fn init_v8_platform_once() {

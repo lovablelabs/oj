@@ -77,29 +77,21 @@ impl Drop for Watchdog {
 
 fn run(shared: &Shared, handle: &v8::IsolateHandle) {
     let mut state = lock(&shared.state);
-    loop {
-        if state.shutdown {
-            return;
-        }
-        // Fire every deadline that has passed — under the lock, so a
-        // concurrent disarm reads a settled verdict.
+    while !state.shutdown {
+        // Fire the earliest due deadline or wait for it — firing holds the
+        // lock, so a concurrent disarm reads a settled verdict.
         let now = Instant::now();
-        let mut due = false;
-        while let Some(entry) = state.armed.first_entry() {
-            if entry.key().0 > now {
-                break;
+        state = match state.armed.first_key_value().map(|(&key, _)| key) {
+            Some((at, _)) if at <= now => {
+                let (_, fired) = state.armed.pop_first().unwrap();
+                fired.store(true, Ordering::SeqCst);
+                handle.terminate_execution();
+                state
             }
-            entry.remove().store(true, Ordering::SeqCst);
-            due = true;
-        }
-        if due {
-            handle.terminate_execution();
-        }
-        state = match state.armed.keys().next().map(|&(at, _)| at) {
-            Some(next) => {
+            Some((at, _)) => {
                 shared
                     .cv
-                    .wait_timeout(state, next.saturating_duration_since(now))
+                    .wait_timeout(state, at.saturating_duration_since(now))
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0
             }

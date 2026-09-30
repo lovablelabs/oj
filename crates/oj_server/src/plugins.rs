@@ -1459,6 +1459,9 @@ struct BootContext {
     /// The engine heap cap every generation is spawned with (see
     /// `plugin_host_memory_mb`).
     memory_limit_bytes: usize,
+    /// Rides into every generation's engine (and the addon keeper), so the
+    /// debug GC fan-out keeps reaching this host across respawns.
+    registry: Option<oj_js::EngineRegistry>,
 }
 
 /// See [`PluginHost::revive`].
@@ -1573,16 +1576,22 @@ const ADDON_KEEPER_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 /// best-effort: the keeper exists to hold registrations, and one addon that
 /// fails to require must not cost the others their keeper. The require cache
 /// makes repeat loads of the same addon free.
-async fn keep_addons_alive(root: &Path, addons: &[PathBuf]) -> Result<(), String> {
+async fn keep_addons_alive(
+    root: &Path,
+    addons: &[PathBuf],
+    registry: Option<oj_js::EngineRegistry>,
+) -> Result<(), String> {
     let engine = {
         let mut keeper = ADDON_KEEPER.lock().unwrap();
         match &*keeper {
             Some(engine) => std::sync::Arc::clone(engine),
             None => {
-                let engine = std::sync::Arc::new(
-                    oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root), None, None)
-                        .map_err(|e| format!("keeper engine failed to spawn: {e}"))?,
-                );
+                let engine = std::sync::Arc::new({
+                    let mut config = oj_js::EngineConfig::new(root);
+                    config.registry = registry;
+                    oj_js::JsEngine::spawn(config, None, None)
+                        .map_err(|e| format!("keeper engine failed to spawn: {e}"))?
+                });
                 *keeper = Some(std::sync::Arc::clone(&engine));
                 engine
             }
@@ -1826,6 +1835,7 @@ impl PluginHost {
         root: &Path,
         plugins_file: &Path,
         config_json: &str,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         Self::spawn_with_policy(
             root,
@@ -1833,6 +1843,7 @@ impl PluginHost {
             config_json,
             false,
             SpawnTimeouts::default(),
+            registry,
         )
         .await
     }
@@ -1845,6 +1856,7 @@ impl PluginHost {
         root: &Path,
         plugins_file: &Path,
         config_json: &str,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         Self::spawn_with_policy(
             root,
@@ -1852,6 +1864,7 @@ impl PluginHost {
             config_json,
             true,
             SpawnTimeouts::default(),
+            registry,
         )
         .await
     }
@@ -1874,6 +1887,7 @@ impl PluginHost {
                 init_wait: Some(init_wait),
                 ..Default::default()
             },
+            None,
         )
         .await
     }
@@ -1887,7 +1901,7 @@ impl PluginHost {
         lazy: bool,
         timeouts: SpawnTimeouts,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_with_policy(root, plugins_file, config_json, lazy, timeouts).await
+        Self::spawn_with_policy(root, plugins_file, config_json, lazy, timeouts, None).await
     }
 
     async fn spawn_with_policy(
@@ -1896,6 +1910,7 @@ impl PluginHost {
         config_json: &str,
         lazy: bool,
         timeouts: SpawnTimeouts,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
 
@@ -1937,6 +1952,7 @@ impl PluginHost {
                 memory_limit_bytes: timeouts
                     .memory
                     .unwrap_or_else(|| plugin_host_memory_mb() * 1024 * 1024),
+                registry,
             },
             revive: Mutex::new(ReviveState {
                 generation: 0,
@@ -2002,6 +2018,7 @@ impl PluginHost {
         let mut engine_config = oj_js::EngineConfig::new(&root);
         engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
         engine_config.memory_limit_bytes = Some(host.boot.memory_limit_bytes);
+        engine_config.registry = host.boot.registry.clone();
         let engine = oj_js::JsEngine::spawn(
             engine_config,
             None,
@@ -2580,6 +2597,7 @@ impl PluginHost {
             } else {
                 revive.last = Some(std::time::Instant::now());
                 let root = self.boot.root.clone();
+                let registry = self.boot.registry.clone();
                 // The abandon rides a Drop guard: a cancelled task (runtime
                 // shutdown mid-keeper) must still abandon, or the engine
                 // Arc's drop would JOIN a possibly-wedged isolate thread.
@@ -2594,7 +2612,7 @@ impl PluginHost {
                 let guard = AbandonOnDrop(Some(engine));
                 tokio::spawn(async move {
                     let _guard = guard;
-                    if let Err(e) = keep_addons_alive(&root, &addons).await {
+                    if let Err(e) = keep_addons_alive(&root, &addons, registry).await {
                         eprintln!(
                             "oj: native-addon keeper unavailable ({e}); a plugin host respawn that would re-register an orphaned addon will be refused"
                         );
@@ -3548,6 +3566,7 @@ mod vite_values_tests {
                 PathBuf::from("/nonexistent/fake-binding.node"),
                 PathBuf::from("/also/missing.node"),
             ],
+            None,
         )
         .await
         .expect("the keeper load is best effort");
@@ -4185,7 +4204,7 @@ export default [{
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
             .await
             .expect("the embedded engine spawns");
         let delta = host.env_delta().await;
@@ -4255,7 +4274,7 @@ export default [{
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
             .await
             .expect("the embedded engine spawns");
         let (a, b, c, d) = tokio::join!(
@@ -4305,7 +4324,7 @@ export default [{
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
             .await
             .expect("the embedded engine spawns");
         let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel(16);

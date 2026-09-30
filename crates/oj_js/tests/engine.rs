@@ -776,34 +776,43 @@ async fn code_cache_persists_and_later_engines_still_run() {
     assert_eq!(value, serde_json::json!("hello fresh"));
 }
 
-/// Regression: the GC registry (collect_all_garbage) holds only WEAK job
-/// senders. A strong entry keeps the dropped engine's channel open, its
-/// thread never exits, and drop's join hangs the caller — a one-shot config
-/// extraction then wedges its whole build for the extract timeout.
+/// Regression: an [`oj_js::EngineRegistry`] holds only WEAK job senders.
+/// A strong entry keeps the dropped engine's channel open, its thread never
+/// exits, and drop's join hangs the caller — a one-shot config extraction
+/// then wedges its whole build for the extract timeout.
 #[test]
-fn dropping_an_engine_is_not_blocked_by_the_gc_registry() {
+fn dropping_an_engine_is_not_blocked_by_its_registry() {
     let root = app_root();
+    let registry = oj_js::EngineRegistry::new();
     let done = std::sync::mpsc::channel();
     let path = root.path().to_path_buf();
+    let handle = registry.clone();
     std::thread::spawn(move || {
-        let engine = JsEngine::spawn(EngineConfig::new(&path), None, None).unwrap();
+        let mut config = EngineConfig::new(&path);
+        config.registry = Some(handle);
+        let engine = JsEngine::spawn(config, None, None).unwrap();
         drop(engine);
         let _ = done.0.send(());
     });
     done.1
         .recv_timeout(Duration::from_secs(20))
-        .expect("engine drop deadlocked: the gc registry is keeping the job channel open");
+        .expect("engine drop deadlocked: the registry is keeping the job channel open");
 }
 
-/// The fan-out reaches a live engine and reports it collected; a dropped
-/// engine is pruned rather than counted.
+/// The fan-out reaches a live registered engine and reports it collected; a
+/// dropped engine is pruned rather than counted.
 #[test]
-fn collect_all_garbage_counts_only_live_engines() {
+fn registry_gc_counts_only_live_engines() {
     let root = app_root();
-    let engine = JsEngine::spawn(EngineConfig::new(root.path()), None, None).unwrap();
-    assert!(oj_js::collect_all_garbage(Duration::from_secs(10)) >= 1);
+    let registry = oj_js::EngineRegistry::new();
+    let mut config = EngineConfig::new(root.path());
+    config.registry = Some(registry.clone());
+    let engine = JsEngine::spawn(config, None, None).unwrap();
+    assert_eq!(registry.collect_garbage(Duration::from_secs(10)), 1);
     drop(engine);
-    // No hang and no phantom count from this test's engine. Other tests run
-    // in parallel and may hold engines, so only assert it returns.
-    let _ = oj_js::collect_all_garbage(Duration::from_secs(10));
+    assert_eq!(
+        registry.collect_garbage(Duration::from_secs(10)),
+        0,
+        "a dropped engine must be pruned, not counted"
+    );
 }

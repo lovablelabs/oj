@@ -332,9 +332,13 @@ pub async fn start_dev(
         });
     }
     let css_host = if app_uses_tailwind(&root) {
-        oj_server::css_engine::CssEngine::tailwind(&root, oj_server::css_engine::START_DEADLINE)
-            .await
-            .ok()
+        oj_server::css_engine::CssEngine::tailwind(
+            &root,
+            oj_server::css_engine::START_DEADLINE,
+            Some(built.ssr.engine_registry()),
+        )
+        .await
+        .ok()
     } else {
         None
     };

@@ -334,6 +334,9 @@ struct ServerState {
     /// compares across dev server restarts.
     started_at_ms: u64,
     hmr_enabled: bool,
+    /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
+    /// Start, addon keeper); every long-lived spawn joins it.
+    engine_registry: oj_js::EngineRegistry,
     plugins: Option<std::sync::Arc<PluginHost>>,
     plugin_serve: Arc<PluginServe>,
     plugins_ssr: tokio::sync::OnceCell<Option<std::sync::Arc<PluginHost>>>,
@@ -953,51 +956,57 @@ impl DevServer {
             preseed::preseed_server_deps(&root, host_env_mode).await;
         }
         boot_phase("plugin host spawning");
+        let engine_registry = oj_js::EngineRegistry::new();
         let plugin_host = match plugins_path {
-            Some(file) => match PluginHost::spawn(&root, &file, &plugin_config).await {
-                Ok(host) => {
-                    // Every remaining plugin may be one oj reimplements natively
-                    // (e.g. @vitejs/plugin-react -> oj does JSX/refresh in oxc). If
-                    // nothing is left after that filtering, the host is an idle
-                    // Node process sitting on the per-request/HMR path -- drop it
-                    // and serve natively. Dropping the Arc kills the process.
-                    // EXCEPT when `server.proxy` is configured: the single proxy
-                    // lives in the host's middleware stack, and a FUNCTION rewrite
-                    // (or `configure`/`bypass`) has no other place to run — keep
-                    // the already-spawned host so the proxy always has a Node home
-                    // instead of the Rust fallback silently forwarding unstripped.
-                    let keep_for_proxy = server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
-                    let plugin_count = host.plugin_count().await;
-                    if plugin_count == 0 && !keep_for_proxy {
-                        host.shutdown();
-                        println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
-                        None
-                    } else if plugin_count == 0 {
-                        // Kept only to host the single `server.proxy` (no plugins
-                        // to build): the middleware stack runs the proxy so a
-                        // function rewrite / configure / bypass has a Node home.
-                        println!(
+            Some(file) => {
+                match PluginHost::spawn(&root, &file, &plugin_config, Some(engine_registry.clone()))
+                    .await
+                {
+                    Ok(host) => {
+                        // Every remaining plugin may be one oj reimplements natively
+                        // (e.g. @vitejs/plugin-react -> oj does JSX/refresh in oxc). If
+                        // nothing is left after that filtering, the host is an idle
+                        // Node process sitting on the per-request/HMR path -- drop it
+                        // and serve natively. Dropping the Arc kills the process.
+                        // EXCEPT when `server.proxy` is configured: the single proxy
+                        // lives in the host's middleware stack, and a FUNCTION rewrite
+                        // (or `configure`/`bypass`) has no other place to run — keep
+                        // the already-spawned host so the proxy always has a Node home
+                        // instead of the Rust fallback silently forwarding unstripped.
+                        let keep_for_proxy =
+                            server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
+                        let plugin_count = host.plugin_count().await;
+                        if plugin_count == 0 && !keep_for_proxy {
+                            host.shutdown();
+                            println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
+                            None
+                        } else if plugin_count == 0 {
+                            // Kept only to host the single `server.proxy` (no plugins
+                            // to build): the middleware stack runs the proxy so a
+                            // function rewrite / configure / bypass has a Node home.
+                            println!(
                             "  plugins: {plugins_label} (none active; host kept for server.proxy)"
                         );
-                        Some(host)
-                    } else {
-                        println!("  plugins: {plugins_label}");
-                        if !is_start {
-                            // Vite awaits the client buildStart while initing the
-                            // server; a rejection fails startup rather than serving.
-                            if let Err(e) = host.build_start().await {
-                                host.shutdown();
-                                anyhow::bail!("plugin buildStart failed:\n{e}");
+                            Some(host)
+                        } else {
+                            println!("  plugins: {plugins_label}");
+                            if !is_start {
+                                // Vite awaits the client buildStart while initing the
+                                // server; a rejection fails startup rather than serving.
+                                if let Err(e) = host.build_start().await {
+                                    host.shutdown();
+                                    anyhow::bail!("plugin buildStart failed:\n{e}");
+                                }
                             }
+                            Some(host)
                         }
-                        Some(host)
+                    }
+                    Err(e) => {
+                        eprintln!("oj: plugin host failed to start: {e}");
+                        None
                     }
                 }
-                Err(e) => {
-                    eprintln!("oj: plugin host failed to start: {e}");
-                    None
-                }
-            },
+            }
             None => None,
         };
         boot_phase("plugin host ready");
@@ -1213,6 +1222,7 @@ impl DevServer {
         };
         let state = Arc::new(ServerState {
             persistent_cache,
+            engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
             reload_tx: reload_tx.clone(),
@@ -1853,6 +1863,12 @@ pub struct SsrBridge {
 }
 
 impl SsrBridge {
+    /// The dev server's engine registry, for hosts on the other side of the
+    /// bridge to register their engines in (SSR, Start).
+    pub fn engine_registry(&self) -> oj_js::EngineRegistry {
+        self.state.engine_registry.clone()
+    }
+
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
         ssr_resolve_inner(&self.state, importer, spec).await
     }
@@ -2149,7 +2165,14 @@ async fn ssr_plugin_host(state: &Arc<ServerState>) -> Option<std::sync::Arc<Plug
             // Lazy spawn (first SSR request): the short init-wait policy, so a
             // wedged init cannot block the watcher thread's watchChange /
             // hotUpdate dispatch or SSR transforms for the long init deadline.
-            match PluginHost::spawn_lazy(&state.root, &file, &state.ssr_plugin_config).await {
+            match PluginHost::spawn_lazy(
+                &state.root,
+                &file,
+                &state.ssr_plugin_config,
+                Some(state.engine_registry.clone()),
+            )
+            .await
+            {
                 Ok(host) => {
                     eprintln!("oj ssr: plugins (ssr environment) from {}", file.display());
                     // The catch-up half of the watcher's pre-init fast-skip:
@@ -5709,7 +5732,13 @@ async fn run_css_engine(
 ) -> Result<String, String> {
     let engine = state
         .tailwind
-        .get_or_try_init(|| CssEngine::tailwind(&state.root, css_engine::DEV_DEADLINE))
+        .get_or_try_init(|| {
+            CssEngine::tailwind(
+                &state.root,
+                css_engine::DEV_DEADLINE,
+                Some(state.engine_registry.clone()),
+            )
+        })
         .await
         .map_err(|e| e.to_string())?;
     engine.compile(source, url).await
@@ -6034,7 +6063,13 @@ async fn run_preprocess_engine(
 ) -> Result<String, String> {
     let engine = state
         .preprocess
-        .get_or_try_init(|| CssEngine::preprocess(&state.root, css_engine::DEV_DEADLINE))
+        .get_or_try_init(|| {
+            CssEngine::preprocess(
+                &state.root,
+                css_engine::DEV_DEADLINE,
+                Some(state.engine_registry.clone()),
+            )
+        })
         .await
         .map_err(|e| e.to_string())?;
     engine.compile_with(source, url, options).await
@@ -6047,7 +6082,13 @@ async fn run_svelte_engine(
 ) -> Result<String, String> {
     let engine = state
         .svelte
-        .get_or_try_init(|| CssEngine::svelte(&state.root, css_engine::DEV_DEADLINE))
+        .get_or_try_init(|| {
+            CssEngine::svelte(
+                &state.root,
+                css_engine::DEV_DEADLINE,
+                Some(state.engine_registry.clone()),
+            )
+        })
         .await
         .map_err(|e| e.to_string())?;
     engine.compile(source, url).await
@@ -7024,7 +7065,10 @@ async fn debug_mem_stats(
         .into_response()
 }
 
-async fn debug_gc(headers: axum::http::HeaderMap) -> Response {
+async fn debug_gc(
+    State(state): State<Arc<ServerState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     if !debug_mem() {
         return (axum::http::StatusCode::NOT_FOUND, "").into_response();
     }
@@ -7034,12 +7078,13 @@ async fn debug_gc(headers: axum::http::HeaderMap) -> Response {
     if headers.contains_key(axum::http::header::ORIGIN) {
         return (axum::http::StatusCode::FORBIDDEN, "").into_response();
     }
-    // Fans out through oj_js's engine registry (plugin hosts, SSR, Start,
+    // Fans out over the server's engine registry (plugin hosts, SSR, Start,
     // CSS, addon-keeper alike) and returns only after each counted engine
     // ACKNOWLEDGED running its collection — a barrier, not a request, so a
     // probe reading RSS right after this response sees post-GC numbers.
-    let collected = tokio::task::spawn_blocking(|| {
-        oj_js::collect_all_garbage(std::time::Duration::from_secs(10))
+    let registry = state.engine_registry.clone();
+    let collected = tokio::task::spawn_blocking(move || {
+        registry.collect_garbage(std::time::Duration::from_secs(10))
     })
     .await
     .unwrap_or(0);

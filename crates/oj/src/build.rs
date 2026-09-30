@@ -1467,7 +1467,11 @@ static BUILD_SVELTE: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>
 async fn expand_css_via_engine(root: &Path, css_file: &Path, css: &str) -> anyhow::Result<String> {
     let engine = BUILD_TAILWIND
         .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::tailwind(root, oj_server::css_engine::BUILD_DEADLINE)
+            oj_server::css_engine::CssEngine::tailwind(
+                root,
+                oj_server::css_engine::BUILD_DEADLINE,
+                None,
+            )
         })
         .await?;
     engine
@@ -1479,7 +1483,11 @@ async fn expand_css_via_engine(root: &Path, css_file: &Path, css: &str) -> anyho
 async fn svelte_via_engine(root: &Path, file: &Path) -> anyhow::Result<String> {
     let engine = BUILD_SVELTE
         .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::svelte(root, oj_server::css_engine::BUILD_DEADLINE)
+            oj_server::css_engine::CssEngine::svelte(
+                root,
+                oj_server::css_engine::BUILD_DEADLINE,
+                None,
+            )
         })
         .await?;
     let source = fs::read_to_string(file)?;
@@ -1500,6 +1508,7 @@ async fn preprocess_via_engine(
             oj_server::css_engine::CssEngine::preprocess(
                 root,
                 oj_server::css_engine::BUILD_DEADLINE,
+                None,
             )
         })
         .await?;
@@ -2238,7 +2247,7 @@ async fn user_plugin_host(
         "pluginsFormat": plugins_format,
     })
     .to_string();
-    match PluginHost::spawn(root, &file, &config).await {
+    match PluginHost::spawn(root, &file, &config, None).await {
         Ok(host) => {
             println!("oj build ({env_name}): plugins from {label}");
             Some(host)

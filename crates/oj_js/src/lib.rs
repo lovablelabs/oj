@@ -31,7 +31,7 @@ pub use deno_napi::addons_pending_unsafe_reregistration;
 /// Native addons some live engine currently holds, for a keeper env that
 /// pre-registers them before a dying engine's teardown can orphan them.
 pub use deno_napi::addons_with_live_registrations;
-pub use engine::collect_all_garbage;
+pub use engine::EngineRegistry;
 pub use engine::JsEngine;
 pub use host::HostFuture;
 pub use host::HostModule;
@@ -60,6 +60,10 @@ pub struct EngineConfig {
     /// source change. Best-effort: a broken or read-only cache only costs the
     /// speedup.
     pub code_cache_dir: Option<PathBuf>,
+    /// Joins this [`EngineRegistry`] at spawn, so the owner's memory probe
+    /// can fan a GC over the engine. Long-lived engines set it; one-shots
+    /// leave it out.
+    pub registry: Option<EngineRegistry>,
 }
 
 impl EngineConfig {
@@ -69,6 +73,7 @@ impl EngineConfig {
             memory_limit_bytes: None,
             default_deadline: None,
             code_cache_dir: None,
+            registry: None,
         }
     }
 }
