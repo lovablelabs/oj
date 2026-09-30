@@ -7,8 +7,7 @@ use std::sync::Mutex;
 use oj_resolver::OjResolver;
 
 pub const PLUGIN_HOST_JS: &str = include_str!("assets/plugin-host.mjs");
-/// Sibling module both the plugin host and the preseed optimizer child import
-/// (`./discovered-deps.mjs` relative to their own materialized location).
+/// Sibling module the plugin host and preseed optimizer child import as `./discovered-deps.mjs`.
 pub const DISCOVERED_DEPS_JS: &str = include_str!("assets/discovered-deps.mjs");
 
 /// Idempotent, atomic materialization of an embedded asset into `dir`.
@@ -105,8 +104,7 @@ pub fn vite_config_file(root: &Path) -> Option<std::path::PathBuf> {
     if let Some(p) = VITE_CONFIG_OVERRIDE.get() {
         return p.is_file().then(|| p.clone());
     }
-    // Vite's DEFAULT_CONFIG_FILES order (constants.ts): the first that exists
-    // wins, so a root with several config files picks the same one Vite does.
+    // Vite's DEFAULT_CONFIG_FILES order: first existing wins.
     [
         "vite.config.js",
         "vite.config.mjs",
@@ -149,9 +147,7 @@ pub struct ViteValues {
     pub proxy: Option<serde_json::Value>,
     pub dedupe: Option<Vec<String>>,
     pub optimize_deps: Option<serde_json::Value>,
-    /// The `build` block as the extractor normalized it (`outDir`, `sourcemap`,
-    /// `minify`, `cssCodeSplit`, `target`, `ssr`); see `extractBuild` in
-    /// vite-extract.mjs for the shapes it admits.
+    /// The `build` block as the extractor normalized it; see `extractBuild` in vite-extract.mjs.
     pub build: Option<serde_json::Value>,
     /// `oxc.jsx` as normalized by the extractor (`{ jsx: { runtime, importSource,
     /// pragma, pragmaFrag } }`), and the `esbuild.jsx*` fields for older configs.
@@ -164,9 +160,8 @@ pub struct ViteValues {
     pub mode: Option<String>,
     /// `resolve.{extensions,mainFields,conditions,preserveSymlinks}`.
     pub resolve: Option<serde_json::Value>,
-    /// The RAW config file's own top-level `resolve` block (the resolved one
-    /// above carries Vite's client-environment conditions); consulted by the
-    /// Node SSR consumers when the ssr environment is runner-backed.
+    /// RAW config's top-level `resolve` (the resolved one carries client-env
+    /// conditions); consulted by Node SSR consumers when ssr is runner-backed.
     pub raw_resolve: Option<serde_json::Value>,
     /// `server.{strictPort,open}` normalized to booleans (`cors` is its own field).
     pub server_flags: Option<serde_json::Value>,
@@ -185,12 +180,8 @@ pub struct ViteValues {
     pub html: Option<serde_json::Value>,
 }
 
-/// How long the config extraction may run before it is terminated. The
-/// extractor runs real plugin code (config hooks), so 60 s is generous
-/// headroom for a cold first run; `OJ_EXTRACT_TIMEOUT=<seconds>` raises it for
-/// configs that legitimately take longer. Unbounded was worse: a config hook
-/// that opened a socket or timer used to be able to wedge boot forever (Vite
-/// has no bound here, but Vite is also not waiting on a separate evaluation).
+/// Bound on config extraction (default 60s, `OJ_EXTRACT_TIMEOUT` raises it):
+/// a config hook that opens a socket or timer must not wedge boot forever.
 fn extraction_timeout() -> std::time::Duration {
     extraction_timeout_from(std::env::var("OJ_EXTRACT_TIMEOUT").ok().as_deref())
 }
@@ -203,30 +194,20 @@ fn extraction_timeout_from(raw: Option<&str>) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// The oj executable one-shot engine jobs run in, set once by the binary's
-/// main. A native addon can take the whole process down when it is
-/// re-initialized after the engine that first loaded it was torn down —
-/// napi-rs before 3.10 corrupts its process-global state then (Node segfaults
-/// the same way when a second worker_thread requires such an addon after the
-/// first worker exited), and vite 8 apps load rolldown's binding once per
-/// engine. A child process per job gives each one-shot engine its own address
-/// space, as the pre-embedded node sidecars had.
+/// The oj executable one-shot engine jobs run in, set once by the binary's main.
+/// A child per job isolates native addons that crash on re-init (napi-rs before 3.10).
 static ENGINE_JOB_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 pub fn engine_jobs_via_subprocess(exe: PathBuf) {
     let _ = ENGINE_JOB_EXE.set(exe);
 }
 
-/// Env var naming the spawner's pid for a one-shot child's parent-death
-/// reaper (`oj engine-job` / `oj start-script`); see `reap_on_parent_death`
-/// in the `oj` binary. Every spawner sets it.
+/// Spawner's pid for a one-shot child's parent-death reaper (see
+/// `reap_on_parent_death` in the `oj` binary). Every spawner sets it.
 pub const PARENT_PID_ENV: &str = "OJ_PARENT_PID";
 
-/// Runs one export of an oj-owned module on a short-lived JS engine and
-/// returns its JSON result: in a child `oj engine-job` process when the
-/// binary registered itself via [`engine_jobs_via_subprocess`] (see
-/// [`ENGINE_JOB_EXE`] for why), in-process otherwise (library consumers,
-/// tests).
+/// Runs one export of an oj-owned module on a short-lived JS engine: in a child
+/// `oj engine-job` process when [`engine_jobs_via_subprocess`] ran, in-process otherwise.
 pub(crate) fn run_engine_job(
     root: &Path,
     module: &Path,
@@ -240,13 +221,8 @@ pub(crate) fn run_engine_job(
     }
 }
 
-/// The in-process engine job: one isolate per run preserves the freshness
-/// the one-shot subprocesses had (module caches, env dance and run-once plugin
-/// guards die with the engine, a hook-started watcher or interval cannot
-/// outlive it), and boot's parallel extractions each own their engine thread.
-/// The call blocks the current thread, as the bounded subprocess wait did;
-/// from inside a tokio runtime it blocks on a scoped helper thread instead so
-/// no runtime worker is parked inside another `block_on`.
+/// One isolate per run: caches and hook-started timers die with the engine.
+/// Blocks; inside a tokio runtime it uses a scoped thread so no runtime worker parks in block_on.
 pub fn run_engine_job_in_process(
     root: &Path,
     module: &Path,
@@ -264,9 +240,7 @@ pub fn run_engine_job_in_process(
             .build()
             .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
         rt.block_on(engine.call(module.to_string_lossy().into_owned(), export, vec![payload]))
-        // Dropping the engine here joins its thread: pending JS work (timers,
-        // watchers a config hook started) is discarded with the isolate, the
-        // in-process equivalent of the old `process.exit(0)`.
+        // Dropping the engine joins its thread; pending JS work dies with the isolate.
     };
     if tokio::runtime::Handle::try_current().is_ok() {
         std::thread::scope(|s| {
@@ -279,9 +253,8 @@ pub fn run_engine_job_in_process(
     }
 }
 
-/// The `--result` file contents of an `oj engine-job` run: the job's outcome,
-/// encoded so the parent can rebuild the exact [`oj_js::EngineError`]. A file,
-/// not stdout, so job code that prints cannot corrupt the channel.
+/// The `--result` file of an `oj engine-job` run, encoding the exact [`oj_js::EngineError`].
+/// A file, not stdout, so job code that prints cannot corrupt the channel.
 pub fn engine_job_envelope(
     outcome: &Result<serde_json::Value, oj_js::EngineError>,
 ) -> serde_json::Value {
@@ -336,11 +309,8 @@ fn run_engine_job_subprocess(
     let result_file =
         std::env::temp_dir().join(format!("oj-engine-job-{}-{seq}.json", std::process::id()));
     let boot = |m: String| oj_js::EngineError::Boot(m);
-    // The job operates on `root` anyway, and inheriting the parent's cwd makes
-    // the spawn itself fail with ENOENT when that directory has been deleted
-    // (in-process hosts chdir the whole process at boot, so the inherited cwd
-    // can be any root a host ever ran in). A root that is itself gone falls
-    // back to the temp dir so the child still spawns and can report properly.
+    // Inheriting the parent's cwd fails the spawn with ENOENT when that dir was
+    // deleted (hosts chdir at boot); a missing root falls back to the temp dir.
     let job_cwd = if root.is_dir() {
         root.to_path_buf()
     } else {
@@ -385,9 +355,8 @@ fn run_engine_job_subprocess(
         }
         // Dropping closes the pipe; the child's read_to_string completes.
     }
-    // The child's engine enforces `timeout` itself; the grace covers process
-    // start and result writing, then a wedged child is killed like the old
-    // bounded subprocess wait did.
+    // The child enforces `timeout` itself; the grace covers spawn and result
+    // writing, then a wedged child is killed.
     let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(15);
     let status = loop {
         match child.try_wait() {
@@ -410,8 +379,7 @@ fn run_engine_job_subprocess(
     let envelope = std::fs::read_to_string(&result_file);
     let _ = std::fs::remove_file(&result_file);
     if !status.success() {
-        // A crash here is an addon or engine taking the child down; the child
-        // dying alone (instead of the caller) is this seam's whole point.
+        // A crash means an addon or engine took the child down instead of the caller.
         return Err(boot(format!("the engine job child died: {status}")));
     }
     let envelope = envelope.map_err(|e| boot(format!("engine job result: {e}")))?;
@@ -421,10 +389,7 @@ fn run_engine_job_subprocess(
 }
 
 /// Evaluate the app's `vite.config` for `command` ("serve" | "build") and `mode`.
-/// A config exported as a function (`defineConfig(({ command, mode }) => ...)`)
-/// branches on both, so a build must be extracted as a build: evaluating it as
-/// `serve`/`development` silently picks the dev branch of `base`, `define`,
-/// `build.outDir` and friends in production output.
+/// Function configs branch on both, so a build must be extracted as a build.
 pub fn extract_vite_values(root: &Path, command: &str, mode: &str) -> Option<ViteValues> {
     extract_vite_values_with(root, command, mode, true)
 }
@@ -440,8 +405,7 @@ fn extract_vite_values_with(
     if plugins_file(root).is_some() {
         return None;
     }
-    // The cache is keyed per (config, command, mode); a default-mode evaluation
-    // can differ from an explicit one, so it gets its own key.
+    // Keyed per (config, command, mode); a default-mode evaluation gets its own key.
     let mode_key = if mode_explicit {
         mode.to_string()
     } else {
@@ -460,9 +424,8 @@ fn extract_vite_values_with(
     }
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
-    // Several extractions run concurrently at boot (route tree, server-fn
-    // resolver, config values), so the script lands via rename: a plain write
-    // truncates it under a concurrent engine's import.
+    // Extractions run concurrently at boot, so the script lands via rename: a
+    // plain write truncates it under a concurrent engine's import.
     static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let script = cache.join("oj-vite-extract.mjs");
@@ -474,8 +437,7 @@ fn extract_vite_values_with(
         std::fs::write(&tmp, VITE_EXTRACT_JS).ok()?;
         std::fs::rename(&tmp, &script).ok()?;
     }
-    // Bounded: the config's plugin code runs inside the engine and must never
-    // wedge boot forever.
+    // Bounded: config plugin code must never wedge boot forever.
     let timeout = extraction_timeout();
     let payload = serde_json::json!({
         "vite": vite.to_string_lossy(),
@@ -485,9 +447,7 @@ fn extract_vite_values_with(
         "modeKind": if mode_explicit { "explicit" } else { "default" },
         "cacheDir": cache.to_string_lossy(),
     });
-    // The result is the call's RETURN VALUE: config code that prints (route
-    // generators, banners) cannot corrupt the result channel, which the old
-    // subprocess had to dodge with a temp result file next to argv.
+    // The result is the call's return value: config code that prints cannot corrupt it.
     let json = match run_engine_job(root, &script, "extract", payload, timeout) {
         Ok(json) => json,
         Err(oj_js::EngineError::Deadline) => {
@@ -503,25 +463,20 @@ fn extract_vite_values_with(
             return None;
         }
     };
-    // Everything the evaluation wrote to stderr (Vite's notices, oj's "not
-    // applied" warnings, plugin prints), captured inside the engine.
+    // Everything the evaluation wrote to stderr, captured inside the engine.
     let stderr = json
         .get("__stderr")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
     print_extraction_stderr(&stderr);
-    // The extractor reports a config that failed to evaluate as `__ok: false`
-    // (having put the cause in the stderr transcript above). That is not a
-    // config with no values, so never parse it into an empty ViteValues: return
-    // None and let the caller decide whether a present-but-broken vite.config
-    // is an error.
+    // `__ok: false` means the config failed to evaluate (cause already in stderr).
+    // Never parse that into an empty ViteValues; return None.
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
-    // Stored once, under the same (config, command, mode_key) the lookup above
-    // uses: a default-mode evaluation must not also masquerade as the explicit
-    // `--mode <same>` entry, whose evaluation can differ.
+    // Stored under the same (config, command, mode_key) the lookup uses; a
+    // default-mode evaluation must not masquerade as the explicit-mode entry.
     let deps: Vec<PathBuf> = json
         .get("__deps")
         .and_then(|v| v.as_array())
@@ -533,16 +488,14 @@ fn extract_vite_values_with(
         .unwrap_or_default();
     let _ = CONFIG_DEPS.set(deps.clone());
     if extraction_deps_truncated(&json) {
-        // The read recorder hit its cap: `__deps` is an incomplete stamp of
-        // the evaluation's inputs, so a cached entry could survive an edit to
-        // an unrecorded file. Serve the result, never cache it.
+        // Read recorder hit its cap: `__deps` is incomplete, so serve the
+        // result but never cache it.
         eprintln!(
             "oj: extracting {}: the config evaluation read more config-shaped files than the recorder tracks; result not cached",
             vite.display()
         );
     } else {
-        // The stderr transcript is stored in its own field (replayed by the
-        // lookup above), not inside the cached output.
+        // Stderr transcript lives in its own field, not inside the cached output.
         let mut stored = json.clone();
         if let Some(obj) = stored.as_object_mut() {
             obj.remove("__stderr");
@@ -561,9 +514,8 @@ fn extract_vite_values_with(
     Some(parse_vite_values(&json))
 }
 
-/// Whether any config extraction in this process ran the engine (a cache
-/// miss): the config's observable inputs changed, so caches derived from the
-/// evaluated config — the deps pre-seed stamp — must not serve either.
+/// Whether any config extraction ran the engine (cache miss): caches derived
+/// from the evaluated config (the deps pre-seed stamp) must not serve either.
 static EXTRACTION_RAN_FRESH: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -572,17 +524,13 @@ pub(crate) fn extraction_ran_fresh() -> bool {
 }
 
 /// Whether the extractor's read recorder overflowed (`__depsTruncated`): the
-/// dep list is then honest-but-incomplete and the extraction must not be
-/// cached under it.
+/// dep list is incomplete and the extraction must not be cached under it.
 fn extraction_deps_truncated(json: &serde_json::Value) -> bool {
     json.get("__depsTruncated").and_then(|v| v.as_bool()) == Some(true)
 }
 
-/// What the config extractor wrote to stderr (Vite's own notices and oj's
-/// "not applied" warnings), printed once per process. The config is loaded
-/// several times in a dev session (the Start route tree, server-fn resolver and
-/// client bundle each adopt it, and again after a rebuild), each replaying the
-/// cached stderr; Vite prints its config warnings once at startup.
+/// Extractor stderr, printed once per process: the config is loaded several
+/// times per dev session, each replaying the cached stderr; Vite prints once.
 fn print_extraction_stderr(stderr: &str) {
     let fresh = unseen_extraction_lines(stderr);
     if !fresh.is_empty() {
@@ -605,11 +553,8 @@ fn unseen_extraction_lines(stderr: &str) -> String {
     out
 }
 
-/// The extraction cache, keyed on everything that can change the verdict: oj's
-/// version, the extraction engine ("deno" marks the in-process engine — a
-/// cache written by a node-subprocess-era oj, or any future engine change,
-/// must never serve, whatever the script hash happens to be), the extraction
-/// script itself and the observable environment.
+/// Extraction cache key: oj version, engine marker ("deno"), script hash and
+/// observable env; entries from another engine era must never serve.
 fn extraction_store(root: &Path) -> oj_cache::config_extract::ConfigExtractStore {
     oj_cache::config_extract::ConfigExtractStore::new(
         root,
@@ -622,10 +567,8 @@ fn extraction_store(root: &Path) -> oj_cache::config_extract::ConfigExtractStore
     )
 }
 
-/// The part of the process environment a vite.config can observe while it
-/// evaluates (`process.env.VITE_*` and `NODE_ENV`), hashed into the extraction
-/// cache key so an env change re-evaluates the config instead of serving the
-/// values computed under the old one.
+/// Env a vite.config can observe (`VITE_*`, `NODE_ENV`), hashed into the cache
+/// key so an env change re-evaluates instead of serving stale values.
 pub fn extraction_env_hash(vars: impl Iterator<Item = (String, String)>) -> String {
     let mut relevant: Vec<(String, String)> = vars
         .filter(|(k, _)| k == "NODE_ENV" || k.starts_with("VITE_"))
@@ -725,12 +668,8 @@ pub fn adopt_vite_config_values(
     mode: &str,
 ) -> Result<(), String> {
     let Some(v) = extract_vite_values(root, command, mode) else {
-        // No vite.config is fine: nothing to adopt. A vite.config that exists but
-        // failed to evaluate is not: Vite fails hard here ("failed to load config
-        // from ..."), and silently carrying on would build or serve with defaults
-        // the app never asked for. An explicit oj.plugins file takes precedence over
-        // vite.config (the extractor skips it then), so only the vite path is an
-        // error. The extractor has already printed the underlying cause to stderr.
+        // No vite.config: nothing to adopt. A present-but-broken vite.config fails
+        // hard like Vite; an oj.plugins file takes precedence (extractor skips it).
         if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
             if !named.is_file() {
                 return Err(format!(
@@ -750,9 +689,8 @@ pub fn adopt_vite_config_values(
     Ok(())
 }
 
-/// Like `adopt_vite_config_values`, for a `mode` that is only the command's
-/// default: the config file's own `mode` (if any) is honored and lands in
-/// `config.mode` so the caller can reload under it.
+/// Like `adopt_vite_config_values`, for a default `mode`: the config file's own
+/// `mode` is honored and lands in `config.mode` so the caller can reload under it.
 pub fn adopt_vite_config_values_default_mode(
     config: &mut oj_config::OjConfig,
     root: &Path,
@@ -760,8 +698,7 @@ pub fn adopt_vite_config_values_default_mode(
     mode: &str,
 ) -> Result<(), String> {
     let Some(v) = extract_vite_values_with(root, command, mode, false) else {
-        // Same rule as `adopt_vite_config_values`: a present vite.config that
-        // failed to evaluate is an error, a missing one is nothing to adopt.
+        // Same rule: a present-but-broken vite.config is an error, a missing one is fine.
         if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
             if !named.is_file() {
                 return Err(format!(
@@ -1010,20 +947,13 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     if config.esbuild.is_none() {
         config.esbuild = v.esbuild;
     }
-    // The ssr block merges PER-KEY, not whole-block: an oj.config.json that
-    // sets one ssr key (say noExternal) must not drop the extractor's other
-    // keys — above all `runnerBacked`, which ONLY extraction produces and every
-    // consumer of the worker path reads, so it is always adopted. `resolve`
-    // recurses ONE level deeper for the same reason: an oj-side
-    // `ssr.resolve.externalConditions` must not drop the extractor's other
-    // resolve sub-keys (the workerd sugar's `conditions` above all).
+    // ssr merges PER-KEY: `runnerBacked` (only extraction produces it) is always
+    // adopted; `resolve` recurses one level so oj sub-keys keep the extractor's others.
     match (config.ssr.as_mut(), v.ssr) {
         (None, vssr) => config.ssr = vssr,
         (Some(existing), Some(vssr)) => {
             if !existing.is_object() {
-                // The oj-side ssr value is not an object: there is nothing to
-                // merge per-key into, and dropping the extractor block here
-                // would break the "runnerBacked is always adopted" contract.
+                // Nothing to merge per-key into; adopt the extractor block (keeps runnerBacked).
                 eprintln!(
                     "oj: config: the ssr block in oj's config is not an object; the vite.config ssr block is used"
                 );
@@ -1047,9 +977,8 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
                                 }
                             }
                         } else {
-                            // Nothing to merge into: adopting the extractor's
-                            // block beats silently dropping the sugar's
-                            // conditions.
+                            // Nothing to merge into: adopt the extractor block
+                            // over dropping the sugar's conditions.
                             eprintln!(
                                 "oj: config: ssr.resolve in oj's config is not an object; the vite.config ssr.resolve block is used"
                             );
@@ -1180,11 +1109,8 @@ fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     }
 }
 
-/// One hook's gate for the build: whether any plugin has the hook, whether one
-/// of them must always be offered every module (function-form, or a filter the
-/// plan cannot represent), and the include filters of the rest. The gate only
-/// ever over-approximates: `wants` may say yes for a module every plugin then
-/// declines in JS, never no for one a plugin would have claimed.
+/// One hook's build gate: presence, always-offered plugins, and include filters.
+/// Only over-approximates: `wants` may say yes wrongly, never no for a module a plugin would claim.
 #[derive(Debug, Default, Clone)]
 pub struct HookFilterPlan {
     pub present: bool,
@@ -1253,9 +1179,8 @@ impl HookFilterPlan {
         }
     }
 
-    /// Whether any plugin's filter could claim this module. `code` is only
-    /// consulted where the caller has it (transform); a code filter with no
-    /// code available passes, keeping the gate an over-approximation.
+    /// Whether any plugin's filter could claim this module; a code filter with
+    /// no code available passes, keeping the gate an over-approximation.
     pub fn wants(&self, id: &str, code: Option<&str>) -> bool {
         if !self.present {
             return false;
@@ -1263,9 +1188,8 @@ impl HookFilterPlan {
         if self.unfiltered {
             return true;
         }
-        // The host matches filters against the slash-normalized id (its
-        // slash() helper), so a Windows path must be normalized the same way
-        // or the gate under-matches.
+        // The host matches slash-normalized ids, so normalize Windows paths
+        // the same way or the gate under-matches.
         let id = if id.contains('\\') {
             std::borrow::Cow::Owned(id.replace('\\', "/"))
         } else {
@@ -1284,9 +1208,8 @@ impl HookFilterPlan {
     }
 }
 
-/// OJ_DEBUG_HOOK_GATE=1: gates log/count the RPCs they skip, so a test can
-/// assert a skip actually happened (output alone cannot: the host's own
-/// per-plugin filters produce identical bytes).
+/// OJ_DEBUG_HOOK_GATE=1: gates log/count skipped RPCs so a test can assert a
+/// skip happened (output alone cannot, the host's filters produce identical bytes).
 pub fn hook_gate_debug() -> bool {
     static ON: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var("OJ_DEBUG_HOOK_GATE").is_ok_and(|v| v == "1"));
@@ -1304,22 +1227,13 @@ impl BuildHookPlan {
 }
 
 pub struct PluginHost {
-    /// The embedded engine hosting plugin-host.mjs. In an Option so
-    /// `declare_gone`/`shutdown` can take + abandon it explicitly (background
-    /// tasks hold Arc clones of the host, so dropping the caller's Arc alone
-    /// must never decide the engine's fate). Abandoning drops the job channel
-    /// and detaches the isolate thread; a thread wedged in NATIVE code (a napi
-    /// call) leaks with its isolate — the accepted cost of the
-    /// in-process host, where a kill used to reclaim it (JS-only wedges are
-    /// interrupted by `terminate_execution` and unwind cleanly).
+    /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
+    /// take + abandon it. A thread wedged in NATIVE code leaks with its isolate.
     engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
-    /// The plugin-host.mjs path on disk — the module every hook call targets.
+    /// The plugin-host.mjs path on disk, the module every hook call targets.
     host_module: String,
-    /// The live hook plan every gate reads. Starts fail-open (gate off), is
-    /// overwritten only by a successful fetch, reverts to fail-open on engine
-    /// respawn (the fresh engine re-evaluates the plugins file), and a failed
-    /// fetch is never cached, so a transient boot-time RPC failure costs
-    /// gating only until the next fetch attempt.
+    /// Live hook plan: starts fail-open, overwritten only by a successful fetch,
+    /// reverts to fail-open on engine respawn; a failed fetch is never cached.
     hook_plan: std::sync::RwLock<BuildHookPlan>,
     hook_plan_fetched: std::sync::atomic::AtomicBool,
     hook_plan_prime_started: std::sync::atomic::AtomicBool,
@@ -1327,114 +1241,62 @@ pub struct PluginHost {
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart().
     server_events: Mutex<Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>>,
-    /// The host's `{ ojServeInfo: ... }` control push: None until the host's
-    /// top-level init completes. Subscribers see the info whenever the host
-    /// eventually comes up, however slow the boot, and can activate the
-    /// middleware path late instead of silently degrading to the SSR runner.
+    /// Host's `{ ojServeInfo }` push: None until top-level init completes; late
+    /// subscribers can still activate the middleware path.
     serve_info_push: tokio::sync::watch::Sender<Option<ServeInfo>>,
-    /// Whether the host finished its top-level init: flipped by the serve-info
-    /// push, the `{ ojInit }` push, or the first hook reply (the host's hook
-    /// entry point only runs after every top-level await, so any reply proves
-    /// init completed). Hook calls are gated on this — see `call`.
+    /// Host finished top-level init: flipped by the serve-info push, `{ ojInit }`,
+    /// or the first hook reply. Hook calls gate on this; see `call`.
     initialized: tokio::sync::watch::Sender<bool>,
-    /// The host is gone (its engine thread exited, its init failed hard, or
-    /// the transport belt declared it wedged): fail calls fast instead of
-    /// waiting out the init deadline or the per-call timeout. A watch so a
-    /// waiter (`host_gone_wait`) can select on the death instead of polling.
+    /// Host is gone (engine thread exited, init failed, or declared wedged): fail
+    /// calls fast. A watch so waiters select on the death instead of polling.
     host_gone: tokio::sync::watch::Sender<bool>,
-    /// When the host's CURRENT generation was spawned (reset by a revive);
-    /// the init deadline is measured from here, so boot RPCs share one
-    /// deadline instead of stacking a fresh one each.
+    /// When the CURRENT generation spawned (reset by a revive); the init deadline
+    /// is measured from here so boot RPCs share one deadline.
     spawned: Mutex<tokio::time::Instant>,
-    /// Per-spawn init-wait policy: how long a call may wait for the host's
-    /// top-level init. The boot/serve host takes the long init deadline (boot
-    /// correctness depends on its snapshot RPCs), shared across calls and
-    /// measured from spawn; a lazily spawned host (the SSR environment host,
-    /// spawned on the first SSR request) takes the short per-call bound,
-    /// measured from EACH call's own start (see `lazy`), so a wedged init
-    /// degrades like a slow hook instead of freezing the watcher thread and
-    /// browser-facing SSR transforms.
+    /// How long a call may wait for top-level init: the boot host takes the long
+    /// deadline measured from spawn, a lazy host the per-call bound from each call's start.
     init_wait: std::time::Duration,
-    /// Whether this host was lazily spawned: its init wait is then anchored to
-    /// each call's own start rather than to the spawn instant — a
-    /// spawn-anchored short bound gave calls arriving after `spawn +
-    /// init_wait` during a still-pending init a zero-length window (instant
-    /// failure), where pre-init-gate semantics gave every call its own
-    /// per-call timeout. Every pre-init call gets its own full window: an
-    /// earlier call's expired window is evidence of a slow boot, not a wedge,
-    /// so it never fails a later call early (see `call`).
+    /// Lazily spawned: init wait anchors to each call's own start, so every
+    /// pre-init call gets a full window and an expired one never fails a later call (see `call`).
     lazy: bool,
-    /// Wedge EVIDENCE, not a call gate: flips true when a pre-init call's
-    /// full init window elapsed with init still pending, or when the stall
-    /// monitor saw a full RPC-scale window pass with no init milestone (see
-    /// `init_progress_seen`), and back false the moment init progresses (an
-    /// `initialized` flip or a milestone). Calls never consult
-    /// it — time alone must not fail a call that a landing init would have
-    /// served — but waiters gating separate work on the host's health (the
-    /// Start prewarm hold) select on it, alongside `host_gone`, instead of
-    /// running their own flat timers against a healthy slow boot.
+    /// Wedge EVIDENCE, not a call gate: true when a full init window or stall
+    /// window passed with no milestone, false again on progress. Calls never consult it; waiters do.
     init_failed: tokio::sync::watch::Sender<bool>,
     /// The env knob named when the init wait elapses (matches `init_wait`).
     init_knob: &'static str,
-    /// Count of `{ ojResyncDone }` pushes: the host sends one when an enqueued
-    /// worker-environment resync actually EXECUTES (its /__oj_invalidate ack
-    /// only means "enqueued"). A counter, not a flag: a waiter compares
-    /// against the value it saw before enqueueing, so a completion landing
-    /// before the wait starts is never missed, and one push may answer
-    /// several coalesced enqueues.
+    /// Count of `{ ojResyncDone }` pushes (a resync EXECUTED; the ack only means
+    /// enqueued). A counter so a completion landing before the wait starts is never missed.
     resync_done: tokio::sync::watch::Sender<u64>,
-    /// Count of `{ ojInitProgress }` pushes: the host reports real milestones
-    /// through its top-level init (script start, plugins loaded, each
-    /// config-phase hook). The stall monitor (see `spawn_with_policy`)
-    /// measures its wedge window from the LAST milestone, so a healthy slow
-    /// boot that keeps progressing is never called wedged, while a host gone
-    /// silent for a full RPC-scale window pre-init is — evidence a caller's
-    /// own window cannot provide on the boot host, whose per-call windows
-    /// equal the whole init deadline.
+    /// Count of `{ ojInitProgress }` pushes (init milestones). The stall monitor
+    /// measures its wedge window from the LAST milestone, so a slow but progressing boot is never wedged.
     init_progress_seen: tokio::sync::watch::Sender<u64>,
-    /// The per-call RPC timeout, snapshotted at spawn (`plugin_rpc_timeout`;
-    /// the env knob cannot change mid-process). Tests override it to exercise
-    /// the transport belts without racing the env other tests read.
+    /// Per-call RPC timeout, snapshotted at spawn; tests override it to avoid
+    /// racing the env knob other tests read.
     rpc_wait: std::time::Duration,
     /// Last "still initializing" progress line, so concurrent init-gated calls
     /// print one line per interval, not one each.
     init_progress: Mutex<std::time::Instant>,
-    /// Everything a respawn needs to boot a fresh engine generation: the
-    /// composed boot seed (pluginsPath/initialJson/cacheRoot), the app root
-    /// the engine and its resolver are built over, and the stall monitor's
-    /// window. Snapshotted at spawn; a respawn boots the same host the same
-    /// way, only on a fresh isolate.
+    /// Everything a respawn needs to boot a fresh generation (boot seed, root,
+    /// stall window), snapshotted at spawn: a respawn boots the same host on a fresh isolate.
     boot: BootContext,
-    /// The revive budget and the engine GENERATION, one lock so a death
-    /// report and a concurrent revive serialize: a report carries the
-    /// generation of the engine it is about, and a report about a replaced
-    /// engine is stale — ignoring it is what keeps the belt of an old,
-    /// abandoned call from killing the freshly revived host.
+    /// Revive budget and engine GENERATION under one lock: a death report about
+    /// a replaced engine is stale and must not kill the freshly revived host.
     revive: Mutex<ReviveState>,
-    /// Set by `shutdown()`: the host was retired on purpose and must never be
-    /// revived (the push dispatcher's channel-close latches `host_gone` on a
-    /// clean shutdown exactly like on a death).
+    /// Set by `shutdown()`: retired on purpose, must never be revived.
     shut_down: std::sync::atomic::AtomicBool,
-    /// A weak self-handle so `&self` methods (the call path's revive) can
-    /// hand the background tasks of a fresh generation their `Arc`s.
+    /// Weak self-handle so `&self` methods can hand a fresh generation's tasks their `Arc`s.
     self_ref: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
 }
 
-/// The dev listener's bound (port, interface), once [`dev_listener_bound`]
-/// ran. Hosts that boot (or revive) after the bind read it in `ignite`; hosts
-/// already up are announced to directly through [`LIVE_HOSTS`].
+/// The dev listener's bound (port, interface): hosts booting after the bind
+/// read it in `ignite`; hosts already up are announced via [`LIVE_HOSTS`].
 static DEV_LISTENER: Mutex<Option<(u16, String)>> = Mutex::new(None);
-/// Every spawned host, weakly: the bind-time announce must reach hosts that
-/// booted before the listener existed (the normal boot order).
+/// Every spawned host, weakly: the bind-time announce must reach hosts booted
+/// before the listener existed (the normal boot order).
 static LIVE_HOSTS: Mutex<Vec<std::sync::Weak<PluginHost>>> = Mutex::new(Vec::new());
 
-/// oj's dev listener is bound: remember the address for hosts yet to boot and
-/// tell every live one. The host's stub `httpServer` emits Vite's
-/// listen()-time "listening" on this signal — plugins wait on that event
-/// before dialing the server (Vite emits it only once the socket really
-/// accepts), so emitting it any earlier hands them a port nobody answers. The
-/// interface travels along because Vite's `address()` is node's: it reports
-/// the real bind, not the configured host.
+/// Dev listener bound: remember for hosts yet to boot, tell every live one.
+/// The stub `httpServer` emits "listening" only on this signal (Vite parity: the socket really accepts).
 pub fn dev_listener_bound(port: u16, interface: &str) {
     *DEV_LISTENER.lock().unwrap() = Some((port, interface.to_string()));
     LIVE_HOSTS.lock().unwrap().retain(|w| match w.upgrade() {
@@ -1451,8 +1313,7 @@ struct BootContext {
     boot_seed: String,
     root: PathBuf,
     stall_wait: std::time::Duration,
-    /// The engine heap cap every generation is spawned with (see
-    /// `plugin_host_memory_mb`).
+    /// Heap cap every generation is spawned with (see `plugin_host_memory_mb`).
     memory_limit_bytes: usize,
 }
 
@@ -1460,38 +1321,21 @@ struct BootContext {
 struct ReviveState {
     /// The live engine's generation; bumped by each revive.
     generation: u64,
-    /// Respawns consumed. A LIFETIME budget, deliberately never reset by a
-    /// successful boot: a wedge that recurs every generation would otherwise
-    /// respawn forever, and each natively wedged generation leaks a detached
-    /// isolate thread — past the budget the host stays gone and the outer
-    /// supervisor (a dev-server restart) owns recovery, as it always did.
+    /// Respawns consumed: a LIFETIME budget, never reset by a successful boot
+    /// (a recurring wedge would respawn forever, leaking a wedged isolate thread each time).
     attempts: u32,
-    /// When the last revive ran, spacing attempts out so a burst of calls
-    /// against a recurring wedge cannot burn the whole budget at once.
+    /// When the last revive ran: spacing so a burst cannot burn the whole budget at once.
     last: Option<std::time::Instant>,
-    /// Native addons already pending unsafe re-registration when THIS host
-    /// died (snapshotted by `declare_gone`, before the abandon). An addon
-    /// that shows up pending only AFTER the death was held by the dead
-    /// generation itself — the successor runs the same plugins and will
-    /// re-register it, so the revive gate refuses on exactly those (see
-    /// `try_revive`); addons some other engine's teardown orphaned are not
-    /// this host's to reload and never block it.
+    /// Addons pending unsafe re-registration when THIS host died (snapshotted
+    /// before the abandon): the revive gate refuses only on ones the dead generation itself orphaned.
     pending_before: std::collections::HashSet<PathBuf>,
-    /// Whether this generation's death has already been declared. One wedge
-    /// times out EVERY in-flight call's belt at once (parallel workers poll
-    /// them before the first `host_gone` flip lands), and each would print
-    /// its own "treating the plugin host as gone" line — and worse,
-    /// re-snapshot `pending_before` AFTER the abandon, folding the dead
-    /// generation's own orphans into it and defeating the revive gate.
-    /// Reset by each revive.
+    /// This generation's death was declared: only the first report may snapshot
+    /// `pending_before` (a later one would fold in the dead generation's own orphans). Reset by each revive.
     reported: bool,
 }
 
-/// Whether this death report is the one that declares its generation gone:
-/// the first report for the live generation wins; a stale generation's
-/// report and every duplicate for an already-declared generation are
-/// dropped (see [`ReviveState::reported`]). Serialized by the caller
-/// holding the `revive` lock.
+/// First report for the live generation wins; stale-generation reports and
+/// duplicates are dropped. Serialized by the caller holding the `revive` lock.
 fn first_death_report(revive: &mut ReviveState, generation: u64) -> bool {
     if revive.generation != generation || revive.reported {
         return false;
@@ -1506,17 +1350,8 @@ pub(crate) const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
 pub(crate) const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration =
     std::time::Duration::from_secs(5);
 
-/// The plugin-host engine's heap cap: Node parity. The process host was a
-/// `node` child, so a deployment's `NODE_OPTIONS --max-old-space-size` capped
-/// it (and Node's ~4GB default did otherwise), and V8 exhaustion crashed it
-/// into a supervisor restart. The embedded engine takes the same cap from the
-/// same places — `OJ_PLUGIN_MEMORY_MB` first, then the inherited
-/// `NODE_OPTIONS` flag, then 4096MB — but degrades gracefully: the near-limit
-/// callback fails the running call with MemoryLimit, the host is declared
-/// gone, and the next call revives it on a fresh heap. Uncapped (the previous
-/// behavior), a heap blow-up ends in a GC storm the transport belt can only
-/// read as a native wedge — or in V8's fatal OOM, which aborts the whole
-/// dev-server process.
+/// Plugin-host heap cap, Node parity: `OJ_PLUGIN_MEMORY_MB`, then NODE_OPTIONS
+/// `--max-old-space-size`, then 4096MB. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
 pub(crate) fn plugin_host_memory_mb() -> usize {
     if let Some(mb) = std::env::var("OJ_PLUGIN_MEMORY_MB")
         .ok()
@@ -1531,10 +1366,8 @@ pub(crate) fn plugin_host_memory_mb() -> usize {
         .unwrap_or(4096)
 }
 
-/// The last `--max-old-space-size` in a NODE_OPTIONS value (last wins, like
-/// Node; Node also accepts the underscore spelling), so the heap cap a
-/// deployment already sets for its Node processes carries over to the
-/// embedded engine unchanged.
+/// The last `--max-old-space-size` in NODE_OPTIONS (last wins, like Node;
+/// underscore spelling accepted too).
 fn max_old_space_mb(node_options: &str) -> Option<usize> {
     let mut found = None;
     for token in node_options.split_whitespace() {
@@ -1548,26 +1381,16 @@ fn max_old_space_mb(node_options: &str) -> Option<usize> {
     found
 }
 
-/// The process-wide native-addon KEEPER: one hidden engine that pre-registers
-/// every currently-live addon before a dying host's teardown can orphan it,
-/// so a later respawn re-registers into the supported concurrent-envs case
-/// instead of the crashing zero-live one (Node's main thread never unloads
-/// addons and Bun keeps envs alive for the same reason). Held for the process
-/// lifetime; its scheduler keeps the event loop polled, so addon threadsafe
-/// functions that dispatch to their first env keep being serviced.
+/// Process-wide native-addon KEEPER: a hidden engine pre-registers live addons before
+/// a dying host's teardown orphans them, so a respawn re-registers into the safe concurrent-envs case.
 static ADDON_KEEPER: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>> = Mutex::new(None);
 
-/// The keeper's whole budget. Deliberately UNDER `PLUGIN_HOST_RESPAWN_SPACING`:
-/// a death that arms the keeper also stamps the spacing clock, so by the time
-/// the first revive is allowed the keeper has either registered (the addons
-/// are live, the revive proceeds) or given up and abandoned the old engine
-/// (the addons are orphaned, the revive gate refuses) — never in between.
+/// Keeper budget, deliberately UNDER `PLUGIN_HOST_RESPAWN_SPACING`: by the time
+/// a revive is allowed the keeper has either registered or given up, never in between.
 const ADDON_KEEPER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Load `addons` into the keeper engine (spawning it on first use), each one
-/// best-effort: the keeper exists to hold registrations, and one addon that
-/// fails to require must not cost the others their keeper. The require cache
-/// makes repeat loads of the same addon free.
+/// Load `addons` into the keeper engine (spawned on first use), each best-effort:
+/// one addon failing to require must not cost the others their keeper.
 async fn keep_addons_alive(root: &Path, addons: &[PathBuf]) -> Result<(), String> {
     let engine = {
         let mut keeper = ADDON_KEEPER.lock().unwrap();
@@ -1583,12 +1406,8 @@ async fn keep_addons_alive(root: &Path, addons: &[PathBuf]) -> Result<(), String
             }
         }
     };
-    // Re-filter against the registry at load time: an UNRELATED engine dying
-    // between the caller's snapshot and this eval orphans its addons, and the
-    // keeper requiring one of those would itself be the dangerous
-    // re-registration. The dying host's own addons stay live through this
-    // (its taken engine's open channel keeps its env alive until the abandon
-    // that follows), so they always survive the filter.
+    // Re-filter at load time: an unrelated engine dying since the snapshot
+    // orphans its addons, and requiring one would itself be the dangerous re-registration.
     let live: std::collections::HashSet<PathBuf> = oj_js::addons_with_live_registrations()
         .into_iter()
         .collect();
@@ -1622,10 +1441,8 @@ for (const p of {paths}) {{
         .map_err(|e| format!("keeper load failed: {e}"))
 }
 
-/// This process's resident set size in MB, best effort, for the host-death
-/// diagnostics: Linux reads the live value from /proc; the other unixes fall
-/// back to getrusage's PEAK (close enough for a grown process, which is what
-/// a wedge diagnostic is looking at).
+/// Process RSS in MB, best effort, for host-death diagnostics: /proc on Linux,
+/// getrusage's PEAK elsewhere.
 fn process_rss_mb() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
@@ -1652,10 +1469,7 @@ fn process_rss_mb() -> Option<u64> {
 }
 
 /// The host's reverse ctx-RPC (`this.resolve` fallbacks, `this.load` module
-/// info), answered SYNCHRONOUSLY on the engine's isolate thread through the
-/// `__oj_rpc` bridge — both handlers are plain resolver/fs/compile work, so
-/// the old request/reply plumbing (ids, a pending map, bounded stdin writes)
-/// has no in-process counterpart at all.
+/// info), answered SYNCHRONOUSLY on the isolate thread via the `__oj_rpc` bridge.
 fn ctx_rpc(
     method: &str,
     args: &[serde_json::Value],
@@ -1714,10 +1528,8 @@ fn ctx_rpc(
     }
 }
 
-/// How long one plugin hook may run before oj gives up on it. Vite has no
-/// hook timeout at all; oj's default of 20 s keeps a hung plugin from wedging
-/// the server, and `OJ_PLUGIN_TIMEOUT=<seconds>` raises it for plugins that
-/// legitimately take longer (a large first-run codegen, a cold type check).
+/// How long one plugin hook may run (default 20s, `OJ_PLUGIN_TIMEOUT` raises it);
+/// Vite has no hook timeout at all.
 pub fn plugin_rpc_timeout() -> std::time::Duration {
     plugin_rpc_timeout_from(std::env::var("OJ_PLUGIN_TIMEOUT").ok().as_deref())
 }
@@ -1730,12 +1542,8 @@ fn plugin_rpc_timeout_from(raw: Option<&str>) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// How long the plugin host may take to finish its top-level init (loading the
-/// config, config/configResolved/configureServer, a Miniflare boot) before an
-/// RPC waiting on it gives up. The host answers RPCs only after init, so this
-/// gates `call` instead of racing the per-call timeout against a slow boot;
-/// Vite has no bound at all here (its startup simply awaits the hooks).
-/// `OJ_PLUGIN_INIT_TIMEOUT=<seconds>` adjusts it.
+/// How long the host may take to finish top-level init before a waiting RPC
+/// gives up (`OJ_PLUGIN_INIT_TIMEOUT`); gates `call` instead of racing the per-call timeout.
 pub fn plugin_init_timeout() -> std::time::Duration {
     plugin_init_timeout_from(std::env::var("OJ_PLUGIN_INIT_TIMEOUT").ok().as_deref())
 }
@@ -1754,10 +1562,8 @@ impl std::fmt::Debug for PluginHost {
     }
 }
 
-/// The old spawn's `kill_on_drop`, in-process: a host dropped without an
-/// explicit shutdown abandons its engine instead of letting the last
-/// `Arc<JsEngine>` drop JOIN a thread that may be parked in a never-settling
-/// init forever.
+/// A host dropped without an explicit shutdown abandons its engine: the last
+/// `Arc<JsEngine>` drop must not JOIN a thread parked in a never-settling init.
 impl Drop for PluginHost {
     fn drop(&mut self) {
         if let Some(engine) = self
@@ -1771,10 +1577,8 @@ impl Drop for PluginHost {
     }
 }
 
-/// The init deadline one `call` waits out while the host is uninitialized: a
-/// boot host shares the spawn-anchored deadline (`spawned + init_wait`), a
-/// lazy host anchors `init_wait` to the CALL's own start so a call arriving
-/// long after spawn still gets a full window (init landing releases it early).
+/// Init deadline a pre-init `call` waits out: boot hosts share `spawned +
+/// init_wait`, lazy hosts anchor to the CALL's own start (init landing releases early).
 fn call_init_deadline(
     lazy: bool,
     spawned: tokio::time::Instant,
@@ -1788,9 +1592,8 @@ fn call_init_deadline(
     }
 }
 
-/// The init-wait policy per spawn kind (see `PluginHost::init_wait`): a boot
-/// host gets the long init deadline, a lazily spawned host the short per-call
-/// bound — each named after the env knob that adjusts it.
+/// Init-wait policy per spawn kind: boot host long deadline, lazy host short
+/// per-call bound, each named after its env knob.
 fn init_wait_policy(lazy: bool) -> (std::time::Duration, &'static str) {
     if lazy {
         (plugin_rpc_timeout(), "OJ_PLUGIN_TIMEOUT")
@@ -1799,9 +1602,8 @@ fn init_wait_policy(lazy: bool) -> (std::time::Duration, &'static str) {
     }
 }
 
-/// Per-spawn timeout overrides, for tests that must exercise the init-wait,
-/// stall-monitor and transport-belt semantics without racing the env-var
-/// knobs other tests read. Production spawns pass the default (env-derived).
+/// Per-spawn timeout overrides for tests, avoiding races on the env-var knobs
+/// other tests read. Production spawns pass the default (env-derived).
 #[derive(Default)]
 struct SpawnTimeouts {
     init_wait: Option<std::time::Duration>,
@@ -1814,9 +1616,8 @@ struct SpawnTimeouts {
 }
 
 impl PluginHost {
-    /// Spawn a boot-time host: calls wait out the full init deadline
-    /// (`OJ_PLUGIN_INIT_TIMEOUT`), because boot correctness depends on its
-    /// snapshot RPCs (config defines, hook gates, serve info).
+    /// Spawn a boot-time host: calls wait out the full init deadline, because
+    /// boot correctness depends on its snapshot RPCs.
     pub async fn spawn(
         root: &Path,
         plugins_file: &Path,
@@ -1832,10 +1633,8 @@ impl PluginHost {
         .await
     }
 
-    /// Spawn a lazily created host (the SSR environment host, created on the
-    /// first SSR request): calls bound their init wait by the ordinary per-call
-    /// timeout (`OJ_PLUGIN_TIMEOUT`), so a wedged init cannot freeze the single
-    /// watcher thread or browser-facing SSR transforms for the long deadline.
+    /// Spawn a lazily created host (e.g. the SSR environment host): calls bound
+    /// their init wait by the per-call timeout, so a wedged init cannot freeze the watcher thread.
     pub async fn spawn_lazy(
         root: &Path,
         plugins_file: &Path,
@@ -1851,8 +1650,7 @@ impl PluginHost {
         .await
     }
 
-    /// Test-only lazy spawn with an explicit init wait, so the latch semantics
-    /// can be exercised without racing the env-var knobs other tests read.
+    /// Test-only lazy spawn with an explicit init wait.
     #[cfg(test)]
     pub(crate) async fn spawn_lazy_with_wait(
         root: &Path,
@@ -1952,26 +1750,16 @@ impl PluginHost {
         Ok(host)
     }
 
-    /// Boot one engine GENERATION onto `host`: write the host module, spawn
-    /// the engine with its push/RPC hooks, install it, and start the three
-    /// per-generation tasks (boot, push dispatcher, init stall monitor). The
-    /// initial spawn and every revive run this same path; each task carries
-    /// its generation so a death it reports about a since-replaced engine is
-    /// ignored (see `declare_gone`). `generation` is the generation this boot
-    /// is FOR: if another revive superseded it before the engine could be
-    /// installed, the just-spawned engine is abandoned instead of installed —
-    /// two racing ignites must never leave a live loser behind (a zombie
-    /// isolate with its own middleware server).
+    /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
+    /// superseded `generation` abandons the just-spawned engine: racing ignites must never leave a live loser.
     fn ignite(host: &std::sync::Arc<PluginHost>, generation: u64) -> Result<(), String> {
         let root = host.boot.root.clone();
         let script = PathBuf::from(&host.host_module);
         if let Some(parent) = script.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        // Written atomically (tmp + rename): several hosts spawn concurrently
-        // in one process (boot + lazy SSR + per-environment build hosts), and
-        // a plain truncating write could hand a sibling engine's import a
-        // half-written module.
+        // Written atomically (tmp + rename): hosts spawn concurrently, and a
+        // truncating write could hand a sibling engine a half-written module.
         let _ = ensure_asset(
             oj_cache::cache_root(&root).as_path(),
             "discovered-deps.mjs",
@@ -1983,10 +1771,8 @@ impl PluginHost {
             std::fs::rename(&tmp, &script).map_err(|e| e.to_string())?;
         }
 
-        // The engine's push channel replaces the sidecar's control-plane
-        // stdout: pushes arrive as values on `post_rx`, so nothing a plugin
-        // prints can splice into the protocol and the whole control-token /
-        // ACK / re-push machinery has no in-process counterpart.
+        // Pushes arrive as values on `post_rx`, so nothing a plugin prints can
+        // splice into the protocol.
         let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
         let resolver = std::sync::Arc::new(OjResolver::new(&root));
         let rpc_handler: oj_js::RpcHandler = {
@@ -2008,9 +1794,8 @@ impl PluginHost {
         let engine = std::sync::Arc::new(engine);
         {
             let revive = host.revive.lock().unwrap();
-            // A shutdown racing this boot must not gain a live engine it can
-            // no longer take (its engine take may have run before this
-            // install), and a newer revive must not gain a live loser.
+            // A shutdown racing this boot must not gain a live engine it can no
+            // longer take, and a newer revive must not gain a live loser.
             if revive.generation != generation
                 || host.shut_down.load(std::sync::atomic::Ordering::SeqCst)
             {
@@ -2021,12 +1806,8 @@ impl PluginHost {
             *host.engine.lock().unwrap() = Some(std::sync::Arc::clone(&engine));
         }
 
-        // The BOOT task: seed the host's identity (what used to be argv and
-        // spawn env) as a global, then trigger the module's top-level init by
-        // calling a trivial export. The init call takes no deadline — the
-        // Rust-side watches (init gate, stall monitor) own boot patience —
-        // and a top-level throw (the old "host process died on boot") fails
-        // it, printing the cause and declaring the host gone.
+        // BOOT task: seed the host's identity, then trigger top-level init via a trivial
+        // export. No deadline (the Rust-side watches own boot patience); a top-level throw declares the host gone.
         let boot_ref = std::sync::Arc::clone(host);
         let boot_engine = std::sync::Arc::clone(&engine);
         let boot_seed = host.boot.boot_seed.clone();
@@ -2044,10 +1825,8 @@ impl PluginHost {
                 .call_with_deadline(host_module, "ojHostReady", Vec::new(), None)
                 .await
             {
-                // The `{ ojInit }` push already flipped `initialized`; the
-                // reply is only the error path's carrier. A host booted (or
-                // revived) after the dev listener bound missed the bind-time
-                // announce — deliver it now.
+                // The `{ ojInit }` push already flipped `initialized`; the reply is
+                // the error path's carrier. Deliver a bind-time announce this host missed.
                 Ok(_) => {
                     let listener = DEV_LISTENER.lock().unwrap().clone();
                     if let Some((port, interface)) = listener {
@@ -2064,23 +1843,13 @@ impl PluginHost {
             }
         });
 
-        // The PUSH DISPATCHER: the engine-channel successor of the stdout
-        // reader task. Same control pushes, minus the parsing: values arrive
-        // whole, hook replies come back on their own call futures, and the
-        // reverse ctx-RPC is answered synchronously inside the engine.
+        // The PUSH DISPATCHER: control pushes arrive whole on the engine channel;
+        // hook replies come back on their own call futures.
         let reader_ref = std::sync::Arc::clone(host);
         tokio::spawn(async move {
             while let Some(msg) = post_rx.recv().await {
-                // A push queued by a since-replaced engine is history, not
-                // state: a stale `ojInit` landing after a revive reset the
-                // watches would open the call gate before the NEW engine even
-                // evaluated its module (racing the boot prelude). Drain and
-                // drop everything from a superseded generation — and from a
-                // declared-dead one: the keeper sequence keeps a dying engine
-                // alive briefly past its declaration, and a wedge that
-                // self-resolves in that window must not re-activate serve
-                // info for a middleware server the pending abandon is about
-                // to kill.
+                // Drain and drop pushes from a superseded or declared-dead generation:
+                // a stale `ojInit` would open the call gate before the NEW engine evaluated its module.
                 if *reader_ref.host_gone.borrow()
                     || reader_ref.revive.lock().unwrap().generation != generation
                 {
@@ -2095,25 +1864,19 @@ impl PluginHost {
                     continue;
                 }
                 if msg.get("ojInit").is_some() {
-                    // The host's unconditional init-complete signal, sent in
-                    // BOTH modes: build mode has no ojServeInfo push, so
-                    // without this the gate would only release on the first
-                    // reply — a hanging first hook would wait out the whole
-                    // init deadline blamed on initialization.
+                    // Unconditional init-complete, sent in BOTH modes: build mode
+                    // has no ojServeInfo push, and the gate must not wait for the first reply.
                     let _ = reader_ref.initialized.send_replace(true);
                     let _ = reader_ref.init_failed.send_replace(false);
                     continue;
                 }
                 if msg.get("ojResyncDone").is_some() {
-                    // An enqueued worker-environment resync actually ran (the
-                    // invalidate queue drained to it); see resync_done.
+                    // An enqueued resync actually ran; see resync_done.
                     reader_ref.resync_done.send_modify(|c| *c += 1);
                     continue;
                 }
                 if msg.get("ojInitProgress").is_some() {
-                    // A real top-level init milestone: the boot is
-                    // progressing, so standing wedge evidence is stale and
-                    // the stall monitor re-arms (see init_progress_seen).
+                    // Real init milestone: wedge evidence is stale, the stall monitor re-arms.
                     reader_ref.init_progress_seen.send_modify(|c| *c += 1);
                     let _ = reader_ref.init_failed.send_replace(false);
                     continue;
@@ -2148,13 +1911,8 @@ impl PluginHost {
                     continue;
                 }
             }
-            // The push channel closed: the engine thread exited (a clean
-            // shutdown, or the unwind after an abandon's terminate). Fail
-            // every future call fast instead of letting an init-gated call
-            // wait out the whole init deadline on a dead engine; in-flight
-            // calls select on this same watch. Generation-guarded: an
-            // abandoned engine's thread can exit AFTER a revive replaced it,
-            // and its close must not kill the fresh generation.
+            // Push channel closed = engine thread exited: fail future calls fast.
+            // Generation-guarded: an abandoned engine's late exit must not kill the fresh generation.
             let revive = reader_ref.revive.lock().unwrap();
             if revive.generation == generation {
                 drop(revive);
@@ -2162,18 +1920,8 @@ impl PluginHost {
             }
         });
 
-        // The init STALL MONITOR: wedge evidence independent of any caller's
-        // window. The boot host's per-call init windows equal the whole init
-        // deadline, so no call ever burns an RPC-scale window on it — without
-        // this, a wedged-but-alive host held evidence-gated waiters (the
-        // Start prewarm hold) for the full deadline. The host reports real
-        // milestones (`{ ojInitProgress }`) through its top-level init; a
-        // full RPC-scale window with NO milestone and init still pending
-        // flips `init_failed`, and any progress — a milestone, or init
-        // itself — clears it. A healthy slow boot that keeps hitting
-        // milestones therefore holds waiters however long it takes, while a
-        // host gone silent releases them at the ~RPC scale. Evidence only:
-        // calls never consult it (see `call`).
+        // Init STALL MONITOR, wedge evidence independent of any caller's window: a
+        // full RPC-scale window with NO milestone flips `init_failed`, progress clears it. Calls never consult it.
         let monitor_ref = std::sync::Arc::clone(host);
         let stall_wait = host.boot.stall_wait;
         tokio::spawn(async move {
@@ -2196,9 +1944,7 @@ impl PluginHost {
                 }
                 if stalled {
                     let _ = monitor_ref.init_failed.send_replace(true);
-                    // The window is spent: re-arm only on new progress (or
-                    // exit on init/death) instead of spinning on a past
-                    // deadline. The reader clears the evidence on progress.
+                    // Window spent: re-arm only on new progress; the reader clears the evidence.
                     loop {
                         tokio::select! {
                             biased;
@@ -2220,19 +1966,15 @@ impl PluginHost {
         Ok(())
     }
 
-    /// Whether a dead host may still come back: budget left, spacing not the
-    /// question here (a waiter asks "is recovery possible at all"), and never
-    /// after an on-purpose `shutdown`.
+    /// Whether a dead host may still come back: budget left, and never after an
+    /// on-purpose `shutdown`.
     pub fn can_revive(&self) -> bool {
         !self.shut_down.load(std::sync::atomic::Ordering::SeqCst)
             && self.revive.lock().unwrap().attempts < PLUGIN_HOST_RESPAWN_LIMIT
     }
 
-    /// Revive a dead host with a fresh engine generation, on demand from the
-    /// next call: reset the per-generation watches, bump the generation, and
-    /// re-run the same boot `ignite` ran at spawn. Bounded by a lifetime
-    /// budget and a minimum spacing (see `ReviveState`); a shutdown host is
-    /// never revived. Returns whether the host is now (or already was) live.
+    /// Revive a dead host with a fresh generation, bounded by lifetime budget and
+    /// spacing (see `ReviveState`). Returns whether the host is now (or already was) live.
     fn try_revive(&self) -> bool {
         if self.shut_down.load(std::sync::atomic::Ordering::SeqCst) {
             return false;
@@ -2242,8 +1984,7 @@ impl PluginHost {
         };
         let mut revive = self.revive.lock().unwrap();
         if !*self.host_gone.borrow() {
-            // A concurrent caller already revived it while we waited on the
-            // lock (or the death report was stale): nothing to do.
+            // A concurrent caller already revived it (or the report was stale).
             return true;
         }
         if revive.attempts >= PLUGIN_HOST_RESPAWN_LIMIT {
@@ -2251,22 +1992,12 @@ impl PluginHost {
         }
         if let Some(last) = revive.last {
             if last.elapsed() < PLUGIN_HOST_RESPAWN_SPACING {
-                // Too soon after the previous attempt: fail this call fast
-                // instead of stacking engines against a recurring wedge.
+                // Too soon: fail fast instead of stacking engines against a recurring wedge.
                 return false;
             }
         }
-        // A respawn re-loads the app's plugins, and with them the native
-        // addons the DEAD generation held. Re-registering an addon whose
-        // every runtime is gone runs its init against dangling process-global
-        // state — a pre-3.10 napi-rs addon (vite 8.0.16's rolldown pin)
-        // crashes the whole dev server on it, which is strictly worse than
-        // the dead host this would heal. Refuse for exactly the addons this
-        // host's own teardown orphaned (pending now, not pending at its
-        // death); an addon another engine still holds live re-registers as
-        // the ordinary concurrent case and never blocks, and neither does an
-        // orphan this host never loaded. No attempt is consumed, and the
-        // spacing clock throttles the re-check and the message.
+        // Re-registering an addon whose every runtime is gone can crash the process
+        // (napi-rs pre-3.10): refuse only for addons this host's own teardown orphaned; no attempt is consumed.
         let orphaned = oj_js::addons_pending_unsafe_reregistration();
         if let Some(addon) = orphaned
             .iter()
@@ -2287,17 +2018,13 @@ impl PluginHost {
             "oj: respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
             revive.attempts
         );
-        // Reset the per-generation state BEFORE the new engine can push:
-        // init pending again, evidence cleared, the stale serve info dropped
-        // (the old middleware port died with its engine; subscribers activate
-        // again on the fresh generation's push).
+        // Reset per-generation state BEFORE the new engine can push: init pending
+        // again, evidence cleared, stale serve info dropped.
         let _ = self.initialized.send_replace(false);
         let _ = self.init_failed.send_replace(false);
         self.serve_info_push.send_replace(None);
-        // The fresh engine re-evaluates the plugins file, which may carry
-        // different hooks or filters; every gate reads the live plan, so the
-        // fail-open reset takes effect immediately and the refetch (spawned
-        // below once the engine is up) restores precise gating.
+        // The fresh engine re-evaluates the plugins file: fail-open now, the
+        // refetch restores precise gating.
         *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
         self.hook_plan_fetched
             .store(false, std::sync::atomic::Ordering::Release);
@@ -2308,8 +2035,7 @@ impl PluginHost {
         drop(revive);
         match Self::ignite(&host, generation) {
             Ok(()) => {
-                // Live again: lift the death flag last, so a caller either
-                // sees a dead host or a fully re-armed one.
+                // Lift the death flag last: a caller sees a dead host or a fully re-armed one.
                 let _ = self.host_gone.send_replace(false);
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     let host = std::sync::Arc::clone(&host);
@@ -2325,8 +2051,7 @@ impl PluginHost {
     }
 
     /// Fire-and-forget `serverListening` delivery (see [`dev_listener_bound`]):
-    /// a failure only means this host's plugins never see "listening", which
-    /// is also what a host death means for them.
+    /// a failure only means this host's plugins never see "listening".
     fn announce_dev_listener(self: &std::sync::Arc<Self>, port: u16, interface: &str) {
         let host = std::sync::Arc::clone(self);
         let interface = interface.to_string();
@@ -2341,33 +2066,12 @@ impl PluginHost {
         if *self.host_gone.borrow() && !self.try_revive() {
             return Err("plugin host exited".into());
         }
-        // The host answers hooks only after its top-level init completes (the
-        // entry point runs past every top-level await), so a call during a
-        // slow boot must wait for init — bounded by this spawn's init-wait
-        // policy (the long spawn-anchored deadline on a boot host, the short
-        // per-call window on a lazy one) — instead of racing its own per-call
-        // timeout against the boot and permanently snapshotting wrong
-        // defaults. Fast boots are untouched: initialized flips with the
-        // serve-info push, the ojInit signal, or the first reply, all
-        // preceding any wait here.
-        //
-        // The gate runs BEFORE anything reaches the engine. A wedged host is
-        // mid-init on the isolate thread, so a job submitted now would only
-        // queue behind the wedge and rot; worse, its failure would be blamed
-        // on the hook. A pre-init call therefore submits nothing: it waits on
-        // the init watch and either proceeds (init flipped: the module is
-        // evaluated and serving) or fails at its window with no job sent.
-        //
-        // Per-call windows, deliberately with NO time-based fail-fast latch:
-        // a previous call's expired window is evidence only of a slow boot,
-        // not a wedge, so a later call must still get its own full window —
-        // a healthy 30 s init serves a call arriving at 21 s the moment init
-        // lands, where a latch would fail it milliseconds short. Time alone
-        // never fails a call early: only host death (host_gone) fails fast.
-        // A truly wedged host costs each caller one window (degrading like a
-        // slow hook) with zero jobs submitted; `init_failed` still records the
-        // expired-window evidence — cleared whenever init progresses — for
-        // waiters that select on wedge evidence (the Start prewarm hold).
+        // Init gate, BEFORE anything reaches the engine: the host answers hooks
+        // only after top-level init, and a job submitted to a wedged mid-init
+        // isolate would queue behind the wedge and be blamed on the hook.
+        // Deliberately NO time-based fail-fast latch: an expired window is
+        // evidence of a slow boot, not a wedge, so every call gets its own full
+        // window; only host death (host_gone) fails fast.
         let mut init_rx = self.initialized.subscribe();
         if !*init_rx.borrow_and_update() {
             let deadline = call_init_deadline(
@@ -2377,9 +2081,8 @@ impl PluginHost {
                 tokio::time::Instant::now(),
             );
             let mut host_gone_rx = self.host_gone.subscribe();
-            // A death flipped between the top-of-call check and this
-            // subscribe is already "seen" by the receiver (changed() would
-            // never fire for it): consult the value once after subscribing.
+            // A death flipped before this subscribe is already "seen" (changed()
+            // never fires for it): consult the value once after subscribing.
             if *host_gone_rx.borrow_and_update() {
                 return Err("plugin host exited".into());
             }
@@ -2403,9 +2106,8 @@ impl PluginHost {
                         }
                     }
                     _ = tokio::time::sleep_until(deadline) => {
-                        // A full window elapsed with init still pending:
-                        // wedge EVIDENCE for selecting waiters (never a gate
-                        // for later calls — see above).
+                        // Full window elapsed with init pending: wedge EVIDENCE,
+                        // never a gate for later calls.
                         let _ = self.init_failed.send_replace(true);
                         return Err(format!(
                             "plugin host still initializing after {}s running {hook} (raise {} for slower boots)",
@@ -2428,23 +2130,14 @@ impl PluginHost {
                 }
             }
         }
-        // Initialized: the module is evaluated and its hook entry point is
-        // callable. The engine call carries the per-call deadline itself
-        // (`OJ_PLUGIN_TIMEOUT`), and a deadline failure costs ONE call with
-        // the host answering everyone else — exactly as the old host's reply
-        // timeout did — whether the hook's promise never settles (abandoned
-        // by the scheduler's expiry tick), it parked over budget behind
-        // slower work, or it wedged in synchronous JS (interrupted by the
-        // call's watchdog; the process host lost the WHOLE host to that
-        // shape). The BELT past it is a second full window with NO reply of
-        // any kind: everything above answers at the deadline while the
-        // scheduler is alive, so total silence means the isolate thread is
-        // blocked in NATIVE code (a napi call — the old "host stopped
-        // draining its stdin" evidence) — declare the host gone.
+        // The engine call carries the per-call deadline itself, and a deadline
+        // failure costs ONE call with the host answering everyone else. The BELT
+        // past it is a second full window with NO reply of any kind: the scheduler
+        // answers at the deadline while alive, so total silence means the isolate
+        // thread is blocked in NATIVE code; declare the host gone.
         let deadline = tokio::time::Instant::now() + self.rpc_wait;
-        // The generation this call runs against, read before the engine so a
-        // racing revive makes the pair stale (belt ignored), never mismatched
-        // the other way (a stale generation blaming a fresh engine).
+        // Generation read before the engine: a racing revive makes the pair stale
+        // (belt ignored), never a stale generation blaming a fresh engine.
         let generation = self.revive.lock().unwrap().generation;
         let engine = self
             .engine
@@ -2488,11 +2181,8 @@ impl PluginHost {
         };
         match result {
             Ok(value) => {
-                // Any reply proves the host's top-level init completed: the
-                // hook entry point only exists past every top-level await.
-                // Generation-guarded: a reply from a since-replaced engine
-                // proves the OLD generation's init, and must not open the
-                // gate for the new one still booting.
+                // Any reply proves top-level init completed. Generation-guarded: a
+                // reply from a replaced engine must not open the gate for the new one.
                 if self.revive.lock().unwrap().generation == generation {
                     let _ = self.initialized.send_replace(true);
                     let _ = self.init_failed.send_replace(false);
@@ -2509,10 +2199,8 @@ impl PluginHost {
             )),
             Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
             Err(oj_js::EngineError::MemoryLimit) => {
-                // A near-limit heap is a property of the isolate, not of this
-                // call: keeping the engine would keep serving off a heap that
-                // can only thrash (and the unwind doubled its cap). Declare
-                // it gone; the next call revives a fresh one.
+                // A near-limit heap is a property of the isolate, not this call:
+                // declare it gone, the next call revives a fresh one.
                 let msg = format!(
                     "plugin host exceeded its memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB) running {hook}",
                     self.boot.memory_limit_bytes / (1024 * 1024)
@@ -2530,26 +2218,15 @@ impl PluginHost {
         }
     }
 
-    /// Treat the host as dead NOW (a wedged isolate, a failed boot): abandon
-    /// the engine — terminate_execution interrupts a running JS job so a
-    /// wedged synchronous hook unwinds and the thread exits on its closed
-    /// channel; a job blocked in NATIVE code cannot be interrupted and leaks
-    /// the detached thread with its isolate (the documented cost of the
-    /// in-process host) — and flip `host_gone` so every in-flight and future
-    /// call fails fast, the same state the push dispatcher's channel-closed
-    /// path reaches — no longer terminal: the next call may revive the host
-    /// with a fresh engine generation (see `try_revive`). `generation` is the
-    /// generation of the engine the report is ABOUT: a report outliving a
-    /// revive (an old call's belt, an abandoned engine's late exit) is stale
-    /// and must not kill the replacement.
+    /// Treat the host as dead NOW: abandon the engine and flip `host_gone`; the next
+    /// call may revive it. A report about a since-replaced generation is stale and must not kill the replacement.
     fn declare_gone(&self, why: &str, generation: u64) {
         let mut revive = self.revive.lock().unwrap();
         if !first_death_report(&mut revive, generation) {
             return;
         }
-        // Snapshot the addons ALREADY orphaned before this death, so the
-        // revive gate can tell "held by the dead generation" (pending only
-        // after its teardown) from "someone else's" (see `pending_before`).
+        // Snapshot addons ALREADY orphaned before this death, so the revive gate
+        // can tell the dead generation's from someone else's (see `pending_before`).
         revive.pending_before = oj_js::addons_pending_unsafe_reregistration()
             .into_iter()
             .collect();
@@ -2558,25 +2235,16 @@ impl PluginHost {
             .unwrap_or_default();
         eprintln!("oj: {why}; treating the plugin host as gone{rss}");
         if let Some(engine) = self.engine.lock().unwrap().take() {
-            // The KEEPER sequence: while any native addon is live, register
-            // it into the keeper env BEFORE this engine is abandoned — the
-            // taken engine's open job channel keeps its env (and with it the
-            // addons' live counts) alive until the abandon, so the keeper
-            // always registers into the supported concurrent-envs case, and
-            // the eventual respawn re-registers the same way. Stamping the
-            // spacing clock defers the first revive past the keeper's
-            // deadline: by then the addons are either live (revive proceeds)
-            // or orphaned (the gate refuses). With no live addons the abandon
-            // is immediate, exactly the old behavior.
+            // KEEPER sequence: register live addons BEFORE the abandon (the open job
+            // channel keeps their env alive until then); the spacing stamp defers the first revive past the keeper.
             let addons = oj_js::addons_with_live_registrations();
             if addons.is_empty() {
                 engine.abandon();
             } else {
                 revive.last = Some(std::time::Instant::now());
                 let root = self.boot.root.clone();
-                // The abandon rides a Drop guard: a cancelled task (runtime
-                // shutdown mid-keeper) must still abandon, or the engine
-                // Arc's drop would JOIN a possibly-wedged isolate thread.
+                // Abandon rides a Drop guard: a cancelled task must still abandon,
+                // or the engine Arc's drop would JOIN a possibly-wedged thread.
                 struct AbandonOnDrop(Option<std::sync::Arc<oj_js::JsEngine>>);
                 impl Drop for AbandonOnDrop {
                     fn drop(&mut self) {
@@ -2612,45 +2280,32 @@ impl PluginHost {
         self.initialized.subscribe()
     }
 
-    /// The shared init deadline, measured from the host's spawn (this host's
-    /// init-wait policy, so a lazily spawned host reports its short bound).
-    /// A caller gating separate work on the host's initialization (the Start
-    /// prewarm waiting for serve info) anchors to THIS deadline instead of
-    /// starting a fresh full period of its own.
+    /// Shared init deadline measured from spawn: callers gating separate work
+    /// anchor to THIS deadline instead of starting a fresh full period.
     pub fn init_deadline_at(&self) -> tokio::time::Instant {
         *self.spawned.lock().unwrap() + self.init_wait
     }
 
-    /// Live updates of the host-gone flag (the engine exited or was
-    /// abandoned). For waiters selecting on wedge evidence without holding the
-    /// `Arc<PluginHost>` (the Start prewarm hold).
+    /// Live updates of the host-gone flag, for waiters selecting on wedge
+    /// evidence without holding the `Arc<PluginHost>`.
     pub fn host_gone_updates(&self) -> tokio::sync::watch::Receiver<bool> {
         self.host_gone.subscribe()
     }
 
-    /// Live updates of the init-failure evidence: true while some pre-init
-    /// call burned its full init window with init still pending, false again
-    /// the moment init progresses. Evidence for waiters gating separate work
-    /// on the host's health (the Start prewarm hold selects on it, with
-    /// `host_gone_updates` and `init_deadline_at`, instead of a flat timer a
-    /// healthy slow boot would trip) — never a per-call gate.
+    /// Init-failure evidence updates: true while a pre-init call burned its full
+    /// window, false again on progress. For health waiters, never a per-call gate.
     pub fn init_failure_updates(&self) -> tokio::sync::watch::Receiver<bool> {
         self.init_failed.subscribe()
     }
 
-    /// Live updates of the resync-executed counter (`{ ojResyncDone }` pushes).
-    /// A caller enqueueing a resync snapshots the value FIRST, then waits for
-    /// it to move past that baseline: the /__oj_invalidate ack only means
-    /// "enqueued", and claiming "resynced" off the ack would log success over
-    /// a queue that never drained.
+    /// Resync-executed counter updates: snapshot FIRST, then wait for it to move
+    /// past the baseline (the /__oj_invalidate ack only means "enqueued").
     pub fn resync_done_updates(&self) -> tokio::sync::watch::Receiver<u64> {
         self.resync_done.subscribe()
     }
 
-    /// Resolves when the host is gone (its engine exited or was abandoned). Lets a
-    /// task holding an `Arc<PluginHost>` — which keeps every channel sender
-    /// alive, so `changed().is_err()` can never observe the death — wait on
-    /// the host dying instead of pinning it forever.
+    /// Resolves when the host is gone: a task holding an `Arc<PluginHost>` keeps
+    /// every sender alive, so `changed().is_err()` can never observe the death.
     pub(crate) async fn host_gone_wait(&self) {
         let mut rx = self.host_gone.subscribe();
         while !*rx.borrow_and_update() {
@@ -2736,10 +2391,8 @@ impl PluginHost {
         .await
     }
 
-    /// `ctx_json` is Vite's IndexHtmlTransformContext for the page (`path`,
-    /// `filename`, and `originalUrl` in dev or `bundle` / `chunk` in a build);
-    /// the host adds the dev server. A throwing hook is an `Err`, as in Vite,
-    /// where it fails the request or the build.
+    /// `ctx_json` is Vite's IndexHtmlTransformContext; the host adds the dev
+    /// server. A throwing hook is an `Err`, as in Vite.
     #[inline]
     pub async fn transform_index_html(&self, html: &str, ctx_json: &str) -> Result<String, String> {
         Ok(self
@@ -2809,20 +2462,8 @@ impl PluginHost {
         !matches!(self.call("hasTransformIndexHtml", &[]).await, Ok(Some(s)) if s == "false")
     }
 
-    /// The per-hook filter plan the build's Rust-side gate runs on, fetched
-    /// once per host. Any failure to fetch or parse degrades to "hook present,
-    /// unfiltered", which is exactly the ungated behavior.
-    /// Ensures the plan was fetched from the live engine and returns a
-    /// snapshot. Gates should prefer the `hook_wants_*` accessors, which read
-    /// the live plan and so see a respawn's fail-open reset immediately.
-    /// One bounded plan fetch at host handout, so the gates run on real
-    /// filters from the first dispatch. Vite has no unfiltered window (its
-    /// filters compile synchronously before every dispatch); the isolate
-    /// boundary would otherwise open one between spawn and the async fetch.
-    /// The first acquirer waits, capped by the deadline; later acquirers
-    /// return immediately (the fetched flag short-circuits once the plan is
-    /// live), and a slow or wedged host degrades to the fail-open default,
-    /// today's behavior, rather than stalling requests.
+    /// One bounded per-host fetch of the hook filter plan, so gates run on real
+    /// filters from the first dispatch; a slow or wedged host degrades to fail-open.
     pub async fn prime_hook_plan(self: &std::sync::Arc<Self>) {
         use std::sync::atomic::Ordering;
         if self.hook_plan_fetched.load(Ordering::Acquire) {
@@ -2848,14 +2489,8 @@ impl PluginHost {
         self.hook_plan.read().unwrap().clone()
     }
 
-    /// Dispatches the app-Vite-side transform warm: every url's
-    /// `environment.warmupRequest` STARTS in the host (Vite's warmup.ts is
-    /// equally fire-and-forget; transformRequest dedups), filling the
-    /// in-memory transform cache the module runner's serial import walk then
-    /// hits. The reply arrives as soon as the warms are dispatched, so a
-    /// cold-graph warm never parks behind this call's RPC window. Returns the
-    /// host's `{environments, started}` summary; None when nothing was
-    /// warmable (no environment carries a warmupRequest, or no urls).
+    /// Dispatch the app-Vite-side transform warm (fire-and-forget, like Vite's
+    /// warmup.ts); replies once dispatched. Returns `{environments, started}`, None when nothing was warmable.
     pub async fn warm_environments(&self, urls: &[String]) -> Result<Option<String>, String> {
         let payload = serde_json::to_string(urls).map_err(|e| e.to_string())?;
         self.call("warmEnvironments", &[&payload]).await
@@ -2866,9 +2501,8 @@ impl PluginHost {
         if self.hook_plan_fetched.load(Ordering::Acquire) {
             return;
         }
-        // Only a successful fetch is cached: it overwrites unconditionally (a
-        // racer's stale failure can never shadow it), and a failure leaves the
-        // fail-open default in place to be retried on the next call.
+        // Only a successful fetch is cached; a failure leaves the fail-open
+        // default in place to be retried on the next call.
         if let Ok(Some(raw)) = self.call("getBuildHookPlan", &[]).await {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
                 let plan = BuildHookPlan {
@@ -2942,22 +2576,14 @@ impl PluginHost {
         .map(|_| ())
     }
 
-    /// How the host serves requests: the loopback port of its configureServer
-    /// middleware stack (when any plugin registered one), and whether it built
-    /// real runner-backed Vite DevEnvironments (documents are then served by
-    /// the plugin middleware, not the Node SSR runner). The host pushes this
-    /// the moment its init completes, and RPCs are init-gated (see `call`), so
-    /// a value that already arrived is returned without a round trip and the
-    /// push is preferred at any point; only a host that blew the init deadline
-    /// yields the default — the caller can then watch `serve_info_updates` for
-    /// the late push instead of degrading silently.
+    /// How the host serves requests. An already-pushed value returns without a round
+    /// trip; only a host that blew the init deadline yields the default (watch `serve_info_updates` for the late push).
     pub async fn serve_info(&self) -> ServeInfo {
         if let Some(info) = *self.serve_info_push.borrow() {
             return info;
         }
         let rpc = self.call("getServeInfo", &[]).await;
-        // The push may have landed while the RPC ran (or failed); it is the
-        // definitive value.
+        // The push may have landed while the RPC ran; it is the definitive value.
         if let Some(info) = *self.serve_info_push.borrow() {
             return info;
         }
@@ -2971,17 +2597,14 @@ impl PluginHost {
         ServeInfo::from_json(&v)
     }
 
-    /// Subscribe to the host's `{ ojServeInfo }` push: `None` until the host's
-    /// top-level init completes, then the definitive `ServeInfo` — however slow
-    /// the boot. Lets the caller activate the plugin-middleware path late when
-    /// the boot-time `serve_info` timed out.
+    /// Subscribe to `{ ojServeInfo }`: `None` until init completes; lets the
+    /// caller activate the plugin-middleware path late.
     pub fn serve_info_updates(&self) -> tokio::sync::watch::Receiver<Option<ServeInfo>> {
         self.serve_info_push.subscribe()
     }
 
-    /// Number of plugins still active after oj filters out the ones it
-    /// reimplements natively (the React family). Defaults to 1 on RPC failure so
-    /// an uncertain host is kept, never dropped by mistake.
+    /// Plugins still active after oj filters out natively reimplemented ones.
+    /// Defaults to 1 on RPC failure so an uncertain host is never dropped.
     pub async fn plugin_count(&self) -> usize {
         self.call("getPluginCount", &[])
             .await
@@ -2991,13 +2614,8 @@ impl PluginHost {
             .unwrap_or(1)
     }
 
-    /// Env mutations made by plugin `config()` hooks in the host's shadowed
-    /// environment (e.g.
-    /// a plugin flipping a VITE_* flag). Empty on RPC failure.
-    /// `define` entries the plugins' `config()` hooks contributed, as
-    /// `(key, js expression)` pairs (a string value is the expression itself,
-    /// anything else its JSON), so they reach oj's compile the way Vite's merged
-    /// `config.define` does.
+    /// `define` entries plugin `config()` hooks contributed, as (key, js
+    /// expression) pairs, reaching oj's compile like Vite's merged `config.define`. Empty on RPC failure.
     pub async fn config_defines(&self) -> Vec<(String, String)> {
         let Ok(Some(raw)) = self.call("getPluginConfig", &[]).await else {
             return Vec::new();
@@ -3041,10 +2659,8 @@ impl PluginHost {
             .unwrap_or(true)
     }
 
-    /// Whether any active plugin has a `load` hook. Vite runs `load` hooks before
-    /// the filesystem read, so a plugin can replace an on-disk file's contents; oj
-    /// gates that load-first pass on this so apps with no `load` hook pay nothing.
-    /// Defaults to false on RPC failure (the fs read alone is always correct).
+    /// Whether any active plugin has a `load` hook (Vite runs load before the fs
+    /// read). Defaults to false on RPC failure (the fs read alone is always correct).
     pub async fn has_load(&self) -> bool {
         self.call("getHasLoad", &[])
             .await
@@ -3054,9 +2670,8 @@ impl PluginHost {
             .unwrap_or(false)
     }
 
-    /// The `filter.code` include patterns of every object-form transform hook, as
-    /// regex source strings. oj gates dependency transforms on these so it only
-    /// hands a dep to the transform RPC when a transform's own filter wants it.
+    /// `filter.code` include patterns of every object-form transform hook, as
+    /// regex sources; dependency transforms are gated on these.
     pub async fn dep_transform_filters(&self) -> Vec<String> {
         let Ok(Some(raw)) = self.call("getDepTransformFilters", &[]).await else {
             return Vec::new();
@@ -3064,9 +2679,8 @@ impl PluginHost {
         serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
     }
 
-    /// The `filter.id` include patterns of every object-form `load` hook, as regex
-    /// source strings. A dependency module is offered to plugin `load` only when
-    /// its path matches one, so deps cost no RPC unless a plugin asked for them.
+    /// `filter.id` include patterns of every object-form `load` hook: deps cost
+    /// no RPC unless a plugin asked for them.
     pub async fn dep_load_filters(&self) -> Vec<String> {
         let Ok(Some(raw)) = self.call("getDepLoadFilters", &[]).await else {
             return Vec::new();
@@ -3074,11 +2688,8 @@ impl PluginHost {
         serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
     }
 
-    /// The `filter.id` include patterns of every object-form `resolveId` hook, as
-    /// regex source strings. A relative or absolute import matching one is offered
-    /// to the plugins' resolveId before oj's own resolver (Vite runs plugin
-    /// resolveId first for every id; oj gates the non-bare ones on a declared
-    /// filter so unfiltered plugins cost no RPC per import).
+    /// `filter.id` include patterns of every object-form `resolveId` hook: a
+    /// non-bare import is offered to plugin resolveId only when it matches one.
     pub async fn resolve_id_filters(&self) -> Vec<String> {
         let Ok(Some(raw)) = self.call("getResolveIdFilters", &[]).await else {
             return Vec::new();
@@ -3087,8 +2698,7 @@ impl PluginHost {
     }
 
     /// Which HMR hooks any active plugin defines: (watchChange, handleHotUpdate).
-    /// Defaults to (true, true) on RPC or parse failure so an HMR RPC is never
-    /// skipped by mistake.
+    /// Defaults to (true, true) on failure so an HMR RPC is never skipped by mistake.
     pub async fn hmr_hooks(&self) -> (bool, bool) {
         let raw = match self.call("getHmrHooks", &[]).await {
             Ok(Some(s)) => s,
@@ -3107,17 +2717,11 @@ impl PluginHost {
         }
     }
 
-    /// Retire the host's engine now (used when the host has no active
-    /// plugins). Abandon, not drop: dropping a JsEngine joins its thread, and
-    /// nobody retiring an idle host should block on V8 teardown — the thread
-    /// exits by itself on the closed channel, and the push dispatcher's
-    /// channel-closed path then latches `host_gone`.
+    /// Retire the engine now. Abandon, not drop: dropping joins the thread; the
+    /// push dispatcher's channel-closed path then latches `host_gone`.
     pub fn shutdown(&self) {
-        // Retired on purpose: never revived. The revive lock orders this
-        // against an in-flight ignite — the flag lands either before its
-        // install guard runs (the fresh engine is abandoned there) or after
-        // the install (the take below reaches that engine) — so a shutdown
-        // racing a revive can never leave a live engine behind.
+        // Retired on purpose: never revived. The revive lock orders this against
+        // an in-flight ignite, so a racing revive can never leave a live engine behind.
         self.shut_down
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let _revive = self.revive.lock().unwrap();
@@ -3238,10 +2842,8 @@ mod vite_values_tests {
         assert_eq!(extraction_timeout_from(Some("0")).as_secs(), 60);
     }
 
-    // The per-spawn init-wait policy: a boot host waits out the long init
-    // deadline (boot correctness depends on its snapshot RPCs), a lazily
-    // spawned host (the SSR environment host) only the short per-call bound,
-    // so a wedged init cannot freeze the watcher thread for the long deadline.
+    // Init-wait policy: a boot host waits out the long init deadline, a lazy one
+    // only the short per-call bound.
     #[test]
     fn init_wait_policy_is_long_for_boot_hosts_and_short_for_lazy_ones() {
         let (boot_wait, boot_knob) = init_wait_policy(false);
@@ -3252,10 +2854,8 @@ mod vite_values_tests {
         assert_eq!(lazy_knob, "OJ_PLUGIN_TIMEOUT");
     }
 
-    // A lazy host's init gate is per-call: a call arriving AFTER spawn +
-    // init_wait (init still pending) gets its own full window from its own
-    // start, never the spawn-anchored deadline's zero-length remainder. A boot
-    // host keeps the shared spawn-anchored deadline.
+    // A lazy host's init gate is per-call: a call past spawn + init_wait gets its
+    // own full window; a boot host keeps the shared spawn-anchored deadline.
     #[test]
     fn lazy_call_past_the_spawn_deadline_gets_its_own_init_window() {
         let wait = std::time::Duration::from_secs(20);
@@ -3280,10 +2880,8 @@ mod vite_values_tests {
         );
     }
 
-    // One wedge fires every in-flight call's belt at once, and each reports
-    // the same death: only the FIRST report per generation declares the host
-    // gone (one log line, one pending_before snapshot), duplicates and stale
-    // generations are dropped, and a revived generation reports fresh.
+    // Only the FIRST report per generation declares the host gone; duplicates and
+    // stale generations are dropped, a revived generation reports fresh.
     #[test]
     fn only_the_first_death_report_per_generation_declares_the_host_gone() {
         let mut revive = ReviveState {
@@ -3316,9 +2914,8 @@ mod vite_values_tests {
         assert!(!first_death_report(&mut revive, 4), "once");
     }
 
-    // An oj.config.json that sets one ssr key (noExternal) must not drop the
-    // extractor's verdict: the ssr block merges per-key, and `runnerBacked` —
-    // which only extraction produces — is always adopted.
+    // An oj-side ssr key must not drop the extractor's verdict: per-key merge,
+    // `runnerBacked` always adopted.
     #[test]
     fn merge_fills_ssr_per_key_and_always_adopts_runner_backed() {
         let mut config = oj_config::OjConfig {
@@ -3365,9 +2962,8 @@ mod vite_values_tests {
         assert!(oj_config::ssr_runner_backed(&config));
     }
 
-    // The ssr merge recurses one level into `resolve`: an oj-side
-    // ssr.resolve.externalConditions must not drop the extractor's other
-    // resolve sub-keys (the workerd sugar's `conditions` above all).
+    // The ssr merge recurses one level into `resolve`: oj-side sub-keys must not
+    // drop the extractor's others (the workerd sugar's `conditions` above all).
     #[test]
     fn merge_recurses_one_level_into_ssr_resolve() {
         let mut config = oj_config::OjConfig {
@@ -3396,9 +2992,8 @@ mod vite_values_tests {
         assert!(oj_config::ssr_runner_backed(&config));
     }
 
-    // A non-object oj-side ssr value (or ssr.resolve) cannot be merged
-    // per-key: the extractor block is adopted (with a warning) so the
-    // "runnerBacked is always adopted" contract holds.
+    // A non-object oj-side ssr (or ssr.resolve) cannot merge per-key: the
+    // extractor block is adopted so the runnerBacked contract holds.
     #[test]
     fn merge_adopts_extractor_ssr_when_the_oj_side_is_not_an_object() {
         let mut config = oj_config::OjConfig {
@@ -3435,14 +3030,8 @@ mod vite_values_tests {
         assert!(oj_config::ssr_runner_backed(&config));
     }
 
-    // Per-call init windows with NO time-based fail-fast: an earlier call's
-    // expired window is slow-boot evidence, not a wedge, so a later pre-init
-    // call still waits its OWN full window and is served the moment a healthy
-    // (merely slow) init lands. The expired window flips the init-failure
-    // EVIDENCE watch for selecting waiters (the Start prewarm hold), and init
-    // progressing clears it.
-    /// Spawn a healthy lazy host over a trivial plugins file and prove it
-    /// serves a call — the shared setup of the revive tests.
+    /// Spawn a healthy lazy host over a trivial plugins file and prove it serves
+    /// a call: the shared setup of the revive tests.
     async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
         let root = std::env::temp_dir().join(format!("oj-revive-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -3466,10 +3055,8 @@ mod vite_values_tests {
         (root, host)
     }
 
-    /// Rewind the respawn spacing after an induced death. A death with live
-    /// native addons anywhere in the process (another test's engine) stamps
-    /// the clock to defer the first revive past the keeper window; these
-    /// tests target revive semantics, not keeper timing, so they clear it.
+    /// Rewind respawn spacing after an induced death: these tests target revive
+    /// semantics, not keeper timing.
     fn clear_respawn_spacing(host: &PluginHost) {
         host.revive.lock().unwrap().last =
             Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
@@ -3528,9 +3115,8 @@ mod vite_values_tests {
         assert_eq!(host.revive.lock().unwrap().attempts, 0, "no respawn burned");
     }
 
-    // The keeper is best effort per addon: an unloadable path is skipped (the
-    // keeper exists to hold the OTHERS), the eval still succeeds, and the
-    // process-wide keeper engine stays up for the next death.
+    // Keeper is best effort per addon: an unloadable path is skipped, the eval
+    // succeeds, the keeper engine stays up for the next death.
     #[tokio::test]
     async fn addon_keeper_tolerates_unloadable_addons() {
         let root = std::env::temp_dir().join(format!("oj-keeper-{}", std::process::id()));
@@ -3551,10 +3137,8 @@ mod vite_values_tests {
         );
     }
 
-    // The engine's heap cap mirrors the cap the process host inherited as a
-    // node child: a deployment's NODE_OPTIONS --max-old-space-size (last
-    // occurrence wins, underscore spelling accepted, like Node), with
-    // OJ_PLUGIN_MEMORY_MB above it and 4096 beneath.
+    // Heap cap mirrors NODE_OPTIONS --max-old-space-size (last wins, underscore
+    // accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, 4096 beneath.
     #[test]
     fn node_options_heap_cap_parses_like_node() {
         assert_eq!(max_old_space_mb("--max-old-space-size=8192"), Some(8192));
@@ -3572,12 +3156,8 @@ mod vite_values_tests {
         assert_eq!(max_old_space_mb(""), None);
     }
 
-    // A heap blow-up is a property of the isolate, not of one call: the
-    // near-limit callback fails the running hook with MemoryLimit, the host
-    // is declared gone (instead of serving on from a heap that can only
-    // thrash, with a doubled cap), and the next call revives it on a fresh
-    // heap. This is the graceful version of the process host's Node OOM
-    // crash + supervisor restart.
+    // A heap blow-up fails the running hook with MemoryLimit, declares the host
+    // gone, and the next call revives it on a fresh heap.
     #[tokio::test]
     async fn a_memory_blowup_declares_the_host_gone_and_the_next_call_revives_it() {
         let root = std::env::temp_dir().join(format!("oj-revive-oom-{}", std::process::id()));
@@ -3641,9 +3221,8 @@ export default [{
         );
     }
 
-    // The budget is a LIFETIME cap: past it the host stays gone (the outer
-    // supervisor owns recovery), and attempts are spaced so a burst of calls
-    // against a recurring wedge cannot stack engines.
+    // Budget is a LIFETIME cap: past it the host stays gone, and attempts are
+    // spaced so a burst cannot stack engines.
     #[tokio::test]
     async fn the_respawn_budget_is_finite_and_spaced() {
         let (_root, host) = spawn_live_host("budget").await;
@@ -3708,8 +3287,8 @@ export default [{
             "no evidence before a window expires"
         );
 
-        // First call: waits its full per-call window (init is live), then
-        // fails on the window — flipping the evidence watch.
+        // First call waits its full per-call window, then fails on the window,
+        // flipping the evidence watch.
         let t0 = std::time::Instant::now();
         let first = host.resolve_id("x", "").await;
         let first_err = first.expect_err("init outlives the first call's window");
@@ -3724,11 +3303,8 @@ export default [{
             "the expired window is wedge evidence"
         );
 
-        // Later calls: each keeps its OWN full window (never the removed
-        // fail-fast), so one of them is served the moment init lands. Every
-        // failure on the way is a full-window "still initializing", and a
-        // failing call burned at least most of a window rather than failing
-        // in milliseconds off a latch.
+        // Later calls each keep their OWN full window (never the removed
+        // fail-fast latch), so one is served the moment init lands.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             let t = std::time::Instant::now();
@@ -3757,20 +3333,15 @@ export default [{
         );
     }
 
-    // The submit-before-gate hazard, pinned: a wedged init holds the isolate
-    // thread, so a job submitted pre-init would only queue behind the wedge
-    // and rot — every later call serialized behind it. Pre-init calls must
-    // submit NOTHING: even with huge arguments, concurrent calls each fail at
-    // their own window ("still initializing"), proving no call sat queued on
-    // the wedged engine.
+    // Submit-before-gate hazard, pinned: pre-init calls must submit NOTHING;
+    // concurrent calls each fail at their own window, proving none queued on the wedged engine.
     #[tokio::test]
     async fn wedged_host_pre_init_calls_fail_at_their_window_without_submitting_jobs() {
         let root = std::env::temp_dir().join(format!("oj-wedged-stdin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        // Init never completes: the host module's top level never settles.
-        // (The interval keeps the event loop alive — the same shape that
-        // wedged the old node child.)
+        // Init never completes; the interval keeps the event loop alive (the
+        // shape that wedged the old node child).
         let plugins = root.join("oj.plugins.mjs");
         std::fs::write(
             &plugins,
@@ -3813,13 +3384,8 @@ export default [{
         );
     }
 
-    // The stall monitor is the REAL evidence flip site for the boot host: its
-    // per-call init windows equal the whole init deadline, so no call ever
-    // burns an RPC-scale window on it. A wedged host (milestones stop, init
-    // never lands) must flip the init-failure evidence at the stall window —
-    // with NO call in flight — and a merely slow host must flip it and then
-    // have init clear it, so evidence-gated waiters (the Start prewarm hold)
-    // release on wedges at the ~RPC scale while healthy boots re-hold.
+    // Stall monitor is the boot host's real evidence flip site: a wedge flips
+    // evidence at the stall window with NO call in flight; a merely slow host flips then clears on init.
     #[tokio::test]
     async fn boot_host_stall_monitor_flips_evidence_without_a_call_and_init_clears_it() {
         let root = std::env::temp_dir().join(format!("oj-boot-stall-{}", std::process::id()));
@@ -3917,12 +3483,8 @@ export default [{
         host.shutdown();
     }
 
-    // A hook that wedges the isolate in SYNCHRONOUS JS (an infinite loop —
-    // the shape that used to block the node host's event loop until its
-    // stdin filled and the whole host was declared gone) is now interrupted
-    // by the per-call watchdog at the deadline: it fails ONE call and the
-    // host survives — strictly better than the process host, where this
-    // wedge cost the whole host.
+    // A hook wedging the isolate in SYNCHRONOUS JS is interrupted by the per-call
+    // watchdog at the deadline: ONE call fails, the host survives.
     #[tokio::test]
     async fn synchronously_wedged_hook_is_terminated_at_its_deadline_and_the_host_survives() {
         let root = std::env::temp_dir().join(format!("oj-wedged-sync-{}", std::process::id()));
@@ -3985,17 +3547,8 @@ export default [{
         host.shutdown();
     }
 
-    // The transport belt: a hook that blocks the isolate thread in NATIVE
-    // code (a blocking child wait here — the same category as a wedged napi
-    // call; note `Atomics.wait` does NOT qualify, V8's terminate interrupts
-    // it) cannot be interrupted by the watchdog and stops the engine's
-    // scheduler entirely, so no reply of any kind — not even the deadline
-    // expiry — can land. The belt (a second full window past the per-call
-    // deadline) declares the host GONE — and the NEXT call revives it on a
-    // fresh engine generation, while calls landing inside the respawn
-    // spacing still fail fast instead of each burning a window on a wedged
-    // engine. The blocked thread itself leaks (detached) until the block
-    // ends: the documented cost of the in-process host.
+    // Transport belt: a hook blocked in NATIVE code stops the scheduler entirely,
+    // so the belt declares the host GONE and the next call revives it; the blocked thread leaks until the block ends.
     #[tokio::test]
     async fn natively_blocked_hook_declares_the_host_gone_and_the_next_call_revives_it() {
         let root = std::env::temp_dir().join(format!("oj-wedged-native-{}", std::process::id()));
@@ -4051,8 +3604,7 @@ export default [{
             "bounded, not a blocked transport: {:?}",
             t0.elapsed()
         );
-        // The host is gone — but not terminally: the next call revives it on
-        // a fresh engine generation (the wedge was per-id) and serves.
+        // Gone but not terminally: the next call revives on a fresh generation.
         clear_respawn_spacing(&host);
         host.load("after")
             .await
@@ -4062,9 +3614,7 @@ export default [{
             1,
             "one respawn consumed"
         );
-        // A second death inside the respawn spacing fails fast without a
-        // window: attempts are spaced so a burst of calls against a
-        // recurring wedge cannot stack engines.
+        // A second death inside the respawn spacing fails fast without a window.
         let generation = host.revive.lock().unwrap().generation;
         host.declare_gone("second test wedge", generation);
         let t1 = std::time::Instant::now();
@@ -4080,11 +3630,8 @@ export default [{
         );
     }
 
-    // The other half of the belt distinction: a hook that merely never
-    // SETTLES (a hung promise — the isolate itself stays healthy) fails only
-    // that one call, at the per-call deadline, and the host keeps serving
-    // everyone else — the old "reply timed out, host kept" semantics. Only
-    // total scheduler silence (the test above) declares the host gone.
+    // A hook that merely never SETTLES fails only that call at the per-call
+    // deadline; only total scheduler silence declares the host gone.
     #[tokio::test]
     async fn hung_hook_promise_fails_only_that_call() {
         let root = std::env::temp_dir().join(format!("oj-hung-hook-{}", std::process::id()));
@@ -4154,12 +3701,8 @@ export default [{
         host.shutdown();
     }
 
-    // Process isolation: the in-process host shares oj's process, so a
-    // plugin's env writes land in a private shadow (visible to the plugins
-    // and to getEnvDelta) and NEVER in oj's real environment. The host's cwd
-    // IS the app root (a real chdir at boot, like the old spawn's
-    // current_dir — relative fs paths in hooks depend on it), and a plugin's
-    // own process.chdir is contained to the shadow afterwards.
+    // Plugin env writes land in a private shadow, NEVER in oj's real environment;
+    // the host's cwd IS the app root and a plugin's chdir is contained to the shadow.
     #[tokio::test]
     async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
         let root = std::env::temp_dir().join(format!("oj-env-shadow-{}", std::process::id()));
@@ -4210,14 +3753,8 @@ export default [{
         host.shutdown();
     }
 
-    // Vite's ordering guarantee: buildStart completes before any serving hook
-    // runs, so an object-form plugin that computes closure state in
-    // buildStart() and reads it in load() (the i18n-barrel shape) never sees
-    // a load first. The host is spawned lazily and NEVER told to buildStart —
-    // the gate at the hook entry must run it — and the first loads arrive
-    // concurrently, which is exactly the race the in-process host had: an
-    // engine call job reaching load() while buildStart had not settled read
-    // `plan` as undefined and 500ed the module.
+    // Vite ordering: buildStart completes before any serving hook. The host is
+    // never told to buildStart; the hook-entry gate must run it, even under concurrent first loads.
     #[tokio::test]
     async fn build_start_settles_before_any_load_even_under_concurrent_first_calls() {
         let root = std::env::temp_dir().join(format!("oj-buildstart-gate-{}", std::process::id()));
@@ -4270,11 +3807,8 @@ export default [{
         host.shutdown();
     }
 
-    // The push channel end to end: a configureServer middleware makes the
-    // host bring up its loopback middleware server and push { ojServeInfo }
-    // with the port; a server.ws.send lands on the ws broadcast; a
-    // server.restart() lands on the server-events channel. All of it arrives
-    // as engine-channel values with no framing in between.
+    // Push channel end to end: { ojServeInfo } with the middleware port, ws send
+    // on the broadcast, server.restart() on the server-events channel.
     #[tokio::test]
     async fn push_channel_delivers_serve_info_ws_and_server_events() {
         let root = std::env::temp_dir().join(format!("oj-push-dispatch-{}", std::process::id()));
@@ -4322,9 +3856,8 @@ export default [{
         );
         drop(pushed);
 
-        // The senders were installed before init began, and configureServer
-        // (where the plugin pushed both) runs before the serve-info push that
-        // released the wait above — so both deliveries are already in.
+        // Senders were installed before init; configureServer ran before the
+        // serve-info push, so both deliveries are already in.
         let payload = tokio::time::timeout(std::time::Duration::from_secs(10), ws_rx.recv())
             .await
             .expect("the ws push arrives")
@@ -4907,9 +4440,8 @@ export default [{
     }
 }
 
-// The extraction contract through the REAL in-process engine: these boot a V8
-// isolate per case, so they are serialized on one lock (and any test that
-// touches the extraction env knobs must hold it while they are set).
+// Extraction contract through the REAL in-process engine: one V8 isolate per
+// case, serialized on one lock (env-knob tests must hold it too).
 #[cfg(test)]
 mod engine_extraction_tests {
     use super::*;
@@ -5011,9 +4543,8 @@ export default { base };"#);
     #[test]
     fn truncated_observed_reads_serve_but_never_cache() {
         let _g = lock();
-        // Cap the read recorder at one path; the config reads two .json files
-        // (through the fs default object, the surface the recorder wraps), so
-        // the dep stamp is incomplete and the result must not be cached.
+        // Cap the recorder at one path; the config reads two .json files, so the
+        // dep stamp is incomplete and the result must not be cached.
         std::env::set_var("OJ_OBSERVED_READS_MAX", "1");
         let dir = app(r#"import fs from "node:fs";
 const a = JSON.parse(fs.readFileSync(new URL("./a.json", import.meta.url), "utf8"));
@@ -5053,10 +4584,8 @@ export default { base: a.base + b.base };"#);
     #[test]
     fn a_hook_started_interval_does_not_outlive_the_extraction() {
         let _g = lock();
-        // The in-process equivalent of the old one-shot subprocess's
-        // process.exit(0): a config that leaves timers behind (the TanStack
-        // route generator shape) must not stall the caller, and the engine
-        // dies with them at drop.
+        // A config that leaves timers behind (the TanStack route-generator shape)
+        // must not stall the caller; the engine dies with them at drop.
         let dir = app("setInterval(() => {}, 1000);\nexport default { base: \"/live/\" };");
         let root = dir.path();
         let started = std::time::Instant::now();
@@ -5093,9 +4622,8 @@ export default { base: "/loud/" };"#);
     #[test]
     fn config_env_writes_do_not_leak_into_the_oj_process() {
         let _g = lock();
-        // The old subprocess kept env mutations to itself; the in-process
-        // engine must shadow process.env the same way (Vite's own NODE_ENV
-        // dance runs on every extraction).
+        // The engine must shadow process.env (Vite's own NODE_ENV dance runs on
+        // every extraction).
         let dir = app(r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
 export default { base: "/env/" };"#);
         let root = dir.path();
@@ -5107,10 +4635,8 @@ export default { base: "/env/" };"#);
         );
     }
 
-    // The TS-config fallback (no vite installed): the extractor bundles the
-    // config with the app's esbuild — a child process spawned from inside the
-    // engine — writes the bundle next to its own script and imports it.
-    // Skips quietly where the start-app fixture has no node_modules.
+    // TS-config fallback (no vite installed): the extractor bundles the config
+    // with the app's esbuild. Skips quietly when the fixture has no node_modules.
     #[test]
     fn a_ts_config_without_vite_loads_through_the_esbuild_fallback() {
         let _g = lock();
@@ -5158,9 +4684,8 @@ export default { base: "/env/" };"#);
         );
     }
 
-    // The phase's crux, checked at the exact seam production uses: a module
-    // running on the engine spawns a real child process (as esbuild's JS API
-    // spawns its Go service) and reads it back.
+    // Checked at the exact production seam: a module on the engine spawns a real
+    // child process (as esbuild's JS API does) and reads it back.
     #[test]
     fn engine_jobs_can_spawn_child_processes() {
         let _g = lock();
@@ -5200,9 +4725,8 @@ export async function run() {
         assert_eq!(out["code"], 0);
     }
 
-    // The engine-job child talks to its parent through this envelope; a
-    // variant that does not survive the round trip would turn a child's
-    // deadline or JS error into a generic boot failure.
+    // The child talks through this envelope; a variant not surviving the round
+    // trip would turn a child's deadline or JS error into a generic boot failure.
     #[test]
     fn engine_job_envelope_round_trips_every_outcome() {
         let outcomes: Vec<Result<serde_json::Value, oj_js::EngineError>> = vec![
