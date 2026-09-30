@@ -89,6 +89,10 @@ jobs:
         run: node e2e/dep-esm-umd-interop.mjs
       - name: ESM dependency's extensionless relative imports (functions-js shape)
         run: node e2e/dep-esm-relative-import.mjs
+      - name: dependency's browser field remaps its own relative imports (axios shape)
+        run: node e2e/dep-browser-field-relative.mjs
+      - name: edits to linked workspace packages trigger HMR (monorepo shape)
+        run: node e2e/hmr-linked-workspace-package.mjs
       - name: client graph names node builtin exports (crypto HMAC shape)
         run: node e2e/client-node-shim.mjs
       - name: build plugin spawns node:worker_threads (vite-plugin-pwa shape)
