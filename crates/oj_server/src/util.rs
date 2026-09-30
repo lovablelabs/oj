@@ -92,22 +92,52 @@ pub(crate) fn now_millis() -> u128 {
 pub(crate) fn fs_gate(state: &ServerState, candidate: &Path) -> Option<PathBuf> {
     let real = std::fs::canonicalize(candidate).ok()?;
     // Vite's isFileLoadingAllowed: `server.fs.strict: false` skips the allow
-    // list entirely (the deny list below still applies).
+    // list entirely (the deny list below still applies). Roots are stored raw
+    // AND canonical (insert_allow_root), so this is hash lookups per ancestor.
     let allowed = !state.fs_strict || {
         let allow = state.fs_allow.lock().unwrap();
-        allow.iter().any(|root| {
-            // Roots are normally already canonical; fall back to canonicalizing so a
-            // symlinked or /var-vs-/private/var root still matches.
-            real.starts_with(root)
-                || std::fs::canonicalize(root)
-                    .map(|r| real.starts_with(r))
-                    .unwrap_or(false)
-        })
+        real.ancestors().any(|a| allow.contains(a))
     };
     if !allowed || path_is_denied(&real, &state.root, &state.fs_deny) {
         return None;
     }
     Some(candidate.to_path_buf())
+}
+
+/// Allow roots are inserted raw AND canonicalized (Vite resolves `fs.allow` up
+/// front), so `fs_gate` never canonicalizes roots per request. A root whose
+/// symlink is retargeted mid-session keeps its old canonical entry until restart.
+pub(crate) fn insert_allow_root(allow: &mut std::collections::HashSet<PathBuf>, root: PathBuf) {
+    if let Ok(real) = std::fs::canonicalize(&root) {
+        if real != root {
+            allow.insert(real);
+        }
+    }
+    allow.insert(root);
+}
+
+pub(crate) fn allow_root(set: &Mutex<std::collections::HashSet<PathBuf>>, root: PathBuf) {
+    insert_allow_root(&mut set.lock().unwrap(), root);
+}
+
+/// Successful canonicalizations memoized on the server: plugin watch lists
+/// re-canonicalize hundreds of stable paths per save. Failures retry (a watched
+/// file can appear later); a retargeted symlink keeps its first resolution.
+pub(crate) fn canonicalize_memo(state: &ServerState, p: &str) -> PathBuf {
+    if let Some(hit) = state.canon_memo.lock().unwrap().get(p) {
+        return hit.clone();
+    }
+    match std::fs::canonicalize(p) {
+        Ok(real) => {
+            state
+                .canon_memo
+                .lock()
+                .unwrap()
+                .insert(p.to_string(), real.clone());
+            real
+        }
+        Err(_) => PathBuf::from(p),
+    }
 }
 
 pub(crate) fn urldecode(input: &str) -> String {

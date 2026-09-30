@@ -82,7 +82,11 @@ pub fn inject_csp_nonce(html: &str, nonce: &str) -> String {
         // read as a tag.
         if matches!(name.as_str(), "script" | "style") && !tag.trim_end().ends_with('/') {
             let close = format!("</{name}");
-            if let Some(end) = rest.to_ascii_lowercase().find(&close) {
+            if let Some(end) = rest
+                .as_bytes()
+                .windows(close.len())
+                .position(|w| w.eq_ignore_ascii_case(close.as_bytes()))
+            {
                 out.push_str(&rest[..end]);
                 rest = &rest[end..];
             }

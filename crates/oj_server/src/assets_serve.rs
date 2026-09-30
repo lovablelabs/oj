@@ -73,7 +73,7 @@ pub(crate) async fn inline_css_module(
     let (_, module) = Box::pin(ensure_module(state, file, clean)).await?;
     Ok(format!(
         "export default {};\n",
-        serde_json::Value::String(module.code.clone())
+        serde_json::to_string(&module.code).unwrap()
     ))
 }
 

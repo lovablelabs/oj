@@ -710,7 +710,7 @@ pub(crate) async fn decide(
                 .map(|p| p.to_string_lossy().into_owned()),
         );
         raw.into_iter()
-            .map(|p| std::fs::canonicalize(&p).unwrap_or_else(|_| PathBuf::from(p)))
+            .map(|p| canonicalize_memo(state, &p))
             .collect()
     };
 

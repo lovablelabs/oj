@@ -291,6 +291,11 @@ struct ServerState {
     /// index 0 verifies, index 1 is `secure: false`.
     proxy_tls: [std::sync::OnceLock<Result<std::sync::Arc<rustls::ClientConfig>, String>>; 2],
     virtual_modules: std::collections::BTreeMap<String, String>,
+    /// The keys of `virtual_modules`, shared with per-request rewrite closures
+    /// (the map is fixed at boot; cloning the keyset per compile was waste).
+    virtual_ids: Arc<std::collections::BTreeSet<String>>,
+    /// See `canonicalize_memo`.
+    canon_memo: Mutex<std::collections::HashMap<String, PathBuf>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
     jsx: oj_compiler::JsxConfig,
     host_policy: HostPolicy,
@@ -1136,20 +1141,26 @@ impl DevServer {
             fs_allow: Arc::new(Mutex::new({
                 // Vite: `allow: raw?.fs?.allow ?? [searchForWorkspaceRoot(root)]`. The
                 // workspace root is the DEFAULT, not an addition: a user allow list replaces it.
-                match server_cfg.fs.as_ref().and_then(|f| f.allow.as_ref()) {
-                    Some(allow) => allow
-                        .iter()
-                        .map(|p| {
-                            let pb = PathBuf::from(p);
-                            if pb.is_absolute() {
-                                pb
-                            } else {
-                                root.join(&pb)
-                            }
-                        })
-                        .collect(),
-                    None => std::iter::once(workspace_root(&root)).collect(),
+                let roots: Vec<PathBuf> =
+                    match server_cfg.fs.as_ref().and_then(|f| f.allow.as_ref()) {
+                        Some(allow) => allow
+                            .iter()
+                            .map(|p| {
+                                let pb = PathBuf::from(p);
+                                if pb.is_absolute() {
+                                    pb
+                                } else {
+                                    root.join(&pb)
+                                }
+                            })
+                            .collect(),
+                        None => vec![workspace_root(&root)],
+                    };
+                let mut set = std::collections::HashSet::new();
+                for r in roots {
+                    insert_allow_root(&mut set, r);
                 }
+                set
             })),
             fs_strict: server_cfg
                 .fs
@@ -1165,6 +1176,14 @@ impl DevServer {
             http: reqwest::Client::new(),
             http_insecure: std::sync::OnceLock::new(),
             proxy_tls: [std::sync::OnceLock::new(), std::sync::OnceLock::new()],
+            virtual_ids: Arc::new(
+                config
+                    .virtual_modules
+                    .iter()
+                    .flat_map(|m| m.keys().cloned())
+                    .collect(),
+            ),
+            canon_memo: Mutex::new(std::collections::HashMap::new()),
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
             jsx_overrides,
             jsx,

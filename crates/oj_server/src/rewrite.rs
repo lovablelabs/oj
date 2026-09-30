@@ -74,7 +74,7 @@ pub(crate) fn rewrite_specifier(
             } else {
                 // An absolute path OUTSIDE root: serve through /@fs (Vite's
                 // FS_PREFIX) and allow its package for the fs guard.
-                fs_allow.lock().unwrap().insert(package_root(p));
+                allow_root(fs_allow, package_root(p));
                 dep_serve_url(p, root)
             };
             return Some(match query {
@@ -101,7 +101,7 @@ pub(crate) fn rewrite_specifier(
             let resolved = rewrite_specifier(root, dir, resolver, fs_allow, dir_cache, base, false)
                 .or_else(|| {
                     resolver.resolve(dir, base).ok().map(|p| {
-                        fs_allow.lock().unwrap().insert(package_root(&p));
+                        allow_root(fs_allow, package_root(&p));
                         url_of(root, &p)
                     })
                 })?;
@@ -154,7 +154,7 @@ pub(crate) fn rewrite_specifier(
                 .components()
                 .any(|c| c.as_os_str() == "node_modules") =>
         {
-            fs_allow.lock().unwrap().insert(package_root(&resolved));
+            allow_root(fs_allow, package_root(&resolved));
             Some(dep_serve_url(&resolved, root))
         }
         Ok(resolved) if resolved.starts_with(root) => {
@@ -170,7 +170,7 @@ pub(crate) fn rewrite_specifier(
             Some(url)
         }
         Ok(resolved) => {
-            fs_allow.lock().unwrap().insert(package_root(&resolved));
+            allow_root(fs_allow, package_root(&resolved));
             Some(dep_serve_url(&resolved, root))
         }
         Err(err) if err.ignored => {

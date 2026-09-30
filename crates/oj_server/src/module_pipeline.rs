@@ -403,8 +403,7 @@ pub(crate) async fn ensure_module(
     let require_resolver = Arc::clone(&state.require_resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let virtual_ids: std::collections::BTreeSet<String> =
-        state.virtual_modules.keys().cloned().collect();
+    let virtual_ids = Arc::clone(&state.virtual_ids);
     let jsx_overrides = state.jsx_overrides.clone();
     let jsx_config = state.jsx.clone();
     let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -607,7 +606,7 @@ pub(crate) async fn ensure_module(
                         && (is_cjs_dep_file(&resolved)
                             || pkg_bundle::needs_forced_interop(&resolved))
                     {
-                        fs_allow.lock().unwrap().insert(package_root(&resolved));
+                        allow_root(&fs_allow, package_root(&resolved));
                         // With partial bundling this is the /@oj-pkg bundle URL, which
                         // exports __cjs_exports too, so the interop still reads off it.
                         return Some(dep_serve_url(&resolved, &root));
@@ -1050,7 +1049,7 @@ pub(crate) fn resolved_imports_json(
                 // If the transform keeps the import, the browser fetches it from
                 // /@fs, so allow-list its package root now.
                 if p.components().any(|c| c.as_os_str() == "node_modules") || !p.starts_with(dir) {
-                    fs_allow.lock().unwrap().insert(package_root(&p));
+                    allow_root(fs_allow, package_root(&p));
                 }
                 serde_json::Value::String(p.display().to_string())
             }

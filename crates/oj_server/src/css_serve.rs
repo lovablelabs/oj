@@ -51,7 +51,7 @@ pub(crate) async fn serve_css_wrapper(
          {exports}\
          {accept}\
          import.meta.hot.prune(() => __oj_removeStyle({url:?}));\n",
-        css = serde_json::Value::String(module.code.clone()),
+        css = serde_json::to_string(&module.code).unwrap(),
     );
     (
         [

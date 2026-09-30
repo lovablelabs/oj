@@ -35,8 +35,7 @@ pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> 
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let virtual_ids: std::collections::BTreeSet<String> =
-        state.virtual_modules.keys().cloned().collect();
+    let virtual_ids = Arc::clone(&state.virtual_ids);
     let plugin_fallback = state.plugins.is_some();
     let importer_abs = format!("\0{id}");
     let compile_opts = dev_compile_opts(state);
@@ -148,7 +147,7 @@ pub(crate) async fn serve_plugin_id(
                     .unwrap_or_else(|| state.root.clone());
                 if let Ok(abs) = state.resolver.resolve(&dir, base) {
                     if abs.is_file() {
-                        state.fs_allow.lock().unwrap().insert(package_root(&abs));
+                        allow_root(&state.fs_allow, package_root(&abs));
                         let mut url = dep_serve_url(&abs, &state.root);
                         if !query.is_empty() {
                             url.push('?');
