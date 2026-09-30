@@ -196,18 +196,55 @@ pub fn capture_startup_cwd() {
     }
 }
 
-pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
+/// The watcher thread's inbox: filesystem notifications, and directories to
+/// add because an outside-root file was served (`ensure_watched_file`). One
+/// channel, so the thread owns the watcher outright with no lock.
+pub(crate) enum WatchMsg {
+    Fs(notify::Result<notify::Event>),
+    Dir(PathBuf),
+}
+
+/// Vite's ensureWatchedFile: a served file OUTSIDE the root is not covered by
+/// the root watch, so its directory goes to the watcher thread (the directory,
+/// not the file: editors save by rename-replace, which strands an inode watch).
+/// node_modules stays unwatched, as Vite's chokidar `ignored` does.
+pub(crate) fn ensure_watched_file(state: &ServerState, file: &Path) {
+    if file.starts_with(&state.root) || file.components().any(|c| c.as_os_str() == "node_modules") {
+        return;
+    }
+    if let Some(dir) = file.parent() {
+        let _ = state.watch_tx.send(WatchMsg::Dir(dir.to_path_buf()));
+    }
+}
+
+/// Recorded only on success, so a directory that does not exist yet (a plugin
+/// watch file created later) is retried instead of skipped forever.
+fn watch_served_dir(
+    watcher: &mut notify::RecommendedWatcher,
+    watched: &mut std::collections::HashSet<PathBuf>,
+    dir: PathBuf,
+) {
+    use notify::{RecursiveMode, Watcher};
+    if !watched.contains(&dir) && watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+        watched.insert(dir);
+    }
+}
+
+pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiver<WatchMsg>) {
     std::thread::spawn(move || {
         use notify::{RecursiveMode, Watcher};
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(tx) {
+        let tx = state.watch_tx.clone();
+        let mut watcher = match notify::recommended_watcher(move |ev| {
+            let _ = tx.send(WatchMsg::Fs(ev));
+        }) {
             Ok(w) => w,
             Err(err) => {
                 eprintln!("oj: file watcher failed to start: {err}");
                 return;
             }
         };
+        let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
         // Watch top-level entries except node_modules/.oj-cache/dist/.git:
         // recursively watching those floods inotify with self-inflicted events
         // (.oj-cache is rewritten on every compile).
@@ -253,8 +290,12 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
         let mut changes = ContentChanges::new();
         loop {
             let first = match rx.recv() {
-                Ok(Ok(ev)) => ev,
-                Ok(Err(_)) => continue,
+                Ok(WatchMsg::Fs(Ok(ev))) => ev,
+                Ok(WatchMsg::Fs(Err(_))) => continue,
+                Ok(WatchMsg::Dir(dir)) => {
+                    watch_served_dir(&mut watcher, &mut served_dirs, dir);
+                    continue;
+                }
                 Err(_) => break,
             };
             let first_paths = changes.changed_paths(&first);
@@ -270,14 +311,15 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>) {
             let mut paths: std::collections::HashSet<PathBuf> = first_paths.into_iter().collect();
             loop {
                 match rx.recv_timeout(Duration::from_millis(debounce_ms)) {
-                    Ok(Ok(ev)) => {
+                    Ok(WatchMsg::Fs(Ok(ev))) => {
                         let changed = changes.changed_paths(&ev);
                         if matches!(ev.kind, notify::EventKind::Create(_)) {
                             created.extend(changed.iter().cloned());
                         }
                         paths.extend(changed);
                     }
-                    Ok(Err(_)) => {}
+                    Ok(WatchMsg::Fs(Err(_))) => {}
+                    Ok(WatchMsg::Dir(dir)) => watch_served_dir(&mut watcher, &mut served_dirs, dir),
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
                 }

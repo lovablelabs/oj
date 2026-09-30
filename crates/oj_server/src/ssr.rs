@@ -34,6 +34,12 @@ pub struct SsrBridge {
 }
 
 impl SsrBridge {
+    /// The dev server's engine registry, for hosts on the other side of the
+    /// bridge to register their engines in (SSR, Start).
+    pub fn engine_registry(&self) -> oj_js::EngineRegistry {
+        self.state.engine_registry.clone()
+    }
+
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
         ssr_resolve_inner(&self.state, importer, spec).await
     }
@@ -317,12 +323,19 @@ pub(crate) async fn ssr_plugin_host(
     let host = state
         .plugins_ssr
         .get_or_init(|| async {
-            let file = match plugins::plugin_source(&state.root)? {
+            let file = match plugins::plugin_source(&state.root, state.config_file.as_deref())? {
                 plugins::PluginSource::OjPlugins(p) | plugins::PluginSource::ViteConfig(p) => p,
             };
             // Lazy spawn with the short init-wait policy: a wedged init must
             // not block watcher dispatch or SSR transforms.
-            match PluginHost::spawn_lazy(&state.root, &file, &state.ssr_plugin_config).await {
+            match PluginHost::spawn_lazy(
+                &state.root,
+                &file,
+                &state.ssr_plugin_config,
+                Some(state.engine_registry.clone()),
+            )
+            .await
+            {
                 Ok(host) => {
                     eprintln!("oj ssr: plugins (ssr environment) from {}", file.display());
                     // Catch-up half of the watcher's pre-init fast-skip

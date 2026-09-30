@@ -787,7 +787,11 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
     if !module.watch_files.is_empty() {
         let mut watched = state.plugin_watched.lock().unwrap();
         for p in &module.watch_files {
-            watched.insert(PathBuf::from(p));
+            let p = PathBuf::from(p);
+            // Vite's addWatchFile goes through ensureWatchedFile too: an
+            // outside-root watch file otherwise never produces an event.
+            ensure_watched_file(state, &p);
+            watched.insert(p);
         }
     }
     let mut graph = state.graph.lock().unwrap();

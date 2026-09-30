@@ -25,7 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo test --workspace
+      # Release, not debug: the tests must exercise the codegen that ships.
+      # A debug-only suite stayed green through a release-only engine
+      # miscompilation (every job on an uncapped isolate failed MemoryLimit).
+      - run: cargo test --workspace --release
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -89,6 +92,10 @@ jobs:
         run: node e2e/dep-esm-umd-interop.mjs
       - name: ESM dependency's extensionless relative imports (functions-js shape)
         run: node e2e/dep-esm-relative-import.mjs
+      - name: dependency's browser field remaps its own relative imports (axios shape)
+        run: node e2e/dep-browser-field-relative.mjs
+      - name: edits to linked workspace packages trigger HMR (monorepo shape)
+        run: node e2e/hmr-linked-workspace-package.mjs
       - name: client graph names node builtin exports (crypto HMAC shape)
         run: node e2e/client-node-shim.mjs
       - name: build plugin spawns node:worker_threads (vite-plugin-pwa shape)

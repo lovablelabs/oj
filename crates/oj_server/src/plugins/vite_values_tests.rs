@@ -10,7 +10,7 @@ fn finds_commonjs_vite_config_formats() {
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join(format!("vite.config.{extension}"));
         std::fs::write(&path, "module.exports = {};").unwrap();
-        assert_eq!(vite_config_file(&root), Some(path));
+        assert_eq!(vite_config_file(&root, None), Some(path));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
@@ -327,6 +327,7 @@ async fn addon_keeper_tolerates_unloadable_addons() {
             PathBuf::from("/nonexistent/fake-binding.node"),
             PathBuf::from("/also/missing.node"),
         ],
+        None,
     )
     .await
     .expect("the keeper load is best effort");
@@ -921,7 +922,7 @@ async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let delta = host.env_delta().await;
@@ -983,7 +984,7 @@ return null;
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let (a, b, c, d) = tokio::join!(
@@ -1030,7 +1031,7 @@ server.restart();
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel(16);
@@ -1127,13 +1128,13 @@ fn config_discovery_precedence_matches_vite() {
     }
     for ext in order {
         assert_eq!(
-            vite_config_file(&root),
+            vite_config_file(&root, None),
             Some(root.join(format!("vite.config.{ext}"))),
             "with every later format present, .{ext} wins"
         );
         std::fs::remove_file(root.join(format!("vite.config.{ext}"))).unwrap();
     }
-    assert_eq!(vite_config_file(&root), None);
+    assert_eq!(vite_config_file(&root, None), None);
     std::fs::remove_dir_all(&root).unwrap();
 }
 

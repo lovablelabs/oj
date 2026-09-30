@@ -525,9 +525,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 .context("engine root not found")?;
             let mut config = oj_js::EngineConfig::new(&root);
             config.code_cache_dir = Some(oj_server::engine_code_cache_dir(&root));
-            let engine = oj_js::JsEngine::spawn(config).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let engine =
+                oj_js::JsEngine::spawn(config, None, None).map_err(|e| anyhow::anyhow!("{e}"))?;
             let value = engine
-                .eval(oj_js::EvalInput::Path(file))
+                .eval(oj_js::EvalInput::Path(file), None)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("{value}");
@@ -607,10 +608,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     PathBuf::from(".")
                 }
             });
-            set_config_override(&root, config);
+            let config = resolve_config_arg(&root, config);
             if oj_server::is_tanstack_start_app(&root) {
                 let mode = mode.unwrap_or_else(|| "production".to_string());
-                start_dev::start_build(root, &mode, out).await
+                start_dev::start_build(root, config, &mode, out).await
             } else {
                 build::build(
                     root,
@@ -628,6 +629,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         manifest,
                         ssr_manifest,
                         watch,
+                        config,
                     },
                 )
                 .await
@@ -638,12 +640,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             out,
             port,
             host,
-            config,
+            // Accepted for Vite CLI parity; nothing on the preview path reads
+            // a config file (the old global was set here but never consulted).
+            config: _,
             strict_port,
             open,
             base,
         } => {
-            set_config_override(&PathBuf::from("."), config);
             let root = root
                 .unwrap_or_else(|| {
                     let playground = PathBuf::from("playground");
@@ -732,15 +735,14 @@ fn preview_options(config: &oj_config::OjConfig, out_dir: PathBuf) -> oj_server:
 
 /// `--config <file>`: use that vite.config instead of the one found in the root
 /// (Vite's `--config`). Relative paths resolve against the app root.
-fn set_config_override(root: &std::path::Path, config: Option<PathBuf>) {
-    if let Some(cfg) = config {
-        let cfg = if cfg.is_absolute() {
+fn resolve_config_arg(root: &std::path::Path, config: Option<PathBuf>) -> Option<PathBuf> {
+    config.map(|cfg| {
+        if cfg.is_absolute() {
             cfg
         } else {
             root.join(cfg)
-        };
-        oj_server::plugins::set_vite_config_override(cfg);
-    }
+        }
+    })
 }
 
 #[cfg(test)]

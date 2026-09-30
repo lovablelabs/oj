@@ -307,6 +307,12 @@ struct ServerState {
     /// compares across dev server restarts.
     started_at_ms: u64,
     hmr_enabled: bool,
+    /// The CLI's `--config` file (resolved against root), for the lazily
+    /// spawned SSR host's plugin-source pick.
+    config_file: Option<PathBuf>,
+    /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
+    /// Start, addon keeper); every long-lived spawn joins it.
+    engine_registry: oj_js::EngineRegistry,
     plugins: Option<std::sync::Arc<PluginHost>>,
     plugin_serve: Arc<PluginServe>,
     plugins_ssr: tokio::sync::OnceCell<Option<std::sync::Arc<PluginHost>>>,
@@ -315,6 +321,9 @@ struct ServerState {
     ssr_watch: Arc<SsrWatchQueue>,
     ssr_plugin_config: String,
     plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// Into the watcher thread's inbox (`WatchMsg`): directories of files
+    /// served from outside the root (`ensure_watched_file`).
+    watch_tx: std::sync::mpsc::Sender<WatchMsg>,
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
@@ -666,14 +675,15 @@ impl DevServer {
             .canonicalize()
             .with_context(|| format!("app root not found: {}", self.root.display()))?;
 
-        if let Some(cfg) = &self.config {
-            let cfg = if cfg.is_absolute() {
+        // The CLI's --config, resolved against the app root; threaded to every
+        // config read instead of parked in a global.
+        let config_file: Option<PathBuf> = self.config.as_ref().map(|cfg| {
+            if cfg.is_absolute() {
                 cfg.clone()
             } else {
                 root.join(cfg)
-            };
-            plugins::set_vite_config_override(cfg);
-        }
+            }
+        });
 
         boot_phase("build_app begin");
         prepare_cache_root(&root);
@@ -684,8 +694,14 @@ impl DevServer {
             .unwrap_or_else(|| "development".to_string());
         let mut config =
             oj_config::load_with(&root, "serve", &dev_mode).map_err(|e| anyhow::anyhow!("{e}"))?;
-        plugins::adopt_vite_config_values(&mut config, &root, "serve", &dev_mode)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        plugins::adopt_vite_config_values(
+            &mut config,
+            &root,
+            config_file.as_deref(),
+            "serve",
+            &dev_mode,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
         boot_phase("vite config values adopted");
 
         // Feed optimizeDeps.include/exclude/needsInterop into partial bundling so
@@ -793,7 +809,7 @@ impl DevServer {
         // TanStack Start owns its module graph and SSR; oj runs the plugin host only
         // for configureServer middleware, in start mode so lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
-        let plugin_src = plugins::plugin_source(&root);
+        let plugin_src = plugins::plugin_source(&root, config_file.as_deref());
         let (plugins_path, plugins_format, plugins_label) = match plugin_src {
             Some(plugins::PluginSource::OjPlugins(p)) => {
                 let label = p.file_name().unwrap().to_string_lossy().into_owned();
@@ -850,42 +866,48 @@ impl DevServer {
             preseed::preseed_server_deps(&root, host_env_mode).await;
         }
         boot_phase("plugin host spawning");
+        let engine_registry = oj_js::EngineRegistry::new();
         let plugin_host = match plugins_path {
-            Some(file) => match PluginHost::spawn(&root, &file, &plugin_config).await {
-                Ok(host) => {
-                    // Nothing left after native filtering = an idle Node process on the hot
-                    // path: drop it (dropping the Arc kills the process). EXCEPT with
-                    // `server.proxy`: a function rewrite/configure/bypass needs a Node home.
-                    let keep_for_proxy = server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
-                    let plugin_count = host.plugin_count().await;
-                    if plugin_count == 0 && !keep_for_proxy {
-                        host.shutdown();
-                        println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
-                        None
-                    } else if plugin_count == 0 {
-                        // Kept only to host `server.proxy` in the middleware stack.
-                        println!(
+            Some(file) => {
+                match PluginHost::spawn(&root, &file, &plugin_config, Some(engine_registry.clone()))
+                    .await
+                {
+                    Ok(host) => {
+                        // Nothing left after native filtering = an idle Node process on the hot
+                        // path: drop it (dropping the Arc kills the process). EXCEPT with
+                        // `server.proxy`: a function rewrite/configure/bypass needs a Node home.
+                        let keep_for_proxy =
+                            server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
+                        let plugin_count = host.plugin_count().await;
+                        if plugin_count == 0 && !keep_for_proxy {
+                            host.shutdown();
+                            println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
+                            None
+                        } else if plugin_count == 0 {
+                            // Kept only to host `server.proxy` in the middleware stack.
+                            println!(
                             "  plugins: {plugins_label} (none active; host kept for server.proxy)"
                         );
-                        Some(host)
-                    } else {
-                        println!("  plugins: {plugins_label}");
-                        if !is_start {
-                            // Vite awaits the client buildStart while initing the
-                            // server; a rejection fails startup rather than serving.
-                            if let Err(e) = host.build_start().await {
-                                host.shutdown();
-                                anyhow::bail!("plugin buildStart failed:\n{e}");
+                            Some(host)
+                        } else {
+                            println!("  plugins: {plugins_label}");
+                            if !is_start {
+                                // Vite awaits the client buildStart while initing the
+                                // server; a rejection fails startup rather than serving.
+                                if let Err(e) = host.build_start().await {
+                                    host.shutdown();
+                                    anyhow::bail!("plugin buildStart failed:\n{e}");
+                                }
                             }
+                            Some(host)
                         }
-                        Some(host)
+                    }
+                    Err(e) => {
+                        eprintln!("oj: plugin host failed to start: {e}");
+                        None
                     }
                 }
-                Err(e) => {
-                    eprintln!("oj: plugin host failed to start: {e}");
-                    None
-                }
-            },
+            }
             None => None,
         };
         boot_phase("plugin host ready");
@@ -1068,6 +1090,7 @@ impl DevServer {
         let (crawl_tx, crawl_rx) = tokio::sync::watch::channel(false);
         let (write_tx, mut write_rx) =
             tokio::sync::mpsc::channel::<(String, Arc<CachedModule>)>(65536);
+        let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
         let public_dir = oj_config::public_dir(&config, &root);
         let client_resolver = Arc::new(OjResolver::with_settings(
             &root,
@@ -1093,6 +1116,8 @@ impl DevServer {
         };
         let state = Arc::new(ServerState {
             persistent_cache,
+            config_file: config_file.clone(),
+            engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
             reload_tx: reload_tx.clone(),
@@ -1201,6 +1226,7 @@ impl DevServer {
             ssr_watch: Arc::new(SsrWatchQueue::default()),
             ssr_plugin_config,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            watch_tx,
             plugins_use_module_parsed,
             plugins_have_transform,
             plugins_have_load,
@@ -1267,7 +1293,7 @@ impl DevServer {
                 }
             });
         }
-        spawn_watcher(Arc::clone(&state));
+        spawn_watcher(Arc::clone(&state), watch_rx);
         let (client_files, ssr_files) = oj_config::server_warmup_files(&config);
         if !client_files.is_empty() || !ssr_files.is_empty() {
             let state = Arc::clone(&state);

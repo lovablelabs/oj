@@ -119,7 +119,13 @@ pub(crate) async fn run_css_engine(
 ) -> Result<String, String> {
     let engine = state
         .tailwind
-        .get_or_try_init(|| CssEngine::tailwind(&state.root, css_engine::DEV_DEADLINE))
+        .get_or_try_init(|| {
+            CssEngine::tailwind(
+                &state.root,
+                css_engine::DEV_DEADLINE,
+                Some(state.engine_registry.clone()),
+            )
+        })
         .await
         .map_err(|e| e.to_string())?;
     engine.compile(source, url).await
@@ -166,7 +172,13 @@ pub(crate) async fn run_preprocess_engine(
 ) -> Result<String, String> {
     let engine = state
         .preprocess
-        .get_or_try_init(|| CssEngine::preprocess(&state.root, css_engine::DEV_DEADLINE))
+        .get_or_try_init(|| {
+            CssEngine::preprocess(
+                &state.root,
+                css_engine::DEV_DEADLINE,
+                Some(state.engine_registry.clone()),
+            )
+        })
         .await
         .map_err(|e| e.to_string())?;
     engine.compile_with(source, url, options).await
@@ -179,7 +191,13 @@ pub(crate) async fn run_svelte_engine(
 ) -> Result<String, String> {
     let engine = state
         .svelte
-        .get_or_try_init(|| CssEngine::svelte(&state.root, css_engine::DEV_DEADLINE))
+        .get_or_try_init(|| {
+            CssEngine::svelte(
+                &state.root,
+                css_engine::DEV_DEADLINE,
+                Some(state.engine_registry.clone()),
+            )
+        })
         .await
         .map_err(|e| e.to_string())?;
     engine.compile(source, url).await

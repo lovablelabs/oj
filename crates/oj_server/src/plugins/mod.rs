@@ -93,16 +93,12 @@ pub enum PluginSource {
     ViteConfig(std::path::PathBuf),
 }
 
-static VITE_CONFIG_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-pub fn set_vite_config_override(path: std::path::PathBuf) {
-    let _ = VITE_CONFIG_OVERRIDE.set(path);
-}
-
 #[inline]
-pub fn vite_config_file(root: &Path) -> Option<std::path::PathBuf> {
-    if let Some(p) = VITE_CONFIG_OVERRIDE.get() {
-        return p.is_file().then(|| p.clone());
+/// `config` is the CLI's `--config` (resolved against the app root); named, it
+/// replaces Vite's default probe entirely.
+pub fn vite_config_file(root: &Path, config: Option<&Path>) -> Option<std::path::PathBuf> {
+    if let Some(p) = config {
+        return p.is_file().then(|| p.to_path_buf());
     }
     // Vite's DEFAULT_CONFIG_FILES order: first existing wins.
     [
@@ -119,14 +115,14 @@ pub fn vite_config_file(root: &Path) -> Option<std::path::PathBuf> {
 }
 
 #[inline]
-pub fn plugin_source(root: &Path) -> Option<PluginSource> {
-    if VITE_CONFIG_OVERRIDE.get().is_some() {
-        return vite_config_file(root).map(PluginSource::ViteConfig);
+pub fn plugin_source(root: &Path, config: Option<&Path>) -> Option<PluginSource> {
+    if config.is_some() {
+        return vite_config_file(root, config).map(PluginSource::ViteConfig);
     }
     if let Some(p) = plugins_file(root) {
         return Some(PluginSource::OjPlugins(p));
     }
-    vite_config_file(root).map(PluginSource::ViteConfig)
+    vite_config_file(root, config).map(PluginSource::ViteConfig)
 }
 
 mod extract;

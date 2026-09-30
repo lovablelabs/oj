@@ -37,9 +37,9 @@ use node_resolver::NodeResolutionKind;
 use node_resolver::ResolutionMode;
 
 use crate::code_cache::FsCodeCache;
-use crate::host::HostBridge;
 use crate::host::HostModuleType;
 use crate::host::HostResolved;
+use crate::host::ModuleHost as HostLink;
 
 /// The engine runs against the real filesystem only.
 pub(crate) type Sys = sys_traits::impls::RealSys;
@@ -61,7 +61,7 @@ pub(crate) struct EngineModuleLoader {
     /// When set, the host is consulted before byonm: it sees every import
     /// except absolute `file:`/`node:`/`data:`/`blob:` URLs on resolve, and
     /// every module fetch except `node:` builtins on load.
-    pub host: Option<HostBridge>,
+    pub host: Option<HostLink>,
     /// Persistent V8 code cache for on-disk modules (see
     /// [`crate::EngineConfig::code_cache_dir`]). Host-served modules are
     /// never cached: they are virtual and change within a session.
@@ -185,7 +185,7 @@ impl ModuleLoader for EngineModuleLoader {
                 let requested_dr = as_deno_resolver_requested_module_type(&requested);
                 let loaded = loader
                     .load(
-                        Cow::Owned(specifier.clone()),
+                        Cow::Borrowed(&specifier),
                         referrer.as_ref(),
                         &requested_dr,
                         None,
@@ -229,11 +229,9 @@ impl ModuleLoader for EngineModuleLoader {
         Some(path.is_file())
     }
 
-    /// Persists freshly compiled bytecode. Reached from both cached compile
-    /// paths that ride the loader — ES modules (`load` supplied the
-    /// `SourceCodeCacheInfo`) and residual ext scripts (`get_code_cache`
-    /// did) — and `hash` is the source hash the supplier computed, so the
-    /// entry validates against exactly the source it was compiled from.
+    /// Persists freshly compiled bytecode for both loader-riding compile
+    /// paths (`load`'s ESM info, `get_code_cache`'s ext scripts); `hash` is
+    /// the supplier's source hash, so get and put always agree on it.
     fn code_cache_ready(
         &self,
         module_specifier: ModuleSpecifier,

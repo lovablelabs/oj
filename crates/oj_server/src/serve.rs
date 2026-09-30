@@ -92,7 +92,12 @@ pub(crate) async fn serve_path(
 
     let file = if let Some(abs) = uri.path().strip_prefix("/@fs") {
         match fs_gate(&state, &PathBuf::from(urldecode(abs))) {
-            Some(real) => real,
+            Some(real) => {
+                // Served from outside the root (a linked workspace package):
+                // the root watch does not cover it.
+                ensure_watched_file(&state, &real);
+                real
+            }
             None => {
                 return (StatusCode::FORBIDDEN, "oj: /@fs path not allow-listed").into_response();
             }

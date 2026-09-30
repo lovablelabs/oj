@@ -32,7 +32,7 @@ fn app_root() -> tempfile::TempDir {
 }
 
 fn engine(root: &Path) -> JsEngine {
-    JsEngine::spawn(EngineConfig::new(root)).unwrap()
+    JsEngine::spawn(EngineConfig::new(root), None, None).unwrap()
 }
 
 /// Deadline-shape tests hang forever when the deadline path breaks; bound
@@ -51,7 +51,7 @@ async fn eval_source_completes_with_default_export() {
     let root = app_root();
     let engine = engine(root.path());
     let value = engine
-        .eval(EvalInput::Source("export default 1 + 1;".into()))
+        .eval(EvalInput::Source("export default 1 + 1;".into()), None)
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!(2));
@@ -65,7 +65,7 @@ async fn eval_runs_event_loop_to_completion() {
         .eval(EvalInput::Source(
             "export default await new Promise((resolve) => setTimeout(() => resolve('done'), 10));"
                 .into(),
-        ))
+        ), None)
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!("done"));
@@ -76,8 +76,9 @@ async fn node_builtins_work() {
     let root = app_root();
     let engine = engine(root.path());
     let value = engine
-        .eval(EvalInput::Source(
-            r#"
+        .eval(
+            EvalInput::Source(
+                r#"
             import { join, basename } from "node:path";
             import { tmpdir } from "node:os";
             import { writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -87,8 +88,10 @@ async fn node_builtins_work() {
             rmSync(file);
             export default text.startsWith("roundtrip:");
             "#
-            .into(),
-        ))
+                .into(),
+            ),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!(true));
@@ -101,13 +104,16 @@ async fn bare_import_resolves_from_node_modules() {
     // ESM import of a CommonJS package: exercises byonm resolution plus the
     // CJS-to-ESM translation.
     let value = engine
-        .eval(EvalInput::Source(
-            r#"
+        .eval(
+            EvalInput::Source(
+                r#"
             import fixture from "oj-fixture";
             export default fixture.greet("oj");
             "#
-            .into(),
-        ))
+                .into(),
+            ),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!("hello oj"));
@@ -118,15 +124,18 @@ async fn create_require_resolves_from_node_modules() {
     let root = app_root();
     let engine = engine(root.path());
     let value = engine
-        .eval(EvalInput::Source(
-            r#"
+        .eval(
+            EvalInput::Source(
+                r#"
             import { createRequire } from "node:module";
             const require = createRequire(import.meta.url);
             const fixture = require("oj-fixture");
             export default fixture.answer;
             "#
-            .into(),
-        ))
+                .into(),
+            ),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!(42));
@@ -152,13 +161,13 @@ async fn eval_path_and_call_work() {
     let engine = engine(root.path());
 
     let value = engine
-        .eval(EvalInput::Path(PathBuf::from("job.mjs")))
+        .eval(EvalInput::Path(PathBuf::from("job.mjs")), None)
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!("loaded"));
 
     let value = engine
-        .call("job.mjs", "greetTwice", vec![serde_json::json!("oj")])
+        .call("job.mjs", "greetTwice", vec![serde_json::json!("oj")], None)
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!("hello oj!hello oj"));
@@ -168,6 +177,7 @@ async fn eval_path_and_call_work() {
             "job.mjs",
             "asyncAdd",
             vec![serde_json::json!(20), serde_json::json!(22)],
+            None,
         )
         .await
         .unwrap();
@@ -179,7 +189,7 @@ async fn js_errors_are_reported_not_fatal() {
     let root = app_root();
     let engine = engine(root.path());
     let err = engine
-        .eval(EvalInput::Source("throw new Error('boom');".into()))
+        .eval(EvalInput::Source("throw new Error('boom');".into()), None)
         .await
         .unwrap_err();
     match err {
@@ -188,7 +198,10 @@ async fn js_errors_are_reported_not_fatal() {
     }
     // The engine stays usable.
     let value = engine
-        .eval(EvalInput::Source("export default 'still alive';".into()))
+        .eval(
+            EvalInput::Source("export default 'still alive';".into()),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!("still alive"));
@@ -199,15 +212,18 @@ async fn memory_cap_terminates_cleanly() {
     let root = app_root();
     let mut config = EngineConfig::new(root.path());
     config.memory_limit_bytes = Some(128 * 1024 * 1024);
-    let engine = JsEngine::spawn(config).unwrap();
+    let engine = JsEngine::spawn(config, None, None).unwrap();
     let err = engine
-        .eval(EvalInput::Source(
-            r#"
+        .eval(
+            EvalInput::Source(
+                r#"
             const chunks = [];
             for (;;) chunks.push(new Array(1024 * 1024).fill(Math.random()));
             "#
-            .into(),
-        ))
+                .into(),
+            ),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -237,13 +253,14 @@ async fn memory_cap_fails_a_parked_call_as_memory_limit_not_deadline() {
     let mut config = EngineConfig::new(root.path());
     config.memory_limit_bytes = Some(128 * 1024 * 1024);
     config.default_deadline = Some(Duration::from_secs(30));
-    let engine = JsEngine::spawn(config).unwrap();
+    let engine = JsEngine::spawn(config, None, None).unwrap();
     let started = std::time::Instant::now();
     let err = engine
         .call(
             root.path().join("hog.mjs").to_string_lossy().into_owned(),
             "run",
             vec![],
+            None,
         )
         .await
         .unwrap_err();
@@ -266,7 +283,7 @@ async fn background_oom_condemns_the_isolate_for_the_next_job() {
     let root = app_root();
     let mut config = EngineConfig::new(root.path());
     config.memory_limit_bytes = Some(128 * 1024 * 1024);
-    let engine = JsEngine::spawn(config).unwrap();
+    let engine = JsEngine::spawn(config, None, None).unwrap();
     // Armed through `call`, which settles on its returned value and leaves
     // the timer as background work (an eval would wait out the event loop
     // and take the blast itself).
@@ -286,6 +303,7 @@ async fn background_oom_condemns_the_isolate_for_the_next_job() {
             root.path().join("bomb.mjs").to_string_lossy().into_owned(),
             "arm",
             vec![],
+            None,
         )
         .await
         .unwrap();
@@ -294,7 +312,7 @@ async fn background_oom_condemns_the_isolate_for_the_next_job() {
     // progress (the scheduler keeps polling: a live timer is not idle).
     tokio::time::sleep(Duration::from_millis(500)).await;
     let err = engine
-        .eval(EvalInput::Source("export default 1;".into()))
+        .eval(EvalInput::Source("export default 1;".into()), None)
         .await
         .unwrap_err();
     assert!(
@@ -307,7 +325,7 @@ async fn background_oom_condemns_the_isolate_for_the_next_job() {
 async fn deadline_terminates_infinite_loop() {
     let root = app_root();
     let engine = engine(root.path());
-    let err = within(engine.eval_with_deadline(
+    let err = within(engine.eval(
         EvalInput::Source("for (;;) {}".into()),
         Some(Duration::from_millis(500)),
     ))
@@ -319,7 +337,7 @@ async fn deadline_terminates_infinite_loop() {
     );
     // The engine stays usable after a terminated job.
     let value = engine
-        .eval(EvalInput::Source("export default 7;".into()))
+        .eval(EvalInput::Source("export default 7;".into()), None)
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!(7));
@@ -339,8 +357,8 @@ async fn deadline_times_out_a_parked_never_settling_call() {
     .unwrap();
     let mut config = EngineConfig::new(root.path());
     config.default_deadline = Some(Duration::from_millis(500));
-    let engine = JsEngine::spawn(config).unwrap();
-    let err = within(engine.call("hang.mjs", "hang", vec![]))
+    let engine = JsEngine::spawn(config, None, None).unwrap();
+    let err = within(engine.call("hang.mjs", "hang", vec![], None))
         .await
         .unwrap_err();
     assert!(
@@ -348,7 +366,7 @@ async fn deadline_times_out_a_parked_never_settling_call() {
         "expected Deadline, got {err:?}"
     );
     // The engine stays usable after the timed-out call.
-    let value = engine.call("hang.mjs", "ok", vec![]).await.unwrap();
+    let value = engine.call("hang.mjs", "ok", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("alive"));
 }
 
@@ -365,15 +383,15 @@ async fn deadline_terminates_an_infinite_loop_call() {
     .unwrap();
     let mut config = EngineConfig::new(root.path());
     config.default_deadline = Some(Duration::from_millis(500));
-    let engine = JsEngine::spawn(config).unwrap();
-    let err = within(engine.call("spin.mjs", "spin", vec![]))
+    let engine = JsEngine::spawn(config, None, None).unwrap();
+    let err = within(engine.call("spin.mjs", "spin", vec![], None))
         .await
         .unwrap_err();
     assert!(
         matches!(err, EngineError::Deadline),
         "expected Deadline, got {err:?}"
     );
-    let value = engine.call("spin.mjs", "ok", vec![]).await.unwrap();
+    let value = engine.call("spin.mjs", "ok", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("alive"));
 }
 
@@ -389,11 +407,11 @@ async fn no_deadline_call_parks_indefinitely_without_timing_out() {
     )
     .unwrap();
     let engine = engine(root.path());
-    let parked = engine.call("park.mjs", "park", vec![]);
+    let parked = engine.call("park.mjs", "park", vec![], None);
     tokio::pin!(parked);
     let raced = tokio::time::timeout(Duration::from_millis(700), parked.as_mut()).await;
     assert!(raced.is_err(), "a no-deadline call must stay parked");
-    let value = engine.call("park.mjs", "ok", vec![]).await.unwrap();
+    let value = engine.call("park.mjs", "ok", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("alive"));
 }
 
@@ -408,9 +426,10 @@ fn two_engines_run_concurrently() {
             .build()
             .unwrap();
         let value = rt
-            .block_on(engine.eval(EvalInput::Source(
-                "export default [1, 2, 3].map((n) => n * 2);".into(),
-            )))
+            .block_on(engine.eval(
+                EvalInput::Source("export default [1, 2, 3].map((n) => n * 2);".into()),
+                None,
+            ))
             .unwrap();
         assert_eq!(value, serde_json::json!([2, 4, 6]));
     };
@@ -449,8 +468,9 @@ async fn napi_addon_loads() {
 
     let engine = engine(root.path());
     let value = engine
-        .eval(EvalInput::Source(
-            r#"
+        .eval(
+            EvalInput::Source(
+                r#"
             import { createRequire } from "node:module";
             const require = createRequire(import.meta.url);
             const css = require("lightningcss");
@@ -461,8 +481,10 @@ async fn napi_addon_loads() {
             });
             export default new TextDecoder().decode(out.code);
             "#
-            .into(),
-        ))
+                .into(),
+            ),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(value, serde_json::json!(".a{color:red}"));
@@ -479,9 +501,9 @@ mod host_seam {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use oj_js::HostFuture;
     use oj_js::HostModule;
     use oj_js::HostModuleType;
+    use oj_js::HostRequest;
     use oj_js::HostResolved;
     use oj_js::ModuleHost;
 
@@ -523,40 +545,50 @@ mod host_seam {
         }
     }
 
-    impl ModuleHost for TestHost {
-        fn resolve<'a>(
-            &'a self,
-            _importer: &'a str,
-            specifier: &'a str,
-        ) -> HostFuture<'a, Result<Option<HostResolved>, String>> {
-            Box::pin(async move {
-                if self.externals.lock().unwrap().contains(specifier) {
-                    return Ok(Some(HostResolved::External(specifier.to_string())));
-                }
-                let id = specifier.trim_start_matches("./");
-                if self.modules.lock().unwrap().contains_key(id) {
-                    return Ok(Some(HostResolved::Url(self.spec(id))));
-                }
-                Ok(None)
-            })
+    impl TestHost {
+        fn resolve(&self, specifier: &str) -> Result<Option<HostResolved>, String> {
+            if self.externals.lock().unwrap().contains(specifier) {
+                return Ok(Some(HostResolved::External(specifier.to_string())));
+            }
+            let id = specifier.trim_start_matches("./");
+            if self.modules.lock().unwrap().contains_key(id) {
+                return Ok(Some(HostResolved::Url(self.spec(id))));
+            }
+            Ok(None)
         }
 
-        fn load<'a>(
-            &'a self,
-            specifier: &'a str,
-        ) -> HostFuture<'a, Result<Option<HostModule>, String>> {
-            Box::pin(async move {
-                let Some(id) = TestHost::id_of(specifier) else {
-                    return Ok(None);
-                };
-                match self.modules.lock().unwrap().get(&id) {
-                    Some(code) => Ok(Some(HostModule {
-                        code: code.clone(),
-                        module_type: HostModuleType::JavaScript,
-                    })),
-                    None => Err(format!("host has no module \"{id}\"")),
+        fn load(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+            let Some(id) = TestHost::id_of(specifier) else {
+                return Ok(None);
+            };
+            match self.modules.lock().unwrap().get(&id) {
+                Some(code) => Ok(Some(HostModule {
+                    code: code.clone(),
+                    module_type: HostModuleType::JavaScript,
+                })),
+                None => Err(format!("host has no module \"{id}\"")),
+            }
+        }
+
+        /// Spawns a serving loop for this host and returns the engine's end.
+        fn link(self: &Arc<Self>) -> ModuleHost {
+            let (link, mut requests) = ModuleHost::channel();
+            let host = Arc::clone(self);
+            tokio::spawn(async move {
+                while let Some(request) = requests.recv().await {
+                    match request {
+                        HostRequest::Resolve {
+                            specifier, reply, ..
+                        } => {
+                            let _ = reply.send(host.resolve(&specifier));
+                        }
+                        HostRequest::Load { specifier, reply } => {
+                            let _ = reply.send(host.load(&specifier));
+                        }
+                    }
                 }
-            })
+            });
+            link
         }
     }
 
@@ -571,12 +603,13 @@ mod host_seam {
                export function greet(name) { return `${name} ${word}`; }"#,
         );
         let engine =
-            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap();
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap();
         let value = engine
             .call(
                 host.spec("entry"),
                 "greet",
                 vec![serde_json::json!("hello")],
+                None,
             )
             .await
             .unwrap();
@@ -601,17 +634,17 @@ mod host_seam {
                export function stat() { return { stamp, run }; }"#,
         );
         let engine =
-            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap();
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap();
 
         let first = engine
-            .call(host.spec("entry"), "stat", vec![])
+            .call(host.spec("entry"), "stat", vec![], None)
             .await
             .unwrap();
         assert_eq!(first, serde_json::json!({ "stamp": 1, "run": 1 }));
 
         // Same specifier: fully cached, nothing re-evaluates.
         let again = engine
-            .call(host.spec("entry"), "stat", vec![])
+            .call(host.spec("entry"), "stat", vec![], None)
             .await
             .unwrap();
         assert_eq!(again, serde_json::json!({ "stamp": 1, "run": 1 }));
@@ -620,7 +653,7 @@ mod host_seam {
         // fresh entry instance re-links against the untouched dep instance.
         host.bump("entry");
         let entry_only = engine
-            .call(host.spec("entry"), "stat", vec![])
+            .call(host.spec("entry"), "stat", vec![], None)
             .await
             .unwrap();
         assert_eq!(entry_only, serde_json::json!({ "stamp": 1, "run": 2 }));
@@ -630,7 +663,7 @@ mod host_seam {
         host.bump("dep");
         host.bump("entry");
         let both = engine
-            .call(host.spec("entry"), "stat", vec![])
+            .call(host.spec("entry"), "stat", vec![], None)
             .await
             .unwrap();
         assert_eq!(both, serde_json::json!({ "stamp": 2, "run": 3 }));
@@ -647,9 +680,14 @@ mod host_seam {
                export function greet(name) { return fixture.greet(name); }"#,
         );
         let engine =
-            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap();
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap();
         let value = engine
-            .call(host.spec("entry"), "greet", vec![serde_json::json!("oj")])
+            .call(
+                host.spec("entry"),
+                "greet",
+                vec![serde_json::json!("oj")],
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(value, serde_json::json!("hello oj"));
@@ -674,18 +712,18 @@ mod host_seam {
                }"#,
         );
         let engine = Arc::new(
-            JsEngine::spawn_with_host(EngineConfig::new(root.path()), host.clone()).unwrap(),
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap(),
         );
         let spec = host.spec("entry");
         let waiter = {
             let engine = engine.clone();
             let spec = spec.clone();
-            tokio::spawn(async move { engine.call(spec, "waitForBaton", vec![]).await })
+            tokio::spawn(async move { engine.call(spec, "waitForBaton", vec![], None).await })
         };
         // Let the waiter's call reach its pending promise before handing off.
         tokio::time::sleep(Duration::from_millis(100)).await;
         let handed = engine
-            .call(spec, "handBaton", vec![serde_json::json!("relay")])
+            .call(spec, "handBaton", vec![serde_json::json!("relay")], None)
             .await
             .unwrap();
         assert_eq!(handed, serde_json::json!("handed"));
@@ -712,8 +750,8 @@ async fn code_cache_persists_and_later_engines_still_run() {
 
     // First engine: cold cache — must run and leave compiled entries behind
     // (the disk ESM module plus the CJS fixture's bytecode/analysis).
-    let engine = JsEngine::spawn(config.clone()).unwrap();
-    let value = engine.call("main.mjs", "run", vec![]).await.unwrap();
+    let engine = JsEngine::spawn(config.clone(), None, None).unwrap();
+    let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
     let entries = std::fs::read_dir(&cache_dir)
@@ -726,8 +764,8 @@ async fn code_cache_persists_and_later_engines_still_run() {
     // flushes pending code-cache writes before the loop exits, so this count
     // is exact: without that flush an engine dropped right after its last
     // call loses entries the next engine then re-writes (a CI-load flake).
-    let engine = JsEngine::spawn(config).unwrap();
-    let value = engine.call("main.mjs", "run", vec![]).await.unwrap();
+    let engine = JsEngine::spawn(config, None, None).unwrap();
+    let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
     assert_eq!(std::fs::read_dir(&cache_dir).unwrap().count(), entries);
@@ -743,39 +781,48 @@ async fn code_cache_persists_and_later_engines_still_run() {
     .unwrap();
     let mut config = EngineConfig::new(root.path());
     config.code_cache_dir = Some(cache_dir);
-    let engine = JsEngine::spawn(config).unwrap();
-    let value = engine.call("main.mjs", "run", vec![]).await.unwrap();
+    let engine = JsEngine::spawn(config, None, None).unwrap();
+    let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello fresh"));
 }
 
-/// Regression: the GC registry (collect_all_garbage) holds only WEAK job
-/// senders. A strong entry keeps the dropped engine's channel open, its
-/// thread never exits, and drop's join hangs the caller — a one-shot config
-/// extraction then wedges its whole build for the extract timeout.
+/// Regression: an [`oj_js::EngineRegistry`] holds only WEAK job senders.
+/// A strong entry keeps the dropped engine's channel open, its thread never
+/// exits, and drop's join hangs the caller — a one-shot config extraction
+/// then wedges its whole build for the extract timeout.
 #[test]
-fn dropping_an_engine_is_not_blocked_by_the_gc_registry() {
+fn dropping_an_engine_is_not_blocked_by_its_registry() {
     let root = app_root();
+    let registry = oj_js::EngineRegistry::new();
     let done = std::sync::mpsc::channel();
     let path = root.path().to_path_buf();
+    let handle = registry.clone();
     std::thread::spawn(move || {
-        let engine = JsEngine::spawn(EngineConfig::new(&path)).unwrap();
+        let mut config = EngineConfig::new(&path);
+        config.registry = Some(handle);
+        let engine = JsEngine::spawn(config, None, None).unwrap();
         drop(engine);
         let _ = done.0.send(());
     });
     done.1
         .recv_timeout(Duration::from_secs(20))
-        .expect("engine drop deadlocked: the gc registry is keeping the job channel open");
+        .expect("engine drop deadlocked: the registry is keeping the job channel open");
 }
 
-/// The fan-out reaches a live engine and reports it collected; a dropped
-/// engine is pruned rather than counted.
+/// The fan-out reaches a live registered engine and reports it collected; a
+/// dropped engine is pruned rather than counted.
 #[test]
-fn collect_all_garbage_counts_only_live_engines() {
+fn registry_gc_counts_only_live_engines() {
     let root = app_root();
-    let engine = JsEngine::spawn(EngineConfig::new(root.path())).unwrap();
-    assert!(oj_js::collect_all_garbage(Duration::from_secs(10)) >= 1);
+    let registry = oj_js::EngineRegistry::new();
+    let mut config = EngineConfig::new(root.path());
+    config.registry = Some(registry.clone());
+    let engine = JsEngine::spawn(config, None, None).unwrap();
+    assert_eq!(registry.collect_garbage(Duration::from_secs(10)), 1);
     drop(engine);
-    // No hang and no phantom count from this test's engine. Other tests run
-    // in parallel and may hold engines, so only assert it returns.
-    let _ = oj_js::collect_all_garbage(Duration::from_secs(10));
+    assert_eq!(
+        registry.collect_garbage(Duration::from_secs(10)),
+        0,
+        "a dropped engine must be pruned, not counted"
+    );
 }

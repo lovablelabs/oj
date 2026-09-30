@@ -26,7 +26,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use oj_js::EngineConfig;
-use oj_js::HostFuture;
 use oj_js::HostModule;
 use oj_js::HostModuleType;
 use oj_js::HostResolved;
@@ -141,11 +140,18 @@ fn pkg_name_of_path(path: &str) -> Option<String> {
 /// Base64url without padding (Node's `Buffer.toString("base64url")`), the
 /// server-function id encoding shared with gen-resolver.mjs and the client
 /// bundle.
+/// Decodes the bootstrap's standard base64 (Node `Buffer.toString("base64")`,
+/// padded); oj owns both ends, so malformed input decodes to empty.
+fn base64_decode(s: &str) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .unwrap_or_default()
+}
+
 fn base64url(bytes: &[u8]) -> String {
-    crate::ssr_host::base64(bytes)
-        .trim_end_matches('=')
-        .replace('+', "-")
-        .replace('/', "_")
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// The server-side `createServerFn` rewrite the node loader applied
@@ -1183,21 +1189,31 @@ impl StartHost {
     }
 }
 
-impl ModuleHost for StartHost {
-    fn resolve<'a>(
-        &'a self,
-        importer: &'a str,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostResolved>, String>> {
-        Box::pin(self.resolve_inner(importer, specifier))
-    }
-
-    fn load<'a>(
-        &'a self,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostModule>, String>> {
-        Box::pin(self.load_inner(specifier))
-    }
+/// Serves the engine's module-host requests by calling this host. One task
+/// owns the recv loop; each request gets a task of its own because deno_core
+/// polls module loads CONCURRENTLY while it builds a graph — handling them
+/// inline would serialize every fetch behind the slowest transform. The loop
+/// ends when the engine (the sender) is gone.
+fn serve_module_host(host: Arc<StartHost>, mut requests: oj_js::HostRequests) {
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            let host = Arc::clone(&host);
+            tokio::spawn(async move {
+                match request {
+                    oj_js::HostRequest::Resolve {
+                        importer,
+                        specifier,
+                        reply,
+                    } => {
+                        let _ = reply.send(host.resolve_inner(&importer, &specifier).await);
+                    }
+                    oj_js::HostRequest::Load { specifier, reply } => {
+                        let _ = reply.send(host.load_inner(&specifier).await);
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// One request into the app's fetch handler, as the bootstrap consumes it.
@@ -1284,6 +1300,7 @@ impl StartEngine {
                 self.bootstrap.clone(),
                 "init",
                 vec![serde_json::Value::Object(env)],
+                None,
             )
             .await
             .map(|_| ())
@@ -1311,6 +1328,7 @@ impl StartEngine {
                 self.bootstrap.clone(),
                 "handle",
                 vec![entry.into(), payload],
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -1429,7 +1447,7 @@ impl ScriptEngine {
         let mut config = EngineConfig::new(root);
         config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
         Ok(ScriptEngine {
-            engine: JsEngine::spawn(config).map_err(|e| anyhow::anyhow!("{e}"))?,
+            engine: JsEngine::spawn(config, None, None).map_err(|e| anyhow::anyhow!("{e}"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
         })
     }
@@ -1455,7 +1473,10 @@ impl ScriptEngine {
         self.env_shadowed
             .get_or_try_init(|| async {
                 self.engine
-                    .eval(oj_js::EvalInput::Source(SCRIPT_ENV_SHADOW_JS.to_string()))
+                    .eval(
+                        oj_js::EvalInput::Source(SCRIPT_ENV_SHADOW_JS.to_string()),
+                        None,
+                    )
                     .await
                     .map(|_| ())
             })
@@ -1469,6 +1490,7 @@ impl ScriptEngine {
                 script.to_string_lossy().into_owned(),
                 "run",
                 vec![serde_json::Value::Object(env_obj)],
+                None,
             )
             .await
     }
@@ -1477,38 +1499,10 @@ impl ScriptEngine {
 fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::EngineError> {
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-    JsEngine::spawn_with_host(config, Arc::clone(host) as Arc<dyn ModuleHost>)
-}
-
-fn base64_decode(s: &str) -> Vec<u8> {
-    fn val(b: u8) -> Option<u32> {
-        match b {
-            b'A'..=b'Z' => Some((b - b'A') as u32),
-            b'a'..=b'z' => Some((b - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((b - b'0' + 52) as u32),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let bytes: Vec<u32> = s.bytes().filter_map(val).collect();
-    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
-    for chunk in bytes.chunks(4) {
-        let mut n = 0u32;
-        for (i, b) in chunk.iter().enumerate() {
-            n |= b << (18 - 6 * i);
-        }
-        let count = match chunk.len() {
-            4 => 3,
-            3 => 2,
-            2 => 1,
-            _ => 0,
-        };
-        for i in 0..count {
-            out.push(((n >> (16 - 8 * i)) & 0xff) as u8);
-        }
-    }
-    out
+    config.registry = Some(host.bridge.engine_registry());
+    let (link, requests) = ModuleHost::channel();
+    serve_module_host(Arc::clone(host), requests);
+    JsEngine::spawn(config, Some(link), None)
 }
 
 #[cfg(test)]
@@ -1622,23 +1616,6 @@ mod tests {
     fn base64url_matches_node_buffer() {
         assert_eq!(base64url(b"src/a.ts#fn"), "c3JjL2EudHMjZm4");
         assert_eq!(base64url(&[0xff, 0xef, 0x01]), "_-8B");
-    }
-
-    #[test]
-    fn base64_roundtrips() {
-        for input in [
-            b"".as_slice(),
-            b"f",
-            b"fo",
-            b"foo",
-            &[0xff, 0x00, 0x10, 0x88],
-        ] {
-            assert_eq!(
-                base64_decode(&crate::ssr_host::base64(input)),
-                input,
-                "{input:?}"
-            );
-        }
     }
 
     #[test]

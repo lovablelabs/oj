@@ -34,7 +34,10 @@ pub(crate) async fn debug_mem_stats(
         .into_response()
 }
 
-pub(crate) async fn debug_gc(headers: axum::http::HeaderMap) -> Response {
+pub(crate) async fn debug_gc(
+    State(state): State<Arc<ServerState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     if !debug_mem() {
         return (axum::http::StatusCode::NOT_FOUND, "").into_response();
     }
@@ -45,8 +48,9 @@ pub(crate) async fn debug_gc(headers: axum::http::HeaderMap) -> Response {
     }
     // Barrier across every registered engine: returns only after each one
     // acknowledged its collection, so a probe reading RSS next sees post-GC numbers.
-    let collected = tokio::task::spawn_blocking(|| {
-        oj_js::collect_all_garbage(std::time::Duration::from_secs(10))
+    let registry = state.engine_registry.clone();
+    let collected = tokio::task::spawn_blocking(move || {
+        registry.collect_garbage(std::time::Duration::from_secs(10))
     })
     .await
     .unwrap_or(0);

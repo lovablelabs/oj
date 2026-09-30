@@ -24,7 +24,7 @@ fn extraction_returns_values_and_caches_them() {
     let _g = lock();
     let dir = app(r#"export default { base: "/app/", server: { port: 5199 } };"#);
     let root = dir.path();
-    let v = extract_vite_values_with(root, "serve", "development", true)
+    let v = extract_vite_values_with(root, None, "serve", "development", true)
         .expect("a valid config extracts");
     assert_eq!(v.base.as_deref(), Some("/app/"));
     assert_eq!(v.port, Some(5199));
@@ -55,7 +55,7 @@ fn a_broken_config_is_none_not_an_empty_config() {
     let dir = app("throw new Error('config exploded');\nexport default {};");
     let root = dir.path();
     assert!(
-        extract_vite_values_with(root, "serve", "development", true).is_none(),
+        extract_vite_values_with(root, None, "serve", "development", true).is_none(),
         "a config that fails to evaluate must never parse as empty values"
     );
     assert!(
@@ -66,7 +66,7 @@ fn a_broken_config_is_none_not_an_empty_config() {
     );
     // ...and the adopt seam surfaces it as the load error Vite gives.
     let mut config = oj_config::OjConfig::default();
-    let err = adopt_vite_config_values(&mut config, root, "serve", "development")
+    let err = adopt_vite_config_values(&mut config, root, None, "serve", "development")
         .expect_err("a present-but-broken vite.config is an error");
     assert!(err.contains("failed to load config"), "{err}");
 }
@@ -82,7 +82,7 @@ export default { base };"#);
         "export const base = \"/dep/\";\n",
     )
     .unwrap();
-    let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+    let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
     assert_eq!(v.base.as_deref(), Some("/dep/"));
     let hit = extraction_store(root)
         .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -107,7 +107,7 @@ export default { base: a.base + b.base };"#);
     let root = dir.path();
     std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
     std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
-    let result = extract_vite_values_with(root, "serve", "development", true);
+    let result = extract_vite_values_with(root, None, "serve", "development", true);
     std::env::remove_var("OJ_OBSERVED_READS_MAX");
     let v = result.expect("the result is still served");
     assert_eq!(v.base.as_deref(), Some("/a/b"));
@@ -126,7 +126,7 @@ fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
     let dir = app("await new Promise(() => {});\nexport default {};");
     let root = dir.path();
     let started = std::time::Instant::now();
-    let result = extract_vite_values_with(root, "serve", "development", true);
+    let result = extract_vite_values_with(root, None, "serve", "development", true);
     std::env::remove_var("OJ_EXTRACT_TIMEOUT");
     assert!(result.is_none(), "a wedged config evaluation is a failure");
     assert!(
@@ -143,7 +143,7 @@ fn a_hook_started_interval_does_not_outlive_the_extraction() {
     let dir = app("setInterval(() => {}, 1000);\nexport default { base: \"/live/\" };");
     let root = dir.path();
     let started = std::time::Instant::now();
-    let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+    let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
     assert_eq!(v.base.as_deref(), Some("/live/"));
     assert!(
         started.elapsed() < std::time::Duration::from_secs(30),
@@ -159,7 +159,7 @@ process.stderr.write("direct stderr write\n");
 console.log("stdout is swallowed");
 export default { base: "/loud/" };"#);
     let root = dir.path();
-    let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+    let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
     assert_eq!(v.base.as_deref(), Some("/loud/"));
     let hit = extraction_store(root)
         .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -181,7 +181,7 @@ fn config_env_writes_do_not_leak_into_the_oj_process() {
     let dir = app(r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
 export default { base: "/env/" };"#);
     let root = dir.path();
-    let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+    let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
     assert_eq!(v.base.as_deref(), Some("/env/"));
     assert!(
         std::env::var("OJ_EXTRACT_LEAK_PROBE").is_err(),
@@ -223,7 +223,7 @@ fn a_ts_config_without_vite_loads_through_the_esbuild_fallback() {
         "import { port } from \"./shared\";\nexport default { base: \"/ts/\" as const, server: { port } };\n",
     )
     .unwrap();
-    let v = extract_vite_values_with(root, "serve", "development", true)
+    let v = extract_vite_values_with(root, None, "serve", "development", true)
         .expect("the TS config loads through the esbuild fallback");
     assert_eq!(v.base.as_deref(), Some("/ts/"));
     assert_eq!(v.port, Some(5321));

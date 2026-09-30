@@ -105,12 +105,17 @@ pub fn run_engine_job_in_process(
         let mut config = oj_js::EngineConfig::new(root);
         config.default_deadline = Some(timeout);
         config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
-        let engine = oj_js::JsEngine::spawn(config)?;
+        let engine = oj_js::JsEngine::spawn(config, None, None)?;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
-        rt.block_on(engine.call(module.to_string_lossy().into_owned(), export, vec![payload]))
+        rt.block_on(engine.call(
+            module.to_string_lossy().into_owned(),
+            export,
+            vec![payload],
+            None,
+        ))
         // Dropping the engine joins its thread; pending JS work dies with the isolate.
     };
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -261,14 +266,20 @@ pub(crate) fn run_engine_job_subprocess(
 
 /// Evaluate the app's `vite.config` for `command` ("serve" | "build") and `mode`.
 /// Function configs branch on both, so a build must be extracted as a build.
-pub fn extract_vite_values(root: &Path, command: &str, mode: &str) -> Option<ViteValues> {
-    extract_vite_values_with(root, command, mode, true)
+pub fn extract_vite_values(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+) -> Option<ViteValues> {
+    extract_vite_values_with(root, config, command, mode, true)
 }
 
 /// `mode_explicit`: false when `mode` is only the command's default (no CLI
 /// `--mode`), which lets a `mode` named in the config file win, as in Vite.
 pub(crate) fn extract_vite_values_with(
     root: &Path,
+    config: Option<&Path>,
     command: &str,
     mode: &str,
     mode_explicit: bool,
@@ -283,7 +294,7 @@ pub(crate) fn extract_vite_values_with(
         format!("{mode}@default")
     };
     let mode_key = mode_key.as_str();
-    let vite = vite_config_file(root)?;
+    let vite = vite_config_file(root, config)?;
     let store = extraction_store(root);
     if let Some(hit) = store.lookup(&vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
@@ -535,13 +546,14 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
 pub fn adopt_vite_config_values(
     config: &mut oj_config::OjConfig,
     root: &Path,
+    config_file: Option<&Path>,
     command: &str,
     mode: &str,
 ) -> Result<(), String> {
-    let Some(v) = extract_vite_values(root, command, mode) else {
+    let Some(v) = extract_vite_values(root, config_file, command, mode) else {
         // No vite.config: nothing to adopt. A present-but-broken vite.config fails
         // hard like Vite; an oj.plugins file takes precedence (extractor skips it).
-        if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
+        if let Some(named) = config_file {
             if !named.is_file() {
                 return Err(format!(
                     "failed to load config from {}: --config names a file that does not exist",
@@ -550,7 +562,7 @@ pub fn adopt_vite_config_values(
             }
         }
         if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root) {
+            if let Some(path) = vite_config_file(root, config_file) {
                 return Err(format!("failed to load config from {}", path.display()));
             }
         }
@@ -565,12 +577,13 @@ pub fn adopt_vite_config_values(
 pub fn adopt_vite_config_values_default_mode(
     config: &mut oj_config::OjConfig,
     root: &Path,
+    config_file: Option<&Path>,
     command: &str,
     mode: &str,
 ) -> Result<(), String> {
-    let Some(v) = extract_vite_values_with(root, command, mode, false) else {
+    let Some(v) = extract_vite_values_with(root, config_file, command, mode, false) else {
         // Same rule: a present-but-broken vite.config is an error, a missing one is fine.
-        if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
+        if let Some(named) = config_file {
             if !named.is_file() {
                 return Err(format!(
                     "failed to load config from {}: --config names a file that does not exist",
@@ -579,7 +592,7 @@ pub fn adopt_vite_config_values_default_mode(
             }
         }
         if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root) {
+            if let Some(path) = vite_config_file(root, config_file) {
                 return Err(format!("failed to load config from {}", path.display()));
             }
         }
