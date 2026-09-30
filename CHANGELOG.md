@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Dependencies that ship separate Node and browser files now load the browser files in dev, as in Vite. A package can list swaps in its package.json `browser` field (e.g. `"./lib/node.js": "./lib/browser.js"`), but oj served a package's own `./` and `../` imports straight from disk without checking that list, so the Node file (and the Node built-ins it imports) reached the browser and the page failed to load. Imports from inside `node_modules` now go through the resolver, which applies the swaps; app source keeps the direct-from-disk shortcut.
+
 ## [0.2.14] - 2026-09-29
 
 ### Fixed

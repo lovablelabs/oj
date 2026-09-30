@@ -6649,7 +6649,11 @@ fn rewrite_specifier(
         }
     }
 
-    if spec.starts_with("./") || spec.starts_with("../") {
+    // A package.json `browser` object can remap a dependency's own relative files
+    // (`"./lib/node.js": "./lib/browser.js"`, or `false` for an empty module), and
+    // only the resolver applies that map: the on-disk fast path is for app source.
+    let in_dep = dir.components().any(|c| c.as_os_str() == "node_modules");
+    if (spec.starts_with("./") || spec.starts_with("../")) && !in_dep {
         let mut joined = normalize(&dir.join(spec));
         if !is_file_cached(dir_cache, &joined) {
             if let Some(ext) = joined.extension().and_then(|e| e.to_str()) {
