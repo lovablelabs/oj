@@ -59,10 +59,11 @@ impl Verdict {
 pub(crate) struct Isolate {
     pub(crate) worker: MainWorker,
     watchdog: Watchdog,
-    /// Set by the near-heap-limit callback, which runs inside an event-loop
-    /// poll; read right after each poll so exhaustion never depends on a
-    /// waker the terminated JS cannot fire.
-    oom: Arc<AtomicBool>,
+    /// Present only on a capped isolate: shared with the near-heap-limit
+    /// callback, which runs inside an event-loop poll; read right after each
+    /// poll so exhaustion never depends on a waker the terminated JS cannot
+    /// fire. An uncapped engine has no OOM machinery at all.
+    oom: Option<Arc<AtomicBool>>,
     /// The heap cap fired: the isolate ran on and may have lost arbitrary
     /// state, so every later job fails fast as MemoryLimit until the owner
     /// (CSS revive, plugin-host respawn) replaces the engine. Without it,
@@ -77,13 +78,12 @@ impl Isolate {
         module_host: Option<ModuleHost>,
     ) -> Result<Isolate, EngineError> {
         let mut worker = build_worker(config, main_module, module_host)?;
-        let oom = Arc::new(AtomicBool::new(false));
         let watchdog = Watchdog::spawn(worker.js_runtime.v8_isolate().thread_safe_handle());
 
         Ok(Isolate {
             worker,
             watchdog,
-            oom,
+            oom: None,
             condemned: false,
         })
     }
@@ -99,12 +99,13 @@ impl Isolate {
             bridge::install(&mut self.worker, hooks);
         }
         if capped {
+            let flag = Arc::new(AtomicBool::new(false));
+            self.oom = Some(Arc::clone(&flag));
             let handle = self.worker.js_runtime.v8_isolate().thread_safe_handle();
-            let oom = self.oom.clone();
             self.worker
                 .js_runtime
                 .add_near_heap_limit_callback(move |current, _initial| {
-                    oom.store(true, Ordering::SeqCst);
+                    flag.store(true, Ordering::SeqCst);
                     handle.terminate_execution();
                     // Raise the limit so V8 can unwind while the termination
                     // lands, instead of aborting the process.
@@ -148,11 +149,16 @@ impl Isolate {
     /// (bisected, stable across layout perturbations). The flag is consumed
     /// outside the tick, by `settle` and the MemoryExhausted arm.
     pub(crate) fn oom_pending(&self) -> bool {
-        self.oom.load(Ordering::SeqCst)
+        self.oom
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 
     pub(crate) fn take_oom(&mut self) -> bool {
-        let fired = self.oom.swap(false, Ordering::SeqCst);
+        let fired = self
+            .oom
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, Ordering::SeqCst));
         if fired {
             self.condemned = true;
         }

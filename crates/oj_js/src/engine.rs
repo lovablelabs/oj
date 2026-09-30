@@ -62,12 +62,19 @@ impl Job {
     }
 }
 
+/// The engine's live half: the job sender and the thread to join. One slot,
+/// taken whole, so a shutdown can never close the channel without also owning
+/// the join (or leave a joinable thread behind a closed channel).
+struct Running {
+    tx: mpsc::UnboundedSender<Job>,
+    thread: std::thread::JoinHandle<()>,
+}
+
 /// Handle to an engine thread. Dropping it shuts the thread down gracefully
 /// (the job channel closes, the loop ends, the thread is joined) — unless the
 /// engine was [`JsEngine::abandon`]ed first, which detaches instead of joining.
 pub struct JsEngine {
-    tx: Mutex<Option<mpsc::UnboundedSender<Job>>>,
-    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    running: Mutex<Option<Running>>,
     /// The isolate's thread-safe handle, for interrupting a running job from
     /// outside the engine thread (see [`JsEngine::abandon`]).
     isolate: v8::IsolateHandle,
@@ -106,8 +113,7 @@ impl JsEngine {
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(isolate)) => Ok(JsEngine {
-                tx: Mutex::new(Some(tx)),
-                thread: Mutex::new(Some(thread)),
+                running: Mutex::new(Some(Running { tx, thread })),
                 isolate,
                 default_deadline,
             }),
@@ -131,8 +137,8 @@ impl JsEngine {
     /// spawn_blocking.
     pub fn collect_garbage(&self, wait: Duration) -> bool {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-        let sent = match self.tx.lock().unwrap().as_ref() {
-            Some(tx) => tx.send(Job::Gc { reply: ack_tx }).is_ok(),
+        let sent = match lock(&self.running).as_ref() {
+            Some(running) => running.tx.send(Job::Gc { reply: ack_tx }).is_ok(),
             None => false,
         };
         sent && ack_rx.recv_timeout(wait).is_ok()
@@ -146,9 +152,8 @@ impl JsEngine {
     /// what a process kill used to reclaim.
     pub fn abandon(&self) {
         self.isolate.terminate_execution();
-        lock(&self.tx).take();
         // Dropping the JoinHandle detaches the thread; Drop will find None.
-        lock(&self.thread).take();
+        drop(lock(&self.running).take());
     }
 
     /// Executes an ES module to completion. `deadline` bounds this one job;
@@ -202,9 +207,10 @@ impl JsEngine {
         make_job: impl FnOnce(Reply) -> Job,
     ) -> Result<serde_json::Value, EngineError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        lock(&self.tx)
+        lock(&self.running)
             .as_ref()
             .ok_or(EngineError::Closed)?
+            .tx
             .send(make_job(reply_tx))
             .map_err(|_| EngineError::Closed)?;
         reply_rx.await.map_err(|_| EngineError::Closed)?
@@ -213,10 +219,10 @@ impl JsEngine {
 
 impl Drop for JsEngine {
     fn drop(&mut self) {
-        // Close the channel first so the engine thread's recv loop ends.
-        lock(&self.tx).take();
-        let thread = lock(&self.thread).take();
-        if let Some(thread) = thread {
+        if let Some(Running { tx, thread }) = lock(&self.running).take() {
+            // Close the channel first so the engine thread's recv loop ends,
+            // then join; the other order deadlocks.
+            drop(tx);
             let _ = thread.join();
         }
     }
