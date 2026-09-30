@@ -1,0 +1,145 @@
+use super::*;
+
+pub(crate) fn bytes_to_string(bytes: Vec<u8>) -> std::io::Result<String> {
+    match simdutf8::basic::from_utf8(&bytes) {
+        Ok(_) => Ok(unsafe { String::from_utf8_unchecked(bytes) }),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        )),
+    }
+}
+
+pub(crate) fn hex_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        out.push(char::from_digit((b >> 4) as u32, 16).unwrap());
+        out.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+    }
+    out
+}
+
+pub(crate) fn hex_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    String::from_utf8(out).ok()
+}
+
+// oj hex-encodes its own /@id/ links, but a Vite plugin's client entry ships a
+// raw /@id/<id> URL (Vite's convention: \0 shown as __x00__). Decode hex when the
+// segment is valid hex, else fall back to the raw id so both forms resolve.
+pub(crate) fn decode_at_id(seg: &str) -> String {
+    if let Some(s) = hex_decode(seg) {
+        return s;
+    }
+    urldecode(seg).replace("__x00__", "\0")
+}
+
+pub(crate) fn is_asset_ext(ext: &str) -> bool {
+    // A plain `.wasm` import is served as a URL module (Vite asks for `?init`).
+    oj_compiler::assets::is_asset_ext(ext) || ext.eq_ignore_ascii_case("wasm")
+}
+
+pub(crate) fn is_asset_path(file: &Path) -> bool {
+    file.extension()
+        .and_then(|e| e.to_str())
+        .map(is_asset_ext)
+        .unwrap_or(false)
+}
+
+pub(crate) fn content_type(ext: &str) -> &'static str {
+    match ext {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "css" => "text/css",
+        "json" | "map" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "wasm" => "application/wasm",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "eot" => "application/vnd.ms-fontobject",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "txt" | "map2" => "text/plain; charset=utf-8",
+        // Any other known asset type (case-insensitive), else octet-stream.
+        other => oj_compiler::assets::asset_mime(other),
+    }
+}
+
+pub(crate) fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+
+// The single gate for serving an absolute (`/@fs`) path. Decide on the
+// canonical target so neither `..` traversal nor a symlink can escape an
+// allow-listed root (component-wise `starts_with` on a raw path does not
+// collapse `..`, and does not follow symlinks): require the real path to be
+// inside a root and not denied. A path that cannot be canonicalized (missing,
+// or a broken symlink) is refused. On success, return the ORIGINAL candidate,
+// not the canonical path, so a caller running with `preserveSymlinks` keeps the
+// module identity it asked for; both resolve to the same bytes.
+pub(crate) fn fs_gate(state: &ServerState, candidate: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(candidate).ok()?;
+    // Vite's isFileLoadingAllowed: `server.fs.strict: false` skips the allow
+    // list entirely (the deny list below still applies).
+    let allowed = !state.fs_strict || {
+        let allow = state.fs_allow.lock().unwrap();
+        allow.iter().any(|root| {
+            // Fast path: roots are normally already canonical (the resolver
+            // realpaths them). Fall back to canonicalizing the root so a
+            // symlinked or /var-vs-/private/var root still matches.
+            real.starts_with(root)
+                || std::fs::canonicalize(root)
+                    .map(|r| real.starts_with(r))
+                    .unwrap_or(false)
+        })
+    };
+    if !allowed || path_is_denied(&real, &state.root, &state.fs_deny) {
+        return None;
+    }
+    Some(candidate.to_path_buf())
+}
+
+pub(crate) fn urldecode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+pub(crate) fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
