@@ -6006,6 +6006,7 @@ dependencies = [
  "anyhow",
  "arcstr",
  "axum",
+ "base64 0.22.1",
  "blake3",
  "clap",
  "deno_core",
