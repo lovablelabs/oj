@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::Once;
 use std::time::Duration;
 
 use deno_core::v8;
@@ -85,7 +84,9 @@ impl JsEngine {
         module_host: Option<ModuleHost>,
         hooks: Option<EngineHooks>,
     ) -> Result<JsEngine, EngineError> {
-        init_v8_platform_once();
+        // Idempotent and concurrency-safe: deno_core guards platform init
+        // with its own process-wide Once.
+        deno_core::JsRuntime::init_platform(None);
         let default_deadline = config.default_deadline;
         // Unbounded on purpose: every caller awaits its reply before it can
         // send again, so queue depth is bounded by caller concurrency; a
@@ -278,10 +279,4 @@ impl EngineRegistry {
         }
         collected
     }
-}
-
-fn init_v8_platform_once() {
-    static V8_INIT: Once = Once::new();
-    // Exactly once process-wide, before the first isolate on any thread.
-    V8_INIT.call_once(|| deno_core::JsRuntime::init_platform(None));
 }
