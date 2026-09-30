@@ -15,6 +15,7 @@ pub mod code_cache;
 mod convert;
 mod engine;
 mod host;
+mod isolate;
 mod loader;
 mod scheduler;
 mod watchdog;

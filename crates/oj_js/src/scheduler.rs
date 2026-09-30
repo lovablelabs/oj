@@ -4,15 +4,18 @@
 //! The engine thread: call jobs run concurrently on the one isolate. A call
 //! is set up exclusively (module load + evaluate + invoke), then parked as a
 //! pending promise; the loop interleaves accepting new jobs, polling every
-//! pending promise, and driving the event loop, so a call that awaits a fetch
+//! parked call, and driving the event loop, so a call that awaits a fetch
 //! back into the caller (an SSR loader hitting its own dev server) never
 //! deadlocks behind itself.
+//!
+//! A parked call's deadline is part of its future (`tokio::time::timeout_at`),
+//! so expiry arrives through the same settlement path as success — there is
+//! no separate timer bookkeeping to keep in sync. The watchdog guard stays
+//! armed underneath for the one case the timer cannot reach: a continuation
+//! wedging the event loop in a busy loop.
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -20,11 +23,9 @@ use std::time::Duration;
 
 use deno_core::url::Url;
 use deno_core::v8;
-use deno_core::PollEventLoopOptions;
-use deno_runtime::worker::MainWorker;
 use tokio::sync::mpsc;
+use tokio::time::error::Elapsed;
 
-use crate::bridge;
 use crate::bridge::EngineHooks;
 use crate::convert::js_err;
 use crate::convert::json_to_v8;
@@ -34,9 +35,9 @@ use crate::convert::SettledResult;
 use crate::engine::Job;
 use crate::engine::Reply;
 use crate::host::HostBridge;
+use crate::isolate::Isolate;
+use crate::isolate::Verdict;
 use crate::watchdog::DeadlineGuard;
-use crate::watchdog::Watchdog;
-use crate::worker::build_worker;
 use crate::EngineConfig;
 use crate::EngineError;
 use crate::EvalInput;
@@ -68,19 +69,20 @@ pub(crate) fn engine_thread(
                 return;
             }
         };
-        if ready.send(Ok(scheduler.isolate_handle())).is_err() {
+        if ready.send(Ok(scheduler.isolate.handle())).is_err() {
             return;
         }
         scheduler.run(rx).await;
     });
 }
 
+/// How a parked call left the pending set: settled by its promise, or timed
+/// out by the deadline baked into its future.
+type ParkedOutcome = Result<SettledResult, Elapsed>;
+
 enum Tick {
     Job(Job),
-    Settled(usize, SettledResult),
-    /// A parked call's deadline passed with its promise still pending:
-    /// abandon the promise and fail that one call.
-    Expired,
+    Settled(usize, ParkedOutcome),
     /// The event loop failed (an uncaught error) with calls still pending:
     /// nothing can settle them anymore.
     Broken(deno_core::error::CoreError),
@@ -94,64 +96,23 @@ enum Tick {
 
 /// A call whose module ran and whose function was invoked, waiting for the
 /// returned promise to settle while the scheduler drives the event loop.
-/// `guard` is the deadline's watchdog, kept armed so a continuation that
-/// wedges the event loop in a busy loop is terminated.
-struct PendingCall {
-    fut: Pin<Box<dyn Future<Output = SettledResult>>>,
-    deadline: Option<tokio::time::Instant>,
+/// `guard` is the same deadline on the watchdog, for a wedged event loop.
+struct ParkedCall {
+    fut: Pin<Box<dyn Future<Output = ParkedOutcome>>>,
     guard: Option<DeadlineGuard>,
     reply: Reply,
 }
 
-/// What a finished job's termination state (watchdog, heap cap) says about
-/// its outcome.
-enum Verdict {
-    Clean,
-    Deadline,
-    MemoryLimit,
-}
-
-impl Verdict {
-    /// Maps a job error onto the termination that caused it.
-    fn apply(
-        self,
-        result: Result<serde_json::Value, EngineError>,
-    ) -> Result<serde_json::Value, EngineError> {
-        match (self, result) {
-            (Verdict::MemoryLimit, Err(_)) => Err(EngineError::MemoryLimit),
-            (Verdict::Deadline, Err(_)) => Err(EngineError::Deadline),
-            (_, result) => result,
-        }
-    }
-
-    /// The error for a call cut off while parked (its promise abandoned).
-    fn cutoff(self) -> EngineError {
-        match self {
-            Verdict::MemoryLimit => EngineError::MemoryLimit,
-            _ => EngineError::Deadline,
-        }
-    }
-}
-
 struct Scheduler {
-    worker: MainWorker,
+    isolate: Isolate,
     config: EngineConfig,
     root_url: Url,
-    watchdog: Watchdog,
-    /// Set by the near-heap-limit callback; the tick loop reads it right
-    /// after each event-loop poll (the callback runs inside that poll).
-    oom: Arc<AtomicBool>,
-    pending: Vec<PendingCall>,
+    calls: Vec<ParkedCall>,
     /// The event loop drained completely (no ops, no live timers). Only tells
     /// the shutdown path whether a final flush is needed; the loop is polled
     /// on every wake regardless (see [`Scheduler::next_tick`]).
     event_loop_idle: bool,
     eval_counter: u64,
-    /// The heap-limit callback fired: the isolate ran on and may have lost
-    /// arbitrary state, so every later job fails fast as MemoryLimit until
-    /// the owner (CSS revive, plugin-host respawn) replaces the engine.
-    /// Without it, each background-work OOM permanently doubles the limit.
-    condemned: bool,
 }
 
 impl Scheduler {
@@ -164,42 +125,15 @@ impl Scheduler {
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         // Never loaded; MainWorker only needs a main-module identity.
         let main_module = root_url.join("__oj_engine_main__.mjs").unwrap();
-        let mut worker = build_worker(&config, &main_module, module_host)?;
-        if let Some(hooks) = hooks {
-            bridge::install(&mut worker, hooks);
-        }
-
-        let oom = Arc::new(AtomicBool::new(false));
-        if config.memory_limit_bytes.is_some() {
-            let handle = worker.js_runtime.v8_isolate().thread_safe_handle();
-            let oom = oom.clone();
-            worker
-                .js_runtime
-                .add_near_heap_limit_callback(move |current, _initial| {
-                    oom.store(true, Ordering::SeqCst);
-                    handle.terminate_execution();
-                    // Raise the limit so V8 can unwind while the termination
-                    // lands, instead of aborting the process.
-                    current * 2
-                });
-        }
-        let watchdog = Watchdog::spawn(worker.js_runtime.v8_isolate().thread_safe_handle());
-
+        let isolate = Isolate::boot(&config, &main_module, module_host, hooks)?;
         Ok(Scheduler {
-            worker,
+            isolate,
             config,
             root_url,
-            watchdog,
-            oom,
-            pending: Vec::new(),
+            calls: Vec::new(),
             event_loop_idle: false,
             eval_counter: 0,
-            condemned: false,
         })
-    }
-
-    fn isolate_handle(&mut self) -> v8::IsolateHandle {
-        self.worker.js_runtime.v8_isolate().thread_safe_handle()
     }
 
     async fn run(&mut self, mut rx: mpsc::UnboundedReceiver<Job>) {
@@ -209,17 +143,14 @@ impl Scheduler {
                 self.event_loop_idle = false;
             }
             match tick {
-                Tick::Job(job) if self.condemned => job.refuse_condemned(),
+                Tick::Job(job) if self.isolate.is_condemned() => job.refuse_condemned(),
                 Tick::Job(Job::Eval {
                     input,
                     deadline,
                     reply,
                 }) => self.eval_job(input, deadline, reply).await,
                 Tick::Job(Job::Gc { reply }) => {
-                    self.worker
-                        .js_runtime
-                        .v8_isolate()
-                        .low_memory_notification();
+                    self.isolate.collect_garbage();
                     let _ = reply.send(());
                 }
                 Tick::Job(Job::Call {
@@ -229,8 +160,7 @@ impl Scheduler {
                     deadline,
                     reply,
                 }) => self.call_job(module, export, args, deadline, reply).await,
-                Tick::Settled(i, result) => self.settled(i, result),
-                Tick::Expired => self.expire(),
+                Tick::Settled(i, outcome) => self.settled(i, outcome),
                 Tick::MemoryExhausted => self.memory_exhausted(),
                 Tick::Broken(e) => self.broken(e),
                 Tick::Closed => {
@@ -241,46 +171,31 @@ impl Scheduler {
         }
     }
 
+    /// One wake of the engine. Priority is load-bearing and top-down: new
+    /// jobs, then parked-call settlements, then event-loop progress (whose
+    /// poll also runs V8's own delayed work — the MemoryReducer's GC tasks
+    /// that return an idle heap's pages — so it is polled even when drained;
+    /// a drained poll just registers the waker, nothing spins). The OOM flag
+    /// is read after the poll because the heap-limit callback runs inside it:
+    /// the tick never depends on a waker the terminated JS cannot fire.
     async fn next_tick(&mut self, rx: &mut mpsc::UnboundedReceiver<Job>) -> Tick {
-        // The earliest parked-call deadline; the pending set only changes
-        // between iterations.
-        let next_deadline = self.pending.iter().filter_map(|p| p.deadline).min();
-        let mut expiry = next_deadline.map(|d| Box::pin(tokio::time::sleep_until(d)));
         std::future::poll_fn(|cx| {
             match rx.poll_recv(cx) {
                 Poll::Ready(Some(job)) => return Poll::Ready(Tick::Job(job)),
                 Poll::Ready(None) => return Poll::Ready(Tick::Closed),
                 Poll::Pending => {}
             }
-            for (i, p) in self.pending.iter_mut().enumerate() {
-                if let Poll::Ready(r) = p.fut.as_mut().poll(cx) {
-                    return Poll::Ready(Tick::Settled(i, r));
+            for (i, call) in self.calls.iter_mut().enumerate() {
+                if let Poll::Ready(outcome) = call.fut.as_mut().poll(cx) {
+                    return Poll::Ready(Tick::Settled(i, outcome));
                 }
             }
-            if let Some(expiry) = expiry.as_mut() {
-                if expiry.as_mut().poll(cx).is_ready() {
-                    return Poll::Ready(Tick::Expired);
-                }
-            }
-            // The event loop is polled even when drained: V8 posts its own
-            // foreground work (the MemoryReducer's delayed GC tasks, which
-            // return an idle heap's pages; incremental-marking steps) through
-            // the platform, and only a poll drains that queue — skipping it
-            // kept an idle isolate at its high-water heap. A drained poll
-            // just registers the waker; nothing spins.
-            match self
-                .worker
-                .js_runtime
-                .poll_event_loop(cx, PollEventLoopOptions::default())
-            {
+            match self.isolate.poll_events(cx) {
                 Poll::Ready(Ok(())) => self.event_loop_idle = true,
                 Poll::Ready(Err(e)) => return Poll::Ready(Tick::Broken(e)),
                 Poll::Pending => self.event_loop_idle = false,
             }
-            // The heap-limit callback runs inside the poll above, so a
-            // mid-pump exhaustion is visible right here — the tick never
-            // depends on a waker the terminated JS can't fire.
-            if self.oom.load(Ordering::SeqCst) {
+            if self.isolate.take_oom() {
                 return Poll::Ready(Tick::MemoryExhausted);
             }
             Poll::Pending
@@ -288,55 +203,35 @@ impl Scheduler {
         .await
     }
 
-    fn guard(&self, deadline: Option<Duration>) -> Option<DeadlineGuard> {
-        deadline.map(|d| DeadlineGuard::arm(&self.watchdog, d))
-    }
-
-    /// Settles a finished job's guard against the oom flag, un-poisoning the
-    /// isolate so later jobs run. A fired heap cap condemns the engine and
-    /// sweeps every parked call (their promises can never settle).
-    fn disarm(&mut self, guard: Option<DeadlineGuard>) -> Verdict {
-        let deadline_fired = guard.map(DeadlineGuard::disarm).unwrap_or(false);
-        let oom_fired = self.oom.swap(false, Ordering::SeqCst);
-        if deadline_fired || oom_fired {
-            self.worker
-                .js_runtime
-                .v8_isolate()
-                .cancel_terminate_execution();
+    /// Settles a finished job's guard and, when the heap cap fired, sweeps
+    /// every parked call — their promises can never settle.
+    fn settle(&mut self, guard: Option<DeadlineGuard>) -> Verdict {
+        let verdict = self.isolate.settle(guard);
+        if matches!(verdict, Verdict::MemoryLimit) {
+            self.fail_all_parked();
         }
-        if oom_fired {
-            self.condemn();
-            Verdict::MemoryLimit
-        } else if deadline_fired {
-            Verdict::Deadline
-        } else {
-            Verdict::Clean
-        }
+        verdict
     }
 
     /// Fails every parked call as MemoryLimit and cancels the heap-limit
     /// callback's termination — AFTER all guards are disarmed, so a watchdog
     /// firing mid-sweep cannot leave a termination pending for the next job.
-    fn condemn(&mut self) {
-        for call in std::mem::take(&mut self.pending) {
+    fn fail_all_parked(&mut self) {
+        for call in std::mem::take(&mut self.calls) {
             if let Some(guard) = call.guard {
                 let _ = guard.disarm();
             }
             let _ = call.reply.send(Err(EngineError::MemoryLimit));
         }
-        self.worker
-            .js_runtime
-            .v8_isolate()
-            .cancel_terminate_execution();
-        self.condemned = true;
+        self.isolate.cancel_termination();
     }
 
     async fn eval_job(&mut self, input: EvalInput, deadline: Option<Duration>, reply: Reply) {
         self.eval_counter += 1;
         let counter = self.eval_counter;
-        let guard = self.guard(deadline);
+        let guard = self.isolate.arm(deadline);
         let result = self.run_eval(counter, input).await;
-        let verdict = self.disarm(guard);
+        let verdict = self.settle(guard);
         let _ = reply.send(verdict.apply(result));
     }
 
@@ -350,63 +245,55 @@ impl Scheduler {
     ) {
         // The watchdog stays armed for the call's whole life. In the
         // EXCLUSIVE setup phase no other JS can be on the stack, so a
-        // termination can never hit an innocent job. While the call is parked
-        // the expiry tick normally handles the deadline; the watchdog only
-        // matters when a continuation wedges the event loop in a busy loop.
+        // termination can never hit an innocent job; while the call is
+        // parked, its future's own timeout normally settles the deadline and
+        // the watchdog only matters for a wedged event loop.
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
-        let guard = self.guard(deadline);
+        let guard = self.isolate.arm(deadline);
         match self.setup_call(&module, &export, args).await {
             Ok(_) if guard.as_ref().is_some_and(DeadlineGuard::fired) => {
                 // Setup outlived the deadline but completed anyway (the
                 // termination raced completion): expired, not broken.
-                let verdict = self.disarm(guard);
+                let verdict = self.settle(guard);
                 let _ = reply.send(Err(verdict.cutoff()));
             }
-            Ok(fut) => self.pending.push(PendingCall {
-                fut: Box::pin(fut),
-                deadline: deadline_at,
-                guard,
-                reply,
-            }),
+            Ok(fut) => {
+                let fut: Pin<Box<dyn Future<Output = ParkedOutcome>>> = match deadline_at {
+                    Some(at) => Box::pin(tokio::time::timeout_at(at, fut)),
+                    None => Box::pin(async move { Ok(fut.await) }),
+                };
+                self.calls.push(ParkedCall { fut, guard, reply });
+            }
             Err(e) => {
-                let verdict = self.disarm(guard);
+                let verdict = self.settle(guard);
                 let _ = reply.send(verdict.apply(Err(e)));
             }
         }
     }
 
-    fn settled(&mut self, i: usize, result: SettledResult) {
-        let call = self.pending.swap_remove(i);
-        let result = settled_to_json(&mut self.worker, result);
-        let verdict = self.disarm(call.guard);
-        let _ = call.reply.send(verdict.apply(result));
-    }
-
-    /// Fails every parked call at or past its deadline; the dropped future
-    /// abandons the promise, the isolate and the other calls carry on.
-    fn expire(&mut self) {
-        let now = tokio::time::Instant::now();
-        let mut i = 0;
-        while i < self.pending.len() {
-            if self.pending[i].deadline.is_some_and(|d| d <= now) {
-                let call = self.pending.swap_remove(i);
-                let verdict = self.disarm(call.guard);
-                let _ = call.reply.send(Err(verdict.cutoff()));
-            } else {
-                i += 1;
-            }
-        }
+    fn settled(&mut self, i: usize, outcome: ParkedOutcome) {
+        let call = self.calls.swap_remove(i);
+        let result = match outcome {
+            Ok(settled) => Some(settled_to_json(&mut self.isolate.worker, settled)),
+            // Timed out while parked: dropping the future abandons the
+            // promise; the isolate and the other calls carry on.
+            Err(_elapsed) => None,
+        };
+        let verdict = self.settle(call.guard);
+        let _ = call.reply.send(match result {
+            Some(result) => verdict.apply(result),
+            None => Err(verdict.cutoff()),
+        });
     }
 
     fn memory_exhausted(&mut self) {
-        self.oom.store(false, Ordering::SeqCst);
         // With nothing parked the OOM would otherwise vanish: say it.
-        if self.pending.is_empty() {
+        if self.calls.is_empty() {
             eprintln!(
                 "oj_js: background work exceeded the engine heap limit; the isolate is condemned"
             );
         }
-        self.condemn();
+        self.fail_all_parked();
     }
 
     /// An uncaught error broke the event loop (the process would die under
@@ -414,33 +301,31 @@ impl Scheduler {
     /// with the error.
     fn broken(&mut self, e: deno_core::error::CoreError) {
         let error = e.to_string();
-        if self.pending.is_empty() {
+        if self.calls.is_empty() {
             eprintln!("oj_js: uncaught error on the engine event loop: {error}");
         }
-        // The oom flag is read ONCE for the whole batch: per-call reads would
+        // The OOM flag is read ONCE for the whole batch: per-call reads would
         // hand MemoryLimit to whichever call came first and a bare
         // termination error to the rest.
-        let oom_fired = self.oom.swap(false, Ordering::SeqCst);
-        self.condemned |= oom_fired;
+        let oom_fired = self.isolate.take_oom();
         let mut cx = Context::from_waker(Waker::noop());
-        for mut call in std::mem::take(&mut self.pending) {
+        for mut call in std::mem::take(&mut self.calls) {
             // A call whose watchdog terminated the wedged loop is the one
             // that expired. All guards are disarmed BEFORE the one cancel
             // below, so a watchdog firing mid-drain cannot leave a
             // termination pending for the next job.
             let deadline_fired = call.guard.map(DeadlineGuard::disarm).unwrap_or(false);
             let result = match call.fut.as_mut().poll(&mut cx) {
-                Poll::Ready(r) => settled_to_json(&mut self.worker, r),
+                Poll::Ready(Ok(settled)) => settled_to_json(&mut self.isolate.worker, settled),
+                Poll::Ready(Err(_)) if oom_fired => Err(EngineError::MemoryLimit),
+                Poll::Ready(Err(_)) => Err(EngineError::Deadline),
                 Poll::Pending if oom_fired => Err(EngineError::MemoryLimit),
                 Poll::Pending if deadline_fired => Err(EngineError::Deadline),
                 Poll::Pending => Err(EngineError::Js(error.clone())),
             };
             let _ = call.reply.send(result);
         }
-        self.worker
-            .js_runtime
-            .v8_isolate()
-            .cancel_terminate_execution();
+        self.isolate.cancel_termination();
     }
 
     /// The tick polls the job channel before the event loop, so an engine
@@ -454,13 +339,12 @@ impl Scheduler {
         if self.event_loop_idle {
             return;
         }
-        let guard = DeadlineGuard::arm(&self.watchdog, Duration::from_millis(250));
+        let guard = self.isolate.arm(Some(Duration::from_millis(250)));
         let mut cx = Context::from_waker(Waker::noop());
-        let _ = self
-            .worker
-            .js_runtime
-            .poll_event_loop(&mut cx, PollEventLoopOptions::default());
-        let _ = guard.disarm();
+        let _ = self.isolate.poll_events(&mut cx);
+        if let Some(guard) = guard {
+            let _ = guard.disarm();
+        }
     }
 
     async fn run_eval(
@@ -468,7 +352,7 @@ impl Scheduler {
         counter: u64,
         input: EvalInput,
     ) -> Result<serde_json::Value, EngineError> {
-        let worker = &mut self.worker;
+        let worker = &mut self.isolate.worker;
         let id = match input {
             EvalInput::Source(source) => {
                 // Unique synthetic specifier per eval: the module map is
@@ -504,14 +388,14 @@ impl Scheduler {
     /// Loads and evaluates the module, invokes the export, and returns the
     /// future of its settled result. The future is independent of the worker
     /// borrow, so the scheduler polls it alongside the event loop and other
-    /// pending calls.
+    /// parked calls.
     async fn setup_call(
         &mut self,
         module: &str,
         export: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<impl Future<Output = SettledResult> + use<>, EngineError> {
-        let worker = &mut self.worker;
+        let worker = &mut self.isolate.worker;
         let url = resolve_module_spec(&self.config, module)?;
         let id = worker.preload_side_module(&url).await.map_err(js_err)?;
         worker.evaluate_module(id).await.map_err(js_err)?;
