@@ -94,16 +94,12 @@ pub enum PluginSource {
     ViteConfig(std::path::PathBuf),
 }
 
-static VITE_CONFIG_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-pub fn set_vite_config_override(path: std::path::PathBuf) {
-    let _ = VITE_CONFIG_OVERRIDE.set(path);
-}
-
+/// `config` is the CLI's `--config` file (already resolved against the app
+/// root); named, it replaces Vite's default probe entirely.
 #[inline]
-pub fn vite_config_file(root: &Path) -> Option<std::path::PathBuf> {
-    if let Some(p) = VITE_CONFIG_OVERRIDE.get() {
-        return p.is_file().then(|| p.clone());
+pub fn vite_config_file(root: &Path, config: Option<&Path>) -> Option<std::path::PathBuf> {
+    if let Some(p) = config {
+        return p.is_file().then(|| p.to_path_buf());
     }
     // Vite's DEFAULT_CONFIG_FILES order (constants.ts): the first that exists
     // wins, so a root with several config files picks the same one Vite does.
@@ -121,14 +117,14 @@ pub fn vite_config_file(root: &Path) -> Option<std::path::PathBuf> {
 }
 
 #[inline]
-pub fn plugin_source(root: &Path) -> Option<PluginSource> {
-    if VITE_CONFIG_OVERRIDE.get().is_some() {
-        return vite_config_file(root).map(PluginSource::ViteConfig);
+pub fn plugin_source(root: &Path, config: Option<&Path>) -> Option<PluginSource> {
+    if config.is_some() {
+        return vite_config_file(root, config).map(PluginSource::ViteConfig);
     }
     if let Some(p) = plugins_file(root) {
         return Some(PluginSource::OjPlugins(p));
     }
-    vite_config_file(root).map(PluginSource::ViteConfig)
+    vite_config_file(root, config).map(PluginSource::ViteConfig)
 }
 
 #[derive(Debug, Default)]
@@ -258,12 +254,17 @@ pub fn run_engine_job_in_process(
         let mut config = oj_js::EngineConfig::new(root);
         config.default_deadline = Some(timeout);
         config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
-        let engine = oj_js::JsEngine::spawn(config)?;
+        let engine = oj_js::JsEngine::spawn(config, None, None)?;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
-        rt.block_on(engine.call(module.to_string_lossy().into_owned(), export, vec![payload]))
+        rt.block_on(engine.call(
+            module.to_string_lossy().into_owned(),
+            export,
+            vec![payload],
+            None,
+        ))
         // Dropping the engine here joins its thread: pending JS work (timers,
         // watchers a config hook started) is discarded with the isolate, the
         // in-process equivalent of the old `process.exit(0)`.
@@ -425,14 +426,20 @@ fn run_engine_job_subprocess(
 /// branches on both, so a build must be extracted as a build: evaluating it as
 /// `serve`/`development` silently picks the dev branch of `base`, `define`,
 /// `build.outDir` and friends in production output.
-pub fn extract_vite_values(root: &Path, command: &str, mode: &str) -> Option<ViteValues> {
-    extract_vite_values_with(root, command, mode, true)
+pub fn extract_vite_values(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+) -> Option<ViteValues> {
+    extract_vite_values_with(root, config, command, mode, true)
 }
 
 /// `mode_explicit`: false when `mode` is only the command's default (no CLI
 /// `--mode`), which lets a `mode` named in the config file win, as in Vite.
 fn extract_vite_values_with(
     root: &Path,
+    config: Option<&Path>,
     command: &str,
     mode: &str,
     mode_explicit: bool,
@@ -448,7 +455,7 @@ fn extract_vite_values_with(
         format!("{mode}@default")
     };
     let mode_key = mode_key.as_str();
-    let vite = vite_config_file(root)?;
+    let vite = vite_config_file(root, config)?;
     let store = extraction_store(root);
     if let Some(hit) = store.lookup(&vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
@@ -721,17 +728,18 @@ fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
 pub fn adopt_vite_config_values(
     config: &mut oj_config::OjConfig,
     root: &Path,
+    config_file: Option<&Path>,
     command: &str,
     mode: &str,
 ) -> Result<(), String> {
-    let Some(v) = extract_vite_values(root, command, mode) else {
+    let Some(v) = extract_vite_values(root, config_file, command, mode) else {
         // No vite.config is fine: nothing to adopt. A vite.config that exists but
         // failed to evaluate is not: Vite fails hard here ("failed to load config
         // from ..."), and silently carrying on would build or serve with defaults
         // the app never asked for. An explicit oj.plugins file takes precedence over
         // vite.config (the extractor skips it then), so only the vite path is an
         // error. The extractor has already printed the underlying cause to stderr.
-        if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
+        if let Some(named) = config_file {
             if !named.is_file() {
                 return Err(format!(
                     "failed to load config from {}: --config names a file that does not exist",
@@ -740,7 +748,7 @@ pub fn adopt_vite_config_values(
             }
         }
         if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root) {
+            if let Some(path) = vite_config_file(root, config_file) {
                 return Err(format!("failed to load config from {}", path.display()));
             }
         }
@@ -756,13 +764,14 @@ pub fn adopt_vite_config_values(
 pub fn adopt_vite_config_values_default_mode(
     config: &mut oj_config::OjConfig,
     root: &Path,
+    config_file: Option<&Path>,
     command: &str,
     mode: &str,
 ) -> Result<(), String> {
-    let Some(v) = extract_vite_values_with(root, command, mode, false) else {
+    let Some(v) = extract_vite_values_with(root, config_file, command, mode, false) else {
         // Same rule as `adopt_vite_config_values`: a present vite.config that
         // failed to evaluate is an error, a missing one is nothing to adopt.
-        if let Some(named) = VITE_CONFIG_OVERRIDE.get() {
+        if let Some(named) = config_file {
             if !named.is_file() {
                 return Err(format!(
                     "failed to load config from {}: --config names a file that does not exist",
@@ -771,7 +780,7 @@ pub fn adopt_vite_config_values_default_mode(
             }
         }
         if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root) {
+            if let Some(path) = vite_config_file(root, config_file) {
                 return Err(format!("failed to load config from {}", path.display()));
             }
         }
@@ -1454,6 +1463,9 @@ struct BootContext {
     /// The engine heap cap every generation is spawned with (see
     /// `plugin_host_memory_mb`).
     memory_limit_bytes: usize,
+    /// Rides into every generation's engine (and the addon keeper), so the
+    /// debug GC fan-out keeps reaching this host across respawns.
+    registry: Option<oj_js::EngineRegistry>,
 }
 
 /// See [`PluginHost::revive`].
@@ -1568,16 +1580,22 @@ const ADDON_KEEPER_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 /// best-effort: the keeper exists to hold registrations, and one addon that
 /// fails to require must not cost the others their keeper. The require cache
 /// makes repeat loads of the same addon free.
-async fn keep_addons_alive(root: &Path, addons: &[PathBuf]) -> Result<(), String> {
+async fn keep_addons_alive(
+    root: &Path,
+    addons: &[PathBuf],
+    registry: Option<oj_js::EngineRegistry>,
+) -> Result<(), String> {
     let engine = {
         let mut keeper = ADDON_KEEPER.lock().unwrap();
         match &*keeper {
             Some(engine) => std::sync::Arc::clone(engine),
             None => {
-                let engine = std::sync::Arc::new(
-                    oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root))
-                        .map_err(|e| format!("keeper engine failed to spawn: {e}"))?,
-                );
+                let engine = std::sync::Arc::new({
+                    let mut config = oj_js::EngineConfig::new(root);
+                    config.registry = registry;
+                    oj_js::JsEngine::spawn(config, None, None)
+                        .map_err(|e| format!("keeper engine failed to spawn: {e}"))?
+                });
                 *keeper = Some(std::sync::Arc::clone(&engine));
                 engine
             }
@@ -1613,7 +1631,7 @@ for (const p of {paths}) {{
 "#
     );
     engine
-        .eval_with_deadline(
+        .eval(
             oj_js::EvalInput::Source(script),
             Some(ADDON_KEEPER_DEADLINE),
         )
@@ -1821,6 +1839,7 @@ impl PluginHost {
         root: &Path,
         plugins_file: &Path,
         config_json: &str,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         Self::spawn_with_policy(
             root,
@@ -1828,6 +1847,7 @@ impl PluginHost {
             config_json,
             false,
             SpawnTimeouts::default(),
+            registry,
         )
         .await
     }
@@ -1840,6 +1860,7 @@ impl PluginHost {
         root: &Path,
         plugins_file: &Path,
         config_json: &str,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         Self::spawn_with_policy(
             root,
@@ -1847,6 +1868,7 @@ impl PluginHost {
             config_json,
             true,
             SpawnTimeouts::default(),
+            registry,
         )
         .await
     }
@@ -1869,6 +1891,7 @@ impl PluginHost {
                 init_wait: Some(init_wait),
                 ..Default::default()
             },
+            None,
         )
         .await
     }
@@ -1882,7 +1905,7 @@ impl PluginHost {
         lazy: bool,
         timeouts: SpawnTimeouts,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_with_policy(root, plugins_file, config_json, lazy, timeouts).await
+        Self::spawn_with_policy(root, plugins_file, config_json, lazy, timeouts, None).await
     }
 
     async fn spawn_with_policy(
@@ -1891,6 +1914,7 @@ impl PluginHost {
         config_json: &str,
         lazy: bool,
         timeouts: SpawnTimeouts,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
 
@@ -1932,6 +1956,7 @@ impl PluginHost {
                 memory_limit_bytes: timeouts
                     .memory
                     .unwrap_or_else(|| plugin_host_memory_mb() * 1024 * 1024),
+                registry,
             },
             revive: Mutex::new(ReviveState {
                 generation: 0,
@@ -1992,17 +2017,19 @@ impl PluginHost {
         let rpc_handler: oj_js::RpcHandler = {
             let resolver = std::sync::Arc::clone(&resolver);
             let root = root.clone();
-            std::sync::Arc::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
+            Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
         };
         let mut engine_config = oj_js::EngineConfig::new(&root);
         engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
         engine_config.memory_limit_bytes = Some(host.boot.memory_limit_bytes);
-        let engine = oj_js::JsEngine::spawn_with_hooks(
+        engine_config.registry = host.boot.registry.clone();
+        let engine = oj_js::JsEngine::spawn(
             engine_config,
-            oj_js::EngineHooks {
+            None,
+            Some(oj_js::EngineHooks {
                 post: post_tx,
                 rpc: Some(rpc_handler),
-            },
+            }),
         )
         .map_err(|e| format!("cannot start the embedded plugin host: {e}"))?;
         let engine = std::sync::Arc::new(engine);
@@ -2034,14 +2061,14 @@ impl PluginHost {
         tokio::spawn(async move {
             let prelude = format!("globalThis.__ojPluginHost = {boot_seed};");
             if let Err(e) = boot_engine
-                .eval_with_deadline(oj_js::EvalInput::Source(prelude), None)
+                .eval(oj_js::EvalInput::Source(prelude), None)
                 .await
             {
                 boot_ref.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
                 return;
             }
             match boot_engine
-                .call_with_deadline(host_module, "ojHostReady", Vec::new(), None)
+                .call(host_module, "ojHostReady", Vec::new(), None)
                 .await
             {
                 // The `{ ojInit }` push already flipped `initialized`; the
@@ -2452,7 +2479,7 @@ impl PluginHost {
             .unwrap()
             .clone()
             .ok_or_else(|| "plugin host exited".to_string())?;
-        let call = engine.call_with_deadline(
+        let call = engine.call(
             self.host_module.clone(),
             "ojRun",
             vec![
@@ -2574,6 +2601,7 @@ impl PluginHost {
             } else {
                 revive.last = Some(std::time::Instant::now());
                 let root = self.boot.root.clone();
+                let registry = self.boot.registry.clone();
                 // The abandon rides a Drop guard: a cancelled task (runtime
                 // shutdown mid-keeper) must still abandon, or the engine
                 // Arc's drop would JOIN a possibly-wedged isolate thread.
@@ -2588,7 +2616,7 @@ impl PluginHost {
                 let guard = AbandonOnDrop(Some(engine));
                 tokio::spawn(async move {
                     let _guard = guard;
-                    if let Err(e) = keep_addons_alive(&root, &addons).await {
+                    if let Err(e) = keep_addons_alive(&root, &addons, registry).await {
                         eprintln!(
                             "oj: native-addon keeper unavailable ({e}); a plugin host respawn that would re-register an orphaned addon will be refused"
                         );
@@ -3207,7 +3235,7 @@ mod vite_values_tests {
             std::fs::create_dir_all(&root).unwrap();
             let path = root.join(format!("vite.config.{extension}"));
             std::fs::write(&path, "module.exports = {};").unwrap();
-            assert_eq!(vite_config_file(&root), Some(path));
+            assert_eq!(vite_config_file(&root, None), Some(path));
             std::fs::remove_dir_all(&root).unwrap();
         }
     }
@@ -3542,6 +3570,7 @@ mod vite_values_tests {
                 PathBuf::from("/nonexistent/fake-binding.node"),
                 PathBuf::from("/also/missing.node"),
             ],
+            None,
         )
         .await
         .expect("the keeper load is best effort");
@@ -4179,7 +4208,7 @@ export default [{
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
             .await
             .expect("the embedded engine spawns");
         let delta = host.env_delta().await;
@@ -4249,7 +4278,7 @@ export default [{
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
             .await
             .expect("the embedded engine spawns");
         let (a, b, c, d) = tokio::join!(
@@ -4299,7 +4328,7 @@ export default [{
             "env": { "command": "serve", "mode": "development" },
         })
         .to_string();
-        let host = PluginHost::spawn_lazy(&root, &plugins, &config)
+        let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
             .await
             .expect("the embedded engine spawns");
         let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel(16);
@@ -4398,13 +4427,13 @@ export default [{
         }
         for ext in order {
             assert_eq!(
-                vite_config_file(&root),
+                vite_config_file(&root, None),
                 Some(root.join(format!("vite.config.{ext}"))),
                 "with every later format present, .{ext} wins"
             );
             std::fs::remove_file(root.join(format!("vite.config.{ext}"))).unwrap();
         }
-        assert_eq!(vite_config_file(&root), None);
+        assert_eq!(vite_config_file(&root, None), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4938,7 +4967,7 @@ mod engine_extraction_tests {
         let _g = lock();
         let dir = app(r#"export default { base: "/app/", server: { port: 5199 } };"#);
         let root = dir.path();
-        let v = extract_vite_values_with(root, "serve", "development", true)
+        let v = extract_vite_values_with(root, None, "serve", "development", true)
             .expect("a valid config extracts");
         assert_eq!(v.base.as_deref(), Some("/app/"));
         assert_eq!(v.port, Some(5199));
@@ -4969,7 +4998,7 @@ mod engine_extraction_tests {
         let dir = app("throw new Error('config exploded');\nexport default {};");
         let root = dir.path();
         assert!(
-            extract_vite_values_with(root, "serve", "development", true).is_none(),
+            extract_vite_values_with(root, None, "serve", "development", true).is_none(),
             "a config that fails to evaluate must never parse as empty values"
         );
         assert!(
@@ -4980,7 +5009,7 @@ mod engine_extraction_tests {
         );
         // ...and the adopt seam surfaces it as the load error Vite gives.
         let mut config = oj_config::OjConfig::default();
-        let err = adopt_vite_config_values(&mut config, root, "serve", "development")
+        let err = adopt_vite_config_values(&mut config, root, None, "serve", "development")
             .expect_err("a present-but-broken vite.config is an error");
         assert!(err.contains("failed to load config"), "{err}");
     }
@@ -4996,7 +5025,7 @@ export default { base };"#);
             "export const base = \"/dep/\";\n",
         )
         .unwrap();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/dep/"));
         let hit = extraction_store(root)
             .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -5022,7 +5051,7 @@ export default { base: a.base + b.base };"#);
         let root = dir.path();
         std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
         std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
-        let result = extract_vite_values_with(root, "serve", "development", true);
+        let result = extract_vite_values_with(root, None, "serve", "development", true);
         std::env::remove_var("OJ_OBSERVED_READS_MAX");
         let v = result.expect("the result is still served");
         assert_eq!(v.base.as_deref(), Some("/a/b"));
@@ -5041,7 +5070,7 @@ export default { base: a.base + b.base };"#);
         let dir = app("await new Promise(() => {});\nexport default {};");
         let root = dir.path();
         let started = std::time::Instant::now();
-        let result = extract_vite_values_with(root, "serve", "development", true);
+        let result = extract_vite_values_with(root, None, "serve", "development", true);
         std::env::remove_var("OJ_EXTRACT_TIMEOUT");
         assert!(result.is_none(), "a wedged config evaluation is a failure");
         assert!(
@@ -5060,7 +5089,7 @@ export default { base: a.base + b.base };"#);
         let dir = app("setInterval(() => {}, 1000);\nexport default { base: \"/live/\" };");
         let root = dir.path();
         let started = std::time::Instant::now();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/live/"));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
@@ -5076,7 +5105,7 @@ process.stderr.write("direct stderr write\n");
 console.log("stdout is swallowed");
 export default { base: "/loud/" };"#);
         let root = dir.path();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/loud/"));
         let hit = extraction_store(root)
             .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -5099,7 +5128,7 @@ export default { base: "/loud/" };"#);
         let dir = app(r#"process.env.OJ_EXTRACT_LEAK_PROBE = "leaked";
 export default { base: "/env/" };"#);
         let root = dir.path();
-        let v = extract_vite_values_with(root, "serve", "development", true).unwrap();
+        let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
         assert_eq!(v.base.as_deref(), Some("/env/"));
         assert!(
             std::env::var("OJ_EXTRACT_LEAK_PROBE").is_err(),
@@ -5143,7 +5172,7 @@ export default { base: "/env/" };"#);
             "import { port } from \"./shared\";\nexport default { base: \"/ts/\" as const, server: { port } };\n",
         )
         .unwrap();
-        let v = extract_vite_values_with(root, "serve", "development", true)
+        let v = extract_vite_values_with(root, None, "serve", "development", true)
             .expect("the TS config loads through the esbuild fallback");
         assert_eq!(v.base.as_deref(), Some("/ts/"));
         assert_eq!(v.port, Some(5321));

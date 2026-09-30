@@ -246,15 +246,15 @@ fn data_response(data: Result<String, String>) -> Response {
 /// wrapped in the document shell.
 async fn render_route(state: &SsrState, path: &str) -> Response {
     use tokio_stream::StreamExt;
-    let out = match state.engine.render(path).await {
+    let mut out = match state.engine.render(path).await {
         Ok(out) => out,
         Err(e) => return error_page(&e),
     };
     let head = tokio_stream::once(Ok::<_, axum::Error>(Bytes::from(page_head(
-        &out.data_json,
-        &out.head,
+        out.data_json(),
+        out.head(),
     ))));
-    let html = tokio_stream::once(Ok::<_, axum::Error>(Bytes::from(out.html)));
+    let html = tokio_stream::once(Ok::<_, axum::Error>(Bytes::from(out.take_html())));
     let tail = tokio_stream::once(Ok::<_, axum::Error>(Bytes::from(page_tail(state))));
     let body = head.chain(html).chain(tail);
     (

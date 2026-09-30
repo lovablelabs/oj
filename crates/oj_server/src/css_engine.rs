@@ -63,20 +63,39 @@ pub struct CssEngine {
     /// The PostCSS config path `find_postcss_config` located, handed to the
     /// tailwind module per request (the old sidecar carried it as an env var).
     postcss_config: Option<String>,
+    /// Rides into every spawned and revived engine, so the debug GC fan-out
+    /// keeps reaching this slot across revives.
+    registry: Option<oj_js::EngineRegistry>,
+}
+
+/// One engine flavor's identity: the script it runs and its diagnostics
+/// label, plus the tailwind flavor's PostCSS config path.
+struct EngineSpec {
+    name: &'static str,
+    js: &'static str,
+    kind: &'static str,
+    postcss_config: Option<String>,
 }
 
 impl CssEngine {
-    pub async fn tailwind(root: &Path, deadline: Duration) -> anyhow::Result<std::sync::Arc<Self>> {
+    pub async fn tailwind(
+        root: &Path,
+        deadline: Duration,
+        registry: Option<oj_js::EngineRegistry>,
+    ) -> anyhow::Result<std::sync::Arc<Self>> {
         let postcss_config =
             crate::find_postcss_config(root).map(|p| p.to_string_lossy().into_owned());
         Self::spawn(
             root,
-            "css-tailwind.mjs",
-            TAILWIND_JS,
-            "tailwind",
+            EngineSpec {
+                name: "css-tailwind.mjs",
+                js: TAILWIND_JS,
+                kind: "tailwind",
+                postcss_config,
+            },
             deadline,
-            postcss_config,
             shared_memory_limit(),
+            registry,
         )
         .await
     }
@@ -84,28 +103,39 @@ impl CssEngine {
     pub async fn preprocess(
         root: &Path,
         deadline: Duration,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<Self>> {
         Self::spawn(
             root,
-            "css-preprocess.mjs",
-            PREPROCESS_JS,
-            "css preprocessor",
+            EngineSpec {
+                name: "css-preprocess.mjs",
+                js: PREPROCESS_JS,
+                kind: "css preprocessor",
+                postcss_config: None,
+            },
             deadline,
-            None,
             shared_memory_limit(),
+            registry,
         )
         .await
     }
 
-    pub async fn svelte(root: &Path, deadline: Duration) -> anyhow::Result<std::sync::Arc<Self>> {
+    pub async fn svelte(
+        root: &Path,
+        deadline: Duration,
+        registry: Option<oj_js::EngineRegistry>,
+    ) -> anyhow::Result<std::sync::Arc<Self>> {
         Self::spawn(
             root,
-            "svelte-compile.mjs",
-            SVELTE_JS,
-            "svelte compiler",
+            EngineSpec {
+                name: "svelte-compile.mjs",
+                js: SVELTE_JS,
+                kind: "svelte compiler",
+                postcss_config: None,
+            },
             deadline,
-            None,
             shared_memory_limit(),
+            registry,
         )
         .await
     }
@@ -116,20 +146,24 @@ impl CssEngine {
     /// unwritable here. Production callers pass [`shared_memory_limit`].
     async fn spawn(
         root: &Path,
-        name: &str,
-        js: &'static str,
-        kind: &'static str,
+        spec: EngineSpec,
         deadline: Duration,
-        postcss_config: Option<String>,
         memory_limit_bytes: usize,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<Self>> {
+        let EngineSpec {
+            name,
+            js,
+            kind,
+            postcss_config,
+        } = spec;
         let script = oj_cache::cache_root(root).join(name);
         if let Some(parent) = script.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&script, js)?;
 
-        let engine = Self::spawn_engine(root, deadline, memory_limit_bytes)
+        let engine = Self::spawn_engine(root, deadline, memory_limit_bytes, registry.clone())
             .await
             .map_err(|e| anyhow::anyhow!("cannot start the {kind} engine: {e}"))?;
         Ok(std::sync::Arc::new(CssEngine {
@@ -143,6 +177,7 @@ impl CssEngine {
             revive_attempts: std::sync::atomic::AtomicU32::new(0),
             last_revive: std::sync::Mutex::new(None),
             postcss_config,
+            registry,
         }))
     }
 
@@ -150,16 +185,18 @@ impl CssEngine {
         root: &Path,
         deadline: Duration,
         memory_limit_bytes: usize,
+        registry: Option<oj_js::EngineRegistry>,
     ) -> Result<JsEngine, EngineError> {
         let config = EngineConfig {
             root: root.to_path_buf(),
             memory_limit_bytes: Some(memory_limit_bytes),
             default_deadline: Some(deadline),
             code_cache_dir: Some(crate::engine_code_cache_dir(root)),
+            registry,
         };
         // JsEngine::spawn blocks until the isolate is up; keep it off the
         // async workers.
-        tokio::task::spawn_blocking(move || JsEngine::spawn(config))
+        tokio::task::spawn_blocking(move || JsEngine::spawn(config, None, None))
             .await
             .map_err(|e| EngineError::Boot(e.to_string()))?
     }
@@ -189,7 +226,14 @@ impl CssEngine {
         if let Ok(mut last) = self.last_revive.lock() {
             *last = Some(std::time::Instant::now());
         }
-        match Self::spawn_engine(&self.root, self.deadline, self.memory_limit_bytes).await {
+        match Self::spawn_engine(
+            &self.root,
+            self.deadline,
+            self.memory_limit_bytes,
+            self.registry.clone(),
+        )
+        .await
+        {
             Ok(fresh) => {
                 slot.0 += 1;
                 slot.1 = fresh;
@@ -263,7 +307,7 @@ impl CssEngine {
             (
                 slot.0,
                 slot.1
-                    .call(self.script.clone(), "compile", vec![request])
+                    .call(self.script.clone(), "compile", vec![request], None)
                     .await,
             )
         };
@@ -430,7 +474,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_missing_preprocessor_reports_the_install_hint_through_the_engine() {
         let root = app_root();
-        let engine = CssEngine::preprocess(root.path(), DEV_DEADLINE)
+        let engine = CssEngine::preprocess(root.path(), DEV_DEADLINE, None)
             .await
             .unwrap();
         let err = engine
@@ -447,7 +491,7 @@ mod tests {
             root.path(),
             "module.exports = { FileManager: class {}, render(css) { if (css.includes('hang')) { for (;;) {} } return Promise.resolve({ css: css + '/*ok*/' }); } };",
         );
-        let engine = CssEngine::preprocess(root.path(), Duration::from_secs(1))
+        let engine = CssEngine::preprocess(root.path(), Duration::from_secs(1), None)
             .await
             .unwrap();
         // Outer guard: this test's failure mode is an infinite hang (the
@@ -481,12 +525,15 @@ mod tests {
         );
         let engine = CssEngine::spawn(
             root.path(),
-            "css-preprocess.mjs",
-            PREPROCESS_JS,
-            "css preprocessor",
+            EngineSpec {
+                name: "css-preprocess.mjs",
+                js: PREPROCESS_JS,
+                kind: "css preprocessor",
+                postcss_config: None,
+            },
             DEV_DEADLINE,
-            None,
             128 * 1024 * 1024,
+            None,
         )
         .await
         .unwrap();

@@ -36,7 +36,7 @@ use deno_runtime::BootstrapOptions;
 use deno_runtime::WorkerExecutionMode;
 
 use crate::code_cache::FsCodeCache;
-use crate::host::HostBridge;
+use crate::host::ModuleHost;
 use crate::loader::EngineModuleLoader;
 use crate::loader::EngineRequireLoader;
 use crate::loader::Sys;
@@ -47,13 +47,9 @@ fn boot(e: impl std::fmt::Display) -> EngineError {
     EngineError::Boot(e.to_string())
 }
 
-/// The byonm resolution stack the engine gives every isolate: workspace and
-/// resolver factories over the app's own node_modules, the module and require
-/// loaders, and the node-compat init services. Built once for the main worker
-/// and rebuilt per worker thread by the worker callback, from ONE recipe so
-/// main-thread and worker resolution semantics can never drift apart (a
-/// resolver flag landing in one copy and not the other is the
-/// hardest-to-debug class of worker bug).
+/// The byonm resolution stack every isolate gets. Built once for the main
+/// worker and rebuilt per worker thread from this ONE recipe, so main-thread
+/// and worker resolution semantics can never drift apart.
 struct EngineLoaders {
     module_loader: Rc<EngineModuleLoader>,
     node_services: NodeExtInitServices<DenoInNpmPackageChecker, NpmResolver<Sys>, Sys>,
@@ -64,7 +60,7 @@ struct EngineLoaders {
 fn engine_loaders(
     root: &Path,
     code_cache_dir: Option<PathBuf>,
-    host: Option<HostBridge>,
+    host: Option<ModuleHost>,
 ) -> Result<EngineLoaders, EngineError> {
     let sys = Sys::default();
 
@@ -127,13 +123,10 @@ fn engine_loaders(
 }
 
 /// Services one engine shares with every worker it spawns (Deno CLI shares
-/// the same set): the SharedArrayBuffer and compiled-wasm stores so buffers
-/// and modules can cross threads (Atomics-based pools, piscina's sync mode,
-/// depend on it), the BroadcastChannel bus so Node 18+ `BroadcastChannel`
-/// reaches workers, and the blob store so a blob URL minted on one thread
-/// resolves on another (Node's blob registry is process-wide). The heap cap
-/// travels too: a worker spawned without `resourceLimits` inherits the
-/// engine's own limit rather than escaping it.
+/// the same set), so SharedArrayBuffers, compiled wasm, BroadcastChannel and
+/// blob URLs cross threads the way Node's process-wide registries do. The
+/// heap cap travels too: a worker spawned without `resourceLimits` inherits
+/// the engine's own limit rather than escaping it.
 #[derive(Clone)]
 struct WorkerShared {
     root: PathBuf,
@@ -148,7 +141,7 @@ struct WorkerShared {
 pub(crate) fn build_worker(
     config: &EngineConfig,
     main_module: &Url,
-    host: Option<HostBridge>,
+    host: Option<ModuleHost>,
 ) -> Result<MainWorker, EngineError> {
     let loaders = engine_loaders(&config.root, config.code_cache_dir.clone(), host)?;
 
@@ -217,18 +210,13 @@ pub(crate) fn build_worker(
 }
 
 /// Web workers for the engine, which Node code reaches through the
-/// `node:worker_threads` compat layer (deno_runtime implements threads on web
-/// workers): terser, workbox/vite-plugin-pwa, jest-worker all spawn them
-/// during a plain Node build, so the deno_runtime default of panicking the
-/// process here took the whole build down with it. Vite runs plugins in Node
-/// where worker_threads just works; this restores that baseline.
+/// `node:worker_threads` compat layer (terser, workbox, jest-worker all spawn
+/// them; deno_runtime's default panics the process instead).
 ///
 /// worker_host's op runs this callback ON the spawned worker thread, so the
-/// closure captures only Send data and rebuilds the byonm service stack there
-/// through the same `engine_loaders` recipe as the main worker. Workers get
-/// no host bridge: their payloads are dependency code (a minifier job, a
-/// workbox build), which under Node resolves with plain Node semantics; the
-/// Vite-style seam is a Start-SSR concern that never applies here.
+/// closure captures only Send data and rebuilds the byonm stack there through
+/// the same `engine_loaders` recipe. Workers get no host bridge: their
+/// payloads are dependency code, which resolves with plain Node semantics.
 fn create_web_worker_cb(
     shared: WorkerShared,
 ) -> Arc<deno_runtime::ops::worker_host::CreateWebWorkerCb> {
@@ -239,12 +227,9 @@ fn create_web_worker_cb(
     use deno_runtime::web_worker::WebWorkerServiceOptions;
 
     Arc::new(move |args| {
-        // The factory getters only fail on an unreadable workspace, which the
-        // parent engine already booted from. The callback type is infallible,
-        // so a failure here PANICS BY DESIGN — the panic unwinds only this
-        // worker thread (the workspace does not set panic=abort), the handle
-        // channel drops unsent, and worker_host's recv error surfaces it to
-        // JS as the worker's boot error, never a process kill.
+        // The callback type is infallible, so a failure here PANICS BY
+        // DESIGN: the panic unwinds only this worker thread and worker_host's
+        // recv error surfaces it to JS as the worker's boot error.
         let loaders = engine_loaders(&shared.root, shared.code_cache_dir.clone(), None)
             .expect("worker loaders (parent booted from this workspace)");
 
@@ -266,14 +251,10 @@ fn create_web_worker_cb(
         };
 
         // Node `resourceLimits` -> V8 CreateParams, Deno CLI's recipe
-        // (cli/lib/worker.rs, matching node_worker.cc UpdateResourceConstraints):
-        // individual constraint setters, then read back the resolved values so
-        // the worker_threads polyfill reports what V8 actually applied. A
-        // worker spawned WITHOUT limits inherits the engine's own heap cap
-        // instead of escaping it. Either way the near-heap-limit callback
-        // below turns exhaustion into ERR_WORKER_OUT_OF_MEMORY for this one
-        // worker; a bare CreateParams cap would abort the whole process on
-        // V8's fatal OOM.
+        // (cli/lib/worker.rs): set each constraint, then read back the
+        // resolved values so the worker_threads polyfill reports what V8
+        // actually applied. A worker spawned WITHOUT limits inherits the
+        // engine's own heap cap instead of escaping it.
         let mb = 1024 * 1024;
         let (create_params, resolved_limits) = if let Some(ref limits) = args.resource_limits {
             let mut params = v8::CreateParams::default();
@@ -310,12 +291,9 @@ fn create_web_worker_cb(
             bootstrap: BootstrapOptions {
                 mode: WorkerExecutionMode::Worker,
                 has_node_modules_dir: true,
-                // Deno CLI gives every worker its main module as `location`.
-                // Without one, the worker runtime bootstrap unconditionally
-                // calls setLocationHref(null) and WorkerLocation's
-                // `new URL(null)` throws `Invalid URL: 'null'` before any
-                // user code runs. (The worker_threads filename itself comes
-                // from op_worker_threads_filename, not from location.)
+                // Deno CLI gives every worker its main module as `location`;
+                // without one, bootstrap's setLocationHref(null) throws
+                // `Invalid URL: 'null'` before any user code runs.
                 location: Some(args.main_module.clone()),
                 ..Default::default()
             },
@@ -353,11 +331,9 @@ fn create_web_worker_cb(
         }
         worker.bootstrap(&bootstrap_options);
 
-        // Graceful OOM for a capped worker: the callback flags oom_triggered
-        // (run_web_worker's error handler turns it into
-        // ERR_WORKER_OUT_OF_MEMORY for Node workers) and terminates only this
-        // isolate; without it a capped worker dies in V8's fatal OOM, taking
-        // the whole build process with it.
+        // Graceful OOM for a capped worker: flag oom_triggered (surfaced as
+        // ERR_WORKER_OUT_OF_MEMORY) and terminate only this isolate, instead
+        // of V8's fatal OOM taking the whole process.
         if has_heap_limit {
             let ts_handle = worker.js_runtime.v8_isolate().thread_safe_handle();
             let oom_flag = worker.oom_triggered.clone();

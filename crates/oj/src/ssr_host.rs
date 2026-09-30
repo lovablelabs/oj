@@ -23,7 +23,6 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use oj_js::EngineConfig;
-use oj_js::HostFuture;
 use oj_js::HostModule;
 use oj_js::HostModuleType;
 use oj_js::HostResolved;
@@ -129,33 +128,38 @@ impl VersionGraph {
 
     /// Drops every record whose file changed since it was loaded, and every
     /// transitive importer of one: their versions bump, so the next request
-    /// re-imports fresh instances along the chain.
+    /// re-imports fresh instances along the chain. Removing a record as it is
+    /// visited IS the visited set: a re-pushed id finds no record and stops.
     pub(crate) fn invalidate(&self) -> usize {
-        let mut graph = self.graph.lock().unwrap();
-        let mut stack: Vec<String> = graph
-            .recs
-            .iter()
-            .filter(|(id, rec)| mtime_of(id) != rec.mtime)
-            .map(|(id, _)| id.clone())
+        // The seed scan stats every recorded file; do that OUTSIDE the lock,
+        // so resolves never queue behind hundreds of filesystem calls. A
+        // module that loads between snapshot and walk is caught by the next
+        // watcher tick, like any change that lands mid-scan.
+        let recorded: Vec<(String, Option<SystemTime>)> = {
+            let graph = self.graph.lock().unwrap();
+            graph
+                .recs
+                .iter()
+                .map(|(id, rec)| (id.clone(), rec.mtime))
+                .collect()
+        };
+        let mut stack: Vec<String> = recorded
+            .into_iter()
+            .filter(|(id, mtime)| mtime_of(id) != *mtime)
+            .map(|(id, _)| id)
             .collect();
-        let mut dirty: HashSet<String> = stack.iter().cloned().collect();
-        while let Some(changed) = stack.pop() {
-            let importers: Vec<String> = match graph.recs.get(&changed) {
-                Some(rec) => rec.importers.iter().cloned().collect(),
-                None => continue,
+        let mut graph = self.graph.lock().unwrap();
+        let mut dropped = 0;
+        while let Some(id) = stack.pop() {
+            let Some(rec) = graph.recs.remove(&id) else {
+                continue;
             };
-            for importer in importers {
-                if dirty.insert(importer.clone()) {
-                    stack.push(importer);
-                }
-            }
+            *graph.versions.entry(id).or_insert(0) += 1;
+            dropped += 1;
+            stack.extend(rec.importers);
         }
-        for id in &dirty {
-            *graph.versions.entry(id.clone()).or_insert(0) += 1;
-            graph.recs.remove(id);
-        }
-        graph.stale += dirty.len();
-        dirty.len()
+        graph.stale += dropped;
+        dropped
     }
 
     pub(crate) fn should_respawn(&self) -> bool {
@@ -247,57 +251,96 @@ pub(crate) fn importer_id(specifier: &str) -> String {
     specifier.to_string()
 }
 
-impl ModuleHost for SsrHost {
-    fn resolve<'a>(
-        &'a self,
-        importer: &'a str,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostResolved>, String>> {
-        Box::pin(async move {
-            let importer_id = importer_id(importer);
-            // node_modules internals resolve with plain Node semantics, as
-            // they did when the runner imported externals natively.
-            if importer_id.contains("/node_modules/") {
-                return Ok(Some(HostResolved::External(specifier.to_string())));
+impl SsrHost {
+    async fn resolve_import(
+        &self,
+        importer: &str,
+        specifier: &str,
+    ) -> Result<Option<HostResolved>, String> {
+        let importer_id = importer_id(importer);
+        // node_modules internals resolve with plain Node semantics, as
+        // they did when the runner imported externals natively.
+        if importer_id.contains("/node_modules/") {
+            return Ok(Some(HostResolved::External(specifier.to_string())));
+        }
+        match self.bridge.resolve(&importer_id, specifier).await? {
+            SsrResolution::Module(id) => {
+                let spec = self.graph.edge_specifier(&id, importer_id);
+                Ok(Some(HostResolved::Url(spec)))
             }
-            match self.bridge.resolve(&importer_id, specifier).await? {
-                SsrResolution::Module(id) => {
-                    let spec = self.graph.edge_specifier(&id, importer_id);
-                    Ok(Some(HostResolved::Url(spec)))
-                }
-                SsrResolution::External(spec) => Ok(Some(HostResolved::External(spec))),
-            }
-        })
+            SsrResolution::External(spec) => Ok(Some(HostResolved::External(spec))),
+        }
     }
 
-    fn load<'a>(
-        &'a self,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostModule>, String>> {
-        Box::pin(async move {
-            let Some(id) = versioned_id(specifier) else {
-                return Ok(None);
-            };
-            let code = self
-                .bridge
-                .load_module(&id)
-                .await
-                .map_err(|e| e.to_string())?;
-            self.graph.record_loaded(&id);
-            Ok(Some(HostModule {
-                code,
-                module_type: HostModuleType::JavaScript,
-            }))
-        })
+    async fn load_import(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+        let Some(id) = versioned_id(specifier) else {
+            return Ok(None);
+        };
+        let code = self
+            .bridge
+            .load_module(&id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.graph.record_loaded(&id);
+        Ok(Some(HostModule {
+            code,
+            module_type: HostModuleType::JavaScript,
+        }))
     }
 }
 
-/// A rendered document from the entry: the loader data (serialized, `<`
-/// escaped), the `<head>` HTML, and the body HTML.
-pub struct RenderOut {
-    pub data_json: String,
-    pub head: String,
-    pub html: String,
+/// Serves the engine's module-host requests by calling this host. One task
+/// owns the recv loop; each request gets a task of its own because deno_core
+/// polls module loads CONCURRENTLY while it builds a graph — handling them
+/// inline would serialize every fetch behind the slowest transform. The loop
+/// ends when the engine (the sender) is gone.
+fn serve_module_host(host: Arc<SsrHost>, mut requests: oj_js::HostRequests) {
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            let host = Arc::clone(&host);
+            tokio::spawn(async move {
+                match request {
+                    oj_js::HostRequest::Resolve {
+                        importer,
+                        specifier,
+                        reply,
+                    } => {
+                        let _ = reply.send(host.resolve_import(&importer, &specifier).await);
+                    }
+                    oj_js::HostRequest::Load { specifier, reply } => {
+                        let _ = reply.send(host.load_import(&specifier).await);
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// A rendered document from the entry, borrowed straight out of the
+/// bootstrap's reply (head and html run large on real pages, so nothing is
+/// copied out): the loader data (serialized, `<` escaped), the `<head>` HTML,
+/// and the body HTML.
+pub struct RenderOut(serde_json::Value);
+
+impl RenderOut {
+    pub fn data_json(&self) -> &str {
+        self.0
+            .get("data")
+            .and_then(|v| v.as_str())
+            .unwrap_or("null")
+    }
+
+    pub fn head(&self) -> &str {
+        self.0.get("head").and_then(|v| v.as_str()).unwrap_or("")
+    }
+
+    /// The body HTML, taken out of the reply without a copy.
+    pub fn take_html(&mut self) -> String {
+        match self.0.get_mut("html").map(serde_json::Value::take) {
+            Some(serde_json::Value::String(html)) => html,
+            _ => String::new(),
+        }
+    }
 }
 
 /// The SSR runner handle `ssr_dev` calls per request. Wraps the engine so a
@@ -361,12 +404,7 @@ impl SsrEngine {
         let value = self
             .call_bootstrap("render", vec![entry.into(), url.into()])
             .await?;
-        let field = |name: &str| value.get(name).and_then(|v| v.as_str()).map(str::to_string);
-        Ok(RenderOut {
-            data_json: field("data").unwrap_or_else(|| "null".into()),
-            head: field("head").unwrap_or_default(),
-            html: field("html").unwrap_or_default(),
-        })
+        Ok(RenderOut(value))
     }
 
     /// Invokes an export of a server module (the `/__oj_fn` path; the module
@@ -393,7 +431,7 @@ impl SsrEngine {
         self.maybe_respawn().await?;
         let engine = self.engine.read().await;
         engine
-            .call(self.bootstrap.clone(), export, args)
+            .call(self.bootstrap.clone(), export, args, None)
             .await
             .map_err(|e| e.to_string())
     }
@@ -416,7 +454,10 @@ impl SsrEngine {
 fn spawn_engine(root: &Path, host: &Arc<SsrHost>) -> Result<JsEngine, oj_js::EngineError> {
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-    JsEngine::spawn_with_host(config, Arc::clone(host) as Arc<dyn ModuleHost>)
+    config.registry = Some(host.bridge.engine_registry());
+    let (link, requests) = ModuleHost::channel();
+    serve_module_host(Arc::clone(host), requests);
+    JsEngine::spawn(config, Some(link), None)
 }
 
 /// The bootstrap's data endpoints reply with an already-serialized JSON
@@ -461,29 +502,8 @@ pub(crate) fn percent_decode(s: &str) -> String {
 
 /// Standard base64 with padding (what `atob` decodes).
 pub(crate) fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 #[cfg(test)]

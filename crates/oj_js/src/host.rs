@@ -1,31 +1,22 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! The module-host seam: a pluggable, async authority the engine consults
-//! before its own byonm loader.
-//!
-//! A [`ModuleHost`] resolves import specifiers and serves module code — the
-//! role oj's dev server plays for SSR modules (transform pipelines, virtual
-//! modules, invalidation via version-stamped specifiers). Implementations are
-//! ordinary async code: the engine's loader lives inside the isolate thread's
-//! current-thread runtime, so it never awaits host futures directly. Instead
-//! every call is spawned onto the tokio runtime the engine was created from
-//! (see [`HostBridge`]) and the reply travels back over a channel.
+//! The module-host seam: the dev server answers the engine's resolve/load
+//! requests over a channel — the role oj's SSR and Start hosts play for
+//! engine-run modules (transform pipelines, virtual modules, invalidation via
+//! version-stamped specifiers). A concrete request enum, not a trait: the
+//! host is whoever holds the receiving end, and it serves requests on its own
+//! runtime, so the engine needs no runtime handle and no dynamic dispatch.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-
-/// Boxed future returned by [`ModuleHost`] methods, so the trait stays
-/// object-safe while implementations write ordinary async blocks.
-pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 /// A resolution the host made for an import.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostResolved {
-    /// A fully resolved module URL the host will serve through
-    /// [`ModuleHost::load`]. Must parse as an absolute URL; the host owns the
-    /// scheme and any cache-busting query (e.g. `?v=N` version stamps).
+    /// A fully resolved module URL the host will serve through a
+    /// [`HostRequest::Load`]. Must parse as an absolute URL; the host owns
+    /// the scheme and any cache-busting query (e.g. `?v=N` version stamps).
     Url(String),
     /// Not the host's module: the engine resolves this specifier with its own
     /// Node semantics (bare npm specifiers, node_modules internals).
@@ -45,40 +36,41 @@ pub enum HostModuleType {
     Json,
 }
 
-/// Async module authority consulted by the engine's loader.
-///
-/// `resolve` sees every import except absolute `file:`/`node:`/`data:`/`blob:`
-/// URLs; `load` sees every module fetch except `node:` builtins. Returning
-/// `None` from either defers to the engine's built-in behavior (byonm Node
-/// resolution and filesystem loading).
-pub trait ModuleHost: Send + Sync + 'static {
-    fn resolve<'a>(
-        &'a self,
-        importer: &'a str,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostResolved>, String>>;
-
-    fn load<'a>(&'a self, specifier: &'a str)
-        -> HostFuture<'a, Result<Option<HostModule>, String>>;
+/// One question from the engine's loader. Replying `Ok(None)` defers to the
+/// engine's built-in behavior (byonm Node resolution, filesystem loading).
+pub enum HostRequest {
+    /// Sees every import except absolute `file:`/`node:`/`data:`/`blob:`
+    /// URLs. deno_core's resolve is synchronous, so the isolate thread PARKS
+    /// on this reply: the server must answer from a runtime that keeps
+    /// running meanwhile (never the engine's own thread).
+    Resolve {
+        importer: String,
+        specifier: String,
+        reply: std::sync::mpsc::Sender<Result<Option<HostResolved>, String>>,
+    },
+    /// Sees every module fetch except `node:` builtins. Awaited on the
+    /// engine's async load path; several may be in flight at once.
+    Load {
+        specifier: String,
+        reply: oneshot::Sender<Result<Option<HostModule>, String>>,
+    },
 }
 
-/// Runs [`ModuleHost`] futures on the runtime the engine was spawned from and
-/// ferries replies to the engine thread.
-///
-/// deno_core's `ModuleLoader::resolve` is synchronous and runs on the isolate
-/// thread while its event loop is being polled, so `resolve_blocking` parks
-/// that thread on a plain channel (never `block_on`); the host future runs
-/// elsewhere, on the multi-thread runtime, so this cannot self-deadlock.
-/// `load` is consulted from the loader's async path and awaits normally.
+/// The stream of requests a host serves; see [`ModuleHost::channel`]. Ends
+/// (recv returns `None`) when the engine is gone.
+pub type HostRequests = mpsc::UnboundedReceiver<HostRequest>;
+
+/// The engine's end of the module-host channel, given to
+/// [`crate::JsEngine::spawn`].
 #[derive(Clone)]
-pub(crate) struct HostBridge {
-    runtime: tokio::runtime::Handle,
-    host: Arc<dyn ModuleHost>,
+pub struct ModuleHost {
+    tx: mpsc::UnboundedSender<HostRequest>,
 }
 
-impl HostBridge {
-    pub(crate) fn new(runtime: tokio::runtime::Handle, host: Arc<dyn ModuleHost>) -> Self {
-        HostBridge { runtime, host }
+impl ModuleHost {
+    pub fn channel() -> (ModuleHost, HostRequests) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (ModuleHost { tx }, rx)
     }
 
     pub(crate) fn resolve_blocking(
@@ -86,27 +78,29 @@ impl HostBridge {
         importer: &str,
         specifier: &str,
     ) -> Result<Option<HostResolved>, String> {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        let host = self.host.clone();
-        let importer = importer.to_string();
-        let specifier = specifier.to_string();
-        self.runtime.spawn(async move {
-            let _ = reply_tx.send(host.resolve(&importer, &specifier).await);
-        });
+        let (reply, reply_rx) = std::sync::mpsc::channel();
+        self.tx
+            .send(HostRequest::Resolve {
+                importer: importer.to_string(),
+                specifier: specifier.to_string(),
+                reply,
+            })
+            .map_err(|_| "the module host is gone".to_string())?;
         reply_rx
             .recv()
-            .map_err(|_| "module host dropped the resolve reply".to_string())?
+            .map_err(|_| "the module host dropped the resolve reply".to_string())?
     }
 
     pub(crate) async fn load(&self, specifier: &str) -> Result<Option<HostModule>, String> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        let host = self.host.clone();
-        let specifier = specifier.to_string();
-        self.runtime.spawn(async move {
-            let _ = reply_tx.send(host.load(&specifier).await);
-        });
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(HostRequest::Load {
+                specifier: specifier.to_string(),
+                reply,
+            })
+            .map_err(|_| "the module host is gone".to_string())?;
         reply_rx
             .await
-            .map_err(|_| "module host dropped the load reply".to_string())?
+            .map_err(|_| "the module host dropped the load reply".to_string())?
     }
 }
