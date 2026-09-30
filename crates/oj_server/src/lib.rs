@@ -342,6 +342,10 @@ struct ServerState {
     ssr_watch: Arc<SsrWatchQueue>,
     ssr_plugin_config: String,
     plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// Into the watcher thread's inbox (`WatchMsg`): directories of files
+    /// served from outside the root (`ensure_watched_file`). The channel
+    /// buffers sends that happen before the thread is up.
+    watch_tx: std::sync::mpsc::Sender<WatchMsg>,
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
@@ -1188,6 +1192,7 @@ impl DevServer {
         let (crawl_tx, crawl_rx) = tokio::sync::watch::channel(false);
         let (write_tx, mut write_rx) =
             tokio::sync::mpsc::channel::<(String, Arc<CachedModule>)>(65536);
+        let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
         let public_dir = oj_config::public_dir(&config, &root);
         let client_resolver = Arc::new(OjResolver::with_settings(
             &root,
@@ -1313,6 +1318,7 @@ impl DevServer {
             ssr_watch: Arc::new(SsrWatchQueue::default()),
             ssr_plugin_config,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            watch_tx,
             plugins_use_module_parsed,
             plugins_have_transform,
             plugins_have_load,
@@ -1379,7 +1385,7 @@ impl DevServer {
                 }
             });
         }
-        spawn_watcher(Arc::clone(&state));
+        spawn_watcher(Arc::clone(&state), watch_rx);
         let (client_files, ssr_files) = oj_config::server_warmup_files(&config);
         if !client_files.is_empty() || !ssr_files.is_empty() {
             let state = Arc::clone(&state);
@@ -4183,7 +4189,13 @@ async fn serve_path(
 
     let file = if let Some(abs) = uri.path().strip_prefix("/@fs") {
         match fs_gate(&state, &PathBuf::from(urldecode(abs))) {
-            Some(real) => real,
+            Some(real) => {
+                // Served from outside the root (a linked workspace package):
+                // the root watch does not cover it, so edits to it would
+                // otherwise never reach the page.
+                ensure_watched_file(&state, &real);
+                real
+            }
             None => {
                 return (StatusCode::FORBIDDEN, "oj: /@fs path not allow-listed").into_response();
             }
@@ -5532,7 +5544,11 @@ fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
     if !module.watch_files.is_empty() {
         let mut watched = state.plugin_watched.lock().unwrap();
         for p in &module.watch_files {
-            watched.insert(PathBuf::from(p));
+            let p = PathBuf::from(p);
+            // Vite's addWatchFile goes through ensureWatchedFile too: an
+            // outside-root watch file otherwise never produces an event.
+            ensure_watched_file(state, &p);
+            watched.insert(p);
         }
     }
     let mut graph = state.graph.lock().unwrap();
@@ -8398,59 +8414,59 @@ pub fn capture_startup_cwd() {
     }
 }
 
-/// Workspace packages linked into any `node_modules` from the root upward: a
-/// symlink whose real path is outside the root and not inside a node_modules.
-fn linked_package_dirs(root: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    let mut dir = Some(root);
-    while let Some(d) = dir {
-        if let Ok(entries) = std::fs::read_dir(d.join("node_modules")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let candidates: Vec<PathBuf> =
-                    if entry.file_name().to_string_lossy().starts_with('@') {
-                        std::fs::read_dir(&path)
-                            .map(|scoped| scoped.flatten().map(|e| e.path()).collect())
-                            .unwrap_or_default()
-                    } else {
-                        vec![path]
-                    };
-                for candidate in candidates {
-                    if !std::fs::symlink_metadata(&candidate)
-                        .is_ok_and(|m| m.file_type().is_symlink())
-                    {
-                        continue;
-                    }
-                    let Ok(real) = std::fs::canonicalize(&candidate) else {
-                        continue;
-                    };
-                    if real.starts_with(root)
-                        || real.components().any(|c| c.as_os_str() == "node_modules")
-                        || out.contains(&real)
-                    {
-                        continue;
-                    }
-                    out.push(real);
-                }
-            }
-        }
-        dir = d.parent();
-    }
-    out
+/// The watcher thread's inbox: filesystem notifications, and directories to
+/// add because an outside-root file was served (`ensure_watched_file`). One
+/// channel, so the thread owns the watcher outright with no lock -- the actor
+/// shape of rust-analyzer's vfs-notify and deno's file watcher.
+enum WatchMsg {
+    Fs(notify::Result<notify::Event>),
+    Dir(PathBuf),
 }
 
-fn spawn_watcher(state: Arc<ServerState>) {
+/// Vite's ensureWatchedFile: a served file OUTSIDE the root (a linked workspace
+/// package reached through /@fs, a plugin's addWatchFile) is not covered by the
+/// root watch, so its directory is sent to the watcher thread. The directory
+/// rather than the file: editors save by rename-replace, which strands an
+/// inode-level file watch. node_modules stays unwatched, as Vite's chokidar
+/// `ignored` filters even explicitly added paths.
+fn ensure_watched_file(state: &ServerState, file: &Path) {
+    if file.starts_with(&state.root) || file.components().any(|c| c.as_os_str() == "node_modules") {
+        return;
+    }
+    if let Some(dir) = file.parent() {
+        let _ = state.watch_tx.send(WatchMsg::Dir(dir.to_path_buf()));
+    }
+}
+
+/// A `WatchMsg::Dir`, watched on first sight. Recorded only on success, so a
+/// directory that does not exist yet (a plugin watch file created later) is
+/// retried instead of skipped forever.
+fn watch_served_dir(
+    watcher: &mut notify::RecommendedWatcher,
+    watched: &mut std::collections::HashSet<PathBuf>,
+    dir: PathBuf,
+) {
+    use notify::{RecursiveMode, Watcher};
+    if !watched.contains(&dir) && watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+        watched.insert(dir);
+    }
+}
+
+fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiver<WatchMsg>) {
     std::thread::spawn(move || {
         use notify::{RecursiveMode, Watcher};
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(tx) {
+        let tx = state.watch_tx.clone();
+        let mut watcher = match notify::recommended_watcher(move |ev| {
+            let _ = tx.send(WatchMsg::Fs(ev));
+        }) {
             Ok(w) => w,
             Err(err) => {
                 eprintln!("oj: file watcher failed to start: {err}");
                 return;
             }
         };
+        let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
         // Watch each top-level entry except node_modules/.oj-cache/dist/.git
         // rather than the whole root: those dirs are huge and, in the case of
         // .oj-cache, rewritten by oj on every compile -- recursively watching
@@ -8464,26 +8480,19 @@ fn spawn_watcher(state: Arc<ServerState>) {
             )
         };
         let mut watched_any = false;
-        // Linked workspace packages (a monorepo's `@acme/shared` symlinked into
-        // node_modules) are app source served through /@fs, so watch their
-        // entries too -- Vite watches every served file outside the root.
-        let mut watch_roots = vec![state.root.clone()];
-        watch_roots.extend(linked_package_dirs(&state.root));
-        for watch_root in &watch_roots {
-            if let Ok(entries) = std::fs::read_dir(watch_root) {
-                for entry in entries.flatten() {
-                    if ignore(&entry.file_name()) {
-                        continue;
-                    }
-                    let path = entry.path();
-                    let mode = if path.is_dir() {
-                        RecursiveMode::Recursive
-                    } else {
-                        RecursiveMode::NonRecursive
-                    };
-                    if watcher.watch(&path, mode).is_ok() {
-                        watched_any = true;
-                    }
+        if let Ok(entries) = std::fs::read_dir(&state.root) {
+            for entry in entries.flatten() {
+                if ignore(&entry.file_name()) {
+                    continue;
+                }
+                let path = entry.path();
+                let mode = if path.is_dir() {
+                    RecursiveMode::Recursive
+                } else {
+                    RecursiveMode::NonRecursive
+                };
+                if watcher.watch(&path, mode).is_ok() {
+                    watched_any = true;
                 }
             }
         }
@@ -8509,8 +8518,12 @@ fn spawn_watcher(state: Arc<ServerState>) {
         let mut changes = ContentChanges::new();
         loop {
             let first = match rx.recv() {
-                Ok(Ok(ev)) => ev,
-                Ok(Err(_)) => continue,
+                Ok(WatchMsg::Fs(Ok(ev))) => ev,
+                Ok(WatchMsg::Fs(Err(_))) => continue,
+                Ok(WatchMsg::Dir(dir)) => {
+                    watch_served_dir(&mut watcher, &mut served_dirs, dir);
+                    continue;
+                }
                 Err(_) => break,
             };
             let first_paths = changes.changed_paths(&first);
@@ -8527,14 +8540,15 @@ fn spawn_watcher(state: Arc<ServerState>) {
             let mut paths: std::collections::HashSet<PathBuf> = first_paths.into_iter().collect();
             loop {
                 match rx.recv_timeout(Duration::from_millis(debounce_ms)) {
-                    Ok(Ok(ev)) => {
+                    Ok(WatchMsg::Fs(Ok(ev))) => {
                         let changed = changes.changed_paths(&ev);
                         if matches!(ev.kind, notify::EventKind::Create(_)) {
                             created.extend(changed.iter().cloned());
                         }
                         paths.extend(changed);
                     }
-                    Ok(Err(_)) => {}
+                    Ok(WatchMsg::Fs(Err(_))) => {}
+                    Ok(WatchMsg::Dir(dir)) => watch_served_dir(&mut watcher, &mut served_dirs, dir),
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
@@ -9742,30 +9756,6 @@ export default [{{
             app,
             "a deno.jsonc with comments is skipped like Vite"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn linked_package_dirs_finds_workspace_symlinks_only() {
-        // repo/
-        //   packages/shared          <- workspace package (linked, watched)
-        //   store/node_modules/dep   <- a store copy (pnpm-style, not watched)
-        //   app/node_modules/@acme/shared -> ../../../packages/shared
-        //   app/node_modules/dep          -> ../../store/node_modules/dep
-        //   app/node_modules/plain        (a real directory, not a link)
-        let repo = tempfile::tempdir().unwrap();
-        let repo = std::fs::canonicalize(repo.path()).unwrap();
-        let shared = repo.join("packages/shared");
-        let store_dep = repo.join("store/node_modules/dep");
-        let app = repo.join("app");
-        std::fs::create_dir_all(&shared).unwrap();
-        std::fs::create_dir_all(&store_dep).unwrap();
-        std::fs::create_dir_all(app.join("node_modules/@acme")).unwrap();
-        std::fs::create_dir_all(app.join("node_modules/plain")).unwrap();
-        std::os::unix::fs::symlink(&shared, app.join("node_modules/@acme/shared")).unwrap();
-        std::os::unix::fs::symlink(&store_dep, app.join("node_modules/dep")).unwrap();
-
-        assert_eq!(linked_package_dirs(&app), vec![shared]);
     }
 
     #[test]
