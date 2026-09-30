@@ -525,9 +525,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 .context("engine root not found")?;
             let mut config = oj_js::EngineConfig::new(&root);
             config.code_cache_dir = Some(oj_server::engine_code_cache_dir(&root));
-            let engine = oj_js::JsEngine::spawn(config).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let engine =
+                oj_js::JsEngine::spawn(config, None, None).map_err(|e| anyhow::anyhow!("{e}"))?;
             let value = engine
-                .eval(oj_js::EvalInput::Path(file))
+                .eval(oj_js::EvalInput::Path(file), None)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("{value}");

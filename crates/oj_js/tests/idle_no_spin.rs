@@ -47,7 +47,7 @@ async fn an_idle_engine_does_not_spin() {
         r#"{"name":"p","version":"1.0.0"}"#,
     )
     .unwrap();
-    let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(dir.path())).unwrap();
+    let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(dir.path()), None, None).unwrap();
     // Allocate enough to arm V8's reducer, so its delayed tasks do wake the
     // engine during the idle window below.
     engine
@@ -55,7 +55,7 @@ async fn an_idle_engine_does_not_spin() {
             "globalThis.x = []; for (let i = 0; i < 20; i++) globalThis.x.push(new Array(1024 * 1024).fill(1.5)); \
              globalThis.x = null; export default 1;"
                 .into(),
-        ))
+        ), None)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;

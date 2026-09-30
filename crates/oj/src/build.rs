@@ -4391,13 +4391,14 @@ pub(crate) async fn build_ssr_app(
         // externals from node_modules via byonm, as it did under node.
         let mut engine_config = oj_js::EngineConfig::new(root);
         engine_config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-        let engine = oj_js::JsEngine::spawn(engine_config)
+        let engine = oj_js::JsEngine::spawn(engine_config, None, None)
             .map_err(|e| anyhow::anyhow!("prerender engine: {e}"))?;
         let result = engine
             .call(
                 script_path.to_string_lossy().into_owned(),
                 "run",
                 Vec::new(),
+                None,
             )
             .await;
         let _ = fs::remove_file(&script_path);

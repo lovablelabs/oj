@@ -159,7 +159,7 @@ impl CssEngine {
         };
         // JsEngine::spawn blocks until the isolate is up; keep it off the
         // async workers.
-        tokio::task::spawn_blocking(move || JsEngine::spawn(config))
+        tokio::task::spawn_blocking(move || JsEngine::spawn(config, None, None))
             .await
             .map_err(|e| EngineError::Boot(e.to_string()))?
     }
@@ -263,7 +263,7 @@ impl CssEngine {
             (
                 slot.0,
                 slot.1
-                    .call(self.script.clone(), "compile", vec![request])
+                    .call(self.script.clone(), "compile", vec![request], None)
                     .await,
             )
         };

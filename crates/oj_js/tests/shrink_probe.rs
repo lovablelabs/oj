@@ -33,19 +33,20 @@ async fn probe_reducer() {
         r#"{"name":"p","version":"1.0.0"}"#,
     )
     .unwrap();
-    let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(dir.path())).unwrap();
+    let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(dir.path()), None, None).unwrap();
     engine
         .eval(oj_js::EvalInput::Source(
             "globalThis.keep = []; for (let i = 0; i < 22; i++) globalThis.keep.push(Array.from({ length: 1 << 20 }, (_, j) => ({ j }))); export default 1;"
                 .into(),
-        ))
+        ), None)
         .await
         .unwrap();
     let retained = rss_mb();
     engine
-        .eval(oj_js::EvalInput::Source(
-            "globalThis.keep = null; export default 2;".into(),
-        ))
+        .eval(
+            oj_js::EvalInput::Source("globalThis.keep = null; export default 2;".into()),
+            None,
+        )
         .await
         .unwrap();
     // Past the reducer's 100s watchdog, the path Node takes here too.

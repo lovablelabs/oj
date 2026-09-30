@@ -1284,6 +1284,7 @@ impl StartEngine {
                 self.bootstrap.clone(),
                 "init",
                 vec![serde_json::Value::Object(env)],
+                None,
             )
             .await
             .map(|_| ())
@@ -1311,6 +1312,7 @@ impl StartEngine {
                 self.bootstrap.clone(),
                 "handle",
                 vec![entry.into(), payload],
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -1429,7 +1431,7 @@ impl ScriptEngine {
         let mut config = EngineConfig::new(root);
         config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
         Ok(ScriptEngine {
-            engine: JsEngine::spawn(config).map_err(|e| anyhow::anyhow!("{e}"))?,
+            engine: JsEngine::spawn(config, None, None).map_err(|e| anyhow::anyhow!("{e}"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
         })
     }
@@ -1455,7 +1457,10 @@ impl ScriptEngine {
         self.env_shadowed
             .get_or_try_init(|| async {
                 self.engine
-                    .eval(oj_js::EvalInput::Source(SCRIPT_ENV_SHADOW_JS.to_string()))
+                    .eval(
+                        oj_js::EvalInput::Source(SCRIPT_ENV_SHADOW_JS.to_string()),
+                        None,
+                    )
                     .await
                     .map(|_| ())
             })
@@ -1469,6 +1474,7 @@ impl ScriptEngine {
                 script.to_string_lossy().into_owned(),
                 "run",
                 vec![serde_json::Value::Object(env_obj)],
+                None,
             )
             .await
     }
@@ -1477,7 +1483,7 @@ impl ScriptEngine {
 fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::EngineError> {
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-    JsEngine::spawn_with_host(config, Arc::clone(host) as Arc<dyn ModuleHost>)
+    JsEngine::spawn(config, Some(Arc::clone(host) as Arc<dyn ModuleHost>), None)
 }
 
 fn base64_decode(s: &str) -> Vec<u8> {

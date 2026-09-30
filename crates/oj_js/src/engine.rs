@@ -77,41 +77,24 @@ pub struct JsEngine {
 }
 
 impl JsEngine {
-    pub fn spawn(config: EngineConfig) -> Result<JsEngine, EngineError> {
-        Self::spawn_inner(config, None, None)
-    }
-
-    /// Spawns an engine whose module loading is governed by `host` (see
-    /// [`ModuleHost`]). Must be called from inside a tokio runtime: host
-    /// futures run on that runtime, never on the isolate thread.
-    pub fn spawn_with_host(
+    /// Spawns an engine. `module_host` governs module loading before the
+    /// engine's own byonm loader (see [`ModuleHost`]) and requires calling
+    /// from inside a tokio runtime, where host futures run; `hooks` installs
+    /// JS→Rust bridge globals before any module runs (see [`EngineHooks`]).
+    pub fn spawn(
         config: EngineConfig,
-        module_host: Arc<dyn ModuleHost>,
-    ) -> Result<JsEngine, EngineError> {
-        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
-            EngineError::Boot("spawn_with_host must be called from inside a tokio runtime".into())
-        })?;
-        Self::spawn_inner(
-            config,
-            Some(host::HostBridge::new(runtime, module_host)),
-            None,
-        )
-    }
-
-    /// Spawns an engine with JS→Rust bridges installed as globals before any
-    /// module runs (see [`EngineHooks`]).
-    pub fn spawn_with_hooks(
-        config: EngineConfig,
-        hooks: EngineHooks,
-    ) -> Result<JsEngine, EngineError> {
-        Self::spawn_inner(config, None, Some(hooks))
-    }
-
-    fn spawn_inner(
-        config: EngineConfig,
-        module_host: Option<host::HostBridge>,
+        module_host: Option<Arc<dyn ModuleHost>>,
         hooks: Option<EngineHooks>,
     ) -> Result<JsEngine, EngineError> {
+        let bridge = match module_host {
+            Some(module_host) => {
+                let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+                    EngineError::Boot("spawning with a module host requires a tokio runtime".into())
+                })?;
+                Some(host::HostBridge::new(runtime, module_host))
+            }
+            None => None,
+        };
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
         let (tx, rx) = mpsc::unbounded_channel();
@@ -122,7 +105,7 @@ impl JsEngine {
             // V8 + deeply recursive module instantiation want more than the
             // 2MB default, especially in debug builds.
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || scheduler::engine_thread(config, module_host, hooks, rx, ready_tx))
+            .spawn(move || scheduler::engine_thread(config, bridge, hooks, rx, ready_tx))
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(isolate)) => Ok(JsEngine {
@@ -171,18 +154,14 @@ impl JsEngine {
         lock(&self.thread).take();
     }
 
-    /// Executes an ES module to completion with the engine's default deadline.
-    pub async fn eval(&self, input: EvalInput) -> Result<serde_json::Value, EngineError> {
-        self.eval_with_deadline(input, self.default_deadline).await
-    }
-
-    /// Executes an ES module to completion with an explicit deadline
-    /// (`None` disables the deadline for this job).
-    pub async fn eval_with_deadline(
+    /// Executes an ES module to completion. `deadline` bounds this one job;
+    /// `None` falls back to the engine's default deadline.
+    pub async fn eval(
         &self,
         input: EvalInput,
         deadline: Option<Duration>,
     ) -> Result<serde_json::Value, EngineError> {
+        let deadline = deadline.or(self.default_deadline);
         self.request(|reply| Job::Eval {
             input,
             deadline,
@@ -194,25 +173,14 @@ impl JsEngine {
     /// Executes `module` (a path, or an absolute module URL), then calls its
     /// `export` with `args` (JSON in, JSON out). A returned promise is
     /// resolved before replying; calls run concurrently on the isolate.
-    pub async fn call(
-        &self,
-        module: impl Into<String>,
-        export: &str,
-        args: Vec<serde_json::Value>,
-    ) -> Result<serde_json::Value, EngineError> {
-        self.call_with_deadline(module, export, args, self.default_deadline)
-            .await
-    }
-
-    /// [`JsEngine::call`] with an explicit deadline (`None` disables it).
-    ///
-    /// Through the call's exclusive setup phase a watchdog terminates a
-    /// wedged run. Once the call parks on its returned promise the scheduler
-    /// abandons the still-pending promise at the deadline, replying
+    /// `deadline` bounds this one call (`None` falls back to the engine's
+    /// default): through the exclusive setup phase a watchdog terminates a
+    /// wedged run; once the call parks, the scheduler abandons the
+    /// still-pending promise at the deadline, replying
     /// [`EngineError::Deadline`] while the isolate and every concurrent call
-    /// carry on; the watchdog stays armed underneath solely for a
+    /// carry on. The watchdog stays armed underneath solely for a
     /// continuation that wedges the event loop in a busy loop.
-    pub async fn call_with_deadline(
+    pub async fn call(
         &self,
         module: impl Into<String>,
         export: &str,
@@ -221,6 +189,7 @@ impl JsEngine {
     ) -> Result<serde_json::Value, EngineError> {
         let module = module.into();
         let export = export.to_string();
+        let deadline = deadline.or(self.default_deadline);
         self.request(|reply| Job::Call {
             module,
             export,

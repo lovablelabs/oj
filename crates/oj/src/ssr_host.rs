@@ -393,7 +393,7 @@ impl SsrEngine {
         self.maybe_respawn().await?;
         let engine = self.engine.read().await;
         engine
-            .call(self.bootstrap.clone(), export, args)
+            .call(self.bootstrap.clone(), export, args, None)
             .await
             .map_err(|e| e.to_string())
     }
@@ -416,7 +416,7 @@ impl SsrEngine {
 fn spawn_engine(root: &Path, host: &Arc<SsrHost>) -> Result<JsEngine, oj_js::EngineError> {
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-    JsEngine::spawn_with_host(config, Arc::clone(host) as Arc<dyn ModuleHost>)
+    JsEngine::spawn(config, Some(Arc::clone(host) as Arc<dyn ModuleHost>), None)
 }
 
 /// The bootstrap's data endpoints reply with an already-serialized JSON

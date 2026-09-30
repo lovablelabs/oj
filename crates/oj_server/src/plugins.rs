@@ -258,12 +258,17 @@ pub fn run_engine_job_in_process(
         let mut config = oj_js::EngineConfig::new(root);
         config.default_deadline = Some(timeout);
         config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
-        let engine = oj_js::JsEngine::spawn(config)?;
+        let engine = oj_js::JsEngine::spawn(config, None, None)?;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
-        rt.block_on(engine.call(module.to_string_lossy().into_owned(), export, vec![payload]))
+        rt.block_on(engine.call(
+            module.to_string_lossy().into_owned(),
+            export,
+            vec![payload],
+            None,
+        ))
         // Dropping the engine here joins its thread: pending JS work (timers,
         // watchers a config hook started) is discarded with the isolate, the
         // in-process equivalent of the old `process.exit(0)`.
@@ -1575,7 +1580,7 @@ async fn keep_addons_alive(root: &Path, addons: &[PathBuf]) -> Result<(), String
             Some(engine) => std::sync::Arc::clone(engine),
             None => {
                 let engine = std::sync::Arc::new(
-                    oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root))
+                    oj_js::JsEngine::spawn(oj_js::EngineConfig::new(root), None, None)
                         .map_err(|e| format!("keeper engine failed to spawn: {e}"))?,
                 );
                 *keeper = Some(std::sync::Arc::clone(&engine));
@@ -1613,7 +1618,7 @@ for (const p of {paths}) {{
 "#
     );
     engine
-        .eval_with_deadline(
+        .eval(
             oj_js::EvalInput::Source(script),
             Some(ADDON_KEEPER_DEADLINE),
         )
@@ -1997,12 +2002,13 @@ impl PluginHost {
         let mut engine_config = oj_js::EngineConfig::new(&root);
         engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
         engine_config.memory_limit_bytes = Some(host.boot.memory_limit_bytes);
-        let engine = oj_js::JsEngine::spawn_with_hooks(
+        let engine = oj_js::JsEngine::spawn(
             engine_config,
-            oj_js::EngineHooks {
+            None,
+            Some(oj_js::EngineHooks {
                 post: post_tx,
                 rpc: Some(rpc_handler),
-            },
+            }),
         )
         .map_err(|e| format!("cannot start the embedded plugin host: {e}"))?;
         let engine = std::sync::Arc::new(engine);
@@ -2034,14 +2040,14 @@ impl PluginHost {
         tokio::spawn(async move {
             let prelude = format!("globalThis.__ojPluginHost = {boot_seed};");
             if let Err(e) = boot_engine
-                .eval_with_deadline(oj_js::EvalInput::Source(prelude), None)
+                .eval(oj_js::EvalInput::Source(prelude), None)
                 .await
             {
                 boot_ref.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
                 return;
             }
             match boot_engine
-                .call_with_deadline(host_module, "ojHostReady", Vec::new(), None)
+                .call(host_module, "ojHostReady", Vec::new(), None)
                 .await
             {
                 // The `{ ojInit }` push already flipped `initialized`; the
@@ -2452,7 +2458,7 @@ impl PluginHost {
             .unwrap()
             .clone()
             .ok_or_else(|| "plugin host exited".to_string())?;
-        let call = engine.call_with_deadline(
+        let call = engine.call(
             self.host_module.clone(),
             "ojRun",
             vec![
