@@ -12,6 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependencies that ship separate Node and browser files now load the browser files in dev, as in Vite. A package can list swaps in its package.json `browser` field (e.g. `"./lib/node.js": "./lib/browser.js"`), but oj served a package's own `./` and `../` imports straight from disk without checking that list, so the Node file (and the Node built-ins it imports) reached the browser and the page failed to load. Imports from inside `node_modules` now go through the resolver, which applies the swaps; app source keeps the direct-from-disk shortcut.
 - Edits to a linked workspace package (a monorepo package symlinked into `node_modules` from outside the app root and served through `/@fs`) now trigger HMR. The watcher only watched the app root's own entries, so such edits never reached the page; Vite watches every served file outside the root.
 
+## [0.2.15] - 2026-09-30
+
+### Fixed
+
+- A dependency's `browser` field now remaps its own relative imports: the on-disk fast path for `./` and `../` imports is kept for app source only, so a package shipping separate Node and browser implementations behind one entry loads the browser one (Vite parity).
+- Linked workspace packages outside the app root are watched for HMR: editing a monorepo package symlinked into node_modules now reaches the page, as Vite watches every served file outside the root.
+
+### Changed
+
+- Internal restructuring of the embedded JS engine and the dev server: the engine crate is split into focused modules, engine spawn/eval/call take optional parameters instead of method variants, process-global state (the GC registry, the `--config` override, the build CLI options) is threaded explicitly, and the module host and JS bridge use concrete channel and callback seams. No behavior changes intended.
+- CI runs the unit test suite in release mode, so the tests exercise the codegen that ships.
+
 ## [0.2.14] - 2026-09-29
 
 ### Fixed

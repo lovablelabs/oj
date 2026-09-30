@@ -141,7 +141,7 @@ version = "0.118.0"
 
 [dependencies.deno_process]
 package = "oj_deno_process"
-version = "0.2.14"
+version = "0.2.15"
 path = "../oj_deno_process"
 
 [dependencies.deno_resolver]
