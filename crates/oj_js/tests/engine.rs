@@ -501,9 +501,9 @@ mod host_seam {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use oj_js::HostFuture;
     use oj_js::HostModule;
     use oj_js::HostModuleType;
+    use oj_js::HostRequest;
     use oj_js::HostResolved;
     use oj_js::ModuleHost;
 
@@ -545,40 +545,50 @@ mod host_seam {
         }
     }
 
-    impl ModuleHost for TestHost {
-        fn resolve<'a>(
-            &'a self,
-            _importer: &'a str,
-            specifier: &'a str,
-        ) -> HostFuture<'a, Result<Option<HostResolved>, String>> {
-            Box::pin(async move {
-                if self.externals.lock().unwrap().contains(specifier) {
-                    return Ok(Some(HostResolved::External(specifier.to_string())));
-                }
-                let id = specifier.trim_start_matches("./");
-                if self.modules.lock().unwrap().contains_key(id) {
-                    return Ok(Some(HostResolved::Url(self.spec(id))));
-                }
-                Ok(None)
-            })
+    impl TestHost {
+        fn resolve(&self, specifier: &str) -> Result<Option<HostResolved>, String> {
+            if self.externals.lock().unwrap().contains(specifier) {
+                return Ok(Some(HostResolved::External(specifier.to_string())));
+            }
+            let id = specifier.trim_start_matches("./");
+            if self.modules.lock().unwrap().contains_key(id) {
+                return Ok(Some(HostResolved::Url(self.spec(id))));
+            }
+            Ok(None)
         }
 
-        fn load<'a>(
-            &'a self,
-            specifier: &'a str,
-        ) -> HostFuture<'a, Result<Option<HostModule>, String>> {
-            Box::pin(async move {
-                let Some(id) = TestHost::id_of(specifier) else {
-                    return Ok(None);
-                };
-                match self.modules.lock().unwrap().get(&id) {
-                    Some(code) => Ok(Some(HostModule {
-                        code: code.clone(),
-                        module_type: HostModuleType::JavaScript,
-                    })),
-                    None => Err(format!("host has no module \"{id}\"")),
+        fn load(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+            let Some(id) = TestHost::id_of(specifier) else {
+                return Ok(None);
+            };
+            match self.modules.lock().unwrap().get(&id) {
+                Some(code) => Ok(Some(HostModule {
+                    code: code.clone(),
+                    module_type: HostModuleType::JavaScript,
+                })),
+                None => Err(format!("host has no module \"{id}\"")),
+            }
+        }
+
+        /// Spawns a serving loop for this host and returns the engine's end.
+        fn link(self: &Arc<Self>) -> ModuleHost {
+            let (link, mut requests) = ModuleHost::channel();
+            let host = Arc::clone(self);
+            tokio::spawn(async move {
+                while let Some(request) = requests.recv().await {
+                    match request {
+                        HostRequest::Resolve {
+                            specifier, reply, ..
+                        } => {
+                            let _ = reply.send(host.resolve(&specifier));
+                        }
+                        HostRequest::Load { specifier, reply } => {
+                            let _ = reply.send(host.load(&specifier));
+                        }
+                    }
                 }
-            })
+            });
+            link
         }
     }
 
@@ -593,7 +603,7 @@ mod host_seam {
                export function greet(name) { return `${name} ${word}`; }"#,
         );
         let engine =
-            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.clone()), None).unwrap();
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap();
         let value = engine
             .call(
                 host.spec("entry"),
@@ -624,7 +634,7 @@ mod host_seam {
                export function stat() { return { stamp, run }; }"#,
         );
         let engine =
-            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.clone()), None).unwrap();
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap();
 
         let first = engine
             .call(host.spec("entry"), "stat", vec![], None)
@@ -670,7 +680,7 @@ mod host_seam {
                export function greet(name) { return fixture.greet(name); }"#,
         );
         let engine =
-            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.clone()), None).unwrap();
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap();
         let value = engine
             .call(
                 host.spec("entry"),
@@ -702,7 +712,7 @@ mod host_seam {
                }"#,
         );
         let engine = Arc::new(
-            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.clone()), None).unwrap(),
+            JsEngine::spawn(EngineConfig::new(root.path()), Some(host.link()), None).unwrap(),
         );
         let spec = host.spec("entry");
         let waiter = {

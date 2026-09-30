@@ -34,7 +34,7 @@ use crate::convert::v8_to_json;
 use crate::convert::SettledResult;
 use crate::engine::Job;
 use crate::engine::Reply;
-use crate::host::HostBridge;
+use crate::host::ModuleHost;
 use crate::isolate::Isolate;
 use crate::isolate::Verdict;
 use crate::watchdog::DeadlineGuard;
@@ -44,7 +44,7 @@ use crate::EvalInput;
 
 pub(crate) fn engine_thread(
     config: EngineConfig,
-    module_host: Option<HostBridge>,
+    module_host: Option<ModuleHost>,
     hooks: Option<EngineHooks>,
     rx: mpsc::UnboundedReceiver<Job>,
     ready: std::sync::mpsc::Sender<Result<v8::IsolateHandle, EngineError>>,
@@ -118,7 +118,7 @@ struct Scheduler {
 impl Scheduler {
     fn boot(
         config: EngineConfig,
-        module_host: Option<HostBridge>,
+        module_host: Option<ModuleHost>,
         hooks: Option<EngineHooks>,
     ) -> Result<Scheduler, EngineError> {
         let root_url = deno_path_util::url_from_directory_path(&config.root)

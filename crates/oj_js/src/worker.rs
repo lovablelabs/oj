@@ -36,7 +36,7 @@ use deno_runtime::BootstrapOptions;
 use deno_runtime::WorkerExecutionMode;
 
 use crate::code_cache::FsCodeCache;
-use crate::host::HostBridge;
+use crate::host::ModuleHost;
 use crate::loader::EngineModuleLoader;
 use crate::loader::EngineRequireLoader;
 use crate::loader::Sys;
@@ -60,7 +60,7 @@ struct EngineLoaders {
 fn engine_loaders(
     root: &Path,
     code_cache_dir: Option<PathBuf>,
-    host: Option<HostBridge>,
+    host: Option<ModuleHost>,
 ) -> Result<EngineLoaders, EngineError> {
     let sys = Sys::default();
 
@@ -141,7 +141,7 @@ struct WorkerShared {
 pub(crate) fn build_worker(
     config: &EngineConfig,
     main_module: &Url,
-    host: Option<HostBridge>,
+    host: Option<ModuleHost>,
 ) -> Result<MainWorker, EngineError> {
     let loaders = engine_loaders(&config.root, config.code_cache_dir.clone(), host)?;
 

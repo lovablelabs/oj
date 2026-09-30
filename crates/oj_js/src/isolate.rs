@@ -19,7 +19,7 @@ use deno_runtime::worker::MainWorker;
 
 use crate::bridge;
 use crate::bridge::EngineHooks;
-use crate::host::HostBridge;
+use crate::host::ModuleHost;
 use crate::watchdog::DeadlineGuard;
 use crate::watchdog::Watchdog;
 use crate::worker::build_worker;
@@ -74,7 +74,7 @@ impl Isolate {
     pub(crate) fn boot(
         config: &EngineConfig,
         main_module: &Url,
-        module_host: Option<HostBridge>,
+        module_host: Option<ModuleHost>,
         hooks: Option<EngineHooks>,
     ) -> Result<Isolate, EngineError> {
         let mut worker = build_worker(config, main_module, module_host)?;

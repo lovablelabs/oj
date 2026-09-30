@@ -37,9 +37,9 @@ use node_resolver::NodeResolutionKind;
 use node_resolver::ResolutionMode;
 
 use crate::code_cache::FsCodeCache;
-use crate::host::HostBridge;
 use crate::host::HostModuleType;
 use crate::host::HostResolved;
+use crate::host::ModuleHost as HostLink;
 
 /// The engine runs against the real filesystem only.
 pub(crate) type Sys = sys_traits::impls::RealSys;
@@ -61,7 +61,7 @@ pub(crate) struct EngineModuleLoader {
     /// When set, the host is consulted before byonm: it sees every import
     /// except absolute `file:`/`node:`/`data:`/`blob:` URLs on resolve, and
     /// every module fetch except `node:` builtins on load.
-    pub host: Option<HostBridge>,
+    pub host: Option<HostLink>,
     /// Persistent V8 code cache for on-disk modules (see
     /// [`crate::EngineConfig::code_cache_dir`]). Host-served modules are
     /// never cached: they are virtual and change within a session.

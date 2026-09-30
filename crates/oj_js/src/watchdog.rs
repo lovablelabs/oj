@@ -2,14 +2,13 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! One long-lived watchdog thread per engine, terminating JS execution when
-//! an armed deadline passes. Firing happens with the state lock held and
-//! disarm takes the same lock, so a disarm's `fired` answer is settled and a
-//! late fire can never poison the job that comes after the one it was armed
-//! for.
+//! an armed deadline passes. Firing removes the deadline from the armed set
+//! under the state lock, so "did it fire" IS "is my key gone" — no flag to
+//! keep in sync — and a disarm taking the same lock reads a settled answer;
+//! a late fire can never poison the job that comes after the one it was
+//! armed for.
 
-use std::collections::BTreeMap;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
@@ -37,7 +36,7 @@ struct State {
     next_id: u64,
     /// Armed deadlines ordered by expiry; the id disambiguates equal instants.
     /// Several calls park concurrently, each with its own deadline.
-    armed: BTreeMap<(Instant, u64), Arc<AtomicBool>>,
+    armed: BTreeSet<(Instant, u64)>,
     shutdown: bool,
 }
 
@@ -46,7 +45,7 @@ impl Watchdog {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 next_id: 0,
-                armed: BTreeMap::new(),
+                armed: BTreeSet::new(),
                 shutdown: false,
             }),
             cv: Condvar::new(),
@@ -78,13 +77,11 @@ impl Drop for Watchdog {
 fn run(shared: &Shared, handle: &v8::IsolateHandle) {
     let mut state = lock(&shared.state);
     while !state.shutdown {
-        // Fire the earliest due deadline or wait for it — firing holds the
-        // lock, so a concurrent disarm reads a settled verdict.
+        // Fire the earliest due deadline or wait for it.
         let now = Instant::now();
-        state = match state.armed.first_key_value().map(|(&key, _)| key) {
+        state = match state.armed.first().copied() {
             Some((at, _)) if at <= now => {
-                let (_, fired) = state.armed.pop_first().unwrap();
-                fired.store(true, Ordering::SeqCst);
+                state.armed.pop_first();
                 handle.terminate_execution();
                 state
             }
@@ -107,39 +104,34 @@ fn run(shared: &Shared, handle: &v8::IsolateHandle) {
 /// when the job settles.
 pub(crate) struct DeadlineGuard {
     key: (Instant, u64),
-    fired: Arc<AtomicBool>,
     shared: Arc<Shared>,
 }
 
 impl DeadlineGuard {
     pub(crate) fn arm(watchdog: &Watchdog, deadline: Duration) -> Self {
-        let fired = Arc::new(AtomicBool::new(false));
         let key = {
             let mut state = lock(&watchdog.shared.state);
             let key = (Instant::now() + deadline, state.next_id);
             state.next_id += 1;
-            state.armed.insert(key, fired.clone());
+            state.armed.insert(key);
             key
         };
         // A new earliest deadline: wake the thread to re-derive its wait.
         watchdog.shared.cv.notify_all();
         DeadlineGuard {
             key,
-            fired,
             shared: Arc::clone(&watchdog.shared),
         }
     }
 
-    /// Disarms the watchdog for this job and reports whether it fired.
-    /// Taking the lock waits out a fire in progress, so the answer is settled.
+    /// Disarms the watchdog for this job and reports whether it fired: the
+    /// key already gone means the watchdog removed it when it terminated.
     pub(crate) fn disarm(self) -> bool {
-        lock(&self.shared.state).armed.remove(&self.key);
-        self.fired.load(Ordering::SeqCst)
+        !lock(&self.shared.state).armed.remove(&self.key)
     }
 
     /// Whether the watchdog fired, without disarming it.
     pub(crate) fn fired(&self) -> bool {
-        let _settled = lock(&self.shared.state);
-        self.fired.load(Ordering::SeqCst)
+        !lock(&self.shared.state).armed.contains(&self.key)
     }
 }

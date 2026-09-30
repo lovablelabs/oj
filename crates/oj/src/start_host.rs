@@ -26,7 +26,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use oj_js::EngineConfig;
-use oj_js::HostFuture;
 use oj_js::HostModule;
 use oj_js::HostModuleType;
 use oj_js::HostResolved;
@@ -1183,21 +1182,29 @@ impl StartHost {
     }
 }
 
-impl ModuleHost for StartHost {
-    fn resolve<'a>(
-        &'a self,
-        importer: &'a str,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostResolved>, String>> {
-        Box::pin(self.resolve_inner(importer, specifier))
-    }
-
-    fn load<'a>(
-        &'a self,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostModule>, String>> {
-        Box::pin(self.load_inner(specifier))
-    }
+/// Serves the engine's module-host requests by calling this host. Requests
+/// fan out so parallel loads stay parallel; the loop ends when the engine
+/// (the sender) is gone.
+fn serve_module_host(host: Arc<StartHost>, mut requests: oj_js::HostRequests) {
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            let host = Arc::clone(&host);
+            tokio::spawn(async move {
+                match request {
+                    oj_js::HostRequest::Resolve {
+                        importer,
+                        specifier,
+                        reply,
+                    } => {
+                        let _ = reply.send(host.resolve_inner(&importer, &specifier).await);
+                    }
+                    oj_js::HostRequest::Load { specifier, reply } => {
+                        let _ = reply.send(host.load_inner(&specifier).await);
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// One request into the app's fetch handler, as the bootstrap consumes it.
@@ -1484,7 +1491,9 @@ fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::E
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
     config.registry = Some(host.bridge.engine_registry());
-    JsEngine::spawn(config, Some(Arc::clone(host) as Arc<dyn ModuleHost>), None)
+    let (link, requests) = ModuleHost::channel();
+    serve_module_host(Arc::clone(host), requests);
+    JsEngine::spawn(config, Some(link), None)
 }
 
 fn base64_decode(s: &str) -> Vec<u8> {

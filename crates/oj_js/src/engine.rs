@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 use crate::bridge::EngineHooks;
-use crate::host;
 use crate::host::ModuleHost;
 use crate::lock;
 use crate::scheduler;
@@ -78,23 +77,14 @@ pub struct JsEngine {
 
 impl JsEngine {
     /// Spawns an engine. `module_host` governs module loading before the
-    /// engine's own byonm loader (see [`ModuleHost`]) and requires calling
-    /// from inside a tokio runtime, where host futures run; `hooks` installs
-    /// JS→Rust bridge globals before any module runs (see [`EngineHooks`]).
+    /// engine's own byonm loader (see [`ModuleHost::channel`]); `hooks`
+    /// installs JS→Rust bridge globals before any module runs (see
+    /// [`EngineHooks`]).
     pub fn spawn(
         config: EngineConfig,
-        module_host: Option<Arc<dyn ModuleHost>>,
+        module_host: Option<ModuleHost>,
         hooks: Option<EngineHooks>,
     ) -> Result<JsEngine, EngineError> {
-        let bridge = match module_host {
-            Some(module_host) => {
-                let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
-                    EngineError::Boot("spawning with a module host requires a tokio runtime".into())
-                })?;
-                Some(host::HostBridge::new(runtime, module_host))
-            }
-            None => None,
-        };
         init_v8_platform_once();
         let default_deadline = config.default_deadline;
         // Unbounded on purpose: every caller awaits its reply before it can
@@ -111,7 +101,7 @@ impl JsEngine {
             // V8 + deeply recursive module instantiation want more than the
             // 2MB default, especially in debug builds.
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || scheduler::engine_thread(config, bridge, hooks, rx, ready_tx))
+            .spawn(move || scheduler::engine_thread(config, module_host, hooks, rx, ready_tx))
             .map_err(|e| EngineError::Boot(e.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(isolate)) => Ok(JsEngine {

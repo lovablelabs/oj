@@ -34,9 +34,10 @@ pub use deno_napi::addons_pending_unsafe_reregistration;
 pub use deno_napi::addons_with_live_registrations;
 pub use engine::EngineRegistry;
 pub use engine::JsEngine;
-pub use host::HostFuture;
 pub use host::HostModule;
 pub use host::HostModuleType;
+pub use host::HostRequest;
+pub use host::HostRequests;
 pub use host::HostResolved;
 pub use host::ModuleHost;
 

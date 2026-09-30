@@ -23,7 +23,6 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use oj_js::EngineConfig;
-use oj_js::HostFuture;
 use oj_js::HostModule;
 use oj_js::HostModuleType;
 use oj_js::HostResolved;
@@ -247,49 +246,67 @@ pub(crate) fn importer_id(specifier: &str) -> String {
     specifier.to_string()
 }
 
-impl ModuleHost for SsrHost {
-    fn resolve<'a>(
-        &'a self,
-        importer: &'a str,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostResolved>, String>> {
-        Box::pin(async move {
-            let importer_id = importer_id(importer);
-            // node_modules internals resolve with plain Node semantics, as
-            // they did when the runner imported externals natively.
-            if importer_id.contains("/node_modules/") {
-                return Ok(Some(HostResolved::External(specifier.to_string())));
+impl SsrHost {
+    async fn resolve_import(
+        &self,
+        importer: &str,
+        specifier: &str,
+    ) -> Result<Option<HostResolved>, String> {
+        let importer_id = importer_id(importer);
+        // node_modules internals resolve with plain Node semantics, as
+        // they did when the runner imported externals natively.
+        if importer_id.contains("/node_modules/") {
+            return Ok(Some(HostResolved::External(specifier.to_string())));
+        }
+        match self.bridge.resolve(&importer_id, specifier).await? {
+            SsrResolution::Module(id) => {
+                let spec = self.graph.edge_specifier(&id, importer_id);
+                Ok(Some(HostResolved::Url(spec)))
             }
-            match self.bridge.resolve(&importer_id, specifier).await? {
-                SsrResolution::Module(id) => {
-                    let spec = self.graph.edge_specifier(&id, importer_id);
-                    Ok(Some(HostResolved::Url(spec)))
-                }
-                SsrResolution::External(spec) => Ok(Some(HostResolved::External(spec))),
-            }
-        })
+            SsrResolution::External(spec) => Ok(Some(HostResolved::External(spec))),
+        }
     }
 
-    fn load<'a>(
-        &'a self,
-        specifier: &'a str,
-    ) -> HostFuture<'a, Result<Option<HostModule>, String>> {
-        Box::pin(async move {
-            let Some(id) = versioned_id(specifier) else {
-                return Ok(None);
-            };
-            let code = self
-                .bridge
-                .load_module(&id)
-                .await
-                .map_err(|e| e.to_string())?;
-            self.graph.record_loaded(&id);
-            Ok(Some(HostModule {
-                code,
-                module_type: HostModuleType::JavaScript,
-            }))
-        })
+    async fn load_import(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+        let Some(id) = versioned_id(specifier) else {
+            return Ok(None);
+        };
+        let code = self
+            .bridge
+            .load_module(&id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.graph.record_loaded(&id);
+        Ok(Some(HostModule {
+            code,
+            module_type: HostModuleType::JavaScript,
+        }))
     }
+}
+
+/// Serves the engine's module-host requests by calling this host. Requests
+/// fan out so parallel loads stay parallel; the loop ends when the engine
+/// (the sender) is gone.
+fn serve_module_host(host: Arc<SsrHost>, mut requests: oj_js::HostRequests) {
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            let host = Arc::clone(&host);
+            tokio::spawn(async move {
+                match request {
+                    oj_js::HostRequest::Resolve {
+                        importer,
+                        specifier,
+                        reply,
+                    } => {
+                        let _ = reply.send(host.resolve_import(&importer, &specifier).await);
+                    }
+                    oj_js::HostRequest::Load { specifier, reply } => {
+                        let _ = reply.send(host.load_import(&specifier).await);
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// A rendered document from the entry: the loader data (serialized, `<`
@@ -417,7 +434,9 @@ fn spawn_engine(root: &Path, host: &Arc<SsrHost>) -> Result<JsEngine, oj_js::Eng
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
     config.registry = Some(host.bridge.engine_registry());
-    JsEngine::spawn(config, Some(Arc::clone(host) as Arc<dyn ModuleHost>), None)
+    let (link, requests) = ModuleHost::channel();
+    serve_module_host(Arc::clone(host), requests);
+    JsEngine::spawn(config, Some(link), None)
 }
 
 /// The bootstrap's data endpoints reply with an already-serialized JSON
