@@ -65,9 +65,6 @@ async fn serve_internal_route(
             "// oj: browser-externalized module (package maps it to false)\nexport default {};\nexport const __cjs_exports = {};\n",
         ));
     }
-    if path.starts_with(pkg_bundle::PKG_PREFIX) {
-        return Some(serve_pkg_bundle(state, path, has_version_query(uri.query())).await);
-    }
     if let Some(id) = path.strip_prefix("/@virtual/") {
         return Some(match state.virtual_modules.get(id) {
             Some(code) => js_response(code.clone()),

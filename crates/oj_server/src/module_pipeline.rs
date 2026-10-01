@@ -280,7 +280,7 @@ async fn plugin_load(
     is_dep: bool,
 ) -> Result<Option<String>, String> {
     let dep_wants_load = is_dep
-        && (pkg_bundle::is_excluded(file) || {
+        && (state.optimize_view.is_excluded(file) || {
             let path = file.to_string_lossy();
             state.dep_load_res.iter().any(|re| re.is_match(&path))
         });
@@ -405,7 +405,7 @@ async fn plugin_transform(
         maps: Vec::new(),
     };
     let dep_wants_transform = is_dep
-        && (pkg_bundle::is_excluded(file)
+        && (state.optimize_view.is_excluded(file)
             || state
                 .dep_transform_res
                 .iter()
@@ -852,12 +852,11 @@ impl ImportRewrite<'_> {
         // optimizeDeps.needsInterop forces the interop rewrite even
         // when static analysis reads the dep as ESM.
         if in_node_modules
-            && (is_cjs_dep_file(&resolved) || pkg_bundle::needs_forced_interop(&resolved))
+            && (is_cjs_dep_file(&resolved)
+                || job.state.optimize_view.needs_forced_interop(&resolved))
         {
             allow_root(&job.state.fs_allow, package_root(&resolved));
-            // With partial bundling this is the /@oj-pkg bundle URL, which
-            // exports __cjs_exports too, so the interop still reads off it.
-            return Some(dep_serve_url(&resolved, &job.state.root));
+            return Some(url_of(&job.state.root, &resolved));
         }
         None
     }

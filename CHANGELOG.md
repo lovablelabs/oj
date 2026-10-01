@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependencies that ship separate Node and browser files now load the browser files in dev, as in Vite. A package can list swaps in its package.json `browser` field (e.g. `"./lib/node.js": "./lib/browser.js"`), but oj served a package's own `./` and `../` imports straight from disk without checking that list, so the Node file (and the Node built-ins it imports) reached the browser and the page failed to load. Imports from inside `node_modules` now go through the resolver, which applies the swaps; app source keeps the direct-from-disk shortcut.
 - Edits to a linked workspace package (a monorepo package symlinked into `node_modules` from outside the app root and served through `/@fs`) now trigger HMR. The watcher only watched the app root's own entries, so such edits never reached the page; Vite watches every served file outside the root.
 
+## [Unreleased]
+
+### Removed
+
+- Partial bundling (the experimental per-package `/@oj-pkg` dep bundler behind `OJ_PARTIAL_BUNDLE`, its rolldown fallback behind `OJ_PB_ROLLDOWN`, and the compiler's package-bundle emitter). The dep optimizer is the one dep-serving story; nothing set these flags.
+
 ## [0.2.15] - 2026-09-30
 
 ### Fixed

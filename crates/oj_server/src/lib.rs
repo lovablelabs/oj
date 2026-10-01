@@ -20,8 +20,6 @@ use oj_cache::{CachedModule, PersistentCache};
 
 pub mod css_engine;
 pub mod optimize;
-pub mod pkg_bundle;
-pub mod pkg_rolldown;
 pub mod plugins;
 mod preseed;
 pub use preseed::PACKAGE_MANAGER_LOCKFILES;
@@ -348,6 +346,10 @@ struct ServerState {
     rt: tokio::runtime::Handle,
     base: Option<String>,
     optimized: Arc<optimize::OptimizedDeps>,
+    /// The `optimizeDeps` knobs for directly-served deps (exclude routes a
+    /// dep through plugin hooks; needsInterop forces the interop rewrite) —
+    /// threaded, not process-global.
+    optimize_view: Arc<optimize::OptimizeView>,
     /// An error frame broadcast while no client was connected is kept and
     /// delivered to the next client (Vite's ws `bufferedError`).
     buffered_error: Mutex<Option<String>>,
@@ -1239,14 +1241,6 @@ fn load_dev_config(
     plugins::adopt_vite_config_values(&mut config, root, config_file, "serve", dev_mode)
         .map_err(|e| anyhow::anyhow!(e))?;
     boot_phase("vite config values adopted");
-    // Feed optimizeDeps.include/exclude/needsInterop into partial bundling so
-    // the same vite.config field that drives Vite's dep pre-bundle drives oj's.
-    let (include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
-    pkg_bundle::configure(
-        include,
-        exclude,
-        oj_config::optimize_deps_needs_interop(&config),
-    );
     Ok(config)
 }
 
@@ -1546,8 +1540,14 @@ impl DevServer {
             ws_token: hmr.ws_token,
             ws_token_check: hmr.ws_token_check,
             optimized: Arc::new(optimized_deps(&root, &config, &dev_mode)),
+            optimize_view: {
+                let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
+                Arc::new(optimize::OptimizeView::new(
+                    exclude,
+                    oj_config::optimize_deps_needs_interop(&config),
+                ))
+            },
         });
-        pkg_bundle::set_version(state.optimized.version());
         spawn_state_tasks(&state, write_rx, watch_rx);
         spawn_warmup(&state, &config);
         if self.lazy {

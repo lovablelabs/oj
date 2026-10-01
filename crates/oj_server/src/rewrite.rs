@@ -112,11 +112,9 @@ pub(crate) fn rewrite_specifier(
         Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => Some(
             mark_css_import(url_of(root, &resolved), &resolved, css_import_marker),
         ),
-        // A node_modules dep routes through `dep_serve_url` even under the app root
-        // so partial bundling can collapse it (per-file URL no-op when off).
         Ok(resolved) => {
             allow_package(fs_allow, &resolved);
-            Some(dep_serve_url(&resolved, root))
+            Some(url_of(root, &resolved))
         }
         Err(err) if err.ignored => {
             // The package's `browser` field maps this specifier to false: serve an
@@ -166,7 +164,7 @@ fn rewrite_absolute(
         // An absolute path OUTSIDE root: serve through /@fs (Vite's
         // FS_PREFIX) and allow its package for the fs guard.
         allow_package(fs_allow, p);
-        dep_serve_url(p, root)
+        url_of(root, p)
     };
     Some(match query {
         Some(q) => format!("{url}?{q}"),
