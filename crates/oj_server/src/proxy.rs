@@ -1,4 +1,6 @@
 use super::*;
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite as ts;
 
 /// Delegate a matched request to the Vite-shaped proxy in the plugin host. On
 /// `x-oj-fallthrough`, re-route the (possibly rewritten) url natively, bodyless.
@@ -7,39 +9,39 @@ pub(crate) async fn delegate_to_node_proxy(
     port: u16,
     req: axum::extract::Request,
 ) -> Response {
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
     let method = parts.method.as_str().to_string();
     let pq = parts
         .uri
         .path_and_query()
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| parts.uri.path().to_string());
-    match proxy_to_loopback_streaming(port, &method, &pq, &parts.headers, Some(body)).await {
-        Ok(resp) => {
-            if resp.headers().contains_key("x-oj-fallthrough") {
-                let mut parts = parts;
-                // Re-route only origin-form paths; an absolute or
-                // protocol-relative bypass URL must never hit native routing.
-                if let Some(uri) = resp
-                    .headers()
-                    .get("x-oj-rewritten-url")
-                    .and_then(|v| v.to_str().ok())
-                    .filter(|s| s.starts_with('/') && !s.starts_with("//"))
-                    .and_then(|s| s.parse::<Uri>().ok())
-                {
-                    parts.uri = uri;
-                }
-                let rreq = axum::extract::Request::from_parts(parts, Body::empty());
-                return next.run(rreq).await;
-            }
-            resp
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("oj proxy delegation to plugin host failed: {e}"),
-        )
-            .into_response(),
+    let resp = match proxy_to_loopback_streaming(port, &method, &pq, &parts.headers, Some(body))
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => return bad_gateway(format!("oj proxy delegation to plugin host failed: {e}")),
+    };
+    if !resp.headers().contains_key("x-oj-fallthrough") {
+        return resp;
     }
+    // Re-route only origin-form paths; an absolute or
+    // protocol-relative bypass URL must never hit native routing.
+    if let Some(uri) = resp
+        .headers()
+        .get("x-oj-rewritten-url")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| s.starts_with('/') && !s.starts_with("//"))
+        .and_then(|s| s.parse::<Uri>().ok())
+    {
+        parts.uri = uri;
+    }
+    next.run(axum::extract::Request::from_parts(parts, Body::empty()))
+        .await
+}
+
+fn bad_gateway(msg: String) -> Response {
+    (StatusCode::BAD_GATEWAY, msg).into_response()
 }
 
 pub(crate) fn proxy_target(
@@ -112,6 +114,18 @@ pub(crate) async fn proxy_middleware(
     // Fallback (no plugin host, or the boot window before the middleware port
     // is known): the Rust proxy forwards directly with the {from,to} rewrite.
     let target = proxy_target(&entry, &path, req.uri().query());
+    forward_direct(&state, req, &entry, &prefix, &target).await
+}
+
+/// The Rust-side proxy: forward to `target` and stream the reply back.
+async fn forward_direct(
+    state: &ServerState,
+    req: axum::extract::Request,
+    entry: &oj_config::ProxyEntry,
+    prefix: &str,
+    target: &str,
+) -> Response {
+    const BUFFER_LIMIT: usize = 1024 * 1024;
     let method = req.method().clone();
     let req_headers = req.headers().clone();
     // Buffer small bodies to preserve Content-Length; stream chunked or large
@@ -121,16 +135,13 @@ pub(crate) async fn proxy_middleware(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
     let chunked = req_headers.contains_key(header::TRANSFER_ENCODING);
-    let stream_request = chunked || content_length.is_some_and(|n| n > 1024 * 1024);
+    let stream_request = chunked || content_length.is_some_and(|n| n > BUFFER_LIMIT as u64);
     let body: reqwest::Body = if stream_request {
         reqwest::Body::wrap_stream(req.into_body().into_data_stream())
     } else {
-        match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
+        match axum::body::to_bytes(req.into_body(), BUFFER_LIMIT).await {
             Ok(b) => reqwest::Body::from(b),
-            Err(e) => {
-                return (StatusCode::BAD_GATEWAY, format!("oj proxy: body read: {e}"))
-                    .into_response()
-            }
+            Err(e) => return bad_gateway(format!("oj proxy: body read: {e}")),
         }
     };
 
@@ -144,7 +155,7 @@ pub(crate) async fn proxy_middleware(
                 .expect("reqwest client")
         })
     };
-    let mut out = client.request(method, &target).body(body);
+    let mut out = client.request(method, target).body(body);
     for (name, value) in req_headers.iter() {
         if entry.change_origin() && name == header::HOST {
             continue;
@@ -153,25 +164,9 @@ pub(crate) async fn proxy_middleware(
     }
 
     match out.send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
-            let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
-            *response.status_mut() = status;
-            for (name, value) in headers.iter() {
-                if name == header::TRANSFER_ENCODING || name == header::CONTENT_LENGTH {
-                    continue;
-                }
-                response.headers_mut().append(name, value.clone());
-            }
-            response
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("oj proxy to {prefix} failed: {e}"),
-        )
-            .into_response(),
+        // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
+        Ok(resp) => stream_reqwest_response(resp),
+        Err(e) => bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
     }
 }
 
@@ -376,105 +371,34 @@ pub(crate) async fn proxy_websocket(
     entry: Option<&oj_config::ProxyEntry>,
     target: &str,
 ) -> Response {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite as ts;
-
     let (mut parts, _body) = req.into_parts();
     let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
         Ok(u) => u,
         Err(rejection) => return rejection.into_response(),
     };
     let url = ws_target_url(target);
-    // tungstenite takes a ready-made request as-is: handshake headers must be
-    // set explicitly (it generates them only for a bare url).
-    let target_uri: axum::http::Uri = match url.parse() {
-        Ok(u) => u,
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("oj proxy: bad websocket target {url}: {e}"),
-            )
-                .into_response()
-        }
-    };
-    // host:port without userinfo, the same authority the dial below uses.
-    let target_host = match (target_uri.host(), target_uri.port_u16()) {
-        (Some(h), Some(p)) => format!("{h}:{p}"),
-        (Some(h), None) => h.to_string(),
-        _ => String::new(),
-    };
-    // http-proxy keeps the browser's Host unless `changeOrigin` asks for the
-    // target's; `rewriteWsOrigin` (Vite) swaps the Origin for the target's origin.
-    let host: String = if entry.is_some_and(|e| e.change_origin()) {
-        target_host.clone()
-    } else {
-        parts
-            .headers
-            .get(header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-            .unwrap_or(target_host)
-    };
-    let mut builder = axum::http::Request::builder()
-        .uri(url.as_str())
-        .header(header::HOST, host)
-        .header(header::CONNECTION, "Upgrade")
-        .header(header::UPGRADE, "websocket")
-        .header(header::SEC_WEBSOCKET_VERSION, "13")
-        .header(
-            header::SEC_WEBSOCKET_KEY,
-            ts::handshake::client::generate_key(),
-        );
-    for (name, value) in parts.headers.iter() {
-        if !ws_forwardable_header(name) {
-            continue;
-        }
-        if *name == header::ORIGIN && entry.is_some_and(|e| e.rewrite_ws_origin()) {
-            builder = builder.header(name, ws_target_origin(&url));
-            continue;
-        }
-        builder = builder.header(name, value);
-    }
-    let upstream_req = match builder.body(()) {
+    let upstream_req = match upstream_ws_request(&url, &parts.headers, entry) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("oj proxy: ws request: {e}"),
-            )
-                .into_response()
-        }
+        Err(msg) => return bad_gateway(msg),
     };
     // `wss://`: tungstenite dials TCP and TLS itself with the rustls config
     // (`secure: false` accepts any certificate), as http-proxy does.
     let connector = if url.starts_with("wss://") {
         match state.proxy_tls_config(entry.is_none_or(|e| e.secure())) {
             Ok(cfg) => Some(tokio_tungstenite::Connector::Rustls(cfg)),
-            Err(e) => {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    format!("oj proxy: tls config: {e}"),
-                )
-                    .into_response()
-            }
+            Err(e) => return bad_gateway(format!("oj proxy: tls config: {e}")),
         }
     } else {
         Some(tokio_tungstenite::Connector::Plain)
     };
-    let connect =
-        tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector);
     // No oj-side deadline, matching Vite: an unclaimed upgrade dangles until
     // the client gives up; hyper aborts this future on client disconnect.
-    let connected = connect.await;
+    let connected =
+        tokio_tungstenite::connect_async_tls_with_config(upstream_req, None, false, connector)
+            .await;
     let (upstream, upstream_resp) = match connected {
         Ok(pair) => pair,
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("oj proxy: websocket to {url} failed: {e}"),
-            )
-                .into_response()
-        }
+        Err(e) => return bad_gateway(format!("oj proxy: websocket to {url} failed: {e}")),
     };
     let selected = upstream_resp
         .headers()
@@ -485,54 +409,116 @@ pub(crate) async fn proxy_websocket(
         Some(p) => upgrade.protocols([p]),
         None => upgrade,
     };
+    upgrade.on_upgrade(move |client| relay_ws(client, upstream))
+}
 
-    fn to_ts(m: Message) -> ts::Message {
-        match m {
-            Message::Text(t) => ts::Message::Text(ts::Utf8Bytes::from(t.as_str())),
-            Message::Binary(b) => ts::Message::Binary(b),
-            Message::Ping(b) => ts::Message::Ping(b),
-            Message::Pong(b) => ts::Message::Pong(b),
-            Message::Close(c) => ts::Message::Close(c.map(|c| ts::protocol::CloseFrame {
-                code: ts::protocol::frame::coding::CloseCode::from(c.code),
-                reason: ts::Utf8Bytes::from(c.reason.as_str()),
-            })),
+/// The upstream handshake request (Err: the 502 message). tungstenite takes a
+/// ready-made request as-is: handshake headers must be set explicitly (it
+/// generates them only for a bare url).
+fn upstream_ws_request(
+    url: &str,
+    headers: &HeaderMap,
+    entry: Option<&oj_config::ProxyEntry>,
+) -> Result<axum::http::Request<()>, String> {
+    let target_uri: Uri = url
+        .parse()
+        .map_err(|e| format!("oj proxy: bad websocket target {url}: {e}"))?;
+    // host:port without userinfo, the same authority the dial uses.
+    let target_host = match (target_uri.host(), target_uri.port_u16()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_string(),
+        _ => String::new(),
+    };
+    // http-proxy keeps the browser's Host unless `changeOrigin` asks for the
+    // target's; `rewriteWsOrigin` (Vite) swaps the Origin for the target's origin.
+    let host = if entry.is_some_and(|e| e.change_origin()) {
+        target_host
+    } else {
+        headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .unwrap_or(target_host)
+    };
+    let mut builder = axum::http::Request::builder()
+        .uri(url)
+        .header(header::HOST, host)
+        .header(header::CONNECTION, "Upgrade")
+        .header(header::UPGRADE, "websocket")
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .header(
+            header::SEC_WEBSOCKET_KEY,
+            ts::handshake::client::generate_key(),
+        );
+    let rewrite_origin = entry.is_some_and(|e| e.rewrite_ws_origin());
+    for (name, value) in headers.iter() {
+        if !ws_forwardable_header(name) {
+            continue;
         }
+        if *name == header::ORIGIN && rewrite_origin {
+            builder = builder.header(name, ws_target_origin(url));
+            continue;
+        }
+        builder = builder.header(name, value);
     }
-    fn from_ts(m: ts::Message) -> Option<Message> {
-        Some(match m {
-            ts::Message::Text(t) => Message::Text(t.as_str().into()),
-            ts::Message::Binary(b) => Message::Binary(b),
-            ts::Message::Ping(b) => Message::Ping(b),
-            ts::Message::Pong(b) => Message::Pong(b),
-            ts::Message::Close(c) => Message::Close(c.map(|c| axum::extract::ws::CloseFrame {
-                code: c.code.into(),
-                reason: c.reason.as_str().into(),
-            })),
-            ts::Message::Frame(_) => return None,
-        })
-    }
+    builder
+        .body(())
+        .map_err(|e| format!("oj proxy: ws request: {e}"))
+}
 
-    upgrade.on_upgrade(move |client| async move {
-        let (mut up_tx, mut up_rx) = upstream.split();
-        let (mut cl_tx, mut cl_rx) = client.split();
-        let client_to_upstream = async {
-            while let Some(Ok(m)) = cl_rx.next().await {
-                if up_tx.send(to_ts(m)).await.is_err() {
+/// Pump messages both ways until either side ends, then close the other.
+async fn relay_ws(
+    client: axum::extract::ws::WebSocket,
+    upstream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) {
+    let (mut up_tx, mut up_rx) = upstream.split();
+    let (mut cl_tx, mut cl_rx) = client.split();
+    let client_to_upstream = async {
+        while let Some(Ok(m)) = cl_rx.next().await {
+            if up_tx.send(to_ts(m)).await.is_err() {
+                break;
+            }
+        }
+        let _ = up_tx.close().await;
+    };
+    let upstream_to_client = async {
+        while let Some(Ok(m)) = up_rx.next().await {
+            if let Some(m) = from_ts(m) {
+                if cl_tx.send(m).await.is_err() {
                     break;
                 }
             }
-            let _ = up_tx.close().await;
-        };
-        let upstream_to_client = async {
-            while let Some(Ok(m)) = up_rx.next().await {
-                if let Some(m) = from_ts(m) {
-                    if cl_tx.send(m).await.is_err() {
-                        break;
-                    }
-                }
-            }
-            let _ = cl_tx.close().await;
-        };
-        tokio::join!(client_to_upstream, upstream_to_client);
+        }
+        let _ = cl_tx.close().await;
+    };
+    tokio::join!(client_to_upstream, upstream_to_client);
+}
+
+fn to_ts(m: Message) -> ts::Message {
+    match m {
+        Message::Text(t) => ts::Message::Text(ts::Utf8Bytes::from(t.as_str())),
+        Message::Binary(b) => ts::Message::Binary(b),
+        Message::Ping(b) => ts::Message::Ping(b),
+        Message::Pong(b) => ts::Message::Pong(b),
+        Message::Close(c) => ts::Message::Close(c.map(|c| ts::protocol::CloseFrame {
+            code: ts::protocol::frame::coding::CloseCode::from(c.code),
+            reason: ts::Utf8Bytes::from(c.reason.as_str()),
+        })),
+    }
+}
+
+fn from_ts(m: ts::Message) -> Option<Message> {
+    Some(match m {
+        ts::Message::Text(t) => Message::Text(t.as_str().into()),
+        ts::Message::Binary(b) => Message::Binary(b),
+        ts::Message::Ping(b) => Message::Ping(b),
+        ts::Message::Pong(b) => Message::Pong(b),
+        ts::Message::Close(c) => Message::Close(c.map(|c| axum::extract::ws::CloseFrame {
+            code: c.code.into(),
+            reason: c.reason.as_str().into(),
+        })),
+        ts::Message::Frame(_) => return None,
     })
 }

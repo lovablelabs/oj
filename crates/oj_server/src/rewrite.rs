@@ -51,51 +51,29 @@ pub(crate) fn is_file_cached(cache: &Mutex<DirCache>, path: &Path) -> bool {
     result
 }
 
-/// Everything a specifier rewrite consults, threaded as one context: the app
-/// root, the importer's directory, and the server's resolver + serve state.
-pub(crate) struct RewriteCtx<'a> {
-    pub root: &'a Path,
-    pub dir: &'a Path,
-    pub resolver: &'a OjResolver,
-    pub fs_allow: &'a Mutex<std::collections::HashSet<PathBuf>>,
-    pub dir_cache: &'a Mutex<DirCache>,
-}
+/// Asset queries that pass through to the resolved URL unchanged.
+const PASSTHROUGH_QUERIES: &[&str] = &[
+    "url",
+    "raw",
+    "inline",
+    "worker",
+    "sharedworker",
+    "init",
+    "react",
+    "no-inline",
+];
 
 pub(crate) fn rewrite_specifier(
-    ctx: &RewriteCtx<'_>,
+    root: &Path,
+    dir: &Path,
+    resolver: &OjResolver,
+    fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
+    dir_cache: &Mutex<DirCache>,
     spec: &str,
     css_import_marker: bool,
 ) -> Option<String> {
-    let &RewriteCtx {
-        root,
-        dir,
-        resolver,
-        fs_allow,
-        dir_cache,
-    } = ctx;
     if spec.starts_with('/') {
-        // A root-relative URL is already servable, but a plugin can emit an absolute
-        // fs path under root: rewrite it to its URL, preserving the query (Vite parity).
-        let (base, query) = match spec.split_once('?') {
-            Some((b, q)) => (b, Some(q)),
-            None => (spec, None),
-        };
-        let p = Path::new(base);
-        if is_file_cached(dir_cache, p) {
-            let url = if p.starts_with(root) {
-                url_of(root, p)
-            } else {
-                // An absolute path OUTSIDE root: serve through /@fs (Vite's
-                // FS_PREFIX) and allow its package for the fs guard.
-                allow_root(fs_allow, package_root(p));
-                url_of(root, p)
-            };
-            return Some(match query {
-                Some(q) => format!("{url}?{q}"),
-                None => url,
-            });
-        }
-        return None;
+        return rewrite_absolute(root, fs_allow, dir_cache, spec);
     }
     if spec.contains("://") {
         return None;
@@ -107,16 +85,14 @@ pub(crate) fn rewrite_specifier(
     }
 
     if let Some((base, query)) = spec.split_once('?') {
-        if matches!(
-            query,
-            "url" | "raw" | "inline" | "worker" | "sharedworker" | "init" | "react" | "no-inline"
-        ) {
-            let resolved = rewrite_specifier(ctx, base, false).or_else(|| {
-                resolver.resolve(dir, base).ok().map(|p| {
-                    allow_root(fs_allow, package_root(&p));
-                    url_of(root, &p)
-                })
-            })?;
+        if PASSTHROUGH_QUERIES.contains(&query) {
+            let resolved = rewrite_specifier(root, dir, resolver, fs_allow, dir_cache, base, false)
+                .or_else(|| {
+                    resolver.resolve(dir, base).ok().map(|p| {
+                        allow_package(fs_allow, &p);
+                        url_of(root, &p)
+                    })
+                })?;
             return Some(format!("{resolved}?{query}"));
         }
     }
@@ -124,69 +100,20 @@ pub(crate) fn rewrite_specifier(
     // A package.json `browser` object can remap a dependency's own relative files
     // (or map one to `false`), and only the resolver applies that map: the
     // on-disk fast path is for app source.
-    let in_dep = dir.components().any(|c| c.as_os_str() == "node_modules");
-    if (spec.starts_with("./") || spec.starts_with("../")) && !in_dep {
-        let mut joined = normalize(&dir.join(spec));
-        if !is_file_cached(dir_cache, &joined) {
-            if let Some(ext) = joined.extension().and_then(|e| e.to_str()) {
-                if ext == "js" || ext == "jsx" {
-                    for cand in ["ts", "tsx"] {
-                        let alt = joined.with_extension(cand);
-                        if is_file_cached(dir_cache, &alt) {
-                            joined = alt;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        let quick = if is_file_cached(dir_cache, &joined) {
-            Some(joined)
-        } else if joined.extension().is_none() {
-            COMPILABLE
-                .iter()
-                .map(|ext| joined.with_extension(ext))
-                .find(|c| is_file_cached(dir_cache, c))
-        } else {
-            None
-        };
-        if let Some(p) = quick {
-            let url = url_of(root, &p);
-            if css_import_marker && is_style_url(&url) {
-                return Some(format!("{url}?import"));
-            }
-            if css_import_marker && is_asset_path(&p) {
-                return Some(format!("{url}?url"));
-            }
-            return Some(url);
+    if (spec.starts_with("./") || spec.starts_with("../")) && !in_node_modules(dir) {
+        if let Some(p) = find_relative_on_disk(dir, dir_cache, spec) {
+            return Some(mark_css_import(url_of(root, &p), &p, css_import_marker));
         }
     }
 
     match resolver.resolve(dir, spec) {
-        // A node_modules dep routes through `dep_serve_url` even under the app root
-        // so partial bundling can collapse it (per-file URL no-op when off).
-        Ok(resolved)
-            if resolved
-                .components()
-                .any(|c| c.as_os_str() == "node_modules") =>
-        {
-            allow_root(fs_allow, package_root(&resolved));
-            Some(url_of(root, &resolved))
-        }
-        Ok(resolved) if resolved.starts_with(root) => {
-            // An alias (`@/assets/logo.svg`) or root-absolute import of a style
-            // or asset gets the same `?import` / `?url` marks a relative one does.
-            let url = url_of(root, &resolved);
-            if css_import_marker && is_style_url(&url) {
-                return Some(format!("{url}?import"));
-            }
-            if css_import_marker && is_asset_path(&resolved) {
-                return Some(format!("{url}?url"));
-            }
-            Some(url)
-        }
+        // An alias (`@/assets/logo.svg`) or root-absolute import of a style
+        // or asset gets the same `?import` / `?url` marks a relative one does.
+        Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => Some(
+            mark_css_import(url_of(root, &resolved), &resolved, css_import_marker),
+        ),
         Ok(resolved) => {
-            allow_root(fs_allow, package_root(&resolved));
+            allow_package(fs_allow, &resolved);
             Some(url_of(root, &resolved))
         }
         Err(err) if err.ignored => {
@@ -213,6 +140,83 @@ pub(crate) fn rewrite_specifier(
             None
         }
     }
+}
+
+// A root-relative URL is already servable, but a plugin can emit an absolute fs
+// path under root: rewrite it to its URL, preserving the query (Vite parity).
+fn rewrite_absolute(
+    root: &Path,
+    fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
+    dir_cache: &Mutex<DirCache>,
+    spec: &str,
+) -> Option<String> {
+    let (base, query) = match spec.split_once('?') {
+        Some((b, q)) => (b, Some(q)),
+        None => (spec, None),
+    };
+    let p = Path::new(base);
+    if !is_file_cached(dir_cache, p) {
+        return None;
+    }
+    let url = if p.starts_with(root) {
+        url_of(root, p)
+    } else {
+        // An absolute path OUTSIDE root: serve through /@fs (Vite's
+        // FS_PREFIX) and allow its package for the fs guard.
+        allow_package(fs_allow, p);
+        url_of(root, p)
+    };
+    Some(match query {
+        Some(q) => format!("{url}?{q}"),
+        None => url,
+    })
+}
+
+/// The file a relative import names, trying `.ts`/`.tsx` for a missing `.js`/`.jsx`
+/// and the compilable extensions for an extensionless path.
+fn find_relative_on_disk(dir: &Path, dir_cache: &Mutex<DirCache>, spec: &str) -> Option<PathBuf> {
+    let mut joined = normalize(&dir.join(spec));
+    if !is_file_cached(dir_cache, &joined) {
+        if let Some("js" | "jsx") = joined.extension().and_then(|e| e.to_str()) {
+            if let Some(alt) = ["ts", "tsx"]
+                .iter()
+                .map(|ext| joined.with_extension(ext))
+                .find(|alt| is_file_cached(dir_cache, alt))
+            {
+                joined = alt;
+            }
+        }
+    }
+    if is_file_cached(dir_cache, &joined) {
+        Some(joined)
+    } else if joined.extension().is_none() {
+        COMPILABLE
+            .iter()
+            .map(|ext| joined.with_extension(ext))
+            .find(|c| is_file_cached(dir_cache, c))
+    } else {
+        None
+    }
+}
+
+/// Marks a style import `?import` and an asset import `?url`, when requested.
+fn mark_css_import(url: String, file: &Path, css_import_marker: bool) -> String {
+    if css_import_marker && is_style_url(&url) {
+        format!("{url}?import")
+    } else if css_import_marker && is_asset_path(file) {
+        format!("{url}?url")
+    } else {
+        url
+    }
+}
+
+/// Lets the fs guard serve files from the package containing `file`.
+fn allow_package(fs_allow: &Mutex<std::collections::HashSet<PathBuf>>, file: &Path) {
+    allow_root(fs_allow, package_root(file));
+}
+
+pub(crate) fn in_node_modules(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == "node_modules")
 }
 
 pub(crate) fn url_of(root: &Path, file: &Path) -> String {

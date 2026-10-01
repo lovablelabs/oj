@@ -209,15 +209,20 @@ pub fn is_tanstack_start_app(root: &Path) -> bool {
             .unwrap_or(false)
 }
 
+type Defines = Vec<(String, String)>;
+
 /// Deduplicate a define list keeping the LAST occurrence of each key (later
 /// layers override earlier ones, as in Vite's define merge).
-fn dedup_defines_last_wins(defines: Vec<(String, String)>) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::with_capacity(defines.len());
+fn dedup_defines_last_wins(defines: Defines) -> Defines {
+    let mut index: HashMap<String, usize> = HashMap::with_capacity(defines.len());
+    let mut out: Defines = Vec::with_capacity(defines.len());
     for (k, v) in defines {
-        if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k) {
-            slot.1 = v;
-        } else {
-            out.push((k, v));
+        match index.get(&k) {
+            Some(&i) => out[i].1 = v,
+            None => {
+                index.insert(k.clone(), out.len());
+                out.push((k, v));
+            }
         }
     }
     out
@@ -494,48 +499,7 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                     println!(
                         "  plugin middleware: forwarding unmatched requests to :{p} (host came up after boot)"
                     );
-                    // The ack means only "enqueued"; "resynced" is claimed only on the
-                    // host's completion push, baseline snapshotted BEFORE the enqueue.
-                    let mut done = host.resync_done_updates();
-                    let baseline = *done.borrow_and_update();
-                    if resync_plugin_mw_with_retry(p).await {
-                        println!("  plugin middleware: worker environment resync enqueued");
-                        let bound = plugins::plugin_rpc_timeout();
-                        let enqueued_at = std::time::Instant::now();
-                        if await_resync_completion(&mut done, baseline, bound).await {
-                            println!(
-                                "  plugin middleware: worker environments resynced (full reload)"
-                            );
-                        } else {
-                            eprintln!(
-                                "oj: warning: the worker environment resync was enqueued but did not complete within {}s (invalidate queue stuck?); edits made while the plugin middleware was down may be stale until the next edit or a restart",
-                                bound.as_secs()
-                            );
-                            // Keep the receiver alive so a LATE drain is reported with its
-                            // true delay; the gone watch ends the wait (this Arc pins the sender).
-                            let host = std::sync::Arc::clone(&host);
-                            tokio::spawn(async move {
-                                let mut done = done;
-                                loop {
-                                    if *done.borrow_and_update() > baseline {
-                                        println!(
-                                            "  plugin middleware: worker environments resynced late, {}s after the enqueue (full reload)",
-                                            enqueued_at.elapsed().as_secs()
-                                        );
-                                        return;
-                                    }
-                                    tokio::select! {
-                                        changed = done.changed() => { if changed.is_err() { return; } }
-                                        _ = host.host_gone_wait() => return,
-                                    }
-                                }
-                            });
-                        }
-                    } else {
-                        eprintln!(
-                            "oj: warning: the worker environment resync was not acknowledged; edits made while the plugin middleware was down may be stale until the next edit or a restart"
-                        );
-                    }
+                    catch_up_resync(&host, p).await;
                 }
             }
             // A death ends the task only when no revive is left. This task's own Arc keeps
@@ -548,43 +512,71 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                 }
                 return;
             }
-            if warned || applied.is_some() {
-                tokio::select! {
-                    changed = updates.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                    changed = gone.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                    _ = recheck.tick() => {}
-                }
-            } else {
-                tokio::select! {
-                    changed = updates.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                    changed = gone.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                    _ = recheck.tick() => {}
-                    _ = tokio::time::sleep_until(host.init_deadline_at()) => {
-                        if !host.is_initialized() {
-                            eprintln!(
-                                "oj: warning: the plugin host did not finish initializing within {}s; plugin-served routes are inactive until it does",
-                                plugins::plugin_init_timeout().as_secs()
-                            );
-                        }
-                        warned = true;
+            let await_init = !warned && applied.is_none();
+            tokio::select! {
+                changed = updates.changed() => {
+                    if changed.is_err() {
+                        return;
                     }
                 }
+                changed = gone.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                _ = recheck.tick() => {}
+                _ = tokio::time::sleep_until(host.init_deadline_at()), if await_init => {
+                    if !host.is_initialized() {
+                        eprintln!(
+                            "oj: warning: the plugin host did not finish initializing within {}s; plugin-served routes are inactive until it does",
+                            plugins::plugin_init_timeout().as_secs()
+                        );
+                    }
+                    warned = true;
+                }
+            }
+        }
+    });
+}
+
+/// The catch-up resync after a (re)activation on port `p`. The ack means only
+/// "enqueued"; "resynced" is claimed only on the host's completion push, baseline
+/// snapshotted BEFORE the enqueue.
+async fn catch_up_resync(host: &Arc<PluginHost>, p: u16) {
+    let mut done = host.resync_done_updates();
+    let baseline = *done.borrow_and_update();
+    if !resync_plugin_mw_with_retry(p).await {
+        eprintln!(
+            "oj: warning: the worker environment resync was not acknowledged; edits made while the plugin middleware was down may be stale until the next edit or a restart"
+        );
+        return;
+    }
+    println!("  plugin middleware: worker environment resync enqueued");
+    let bound = plugins::plugin_rpc_timeout();
+    let enqueued_at = std::time::Instant::now();
+    if await_resync_completion(&mut done, baseline, bound).await {
+        println!("  plugin middleware: worker environments resynced (full reload)");
+        return;
+    }
+    eprintln!(
+        "oj: warning: the worker environment resync was enqueued but did not complete within {}s (invalidate queue stuck?); edits made while the plugin middleware was down may be stale until the next edit or a restart",
+        bound.as_secs()
+    );
+    // Keep the receiver alive so a LATE drain is reported with its
+    // true delay; the gone watch ends the wait (this Arc pins the sender).
+    let host = Arc::clone(host);
+    tokio::spawn(async move {
+        loop {
+            if *done.borrow_and_update() > baseline {
+                println!(
+                    "  plugin middleware: worker environments resynced late, {}s after the enqueue (full reload)",
+                    enqueued_at.elapsed().as_secs()
+                );
+                return;
+            }
+            tokio::select! {
+                changed = done.changed() => { if changed.is_err() { return; } }
+                _ = host.host_gone_wait() => return,
             }
         }
     });
@@ -649,6 +641,609 @@ pub async fn bind_dev_listener(
     ))
 }
 
+/// Inputs of the client `import.meta.env` / `process.env.NODE_ENV` defines. Rebuilt
+/// after plugin-host boot with the config()-hook env delta.
+struct ClientDefines<'a> {
+    env: Vec<(String, String)>,
+    prefixes: Vec<String>,
+    config: &'a oj_config::OjConfig,
+    mode: &'a str,
+}
+
+impl ClientDefines<'_> {
+    fn has_prefix(&self, key: &str) -> bool {
+        self.prefixes.iter().any(|p| key.starts_with(p.as_str()))
+    }
+
+    fn build(&self, extra: &std::collections::BTreeMap<String, String>) -> Defines {
+        let prefixes: Vec<&str> = self.prefixes.iter().map(String::as_str).collect();
+        let merged = oj_env::with_process_env(
+            self.env.clone(),
+            std::env::vars().chain(extra.iter().map(|(k, v)| (k.clone(), v.clone()))),
+            &prefixes,
+        );
+        // Vite defines process.env.NODE_ENV in dev too (nodeEnv = NODE_ENV || mode);
+        // DEV/PROD follow it: `NODE_ENV=production vite dev` is PROD.
+        let node_env = oj_env::resolve_node_env(
+            std::env::var("NODE_ENV").ok().as_deref(),
+            &self.env,
+            "development",
+        );
+        let mut defines = oj_env::import_meta_env_defines(
+            &merged,
+            self.mode,
+            node_env != "production",
+            self.config.base.as_deref().unwrap_or("/"),
+            &prefixes,
+        );
+        defines.extend(oj_config::config_defines(self.config));
+        defines.extend(oj_config::environment_defines(self.config, "client"));
+        let node_env_json =
+            serde_json::to_string(&node_env).unwrap_or_else(|_| "\"development\"".into());
+        for key in [
+            "process.env.NODE_ENV",
+            "global.process.env.NODE_ENV",
+            "globalThis.process.env.NODE_ENV",
+        ] {
+            if !defines.iter().any(|(k, _)| k == key) {
+                defines.push((key.to_string(), node_env_json.clone()));
+            }
+        }
+        // The oxc replacer refuses duplicate keys outright (silently disabling
+        // every define), so dedupe keeping the last occurrence.
+        dedup_defines_last_wins(defines)
+    }
+}
+
+/// What installing a client define list yields for the server state.
+struct InstalledDefines {
+    html_env: std::collections::BTreeMap<String, String>,
+    /// Salts the persistent cache: a cached compile embeds the defines.
+    digest: String,
+}
+
+fn install_client_defines(defines: Defines) -> InstalledDefines {
+    let html_env = oj_env::html_env_map(&defines);
+    let mut hasher = blake3::Hasher::new();
+    for (k, v) in &defines {
+        hasher.update(k.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(v.as_bytes());
+        hasher.update(&[0]);
+    }
+    let digest = hasher.finalize().to_hex().to_string();
+    oj_compiler::set_import_meta_env(defines);
+    InstalledDefines { html_env, digest }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PluginsFormat {
+    Oj,
+    Vite,
+}
+
+impl PluginsFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            PluginsFormat::Oj => "oj",
+            PluginsFormat::Vite => "vite",
+        }
+    }
+}
+
+struct PluginFile {
+    path: PathBuf,
+    format: PluginsFormat,
+    label: String,
+}
+
+fn plugin_file(root: &Path, config_file: Option<&Path>) -> Option<PluginFile> {
+    match plugins::plugin_source(root, config_file)? {
+        plugins::PluginSource::OjPlugins(p) => Some(PluginFile {
+            label: p.file_name().unwrap().to_string_lossy().into_owned(),
+            path: p,
+            format: PluginsFormat::Oj,
+        }),
+        plugins::PluginSource::ViteConfig(p) => Some(PluginFile {
+            path: p,
+            format: PluginsFormat::Vite,
+            label: "vite.config".to_string(),
+        }),
+    }
+}
+
+/// Handed to buildEnvironments and vite.resolveConfig verbatim: the deps
+/// pre-seed child must resolve with the SAME string or cache hashes cannot match.
+const HOST_ENV_MODE: &str = "dev";
+
+/// The plugin host spawn payloads for the client and ssr environments.
+struct PluginHostPayloads {
+    client: String,
+    ssr: String,
+}
+
+fn plugin_host_payloads(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    server_cfg: &oj_config::ServerConfig,
+    dev_mode: &str,
+    port: u16,
+    format: PluginsFormat,
+    is_start: bool,
+) -> PluginHostPayloads {
+    let mut cfg = serde_json::json!({
+        "config": {
+            "root": root.display().to_string(),
+            "base": config.base.clone().unwrap_or_else(|| "/".into()),
+            "mode": dev_mode,
+            "command": "serve",
+            "define": config.define,
+            // For an oj-config-format app this is the only place the host learns
+            // `server.proxy` ({from,to} rewrites cross; a FUNCTION rewrite rides the
+            // host's own loaded config). strictPort etc: plugins read oj's real values.
+            "server": {
+                "port": port,
+                "strictPort": oj_config::server_strict_port(config),
+                "host": server_cfg.host,
+                "proxy": server_cfg.proxy,
+            },
+            // `{}` rather than null: the host deep-merges this over the user's resolved
+            // config, and null would erase its environments (and per-environment define).
+            "environments": config.environments.clone().unwrap_or_default(),
+        },
+        "env": { "command": "serve", "mode": dev_mode },
+        "environment": { "name": "client", "mode": HOST_ENV_MODE },
+        "pluginsFormat": format.as_str(),
+        // Optimizer include snapshot from Vite's prior _metadata.json: BOTH the preseed
+        // child and buildEnvironments fold it into optimizeDeps.include so the seeded
+        // configHash matches and a cold boot never re-optimizes in-host (server.restart()).
+        "preseedIncludePath": oj_cache::cache_root(root).join("preseed-include.json").to_string_lossy(),
+        "ojStartMode": is_start,
+    });
+    if format == PluginsFormat::Vite {
+        // The extractor's verdict rides the spawn payload: TRUE is authoritative, FALSE
+        // falls through to the host's own declaration check; omitted for oj plugin files.
+        cfg["runnerBacked"] = serde_json::json!(oj_config::ssr_runner_backed(config));
+    }
+    let client = cfg.to_string();
+    cfg["environment"]["name"] = serde_json::json!("ssr");
+    PluginHostPayloads {
+        client,
+        ssr: cfg.to_string(),
+    }
+}
+
+/// Spawn the client plugin host. Nothing left after native filtering = an idle
+/// process on the hot path: drop it (dropping the Arc kills it). EXCEPT with
+/// `server.proxy`: a function rewrite/configure/bypass needs a JS home.
+async fn spawn_plugin_host(
+    root: &Path,
+    file: &PluginFile,
+    payload: &str,
+    registry: &oj_js::EngineRegistry,
+    keep_for_proxy: bool,
+    is_start: bool,
+) -> anyhow::Result<Option<Arc<PluginHost>>> {
+    let label = &file.label;
+    let host = match PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await {
+        Ok(host) => host,
+        Err(e) => {
+            eprintln!("oj: plugin host failed to start: {e}");
+            return Ok(None);
+        }
+    };
+    let plugin_count = host.plugin_count().await;
+    if plugin_count == 0 && !keep_for_proxy {
+        host.shutdown();
+        println!("  plugins: {label} (none active after native filtering; served natively)");
+        return Ok(None);
+    }
+    if plugin_count == 0 {
+        // Kept only to host `server.proxy` in the middleware stack.
+        println!("  plugins: {label} (none active; host kept for server.proxy)");
+        return Ok(Some(host));
+    }
+    println!("  plugins: {label}");
+    if !is_start {
+        // Vite awaits the client buildStart while initing the
+        // server; a rejection fails startup rather than serving.
+        if let Err(e) = host.build_start().await {
+            host.shutdown();
+            anyhow::bail!("plugin buildStart failed:\n{e}");
+        }
+    }
+    Ok(Some(host))
+}
+
+/// Fold config()-hook env mutations (e.g. a plugin flipping a VITE_* flag) and the
+/// `define` entries the hooks returned (Vite merges them into config.define; the
+/// plugin's value wins) into the client defines before any module compiles.
+async fn fold_plugin_defines(
+    host: &PluginHost,
+    defines: &ClientDefines<'_>,
+) -> Option<InstalledDefines> {
+    let prefixed: std::collections::BTreeMap<String, String> = host
+        .env_delta()
+        .await
+        .into_iter()
+        .filter(|(k, _)| defines.has_prefix(k))
+        .collect();
+    let plugin_defines = host.config_defines().await;
+    if prefixed.is_empty() && plugin_defines.is_empty() {
+        return None;
+    }
+    let overridden: std::collections::HashSet<&str> =
+        plugin_defines.iter().map(|(k, _)| k.as_str()).collect();
+    let mut merged = defines.build(&prefixed);
+    merged.retain(|(k, _)| !overridden.contains(k.as_str()));
+    merged.extend(plugin_defines.iter().cloned());
+    Some(install_client_defines(merged))
+}
+
+/// Which plugin hooks exist, so per-module and per-save RPCs nothing consumes
+/// are skipped (the tagger case: no transform, no HMR hooks).
+#[derive(Default)]
+struct PluginCaps {
+    use_module_parsed: bool,
+    have_transform: bool,
+    have_load: bool,
+    dep_transform_res: Vec<regex::Regex>,
+    dep_load_res: Vec<regex::Regex>,
+    resolve_id_res: Vec<regex::Regex>,
+    watch_change: bool,
+    hot_update: bool,
+}
+
+fn compile_filters(patterns: &[String]) -> Vec<regex::Regex> {
+    patterns
+        .iter()
+        .filter_map(|s| regex::Regex::new(s).ok())
+        .collect()
+}
+
+impl PluginCaps {
+    async fn probe(host: &PluginHost) -> Self {
+        let use_module_parsed = host.has_module_parsed().await;
+        let have_transform = host.has_transform().await;
+        let have_load = host.has_load().await;
+        let dep_transform_res = compile_filters(&host.dep_transform_filters().await);
+        let dep_load_res = compile_filters(&host.dep_load_filters().await);
+        let resolve_id_res = compile_filters(&host.resolve_id_filters().await);
+        // Prime the per-plugin filter plan (hook_wants_* gates read it live): a filtered
+        // hook's RPC is skipped for app modules its filter can never claim.
+        let _ = host.build_hook_plan().await;
+        let (watch_change, hot_update) = host.hmr_hooks().await;
+        PluginCaps {
+            use_module_parsed,
+            have_transform,
+            have_load,
+            dep_transform_res,
+            dep_load_res,
+            resolve_id_res,
+            watch_change,
+            hot_update,
+        }
+    }
+}
+
+fn hmr_gate_of(server_cfg: &oj_config::ServerConfig) -> Option<Arc<HmrGate>> {
+    let env_on = |name: &str| matches!(std::env::var(name).as_deref(), Ok("1") | Ok("true"));
+    let enabled =
+        server_cfg.hmr_gate == Some(true) || env_on("OJ_HMR_GATE") || env_on("LOVABLE_DEV_SERVER");
+    if !enabled {
+        return None;
+    }
+    let full_reload = std::env::var("OJ_HMR_FULL_RELOAD")
+        .or_else(|_| std::env::var("LOVABLE_HMR_FULL_RELOAD"))
+        .as_deref()
+        != Ok("false");
+    println!(
+        "  hmr gate: on ({})",
+        if full_reload {
+            "full-reload"
+        } else {
+            "granular"
+        }
+    );
+    Some(Arc::new(HmrGate {
+        full_reload,
+        max_hold: Duration::from_millis(240_000),
+        inner: Mutex::new(GateInner::default()),
+        held_reload: std::sync::atomic::AtomicBool::new(false),
+    }))
+}
+
+struct HmrSetup {
+    enabled: bool,
+    ws_path: String,
+    ws_token: String,
+    ws_token_check: bool,
+    client_js: String,
+}
+
+fn hmr_setup(
+    config: &oj_config::OjConfig,
+    server_cfg: &oj_config::ServerConfig,
+    gated: bool,
+) -> HmrSetup {
+    let enabled = server_cfg
+        .hmr
+        .as_ref()
+        .map(|h| !h.is_disabled())
+        .unwrap_or(true);
+    if !enabled {
+        println!("  hmr: disabled (server.hmr: false)");
+    }
+    let options = match &server_cfg.hmr {
+        Some(oj_config::HmrConfig::Options(o)) => Some(o.clone()),
+        _ => None,
+    };
+    if options
+        .as_ref()
+        .is_some_and(|o| o.port.is_some() && o.client_port.is_none())
+    {
+        println!(
+            "  hmr.port is not applied (the socket shares the dev server port); set hmr.clientPort for the port the browser dials"
+        );
+    }
+    let ws_path = hmr_socket_path(options.as_ref());
+    let ws_token = new_ws_token();
+    // In gated mode an external editor attaches from a browser page, so the token
+    // is not demanded there (as with Vite's legacy.skipWebSocketTokenCheck).
+    let ws_token_check = !gated
+        && config
+            .legacy
+            .as_ref()
+            .and_then(|l| l.skip_web_socket_token_check)
+            != Some(true);
+    let client_js = render_client_js(CLIENT_JS, options.as_ref(), &ws_path, &ws_token);
+    HmrSetup {
+        enabled,
+        ws_path,
+        ws_token,
+        ws_token_check,
+        client_js,
+    }
+}
+
+fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions: oj_config::resolve_conditions(config, "client"),
+            alias: oj_config::resolve_alias(config, "client"),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: oj_config::resolve_extensions(config),
+            main_fields: oj_config::resolve_main_fields(config),
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server: false,
+        },
+    )
+}
+
+/// Feeds the unbundled Node SSR path. Conditions never cross runtimes: a
+/// runner-backed ssr environment's list describes workerd, so this Node
+/// consumer takes Vite's Node server defaults instead.
+fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions: if oj_config::ssr_runner_backed(config) {
+                oj_config::node_server_conditions(config, true)
+            } else {
+                oj_config::resolve_conditions(config, "ssr")
+            },
+            alias: oj_config::resolve_alias(config, "ssr"),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: oj_config::resolve_extensions(config),
+            main_fields: oj_config::resolve_main_fields(config),
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            // Vite's server environment: no `browser` main field or remap.
+            server: true,
+        },
+    )
+}
+
+/// Vite: `allow: raw?.fs?.allow ?? [searchForWorkspaceRoot(root)]`. The workspace
+/// root is the DEFAULT, not an addition: a user allow list replaces it.
+fn fs_allow_list(
+    root: &Path,
+    server_cfg: &oj_config::ServerConfig,
+) -> std::collections::HashSet<PathBuf> {
+    let roots: Vec<PathBuf> = match server_cfg.fs.as_ref().and_then(|f| f.allow.as_ref()) {
+        Some(allow) => allow
+            .iter()
+            .map(|p| {
+                let pb = PathBuf::from(p);
+                if pb.is_absolute() {
+                    pb
+                } else {
+                    root.join(&pb)
+                }
+            })
+            .collect(),
+        None => vec![workspace_root(root)],
+    };
+    let mut set = std::collections::HashSet::new();
+    for r in roots {
+        insert_allow_root(&mut set, r);
+    }
+    set
+}
+
+fn optimized_deps(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    dev_mode: &str,
+) -> optimize::OptimizedDeps {
+    let (include, exclude, entries) = oj_config::optimize_deps_lists(config);
+    optimize::OptimizedDeps::prepare(
+        root,
+        env!("CARGO_PKG_VERSION"),
+        optimize::OptimizeInput {
+            no_discovery: config.optimize_deps.as_ref().and_then(|o| o.no_discovery),
+            include,
+            exclude,
+            entries,
+            dedupe: oj_config::resolve_dedupe(config),
+            alias: oj_config::resolve_alias(config, "client"),
+            force: oj_config::optimize_deps_force(config),
+            bundler_options: oj_config::optimize_deps_bundler_options(config),
+            conditions: oj_config::resolve_conditions(config, "client"),
+            main_fields: optimize::optimizer_main_fields(config),
+            extensions: oj_config::resolve_extensions(config)
+                .unwrap_or_else(oj_resolver::default_extensions),
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            mode: dev_mode.to_string(),
+            needs_interop: oj_config::optimize_deps_needs_interop(config),
+        },
+    )
+}
+
+/// Plugin server events, the cache writer thread and the file watcher.
+fn spawn_state_tasks(
+    state: &Arc<ServerState>,
+    mut write_rx: tokio::sync::mpsc::Receiver<(String, Arc<CachedModule>)>,
+    watch_rx: std::sync::mpsc::Receiver<WatchMsg>,
+) {
+    if let Some(host) = &state.plugins {
+        host.set_ws_sender(state.reload_tx.clone());
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
+        host.set_server_events_sender(ev_tx);
+        let st = Arc::clone(state);
+        tokio::spawn(async move {
+            while let Some(ev) = ev_rx.recv().await {
+                handle_plugin_server_event(&st, &ev).await;
+            }
+        });
+    }
+    {
+        let state = Arc::clone(state);
+        std::thread::spawn(move || {
+            while let Some((key, module)) = write_rx.blocking_recv() {
+                state.cache.put(&key, &module);
+            }
+        });
+    }
+    spawn_watcher(Arc::clone(state), watch_rx);
+}
+
+/// `server.warmup`: precompile the client files.
+fn spawn_warmup(state: &Arc<ServerState>, config: &oj_config::OjConfig) {
+    let (client_files, ssr_files) = oj_config::server_warmup_files(config);
+    if client_files.is_empty() && ssr_files.is_empty() {
+        return;
+    }
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        for file in warmup_paths(&state.root, &client_files) {
+            let url = url_of(&state.root, &file);
+            if let Err(error) = ensure_module(&state, &file, &url).await {
+                eprintln!("oj: warmup {url}: {error}");
+            }
+        }
+        // SSR dev compiles are not cached (each /@ssr-module re-transforms); the
+        // durable warm-up is spawning the SSR plugin host off the first request.
+        if !ssr_files.is_empty() {
+            if let Some(host) = ssr_plugin_host(&state).await {
+                let _ = host.build_hook_plan().await;
+            }
+        }
+    });
+}
+
+fn build_router(
+    state: Arc<ServerState>,
+    server_cfg: &oj_config::ServerConfig,
+    hmr_ws_path: &str,
+) -> Router {
+    let mut app = Router::new()
+        .route("/@oj/client.js", get(serve_client_js))
+        .route(
+            "/@oj/refresh-runtime.js",
+            get(|| async { js(REFRESH_RUNTIME_JS) }),
+        )
+        .route(
+            "/@oj/refresh-preamble.js",
+            get(|| async { js(REFRESH_PREAMBLE_JS) }),
+        )
+        .route("/@oj/routes.js", get(serve_oj_routes))
+        // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
+        // probes measure retained heap (issue #202). 404 unless enabled.
+        .route("/@oj/debug/gc", get(debug_gc))
+        .route("/@oj/debug/mem", get(debug_mem_stats))
+        .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
+        .route(
+            "/@oj/lingui-macro-shim.js",
+            get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
+        )
+        .route("/@ssr-resolve", get(ssr_resolve))
+        .route("/@ssr-module", get(ssr_module))
+        .route("/__ws", get(ws_upgrade))
+        .route("/__hmr_flush", post(hmr_flush))
+        .route("/__hmr_gate", get(hmr_gate_status))
+        .fallback(serve_fallback);
+    // `server.hmr.path`: the client dials this path instead of /__ws (Vite
+    // serves its socket at base + hmr.path).
+    if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
+        app = app.route(hmr_ws_path, get(ws_upgrade));
+    }
+    // Layer order is reversed at request time (last added runs first). Vite's
+    // sequence is cors, host validation, proxy: proxied requests bypass neither gate.
+    if !state.proxy.is_empty() {
+        app = app.layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            proxy_middleware,
+        ));
+    }
+    app = app.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&state),
+        vite_hmr_upgrade,
+    ));
+    let extra_headers: Vec<(header::HeaderName, header::HeaderValue)> = server_cfg
+        .headers
+        .as_ref()
+        .map(|h| {
+            h.iter()
+                .filter_map(|(k, v)| Some((k.parse().ok()?, v.parse().ok()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !extra_headers.is_empty() {
+        app = app.layer(axum::middleware::from_fn_with_state(
+            Arc::new(extra_headers),
+            apply_dev_headers,
+        ));
+    }
+    if !state.host_policy.allow_all {
+        app = app.layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            host_check_middleware,
+        ));
+    }
+    if let Some(cors) = CorsPolicy::from_config(server_cfg.cors.as_ref()) {
+        app = app.layer(axum::middleware::from_fn_with_state(
+            Arc::new(cors),
+            cors_middleware,
+        ));
+    }
+    app.with_state(state)
+}
+
+/// Load the serve config and adopt the vite.config's values.
+fn load_dev_config(
+    root: &Path,
+    config_file: Option<&Path>,
+    dev_mode: &str,
+) -> anyhow::Result<oj_config::OjConfig> {
+    let mut config =
+        oj_config::load_with(root, "serve", dev_mode).map_err(|e| anyhow::anyhow!("{e}"))?;
+    plugins::adopt_vite_config_values(&mut config, root, config_file, "serve", dev_mode)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    boot_phase("vite config values adopted");
+    Ok(config)
+}
+
 impl DevServer {
     pub async fn run(self) -> anyhow::Result<()> {
         let built = self.build_app().await?;
@@ -671,6 +1266,22 @@ impl DevServer {
         Ok(())
     }
 
+    /// On-disk module cache: experimental, off by default (--enable-cache /
+    /// OJ_ENABLE_CACHE=1); --no-cache / OJ_NO_CACHE=1 forces it off.
+    fn persistent_cache_enabled(&self) -> bool {
+        let env_flag = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty() && v != "0");
+        let enabled = self.enable_cache || env_flag("OJ_ENABLE_CACHE");
+        let forced_off = self.no_cache || env_flag("OJ_NO_CACHE");
+        enabled && !forced_off
+    }
+
+    fn dev_mode(&self) -> String {
+        self.mode
+            .clone()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "development".to_string())
+    }
+
     pub async fn build_app(self) -> anyhow::Result<BuiltApp> {
         let root = self
             .root
@@ -689,84 +1300,22 @@ impl DevServer {
 
         boot_phase("build_app begin");
         prepare_cache_root(&root);
-        let dev_mode = self
-            .mode
-            .clone()
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| "development".to_string());
-        let mut config =
-            oj_config::load_with(&root, "serve", &dev_mode).map_err(|e| anyhow::anyhow!("{e}"))?;
-        plugins::adopt_vite_config_values(
-            &mut config,
-            &root,
-            config_file.as_deref(),
-            "serve",
-            &dev_mode,
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
-        boot_phase("vite config values adopted");
+        let dev_mode = self.dev_mode();
+        let config = load_dev_config(&root, config_file.as_deref(), &dev_mode)?;
 
-        let env_prefixes = oj_config::env_prefixes(&config);
-        let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
         let env_dir = config
             .env_dir
             .as_deref()
             .map(|d| root.join(d))
             .unwrap_or_else(|| root.clone());
-        let env = oj_env::load(&env_dir, &dev_mode);
-        // Rebuilt after plugin-host boot with the config()-hook env delta, so
-        // it stays a closure over the same inputs rather than a one-shot block.
-        let build_env_defines = |extra: &std::collections::BTreeMap<String, String>| {
-            let merged = oj_env::with_process_env(
-                env.clone(),
-                std::env::vars().chain(extra.iter().map(|(k, v)| (k.clone(), v.clone()))),
-                &env_prefix_refs,
-            );
-            // Vite defines process.env.NODE_ENV in dev too (nodeEnv = NODE_ENV || mode);
-            // DEV/PROD follow it: `NODE_ENV=production vite dev` is PROD.
-            let node_env = oj_env::resolve_node_env(
-                std::env::var("NODE_ENV").ok().as_deref(),
-                &env,
-                "development",
-            );
-            let mut defines = oj_env::import_meta_env_defines(
-                &merged,
-                &dev_mode,
-                node_env != "production",
-                config.base.as_deref().unwrap_or("/"),
-                &env_prefix_refs,
-            );
-            defines.extend(oj_config::config_defines(&config));
-            defines.extend(oj_config::environment_defines(&config, "client"));
-            let node_env_json =
-                serde_json::to_string(&node_env).unwrap_or_else(|_| "\"development\"".into());
-            for key in [
-                "process.env.NODE_ENV",
-                "global.process.env.NODE_ENV",
-                "globalThis.process.env.NODE_ENV",
-            ] {
-                if !defines.iter().any(|(k, _)| k == key) {
-                    defines.push((key.to_string(), node_env_json.clone()));
-                }
-            }
-            // The oxc replacer refuses duplicate keys outright (silently disabling
-            // every define), so dedupe keeping the last occurrence.
-            dedup_defines_last_wins(defines)
+        let client_defines = ClientDefines {
+            env: oj_env::load(&env_dir, &dev_mode),
+            prefixes: oj_config::env_prefixes(&config),
+            config: &config,
+            mode: &dev_mode,
         };
-        let digest_defines = |defines: &[(String, String)]| {
-            let mut hasher = blake3::Hasher::new();
-            for (k, v) in defines {
-                hasher.update(k.as_bytes());
-                hasher.update(&[0]);
-                hasher.update(v.as_bytes());
-                hasher.update(&[0]);
-            }
-            hasher.finalize().to_hex().to_string()
-        };
-        let defines = build_env_defines(&std::collections::BTreeMap::new());
-        let mut html_env = oj_env::html_env_map(&defines);
-        let mut env_defines_digest = digest_defines(&defines);
-        oj_compiler::set_import_meta_env(defines);
+        let mut defines =
+            install_client_defines(client_defines.build(&std::collections::BTreeMap::new()));
         // `environments.ssr.define` layers over the shared define for SSR compiles only
         // (Vite's per-environment define): a per-side key must not leak across.
         oj_compiler::set_import_meta_env_ssr(dedup_defines_last_wins(
@@ -779,12 +1328,7 @@ impl DevServer {
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
-        // On-disk module cache: experimental, off by default (--enable-cache /
-        // OJ_ENABLE_CACHE=1); --no-cache / OJ_NO_CACHE=1 forces it off.
-        let env_flag = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty() && v != "0");
-        let cache_enabled = self.enable_cache || env_flag("OJ_ENABLE_CACHE");
-        let cache_forced_off = self.no_cache || env_flag("OJ_NO_CACHE");
-        let persistent_cache = cache_enabled && !cache_forced_off;
+        let persistent_cache = self.persistent_cache_enabled();
         let host = resolve_host(self.host.as_deref().or(server_cfg.host.as_deref()));
         let proxy: Vec<(String, oj_config::ProxyEntry)> = server_cfg
             .proxy
@@ -800,104 +1344,40 @@ impl DevServer {
         // TanStack Start owns its module graph and SSR; oj runs the plugin host only
         // for configureServer middleware, in start mode so lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
-        let plugin_src = plugins::plugin_source(&root, config_file.as_deref());
-        let (plugins_path, plugins_format, plugins_label) = match plugin_src {
-            Some(plugins::PluginSource::OjPlugins(p)) => {
-                let label = p.file_name().unwrap().to_string_lossy().into_owned();
-                (Some(p), "oj", label)
-            }
-            Some(plugins::PluginSource::ViteConfig(p)) => {
-                (Some(p), "vite", "vite.config".to_string())
-            }
-            None => (None, "oj", String::new()),
-        };
-
-        // Handed to buildEnvironments and vite.resolveConfig verbatim: the deps
-        // pre-seed child must resolve with the SAME string or cache hashes cannot match.
-        let host_env_mode = "dev";
-        let mut plugin_cfg = serde_json::json!({
-            "config": {
-                "root": root.display().to_string(),
-                "base": config.base.clone().unwrap_or_else(|| "/".into()),
-                "mode": dev_mode,
-                "command": "serve",
-                "define": config.define,
-                // For an oj-config-format app this is the only place the host learns
-                // `server.proxy` ({from,to} rewrites cross; a FUNCTION rewrite rides the
-                // host's own loaded config). strictPort etc: plugins read oj's real values.
-                "server": { "port": port, "strictPort": strict_port, "host": server_cfg.host, "proxy": server_cfg.proxy },
-                // `{}` rather than null: the host deep-merges this over the user's resolved
-                // config, and null would erase its environments (and per-environment define).
-                "environments": config.environments.clone().unwrap_or_default(),
-            },
-            "env": { "command": "serve", "mode": dev_mode },
-            "environment": { "name": "client", "mode": host_env_mode },
-            "pluginsFormat": plugins_format,
-            // Optimizer include snapshot from Vite's prior _metadata.json: BOTH the preseed
-            // child and buildEnvironments fold it into optimizeDeps.include so the seeded
-            // configHash matches and a cold boot never re-optimizes in-host (server.restart()).
-            "preseedIncludePath": oj_cache::cache_root(&root).join("preseed-include.json").to_string_lossy(),
-            "ojStartMode": is_start,
-        });
-        if plugins_format == "vite" {
-            // The extractor's verdict rides the spawn payload: TRUE is authoritative, FALSE
-            // falls through to the host's own declaration check; omitted for oj plugin files.
-            plugin_cfg["runnerBacked"] = serde_json::json!(oj_config::ssr_runner_backed(&config));
-        }
-        let plugin_config = plugin_cfg.to_string();
-        plugin_cfg["environment"]["name"] = serde_json::json!("ssr");
-        let ssr_plugin_config = plugin_cfg.to_string();
+        let plugin_file = plugin_file(&root, config_file.as_deref());
+        let payloads = plugin_host_payloads(
+            &root,
+            &config,
+            &server_cfg,
+            &dev_mode,
+            port,
+            plugin_file.as_ref().map_or(PluginsFormat::Oj, |f| f.format),
+            is_start,
+        );
         // Optimizer quarantine: a cold deps cache would run Vite's dep optimizer (rolldown,
         // process-scoped native retention) inside oj; pre-seed in a one-shot child so the
         // host finds the caches warm and never builds in-process (see preseed.rs).
-        if plugins_path.is_some()
-            && plugins_format == "vite"
+        if plugin_file
+            .as_ref()
+            .is_some_and(|f| f.format == PluginsFormat::Vite)
             && oj_config::ssr_runner_backed(&config)
         {
-            preseed::preseed_server_deps(&root, host_env_mode).await;
+            preseed::preseed_server_deps(&root, HOST_ENV_MODE).await;
         }
         boot_phase("plugin host spawning");
         let engine_registry = oj_js::EngineRegistry::new();
-        let plugin_host = match plugins_path {
+        let plugin_host = match &plugin_file {
             Some(file) => {
-                match PluginHost::spawn(&root, &file, &plugin_config, Some(engine_registry.clone()))
-                    .await
-                {
-                    Ok(host) => {
-                        // Nothing left after native filtering = an idle Node process on the hot
-                        // path: drop it (dropping the Arc kills the process). EXCEPT with
-                        // `server.proxy`: a function rewrite/configure/bypass needs a Node home.
-                        let keep_for_proxy =
-                            server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
-                        let plugin_count = host.plugin_count().await;
-                        if plugin_count == 0 && !keep_for_proxy {
-                            host.shutdown();
-                            println!("  plugins: {plugins_label} (none active after native filtering; served natively)");
-                            None
-                        } else if plugin_count == 0 {
-                            // Kept only to host `server.proxy` in the middleware stack.
-                            println!(
-                            "  plugins: {plugins_label} (none active; host kept for server.proxy)"
-                        );
-                            Some(host)
-                        } else {
-                            println!("  plugins: {plugins_label}");
-                            if !is_start {
-                                // Vite awaits the client buildStart while initing the
-                                // server; a rejection fails startup rather than serving.
-                                if let Err(e) = host.build_start().await {
-                                    host.shutdown();
-                                    anyhow::bail!("plugin buildStart failed:\n{e}");
-                                }
-                            }
-                            Some(host)
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("oj: plugin host failed to start: {e}");
-                        None
-                    }
-                }
+                let keep_for_proxy = server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
+                spawn_plugin_host(
+                    &root,
+                    file,
+                    &payloads.client,
+                    &engine_registry,
+                    keep_for_proxy,
+                    is_start,
+                )
+                .await?
             }
             None => None,
         };
@@ -914,79 +1394,13 @@ impl DevServer {
             // Activate on its late serve-info push; never degrade silently.
             spawn_late_plugin_serve(Arc::clone(&plugin_serve), Arc::clone(host));
         }
+        let mut caps = PluginCaps::default();
         if let Some(host) = &plugin_host {
-            // Fold config()-hook env mutations (e.g. a plugin flipping a VITE_*
-            // flag) into the client defines before any module compiles.
-            let prefixed: std::collections::BTreeMap<String, String> = host
-                .env_delta()
-                .await
-                .into_iter()
-                .filter(|(k, _)| env_prefix_refs.iter().any(|p| k.starts_with(p)))
-                .collect();
-            // Likewise `define` entries the plugins' config() hooks returned
-            // (Vite merges them into config.define; the plugin's value wins).
-            let plugin_defines = host.config_defines().await;
-            if !prefixed.is_empty() || !plugin_defines.is_empty() {
-                let mut defines = build_env_defines(&prefixed);
-                defines.retain(|(k, _)| !plugin_defines.iter().any(|(pk, _)| pk == k));
-                defines.extend(plugin_defines);
-                html_env = oj_env::html_env_map(&defines);
-                env_defines_digest = digest_defines(&defines);
-                oj_compiler::set_import_meta_env(defines);
+            if let Some(folded) = fold_plugin_defines(host, &client_defines).await {
+                defines = folded;
             }
+            caps = PluginCaps::probe(host).await;
         }
-        let plugins_use_module_parsed = match &plugin_host {
-            Some(host) => host.has_module_parsed().await,
-            None => false,
-        };
-        // No transform hook (the tagger case) makes the per-module transform RPC a
-        // wasted full-source stdio round-trip; skip it when nothing consumes it.
-        let plugins_have_transform = match &plugin_host {
-            Some(host) => host.has_transform().await,
-            None => false,
-        };
-        let plugins_have_load = match &plugin_host {
-            Some(host) => host.has_load().await,
-            None => false,
-        };
-        let dep_transform_res: Vec<regex::Regex> = match &plugin_host {
-            Some(host) => host
-                .dep_transform_filters()
-                .await
-                .iter()
-                .filter_map(|s| regex::Regex::new(s).ok())
-                .collect(),
-            None => Vec::new(),
-        };
-        let dep_load_res: Vec<regex::Regex> = match &plugin_host {
-            Some(host) => host
-                .dep_load_filters()
-                .await
-                .iter()
-                .filter_map(|s| regex::Regex::new(s).ok())
-                .collect(),
-            None => Vec::new(),
-        };
-        let resolve_id_res: Vec<regex::Regex> = match &plugin_host {
-            Some(host) => host
-                .resolve_id_filters()
-                .await
-                .iter()
-                .filter_map(|s| regex::Regex::new(s).ok())
-                .collect(),
-            None => Vec::new(),
-        };
-        // Prime the per-plugin filter plan (hook_wants_* gates read it live): a filtered
-        // hook's RPC is skipped for app modules its filter can never claim.
-        if let Some(host) = &plugin_host {
-            let _ = host.build_hook_plan().await;
-        }
-        // Same idea for HMR: a host without watchChange/handleHotUpdate hooks (the
-        // tagger case) doesn't need those per-save stdio round-trips.
-        let (plugins_watch_change, plugins_hot_update) = match &plugin_host {
-            Some(host) => host.hmr_hooks().await,
-            None => (false, false),
-        };
 
         let jsx = jsx_config_of(&config);
         let jsx_overrides = match &plugin_host {
@@ -997,67 +1411,8 @@ impl DevServer {
             None => std::collections::BTreeMap::new(),
         };
 
-        let hmr_gate = {
-            let env_on =
-                |name: &str| matches!(std::env::var(name).as_deref(), Ok("1") | Ok("true"));
-            let enabled = server_cfg.hmr_gate == Some(true)
-                || env_on("OJ_HMR_GATE")
-                || env_on("LOVABLE_DEV_SERVER");
-            if enabled {
-                let full_reload = std::env::var("OJ_HMR_FULL_RELOAD")
-                    .or_else(|_| std::env::var("LOVABLE_HMR_FULL_RELOAD"))
-                    .as_deref()
-                    != Ok("false");
-                println!(
-                    "  hmr gate: on ({})",
-                    if full_reload {
-                        "full-reload"
-                    } else {
-                        "granular"
-                    }
-                );
-                Some(Arc::new(HmrGate {
-                    full_reload,
-                    max_hold: Duration::from_millis(240_000),
-                    inner: Mutex::new(GateInner::default()),
-                    held_reload: std::sync::atomic::AtomicBool::new(false),
-                }))
-            } else {
-                None
-            }
-        };
-
-        let hmr_enabled = server_cfg
-            .hmr
-            .as_ref()
-            .map(|h| !h.is_disabled())
-            .unwrap_or(true);
-        if !hmr_enabled {
-            println!("  hmr: disabled (server.hmr: false)");
-        }
-        let hmr_options = match &server_cfg.hmr {
-            Some(oj_config::HmrConfig::Options(o)) => Some(o.clone()),
-            _ => None,
-        };
-        if hmr_options
-            .as_ref()
-            .is_some_and(|o| o.port.is_some() && o.client_port.is_none())
-        {
-            println!(
-                "  hmr.port is not applied (the socket shares the dev server port); set hmr.clientPort for the port the browser dials"
-            );
-        }
-        let hmr_ws_path = hmr_socket_path(hmr_options.as_ref());
-        let ws_token = new_ws_token();
-        // In gated mode an external editor attaches from a browser page, so the token
-        // is not demanded there (as with Vite's legacy.skipWebSocketTokenCheck).
-        let ws_token_check = hmr_gate.is_none()
-            && config
-                .legacy
-                .as_ref()
-                .and_then(|l| l.skip_web_socket_token_check)
-                != Some(true);
-        let client_js = render_client_js(CLIENT_JS, hmr_options.as_ref(), &hmr_ws_path, &ws_token);
+        let hmr_gate = hmr_gate_of(&server_cfg);
+        let hmr = hmr_setup(&config, &server_cfg, hmr_gate.is_some());
         let app_type = config.app_type.clone().unwrap_or_else(|| "spa".to_string());
         if app_type != "spa" {
             println!("  appType: {app_type}");
@@ -1079,22 +1434,10 @@ impl DevServer {
         let started = Instant::now();
         let (reload_tx, _) = broadcast::channel::<String>(64);
         let (crawl_tx, crawl_rx) = tokio::sync::watch::channel(false);
-        let (write_tx, mut write_rx) =
-            tokio::sync::mpsc::channel::<(String, Arc<CachedModule>)>(65536);
+        let (write_tx, write_rx) = tokio::sync::mpsc::channel::<(String, Arc<CachedModule>)>(65536);
         let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
         let public_dir = oj_config::public_dir(&config, &root);
-        let client_resolver = Arc::new(OjResolver::with_settings(
-            &root,
-            oj_resolver::ResolveSettings {
-                conditions: oj_config::resolve_conditions(&config, "client"),
-                alias: oj_config::resolve_alias(&config, "client"),
-                dedupe: oj_config::resolve_dedupe(&config),
-                extensions: oj_config::resolve_extensions(&config),
-                main_fields: oj_config::resolve_main_fields(&config),
-                preserve_symlinks: oj_config::resolve_preserve_symlinks(&config),
-                server: false,
-            },
-        ));
+        let client_resolver = Arc::new(client_resolver(&root, &config));
         let css_resolve = oj_css::CssResolveConfig {
             root: root.clone(),
             public_dir: public_dir.clone().unwrap_or_default(),
@@ -1104,37 +1447,6 @@ impl DevServer {
             targets: oj_config::build_css_targets(&config),
             minify: false,
             modules: css_modules_options(&config),
-        };
-        let optimized = Arc::new({
-            let (include, exclude, entries) = oj_config::optimize_deps_lists(&config);
-            optimize::OptimizedDeps::prepare(
-                &root,
-                env!("CARGO_PKG_VERSION"),
-                optimize::OptimizeInput {
-                    no_discovery: config.optimize_deps.as_ref().and_then(|o| o.no_discovery),
-                    include,
-                    exclude,
-                    entries,
-                    dedupe: oj_config::resolve_dedupe(&config),
-                    alias: oj_config::resolve_alias(&config, "client"),
-                    force: oj_config::optimize_deps_force(&config),
-                    bundler_options: oj_config::optimize_deps_bundler_options(&config),
-                    conditions: oj_config::resolve_conditions(&config, "client"),
-                    main_fields: optimize::optimizer_main_fields(&config),
-                    extensions: oj_config::resolve_extensions(&config)
-                        .unwrap_or_else(oj_resolver::default_extensions),
-                    preserve_symlinks: oj_config::resolve_preserve_symlinks(&config),
-                    mode: dev_mode.clone(),
-                    needs_interop: oj_config::optimize_deps_needs_interop(&config),
-                },
-            )
-        });
-        let optimize_view = {
-            let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
-            Arc::new(optimize::OptimizeView::new(
-                exclude,
-                oj_config::optimize_deps_needs_interop(&config),
-            ))
         };
         let state = Arc::new(ServerState {
             persistent_cache,
@@ -1146,28 +1458,9 @@ impl DevServer {
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),
             resolver: client_resolver,
-            ssr_resolver: Arc::new(OjResolver::with_settings(
-                &root,
-                oj_resolver::ResolveSettings {
-                    // Feeds the unbundled Node SSR path. Conditions never cross runtimes:
-                    // a runner-backed ssr environment's list describes workerd, so this
-                    // Node consumer takes Vite's Node server defaults instead.
-                    conditions: if oj_config::ssr_runner_backed(&config) {
-                        oj_config::node_server_conditions(&config, true)
-                    } else {
-                        oj_config::resolve_conditions(&config, "ssr")
-                    },
-                    alias: oj_config::resolve_alias(&config, "ssr"),
-                    dedupe: oj_config::resolve_dedupe(&config),
-                    extensions: oj_config::resolve_extensions(&config),
-                    main_fields: oj_config::resolve_main_fields(&config),
-                    preserve_symlinks: oj_config::resolve_preserve_symlinks(&config),
-                    // Vite's server environment: no `browser` main field or remap.
-                    server: true,
-                },
-            )),
+            ssr_resolver: Arc::new(ssr_resolver(&root, &config)),
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
-                .with_salt_extra(&env_defines_digest)
+                .with_salt_extra(&defines.digest)
                 // A cached compile embeds the JSX runtime import; a changed
                 // importSource/runtime must not serve the old module.
                 .with_salt_extra(&format!("jsx={jsx:?}")),
@@ -1185,35 +1478,8 @@ impl DevServer {
             css_config: config.css.clone(),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
-            fs_allow: Arc::new(Mutex::new({
-                // Vite: `allow: raw?.fs?.allow ?? [searchForWorkspaceRoot(root)]`. The
-                // workspace root is the DEFAULT, not an addition: a user allow list replaces it.
-                let roots: Vec<PathBuf> =
-                    match server_cfg.fs.as_ref().and_then(|f| f.allow.as_ref()) {
-                        Some(allow) => allow
-                            .iter()
-                            .map(|p| {
-                                let pb = PathBuf::from(p);
-                                if pb.is_absolute() {
-                                    pb
-                                } else {
-                                    root.join(&pb)
-                                }
-                            })
-                            .collect(),
-                        None => vec![workspace_root(&root)],
-                    };
-                let mut set = std::collections::HashSet::new();
-                for r in roots {
-                    insert_allow_root(&mut set, r);
-                }
-                set
-            })),
-            fs_strict: server_cfg
-                .fs
-                .as_ref()
-                .and_then(|f| f.strict)
-                .unwrap_or(true),
+            fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
+            fs_strict,
             fs_deny: compile_fs_deny(&oj_config::server_fs_deny(&config)),
             dir_cache: Arc::new(Mutex::new(DirCache::new())),
             cache_writes: write_tx,
@@ -1241,77 +1507,49 @@ impl DevServer {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
-            hmr_enabled,
+            hmr_enabled: hmr.enabled,
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr: tokio::sync::OnceCell::new(),
             ssr_watch: Arc::new(SsrWatchQueue::default()),
-            ssr_plugin_config,
+            ssr_plugin_config: payloads.ssr,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
             watch_tx,
-            plugins_use_module_parsed,
-            plugins_have_transform,
-            plugins_have_load,
-            dep_transform_res,
-            dep_load_res,
-            resolve_id_res,
-            plugins_watch_change,
-            plugins_hot_update,
-            html_env,
+            plugins_use_module_parsed: caps.use_module_parsed,
+            plugins_have_transform: caps.have_transform,
+            plugins_have_load: caps.have_load,
+            dep_transform_res: caps.dep_transform_res,
+            dep_load_res: caps.dep_load_res,
+            resolve_id_res: caps.resolve_id_res,
+            plugins_watch_change: caps.watch_change,
+            plugins_hot_update: caps.hot_update,
+            html_env: defines.html_env,
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
             base: config.base.clone().filter(|b| b != "/"),
             buffered_error: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
-            client_js_etag: format!("\"{}\"", &blake3::hash(client_js.as_bytes()).to_hex()[..16]),
-            client_js: Bytes::from(client_js),
+            client_js_etag: format!(
+                "\"{}\"",
+                &blake3::hash(hmr.client_js.as_bytes()).to_hex()[..16]
+            ),
+            client_js: Bytes::from(hmr.client_js),
             glob_importers: Mutex::new(HashMap::new()),
             app_type,
             watch_ignored,
-            ws_token,
-            ws_token_check,
-            optimized: Arc::clone(&optimized),
-            optimize_view: Arc::clone(&optimize_view),
+            ws_token: hmr.ws_token,
+            ws_token_check: hmr.ws_token_check,
+            optimized: Arc::new(optimized_deps(&root, &config, &dev_mode)),
+            optimize_view: {
+                let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
+                Arc::new(optimize::OptimizeView::new(
+                    exclude,
+                    oj_config::optimize_deps_needs_interop(&config),
+                ))
+            },
         });
-        if let Some(host) = &state.plugins {
-            host.set_ws_sender(state.reload_tx.clone());
-            let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
-            host.set_server_events_sender(ev_tx);
-            let st = Arc::clone(&state);
-            tokio::spawn(async move {
-                while let Some(ev) = ev_rx.recv().await {
-                    handle_plugin_server_event(&st, &ev).await;
-                }
-            });
-        }
-        {
-            let state = Arc::clone(&state);
-            std::thread::spawn(move || {
-                while let Some((key, module)) = write_rx.blocking_recv() {
-                    state.cache.put(&key, &module);
-                }
-            });
-        }
-        spawn_watcher(Arc::clone(&state), watch_rx);
-        let (client_files, ssr_files) = oj_config::server_warmup_files(&config);
-        if !client_files.is_empty() || !ssr_files.is_empty() {
-            let state = Arc::clone(&state);
-            tokio::spawn(async move {
-                for file in warmup_paths(&state.root, &client_files) {
-                    let url = url_of(&state.root, &file);
-                    if let Err(error) = ensure_module(&state, &file, &url).await {
-                        eprintln!("oj: warmup {url}: {error}");
-                    }
-                }
-                // SSR dev compiles are not cached (each /@ssr-module re-transforms); the
-                // durable warm-up is spawning the SSR plugin host off the first request.
-                if !ssr_files.is_empty() {
-                    if let Some(host) = ssr_plugin_host(&state).await {
-                        let _ = host.build_hook_plan().await;
-                    }
-                }
-            });
-        }
+        spawn_state_tasks(&state, write_rx, watch_rx);
+        spawn_warmup(&state, &config);
         if self.lazy {
             // Lazy mode (Vite's default): compile on demand. Mark the crawl "done" so
             // preload injection and chunk assembly never block on a crawl that will not run.
@@ -1320,77 +1558,6 @@ impl DevServer {
             spawn_crawl(Arc::clone(&state), crawl_tx);
         }
 
-        let mut app = Router::new()
-            .route("/@oj/client.js", get(serve_client_js))
-            .route(
-                "/@oj/refresh-runtime.js",
-                get(|| async { js(REFRESH_RUNTIME_JS) }),
-            )
-            .route(
-                "/@oj/refresh-preamble.js",
-                get(|| async { js(REFRESH_PREAMBLE_JS) }),
-            )
-            .route("/@oj/routes.js", get(serve_oj_routes))
-            // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
-            // probes measure retained heap (issue #202). 404 unless enabled.
-            .route("/@oj/debug/gc", get(debug_gc))
-            .route("/@oj/debug/mem", get(debug_mem_stats))
-            .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
-            .route(
-                "/@oj/lingui-macro-shim.js",
-                get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
-            )
-            .route("/@ssr-resolve", get(ssr_resolve))
-            .route("/@ssr-module", get(ssr_module))
-            .route("/__ws", get(ws_upgrade))
-            .route("/__hmr_flush", post(hmr_flush))
-            .route("/__hmr_gate", get(hmr_gate_status))
-            .fallback(serve_fallback);
-        // `server.hmr.path`: the client dials this path instead of /__ws (Vite
-        // serves its socket at base + hmr.path).
-        if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
-            app = app.route(&hmr_ws_path, get(ws_upgrade));
-        }
-        // Layer order is reversed at request time (last added runs first). Vite's
-        // sequence is cors, host validation, proxy: proxied requests bypass neither gate.
-        if !state.proxy.is_empty() {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                Arc::clone(&state),
-                proxy_middleware,
-            ));
-        }
-        app = app.layer(axum::middleware::from_fn_with_state(
-            Arc::clone(&state),
-            vite_hmr_upgrade,
-        ));
-        let extra_headers: Vec<(header::HeaderName, header::HeaderValue)> = config
-            .server
-            .as_ref()
-            .and_then(|s| s.headers.as_ref())
-            .map(|h| {
-                h.iter()
-                    .filter_map(|(k, v)| Some((k.parse().ok()?, v.parse().ok()?)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !extra_headers.is_empty() {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                Arc::new(extra_headers),
-                apply_dev_headers,
-            ));
-        }
-        if !state.host_policy.allow_all {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                Arc::clone(&state),
-                host_check_middleware,
-            ));
-        }
-        if let Some(cors) = CorsPolicy::from_config(server_cfg.cors.as_ref()) {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                Arc::new(cors),
-                cors_middleware,
-            ));
-        }
         let proxy_prefixes: Vec<String> = state.proxy.iter().map(|(p, _)| p.clone()).collect();
         let hmr_gate = state.hmr_gate.as_ref().map(|_| HmrGateHandle {
             state: Arc::clone(&state),
@@ -1398,10 +1565,10 @@ impl DevServer {
         let ssr = SsrBridge {
             state: Arc::clone(&state),
         };
-        let app = app.with_state(state);
+        let router = build_router(state, &server_cfg, &hmr.ws_path);
 
         Ok(BuiltApp {
-            router: app,
+            router,
             host,
             port,
             strict_port,
@@ -1516,19 +1683,8 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
         let dir = root.clone();
-        let mut rewrite = |s: &str| {
-            rewrite_specifier(
-                &rewrite::RewriteCtx {
-                    root: &root,
-                    dir: &dir,
-                    resolver: &resolver,
-                    fs_allow: &fs_allow,
-                    dir_cache: &dir_cache,
-                },
-                s,
-                true,
-            )
-        };
+        let mut rewrite =
+            |s: &str| rewrite_specifier(&root, &dir, &resolver, &fs_allow, &dir_cache, s, true);
         oj_compiler::compile_module(&synthetic, OJ_ROUTES_JS, &compile_opts, Some(&mut rewrite))
             .map(|o| o.code_with_inline_map())
             .map_err(|e| format!("{e}"))

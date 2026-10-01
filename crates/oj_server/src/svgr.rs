@@ -160,13 +160,15 @@ fn jsx_attr_name(key: &str) -> String {
     if key.starts_with("data-") || key.starts_with("aria-") {
         return key.to_string();
     }
-    if !key.contains('-') && !key.contains(':') {
-        return key.to_string();
-    }
-    let mut out = String::with_capacity(key.len());
+    camel_case(key, &['-', ':'])
+}
+
+/// `stroke-width` -> `strokeWidth`, splitting on any of `seps`.
+fn camel_case(s: &str, seps: &[char]) -> String {
+    let mut out = String::with_capacity(s.len());
     let mut upper = false;
-    for c in key.chars() {
-        if c == '-' || c == ':' {
+    for c in s.chars() {
+        if seps.contains(&c) {
             upper = true;
         } else if upper {
             out.extend(c.to_uppercase());
@@ -202,19 +204,7 @@ fn css_prop_to_camel(prop: &str) -> String {
     if prop.starts_with("--") {
         return serde_json::Value::String(prop.to_string()).to_string();
     }
-    let mut out = String::with_capacity(prop.len());
-    let mut upper = false;
-    for c in prop.chars() {
-        if c == '-' {
-            upper = true;
-        } else if upper {
-            out.extend(c.to_uppercase());
-            upper = false;
-        } else {
-            out.push(c);
-        }
-    }
-    out
+    camel_case(prop, &['-'])
 }
 
 #[cfg(test)]

@@ -28,10 +28,15 @@ pub(crate) async fn forward_to_plugin_middleware(
     if resp.headers().contains_key("x-oj-fallthrough") {
         return None;
     }
+    Some(stream_reqwest_response(resp))
+}
+
+/// A reqwest reply as a streamed axum Response, minus TE/CL (Vite pipes it):
+/// TanStack Start streams dehydrated data into the HTML; buffering breaks
+/// progressive hydration.
+pub(crate) fn stream_reqwest_response(resp: reqwest::Response) -> Response {
     let status = resp.status();
     let resp_headers = resp.headers().clone();
-    // Stream the response through (Vite pipes it): TanStack Start streams
-    // dehydrated data into the HTML; buffering breaks progressive hydration.
     let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
     *response.status_mut() = status;
     for (name, value) in resp_headers.iter() {
@@ -40,7 +45,7 @@ pub(crate) async fn forward_to_plugin_middleware(
         }
         response.headers_mut().append(name, value.clone());
     }
-    Some(response)
+    response
 }
 
 // Tell the plugin middleware server that files changed so it can invalidate
@@ -185,17 +190,7 @@ pub async fn proxy_to_loopback_streaming(
         out = out.body(reqwest::Body::wrap_stream(b.into_data_stream()));
     }
     let resp = out.send().await.map_err(|e| e.to_string())?;
-    let status = resp.status();
-    let resp_headers = resp.headers().clone();
-    let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
-    *response.status_mut() = status;
-    for (name, value) in resp_headers.iter() {
-        if name == header::TRANSFER_ENCODING || name == header::CONTENT_LENGTH {
-            continue;
-        }
-        response.headers_mut().append(name, value.clone());
-    }
-    Ok(response)
+    Ok(stream_reqwest_response(resp))
 }
 
 pub async fn forward_to_plugin_mw(

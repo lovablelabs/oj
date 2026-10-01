@@ -142,11 +142,12 @@ pub(crate) fn canonicalize_memo(state: &ServerState, p: &str) -> PathBuf {
 
 pub(crate) fn urldecode(input: &str) -> String {
     let bytes = input.as_bytes();
+    let nibble = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+            if let (Some(h), Some(l)) = (nibble(bytes[i + 1]), nibble(bytes[i + 2])) {
                 out.push(h * 16 + l);
                 i += 3;
                 continue;
@@ -156,13 +157,4 @@ pub(crate) fn urldecode(input: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-pub(crate) fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
