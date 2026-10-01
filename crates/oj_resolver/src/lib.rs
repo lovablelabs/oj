@@ -1,89 +1,33 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+//! Module resolution for oj: oxc_resolver configured the way Vite resolves
+//! (extensions, mainFields, conditions, aliases, tsconfig paths), plus the Vite
+//! behaviors oxc does not have (dedupe, exports-first directory entries).
+
+mod defaults;
+mod exports;
+mod settings;
+mod spec;
+
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use oxc_resolver::{
-    AliasValue, ResolveOptions, Resolver, TsconfigDiscovery, TsconfigOptions, TsconfigReferences,
+use oxc_resolver::Resolver;
+
+pub use defaults::{
+    default_extension_alias, default_extensions, default_main_fields, default_server_main_fields,
+    with_main_fallback,
 };
+use exports::{directory_entry, DirectoryEntry};
+pub use settings::ResolveSettings;
+use spec::package_name;
 
 pub struct OjResolver {
     inner: Resolver,
     root: PathBuf,
-    dedupe: Vec<String>,
-}
-
-/// `base` + `spec` with `.`/`..` folded lexically (no fs), so the result
-/// compares against resolver-returned paths.
-fn lexical_join(base: &Path, spec: &str) -> PathBuf {
-    let mut out = base.to_path_buf();
-    for component in Path::new(spec).components() {
-        match component {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-/// Node's PACKAGE_EXPORTS_RESOLVE narrowed to the "." subpath: the root
-/// target under `conditions` (plus the always-matching "default" —
-/// resolve.exports seeds it even under Vite's `unsafe: true`), walking
-/// condition maps in source order and arrays first-hit, as Vite's
-/// resolveExportsOrImports does for resolvePackageEntry. Source order holds
-/// because oxc_resolver already turns on serde_json's preserve_order for the
-/// whole build. A bare string target ("lib.js") is kept: resolve.exports
-/// accepts any string and Vite path.joins it onto the directory, so it
-/// normalizes to "./lib.js" rather than being read as a package name.
-fn exports_dot_target(exports: &serde_json::Value, conditions: &[String]) -> Option<String> {
-    match exports {
-        serde_json::Value::String(target) => {
-            if target.is_empty() {
-                None
-            } else if target.starts_with("./") || target.starts_with("../") {
-                Some(target.clone())
-            } else {
-                Some(format!("./{target}"))
-            }
-        }
-        serde_json::Value::Array(entries) => entries
-            .iter()
-            .find_map(|entry| exports_dot_target(entry, conditions)),
-        serde_json::Value::Object(map) => {
-            // A map is either subpaths (keys start with ".") or conditions;
-            // Node forbids mixing, so any dotted key decides.
-            if map.keys().any(|key| key.starts_with('.')) {
-                exports_dot_target(map.get(".")?, conditions)
-            } else {
-                map.iter().find_map(|(key, value)| {
-                    if key == "default" || conditions.iter().any(|c| c == key) {
-                        exports_dot_target(value, conditions)
-                    } else {
-                        None
-                    }
-                })
-            }
-        }
-        _ => None,
-    }
-}
-
-/// The package id of a bare specifier: `react-dom/client` -> `react-dom`,
-/// `@radix-ui/react-slot/x` -> `@radix-ui/react-slot`.
-fn package_name(spec: &str) -> String {
-    let mut it = spec.split('/');
-    let first = it.next().unwrap_or("");
-    if first.starts_with('@') {
-        match it.next() {
-            Some(second) => format!("{first}/{second}"),
-            None => first.to_string(),
-        }
-    } else {
-        first.to_string()
-    }
+    /// `resolve.dedupe` package names.
+    dedupe: HashSet<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -92,94 +36,9 @@ pub struct ResolveFailure {
     pub specifier: String,
     pub importer: PathBuf,
     pub reason: String,
-    /// The package deliberately maps this specifier to `false` (a package.json
-    /// `browser` field entry or a `{ find, replacement: false }` alias). Not a
-    /// real failure: the module is meant to be empty in this target, so it
-    /// should be served as an empty stub rather than 404'd.
+    /// The package maps this specifier to `false` (a `browser` field entry or a
+    /// `replacement: false` alias): serve an empty stub, not a 404.
     pub ignored: bool,
-}
-
-#[derive(Clone, Default)]
-pub struct ResolveSettings {
-    pub conditions: Vec<String>,
-    pub alias: Vec<(String, String)>,
-    pub dedupe: Vec<String>,
-    pub extensions: Option<Vec<String>>,
-    pub main_fields: Option<Vec<String>>,
-    pub preserve_symlinks: bool,
-    /// Resolving for a server (SSR) environment: Vite's DEFAULT_SERVER_MAIN_FIELDS
-    /// drop `browser`, and the package.json `browser` object remap only applies
-    /// when the effective mainFields include `browser` (resolve.ts
-    /// tryResolveBrowserMapping), so Node-side code gets the Node build.
-    pub server: bool,
-}
-
-/// Extensions probed for an extensionless import, in priority order: Vite's
-/// DEFAULT_EXTENSIONS (constants.ts), so `./foo` with both `foo.js` and `foo.ts`
-/// on disk picks `foo.js` like Vite, and `./foo` reaches `foo.mts`. Shared with
-/// the dependency optimizer so it resolves exactly like the dev server.
-pub fn default_extensions() -> Vec<String> {
-    [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"]
-        .map(String::from)
-        .to_vec()
-}
-
-/// Package entry fields for legacy deps without an `exports` map. `module` leads
-/// so a dep shipping both an ESM build and a `browser` STRING that points at a
-/// UMD/CJS bundle (e.g. transliteration) serves its ESM: real named exports, no
-/// CJS-interop guessing. The `browser` OBJECT remap (node-shim swaps) is
-/// unaffected: it runs through alias_fields, not here. Shared with the optimizer.
-pub fn default_main_fields() -> Vec<String> {
-    ["module", "browser", "jsnext:main", "jsnext", "main"]
-        .map(String::from)
-        .to_vec()
-}
-
-/// Vite's DEFAULT_SERVER_MAIN_FIELDS: the client list without `browser`.
-pub fn default_server_main_fields() -> Vec<String> {
-    default_main_fields()
-        .into_iter()
-        .filter(|f| f != "browser")
-        .collect()
-}
-
-/// Vite's `pkg.main` fallback as a list transform: resolvePackageEntry ALWAYS
-/// falls back to `pkg.main` after the mainFields walk (`entryPoint ||=
-/// data.main`; its resolve plugin spells it `mainFields.concat(["main"])`), so
-/// its DEFAULT_MAIN_FIELDS deliberately omit "main". A resolver without that
-/// fallback (oxc_resolver, rolldown, the dep optimizer's sidecar) must take
-/// the list with "main" appended LAST — never outranking the configured
-/// fields — or a package whose only entry is `main` resolves in one consumer
-/// and fails in the next.
-pub fn with_main_fallback(mut fields: Vec<String>) -> Vec<String> {
-    if !fields.iter().any(|f| f == "main") {
-        fields.push("main".to_string());
-    }
-    fields
-}
-
-/// Vite's TS-output remap (resolve.ts `tryCleanFsResolve` / `isPossibleTsOutput`):
-/// an import ending in `.js`/`.jsx`/`.mjs`/`.cjs` with no such file on disk
-/// resolves to its TypeScript source (`.ts` then `.tsx`, `.tsx`, `.mts`, `.cts`),
-/// so a NodeNext-style `import "./x.js"` works from source. The real extension
-/// leads so an existing `.js` wins over a sibling `.ts`, as Vite tries the exact
-/// file first. It applies to every filesystem path, aliased and tsconfig-paths
-/// imports included, not only relative ones. Shared with the build.
-pub fn default_extension_alias() -> Vec<(String, Vec<String>)> {
-    [
-        (".js", &[".js", ".ts", ".tsx"][..]),
-        (".jsx", &[".jsx", ".tsx"][..]),
-        (".mjs", &[".mjs", ".mts"][..]),
-        (".cjs", &[".cjs", ".cts"][..]),
-    ]
-    .iter()
-    .map(|(ext, alts)| {
-        (
-            ext.to_string(),
-            alts.iter().map(|s| s.to_string()).collect(),
-        )
-    })
-    .collect()
 }
 
 impl OjResolver {
@@ -212,74 +71,16 @@ impl OjResolver {
     }
 
     pub fn with_settings(root: &Path, settings: ResolveSettings) -> Self {
-        let tsconfig = root.join("tsconfig.json");
-        let alias = settings
-            .alias
-            .iter()
-            .map(|(find, replacement)| {
-                let target = if replacement.starts_with('.') {
-                    root.join(replacement).to_string_lossy().into_owned()
-                } else {
-                    replacement.clone()
-                };
-                (find.clone(), vec![AliasValue::Path(target)])
-            })
-            .collect();
-        // The `with_main_fallback` append: oxc_resolver has no pkg.main
-        // fallback (an exhausted main_fields goes straight to the index
-        // files), so the list must end with "main", or a package whose only
-        // entry is `main` (a linked workspace package with a TS main, say)
-        // stops resolving the moment a Vite-shaped mainFields list is adopted
-        // from the config.
-        let main_fields = with_main_fallback(settings.main_fields.unwrap_or_else(|| {
-            if settings.server {
-                default_server_main_fields()
-            } else {
-                default_main_fields()
-            }
-        }));
-        // Vite applies the package.json `browser` object only when mainFields
-        // include `browser` (the client default; a server list opts in by naming it).
-        let alias_fields = if main_fields.iter().any(|f| f == "browser") {
-            vec![vec!["browser".to_string()]]
-        } else {
-            Vec::new()
-        };
-        let options = ResolveOptions {
-            extensions: settings.extensions.unwrap_or_else(default_extensions),
-            main_fields,
-            alias_fields,
-            condition_names: settings.conditions,
-            alias,
-            extension_alias: default_extension_alias(),
-            // oxc's exports-in-directory support (added for rolldown-vite;
-            // vitejs/vite#20252 tried to drop the behavior and was rejected)
-            // runs exports AFTER mainFields and index, so it only rescues a
-            // manifest nothing else can enter; directory_exports_entry owns
-            // Vite's exports-FIRST precedence on top.
-            allow_package_exports_in_directory_resolve: true,
-            symlinks: !settings.preserve_symlinks,
-            tsconfig: tsconfig.is_file().then_some({
-                TsconfigDiscovery::Manual(TsconfigOptions {
-                    config_file: tsconfig,
-                    references: TsconfigReferences::Auto,
-                })
-            }),
-            ..ResolveOptions::default()
-        };
         Self {
-            inner: Resolver::new(options),
+            inner: Resolver::new(settings::resolve_options(root, &settings)),
             root: root.to_path_buf(),
-            dedupe: settings.dedupe,
+            dedupe: settings.dedupe.into_iter().collect(),
         }
     }
 
-    /// The resolver for `require()` specifiers: Vite's `getConditions` pushes
-    /// `require` instead of `import` when resolving for a requirer (`isRequire`),
-    /// so a dual package's `exports` map hands its CommonJS build to a CJS dep
-    /// that requires it and its ESM build to an importer. Everything else
-    /// (aliases, extensions, dedupe, tsconfig paths) is the same, and the fs
-    /// cache is shared.
+    /// The resolver for `require()` specifiers: Vite's `getConditions` swaps
+    /// `import` for `require` for a requirer, so a dual package hands its CJS
+    /// build to a CJS dep. Everything else, the fs cache included, is shared.
     pub fn require_variant(&self) -> Self {
         let mut options = self.inner.options().clone();
         for c in options.condition_names.iter_mut() {
@@ -294,97 +95,19 @@ impl OjResolver {
         }
     }
 
-    /// A bare import of a `resolve.dedupe` package resolves from the project
-    /// root so nested / monorepo copies collapse to one instance (Vite parity).
+    /// A bare import of a `resolve.dedupe` package resolves from the root so
+    /// nested copies collapse to one instance (Vite parity).
     fn should_dedupe(&self, specifier: &str) -> bool {
-        if self.dedupe.is_empty() || specifier.starts_with('.') || specifier.starts_with('/') {
-            return false;
-        }
-        let pkg = package_name(specifier);
-        self.dedupe.iter().any(|d| d == &pkg)
+        !self.dedupe.is_empty()
+            && !specifier.starts_with('.')
+            && !specifier.starts_with('/')
+            && self.dedupe.contains(package_name(specifier))
     }
 
-    /// Drop the resolver's file system cache. A lookup that failed is cached
-    /// like a hit, so a file or directory created after the miss (an import
-    /// written before its module exists) stays unresolvable until this runs.
+    /// Drops the fs cache. Misses are cached like hits, so a file created after
+    /// a failed lookup stays unresolvable until this runs.
     pub fn clear_cache(&self) {
         self.inner.clear_cache();
-    }
-
-    /// Vite resolves a path-reached directory through its manifest's
-    /// `exports["."]` before the mainFields walk (resolvePackageEntry), where
-    /// Node binds `exports` only at the package-name boundary — the underlying
-    /// resolver follows Node, so a directory import of a manifest carrying
-    /// both `exports` and entry fields lands on the wrong file. When the
-    /// resolution came out of a directory the specifier named, re-enter
-    /// through the exports root target. Once `exports` names an
-    /// entry, Vite never falls back to mainFields: a target missing on disk
-    /// throws in resolvePackageEntry, tryCleanFsResolve catches it and
-    /// probes `index.*` — so a broken target here goes to the index and
-    /// then fails, never to the mainFields pick. (A manifest with exports
-    /// and no other way in resolves via oxc's own
-    /// allow_package_exports_in_directory_resolve, enabled in
-    /// with_settings, which runs exports after mainFields and index — the
-    /// last-resort half of the same Vite behavior.) The path-containment gate
-    /// keeps the hot path free: an extensionless hit (`./x` -> `x.js`) never
-    /// lands inside its own specifier's directory, and an exact hit
-    /// (`./x.js` -> `x.js`, the commonest relative shape) is the equality
-    /// case, skipped before the read — so only real directory hits — rare —
-    /// pay the manifest read. (`Resolution::package_json` is
-    /// not usable here: oxc attaches it on package-boundary requests, not
-    /// relative ones.) A symlinked directory hands back realpaths that miss
-    /// the lexical gate and keeps today's Node behavior rather than taxing
-    /// every miss with a canonicalize.
-    fn directory_exports_entry(
-        &self,
-        base: &Path,
-        specifier: &str,
-        resolved: &Path,
-    ) -> DirectoryEntry {
-        if !(specifier.starts_with("./")
-            || specifier.starts_with("../")
-            || specifier.starts_with('/'))
-        {
-            return DirectoryEntry::NotApplicable;
-        }
-        let clean = &specifier[..specifier.find(['?', '#']).unwrap_or(specifier.len())];
-        let joined = lexical_join(base, clean);
-        // Equality is the exact-file hit (`./x.js` -> `x.js`): never a
-        // directory, so it skips the manifest read below.
-        if resolved == joined || !resolved.starts_with(&joined) {
-            return DirectoryEntry::NotApplicable;
-        }
-        let Ok(bytes) = std::fs::read(joined.join("package.json")) else {
-            return DirectoryEntry::NotApplicable;
-        };
-        let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            return DirectoryEntry::NotApplicable;
-        };
-        // Vite gates on JS truthiness (`if (data.exports)`), so a false/null/
-        // empty exports field falls to the mainFields walk like an absent one.
-        let exports = match manifest.get("exports") {
-            None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => {
-                return DirectoryEntry::NotApplicable
-            }
-            Some(serde_json::Value::String(s)) if s.is_empty() => {
-                return DirectoryEntry::NotApplicable;
-            }
-            Some(exports) => exports,
-        };
-        // With a truthy exports field, resolve.exports THROWS when "." has no
-        // derivable target ('No known conditions'/'Missing "." specifier'),
-        // and resolvePackageEntry converts any throw to packageEntryFailure —
-        // so mainFields never run: a no-target map lands on index probing
-        // exactly like a target missing on disk.
-        if let Some(target) = exports_dot_target(exports, &self.inner.options().condition_names) {
-            if let Ok(resolution) = self.inner.resolve(&joined, &target) {
-                return DirectoryEntry::Resolved(resolution.full_path());
-            }
-        }
-        if let Ok(resolution) = self.inner.resolve(&joined, "./index") {
-            return DirectoryEntry::Resolved(resolution.full_path());
-        }
-        DirectoryEntry::Unresolvable(joined)
     }
 
     pub fn resolve(&self, importer_dir: &Path, specifier: &str) -> Result<PathBuf, ResolveFailure> {
@@ -394,51 +117,37 @@ impl OjResolver {
         } else {
             importer_dir
         };
+        let failure = |reason: String, ignored: bool| ResolveFailure {
+            specifier: specifier.to_string(),
+            importer: importer_dir.to_path_buf(),
+            reason,
+            ignored,
+        };
         match self.inner.resolve(base, specifier) {
             Ok(resolution) => {
-                match self.directory_exports_entry(base, specifier, resolution.path()) {
+                match directory_entry(&self.inner, base, specifier, resolution.path()) {
                     DirectoryEntry::Resolved(entry) => Ok(entry),
                     DirectoryEntry::NotApplicable => Ok(resolution.full_path()),
-                    DirectoryEntry::Unresolvable(dir) => Err(ResolveFailure {
-                        specifier: specifier.to_string(),
-                        importer: importer_dir.to_path_buf(),
-                        reason: format!(
+                    DirectoryEntry::Unresolvable(dir) => Err(failure(
+                        format!(
                             "failed to resolve entry for package '{}': its exports name a missing file and no index exists",
                             dir.display()
                         ),
-                        ignored: false,
-                    }),
+                        false,
+                    )),
                 }
             }
             Err(err) => {
-                // Dedupe from root can miss a package only installed nested;
-                // fall back to the importer's dir before failing.
+                // A deduped package installed only nested: retry from the importer.
                 if deduped {
                     if let Ok(resolution) = self.inner.resolve(importer_dir, specifier) {
                         return Ok(resolution.full_path());
                     }
                 }
-                Err(ResolveFailure {
-                    specifier: specifier.to_string(),
-                    importer: importer_dir.to_path_buf(),
-                    reason: err.to_string(),
-                    ignored: err.is_ignore(),
-                })
+                Err(failure(err.to_string(), err.is_ignore()))
             }
         }
     }
-}
-
-/// How the Vite directory-entry override landed for a specifier.
-enum DirectoryEntry {
-    /// Not a directory hit, or its manifest names no exports root target.
-    NotApplicable,
-    /// The exports root target (or, when it is missing on disk, the
-    /// directory's index) resolved.
-    Resolved(PathBuf),
-    /// The manifest names a root target but neither it nor an index exists;
-    /// Vite fails this resolution rather than using an entry field.
-    Unresolvable(PathBuf),
 }
 
 #[cfg(test)]
@@ -1098,23 +807,6 @@ mod tests {
                 .ends_with("esm.js"),
             "the appended main fallback must not outrank the user's fields",
         );
-    }
-
-    // The shared transform every non-fallback resolver (oxc, rolldown, the
-    // optimizer sidecar) applies to an adopted mainFields list.
-    #[test]
-    fn with_main_fallback_appends_main_last_and_dedups() {
-        assert_eq!(
-            with_main_fallback(["browser", "module"].map(String::from).to_vec()),
-            ["browser", "module", "main"].map(String::from)
-        );
-        // Already present (anywhere): the list is untouched — the fallback
-        // never outranks or duplicates a configured "main".
-        assert_eq!(
-            with_main_fallback(["main", "module"].map(String::from).to_vec()),
-            ["main", "module"].map(String::from)
-        );
-        assert_eq!(with_main_fallback(Vec::new()), ["main".to_string()]);
     }
 
     #[test]
