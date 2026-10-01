@@ -35,7 +35,18 @@ struct FileStamp {
     digest: String,
 }
 
+/// Digest recorded for a file that could not be read, so a later create is
+/// a change like any edit.
 const ABSENT: &str = "-";
+
+impl FileStamp {
+    fn of(path: &Path) -> Self {
+        Self {
+            path: path.display().to_string(),
+            digest: file_digest(path),
+        }
+    }
+}
 
 impl ConfigExtractStore {
     pub fn new(root: &Path, salt: &str) -> Self {
@@ -63,20 +74,9 @@ impl ConfigExtractStore {
                 return None;
             }
         };
-        let entry: Entry = match serde_json::from_slice(&payload) {
-            Ok(e) => e,
-            Err(_) => {
-                let _ = fs::remove_file(&path);
-                return None;
-            }
-        };
-        if entry.env_epoch != env_epoch(&self.root) {
+        let entry: Entry = integrity::parse_json_or_remove(&path, &payload)?;
+        if !self.is_fresh(&entry) {
             return None;
-        }
-        for f in &entry.files {
-            if file_digest(Path::new(&f.path)) != f.digest {
-                return None;
-            }
         }
         Some(CachedExtract {
             deps: entry.files.iter().map(|f| PathBuf::from(&f.path)).collect(),
@@ -102,16 +102,9 @@ impl ConfigExtractStore {
         files.extend(deps.iter().cloned());
         files.sort();
         files.dedup();
-        let files = files
-            .into_iter()
-            .map(|p| FileStamp {
-                digest: file_digest(&p),
-                path: p.display().to_string(),
-            })
-            .collect();
         let entry = Entry {
             env_epoch: env_epoch(&self.root),
-            files,
+            files: files.iter().map(|p| FileStamp::of(p)).collect(),
             output: output.to_string(),
             stderr: stderr.to_string(),
         };
@@ -120,17 +113,24 @@ impl ConfigExtractStore {
             integrity::write_self_verified(&path, &serde_json::to_vec(&entry).unwrap_or_default());
     }
 
+    /// An entry holds while the env epoch matches and every stamped file
+    /// (config plus its imports) still has the recorded digest.
+    fn is_fresh(&self, entry: &Entry) -> bool {
+        entry.env_epoch == env_epoch(&self.root)
+            && entry
+                .files
+                .iter()
+                .all(|f| file_digest(Path::new(&f.path)) == f.digest)
+    }
+
     fn entry_path(&self, config: &Path, command: &str, mode: &str) -> PathBuf {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(self.salt.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(config.as_os_str().as_encoded_bytes());
-        hasher.update(&[0]);
-        hasher.update(command.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(mode.as_bytes());
-        self.dir
-            .join(format!("{}.json", hasher.finalize().to_hex()))
+        let key = crate::hash_nul_joined(&[
+            self.salt.as_bytes(),
+            config.as_os_str().as_encoded_bytes(),
+            command.as_bytes(),
+            mode.as_bytes(),
+        ]);
+        self.dir.join(format!("{}.json", key.to_hex()))
     }
 }
 
@@ -143,6 +143,8 @@ fn file_digest(path: &Path) -> String {
 
 fn env_epoch(root: &Path) -> String {
     let mut hasher = blake3::Hasher::new();
+    // A present file feeds name+content and an absent one feeds nothing, so
+    // create and delete both change the epoch.
     for name in [
         "package-lock.json",
         "yarn.lock",
@@ -153,15 +155,9 @@ fn env_epoch(root: &Path) -> String {
         ".env.local",
         ".env.development",
         ".env.development.local",
-        // Files a plugin's `config` hook reads outside the config-import graph:
-        // @cloudflare/vite-plugin resolves the Worker config from
-        // wrangler.jsonc/.json/.toml (wrangler.unstable_readConfig) while the
-        // hooks run, so its verdict — runner-backed detection included — can
-        // flip on a wrangler edit with no vite.config change. Absence is a
-        // state too: a present file feeds name+content, an absent one feeds
-        // nothing, so create/delete transitions change the epoch. (.dev.vars
-        // is NOT here: the plugin reads it at preview/build-output time, not
-        // in its config hook.)
+        // Read by @cloudflare/vite-plugin's config hook, outside the
+        // config-import graph, so a wrangler edit can flip its verdict with no
+        // vite.config change. (.dev.vars is read later, not in that hook.)
         "wrangler.jsonc",
         "wrangler.json",
         "wrangler.toml",
@@ -257,10 +253,8 @@ mod tests {
     }
 
     // A wrangler config is read by the Cloudflare plugin's config hook, not
-    // imported by vite.config: without it in the key, a verdict computed under
-    // a broken wrangler.jsonc survived the wrangler fix (the worker path
-    // stayed off until vite.config itself was touched). Every transition —
-    // create, edit, delete — must be a miss.
+    // imported by vite.config, so it must be in the key: every transition
+    // (create, edit, delete) is a miss.
     #[test]
     fn wrangler_config_changes_invalidate() {
         let root = temp_root("wrangler");

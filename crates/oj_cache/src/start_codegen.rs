@@ -74,6 +74,13 @@ struct FileInfo {
     marked: bool,
 }
 
+/// Sorted, deduped inputs with their digests (`None` = unreadable).
+struct InputScan {
+    inputs: Vec<PathBuf>,
+    infos: Vec<Option<FileInfo>>,
+    rehashed: usize,
+}
+
 impl StartCodegenStore {
     pub fn new(
         root: &Path,
@@ -99,103 +106,68 @@ impl StartCodegenStore {
         outputs: &[(&str, &Path)],
     ) -> Result<RestoreStats, Miss> {
         let started = Instant::now();
-        let inputs = sorted(inputs);
-        let memo = self.read_memo();
-        let (infos, rehashed) = self.verified_infos(&inputs, memo.as_ref());
-        let (key, keyed_files) = self.key_from(&inputs, &infos)?;
+        let scan = self.scan(inputs);
+        let (key, keyed_files) = self.key_from(&scan.inputs, &scan.infos)?;
         let entry = self.dir.join(&key);
         if !entry.is_dir() {
             return Err(Miss::NoEntryForKey(key));
         }
-        let Some(manifest) = read_entry_manifest(&entry) else {
+        // Every output is read and verified before any is written, so a
+        // corrupt entry never leaves the tree half-restored.
+        let Some(restored) = read_entry_outputs(&entry, &key, outputs) else {
             let _ = fs::remove_dir_all(&entry);
             return Err(Miss::EntryCorrupt(key));
         };
-        let mut restored: Vec<(&Path, Vec<u8>)> = Vec::with_capacity(outputs.len());
-        for (name, dest) in outputs {
-            let bytes = manifest
-                .get(*name)
-                .ok_or(())
-                .and_then(|exp| {
-                    integrity::verified_read(&entry.join(name), exp, VerifyMode::Full)
-                        .map_err(|e| {
-                            eprintln!(
-                                "oj: cache integrity: {{\"store\":\"start-codegen\",\"entry\":\"{}\",\"file\":{name:?},\"error\":{:?}}}",
-                                key.get(..8).unwrap_or(&key),
-                                e.to_string()
-                            );
-                        })
-                });
-            match bytes {
-                Ok(bytes) => restored.push((dest, bytes)),
-                Err(()) => {
-                    let _ = fs::remove_dir_all(&entry);
-                    return Err(Miss::EntryCorrupt(key));
-                }
-            }
-        }
         for (dest, bytes) in restored {
             if write_atomic_if_changed(dest, &bytes).is_err() {
                 return Err(Miss::EntryCorrupt(key));
             }
         }
-        if rehashed > 0 || !self.dir.join(MEMO_FILE).is_file() {
-            self.write_memo(&build_memo(&self.root, &inputs, &infos));
+        if scan.rehashed > 0 || !self.dir.join(MEMO_FILE).is_file() {
+            self.write_memo(&build_memo(&self.root, &scan.inputs, &scan.infos));
         }
         touch(&entry);
         Ok(RestoreStats {
             key,
             keyed_files,
-            rehashed,
+            rehashed: scan.rehashed,
             elapsed_ms: started.elapsed().as_millis(),
         })
     }
 
     pub fn persist(&self, inputs: &[PathBuf], outputs: &[(&str, &Path)]) -> Option<String> {
-        let inputs = sorted(inputs);
-        let memo = self.read_memo();
-        let (infos, _) = self.verified_infos(&inputs, memo.as_ref());
-        let (key, _) = self.key_from(&inputs, &infos).ok()?;
+        let scan = self.scan(inputs);
+        let (key, _) = self.key_from(&scan.inputs, &scan.infos).ok()?;
         let entry = self.dir.join(&key);
         if !entry.is_dir() {
-            let tmp = self
-                .dir
-                .join(format!(".tmp-{}-{}", key.get(..16)?, std::process::id()));
-            let _ = fs::remove_dir_all(&tmp);
-            fs::create_dir_all(&tmp).ok()?;
-            let mut manifest: HashMap<String, ExpectedFile> = HashMap::new();
-            for (name, src) in outputs {
-                let Ok(bytes) = fs::read(src) else {
-                    let _ = fs::remove_dir_all(&tmp);
-                    return None;
-                };
-                if fs::write(tmp.join(name), &bytes).is_err() {
-                    let _ = fs::remove_dir_all(&tmp);
-                    return None;
-                }
-                manifest.insert(
-                    (*name).to_string(),
-                    ExpectedFile {
-                        size: bytes.len() as u64,
-                        hash: blake3::hash(&bytes).to_hex().to_string(),
-                    },
-                );
-            }
-            if write_entry_manifest(&tmp, &manifest).is_err() {
-                let _ = fs::remove_dir_all(&tmp);
-                return None;
-            }
-            if fs::rename(&tmp, &entry).is_err() {
-                let _ = fs::remove_dir_all(&tmp);
-                if !entry.is_dir() {
-                    return None;
-                }
-            }
+            self.publish_entry(&key, &entry, outputs)?;
         }
-        self.write_memo(&build_memo(&self.root, &inputs, &infos));
+        self.write_memo(&build_memo(&self.root, &scan.inputs, &scan.infos));
         touch(&entry);
         self.prune(DEFAULT_KEEP_ENTRIES);
         Some(key)
+    }
+
+    /// Stages the outputs plus their manifest in a temp dir, then renames it
+    /// to `entry`. Losing the rename to a concurrent writer of the same key is
+    /// fine: that entry holds the same content.
+    fn publish_entry(&self, key: &str, entry: &Path, outputs: &[(&str, &Path)]) -> Option<()> {
+        let tmp = self
+            .dir
+            .join(format!(".tmp-{}-{}", key.get(..16)?, std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).ok()?;
+        if stage_entry(&tmp, outputs).is_none() {
+            let _ = fs::remove_dir_all(&tmp);
+            return None;
+        }
+        if fs::rename(&tmp, entry).is_err() {
+            let _ = fs::remove_dir_all(&tmp);
+            if !entry.is_dir() {
+                return None;
+            }
+        }
+        Some(())
     }
 
     pub fn prune(&self, keep: usize) {
@@ -248,6 +220,18 @@ impl StartCodegenStore {
         Ok((hasher.finalize().to_hex().to_string(), keyed))
     }
 
+    /// Sorts and dedups `inputs`, then digests each one (memo first).
+    fn scan(&self, inputs: &[PathBuf]) -> InputScan {
+        let inputs = sorted(inputs);
+        let memo = self.read_memo();
+        let (infos, rehashed) = self.verified_infos(&inputs, memo.as_ref());
+        InputScan {
+            inputs,
+            infos,
+            rehashed,
+        }
+    }
+
     fn verified_infos(
         &self,
         inputs: &[PathBuf],
@@ -255,42 +239,29 @@ impl StartCodegenStore {
     ) -> (Vec<Option<FileInfo>>, usize) {
         let rehashed = AtomicUsize::new(0);
         let infos = par_map(inputs, |p| {
-            let rel = rel_key(&self.root, p);
-            if let Some(known) = memo.and_then(|m| m.files.get(&rel)) {
-                if let Ok(meta) = fs::metadata(p) {
-                    if meta.len() == known.size && mtime_ns(&meta) == Some(known.mtime_ns) {
-                        if let Ok(digest) = blake3::Hash::from_hex(&known.digest) {
-                            return Some(FileInfo {
-                                digest,
-                                marked: known.marked,
-                            });
-                        }
-                    }
-                }
+            let known = memo.and_then(|m| m.files.get(&rel_key(&self.root, p)));
+            if let Some(info) = known.and_then(|k| memo_hit(p, k)) {
+                return Some(info);
             }
             rehashed.fetch_add(1, Ordering::Relaxed);
-            let bytes = fs::read(p).ok()?;
-            Some(FileInfo {
-                digest: blake3::hash(&bytes),
-                marked: self
-                    .marker
-                    .as_ref()
-                    .is_none_or(|m| contains(&bytes, m.as_bytes())),
-            })
+            self.hash_input(p)
         });
         (infos, rehashed.into_inner())
     }
 
+    fn hash_input(&self, path: &Path) -> Option<FileInfo> {
+        let bytes = fs::read(path).ok()?;
+        Some(FileInfo {
+            digest: blake3::hash(&bytes),
+            marked: self
+                .marker
+                .as_ref()
+                .is_none_or(|m| contains(&bytes, m.as_bytes())),
+        })
+    }
+
     fn read_memo(&self) -> Option<Memo> {
-        let path = self.dir.join(MEMO_FILE);
-        let bytes = fs::read(&path).ok()?;
-        match serde_json::from_slice(&bytes) {
-            Ok(memo) => Some(memo),
-            Err(_) => {
-                let _ = fs::remove_file(&path);
-                None
-            }
-        }
+        integrity::read_json_or_remove(&self.dir.join(MEMO_FILE))
     }
 
     fn write_memo(&self, memo: &Memo) {
@@ -332,53 +303,68 @@ fn write_atomic_if_changed(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     integrity::atomic_write(dest, bytes)
 }
 
-fn read_entry_manifest(entry: &Path) -> Option<HashMap<String, ExpectedFile>> {
-    #[derive(Deserialize)]
-    struct Rec {
-        size: u64,
-        hash: String,
+/// The memoized digest, trusted only while size and mtime still match.
+fn memo_hit(path: &Path, known: &MemoFile) -> Option<FileInfo> {
+    let meta = fs::metadata(path).ok()?;
+    if meta.len() != known.size || mtime_ns(&meta) != Some(known.mtime_ns) {
+        return None;
     }
+    Some(FileInfo {
+        digest: blake3::Hash::from_hex(&known.digest).ok()?,
+        marked: known.marked,
+    })
+}
+
+/// Reads and fully verifies every requested output of `entry`. `None` means
+/// the entry is corrupt (no manifest, missing file, or a mismatch).
+fn read_entry_outputs<'a>(
+    entry: &Path,
+    key: &str,
+    outputs: &[(&str, &'a Path)],
+) -> Option<Vec<(&'a Path, Vec<u8>)>> {
+    let manifest = read_entry_manifest(entry)?;
+    let mut restored = Vec::with_capacity(outputs.len());
+    for (name, dest) in outputs {
+        let expected = manifest.get(*name)?;
+        match integrity::verified_read(&entry.join(name), expected, VerifyMode::Full) {
+            Ok(bytes) => restored.push((*dest, bytes)),
+            Err(e) => {
+                eprintln!(
+                    "oj: cache integrity: {{\"store\":\"start-codegen\",\"entry\":\"{}\",\"file\":{name:?},\"error\":{:?}}}",
+                    key.get(..8).unwrap_or(key),
+                    e.to_string()
+                );
+                return None;
+            }
+        }
+    }
+    Some(restored)
+}
+
+/// Copies each output into `tmp` and writes the manifest of their sizes and
+/// hashes. `None` on any read or write failure.
+fn stage_entry(tmp: &Path, outputs: &[(&str, &Path)]) -> Option<()> {
+    let mut manifest: HashMap<String, ExpectedFile> = HashMap::new();
+    for (name, src) in outputs {
+        let bytes = fs::read(src).ok()?;
+        fs::write(tmp.join(name), &bytes).ok()?;
+        manifest.insert((*name).to_string(), ExpectedFile::of(&bytes));
+    }
+    write_entry_manifest(tmp, &manifest).ok()
+}
+
+fn read_entry_manifest(entry: &Path) -> Option<HashMap<String, ExpectedFile>> {
     let bytes = integrity::read_self_verified(&entry.join(FILES_FILE)).ok()?;
-    let raw: HashMap<String, Rec> = serde_json::from_slice(&bytes).ok()?;
-    Some(
-        raw.into_iter()
-            .map(|(k, r)| {
-                (
-                    k,
-                    ExpectedFile {
-                        size: r.size,
-                        hash: r.hash,
-                    },
-                )
-            })
-            .collect(),
-    )
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn write_entry_manifest(
     entry: &Path,
     manifest: &HashMap<String, ExpectedFile>,
 ) -> std::io::Result<()> {
-    #[derive(Serialize)]
-    struct Rec<'a> {
-        size: u64,
-        hash: &'a str,
-    }
-    let raw: HashMap<&str, Rec> = manifest
-        .iter()
-        .map(|(k, e)| {
-            (
-                k.as_str(),
-                Rec {
-                    size: e.size,
-                    hash: &e.hash,
-                },
-            )
-        })
-        .collect();
     integrity::write_self_verified(
         &entry.join(FILES_FILE),
-        &serde_json::to_vec(&raw).unwrap_or_default(),
+        &serde_json::to_vec(manifest).unwrap_or_default(),
     )
 }
 
