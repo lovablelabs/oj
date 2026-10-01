@@ -1,6 +1,7 @@
 //! CSS modules: scoping options, `composes`, `localsConvention` and the JS
 //! module body, matching postcss-modules as Vite configures it.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -233,6 +234,7 @@ pub(crate) fn module_exports(
 ) -> Vec<(String, String)> {
     let composer = Composer {
         by_scoped: map.values().map(|e| (e.name.as_str(), e)).collect(),
+        deps: RefCell::default(),
         url,
         resolve,
         depth,
@@ -247,6 +249,8 @@ pub(crate) fn module_exports(
 
 struct Composer<'a> {
     by_scoped: HashMap<&'a str, &'a CssModuleExport>,
+    /// Export maps of `from "..."` files by specifier, each compiled once.
+    deps: RefCell<HashMap<&'a str, Option<HashMap<String, String>>>>,
     url: &'a str,
     resolve: &'a CssResolve<'a>,
     depth: u8,
@@ -270,8 +274,12 @@ impl<'a> Composer<'a> {
                 }
                 CssModuleReference::Global { name } => name.clone(),
                 CssModuleReference::Dependency { name, specifier } => {
-                    match dependency_export(specifier, name, self.url, self.resolve, self.depth) {
-                        Some(v) => v,
+                    let mut deps = self.deps.borrow_mut();
+                    let exports = deps.entry(specifier).or_insert_with(|| {
+                        dependency_exports(specifier, self.url, self.resolve, self.depth)
+                    });
+                    match exports.as_ref().and_then(|e| e.get(name)) {
+                        Some(v) => v.clone(),
                         None => {
                             eprintln!(
                                 "oj: css module {}: cannot resolve `composes: {name} from {specifier:?}`",
@@ -291,15 +299,14 @@ impl<'a> Composer<'a> {
     }
 }
 
-/// `composes: name from "spec"`: export `name` of the module file `spec` names
+/// The export map of the module file a `composes: ... from "spec"` names
 /// (relative, root-absolute or aliased), compiled with the same settings.
-fn dependency_export(
+fn dependency_exports(
     spec: &str,
-    name: &str,
     url: &str,
     resolve: &CssResolve<'_>,
     depth: u8,
-) -> Option<String> {
+) -> Option<HashMap<String, String>> {
     if depth > 8 {
         return None;
     }
@@ -323,10 +330,7 @@ fn dependency_export(
         None => dep.to_string_lossy().into_owned(),
     };
     let out = compile_css_depth(&dep_url, &source, Mode::default(), resolve, depth + 1).ok()?;
-    out.exports?
-        .into_iter()
-        .find(|(n, _)| n == name)
-        .map(|(_, v)| v)
+    Some(out.exports?.into_iter().collect())
 }
 
 #[cfg(test)]

@@ -2,8 +2,9 @@
 //! basenames, npm package entries, aliases, root-absolute paths and `~pkg`.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::path::{node_modules_load_paths, read_package_json, with_ext};
 use crate::resolve::{CssResolve, CssResolveConfig};
@@ -56,7 +57,8 @@ pub fn compile_sass_collecting(
 ) -> Result<String, String> {
     let fs = SassFs {
         resolve: opts.resolve.into(),
-        seen: RefCell::new(Vec::new()),
+        seen: RefCell::default(),
+        probes: RefCell::default(),
     };
     let mut options = grass::Options::default().fs(&fs);
     let node_modules = opts
@@ -216,15 +218,30 @@ struct SassFs {
     /// resolve like the entry's.
     resolve: CssResolveConfig,
     seen: RefCell<Vec<PathBuf>>,
+    /// `(is_dir, is_file)` answers: grass re-probes the same candidates from
+    /// every partial, and files do not change within a compile.
+    probes: RefCell<HashMap<(bool, PathBuf), bool>>,
+}
+
+impl SassFs {
+    fn probe(&self, dir: bool, p: &Path, answer: impl FnOnce() -> bool) -> bool {
+        let key = (dir, p.to_path_buf());
+        if let Some(&hit) = self.probes.borrow().get(&key) {
+            return hit;
+        }
+        let v = answer();
+        self.probes.borrow_mut().insert(key, v);
+        v
+    }
 }
 
 impl grass::Fs for SassFs {
     fn is_dir(&self, p: &Path) -> bool {
-        p.is_dir() || dotted_stylesheet(p).is_some()
+        self.probe(true, p, || p.is_dir() || dotted_stylesheet(p).is_some())
     }
 
     fn is_file(&self, p: &Path) -> bool {
-        p.is_file() || probe_target(p).is_some()
+        self.probe(false, p, || p.is_file() || probe_target(p).is_some())
     }
 
     fn read(&self, p: &Path) -> io::Result<Vec<u8>> {
@@ -306,7 +323,10 @@ fn collapse_phantom_dirs(p: &Path) -> Option<PathBuf> {
     for (i, comp) in comps.iter().enumerate() {
         let candidate = out.join(comp);
         let is_last = i + 1 == comps.len();
+        // Only a dotted name can be a phantom dir (grass finds `seg.scss` itself).
+        let dotted = matches!(comp, Component::Normal(n) if n.as_encoded_bytes().contains(&b'.'));
         if !is_last
+            && dotted
             && (with_ext(&candidate, "scss").is_file() || with_ext(&candidate, "sass").is_file())
         {
             changed = true;
