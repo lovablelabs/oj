@@ -1,26 +1,5 @@
 use super::*;
 
-// Partial bundling (oj-native per-package dep bundling) is opt-in for now.
-pub(crate) fn partial_bundle_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("OJ_PARTIAL_BUNDLE").is_ok_and(|v| !v.is_empty() && v != "0"))
-}
-
-// The URL a resolved bare dep is served from: partial bundling serves a CJS package
-// as one shared `/@oj-pkg` bundle keyed by entry path, everything else per-file.
-// Both the interop and specifier-rewrite paths route here so a dep never gets two URLs.
-pub(crate) fn dep_serve_url(resolved: &Path, root: &Path) -> String {
-    if partial_bundle_enabled()
-        && resolved.components().any(|c| c.as_os_str() == "node_modules")
-        && is_bundleable_dep_file(resolved)
-        // optimizeDeps.exclude: serve this package per-file, never bundled.
-        && !pkg_bundle::is_excluded(resolved)
-    {
-        return pkg_bundle::bundle_url_for(resolved);
-    }
-    url_of(root, resolved)
-}
-
 /// Vite's DEP_VERSION_RE: the request carries a `v=` query, i.e. it was reached
 /// through a versioned dep URL and may be cached forever.
 pub(crate) fn has_version_query(query: Option<&str>) -> bool {

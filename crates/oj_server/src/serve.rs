@@ -57,10 +57,6 @@ pub(crate) async fn serve_path(
             .into_response();
     }
 
-    if uri.path().starts_with(pkg_bundle::PKG_PREFIX) {
-        return serve_pkg_bundle(&state, uri.path(), has_version_query(uri.query())).await;
-    }
-
     if let Some(id) = uri.path().strip_prefix("/@virtual/") {
         return match state.virtual_modules.get(id) {
             Some(code) => (

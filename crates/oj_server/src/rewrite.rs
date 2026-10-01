@@ -51,15 +51,28 @@ pub(crate) fn is_file_cached(cache: &Mutex<DirCache>, path: &Path) -> bool {
     result
 }
 
+/// Everything a specifier rewrite consults, threaded as one context: the app
+/// root, the importer's directory, and the server's resolver + serve state.
+pub(crate) struct RewriteCtx<'a> {
+    pub root: &'a Path,
+    pub dir: &'a Path,
+    pub resolver: &'a OjResolver,
+    pub fs_allow: &'a Mutex<std::collections::HashSet<PathBuf>>,
+    pub dir_cache: &'a Mutex<DirCache>,
+}
+
 pub(crate) fn rewrite_specifier(
-    root: &Path,
-    dir: &Path,
-    resolver: &OjResolver,
-    fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
-    dir_cache: &Mutex<DirCache>,
+    ctx: &RewriteCtx<'_>,
     spec: &str,
     css_import_marker: bool,
 ) -> Option<String> {
+    let &RewriteCtx {
+        root,
+        dir,
+        resolver,
+        fs_allow,
+        dir_cache,
+    } = ctx;
     if spec.starts_with('/') {
         // A root-relative URL is already servable, but a plugin can emit an absolute
         // fs path under root: rewrite it to its URL, preserving the query (Vite parity).
@@ -75,7 +88,7 @@ pub(crate) fn rewrite_specifier(
                 // An absolute path OUTSIDE root: serve through /@fs (Vite's
                 // FS_PREFIX) and allow its package for the fs guard.
                 allow_root(fs_allow, package_root(p));
-                dep_serve_url(p, root)
+                url_of(root, p)
             };
             return Some(match query {
                 Some(q) => format!("{url}?{q}"),
@@ -98,13 +111,12 @@ pub(crate) fn rewrite_specifier(
             query,
             "url" | "raw" | "inline" | "worker" | "sharedworker" | "init" | "react" | "no-inline"
         ) {
-            let resolved = rewrite_specifier(root, dir, resolver, fs_allow, dir_cache, base, false)
-                .or_else(|| {
-                    resolver.resolve(dir, base).ok().map(|p| {
-                        allow_root(fs_allow, package_root(&p));
-                        url_of(root, &p)
-                    })
-                })?;
+            let resolved = rewrite_specifier(ctx, base, false).or_else(|| {
+                resolver.resolve(dir, base).ok().map(|p| {
+                    allow_root(fs_allow, package_root(&p));
+                    url_of(root, &p)
+                })
+            })?;
             return Some(format!("{resolved}?{query}"));
         }
     }
@@ -159,7 +171,7 @@ pub(crate) fn rewrite_specifier(
                 .any(|c| c.as_os_str() == "node_modules") =>
         {
             allow_root(fs_allow, package_root(&resolved));
-            Some(dep_serve_url(&resolved, root))
+            Some(url_of(root, &resolved))
         }
         Ok(resolved) if resolved.starts_with(root) => {
             // An alias (`@/assets/logo.svg`) or root-absolute import of a style
@@ -175,7 +187,7 @@ pub(crate) fn rewrite_specifier(
         }
         Ok(resolved) => {
             allow_root(fs_allow, package_root(&resolved));
-            Some(dep_serve_url(&resolved, root))
+            Some(url_of(root, &resolved))
         }
         Err(err) if err.ignored => {
             // The package's `browser` field maps this specifier to false: serve an

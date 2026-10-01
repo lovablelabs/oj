@@ -1335,10 +1335,6 @@ fn preload_hints_name_the_exact_import_url() {
         "/@oj-deps/react.mjs?v=abcd1234"
     );
     assert_eq!(
-        preload_href("/@oj-pkg/00ff", "abcd1234"),
-        "/@oj-pkg/00ff?v=abcd1234"
-    );
-    assert_eq!(
         preload_href("/@oj-deps/react.mjs", ""),
         "/@oj-deps/react.mjs",
         "no version, no query"

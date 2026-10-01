@@ -12,7 +12,7 @@ pub(crate) fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Op
         .lock()
         .unwrap()
         .insert(package_root(resolved));
-    let url = dep_serve_url(resolved, &state.root);
+    let url = url_of(&state.root, resolved);
     Some(Redirect::temporary(&url).into_response())
 }
 
@@ -49,9 +49,17 @@ pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> 
                     return Some(meta.url.clone());
                 }
             }
-            if let Some(url) =
-                rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, spec, true)
-            {
+            if let Some(url) = rewrite_specifier(
+                &crate::rewrite::RewriteCtx {
+                    root: &root,
+                    dir: &root,
+                    resolver: &resolver,
+                    fs_allow: &fs_allow,
+                    dir_cache: &dir_cache,
+                },
+                spec,
+                true,
+            ) {
                 return Some(url);
             }
             if plugin_fallback && is_bare_specifier(spec) {
@@ -148,7 +156,7 @@ pub(crate) async fn serve_plugin_id(
                 if let Ok(abs) = state.resolver.resolve(&dir, base) {
                     if abs.is_file() {
                         allow_root(&state.fs_allow, package_root(&abs));
-                        let mut url = dep_serve_url(&abs, &state.root);
+                        let mut url = url_of(&state.root, &abs);
                         if !query.is_empty() {
                             url.push('?');
                             url.push_str(query);
@@ -195,9 +203,17 @@ pub(crate) async fn serve_plugin_id(
     let compile_opts = dev_compile_opts(state);
     let compiled = tokio::task::spawn_blocking(move || {
         let mut rewrite = |s: &str| {
-            if let Some(u) =
-                rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, s, true)
-            {
+            if let Some(u) = rewrite_specifier(
+                &crate::rewrite::RewriteCtx {
+                    root: &root,
+                    dir: &root,
+                    resolver: &resolver,
+                    fs_allow: &fs_allow,
+                    dir_cache: &dir_cache,
+                },
+                s,
+                true,
+            ) {
                 return Some(u);
             }
             // A plugin virtual can import another plugin virtual: route bare
@@ -235,83 +251,6 @@ pub(crate) async fn serve_plugin_id(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("compile task failed: {e}"),
-        )
-            .into_response(),
-    }
-}
-
-// Serve a `/@oj-pkg/<hex>` bundle (a CJS package's whole internal graph). An
-// unbundleable package falls back to per-file output at this SAME url so the
-// importer's interop (__cjs_exports) still resolves.
-pub(crate) async fn serve_pkg_bundle(
-    state: &Arc<ServerState>,
-    path: &str,
-    versioned: bool,
-) -> Response {
-    let js = |code: Bytes| {
-        (
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::CACHE_CONTROL, dep_cache_control(versioned)),
-            ],
-            code,
-        )
-            .into_response()
-    };
-    // Chunks from a previous rolldown fallback aren't decodable entry hexes,
-    // so check them before entry_from_url.
-    if let Some(code) = pkg_rolldown::cached_chunk(path) {
-        return js(code);
-    }
-    if let Some(code) = pkg_bundle::cached(path) {
-        return js(code);
-    }
-    let Some(entry) = pkg_bundle::entry_from_url(path) else {
-        return (StatusCode::NOT_FOUND, "oj: bad pkg bundle path").into_response();
-    };
-    let resolver = Arc::clone(&state.resolver);
-    let root = state.root.clone();
-    // Known-hard packages produce a concatenator bundle that builds but breaks
-    // at runtime: force them straight through rolldown.
-    if pkg_rolldown::enabled() && pkg_rolldown::is_forced(&entry) {
-        if let Some(code) = pkg_rolldown::build(&entry, &state.root, Arc::clone(&resolver)).await {
-            return js(code);
-        }
-    }
-    let entry_owned = entry.clone();
-    let build_resolver = Arc::clone(&resolver);
-    let outcome = tokio::task::spawn_blocking(move || {
-        pkg_bundle::build(&entry_owned, build_resolver.as_ref(), &root)
-    })
-    .await;
-    match outcome {
-        Ok(pkg_bundle::BundleOutcome::Bundle(code)) => {
-            let code = Bytes::from(code);
-            pkg_bundle::store(path, code.clone());
-            js(code)
-        }
-        Ok(pkg_bundle::BundleOutcome::Fallback) => {
-            // Concatenator bailed: try rolldown for this one package before
-            // serving per-file.
-            if pkg_rolldown::enabled() {
-                if let Some(code) =
-                    pkg_rolldown::build(&entry, &state.root, Arc::clone(&resolver)).await
-                {
-                    return js(code);
-                }
-                if std::env::var("OJ_PB_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0") {
-                    eprintln!("oj[pb] rolldown fallback failed, serving per-file: {path}");
-                }
-            }
-            let url = url_of(&state.root, &entry);
-            match ensure_module(state, &entry, &url).await {
-                Ok((_, module)) => js(module.code.clone().into()),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {e}")).into_response(),
-            }
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("oj: pkg bundle task failed: {e}"),
         )
             .into_response(),
     }
@@ -365,9 +304,17 @@ pub(crate) async fn serve_plugin_load_fallback(
     let compile_opts = dev_compile_opts(state);
     let compiled = tokio::task::spawn_blocking(move || {
         let mut rewrite = |s: &str| {
-            if let Some(u) =
-                rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, s, true)
-            {
+            if let Some(u) = rewrite_specifier(
+                &crate::rewrite::RewriteCtx {
+                    root: &root,
+                    dir: &root,
+                    resolver: &resolver,
+                    fs_allow: &fs_allow,
+                    dir_cache: &dir_cache,
+                },
+                s,
+                true,
+            ) {
                 return Some(u);
             }
             // A plugin virtual can import another plugin virtual: route bare
@@ -417,15 +364,6 @@ pub(crate) fn is_lingui_macro_specifier(spec: &str) -> bool {
     matches!(
         spec,
         "@lingui/macro" | "@lingui/core/macro" | "@lingui/react/macro"
-    )
-}
-
-// A node_modules JS-family file partial bundling should try to collapse into
-// one `/@oj-pkg` bundle; css/json/asset deps stay per-file.
-pub(crate) fn is_bundleable_dep_file(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("js" | "cjs" | "jsx" | "mjs")
     )
 }
 

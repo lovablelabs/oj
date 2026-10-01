@@ -185,9 +185,7 @@ pub(crate) async fn serve_fallback(
 pub(crate) fn preload_href(path: &str, version: &str) -> String {
     if is_style_url(path) {
         format!("{path}?import")
-    } else if !version.is_empty()
-        && (path.starts_with("/@oj-deps/") || path.starts_with(pkg_bundle::PKG_PREFIX))
-    {
+    } else if !version.is_empty() && path.starts_with("/@oj-deps/") {
         format!("{path}?v={version}")
     } else {
         path.to_string()

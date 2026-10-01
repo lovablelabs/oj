@@ -67,7 +67,7 @@ pub(crate) async fn ensure_module(
     // through plugin hooks in Vite too; pre-bundled deps never do), and reached only
     // on a cold module, so the warm path pays no per-request RPC.
     let dep_wants_load = is_dep_early
-        && (pkg_bundle::is_excluded(file) || {
+        && (state.optimize_view.is_excluded(file) || {
             let path = file.to_string_lossy();
             state.dep_load_res.iter().any(|re| re.is_match(&path))
         });
@@ -232,7 +232,7 @@ pub(crate) async fn ensure_module(
     let mut plugin_watch_files: Vec<String> = Vec::new();
     let mut plugin_maps: Vec<String> = Vec::new();
     let dep_wants_transform = is_dep
-        && (pkg_bundle::is_excluded(file)
+        && (state.optimize_view.is_excluded(file)
             || state
                 .dep_transform_res
                 .iter()
@@ -404,6 +404,7 @@ pub(crate) async fn ensure_module(
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
     let virtual_ids = Arc::clone(&state.virtual_ids);
+    let optimize_view = Arc::clone(&state.optimize_view);
     let jsx_overrides = state.jsx_overrides.clone();
     let jsx_config = state.jsx.clone();
     let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -537,9 +538,17 @@ pub(crate) async fn ensure_module(
                     return Some(meta.url.clone());
                 }
             }
-            if let Some(url) =
-                rewrite_specifier(&root, &dir, resolver, &fs_allow, &dir_cache, spec, true)
-            {
+            if let Some(url) = rewrite_specifier(
+                &crate::rewrite::RewriteCtx {
+                    root: &root,
+                    dir: &dir,
+                    resolver,
+                    fs_allow: &fs_allow,
+                    dir_cache: &dir_cache,
+                },
+                spec,
+                true,
+            ) {
                 // With a transform plugin active, leave `.svg` unmarked (not `?url`) so
                 // it routes through compile and svgr can componentize it (Vite parity).
                 if svgr_active {
@@ -604,12 +613,10 @@ pub(crate) async fn ensure_module(
                     // when static analysis reads the dep as ESM.
                     if in_node_modules
                         && (is_cjs_dep_file(&resolved)
-                            || pkg_bundle::needs_forced_interop(&resolved))
+                            || optimize_view.needs_forced_interop(&resolved))
                     {
                         allow_root(&fs_allow, package_root(&resolved));
-                        // With partial bundling this is the /@oj-pkg bundle URL, which
-                        // exports __cjs_exports too, so the interop still reads off it.
-                        return Some(dep_serve_url(&resolved, &root));
+                        return Some(url_of(&root, &resolved));
                     }
                 }
             }

@@ -9,6 +9,48 @@ use tokio::sync::watch;
 
 const OPTIMIZE_JS: &str = include_str!("assets/optimize-deps.mjs");
 
+/// The `optimizeDeps` knobs that apply to DIRECTLY-SERVED deps (ones the
+/// optimizer did not pre-bundle): `exclude` routes a dep through plugin
+/// hooks like Vite, and `needsInterop` forces the CJS interop rewrite even
+/// when static analysis reads the dep as ESM.
+pub struct OptimizeView {
+    pub exclude: std::collections::HashSet<String>,
+    pub needs_interop: std::collections::HashSet<String>,
+}
+
+impl OptimizeView {
+    pub fn new(exclude: Vec<String>, needs_interop: Vec<String>) -> Self {
+        OptimizeView {
+            exclude: exclude.into_iter().collect(),
+            needs_interop: needs_interop.into_iter().collect(),
+        }
+    }
+
+    fn names(&self, set: &std::collections::HashSet<String>, path: &std::path::Path) -> bool {
+        package_name(path).is_some_and(|name| set.contains(&name))
+    }
+
+    pub fn is_excluded(&self, path: &std::path::Path) -> bool {
+        self.names(&self.exclude, path)
+    }
+
+    pub fn needs_forced_interop(&self, path: &std::path::Path) -> bool {
+        self.names(&self.needs_interop, path)
+    }
+}
+
+/// The npm package name a node_modules path belongs to (`@scope/name` or `name`).
+pub(crate) fn package_name(entry: &std::path::Path) -> Option<String> {
+    let comps: Vec<&std::ffi::OsStr> = entry.components().map(|c| c.as_os_str()).collect();
+    let idx = comps.iter().rposition(|c| *c == "node_modules")?;
+    let first = comps.get(idx + 1)?.to_str()?;
+    if first.starts_with('@') {
+        Some(format!("{first}/{}", comps.get(idx + 2)?.to_str()?))
+    } else {
+        Some(first.to_string())
+    }
+}
+
 pub struct DepMeta {
     pub file: String,
     pub needs_interop: bool,

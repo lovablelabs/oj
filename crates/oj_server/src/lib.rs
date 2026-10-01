@@ -20,8 +20,6 @@ use oj_cache::{CachedModule, PersistentCache};
 
 pub mod css_engine;
 pub mod optimize;
-pub mod pkg_bundle;
-pub mod pkg_rolldown;
 pub mod plugins;
 mod preseed;
 pub use preseed::PACKAGE_MANAGER_LOCKFILES;
@@ -343,6 +341,10 @@ struct ServerState {
     rt: tokio::runtime::Handle,
     base: Option<String>,
     optimized: Arc<optimize::OptimizedDeps>,
+    /// The `optimizeDeps` knobs for directly-served deps (exclude routes a
+    /// dep through plugin hooks; needsInterop forces the interop rewrite) —
+    /// threaded, not process-global.
+    optimize_view: Arc<optimize::OptimizeView>,
     /// An error frame broadcast while no client was connected is kept and
     /// delivered to the next client (Vite's ws `bufferedError`).
     buffered_error: Mutex<Option<String>>,
@@ -703,17 +705,6 @@ impl DevServer {
         )
         .map_err(|e| anyhow::anyhow!(e))?;
         boot_phase("vite config values adopted");
-
-        // Feed optimizeDeps.include/exclude/needsInterop into partial bundling so
-        // the same vite.config field that drives Vite's dep pre-bundle drives oj's.
-        {
-            let (include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
-            pkg_bundle::configure(
-                include,
-                exclude,
-                oj_config::optimize_deps_needs_interop(&config),
-            );
-        }
 
         let env_prefixes = oj_config::env_prefixes(&config);
         let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
@@ -1114,6 +1105,37 @@ impl DevServer {
             minify: false,
             modules: css_modules_options(&config),
         };
+        let optimized = Arc::new({
+            let (include, exclude, entries) = oj_config::optimize_deps_lists(&config);
+            optimize::OptimizedDeps::prepare(
+                &root,
+                env!("CARGO_PKG_VERSION"),
+                optimize::OptimizeInput {
+                    no_discovery: config.optimize_deps.as_ref().and_then(|o| o.no_discovery),
+                    include,
+                    exclude,
+                    entries,
+                    dedupe: oj_config::resolve_dedupe(&config),
+                    alias: oj_config::resolve_alias(&config, "client"),
+                    force: oj_config::optimize_deps_force(&config),
+                    bundler_options: oj_config::optimize_deps_bundler_options(&config),
+                    conditions: oj_config::resolve_conditions(&config, "client"),
+                    main_fields: optimize::optimizer_main_fields(&config),
+                    extensions: oj_config::resolve_extensions(&config)
+                        .unwrap_or_else(oj_resolver::default_extensions),
+                    preserve_symlinks: oj_config::resolve_preserve_symlinks(&config),
+                    mode: dev_mode.clone(),
+                    needs_interop: oj_config::optimize_deps_needs_interop(&config),
+                },
+            )
+        });
+        let optimize_view = {
+            let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
+            Arc::new(optimize::OptimizeView::new(
+                exclude,
+                oj_config::optimize_deps_needs_interop(&config),
+            ))
+        };
         let state = Arc::new(ServerState {
             persistent_cache,
             config_file: config_file.clone(),
@@ -1248,32 +1270,9 @@ impl DevServer {
             watch_ignored,
             ws_token,
             ws_token_check,
-            optimized: Arc::new({
-                let (include, exclude, entries) = oj_config::optimize_deps_lists(&config);
-                optimize::OptimizedDeps::prepare(
-                    &root,
-                    env!("CARGO_PKG_VERSION"),
-                    optimize::OptimizeInput {
-                        no_discovery: config.optimize_deps.as_ref().and_then(|o| o.no_discovery),
-                        include,
-                        exclude,
-                        entries,
-                        dedupe: oj_config::resolve_dedupe(&config),
-                        alias: oj_config::resolve_alias(&config, "client"),
-                        force: oj_config::optimize_deps_force(&config),
-                        bundler_options: oj_config::optimize_deps_bundler_options(&config),
-                        conditions: oj_config::resolve_conditions(&config, "client"),
-                        main_fields: optimize::optimizer_main_fields(&config),
-                        extensions: oj_config::resolve_extensions(&config)
-                            .unwrap_or_else(oj_resolver::default_extensions),
-                        preserve_symlinks: oj_config::resolve_preserve_symlinks(&config),
-                        mode: dev_mode.clone(),
-                        needs_interop: oj_config::optimize_deps_needs_interop(&config),
-                    },
-                )
-            }),
+            optimized: Arc::clone(&optimized),
+            optimize_view: Arc::clone(&optimize_view),
         });
-        pkg_bundle::set_version(state.optimized.version());
         if let Some(host) = &state.plugins {
             host.set_ws_sender(state.reload_tx.clone());
             let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1517,8 +1516,19 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
         let dir = root.clone();
-        let mut rewrite =
-            |s: &str| rewrite_specifier(&root, &dir, &resolver, &fs_allow, &dir_cache, s, true);
+        let mut rewrite = |s: &str| {
+            rewrite_specifier(
+                &rewrite::RewriteCtx {
+                    root: &root,
+                    dir: &dir,
+                    resolver: &resolver,
+                    fs_allow: &fs_allow,
+                    dir_cache: &dir_cache,
+                },
+                s,
+                true,
+            )
+        };
         oj_compiler::compile_module(&synthetic, OJ_ROUTES_JS, &compile_opts, Some(&mut rewrite))
             .map(|o| o.code_with_inline_map())
             .map_err(|e| format!("{e}"))

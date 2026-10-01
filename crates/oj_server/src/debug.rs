@@ -20,14 +20,10 @@ pub(crate) async fn debug_mem_stats(
         return (axum::http::StatusCode::FORBIDDEN, "").into_response();
     }
     let (entries, total, code, map) = state.memory.lock().unwrap().stats();
-    let (pb_entries, pb_bytes) = pkg_bundle::debug_stats();
-    let (pr_entries, pr_bytes) = pkg_rolldown::debug_stats();
-    let (pkg_entries, pkg_bytes) = (pb_entries + pr_entries, pb_bytes + pr_bytes);
     (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         serde_json::json!({
             "module_cache": { "entries": entries, "bytes": total, "code_bytes": code, "map_bytes": map },
-            "pkg_store_memory": { "entries": pkg_entries, "bytes": pkg_bytes },
         })
         .to_string(),
     )

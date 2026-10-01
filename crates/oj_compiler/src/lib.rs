@@ -8,7 +8,6 @@ pub mod glob;
 pub mod html;
 pub mod interop;
 pub mod json;
-pub mod pkgbundle;
 pub mod ssr;
 pub mod tsconfig;
 
