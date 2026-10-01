@@ -11,54 +11,37 @@
 /// Values may be single-quoted, double-quoted, or bare.
 pub fn html_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let bytes = tag.as_bytes();
+    let skip_ws = |i| skip(bytes, i, |b| b.is_ascii_whitespace());
     let mut cursor = bytes.iter().position(u8::is_ascii_whitespace)?;
 
     while cursor < bytes.len() {
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let start = cursor;
-        while cursor < bytes.len()
-            && !bytes[cursor].is_ascii_whitespace()
-            && bytes[cursor] != b'='
-            && bytes[cursor] != b'/'
-        {
-            cursor += 1;
-        }
+        let start = skip_ws(cursor);
+        cursor = skip(bytes, start, |b| {
+            !b.is_ascii_whitespace() && b != b'=' && b != b'/'
+        });
         if cursor == start {
             cursor += 1;
             continue;
         }
         let attribute = &tag[start..cursor];
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= bytes.len() || bytes[cursor] != b'=' {
+        cursor = skip_ws(cursor);
+        if bytes.get(cursor) != Some(&b'=') {
             continue;
         }
-        cursor += 1;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= bytes.len() {
-            return None;
-        }
-        let (value_start, value_end) = if matches!(bytes[cursor], b'\'' | b'"') {
-            let quote = bytes[cursor];
-            let start = cursor + 1;
-            cursor = start;
-            while cursor < bytes.len() && bytes[cursor] != quote {
-                cursor += 1;
+        cursor = skip_ws(cursor + 1);
+        let (value_start, value_end) = match *bytes.get(cursor)? {
+            quote @ (b'\'' | b'"') => {
+                let start = cursor + 1;
+                cursor = skip(bytes, start, |b| b != quote);
+                let end = cursor;
+                cursor += usize::from(cursor < bytes.len());
+                (start, end)
             }
-            let end = cursor;
-            cursor += usize::from(cursor < bytes.len());
-            (start, end)
-        } else {
-            let start = cursor;
-            while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
+            _ => {
+                let start = cursor;
+                cursor = skip(bytes, start, |b| !b.is_ascii_whitespace());
+                (start, cursor)
             }
-            (start, cursor)
         };
         if attribute.eq_ignore_ascii_case(name) {
             return Some(&tag[value_start..value_end]);
@@ -66,6 +49,14 @@ pub fn html_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     }
 
     None
+}
+
+/// The first index at or after `i` whose byte fails `pred` (or the end).
+fn skip(bytes: &[u8], mut i: usize, pred: impl Fn(u8) -> bool) -> usize {
+    while i < bytes.len() && pred(bytes[i]) {
+        i += 1;
+    }
+    i
 }
 
 #[cfg(test)]

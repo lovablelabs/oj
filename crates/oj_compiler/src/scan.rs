@@ -4,12 +4,12 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{Program, Statement};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
 
-// SIMD substring scanners (memchr), built once and reused as cheap gates before
-// expensive transforms. Shared with `bundle.rs` so both compile paths scan the
-// same way instead of falling back to scalar `str::contains`.
+// SIMD substring finders (memchr), built once: cheap gates before expensive
+// transforms, shared with `bundle.rs`.
 pub(crate) static F_IMPORT_META_ENV: LazyLock<Finder<'static>> =
     LazyLock::new(|| Finder::new("import.meta.env"));
 
@@ -24,16 +24,22 @@ pub(crate) fn scan(finder: &Finder<'static>, source: &str) -> bool {
     finder.find(source.as_bytes()).is_some()
 }
 
-pub fn exports(source_text: &str, path: &Path) -> Vec<String> {
+/// Runs `f` on the parsed module; empty when the path has no JS/TS type or the
+/// parser panicked (recoverable syntax errors still yield a program).
+fn with_program<T: Default>(source_text: &str, path: &Path, f: impl FnOnce(&Program) -> T) -> T {
     let Ok(source_type) = SourceType::from_path(path) else {
-        return Vec::new();
+        return T::default();
     };
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, source_type).parse();
     if parsed.panicked {
-        return Vec::new();
+        return T::default();
     }
-    export_names(&parsed.program)
+    f(&parsed.program)
+}
+
+pub fn exports(source_text: &str, path: &Path) -> Vec<String> {
+    with_program(source_text, path, export_names)
 }
 
 pub(crate) fn export_names(program: &Program<'_>) -> Vec<String> {
@@ -44,14 +50,18 @@ pub(crate) fn export_names(program: &Program<'_>) -> Vec<String> {
                 names.extend(bundle::binding_names(&decl.declaration));
             }
             Statement::ExportNamedDeclaration(decl) => {
-                for spec in &decl.specifiers {
-                    names.push(bundle::export_name(&spec.exported));
-                }
+                names.extend(
+                    decl.specifiers
+                        .iter()
+                        .map(|s| bundle::export_name(&s.exported)),
+                );
             }
             Statement::ExportFromDeclaration(decl) => {
-                for spec in &decl.specifiers {
-                    names.push(bundle::export_name(&spec.exported));
-                }
+                names.extend(
+                    decl.specifiers
+                        .iter()
+                        .map(|s| bundle::export_name(&s.exported)),
+                );
             }
             Statement::ExportAllDeclaration(decl) => {
                 if let Some(exported) = &decl.exported {
@@ -65,33 +75,24 @@ pub(crate) fn export_names(program: &Program<'_>) -> Vec<String> {
     names
 }
 
-// Static import/export-from specifiers, in source order (deduped). Used to
-// pre-resolve a module's imports before a plugin transform so a plugin's
-// `this.resolve` is a local lookup instead of a per-import host round-trip.
+/// Static import/export-from specifiers, in source order (deduped). Used to
+/// pre-resolve a module's imports before a plugin transform so a plugin's
+/// `this.resolve` is a local lookup instead of a per-import host round-trip.
 pub fn imports(source_text: &str, path: &Path) -> Vec<String> {
-    let Ok(source_type) = SourceType::from_path(path) else {
-        return Vec::new();
-    };
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source_text, source_type).parse();
-    if parsed.panicked {
-        return Vec::new();
-    }
-    let mut specs = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut push = |s: &str, specs: &mut Vec<String>| {
-        if seen.insert(s.to_string()) {
-            specs.push(s.to_string());
-        }
-    };
-    for stmt in &parsed.program.body {
-        match stmt {
-            Statement::ImportDeclaration(decl) => push(decl.source.value.as_str(), &mut specs),
-            Statement::ExportAllDeclaration(decl) => push(decl.source.value.as_str(), &mut specs),
-            _ => {}
-        }
-    }
-    specs
+    with_program(source_text, path, |program| {
+        let mut seen = HashSet::new();
+        program
+            .body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Statement::ImportDeclaration(decl) => Some(decl.source.value.as_str()),
+                Statement::ExportAllDeclaration(decl) => Some(decl.source.value.as_str()),
+                _ => None,
+            })
+            .filter(|s| seen.insert(*s))
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 #[cfg(test)]

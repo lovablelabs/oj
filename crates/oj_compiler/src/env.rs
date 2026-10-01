@@ -2,16 +2,14 @@ use crate::scan::{scan, F_IMPORT_META_ENV};
 use oxc_transformer_plugins::ReplaceGlobalDefinesConfig;
 use std::sync::{Arc, LazyLock, RwLock};
 
-/// Everything a compile derives from one resolved define list, built once per
-/// `set_*` call instead of once per compile: the non-`import.meta` keys that
-/// gate the replacer on plain source text, and the oxc config, which validates
-/// and parses every value in its own arena and is `Clone` over an `Arc`.
+/// What a compile derives from one resolved define list, built once per
+/// `set_*` call rather than per compile: the plain-text gate keys and the oxc
+/// config (parsed once, `Clone` over an `Arc`).
 pub(crate) struct EnvDefines {
-    /// Keys other than `import.meta*`; `import.meta.env` itself is gated by the
-    /// SIMD `F_IMPORT_META_ENV` scan, so these are the only scalar scans left.
+    /// Keys outside `import.meta.env*`, which the SIMD `F_IMPORT_META_ENV`
+    /// scan already gates; these are the only scalar scans.
     plain_keys: Vec<String>,
-    /// `None` when oxc rejected the list, which skips the replacer for that
-    /// compile (unchanged from the uncached behaviour).
+    /// `None` when oxc rejected the list; compiles then skip the replacer.
     config: Option<ReplaceGlobalDefinesConfig>,
 }
 
@@ -19,9 +17,8 @@ impl EnvDefines {
     fn build(pairs: Vec<(String, String)>) -> Arc<Self> {
         let plain_keys = pairs
             .iter()
-            // Only import.meta.env itself (and its members) is covered by the
-            // SIMD finder; any other import.meta.* define (import.meta.vitest)
-            // must stay a scanned plain key or needed_by never sees it.
+            // Other import.meta.* defines (import.meta.vitest) are not covered
+            // by the SIMD finder, so they stay plain keys.
             .filter(|(k, _)| k != "import.meta.env" && !k.starts_with("import.meta.env."))
             .map(|(k, _)| k.clone())
             .collect();
@@ -59,9 +56,8 @@ struct EnvState {
 }
 
 impl EnvState {
-    /// Rederives both variants. `ReplaceGlobalDefinesConfig::new` parses every
-    /// value (roughly 100 us with 40 vars), so it runs in the setters, not on
-    /// the compile path.
+    /// Rederives both variants. Config parsing costs ~100us for 40 vars, so it
+    /// runs in the setters, off the compile path.
     fn rebuild(&mut self) {
         let Some(pairs) = &self.client_pairs else {
             self.client = None;
@@ -89,10 +85,9 @@ impl EnvState {
 }
 
 /// The dev server's `import.meta.env` / `define` replacements, shared with
-/// every compile through [`CompileOptions::env`](crate::CompileOptions). A
-/// `RwLock` because the server re-sets them once plugin `config()` hooks
-/// report env changes. The setters rebuild both variants: call them at boot,
-/// not per request.
+/// every compile through [`CompileOptions::env`](crate::CompileOptions).
+/// Re-set when plugin `config()` hooks change env; setters rebuild both
+/// variants, so call them at boot, not per request.
 #[derive(Default)]
 pub struct ImportMetaEnv {
     state: RwLock<EnvState>,
@@ -191,9 +186,8 @@ mod tests {
 
     #[test]
     fn fallback_variants_are_cached_per_dev_ssr() {
-        // No env is set here, so every lookup lands
-        // on the fallback table: the same (dev, ssr) hands back the same Arc,
-        // and each variant is its own entry.
+        // With no env set, the same (dev, ssr) returns the same Arc and each
+        // variant is its own entry.
         assert!(Arc::ptr_eq(
             &defines_for(None, true, false),
             &defines_for(None, true, false)

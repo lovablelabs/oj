@@ -1,7 +1,11 @@
 use crate::bundle;
 use crate::compile::ImportRewriter;
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Program, Statement, StringLiteral};
+use oxc_ast::ast::{
+    Expression, ImportDeclarationSpecifier, ImportExpression, Program, Statement, StringLiteral,
+};
+use oxc_ast_visit::{walk_mut, VisitMut};
+use std::collections::HashMap;
 
 pub(crate) fn rewrite_module_specifiers_pub<'a>(
     allocator: &'a Allocator,
@@ -9,85 +13,123 @@ pub(crate) fn rewrite_module_specifiers_pub<'a>(
     rewriter: &mut ImportRewriter,
 ) -> (Vec<String>, Vec<String>) {
     let mut opt: Option<&mut ImportRewriter> = Some(rewriter);
-    let (imports, dynamic_imports, _) = rewrite_module_specifiers(allocator, program, &mut opt);
-    (imports, dynamic_imports)
+    let specifiers = rewrite_module_specifiers(allocator, program, &mut opt);
+    (specifiers.imports, specifiers.dynamic_imports)
 }
 
-/// Per import specifier, the binding names the module uses from it.
-type ImportBindings = Vec<(String, Vec<String>)>;
+/// What [`rewrite_module_specifiers`] collected, specifiers already rewritten.
+pub(crate) struct ModuleSpecifiers {
+    pub imports: Vec<String>,
+    pub dynamic_imports: Vec<String>,
+    /// Per specifier, the binding names the module uses from it (Vite's
+    /// `importedBindings`), in first-seen order.
+    pub bindings: Vec<(String, Vec<String>)>,
+}
 
+/// Rewrites static import/export-from sources (and, with a rewriter, dynamic
+/// `import("...")` literals) and collects them.
 pub(crate) fn rewrite_module_specifiers<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     rewriter: &mut Option<&mut ImportRewriter>,
-) -> (Vec<String>, Vec<String>, ImportBindings) {
+) -> ModuleSpecifiers {
     let mut imports = Vec::new();
     let mut dynamic_imports = Vec::new();
-    let mut bindings: ImportBindings = Vec::new();
+    let mut bindings = BindingsBuilder::default();
     for stmt in program.body.iter_mut() {
-        // The names each statement pulls from its source, for partial-accept
-        // gating (Vite's importedBindings): a side-effect import records an
-        // empty list (nothing used, always within any accepted set) and a
-        // namespace or star re-export records `*` (never within one).
-        let names: Vec<String> = match stmt {
-            Statement::ImportDeclaration(decl) => decl
-                .specifiers
-                .iter()
-                .flatten()
-                .map(|s| {
-                    use oxc_ast::ast::ImportDeclarationSpecifier as S;
-                    match s {
-                        S::ImportSpecifier(s) => s.imported.name().to_string(),
-                        S::ImportDefaultSpecifier(_) => "default".to_string(),
-                        S::ImportNamespaceSpecifier(_) => "*".to_string(),
-                    }
-                })
-                .collect(),
-            Statement::ExportFromDeclaration(decl) => decl
-                .specifiers
-                .iter()
-                .map(|s| bundle::export_name(&s.local))
-                .collect(),
-            Statement::ExportAllDeclaration(_) => vec!["*".to_string()],
-            _ => Vec::new(),
+        let names = imported_names(stmt);
+        let Some(lit) = static_source(stmt) else {
+            continue;
         };
-        let source: Option<&mut StringLiteral> = match stmt {
-            Statement::ImportDeclaration(decl) => Some(&mut decl.source),
-            Statement::ExportFromDeclaration(decl) => Some(&mut decl.source),
-            Statement::ExportAllDeclaration(decl) => Some(&mut decl.source),
-            _ => None,
-        };
-        let Some(lit) = source else { continue };
-
         if let Some(rewriter) = rewriter.as_deref_mut() {
-            if let Some(new_spec) = rewriter(lit.value.as_str()) {
-                lit.value = allocator.alloc_str(&new_spec).into();
-                lit.raw = None;
-            }
+            rewrite_literal(allocator, lit, rewriter);
         }
         let spec = lit.value.to_string();
-        match bindings.iter_mut().find(|(s, _)| *s == spec) {
-            Some((_, existing)) => existing.extend(names),
-            None => bindings.push((spec.clone(), names)),
-        }
+        bindings.extend(&spec, names);
         imports.push(spec);
     }
     if let Some(rewriter) = rewriter.as_deref_mut() {
-        let mut dyn_rewriter = DynamicImportRewriter {
+        DynamicImportRewriter {
             allocator,
             rewriter,
             dynamic: &mut dynamic_imports,
-        };
-        use oxc_ast_visit::VisitMut;
-        dyn_rewriter.visit_program(program);
+        }
+        .visit_program(program);
     }
     for spec in &dynamic_imports {
-        match bindings.iter_mut().find(|(s, _)| s == spec) {
-            Some((_, existing)) => existing.push("*".to_string()),
-            None => bindings.push((spec.clone(), vec!["*".to_string()])),
+        bindings.extend(spec, vec!["*".to_string()]);
+    }
+    ModuleSpecifiers {
+        imports,
+        dynamic_imports,
+        bindings: bindings.list,
+    }
+}
+
+/// Swaps a string literal's value for the rewriter's answer, if any.
+pub(crate) fn rewrite_literal<'a>(
+    allocator: &'a Allocator,
+    lit: &mut StringLiteral<'a>,
+    rewriter: &mut ImportRewriter,
+) {
+    if let Some(new_spec) = rewriter(lit.value.as_str()) {
+        lit.value = allocator.alloc_str(&new_spec).into();
+        lit.raw = None;
+    }
+}
+
+/// The names a statement pulls from its source, for partial-accept gating: a
+/// side-effect import records an empty list (always within any accepted set),
+/// a namespace import or star re-export records `*` (never within one).
+fn imported_names(stmt: &Statement) -> Vec<String> {
+    match stmt {
+        Statement::ImportDeclaration(decl) => decl
+            .specifiers
+            .iter()
+            .flatten()
+            .map(|s| match s {
+                ImportDeclarationSpecifier::ImportSpecifier(s) => s.imported.name().to_string(),
+                ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => "default".to_string(),
+                ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => "*".to_string(),
+            })
+            .collect(),
+        Statement::ExportFromDeclaration(decl) => decl
+            .specifiers
+            .iter()
+            .map(|s| bundle::export_name(&s.local))
+            .collect(),
+        Statement::ExportAllDeclaration(_) => vec!["*".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn static_source<'s, 'a>(stmt: &'s mut Statement<'a>) -> Option<&'s mut StringLiteral<'a>> {
+    match stmt {
+        Statement::ImportDeclaration(decl) => Some(&mut decl.source),
+        Statement::ExportFromDeclaration(decl) => Some(&mut decl.source),
+        Statement::ExportAllDeclaration(decl) => Some(&mut decl.source),
+        _ => None,
+    }
+}
+
+/// Ordered per-specifier binding lists with a map index, so repeated imports
+/// of one specifier merge without a linear scan.
+#[derive(Default)]
+struct BindingsBuilder {
+    list: Vec<(String, Vec<String>)>,
+    index: HashMap<String, usize>,
+}
+
+impl BindingsBuilder {
+    fn extend(&mut self, spec: &str, names: Vec<String>) {
+        match self.index.get(spec) {
+            Some(&i) => self.list[i].1.extend(names),
+            None => {
+                self.index.insert(spec.to_string(), self.list.len());
+                self.list.push((spec.to_string(), names));
+            }
         }
     }
-    (imports, dynamic_imports, bindings)
 }
 
 struct DynamicImportRewriter<'a, 'b> {
@@ -96,16 +138,13 @@ struct DynamicImportRewriter<'a, 'b> {
     dynamic: &'b mut Vec<String>,
 }
 
-impl<'a> oxc_ast_visit::VisitMut<'a> for DynamicImportRewriter<'a, '_> {
-    fn visit_import_expression(&mut self, it: &mut oxc_ast::ast::ImportExpression<'a>) {
-        if let oxc_ast::ast::Expression::StringLiteral(lit) = &mut it.source {
-            if let Some(new_spec) = (self.rewriter)(lit.value.as_str()) {
-                lit.value = self.allocator.alloc_str(&new_spec).into();
-                lit.raw = None;
-            }
+impl<'a> VisitMut<'a> for DynamicImportRewriter<'a, '_> {
+    fn visit_import_expression(&mut self, it: &mut ImportExpression<'a>) {
+        if let Expression::StringLiteral(lit) = &mut it.source {
+            rewrite_literal(self.allocator, lit, self.rewriter);
             self.dynamic.push(lit.value.to_string());
         }
-        oxc_ast_visit::walk_mut::walk_import_expression(self, it);
+        walk_mut::walk_import_expression(self, it);
     }
 }
 

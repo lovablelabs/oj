@@ -74,10 +74,9 @@ pub struct CompileOptions {
     pub sourcemap: bool,
     pub ssr: bool,
     pub jsx: JsxConfig,
-    /// Class-field semantics decided by the caller ([[Set]] when true), so a
-    /// cache key computed from the ORIGINAL path and a compile running on a
-    /// synthetic one (`x.svg` -> `x.svg.tsx`) can never disagree; `None` asks
-    /// the compiler to consult the nearest tsconfig itself.
+    /// Class-field semantics ([[Set]] when true), decided by the caller so a
+    /// cache key from the original path and a compile on a synthetic one
+    /// (`x.svg` -> `x.svg.tsx`) agree; `None` consults the nearest tsconfig.
     pub class_field_set_semantics: Option<bool>,
     /// The dev server's defines; `None` uses the mode-derived fallback.
     pub env: Option<Arc<ImportMetaEnv>>,
@@ -112,9 +111,9 @@ impl CompileOptions {
 #[derive(Debug)]
 pub struct CompileOutput {
     pub code: String,
-    /// The sourcemap as RAW JSON; the data URL is built at serve time, as
-    /// Vite's genSourceMapUrl does per send. Raw JSON retains 25% fewer bytes
-    /// than base64 in every cache that holds the module.
+    /// The sourcemap as raw JSON; the data URL is built at serve time, as
+    /// Vite's genSourceMapUrl does. Raw JSON is 25% smaller than base64 in
+    /// every cache that holds the module.
     pub map_json: Option<String>,
     pub imports: Vec<String>,
     pub dynamic_imports: Vec<String>,
@@ -197,136 +196,191 @@ pub fn compile_module_with_maps(
 ) -> Result<CompileOutput, CompileError> {
     let source_type = SourceType::from_path(path)
         .map_err(|_| CompileError::UnsupportedFileType(path.to_path_buf()))?;
-
     let allocator = Allocator::default();
 
-    let parsed = Parser::new(&allocator, source_text, source_type).parse();
-    if parsed.panicked || !parsed.diagnostics.is_empty() {
-        let message = parsed
-            .diagnostics
+    let mut program = parse(&allocator, path, source_text, source_type)?;
+    transform(&allocator, path, source_text, opts, &mut program)?;
+    apply_defines(&allocator, source_text, opts, &mut program);
+    let synthesized = expand_synthesized(&allocator, path, source_text, &mut program);
+
+    let specifiers = rewrite_module_specifiers(&allocator, &mut program, &mut rewriter);
+    let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
+    if let Some(h) = hot_accept.as_mut() {
+        promote_full_export_accept(h, &program);
+    }
+    let is_refresh_boundary = opts.refresh && detect_refresh_registrations(&program);
+
+    let (code, map_json) = codegen(&program, path, opts, synthesized, input_maps);
+    Ok(CompileOutput {
+        code,
+        map_json,
+        imports: specifiers.imports,
+        dynamic_imports: specifiers.dynamic_imports,
+        import_bindings: specifiers.bindings,
+        is_refresh_boundary,
+        hot_accept,
+    })
+}
+
+/// Renders oxc diagnostics against the source, one per line.
+macro_rules! diagnostics_message {
+    ($diagnostics:expr, $source_text:expr) => {
+        $diagnostics
             .into_iter()
-            .map(|d| format!("{:?}", d.with_source_code(source_text.to_string())))
+            .map(|d| format!("{:?}", d.with_source_code($source_text.to_string())))
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n")
+    };
+}
+
+fn parse<'a>(
+    allocator: &'a Allocator,
+    path: &Path,
+    source_text: &'a str,
+    source_type: SourceType,
+) -> Result<Program<'a>, CompileError> {
+    let parsed = Parser::new(allocator, source_text, source_type).parse();
+    if parsed.panicked || !parsed.diagnostics.is_empty() {
         return Err(CompileError::Parse {
             path: path.to_path_buf(),
-            message,
+            message: diagnostics_message!(parsed.diagnostics, source_text),
         });
     }
-    let mut program = parsed.program;
+    Ok(parsed.program)
+}
 
-    let semantic_ret = SemanticBuilder::new()
+/// TypeScript strip, JSX and (dev) React Refresh instrumentation.
+fn transform<'a>(
+    allocator: &'a Allocator,
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
+    program: &mut Program<'a>,
+) -> Result<(), CompileError> {
+    // oxc's TS enum transform panics without enum evaluation.
+    let scoping = SemanticBuilder::new()
         .with_excess_capacity(2.0)
         .with_enum_eval(true)
-        .build(&program);
-    let scoping = semantic_ret.semantic.into_scoping();
+        .build(program)
+        .semantic
+        .into_scoping();
+    let transform_ret = Transformer::new(allocator, path, &transform_options(path, opts))
+        .build_with_scoping(scoping, program);
+    if !transform_ret.diagnostics.is_empty() {
+        return Err(CompileError::Transform {
+            path: path.to_path_buf(),
+            message: diagnostics_message!(transform_ret.diagnostics, source_text),
+        });
+    }
+    Ok(())
+}
 
-    let mut transform_options = TransformOptions::default();
-    // Vite honors the nearest tsconfig's class-field semantics (vite:oxc hands
-    // tsconfig discovery to the transform); oxc's documented recipe for
+fn transform_options(path: &Path, opts: &CompileOptions) -> TransformOptions {
+    let mut options = TransformOptions::default();
+    // Vite honors the nearest tsconfig's class-field semantics; oxc's recipe for
     // `useDefineForClassFields: false` is exactly these two flags.
     if opts
         .class_field_set_semantics
         .unwrap_or_else(|| tsconfig::class_field_set_semantics(path))
     {
-        transform_options.assumptions.set_public_class_fields = true;
-        transform_options
-            .typescript
-            .remove_class_fields_without_initializer = true;
+        options.assumptions.set_public_class_fields = true;
+        options.typescript.remove_class_fields_without_initializer = true;
     }
-    transform_options.jsx.jsx_plugin = true;
+    let jsx = &mut options.jsx;
+    jsx.jsx_plugin = true;
     if opts.jsx.is_classic() {
-        transform_options.jsx.runtime = JsxRuntime::Classic;
-        // oxc rejects pragma/pragmaFrag under the automatic runtime, so they are
-        // only set for classic.
-        transform_options.jsx.pragma = opts.jsx.pragma.clone();
-        transform_options.jsx.pragma_frag = opts.jsx.pragma_frag.clone();
+        jsx.runtime = JsxRuntime::Classic;
+        // oxc rejects pragma/pragmaFrag under the automatic runtime.
+        jsx.pragma = opts.jsx.pragma.clone();
+        jsx.pragma_frag = opts.jsx.pragma_frag.clone();
     } else {
-        transform_options.jsx.runtime = JsxRuntime::Automatic;
-        transform_options.jsx.import_source = opts.jsx.import_source.clone();
+        jsx.runtime = JsxRuntime::Automatic;
+        jsx.import_source = opts.jsx.import_source.clone();
     }
-    transform_options.jsx.development = opts.dev;
-    transform_options.jsx.jsx_self_plugin = opts.dev;
-    transform_options.jsx.jsx_source_plugin = opts.dev;
+    jsx.development = opts.dev;
+    jsx.jsx_self_plugin = opts.dev;
+    jsx.jsx_source_plugin = opts.dev;
     if opts.dev && opts.refresh {
-        transform_options.jsx.refresh = Some(ReactRefreshOptions::default());
+        jsx.refresh = Some(ReactRefreshOptions::default());
     }
+    options
+}
 
-    let transform_ret = Transformer::new(&allocator, path, &transform_options)
-        .build_with_scoping(scoping, &mut program);
-    if !transform_ret.diagnostics.is_empty() {
-        let message = transform_ret
-            .diagnostics
-            .into_iter()
-            .map(|d| format!("{:?}", d.with_source_code(source_text.to_string())))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(CompileError::Transform {
-            path: path.to_path_buf(),
-            message,
-        });
-    }
-
+/// `import.meta.env` / `define` replacement. Runs after the transform, so
+/// scoping is rebuilt: the JSX/TS passes add references without reference ids,
+/// which the replacer would panic on.
+fn apply_defines<'a>(
+    allocator: &'a Allocator,
+    source_text: &str,
+    opts: &CompileOptions,
+    program: &mut Program<'a>,
+) {
     let defines = defines_for(opts.env.as_deref(), opts.dev, opts.ssr);
-    if defines.needed_by(source_text) {
-        if let Some(config) = defines.config() {
-            let scoping = SemanticBuilder::new()
-                .build(&program)
-                .semantic
-                .into_scoping();
-            let _ = ReplaceGlobalDefines::new(&allocator, config).build(scoping, &mut program);
-        }
+    if !defines.needed_by(source_text) {
+        return;
     }
+    if let Some(config) = defines.config() {
+        let scoping = SemanticBuilder::new()
+            .build(program)
+            .semantic
+            .into_scoping();
+        let _ = ReplaceGlobalDefines::new(allocator, config).build(scoping, program);
+    }
+}
 
-    // Track synthesized expansions: they splice generated nodes with no faithful
-    // source origin, so their sourcemap must be skipped (see codegen below).
+/// Expands `import.meta.glob`, dynamic-import-vars (``import(`./x/${v}.js`)``,
+/// as the build path does) and `new URL("./asset", import.meta.url)` (to a
+/// hoisted `?url` import). Returns whether any generated nodes were spliced in:
+/// those have no source origin, so the module's sourcemap must be skipped.
+fn expand_synthesized<'a>(
+    allocator: &'a Allocator,
+    path: &Path,
+    source_text: &str,
+    program: &mut Program<'a>,
+) -> bool {
+    let dir = path.parent().unwrap_or(path);
     let mut synthesized = false;
-    if F_IMPORT_META_GLOB.find(source_text.as_bytes()).is_some() {
-        let dir = path.parent().unwrap_or(path);
-        glob::expand(&allocator, dir, &mut program);
+    if scan(&F_IMPORT_META_GLOB, source_text) {
+        glob::expand(allocator, dir, program);
         synthesized = true;
     }
-
-    // Expand dynamic-import-vars (import(`./x/${v}.js`)) in dev too — the build
-    // path already does; without it these work in `oj build` but throw in dev.
     if scan(&F_IMPORT_PAREN, source_text) {
-        let dir = path.parent().unwrap_or(path);
-        synthesized |= glob::expand_dynamic_import_vars(&allocator, dir, &mut program, source_text);
+        synthesized |= glob::expand_dynamic_import_vars(allocator, dir, program, source_text);
     }
-
-    // new URL("./asset", import.meta.url) -> a hoisted ?url asset import.
     if source_text.contains("import.meta.url") {
-        let dir = path.parent().unwrap_or(path);
-        synthesized |= glob::expand_new_url_asset(&allocator, dir, &mut program, source_text);
+        synthesized |= glob::expand_new_url_asset(allocator, dir, program, source_text);
     }
+    synthesized
+}
 
-    let (imports, dynamic_imports, import_bindings) =
-        rewrite_module_specifiers(&allocator, &mut program, &mut rewriter);
-    let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
-    // Vite's promotion (importAnalysis): a module whose acceptExports list
-    // covers every export it actually has is fully self-accepting, so even a
-    // namespace or dynamic importer hot-swaps through it.
-    if let Some(h) = hot_accept.as_mut() {
-        if let Some(accepted) = &h.accepted_exports {
-            // Vacuously true with no detectable exports, as in Vite (its
-            // es-module-lexer list is empty for `export *` too).
-            if export_names(&program).iter().all(|n| accepted.contains(n)) {
-                h.self_accepting = true;
-            }
+/// Vite's promotion (importAnalysis): an `acceptExports` list covering every
+/// export the module has makes it fully self-accepting, so even a namespace or
+/// dynamic importer hot-swaps through it. Vacuously true with no detectable
+/// exports, as in Vite (its es-module-lexer list is empty for `export *` too).
+fn promote_full_export_accept(hot: &mut HotAccept, program: &Program) {
+    if let Some(accepted) = &hot.accepted_exports {
+        if export_names(program).iter().all(|n| accepted.contains(n)) {
+            hot.self_accepting = true;
         }
     }
+}
 
-    let is_refresh_boundary = opts.refresh && detect_refresh_registrations(&program);
-
-    // Synthesized nodes (glob / dynamic-import-vars) carry generated-string spans
-    // with no origin in this module's source; sourcemapping them panics oxc's
-    // builder on out-of-range spans, so skip the map for those modules.
+/// Emits code and the raw JSON map, folded through any plugin `input_maps`.
+fn codegen(
+    program: &Program,
+    path: &Path,
+    opts: &CompileOptions,
+    synthesized: bool,
+    input_maps: &[String],
+) -> (String, Option<String>) {
+    // Synthesized nodes carry generated-string spans; sourcemapping them panics
+    // oxc's builder on out-of-range spans.
     let codegen_options = CodegenOptions {
         source_map_path: (opts.sourcemap && !synthesized).then(|| path.to_path_buf()),
         ..CodegenOptions::default()
     };
     let CodegenReturn { code, map, .. } =
-        Codegen::new().with_options(codegen_options).build(&program);
+        Codegen::new().with_options(codegen_options).build(program);
 
     let map_json = map.map(|oj_map| {
         let mut json = if input_maps.is_empty() {
@@ -334,21 +388,12 @@ pub fn compile_module_with_maps(
         } else {
             compose_input_maps_json(&oj_map, input_maps)
         };
-        // to_json_string over-reserves ~4x; this String is RETAINED per module
-        // in every cache, so excess capacity is resident memory.
+        // to_json_string over-reserves ~4x and this String is retained per
+        // module in every cache.
         json.shrink_to_fit();
         json
     });
-
-    Ok(CompileOutput {
-        code,
-        map_json,
-        imports,
-        dynamic_imports,
-        import_bindings,
-        is_refresh_boundary,
-        hot_accept,
-    })
+    (code, map_json)
 }
 
 #[cfg(test)]
@@ -358,11 +403,9 @@ mod tests {
 
     #[test]
     fn defines_apply_after_jsx_transform_without_reference_id_panic() {
-        // import.meta.env inside JSX: the JSX/TS transform introduces
-        // IdentifierReferences without reference_ids, and ReplaceGlobalDefines
-        // reads reference_id() while walking the whole program. Before scoping
-        // was rebuilt on the transformed program this panicked; it must compile
-        // and still apply the defines.
+        // The JSX/TS transform introduces IdentifierReferences without
+        // reference_ids, which ReplaceGlobalDefines reads: scoping must be
+        // rebuilt on the transformed program or this panics.
         let src = r#"
 export function App() {
   return <div className={import.meta.env.DEV ? "dev" : "prod"}>{import.meta.env.MODE}</div>;
@@ -383,8 +426,7 @@ export function App() {
 
     #[test]
     fn enum_declarations_compile() {
-        // oxc's TS enum transform requires with_enum_eval(true); without it the
-        // transformer panics on any enum.
+        // oxc's TS enum transform panics without with_enum_eval(true).
         let src = "export enum Dir { Up, Down }\nexport const d = Dir.Up;";
         let out = compile_module(Path::new("e.ts"), src, &CompileOptions::prod(), None).unwrap();
         assert!(!out.code.is_empty(), "{}", out.code);
@@ -447,9 +489,7 @@ import React from "react";
 
     #[test]
     fn dev_compile_expands_dynamic_import_vars() {
-        // import(`./x/${v}.js`) must expand in the DEV compile path too — the
-        // build path already does, so without this it works in `oj build` and
-        // throws at runtime under `oj dev`.
+        // import(`./x/${v}.js`) must expand in dev as it does in `oj build`.
         let dir = std::env::temp_dir().join(format!("oj-dynimport-{}", std::process::id()));
         let loc = dir.join("locales");
         std::fs::create_dir_all(&loc).unwrap();
@@ -473,8 +513,7 @@ import React from "react";
 
     #[test]
     fn dev_compile_rewrites_new_url_import_meta_url() {
-        // new URL("./x", import.meta.url) -> a hoisted ?url asset import ref, so
-        // the asset flows through oj's pipeline instead of 404-ing.
+        // new URL("./x", import.meta.url) -> a hoisted ?url asset import ref.
         let src = "export const w = new URL(\"./worker.js\", import.meta.url);\n";
         let out = compile(std::path::Path::new("m.js"), src, &CompileOptions::dev()).unwrap();
         assert!(

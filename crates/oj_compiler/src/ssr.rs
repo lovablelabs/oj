@@ -6,9 +6,10 @@ use std::path::Path;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingPattern, Declaration, ExportDefaultDeclarationKind, ExportSpecifier, Expression,
-    ImportDeclarationSpecifier, ImportExpression, ImportMeta, ModuleExportName, ObjectProperty,
-    PropertyKey, Statement,
+    BindingPattern, Declaration, ExportAllDeclaration, ExportDefaultDeclaration,
+    ExportDefaultDeclarationKind, ExportFromDeclaration, ExportNamedDeclaration, ExportSpecifier,
+    Expression, ImportDeclaration, ImportDeclarationSpecifier, ImportExpression, ImportMeta,
+    ModuleExportName, ObjectProperty, PropertyKey, Statement,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
@@ -65,15 +66,17 @@ fn men_key(key: &PropertyKey) -> String {
     }
 }
 
-struct RefCollector<'a, 'b> {
+/// Rewrites references to import bindings (`(0, ns.name)`, shorthand
+/// properties expanded), `import.meta` and `import(`.
+struct RefCollector<'b> {
     scoping: &'b Scoping,
     imports: &'b HashMap<SymbolId, String>,
     edits: Vec<Edit>,
+    /// Span starts of shorthand values already rewritten with their key.
     handled: HashSet<u32>,
-    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a, 'b> RefCollector<'a, 'b> {
+impl<'b> RefCollector<'b> {
     fn repl_for_ref(&self, reference_id: Option<ReferenceId>) -> Option<&'b String> {
         let rid = reference_id?;
         let sym = self.scoping.get_reference(rid).symbol_id()?;
@@ -81,7 +84,7 @@ impl<'a, 'b> RefCollector<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Visit<'a> for RefCollector<'a, 'b> {
+impl<'a> Visit<'a> for RefCollector<'_> {
     fn visit_expression(&mut self, expr: &Expression<'a>) {
         if let Expression::ImportMeta(m) = expr {
             self.visit_import_meta(m);
@@ -138,6 +141,10 @@ impl<'a, 'b> Visit<'a> for RefCollector<'a, 'b> {
     }
 }
 
+/// Vite's `ssrTransform`: static imports and re-exports become hoisted
+/// `__vite_ssr_import__` consts, exports become `__vite_ssr_exportName__`
+/// getters, and import bindings, `import.meta` and `import()` are rewritten
+/// in place. Unparseable input is returned unchanged.
 pub fn ssr_transform(source: &str, path: &Path) -> String {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
@@ -151,205 +158,204 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
         .semantic
         .into_scoping();
 
-    let mut imports: HashMap<SymbolId, String> = HashMap::new();
-    let mut edits: Vec<Edit> = Vec::new();
-    let mut hoisted: Vec<String> = Vec::new();
-    let mut uid = 0usize;
-
-    let import_const = |uid: usize, src: &str, names: &[String]| -> String {
-        let meta = if names.is_empty() {
-            String::new()
-        } else {
-            format!(
-                ", {{\"importedNames\":[{}]}}",
-                names
-                    .iter()
-                    .map(|n| json_str(n))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-        };
-        format!(
-            "const __vite_ssr_import_{uid}__ = await __vite_ssr_import__({}{meta});",
-            json_str(src)
-        )
-    };
-
+    let mut hoister = Hoister::new(&scoping);
     for stmt in &program.body {
-        match stmt {
-            Statement::ImportDeclaration(imp) => {
-                if imp.import_kind.is_type() {
-                    edits.push(Edit {
-                        start: imp.span.start,
-                        end: imp.span.end,
-                        text: String::new(),
-                    });
-                    continue;
-                }
-                let src = imp.source.value.as_str();
-                let mut names: Vec<String> = Vec::new();
-                if let Some(specs) = &imp.specifiers {
-                    for spec in specs {
-                        match spec {
-                            ImportDeclarationSpecifier::ImportSpecifier(s)
-                                if s.import_kind.is_type() => {}
-                            ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                                let name = men_name(&s.imported);
-                                names.push(name.clone());
-                                if let Some(sym) = s.local.symbol_id.get() {
-                                    imports.insert(sym, member(uid, &name));
-                                }
-                            }
-                            ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
-                                names.push("default".into());
-                                if let Some(sym) = s.local.symbol_id.get() {
-                                    imports.insert(sym, member(uid, "default"));
-                                }
-                            }
-                            ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                                if let Some(sym) = s.local.symbol_id.get() {
-                                    imports.insert(sym, format!("__vite_ssr_import_{uid}__"));
-                                }
-                            }
-                        }
-                    }
-                }
-                hoisted.push(import_const(uid, src, &names));
-                edits.push(Edit {
-                    start: imp.span.start,
-                    end: imp.span.end,
-                    text: String::new(),
-                });
-                uid += 1;
-            }
-            Statement::ExportDeclaration(exp) => {
-                for name in declared_names(&exp.declaration) {
-                    hoisted.push(export_name(&name, &name));
-                }
-                let decl_start = exp.declaration.span().start;
-                edits.push(Edit {
-                    start: exp.span.start,
-                    end: decl_start,
-                    text: String::new(),
-                });
-            }
-            Statement::ExportFromDeclaration(exp) => {
-                let value_specs: Vec<&ExportSpecifier> = exp
-                    .specifiers
-                    .iter()
-                    .filter(|s| !s.export_kind.is_type())
-                    .collect();
-                if exp.export_kind.is_type() || value_specs.is_empty() {
-                    edits.push(Edit {
-                        start: exp.span.start,
-                        end: exp.span.end,
-                        text: String::new(),
-                    });
-                    continue;
-                }
-                let names: Vec<String> = value_specs.iter().map(|s| men_name(&s.local)).collect();
-                let cur = uid;
-                hoisted.push(import_const(cur, exp.source.value.as_str(), &names));
-                uid += 1;
-                for s in &value_specs {
-                    let local = men_name(&s.local);
-                    let exported = men_name(&s.exported);
-                    hoisted.push(export_name(&exported, &member(cur, &local)));
-                }
-                edits.push(Edit {
-                    start: exp.span.start,
-                    end: exp.span.end,
-                    text: String::new(),
-                });
-            }
-            Statement::ExportNamedDeclaration(exp) => {
-                if !exp.export_kind.is_type() {
-                    for s in exp.specifiers.iter().filter(|s| !s.export_kind.is_type()) {
-                        let exported = men_name(&s.exported);
-                        let local_expr = resolve_local_symbol(&scoping, s)
-                            .and_then(|sym| imports.get(&sym).cloned())
-                            .unwrap_or_else(|| men_name(&s.local));
-                        hoisted.push(export_name(&exported, &local_expr));
-                    }
-                }
-                edits.push(Edit {
-                    start: exp.span.start,
-                    end: exp.span.end,
-                    text: String::new(),
-                });
-            }
-            Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
-                ExportDefaultDeclarationKind::FunctionDeclaration(f) if f.id.is_some() => {
-                    let name = f.id.as_ref().unwrap().name.to_string();
-                    hoisted.push(export_name("default", &name));
-                    edits.push(Edit {
-                        start: exp.span.start,
-                        end: f.span.start,
-                        text: String::new(),
-                    });
-                }
-                ExportDefaultDeclarationKind::ClassDeclaration(c) if c.id.is_some() => {
-                    let name = c.id.as_ref().unwrap().name.to_string();
-                    hoisted.push(export_name("default", &name));
-                    edits.push(Edit {
-                        start: exp.span.start,
-                        end: c.span.start,
-                        text: String::new(),
-                    });
-                }
-                _ => {
-                    hoisted.push(export_name("default", "__vite_ssr_export_default__"));
-                    let expr_start = exp.declaration.span().start;
-                    edits.push(Edit {
-                        start: exp.span.start,
-                        end: expr_start,
-                        text: "const __vite_ssr_export_default__ = ".into(),
-                    });
-                }
-            },
-            Statement::ExportAllDeclaration(exp) => {
-                if exp.export_kind.is_type() {
-                    edits.push(Edit {
-                        start: exp.span.start,
-                        end: exp.span.end,
-                        text: String::new(),
-                    });
-                    continue;
-                }
-                let cur = uid;
-                hoisted.push(import_const(cur, exp.source.value.as_str(), &[]));
-                uid += 1;
-                if let Some(exported) = &exp.exported {
-                    hoisted.push(export_name(
-                        &men_name(exported),
-                        &format!("__vite_ssr_import_{cur}__"),
-                    ));
-                } else {
-                    hoisted.push(format!(
-                        "__vite_ssr_exportAll__(__vite_ssr_import_{cur}__);"
-                    ));
-                }
-                edits.push(Edit {
-                    start: exp.span.start,
-                    end: exp.span.end,
-                    text: String::new(),
-                });
-            }
-            _ => {}
-        }
+        hoister.statement(stmt);
     }
+    let Hoister {
+        imports,
+        mut edits,
+        hoisted,
+        ..
+    } = hoister;
 
     let mut collector = RefCollector {
         scoping: &scoping,
         imports: &imports,
         edits: Vec::new(),
         handled: HashSet::new(),
-        _marker: std::marker::PhantomData,
     };
     collector.visit_program(&program);
     edits.extend(collector.edits);
 
     apply(source, edits, &hoisted)
+}
+
+/// The top-level pass: hoisted import/export lines, the span edits that drop
+/// the original statements, and the import bindings the reference pass
+/// rewrites. `uid` numbers the `__vite_ssr_import_N__` consts in source order.
+struct Hoister<'s> {
+    scoping: &'s Scoping,
+    imports: HashMap<SymbolId, String>,
+    edits: Vec<Edit>,
+    hoisted: Vec<String>,
+    uid: usize,
+}
+
+impl<'s> Hoister<'s> {
+    fn new(scoping: &'s Scoping) -> Self {
+        Self {
+            scoping,
+            imports: HashMap::new(),
+            edits: Vec::new(),
+            hoisted: Vec::new(),
+            uid: 0,
+        }
+    }
+
+    fn replace(&mut self, start: u32, end: u32, text: impl Into<String>) {
+        self.edits.push(Edit {
+            start,
+            end,
+            text: text.into(),
+        });
+    }
+
+    fn remove(&mut self, start: u32, end: u32) {
+        self.replace(start, end, String::new());
+    }
+
+    /// Hoists `const __vite_ssr_import_N__ = await __vite_ssr_import__(src)`,
+    /// with Vite's `importedNames` metadata when there are named bindings, and
+    /// returns N.
+    fn hoist_import(&mut self, src: &str, names: &[String]) -> usize {
+        let uid = self.uid;
+        self.uid += 1;
+        let meta = if names.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = names.iter().map(|n| json_str(n)).collect();
+            format!(", {{\"importedNames\":[{}]}}", list.join(","))
+        };
+        self.hoisted.push(format!(
+            "const __vite_ssr_import_{uid}__ = await __vite_ssr_import__({}{meta});",
+            json_str(src)
+        ));
+        uid
+    }
+
+    fn hoist_export(&mut self, name: &str, local_expr: &str) {
+        self.hoisted.push(export_name(name, local_expr));
+    }
+
+    fn statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::ImportDeclaration(imp) => self.import(imp),
+            Statement::ExportDeclaration(exp) => {
+                for name in declared_names(&exp.declaration) {
+                    self.hoist_export(&name, &name);
+                }
+                self.remove(exp.span.start, exp.declaration.span().start);
+            }
+            Statement::ExportFromDeclaration(exp) => self.export_from(exp),
+            Statement::ExportNamedDeclaration(exp) => self.export_named(exp),
+            Statement::ExportDefaultDeclaration(exp) => self.export_default(exp),
+            Statement::ExportAllDeclaration(exp) => self.export_all(exp),
+            _ => {}
+        }
+    }
+
+    fn import(&mut self, imp: &ImportDeclaration) {
+        if imp.import_kind.is_type() {
+            self.remove(imp.span.start, imp.span.end);
+            return;
+        }
+        let uid = self.uid;
+        let mut names: Vec<String> = Vec::new();
+        for spec in imp.specifiers.iter().flatten() {
+            let (local, repl) = match spec {
+                ImportDeclarationSpecifier::ImportSpecifier(s) if s.import_kind.is_type() => {
+                    continue
+                }
+                ImportDeclarationSpecifier::ImportSpecifier(s) => {
+                    let name = men_name(&s.imported);
+                    let repl = member(uid, &name);
+                    names.push(name);
+                    (&s.local, repl)
+                }
+                ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                    names.push("default".into());
+                    (&s.local, member(uid, "default"))
+                }
+                ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                    (&s.local, format!("__vite_ssr_import_{uid}__"))
+                }
+            };
+            if let Some(sym) = local.symbol_id.get() {
+                self.imports.insert(sym, repl);
+            }
+        }
+        self.hoist_import(imp.source.value.as_str(), &names);
+        self.remove(imp.span.start, imp.span.end);
+    }
+
+    fn export_from(&mut self, exp: &ExportFromDeclaration) {
+        let value_specs: Vec<&ExportSpecifier> = exp
+            .specifiers
+            .iter()
+            .filter(|s| !s.export_kind.is_type())
+            .collect();
+        if !exp.export_kind.is_type() && !value_specs.is_empty() {
+            let names: Vec<String> = value_specs.iter().map(|s| men_name(&s.local)).collect();
+            let uid = self.hoist_import(exp.source.value.as_str(), &names);
+            for (s, local) in value_specs.iter().zip(&names) {
+                self.hoist_export(&men_name(&s.exported), &member(uid, local));
+            }
+        }
+        self.remove(exp.span.start, exp.span.end);
+    }
+
+    fn export_named(&mut self, exp: &ExportNamedDeclaration) {
+        if !exp.export_kind.is_type() {
+            for s in exp.specifiers.iter().filter(|s| !s.export_kind.is_type()) {
+                let local_expr = resolve_local_symbol(self.scoping, s)
+                    .and_then(|sym| self.imports.get(&sym).cloned())
+                    .unwrap_or_else(|| men_name(&s.local));
+                self.hoist_export(&men_name(&s.exported), &local_expr);
+            }
+        }
+        self.remove(exp.span.start, exp.span.end);
+    }
+
+    fn export_default(&mut self, exp: &ExportDefaultDeclaration) {
+        // A named function or class keeps its binding: only `export default`
+        // goes. Anything else is captured in `__vite_ssr_export_default__`.
+        let named = match &exp.declaration {
+            ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                f.id.as_ref().map(|id| (id.name.to_string(), f.span.start))
+            }
+            ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                c.id.as_ref().map(|id| (id.name.to_string(), c.span.start))
+            }
+            _ => None,
+        };
+        match named {
+            Some((name, decl_start)) => {
+                self.hoist_export("default", &name);
+                self.remove(exp.span.start, decl_start);
+            }
+            None => {
+                self.hoist_export("default", "__vite_ssr_export_default__");
+                self.replace(
+                    exp.span.start,
+                    exp.declaration.span().start,
+                    "const __vite_ssr_export_default__ = ",
+                );
+            }
+        }
+    }
+
+    fn export_all(&mut self, exp: &ExportAllDeclaration) {
+        if !exp.export_kind.is_type() {
+            let uid = self.hoist_import(exp.source.value.as_str(), &[]);
+            let ns = format!("__vite_ssr_import_{uid}__");
+            match &exp.exported {
+                Some(exported) => self.hoist_export(&men_name(exported), &ns),
+                None => self.hoisted.push(format!("__vite_ssr_exportAll__({ns});")),
+            }
+        }
+        self.remove(exp.span.start, exp.span.end);
+    }
 }
 
 pub fn ssr_transform_module(
