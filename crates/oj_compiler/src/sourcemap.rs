@@ -8,6 +8,9 @@ pub fn map_json_to_data_url(json: &str) -> String {
     )
 }
 
+/// Folds oj's map through the plugin `input_maps` (applied last to first) so
+/// served positions trace to the original source. Unparseable plugin maps are
+/// skipped; a failed fold degrades to oj's own map.
 pub(crate) fn compose_input_maps_json(
     oj_map: &oxc_sourcemap::SourceMap,
     input_maps: &[String],
@@ -16,7 +19,7 @@ pub(crate) fn compose_input_maps_json(
     for pm in input_maps.iter().rev() {
         let outer = match oxc_sourcemap::SourceMap::from_json_string(&acc) {
             Ok(m) => m,
-            Err(_) => return oj_map.to_data_url(),
+            Err(_) => return oj_map.to_json_string(),
         };
         let inner = match oxc_sourcemap::SourceMap::from_json_string(pm) {
             Ok(m) => m,
@@ -30,6 +33,7 @@ pub(crate) fn compose_input_maps_json(
     }
 }
 
+/// `outer` (served -> intermediate) through `inner` (intermediate -> original).
 fn compose_two<'i>(
     outer: &oxc_sourcemap::SourceMap,
     inner: &'i oxc_sourcemap::SourceMap,
