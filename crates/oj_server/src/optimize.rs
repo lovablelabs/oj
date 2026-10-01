@@ -12,9 +12,8 @@ const OPTIMIZE_JS: &str = include_str!("assets/optimize-deps.mjs");
 pub struct DepMeta {
     pub file: String,
     pub needs_interop: bool,
-    /// The URL an importer is rewritten to: `/@oj-deps/<file>?v=<version>`, the
-    /// version query being what lets the server mark the response immutable (Vite's
-    /// ensureVersionQuery + `Cache-Control: max-age=31536000,immutable`).
+    /// Importer rewrite target `/@oj-deps/<file>?v=<version>`; the version query
+    /// is what lets the response be served immutable (Vite's ensureVersionQuery).
     pub url: String,
 }
 
@@ -23,9 +22,8 @@ pub type DepMap = HashMap<String, DepMeta>;
 pub struct OptimizedDeps {
     rx: watch::Receiver<Option<Arc<DepMap>>>,
     dir: PathBuf,
-    /// Short prebundle hash (Vite's browserHash): changes whenever the lockfile
-    /// or the optimizer config does, so a stale immutable cache entry is never
-    /// re-used under the same URL. Empty when the optimizer is disabled.
+    /// Short prebundle hash (Vite's browserHash): changes with the lockfile or
+    /// optimizer config so stale immutable entries never share a URL. Empty when disabled.
     version: String,
 }
 
@@ -102,11 +100,8 @@ impl OptimizedDeps {
     }
 }
 
-/// Dependency-optimizer inputs derived from the resolved config
-/// (`optimizeDeps.include/exclude/entries`, `resolve.dedupe`, `resolve.alias`).
-/// `optimizeDeps.noDiscovery` when the user set it, else the OJ_OPTIMIZE_SCAN
-/// opt-in. One function so the optimizer run and its cache key can never
-/// disagree about which mode a prebundle was built in.
+/// `optimizeDeps.noDiscovery` when set, else the OJ_OPTIMIZE_SCAN opt-in. One
+/// function so the optimizer run and its cache key can never disagree on mode.
 fn effective_auto_discover(no_discovery: Option<bool>) -> bool {
     no_discovery.map(|disabled| !disabled).unwrap_or_else(|| {
         std::env::var("OJ_OPTIMIZE_SCAN").is_ok_and(|v| !v.is_empty() && v != "0")
@@ -134,26 +129,21 @@ pub struct OptimizeInput {
     /// Vite's `--mode` (getConfigHash folds `define: NODE_ENV || mode`): a dep
     /// prebundled for `development` is not the `production` one.
     pub mode: String,
-    /// `optimizeDeps.needsInterop`: deps whose metadata must say `needsInterop:
-    /// true` whatever their bundle's export shape (Vite's needsInterop()).
+    /// `optimizeDeps.needsInterop`: force `needsInterop: true` whatever the
+    /// bundle's export shape (Vite's needsInterop()).
     pub needs_interop: Vec<String>,
 }
 
-/// The mainFields the prebundle resolves with, from the resolved config: the
-/// user's `resolve.mainFields` (or the dev resolver's defaults) with Vite's
-/// `pkg.main` fallback appended last. The sidecar's bundler walks the list
-/// verbatim (no resolvePackageEntry fallback), so a Vite-shaped main-less
-/// list from the config must not make a dep that resolves in the dev server
-/// fail the prebundle.
+/// Prebundle mainFields: the resolved config's list with Vite's `pkg.main`
+/// fallback appended last, since the sidecar bundler walks the list verbatim.
 pub fn optimizer_main_fields(config: &oj_config::OjConfig) -> Vec<String> {
     oj_resolver::with_main_fallback(
         oj_config::resolve_main_fields(config).unwrap_or_else(oj_resolver::default_main_fields),
     )
 }
 
-/// Vite's lockfileFormats (optimizer/index.ts): the lockfile a package manager
-/// writes, paired with the patch-package directory whose mtime must also
-/// invalidate the prebundle (`checkPatchesDir`).
+/// Vite's lockfileFormats: each lockfile paired with the patch-package
+/// directory whose mtime must also invalidate the prebundle (checkPatchesDir).
 const LOCKFILES: &[(&str, Option<&str>)] = &[
     ("node_modules/.pnpm/lock.yaml", None),
     ("node_modules/.package-lock.json", Some("patches")),
@@ -174,9 +164,8 @@ const LOCKFILES: &[(&str, Option<&str>)] = &[
     ("deno.lock", None),
 ];
 
-/// Fold every lockfile found in the nearest ancestor directory that has one
-/// (Vite's lookupFile walks up from root), plus the mtime of its patch-package
-/// directory, into `hasher`.
+/// Fold every lockfile in the nearest ancestor directory that has one (Vite's
+/// lookupFile), plus its patch-package dir mtime, into `hasher`.
 fn hash_lockfiles(root: &Path, hasher: &mut blake3::Hasher) {
     let mut dir = Some(root);
     while let Some(d) = dir {
@@ -235,9 +224,8 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         hasher.update(b"=");
         hasher.update(replacement.as_bytes());
     }
-    // The cache key must cover the EFFECTIVE decision: OJ_OPTIMIZE_SCAN is a
-    // fallback input to it, and hashing the raw Option let an env toggle serve
-    // the other mode's stale prebundle.
+    // Key the EFFECTIVE decision: hashing the raw Option let an OJ_OPTIMIZE_SCAN
+    // toggle serve the other mode's stale prebundle.
     hasher.update(
         format!(
             "\0discovery:{}",
@@ -300,11 +288,8 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<DepMap> {
     Some(map)
 }
 
-/// How long the dep pre-bundle may run before it is terminated. The old
-/// subprocess wait was UNBOUNDED — a wedged esbuild service could stall dep
-/// optimization forever — so the in-process engine gets a deadline: 120 s
-/// covers a cold pre-bundle of a large include list with room to spare, and
-/// `OJ_OPTIMIZE_TIMEOUT=<seconds>` raises it.
+/// Deadline for the dep pre-bundle (a wedged esbuild service must not stall it
+/// forever): 120 s default, raised via `OJ_OPTIMIZE_TIMEOUT=<seconds>`.
 fn optimizer_timeout() -> std::time::Duration {
     optimizer_timeout_from(std::env::var("OJ_OPTIMIZE_TIMEOUT").ok().as_deref())
 }
@@ -346,16 +331,11 @@ async fn run_optimizer(
         .iter()
         .map(|(f, r)| [f.as_str(), r.as_str()])
         .collect();
-    // Full-graph auto-discovery (esbuild-scan the whole dep tree and pre-bundle
-    // it) is opt-in via OJ_OPTIMIZE_SCAN=1: it can break apps with UMD/CommonJS
-    // interop quirks, so by default oj pre-bundles only the explicit
-    // optimizeDeps.include list and serves the rest through wrap_cjs.
+    // Full-graph auto-discovery is opt-in (OJ_OPTIMIZE_SCAN=1): it can break
+    // UMD/CJS interop, so default = explicit include list, rest via wrap_cjs.
     let auto_discover = effective_auto_discover(input.no_discovery);
-    // The config travels as a JSON argument into the engine call (the old
-    // subprocess packed it into one argv string, an OS argv-length hazard on
-    // big include/alias lists) and the metadata comes back as the call's
-    // return value (the old stdout channel broke when a dep printed on
-    // require).
+    // Config as JSON engine-call argument, metadata as the return value: argv
+    // has an OS length limit and stdout broke when a dep printed on require.
     let cfg = serde_json::json!({
         "root": root.to_string_lossy(),
         "outDir": dir.to_string_lossy(),
@@ -425,9 +405,8 @@ mod tests {
         }
     }
 
-    // The optimizer seam of Vite's pkg.main fallback: OptimizeInput takes the
-    // adopted mainFields with "main" appended last, so a dep that resolves in
-    // the dev server never fails the prebundle under a Vite-shaped list.
+    // Vite's pkg.main fallback: "main" is appended last so a dep that resolves
+    // in the dev server never fails the prebundle under a Vite-shaped list.
     #[test]
     fn optimizer_main_fields_append_vites_main_fallback() {
         let from = |json: &str| -> oj_config::OjConfig { serde_json::from_str(json).unwrap() };
@@ -709,11 +688,8 @@ mod tests {
         assert_eq!(deps.dir(), Path::new(""));
     }
 
-    // The pre-bundle through the REAL in-process engine and the REAL esbuild
-    // (whose JS API spawns its Go service as a child process — the seam this
-    // migration had to prove). Uses the start-app fixture's esbuild install;
-    // skips quietly where the fixture has no node_modules, like the JS unit
-    // tests do.
+    // Pre-bundle through the REAL engine and REAL esbuild (its JS API spawns a
+    // Go child service); skips quietly when the fixture esbuild is not installed.
     #[tokio::test(flavor = "multi_thread")]
     async fn optimizer_prebundles_through_the_engine_with_real_esbuild() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

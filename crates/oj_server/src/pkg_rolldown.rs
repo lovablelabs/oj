@@ -1,18 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 //
-// Rolldown fallback for partial bundling. When the hand-rolled concatenator
-// (`pkg_bundle`) bails on a package (a feature it doesn't implement: code-split
-// dynamic imports, `import.meta.url`, exotic export forms), we bundle that one
-// package with the rolldown crate oj already embeds -- exactly what Vite does for
-// its dep pre-bundle -- instead of serving it per-file. Cross-package imports are
-// externalized to their own served URLs (so React and friends stay singletons),
-// and each emitted chunk is served under `/@oj-pkg/<filename>` so a package that
-// code-splits resolves its sibling chunks by ordinary URL-relative rules.
-//
-// This is prototype-stage and gated behind `OJ_PB_ROLLDOWN` (on top of
-// `OJ_PARTIAL_BUNDLE`): the concatenator remains the fast path and keeps oj's
-// CommonJS runtime interop; rolldown only catches what the concatenator can't.
+// Rolldown fallback for partial bundling: when pkg_bundle bails, bundle that one
+// package with the embedded rolldown, externalizing cross-package imports to their
+// served URLs (singletons preserved). Prototype, gated behind OJ_PB_ROLLDOWN.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -40,12 +31,8 @@ pub fn enabled() -> bool {
     })
 }
 
-// Packages the concatenator gets wrong (it produces a bundle that builds but is
-// broken at runtime, so it never "bails" and the fallback never fires). We can't
-// detect those statically, so we keep a short curated list and force them through
-// rolldown directly. `object-inspect` is the canonical case: its conditional
-// `require` of Node's util lands on `undefined`, and the concatenated bundle then
-// reads `.custom` off it. Extend at runtime with `OJ_PB_ROLLDOWN_FORCE=a,b`.
+// Packages the concatenator bundles but breaks at runtime (it never bails, so the
+// fallback never fires): curated force-through-rolldown list; extend with OJ_PB_ROLLDOWN_FORCE=a,b.
 const BUILTIN_FORCE: &[&str] = &["object-inspect"];
 
 fn force_set() -> &'static std::collections::HashSet<String> {
@@ -62,10 +49,8 @@ fn force_set() -> &'static std::collections::HashSet<String> {
     })
 }
 
-/// Should this package skip the concatenator and go straight to rolldown? True
-/// for the curated known-broken list, any `OJ_PB_ROLLDOWN_FORCE` additions, and
-/// any package the user named in `optimizeDeps.include` (the config-driven
-/// promotion of the env override).
+/// Skip the concatenator: the curated known-broken list, `OJ_PB_ROLLDOWN_FORCE`
+/// additions, and packages named in `optimizeDeps.include`.
 pub fn is_forced(entry: &Path) -> bool {
     crate::pkg_bundle::package_name(entry).is_some_and(|n| force_set().contains(&n))
         || crate::pkg_bundle::is_include_forced(entry)
@@ -93,9 +78,8 @@ fn store_chunk(path: String, code: Bytes) {
     chunk_cache().lock().unwrap().insert(path, code);
 }
 
-/// Bundle one package (rooted at `entry`) with rolldown and cache every emitted
-/// chunk under its served path. Returns the entry chunk's code, or `None` if the
-/// bundle failed (caller then keeps the plain per-file fallback).
+/// Bundle one package with rolldown, caching every emitted chunk under its served
+/// path. Returns the entry chunk's code; None = caller keeps the per-file fallback.
 pub async fn build(entry: &Path, root: &Path, resolver: Arc<OjResolver>) -> Option<Bytes> {
     let hex = hex_encode(&entry.to_string_lossy());
     let pkg_root = package_root(entry);

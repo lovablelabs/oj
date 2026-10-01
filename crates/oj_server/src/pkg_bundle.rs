@@ -1,16 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 //
-// Server side of oj-native partial bundling: discover one node_modules package's
-// internal CommonJS file graph, compile each file to a factory body, and hand it
-// to `oj_compiler::pkgbundle::emit_package_bundle` for a single served ESM file.
-// Cross-package `require`s become native ESM imports to *their* `/@oj-pkg/...`
-// bundles (or a node-builtin stub), so each package collapses to one request
-// while keeping oj's per-module CommonJS runtime (robust UMD/dynamic interop).
-//
-// v1 is deliberately conservative: a package whose graph contains an ES module,
-// an unsupported file type, or an escaping relative import bails to `Fallback`,
-// and the caller serves that package the normal (per-file) way.
+// oj-native partial bundling: walk one node_modules package's internal file
+// graph, compile each file to a factory, and emit a single served ESM bundle;
+// cross-package requires import their own /@oj-pkg bundles. Unsafe graphs bail to Fallback.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -37,9 +30,8 @@ const INTERNAL_EXTS: &[&str] = &["js", "cjs", "mjs", "jsx", "json"];
 
 pub fn bundle_url_for(entry_abs: &Path) -> String {
     let url = format!("{PKG_PREFIX}{}", hex_encode(&entry_abs.to_string_lossy()));
-    // Same `?v=<prebundle hash>` stamp as /@oj-deps (Vite's ensureVersionQuery)
-    // so the bundle is served immutable and every importer, app source or a
-    // sibling bundle, names the one URL (one module instance).
+    // Same `?v=<prebundle hash>` stamp as /@oj-deps so the bundle is served
+    // immutable and every importer names the one URL (one module instance).
     match version_cell().get().filter(|v| !v.is_empty()) {
         Some(v) => format!("{url}?v={v}"),
         None => url,
@@ -63,9 +55,8 @@ pub fn entry_from_url(path: &str) -> Option<PathBuf> {
     crate::hex_decode(hex).map(PathBuf::from)
 }
 
-// In-memory cache of built bundles, keyed by the `/@oj-pkg/<hex>` URL. A
-// package's files don't change during a dev session, so no invalidation.
-// Bodies are `Bytes`, so a hit hands hyper a refcount bump rather than a copy.
+// Built-bundle cache keyed by URL; package files don't change during a dev
+// session, so no invalidation. Bytes: a hit hands hyper a refcount bump, not a copy.
 fn cache() -> &'static Mutex<HashMap<String, Bytes>> {
     static C: OnceLock<Mutex<HashMap<String, Bytes>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
@@ -194,10 +185,8 @@ fn resolve_relative(from_dir: &Path, spec: &str) -> Option<PathBuf> {
     None
 }
 
-/// A bare specifier (e.g. `jotai/react`) that resolves to a file *inside the
-/// same package* is internal, not a cross-package edge: bundling it keeps its
-/// exports concrete (so `export * from 'jotai/react'` becomes real static
-/// re-exports, not runtime-only properties an `import { x }` can't see).
+/// A bare specifier resolving inside the same package is internal, not a
+/// cross-package edge: `export * from 'jotai/react'` stays real static re-exports.
 fn resolve_same_package(
     pkg_root: &Path,
     from_dir: &Path,
@@ -238,9 +227,8 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
         Some(id) => id,
         None => return BundleOutcome::Fallback,
     };
-    // id -> (direct named exports, internal re-export target ids), so the entry's
-    // full ESM export set can follow `__exportStar` barrels (e.g. @sniptt/guards,
-    // whose entry re-exports its submodules and has no direct names of its own).
+    // id -> (direct named exports, internal re-export target ids): lets the
+    // entry's export set follow `__exportStar` barrels with no direct names.
     let mut export_info: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
 
     while let Some(file) = queue.pop_front() {
@@ -267,10 +255,8 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
             continue;
         }
 
-        // ES module inside the package: compile it to an ESM factory and
-        // register it alongside the CJS ones. The
-        // resolve callback rewrites each import to a bundle-internal ("#id") or
-        // cross-package ("@url") target that the runtime interprets.
+        // Internal ES module: compile to an ESM factory; the resolve callback
+        // rewrites each import to "#id" (internal) or "@url" (cross-package).
         if ext == "mjs" || is_esm(&file, &src) {
             // import.meta.url / .resolve can't be honored inside a factory function.
             if src.contains("import.meta.url") || src.contains("import.meta.resolve") {
@@ -344,9 +330,8 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
                     return BundleOutcome::Fallback;
                 }
             };
-            // Dynamic imports are fine: compile_esm_factory lowered them to
-            // `__oj_import_lazy("#id"|"@url")`, which the emitted bundle runtime
-            // resolves (internal -> resolved namespace, external -> native import).
+            // Dynamic imports were lowered to `__oj_import_lazy("#id"|"@url")`,
+            // which the emitted bundle runtime resolves.
             if factory.kind != oj_compiler::bundle::FactoryKind::Esm {
                 return bail("compiled as CJS unexpectedly", &file);
             }
@@ -456,9 +441,8 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
     ))
 }
 
-/// The entry's full ESM export names: its own plus everything re-exported
-/// (transitively) from internal modules via `__exportStar` / `module.exports =
-/// require("./x")`.
+/// The entry's full ESM export names: its own plus everything transitively
+/// re-exported from internal modules (`__exportStar` / `module.exports = require`).
 fn collect_exports(entry: &str, info: &HashMap<String, (Vec<String>, Vec<String>)>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
@@ -716,9 +700,8 @@ mod tests {
 
     #[test]
     fn same_package_subpath_star_export_is_internal_and_named() {
-        // jotai shape: the entry `export * from 'pkg/react'` (a bare same-package
-        // subpath). It must bundle react.mjs internally and expose its names as
-        // real static ESM exports, not runtime-only properties.
+        // jotai shape: a bare same-package subpath star export must bundle
+        // internally and expose real static ESM exports, not runtime-only properties.
         let root = std::env::temp_dir().join(format!("oj-pkg-subpath-{}", std::process::id()));
         let nm = root.join("node_modules").join("jotaiish");
         std::fs::create_dir_all(nm.join("esm")).unwrap();
@@ -798,9 +781,8 @@ mod tests {
 
     #[test]
     fn barrel_reexports_become_static_named_exports() {
-        // A @sniptt/guards-style barrel: the entry has no direct names, it
-        // __exportStar's a submodule. The bundle must still expose those names as
-        // ESM exports (ESM-dep importers can't be interop-rewritten).
+        // Barrel entry with no direct names, only __exportStar: the bundle must
+        // still expose those names as ESM exports.
         let root = std::env::temp_dir().join(format!("oj-pkg-barrel-{}", std::process::id()));
         let nm = root.join("node_modules").join("guards");
         std::fs::create_dir_all(nm.join("g")).unwrap();

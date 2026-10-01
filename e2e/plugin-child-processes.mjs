@@ -79,7 +79,17 @@ const alive = (pid) => {
     return false;
   }
 };
-const reaped = (pid) => settles(() => !alive(pid), { timeoutMs: 15000 });
+// Identity, not just liveness: a recycled pid makes bare kill(pid, 0) report
+// an unrelated process as "surviving" on a busy machine.
+const gone = (pid) => {
+  if (!alive(pid)) return true;
+  try {
+    return !execSync(`ps -o comm= -p ${pid}`).toString().includes("sleep");
+  } catch {
+    return true;
+  }
+};
+const reaped = (pid) => settles(() => gone(pid), { timeoutMs: 15000 });
 
 let failed = false;
 let stderr = "";

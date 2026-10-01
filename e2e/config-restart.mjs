@@ -5,7 +5,7 @@
 // (config is read once at startup, so it can't be hot-applied). Standalone:
 // manages its own oj process because the restart re-execs it.
 
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -59,6 +59,10 @@ try {
   console.log("initial start:      ok");
 
   stderr = "";
+  // Read the FIRST boot's child pid before triggering the restart: a fast
+  // reboot re-runs configureServer and overwrites child.pid with the new
+  // boot's healthy child.
+  const childPid = Number(fs.readFileSync(path.join(app, "child.pid"), "utf8"));
   // Touch a watched config/.env file → expect a restart.
   fs.appendFileSync(path.join(app, ".env"), "VITE_BAR=2\n");
 
@@ -70,12 +74,17 @@ try {
   // plugin-spawned runtime (miniflare's workerd) used to SURVIVE it as a
   // stranded frozen child holding its whole footprint. restart_process() now
   // kills every descendant first.
-  const childPid = Number(fs.readFileSync(path.join(app, "child.pid"), "utf8"));
+  // Identity, not just liveness: a recycled pid makes bare kill(pid, 0) report
+  // an unrelated process as the "surviving" child on a busy machine.
   const childDead = await settles(
     () => {
       try {
         process.kill(childPid, 0);
-        return false;
+      } catch {
+        return true;
+      }
+      try {
+        return !execSync(`ps -o comm= -p ${childPid}`).toString().includes("sleep");
       } catch {
         return true;
       }
