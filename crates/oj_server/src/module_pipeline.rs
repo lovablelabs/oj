@@ -684,9 +684,13 @@ impl CompileJob {
             let dep_src = dep_interop.as_deref().unwrap_or(source);
             // A CJS dep's `require()`s resolve with the `require` condition (Vite's
             // getConditions), so a dual package hands it its CJS build, not the ESM one.
-            return oj_compiler::cjs::compile_dep(file, &self.url, dep_src, &mut |spec: &str| {
-                rw.rewrite(spec, &self.state.require_resolver)
-            });
+            return oj_compiler::cjs::compile_dep(
+                file,
+                &self.url,
+                dep_src,
+                &mut |spec: &str| rw.rewrite(spec, &self.state.require_resolver),
+                Some(Arc::clone(&self.state.import_meta_env)),
+            );
         }
         // Gated on a cheap bare-import scan: the interop rewrite (a full
         // parse) runs only when a bare specifier maps to an interop URL.
@@ -705,9 +709,13 @@ impl CompileJob {
             None
         };
         let dep_src = dep_interop.as_deref().unwrap_or(source);
-        oj_compiler::cjs::compile_dep(file, &self.url, dep_src, &mut |spec: &str| {
-            rw.rewrite(spec, &self.state.resolver)
-        })
+        oj_compiler::cjs::compile_dep(
+            file,
+            &self.url,
+            dep_src,
+            &mut |spec: &str| rw.rewrite(spec, &self.state.resolver),
+            Some(Arc::clone(&self.state.import_meta_env)),
+        )
     }
 
     fn compile_app(
@@ -720,11 +728,10 @@ impl CompileJob {
             &|spec: &str| rw.cjs_interop_url(spec),
             &mut warn_interop_once,
         );
-        let mut opts = oj_compiler::CompileOptions::dev();
+        let mut opts = dev_compile_opts(&self.state);
         if self.is_svelte {
             opts.refresh = false;
         }
-        opts.jsx = self.state.jsx.clone();
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);

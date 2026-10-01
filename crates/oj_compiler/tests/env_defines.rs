@@ -2,19 +2,12 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! The server-set define list and its SSR layering, exercised through
-//! `compile`. Its own integration binary because `set_import_meta_env*` is
-//! process-global: the unit tests in lib.rs rely on the mode-derived fallback,
-//! and these tests serialize on a mutex so they never observe each other's set.
+//! `compile` with an [`ImportMetaEnv`] riding the compile options.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::Arc;
 
-use oj_compiler::{
-    compile, merge_import_meta_env_ssr, set_import_meta_env, set_import_meta_env_ssr,
-    CompileOptions,
-};
-
-static SERIAL: Mutex<()> = Mutex::new(());
+use oj_compiler::{compile, CompileOptions, ImportMetaEnv};
 
 fn client() -> Vec<(String, String)> {
     vec![
@@ -29,19 +22,27 @@ fn client() -> Vec<(String, String)> {
     ]
 }
 
-fn ssr_opts() -> CompileOptions {
-    let mut o = CompileOptions::dev();
-    o.ssr = true;
-    o
+fn dev(env: &Arc<ImportMetaEnv>) -> CompileOptions {
+    CompileOptions {
+        env: Some(Arc::clone(env)),
+        ..CompileOptions::dev()
+    }
+}
+
+fn ssr_opts(env: &Arc<ImportMetaEnv>) -> CompileOptions {
+    CompileOptions {
+        ssr: true,
+        ..dev(env)
+    }
 }
 
 #[test]
 fn set_replaces_client_defines_and_a_re_set_wins() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    set_import_meta_env(client());
-    set_import_meta_env_ssr(vec![]);
+    let env = Arc::new(ImportMetaEnv::default());
+    env.set(client());
+    env.set_ssr(vec![]);
     let src = "export const x = import.meta.env.VITE_X; export const s = __SIDE__;";
-    let out = compile(Path::new("a.ts"), src, &CompileOptions::dev()).unwrap();
+    let out = compile(Path::new("a.ts"), src, &dev(&env)).unwrap();
     assert!(
         out.code.contains("\"x1\"") && out.code.contains("\"client\""),
         "{}",
@@ -50,8 +51,8 @@ fn set_replaces_client_defines_and_a_re_set_wins() {
 
     let mut again = client();
     again[1].1 = "\"x2\"".into();
-    set_import_meta_env(again);
-    let out = compile(Path::new("a.ts"), src, &CompileOptions::dev()).unwrap();
+    env.set(again);
+    let out = compile(Path::new("a.ts"), src, &dev(&env)).unwrap();
     assert!(
         out.code.contains("\"x2\"") && !out.code.contains("\"x1\""),
         "stale cached config:\n{}",
@@ -61,11 +62,11 @@ fn set_replaces_client_defines_and_a_re_set_wins() {
 
 #[test]
 fn ssr_compiles_flip_ssr_flag_and_layer_ssr_overrides_only() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    set_import_meta_env(client());
-    set_import_meta_env_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
+    let env = Arc::new(ImportMetaEnv::default());
+    env.set(client());
+    env.set_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
     let src = "export const s = import.meta.env.SSR; export const all = import.meta.env; export const side = __SIDE__;";
-    let ssr = compile(Path::new("a.ts"), src, &ssr_opts()).unwrap();
+    let ssr = compile(Path::new("a.ts"), src, &ssr_opts(&env)).unwrap();
     assert!(ssr.code.contains("s = true"), "{}", ssr.code);
     assert!(
         ssr.code.contains("\"SSR\": true"),
@@ -73,7 +74,7 @@ fn ssr_compiles_flip_ssr_flag_and_layer_ssr_overrides_only() {
         ssr.code
     );
     assert!(ssr.code.contains("\"server\""), "{}", ssr.code);
-    let cli = compile(Path::new("a.ts"), src, &CompileOptions::dev()).unwrap();
+    let cli = compile(Path::new("a.ts"), src, &dev(&env)).unwrap();
     assert!(
         cli.code.contains("s = false") && cli.code.contains("\"client\""),
         "ssr override leaked to client:\n{}",
@@ -83,21 +84,21 @@ fn ssr_compiles_flip_ssr_flag_and_layer_ssr_overrides_only() {
 
 #[test]
 fn merge_ssr_overrides_later_wins_and_invalidates_the_ssr_variant() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    set_import_meta_env(client());
-    set_import_meta_env_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
+    let env = Arc::new(ImportMetaEnv::default());
+    env.set(client());
+    env.set_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
     let src = "export const side = __SIDE__; export const only = __SSR_ONLY__;";
-    let before = compile(Path::new("a.ts"), src, &ssr_opts()).unwrap();
+    let before = compile(Path::new("a.ts"), src, &ssr_opts(&env)).unwrap();
     assert!(
         before.code.contains("\"server\"") && before.code.contains("__SSR_ONLY__"),
         "{}",
         before.code
     );
-    merge_import_meta_env_ssr(vec![
+    env.merge_ssr(vec![
         ("__SIDE__".into(), "\"srv2\"".into()),
         ("__SSR_ONLY__".into(), "1".into()),
     ]);
-    let after = compile(Path::new("a.ts"), src, &ssr_opts()).unwrap();
+    let after = compile(Path::new("a.ts"), src, &ssr_opts(&env)).unwrap();
     assert!(
         after.code.contains("\"srv2\"") && after.code.contains("only = 1"),
         "merge not applied:\n{}",
@@ -107,25 +108,25 @@ fn merge_ssr_overrides_later_wins_and_invalidates_the_ssr_variant() {
 
 #[test]
 fn plain_key_gate_still_replaces_process_env_node_env() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    set_import_meta_env(client());
-    set_import_meta_env_ssr(vec![]);
+    let env = Arc::new(ImportMetaEnv::default());
+    env.set(client());
+    env.set_ssr(vec![]);
     let src = "export const dev = process.env.NODE_ENV !== \"production\";";
-    let out = compile(Path::new("dep.js"), src, &CompileOptions::dev()).unwrap();
+    let out = compile(Path::new("dep.js"), src, &dev(&env)).unwrap();
     assert!(!out.code.contains("process.env.NODE_ENV"), "{}", out.code);
 }
 
 #[test]
 fn a_rejected_define_list_silently_skips_replacement() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Arc::new(ImportMetaEnv::default());
     // oxc rejects a value with a syntax error; that skips the replacer
     // for the compile rather than failing it, and the cache must keep that.
-    set_import_meta_env(vec![("import.meta.env.BAD".into(), "{".into())]);
-    set_import_meta_env_ssr(vec![]);
+    env.set(vec![("import.meta.env.BAD".into(), "{".into())]);
+    env.set_ssr(vec![]);
     let out = compile(
         Path::new("a.ts"),
         "export const b = import.meta.env.BAD;",
-        &CompileOptions::dev(),
+        &dev(&env),
     )
     .unwrap();
     assert!(out.code.contains("import.meta.env.BAD"), "{}", out.code);
@@ -133,20 +134,20 @@ fn a_rejected_define_list_silently_skips_replacement() {
 
 #[test]
 fn ssr_overrides_set_before_the_client_list_still_layer() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Arc::new(ImportMetaEnv::default());
     // The server may hand over `environments.ssr.define` before the dotenv
     // list lands; the ssr variant must be derived once both inputs are known.
-    set_import_meta_env(vec![]);
-    set_import_meta_env_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
-    set_import_meta_env(client());
+    env.set(vec![]);
+    env.set_ssr(vec![("__SIDE__".into(), "\"server\"".into())]);
+    env.set(client());
     let src = "export const s = import.meta.env.SSR; export const side = __SIDE__;";
-    let ssr = compile(Path::new("a.ts"), src, &ssr_opts()).unwrap();
+    let ssr = compile(Path::new("a.ts"), src, &ssr_opts(&env)).unwrap();
     assert!(
         ssr.code.contains("s = true") && ssr.code.contains("\"server\""),
         "ssr overrides set first were lost:\n{}",
         ssr.code
     );
-    let cli = compile(Path::new("a.ts"), src, &CompileOptions::dev()).unwrap();
+    let cli = compile(Path::new("a.ts"), src, &dev(&env)).unwrap();
     assert!(
         cli.code.contains("s = false") && cli.code.contains("\"client\""),
         "{}",
@@ -156,19 +157,19 @@ fn ssr_overrides_set_before_the_client_list_still_layer() {
 
 #[test]
 fn an_invalid_ssr_override_only_disables_the_ssr_variant() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Arc::new(ImportMetaEnv::default());
     // Each variant carries its own Option<config>: a value oxc rejects in the
     // ssr overrides skips replacement for ssr compiles only.
-    set_import_meta_env(client());
-    set_import_meta_env_ssr(vec![("__SIDE__".into(), "{".into())]);
+    env.set(client());
+    env.set_ssr(vec![("__SIDE__".into(), "{".into())]);
     let src = "export const x = import.meta.env.VITE_X; export const side = __SIDE__;";
-    let ssr = compile(Path::new("a.ts"), src, &ssr_opts()).unwrap();
+    let ssr = compile(Path::new("a.ts"), src, &ssr_opts(&env)).unwrap();
     assert!(
         ssr.code.contains("import.meta.env.VITE_X") && ssr.code.contains("__SIDE__"),
         "ssr compile must skip replacement wholesale:\n{}",
         ssr.code
     );
-    let cli = compile(Path::new("a.ts"), src, &CompileOptions::dev()).unwrap();
+    let cli = compile(Path::new("a.ts"), src, &dev(&env)).unwrap();
     assert!(
         cli.code.contains("\"x1\"") && cli.code.contains("\"client\""),
         "client variant must be unaffected:\n{}",
@@ -178,13 +179,13 @@ fn an_invalid_ssr_override_only_disables_the_ssr_variant() {
 
 #[test]
 fn a_factory_dep_with_only_plain_key_defines_gets_them_replaced() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Arc::new(ImportMetaEnv::default());
     // The exact partial-bundle shape that reaches the browser as a bare
     // `process` if the factory gate only scans for import.meta.env: an ESM
     // dep whose sole define use is a plain key like process.env.NODE_ENV.
     let mut defines = client();
     defines.push(("process.env.NODE_ENV".into(), "\"development\"".into()));
-    set_import_meta_env(defines);
+    env.set(defines);
     let src = r#"export const dev = process.env.NODE_ENV !== "production";"#;
     let mut resolve = |_: &str| None;
     let factory = oj_compiler::bundle::compile_factory(
@@ -192,6 +193,7 @@ fn a_factory_dep_with_only_plain_key_defines_gets_them_replaced() {
         "/u.mjs",
         src,
         &mut resolve,
+        Some(&env),
     )
     .expect("factory compiles");
     assert!(
@@ -208,18 +210,36 @@ fn a_factory_dep_with_only_plain_key_defines_gets_them_replaced() {
 
 #[test]
 fn a_non_env_import_meta_define_still_gates_and_replaces() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Arc::new(ImportMetaEnv::default());
     // import.meta.vitest-style defines are not covered by the import.meta.env
     // finder, so they must stay scanned plain keys or a module mentioning only
     // them skips replacement entirely.
     let mut defines = client();
     defines.push(("import.meta.vitest".into(), "undefined".into()));
-    set_import_meta_env(defines);
+    env.set(defines);
     let src = "export const t = import.meta.vitest;";
-    let out = compile(Path::new("a.ts"), src, &CompileOptions::dev()).unwrap();
+    let out = compile(Path::new("a.ts"), src, &dev(&env)).unwrap();
     assert!(
         !out.code.contains("import.meta.vitest"),
         "the non-env import.meta define must be replaced:\n{}",
         out.code
     );
+}
+
+#[test]
+fn an_esm_dependency_gets_the_server_defines() {
+    // Deps served unbundled compile through `cjs::compile_dep`; its ESM branch
+    // must carry the env, or `process.env.NODE_ENV` reaches the browser.
+    let env = Arc::new(ImportMetaEnv::default());
+    env.set(client());
+    let src = r#"export const dev = process.env.NODE_ENV !== "production";"#;
+    let out = oj_compiler::cjs::compile_dep(
+        Path::new("/app/node_modules/d/index.mjs"),
+        "/node_modules/d/index.mjs",
+        src,
+        &mut |_| None,
+        Some(Arc::clone(&env)),
+    )
+    .expect("dep compiles");
+    assert!(!out.code.contains("process.env"), "{}", out.code);
 }

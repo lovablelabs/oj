@@ -5,17 +5,20 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Expression, ImportDeclarationSpecifier, ModuleExportName, Statement};
+use oxc_ast::ast::{
+    ExportDefaultDeclarationKind, Expression, ImportDeclarationSpecifier, ModuleExportName,
+    Program, Statement,
+};
 use oxc_ast_visit::{walk_mut, VisitMut};
 use oxc_codegen::Codegen;
 use oxc_ecmascript::BoundNames;
-use oxc_parser::Parser;
+use oxc_parser::{Parser, ParserReturn};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_syntax::reference::ReferenceId;
 use oxc_transformer::{JsxRuntime, ReactRefreshOptions, TransformOptions, Transformer};
 
-use crate::{CompileError, ImportRewriter};
+use crate::{CompileError, ImportMetaEnv, ImportRewriter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FactoryKind {
@@ -45,32 +48,62 @@ impl FactoryOutput {
     }
 }
 
+/// What an ESM factory compile varies on.
+#[derive(Clone, Copy)]
+struct FactoryOptions<'e> {
+    refresh: bool,
+    /// The dev server's defines (dev client variant); `None` uses the fallback.
+    env: Option<&'e ImportMetaEnv>,
+}
+
 pub fn compile_factory(
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut ImportRewriter,
+    env: Option<&ImportMetaEnv>,
 ) -> Result<FactoryOutput, CompileError> {
     let is_dep = url.starts_with("/node_modules/")
         || (url.starts_with("/@fs/") && url.contains("/node_modules/"));
     if !is_dep {
         // App source is ESM.
-        return compile_esm_factory(path, url, source_text, resolve, true);
+        let opts = FactoryOptions { refresh: true, env };
+        return compile_esm_factory(path, url, source_text, resolve, opts);
     }
 
-    // Dependency: parse once to decide ESM vs CJS, and reuse that parse for the
-    // ESM pipeline instead of parsing a second time (the old path parsed once in
-    // `has_module_syntax` and again in `compile_esm_factory`). A file that can't
-    // parse as a module, or has no top-level import/export, is CommonJS and the
-    // CJS path re-parses it in sloppy mode (which allows `with`, top-level `this`,
-    // and other script-only forms an ESM parse rejects).
+    // Dependency: parse once to decide ESM vs CJS and reuse that parse for the
+    // ESM pipeline. A file that can't parse as a module, or has no top-level
+    // import/export, is CommonJS; the CJS path re-parses it in sloppy mode
+    // (which allows `with`, top-level `this` and other script-only forms).
     let allocator = Allocator::default();
-    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
-    let parsed = Parser::new(&allocator, source_text, source_type).parse();
-    if parsed.panicked {
+    let parsed = Parser::new(&allocator, source_text, source_type_for(path)).parse();
+    if parsed.panicked || !has_module_syntax(&parsed.program) {
         return compile_cjs_factory(path, source_text, resolve);
     }
-    let has_module_syntax = parsed.program.body.iter().any(|stmt| {
+    if !parsed.diagnostics.is_empty() {
+        return Err(parse_error(path, source_text, parsed));
+    }
+    let opts = FactoryOptions {
+        refresh: false,
+        env,
+    };
+    compile_esm_factory_from_parsed(
+        &allocator,
+        parsed.program,
+        path,
+        url,
+        source_text,
+        resolve,
+        opts,
+    )
+}
+
+fn source_type_for(path: &Path) -> SourceType {
+    SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs())
+}
+
+fn has_module_syntax(program: &Program) -> bool {
+    program.body.iter().any(|stmt| {
         matches!(
             stmt,
             Statement::ImportDeclaration(_)
@@ -80,31 +113,20 @@ pub fn compile_factory(
                 | Statement::ExportAllDeclaration(_)
                 | Statement::ExportDefaultDeclaration(_)
         )
-    });
-    if !has_module_syntax {
-        return compile_cjs_factory(path, source_text, resolve);
+    })
+}
+
+fn parse_error(path: &Path, source_text: &str, parsed: ParserReturn) -> CompileError {
+    let message = parsed
+        .diagnostics
+        .into_iter()
+        .map(|d| format!("{:?}", d.with_source_code(source_text.to_string())))
+        .collect::<Vec<_>>()
+        .join("\n");
+    CompileError::Parse {
+        path: path.to_path_buf(),
+        message,
     }
-    if !parsed.diagnostics.is_empty() {
-        let message = parsed
-            .diagnostics
-            .into_iter()
-            .map(|d| format!("{:?}", d.with_source_code(source_text.to_string())))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(CompileError::Parse {
-            path: path.to_path_buf(),
-            message,
-        });
-    }
-    compile_esm_factory_from_parsed(
-        &allocator,
-        parsed.program,
-        path,
-        url,
-        source_text,
-        resolve,
-        false,
-    )
 }
 
 fn compile_cjs_factory(
@@ -135,32 +157,17 @@ fn compile_cjs_factory(
     })
 }
 
-struct Replacement {
-    var: String,
-    member: Option<String>,
-}
-
 fn compile_esm_factory(
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut ImportRewriter,
-    refresh: bool,
+    opts: FactoryOptions,
 ) -> Result<FactoryOutput, CompileError> {
     let allocator = Allocator::default();
-    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
-    let parsed = Parser::new(&allocator, source_text, source_type).parse();
+    let parsed = Parser::new(&allocator, source_text, source_type_for(path)).parse();
     if parsed.panicked || !parsed.diagnostics.is_empty() {
-        let message = parsed
-            .diagnostics
-            .into_iter()
-            .map(|d| format!("{:?}", d.with_source_code(source_text.to_string())))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(CompileError::Parse {
-            path: path.to_path_buf(),
-            message,
-        });
+        return Err(parse_error(path, source_text, parsed));
     }
     compile_esm_factory_from_parsed(
         &allocator,
@@ -169,51 +176,24 @@ fn compile_esm_factory(
         url,
         source_text,
         resolve,
-        refresh,
+        opts,
     )
 }
 
-/// The ESM factory pipeline over an already-parsed program. Splitting the parse
-/// out lets `compile_factory` parse a dependency once to detect module syntax and
-/// then reuse that parse here, instead of parsing a second time to compile.
+/// The ESM factory pipeline over an already-parsed program, so `compile_factory`
+/// can reuse the parse it made to detect module syntax.
 fn compile_esm_factory_from_parsed<'a>(
     allocator: &'a Allocator,
-    program: oxc_ast::ast::Program<'a>,
+    mut program: Program<'a>,
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut ImportRewriter,
-    refresh: bool,
+    opts: FactoryOptions,
 ) -> Result<FactoryOutput, CompileError> {
-    let mut program = program;
+    let FactoryOptions { refresh, env } = opts;
 
-    let scoping = SemanticBuilder::new()
-        .with_excess_capacity(2.0)
-        .with_enum_eval(true)
-        .build(&program);
-    let scoping = scoping.semantic.into_scoping();
-    let mut transform_options = TransformOptions::default();
-    transform_options.jsx.jsx_plugin = true;
-    transform_options.jsx.runtime = JsxRuntime::Automatic;
-    transform_options.jsx.development = true;
-    if refresh {
-        transform_options.jsx.refresh = Some(ReactRefreshOptions::default());
-    }
-    let ret = Transformer::new(allocator, path, &transform_options)
-        .build_with_scoping(scoping, &mut program);
-    if !ret.diagnostics.is_empty() {
-        let message = ret
-            .diagnostics
-            .into_iter()
-            .map(|d| format!("{d:?}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(CompileError::Transform {
-            path: path.to_path_buf(),
-            message,
-        });
-    }
-
+    transform_jsx(allocator, path, &mut program, refresh)?;
     let is_refresh_boundary = refresh && crate::detect_refresh_registrations(&program);
 
     if crate::scan(&crate::F_IMPORT_PAREN, source_text) {
@@ -224,25 +204,7 @@ fn compile_esm_factory_from_parsed<'a>(
             source_text,
         );
     }
-
-    // needed_by also matches the plain-key defines (process.env.NODE_ENV and
-    // friends): an ESM dep in a partial bundle that mentions only those must
-    // still get the replacement, or the browser hits a bare `process`. One
-    // snapshot serves both the gate and the config, so a concurrent re-set of
-    // the defines can never let the gate pass on one list and the replacer
-    // apply another.
-    let defines = crate::import_meta_env_defines(true, false);
-    if defines.needed_by(source_text) {
-        use oxc_transformer_plugins::ReplaceGlobalDefines;
-        let scoping = SemanticBuilder::new()
-            .build(&program)
-            .semantic
-            .into_scoping();
-        if let Some(config) = defines.config() {
-            let _ = ReplaceGlobalDefines::new(allocator, config).build(scoping, &mut program);
-        }
-    }
-
+    replace_defines(allocator, &mut program, env, source_text);
     if crate::scan(&crate::F_IMPORT_META_GLOB, source_text) {
         crate::glob::expand(allocator, path.parent().unwrap_or(path), &mut program);
     }
@@ -250,153 +212,294 @@ fn compile_esm_factory_from_parsed<'a>(
     let (_, dynamic_imports) =
         crate::rewrite_module_specifiers_pub(allocator, &mut program, resolve);
 
-    let semantic = SemanticBuilder::new()
-        .with_build_nodes(true)
-        .build(&program)
-        .semantic;
+    let shape = ModuleShape::collect(&program);
+    RefRewriter {
+        allocator,
+        replacements: &shape.replacements,
+        url,
+    }
+    .visit_program(&mut program);
+    lower_to_factory_body(allocator, &mut program, &shape.prologue(), path)?;
 
-    let mut import_vars: Vec<String> = Vec::new();
-    let mut var_of_url: HashMap<String, usize> = HashMap::new();
-    let mut replacements: HashMap<ReferenceId, Replacement> = HashMap::new();
-    let mut getters: Vec<(String, String)> = Vec::new();
-    let mut stars: Vec<usize> = Vec::new();
-    let mut has_default_expr = false;
-    // Imported local name -> the expression it lowers to (`_oj_mN` or
-    // `_oj_mN.member`). A re-export `export { x }` of an imported binding `x`
-    // must emit a getter over this expression, not the bare local name (whose
-    // `import` statement is stripped), otherwise `x` is a dangling reference.
-    let mut import_local_expr: HashMap<String, String> = HashMap::new();
+    let esm_named = shape
+        .getters
+        .iter()
+        .map(|g| g.name.clone())
+        .filter(|n| n != "default")
+        .collect();
+    let esm_star_targets = shape
+        .stars
+        .iter()
+        .filter_map(|&vi| shape.import_vars.get(vi).cloned())
+        .collect();
 
-    let mut var_for = |url: &str, import_vars: &mut Vec<String>| -> usize {
-        if let Some(&i) = var_of_url.get(url) {
+    let code = Codegen::new().build(&program).code;
+    Ok(FactoryOutput {
+        code,
+        imports: shape.import_vars,
+        require_map: Vec::new(),
+        kind: FactoryKind::Esm,
+        dynamic_imports,
+        is_refresh_boundary,
+        esm_named,
+        esm_star_targets,
+    })
+}
+
+/// TS strip + automatic dev JSX, plus React Refresh registration for app code.
+fn transform_jsx<'a>(
+    allocator: &'a Allocator,
+    path: &Path,
+    program: &mut Program<'a>,
+    refresh: bool,
+) -> Result<(), CompileError> {
+    let scoping = SemanticBuilder::new()
+        .with_excess_capacity(2.0)
+        .with_enum_eval(true)
+        .build(program)
+        .semantic
+        .into_scoping();
+    let mut transform_options = TransformOptions::default();
+    transform_options.jsx.jsx_plugin = true;
+    transform_options.jsx.runtime = JsxRuntime::Automatic;
+    transform_options.jsx.development = true;
+    if refresh {
+        transform_options.jsx.refresh = Some(ReactRefreshOptions::default());
+    }
+    let ret =
+        Transformer::new(allocator, path, &transform_options).build_with_scoping(scoping, program);
+    if ret.diagnostics.is_empty() {
+        return Ok(());
+    }
+    let message = ret
+        .diagnostics
+        .into_iter()
+        .map(|d| format!("{d:?}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(CompileError::Transform {
+        path: path.to_path_buf(),
+        message,
+    })
+}
+
+/// `needed_by` also matches the plain-key defines (`process.env.NODE_ENV` and
+/// friends), so an ESM dep mentioning only those still gets replaced instead of
+/// hitting a bare `process` in the browser. One snapshot serves both the gate
+/// and the config, so a concurrent re-set can't split them.
+fn replace_defines<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    env: Option<&ImportMetaEnv>,
+    source_text: &str,
+) {
+    use oxc_transformer_plugins::ReplaceGlobalDefines;
+    let defines = crate::defines_for(env, true, false);
+    if !defines.needed_by(source_text) {
+        return;
+    }
+    let scoping = SemanticBuilder::new()
+        .build(program)
+        .semantic
+        .into_scoping();
+    if let Some(config) = defines.config() {
+        let _ = ReplaceGlobalDefines::new(allocator, config).build(scoping, program);
+    }
+}
+
+/// How an imported binding lowers: `_oj_mN` (namespace) or `_oj_mN.member`.
+#[derive(Clone)]
+struct Replacement {
+    var: String,
+    member: Option<String>,
+}
+
+impl Replacement {
+    fn expr(&self) -> String {
+        match &self.member {
+            Some(member) => format!("{}.{}", self.var, member),
+            None => self.var.clone(),
+        }
+    }
+}
+
+/// One `__oj_esm` getter: exported name -> the expression it reads.
+struct Getter {
+    name: String,
+    expr: String,
+}
+
+impl Getter {
+    fn new(name: impl Into<String>, expr: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            expr: expr.into(),
+        }
+    }
+}
+
+/// The module's import/export surface, read off the top-level statements.
+#[derive(Default)]
+struct ModuleShape {
+    /// Required targets in first-seen order; index N is `_oj_mN`.
+    import_vars: Vec<String>,
+    var_of_url: HashMap<String, usize>,
+    replacements: HashMap<ReferenceId, Replacement>,
+    getters: Vec<Getter>,
+    /// `export *` sources, as indices into `import_vars`.
+    stars: Vec<usize>,
+    /// An anonymous default export, assigned to `__oj_default`.
+    has_default_expr: bool,
+}
+
+impl ModuleShape {
+    fn collect(program: &Program) -> Self {
+        let semantic = SemanticBuilder::new()
+            .with_build_nodes(true)
+            .build(program)
+            .semantic;
+        let mut shape = Self::default();
+        // Imported local name -> its lowered expression. A re-export `export { x }`
+        // of an imported `x` must read that expression, since the `import` is gone.
+        let mut import_local_expr: HashMap<String, String> = HashMap::new();
+
+        for stmt in &program.body {
+            match stmt {
+                Statement::ImportDeclaration(decl) => {
+                    let vi = shape.var_for(decl.source.value.as_str());
+                    for spec in decl.specifiers.iter().flatten() {
+                        let (local, member) = match spec {
+                            ImportDeclarationSpecifier::ImportSpecifier(s) => {
+                                (&s.local, Some(export_name(&s.imported)))
+                            }
+                            ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                                (&s.local, Some("default".to_string()))
+                            }
+                            ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                                (&s.local, None)
+                            }
+                        };
+                        let lowered = Replacement {
+                            var: format!("_oj_m{vi}"),
+                            member,
+                        };
+                        import_local_expr.insert(local.name.to_string(), lowered.expr());
+                        let Some(symbol_id) = local.symbol_id.get() else {
+                            continue;
+                        };
+                        for &reference_id in
+                            semantic.scoping().get_resolved_reference_ids(symbol_id)
+                        {
+                            shape.replacements.insert(reference_id, lowered.clone());
+                        }
+                    }
+                }
+                Statement::ExportDeclaration(decl) => {
+                    for name in binding_names(&decl.declaration) {
+                        shape.getters.push(Getter::new(name.clone(), name));
+                    }
+                }
+                Statement::ExportNamedDeclaration(decl) => {
+                    for spec in &decl.specifiers {
+                        let local = export_name(&spec.local);
+                        let expr = import_local_expr.get(&local).cloned().unwrap_or(local);
+                        shape
+                            .getters
+                            .push(Getter::new(export_name(&spec.exported), expr));
+                    }
+                }
+                Statement::ExportFromDeclaration(decl) => {
+                    let vi = shape.var_for(decl.source.value.as_str());
+                    for spec in &decl.specifiers {
+                        let local = export_name(&spec.local);
+                        let expr = format!("_oj_m{vi}.{local}");
+                        shape
+                            .getters
+                            .push(Getter::new(export_name(&spec.exported), expr));
+                    }
+                }
+                Statement::ExportAllDeclaration(decl) => {
+                    let vi = shape.var_for(decl.source.value.as_str());
+                    shape.stars.push(vi);
+                }
+                Statement::ExportDefaultDeclaration(decl) => {
+                    let expr = match named_default_decl(&decl.declaration) {
+                        Some(name) => name,
+                        None => {
+                            shape.has_default_expr = true;
+                            "__oj_default".to_string()
+                        }
+                    };
+                    shape.getters.push(Getter::new("default", expr));
+                }
+                _ => {}
+            }
+        }
+        shape
+    }
+
+    fn var_for(&mut self, url: &str) -> usize {
+        if let Some(&i) = self.var_of_url.get(url) {
             return i;
         }
-        let i = import_vars.len();
-        import_vars.push(url.to_string());
-        var_of_url.insert(url.to_string(), i);
+        let i = self.import_vars.len();
+        self.import_vars.push(url.to_string());
+        self.var_of_url.insert(url.to_string(), i);
         i
-    };
-
-    for stmt in &program.body {
-        match stmt {
-            Statement::ImportDeclaration(decl) => {
-                let target = decl.source.value.as_str().to_string();
-                let vi = var_for(&target, &mut import_vars);
-                for spec in decl.specifiers.iter().flatten() {
-                    let (local, member) = match spec {
-                        ImportDeclarationSpecifier::ImportSpecifier(s) => (
-                            &s.local,
-                            Some(match &s.imported {
-                                ModuleExportName::IdentifierName(n) => n.name.to_string(),
-                                ModuleExportName::IdentifierReference(n) => n.name.to_string(),
-                                ModuleExportName::StringLiteral(s) => s.value.to_string(),
-                            }),
-                        ),
-                        ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
-                            (&s.local, Some("default".to_string()))
-                        }
-                        ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => (&s.local, None),
-                    };
-                    let expr = match &member {
-                        Some(m) => format!("_oj_m{vi}.{m}"),
-                        None => format!("_oj_m{vi}"),
-                    };
-                    import_local_expr.insert(local.name.to_string(), expr);
-                    let Some(symbol_id) = local.symbol_id.get() else {
-                        continue;
-                    };
-                    for &reference_id in semantic.scoping().get_resolved_reference_ids(symbol_id) {
-                        replacements.insert(
-                            reference_id,
-                            Replacement {
-                                var: format!("_oj_m{vi}"),
-                                member: member.clone(),
-                            },
-                        );
-                    }
-                }
-            }
-            Statement::ExportDeclaration(decl) => {
-                for name in binding_names(&decl.declaration) {
-                    getters.push((name.clone(), name));
-                }
-            }
-            Statement::ExportNamedDeclaration(decl) => {
-                for spec in &decl.specifiers {
-                    let local = export_name(&spec.local);
-                    let exported = export_name(&spec.exported);
-                    // If `local` names an imported binding, re-export the lowered
-                    // expression; a plain local binding re-exports by its own name.
-                    let expr = import_local_expr.get(&local).cloned().unwrap_or(local);
-                    getters.push((exported, expr));
-                }
-            }
-            Statement::ExportFromDeclaration(decl) => {
-                let vi = var_for(decl.source.value.as_str(), &mut import_vars);
-                for spec in &decl.specifiers {
-                    let local = export_name(&spec.local);
-                    let exported = export_name(&spec.exported);
-                    getters.push((exported, format!("_oj_m{vi}.{local}")));
-                }
-            }
-            Statement::ExportAllDeclaration(decl) => {
-                stars.push(var_for(decl.source.value.as_str(), &mut import_vars));
-            }
-            Statement::ExportDefaultDeclaration(decl) => {
-                use oxc_ast::ast::ExportDefaultDeclarationKind as K;
-                match &decl.declaration {
-                    K::FunctionDeclaration(f) if f.id.is_some() => {
-                        getters.push(("default".into(), f.id.as_ref().unwrap().name.to_string()));
-                    }
-                    K::ClassDeclaration(c) if c.id.is_some() => {
-                        getters.push(("default".into(), c.id.as_ref().unwrap().name.to_string()));
-                    }
-                    _ => {
-                        has_default_expr = true;
-                        getters.push(("default".into(), "__oj_default".into()));
-                    }
-                }
-            }
-            _ => {}
-        }
     }
-    drop(semantic);
 
-    let mut rewriter = RefRewriter {
-        allocator,
-        replacements: &replacements,
-        url,
-    };
-    rewriter.visit_program(&mut program);
+    /// Factory prologue: export getters first (so circular importers see
+    /// them), then
+    /// one `__oj_require` per target, then star re-exports.
+    fn prologue(&self) -> String {
+        let mut prologue = String::new();
+        if self.has_default_expr {
+            prologue.push_str("var __oj_default;\n");
+        }
+        if self.getters.is_empty() {
+            prologue.push_str("__oj_esm(__oj_exports, {});\n");
+        } else {
+            let entries: Vec<String> = self
+                .getters
+                .iter()
+                .map(|g| format!("{:?}: () => {}", g.name, g.expr))
+                .collect();
+            prologue.push_str(&format!(
+                "__oj_esm(__oj_exports, {{ {} }});\n",
+                entries.join(", ")
+            ));
+        }
+        for (i, target) in self.import_vars.iter().enumerate() {
+            prologue.push_str(&format!("var _oj_m{i} = __oj_require({target:?});\n"));
+        }
+        for vi in &self.stars {
+            prologue.push_str(&format!("__oj_export_star(_oj_m{vi}, __oj_exports);\n"));
+        }
+        prologue
+    }
+}
 
+/// The local name of `export default function f` / `export default class C`.
+fn named_default_decl(kind: &ExportDefaultDeclarationKind) -> Option<String> {
+    match kind {
+        ExportDefaultDeclarationKind::FunctionDeclaration(f) => f.id.as_ref(),
+        ExportDefaultDeclarationKind::ClassDeclaration(c) => c.id.as_ref(),
+        _ => None,
+    }
+    .map(|id| id.name.to_string())
+}
+
+/// Replace the body with the prologue followed by the original statements, with
+/// imports and re-exports dropped and export declarations unwrapped.
+fn lower_to_factory_body<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    prologue: &str,
+    path: &Path,
+) -> Result<(), CompileError> {
     let old_body = std::mem::replace(&mut program.body, oxc_allocator::Vec::new_in(&allocator));
     let mut new_body = oxc_allocator::Vec::new_in(&allocator);
-
-    let mut prologue = String::new();
-    if has_default_expr {
-        prologue.push_str("var __oj_default;\n");
-    }
-    if !getters.is_empty() {
-        let entries: Vec<String> = getters
-            .iter()
-            .map(|(name, expr)| format!("{name:?}: () => {expr}"))
-            .collect();
-        prologue.push_str(&format!(
-            "__oj_esm(__oj_exports, {{ {} }});\n",
-            entries.join(", ")
-        ));
-    } else {
-        prologue.push_str("__oj_esm(__oj_exports, {});\n");
-    }
-    for (i, target) in import_vars.iter().enumerate() {
-        prologue.push_str(&format!("var _oj_m{i} = __oj_require({target:?});\n"));
-    }
-    for vi in &stars {
-        prologue.push_str(&format!("__oj_export_star(_oj_m{vi}, __oj_exports);\n"));
-    }
-    for stmt in parse_snippet(allocator, &prologue, path)? {
-        new_body.push(stmt);
-    }
+    new_body.extend(parse_snippet(allocator, prologue, path)?);
 
     for stmt in old_body {
         match stmt {
@@ -408,66 +511,27 @@ fn compile_esm_factory_from_parsed<'a>(
                 new_body.push(Statement::from(decl.unbox().declaration));
             }
             Statement::ExportDefaultDeclaration(decl) => {
-                use oxc_ast::ast::ExportDefaultDeclarationKind as K;
-                match decl.unbox().declaration {
+                use ExportDefaultDeclarationKind as K;
+                let expr = match decl.unbox().declaration {
                     K::FunctionDeclaration(f) if f.id.is_some() => {
                         new_body.push(Statement::FunctionDeclaration(f));
+                        continue;
                     }
                     K::ClassDeclaration(c) if c.id.is_some() => {
                         new_body.push(Statement::ClassDeclaration(c));
+                        continue;
                     }
-                    K::FunctionDeclaration(f) => {
-                        push_default_assignment(
-                            allocator,
-                            &mut new_body,
-                            Expression::FunctionExpression(f),
-                            path,
-                        )?;
-                    }
-                    K::ClassDeclaration(c) => {
-                        push_default_assignment(
-                            allocator,
-                            &mut new_body,
-                            Expression::ClassExpression(c),
-                            path,
-                        )?;
-                    }
-                    kind => {
-                        push_default_assignment(
-                            allocator,
-                            &mut new_body,
-                            kind.into_expression(),
-                            path,
-                        )?;
-                    }
-                }
+                    K::FunctionDeclaration(f) => Expression::FunctionExpression(f),
+                    K::ClassDeclaration(c) => Expression::ClassExpression(c),
+                    kind => kind.into_expression(),
+                };
+                push_default_assignment(allocator, &mut new_body, expr, path)?;
             }
             other => new_body.push(other),
         }
     }
     program.body = new_body;
-
-    let esm_named: Vec<String> = getters
-        .iter()
-        .map(|(exported, _)| exported.clone())
-        .filter(|n| n != "default")
-        .collect();
-    let esm_star_targets: Vec<String> = stars
-        .iter()
-        .filter_map(|&vi| import_vars.get(vi).cloned())
-        .collect();
-
-    let code = Codegen::new().build(&program).code;
-    Ok(FactoryOutput {
-        code,
-        imports: import_vars,
-        require_map: Vec::new(),
-        kind: FactoryKind::Esm,
-        dynamic_imports,
-        is_refresh_boundary,
-        esm_named,
-        esm_star_targets,
-    })
+    Ok(())
 }
 
 fn push_default_assignment<'a>(
@@ -537,6 +601,9 @@ pub(crate) fn binding_names(declaration: &oxc_ast::ast::Declaration) -> Vec<Stri
     names
 }
 
+/// Rewrites imported-binding references to their `_oj_mN` form, `import.meta.url`
+/// / `import.meta.hot` to factory-safe forms, and literal `import()` to
+/// `__oj_import_lazy`.
 struct RefRewriter<'a, 'b> {
     allocator: &'a Allocator,
     replacements: &'b HashMap<ReferenceId, Replacement>,
@@ -561,10 +628,7 @@ impl<'a> VisitMut<'a> for RefRewriter<'a, '_> {
                 .reference_id
                 .get()
                 .and_then(|id| self.replacements.get(&id))
-                .map(|r| match &r.member {
-                    Some(member) => format!("{}.{}", r.var, member),
-                    None => r.var.clone(),
-                }),
+                .map(Replacement::expr),
             Expression::StaticMemberExpression(member)
                 if matches!(member.object, Expression::ImportMeta(_))
                     && member.property.name == "url" =>
@@ -627,7 +691,10 @@ mod tests {
             "/src/Mod.tsx",
             src,
             &mut resolve,
-            true,
+            FactoryOptions {
+                refresh: true,
+                env: None,
+            },
         )
         .unwrap()
     }

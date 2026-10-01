@@ -301,6 +301,8 @@ struct ServerState {
     canon_memo: Mutex<std::collections::HashMap<String, PathBuf>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
     jsx: oj_compiler::JsxConfig,
+    /// The `import.meta.env` / `define` replacements every dev compile applies.
+    import_meta_env: Arc<oj_compiler::ImportMetaEnv>,
     host_policy: HostPolicy,
     hmr_gate: Option<Arc<HmrGate>>,
     /// Fires when the HMR gate flushes, so the Start server releases the page
@@ -702,7 +704,7 @@ struct InstalledDefines {
     digest: String,
 }
 
-fn install_client_defines(defines: Defines) -> InstalledDefines {
+fn install_client_defines(env: &oj_compiler::ImportMetaEnv, defines: Defines) -> InstalledDefines {
     let html_env = oj_env::html_env_map(&defines);
     let mut hasher = blake3::Hasher::new();
     for (k, v) in &defines {
@@ -712,7 +714,7 @@ fn install_client_defines(defines: Defines) -> InstalledDefines {
         hasher.update(&[0]);
     }
     let digest = hasher.finalize().to_hex().to_string();
-    oj_compiler::set_import_meta_env(defines);
+    env.set(defines);
     InstalledDefines { html_env, digest }
 }
 
@@ -821,12 +823,16 @@ async fn spawn_plugin_host(
     file: &PluginFile,
     payload: &str,
     registry: &oj_js::EngineRegistry,
+    import_meta_env: &Arc<oj_compiler::ImportMetaEnv>,
     keep_for_proxy: bool,
     is_start: bool,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
     let host = match PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await {
-        Ok(host) => host,
+        Ok(host) => {
+            host.set_import_meta_env(Arc::clone(import_meta_env));
+            host
+        }
         Err(e) => {
             eprintln!("oj: plugin host failed to start: {e}");
             return Ok(None);
@@ -861,6 +867,7 @@ async fn spawn_plugin_host(
 async fn fold_plugin_defines(
     host: &PluginHost,
     defines: &ClientDefines<'_>,
+    env: &oj_compiler::ImportMetaEnv,
 ) -> Option<InstalledDefines> {
     let prefixed: std::collections::BTreeMap<String, String> = host
         .env_delta()
@@ -877,7 +884,7 @@ async fn fold_plugin_defines(
     let mut merged = defines.build(&prefixed);
     merged.retain(|(k, _)| !overridden.contains(k.as_str()));
     merged.extend(plugin_defines.iter().cloned());
-    Some(install_client_defines(merged))
+    Some(install_client_defines(env, merged))
 }
 
 /// Which plugin hooks exist, so per-module and per-save RPCs nothing consumes
@@ -1314,13 +1321,16 @@ impl DevServer {
             config: &config,
             mode: &dev_mode,
         };
-        let mut defines =
-            install_client_defines(client_defines.build(&std::collections::BTreeMap::new()));
+        let import_meta_env = Arc::new(oj_compiler::ImportMetaEnv::default());
+        let mut defines = install_client_defines(
+            &import_meta_env,
+            client_defines.build(&std::collections::BTreeMap::new()),
+        );
         // `environments.ssr.define` layers over the shared define for SSR compiles only
         // (Vite's per-environment define): a per-side key must not leak across.
-        oj_compiler::set_import_meta_env_ssr(dedup_defines_last_wins(
-            oj_config::environment_defines(&config, "ssr"),
-        ));
+        import_meta_env.set_ssr(dedup_defines_last_wins(oj_config::environment_defines(
+            &config, "ssr",
+        )));
 
         // BEFORE any engine boots: plugin-hook children register here (own process
         // group each) so restarts and shutdown can kill whole plugin-spawned trees.
@@ -1374,6 +1384,7 @@ impl DevServer {
                     file,
                     &payloads.client,
                     &engine_registry,
+                    &import_meta_env,
                     keep_for_proxy,
                     is_start,
                 )
@@ -1396,7 +1407,8 @@ impl DevServer {
         }
         let mut caps = PluginCaps::default();
         if let Some(host) = &plugin_host {
-            if let Some(folded) = fold_plugin_defines(host, &client_defines).await {
+            if let Some(folded) = fold_plugin_defines(host, &client_defines, &import_meta_env).await
+            {
                 defines = folded;
             }
             caps = PluginCaps::probe(host).await;
@@ -1500,6 +1512,7 @@ impl DevServer {
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
             jsx_overrides,
             jsx,
+            import_meta_env,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),
             hmr_gate,
             gate_flush_tx: broadcast::channel::<()>(16).0,
@@ -1715,6 +1728,7 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
 fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     let mut opts = oj_compiler::CompileOptions::dev();
     opts.jsx = state.jsx.clone();
+    opts.env = Some(Arc::clone(&state.import_meta_env));
     opts
 }
 

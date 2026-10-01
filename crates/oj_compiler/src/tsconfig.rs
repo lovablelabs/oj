@@ -2,18 +2,14 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! Nearest-tsconfig discovery for the transform, mirroring Vite's vite:oxc
-//! slot: rolldown passes tsconfig discovery `Auto` into oxc's transform,
-//! which hands each file to oxc_resolver's `find_tsconfig` (ancestor-directory
-//! search, `extends` merged, `files`/`include`/`exclude` ownership honored,
-//! `None` inside node_modules). rolldown then derives the class-field
-//! semantics from the merged compilerOptions: an explicit
-//! `useDefineForClassFields` wins, otherwise the `target` decides (`esnext`
-//! or ES2022+ mean define semantics, anything else — including no target —
-//! means assignment semantics), and NO tsconfig means the transform defaults
-//! (define semantics). Only that one option is consumed here today; rolldown's
-//! merge also maps `verbatimModuleSyntax`/`preserveValueImports` (type-import
-//! elision), `experimentalDecorators` and the `jsx*` family — of those,
-//! `verbatimModuleSyntax` is the consequential open gap (audit VI P2).
+//! slot: rolldown passes tsconfig discovery `Auto` to oxc, which uses
+//! oxc_resolver's `find_tsconfig` (ancestor search, `extends` merged,
+//! `files`/`include`/`exclude` honored, `None` inside node_modules).
+//! Only the class-field semantics are consumed here, derived like rolldown:
+//! an explicit `useDefineForClassFields` wins, else `target` decides (`esnext`
+//! or ES2022+ mean define, anything else including no target means assign),
+//! and no tsconfig means the transform default (define). rolldown also maps
+//! `verbatimModuleSyntax`, `experimentalDecorators` and `jsx*`; not yet here.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -68,10 +64,8 @@ pub fn class_field_set_semantics(path: &Path) -> bool {
     !define
 }
 
-/// Drops every cached tsconfig lookup, the compiler half of Vite's
-/// `reloadOnTsconfigChange` (which clears its resolution cache, invalidates
-/// every module graph and forces a full reload); the dev server calls this
-/// when a tsconfig file changes.
+/// Drops every cached tsconfig lookup: the compiler half of Vite's
+/// `reloadOnTsconfigChange`, called by the dev server when a tsconfig changes.
 pub fn clear_cache() {
     resolver().clear_cache();
 }

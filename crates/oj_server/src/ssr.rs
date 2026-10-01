@@ -344,6 +344,7 @@ pub(crate) async fn ssr_plugin_host(
             .await
             {
                 Ok(host) => {
+                    host.set_import_meta_env(Arc::clone(&state.import_meta_env));
                     eprintln!("oj ssr: plugins (ssr environment) from {}", file.display());
                     // Catch-up half of the watcher's pre-init fast-skip
                     // (see SsrWatchQueue).
@@ -355,7 +356,7 @@ pub(crate) async fn ssr_plugin_host(
                     // layers over the shared define for SSR compiles.
                     let ssr_defines = host.config_defines().await;
                     if !ssr_defines.is_empty() {
-                        oj_compiler::merge_import_meta_env_ssr(ssr_defines);
+                        state.import_meta_env.merge_ssr(ssr_defines);
                     }
                     Some(host)
                 }

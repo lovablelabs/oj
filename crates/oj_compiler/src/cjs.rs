@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use oxc_allocator::Allocator;
@@ -18,16 +19,20 @@ use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 
 use crate::{CompileError, CompileOutput};
 
+/// A dependency file: ESM goes through the normal compile with `env`'s
+/// defines (so `process.env.NODE_ENV` is replaced), CJS is wrapped.
 pub fn compile_dep(
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut dyn FnMut(&str) -> Option<String>,
+    env: Option<std::sync::Arc<crate::ImportMetaEnv>>,
 ) -> Result<CompileOutput, CompileError> {
     if has_module_syntax(path, source_text) {
         let opts = crate::CompileOptions {
             refresh: false,
             sourcemap: false,
+            env,
             ..crate::CompileOptions::dev()
         };
         crate::compile_module(path, source_text, &opts, Some(resolve))
@@ -56,19 +61,24 @@ pub fn analyze_for_factory(
     path: &Path,
     source_text: &str,
 ) -> Result<CjsFactoryAnalysis, CompileError> {
-    let (body, analysis) = lower_and_analyze(path, source_text)?;
-    let named_exports = analysis.named_exports.clone();
-    let reexport_requires = analysis.reexport_requires.clone();
+    let LoweredCjs { body, analysis } = lower_and_analyze(path, source_text)?;
     let mut requires = analysis.requires;
-    requires.extend(analysis.reexport_requires);
-    let mut seen = std::collections::HashSet::new();
-    requires.retain(|s| seen.insert(s.clone()));
+    requires.extend(analysis.reexport_requires.iter().cloned());
     Ok(CjsFactoryAnalysis {
         body,
-        requires,
-        named_exports,
-        reexport_requires,
+        requires: dedup_in_order(requires),
+        named_exports: analysis.named_exports,
+        reexport_requires: analysis.reexport_requires,
     })
+}
+
+/// Drops repeated entries, keeping the first occurrence of each.
+fn dedup_in_order(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
 }
 
 fn has_module_syntax(_path: &Path, source_text: &str) -> bool {
@@ -90,10 +100,13 @@ fn has_module_syntax(_path: &Path, source_text: &str) -> bool {
     })
 }
 
-fn lower_and_analyze(
-    path: &Path,
-    source_text: &str,
-) -> Result<(String, CjsAnalyzer), CompileError> {
+/// A CJS module after NODE_ENV folding and DCE, plus what it requires/exports.
+struct LoweredCjs {
+    body: String,
+    analysis: CjsAnalyzer,
+}
+
+fn lower_and_analyze(path: &Path, source_text: &str) -> Result<LoweredCjs, CompileError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, SourceType::cjs()).parse();
     if parsed.panicked {
@@ -123,7 +136,10 @@ fn lower_and_analyze(
     let mut analysis = CjsAnalyzer::default();
     analysis.visit_program(&program);
 
-    Ok((Codegen::new().build(&program).code, analysis))
+    Ok(LoweredCjs {
+        body: Codegen::new().build(&program).code,
+        analysis,
+    })
 }
 
 pub fn wrap_cjs(
@@ -132,44 +148,72 @@ pub fn wrap_cjs(
     source_text: &str,
     resolve: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Result<CompileOutput, CompileError> {
-    let (body, analysis) = lower_and_analyze(path, source_text)?;
+    let LoweredCjs { body, analysis } = lower_and_analyze(path, source_text)?;
 
     let mut out = String::new();
-    let mut deps = String::new();
     let mut resolved_imports: Vec<String> = Vec::new();
-    let mut unresolved: Vec<&str> = Vec::new();
-
-    let mut unique_requires = analysis.requires.clone();
-    unique_requires.dedup();
-    let unique_requires: Vec<String> = {
-        let mut seen = std::collections::HashSet::new();
-        unique_requires
-            .into_iter()
-            .filter(|s| seen.insert(s.clone()))
-            .collect()
-    };
-
-    for (i, spec) in unique_requires.iter().enumerate() {
-        match resolve(spec) {
-            Some(dep_url) => {
-                // Namespace import, not `{ __cjs_exports }`: a required dep may be
-                // a genuine ESM module (e.g. an aliased polyfill) with no
-                // __cjs_exports. __oj_cjs_interop unwraps oj-compiled CJS to its
-                // module.exports and passes an ESM namespace through as-is.
-                out.push_str(&format!("import * as __oj_ns_{i} from {dep_url:?};\n"));
-                deps.push_str(&format!("  {spec:?}: __oj_cjs_interop(__oj_ns_{i}),\n"));
-                resolved_imports.push(dep_url);
-            }
-            None => unresolved.push(spec),
-        }
-    }
+    let deps = import_requires(
+        &dedup_in_order(analysis.requires.clone()),
+        resolve,
+        &mut out,
+        &mut resolved_imports,
+    );
     if analysis.has_dynamic_require {
         out.push_str(&format!(
             "console.warn(\"[oj] {url} contains dynamic require(); calls will throw\");\n"
         ));
     }
+    out.push_str(&wrapper(url, &deps, &body));
 
-    out.push_str(&format!(
+    for spec in &analysis.reexport_requires {
+        if let Some(dep_url) = resolve(spec) {
+            out.push_str(&format!("export * from {dep_url:?};\n"));
+            if !resolved_imports.contains(&dep_url) {
+                resolved_imports.push(dep_url);
+            }
+        }
+    }
+    push_named_exports(&analysis.named_exports, &mut out);
+
+    Ok(CompileOutput {
+        code: out,
+        map_json: None,
+        imports: resolved_imports,
+        dynamic_imports: Vec::new(),
+        import_bindings: Vec::new(),
+        is_refresh_boundary: false,
+        hot_accept: None,
+    })
+}
+
+/// Emits one namespace import per resolvable require into `out` and returns
+/// the `__oj_deps` table entries. Unresolved specifiers get no import; the
+/// runtime `require` throws for them.
+///
+/// Namespace import, not `{ __cjs_exports }`: a required dep may be genuine
+/// ESM (e.g. an aliased polyfill) with no __cjs_exports. __oj_cjs_interop
+/// unwraps oj-compiled CJS to its module.exports and passes ESM through.
+fn import_requires(
+    requires: &[String],
+    resolve: &mut dyn FnMut(&str) -> Option<String>,
+    out: &mut String,
+    resolved_imports: &mut Vec<String>,
+) -> String {
+    let mut deps = String::new();
+    for (i, spec) in requires.iter().enumerate() {
+        if let Some(dep_url) = resolve(spec) {
+            out.push_str(&format!("import * as __oj_ns_{i} from {dep_url:?};\n"));
+            deps.push_str(&format!("  {spec:?}: __oj_cjs_interop(__oj_ns_{i}),\n"));
+            resolved_imports.push(dep_url);
+        }
+    }
+    deps
+}
+
+/// The CommonJS environment (`module`, `exports`, `require`, `__filename`,
+/// `__dirname`) around `body`, with `__cjs_exports` and default exports.
+fn wrapper(url: &str, deps: &str, body: &str) -> String {
+    format!(
         r#"function __oj_cjs_interop(ns) {{
   return ns && Object.prototype.hasOwnProperty.call(ns, "__cjs_exports") ? ns.__cjs_exports : ns;
 }}
@@ -190,20 +234,12 @@ export const __cjs_exports = module.exports;
 export default (module.exports && module.exports.__esModule) ? module.exports["default"] : module.exports;
 "#,
         dirname = url.rsplit_once('/').map(|(d, _)| d).unwrap_or(""),
-    ));
+    )
+}
 
-    for spec in &analysis.reexport_requires {
-        if let Some(dep_url) = resolve(spec) {
-            out.push_str(&format!("export * from {dep_url:?};\n"));
-            if !resolved_imports.contains(&dep_url) {
-                resolved_imports.push(dep_url);
-            }
-        }
-    }
-
-    let mut seen = std::collections::HashSet::new();
-    for (i, name) in analysis
-        .named_exports
+fn push_named_exports(names: &[String], out: &mut String) {
+    let mut seen = HashSet::new();
+    for (i, name) in names
         .iter()
         .filter(|n| is_valid_export_name(n) && seen.insert(n.as_str()))
         .enumerate()
@@ -212,16 +248,6 @@ export default (module.exports && module.exports.__esModule) ? module.exports["d
             "const __oj_export_{i} = module.exports[{name:?}];\nexport {{ __oj_export_{i} as {name} }};\n"
         ));
     }
-
-    Ok(CompileOutput {
-        code: out,
-        map_json: None,
-        imports: resolved_imports,
-        dynamic_imports: Vec::new(),
-        import_bindings: Vec::new(),
-        is_refresh_boundary: false,
-        hot_accept: None,
-    })
 }
 
 // The simple name a callee ultimately invokes, unwrapping member access and the
@@ -295,10 +321,8 @@ impl<'a> Visit<'a> for CjsAnalyzer {
             }
         }
         // TypeScript/tslib/swc compile `export * from "x"` to a helper call
-        // (`__exportStar(require("x"), exports)`, `__export(require("x"))`,
-        // `tslib_1.__exportStar(...)`, `(0, tslib_1.__exportStar)(...)`). Without
-        // this a barrel like @sniptt/guards re-exporting its submodules exposes
-        // no named exports, so `import { isUndefined }` fails.
+        // (`__exportStar(require("x"), exports)`, `(0, tslib_1.__exportStar)(...)`);
+        // without this a re-exporting barrel exposes no named exports.
         if is_export_star_helper(&it.callee) {
             if let Some(Expression::CallExpression(inner)) =
                 it.arguments.first().and_then(|a| a.as_expression())
@@ -565,7 +589,7 @@ exports.named = 1;
     fn esm_deps_bypass_the_cjs_wrapper() {
         let src = r#"export const x = 1;"#;
         let mut resolve = |_: &str| None;
-        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve).unwrap();
+        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve, None).unwrap();
         assert!(out.code.contains("export const x = 1"));
         assert!(!out.code.contains("__cjs_exports"));
     }
