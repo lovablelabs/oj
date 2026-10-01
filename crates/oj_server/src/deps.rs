@@ -11,7 +11,7 @@ pub(crate) fn partial_bundle_enabled() -> bool {
 // Both the interop and specifier-rewrite paths route here so a dep never gets two URLs.
 pub(crate) fn dep_serve_url(resolved: &Path, root: &Path) -> String {
     if partial_bundle_enabled()
-        && resolved.components().any(|c| c.as_os_str() == "node_modules")
+        && in_node_modules(resolved)
         && is_bundleable_dep_file(resolved)
         // optimizeDeps.exclude: serve this package per-file, never bundled.
         && !pkg_bundle::is_excluded(resolved)
@@ -74,7 +74,7 @@ pub(crate) fn optional_peer_dep_url(root: &Path, dir: &Path, spec: &str) -> Opti
     }
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    if dir == root || !dir.components().any(|c| c.as_os_str() == "node_modules") {
+    if dir == root || !in_node_modules(&dir) {
         return None;
     }
     let pkg_name = {

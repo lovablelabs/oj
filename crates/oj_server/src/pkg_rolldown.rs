@@ -6,6 +6,7 @@
 // served URLs (singletons preserved). Prototype, gated behind OJ_PB_ROLLDOWN.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -35,11 +36,10 @@ pub fn enabled() -> bool {
 // fallback never fires): curated force-through-rolldown list; extend with OJ_PB_ROLLDOWN_FORCE=a,b.
 const BUILTIN_FORCE: &[&str] = &["object-inspect"];
 
-fn force_set() -> &'static std::collections::HashSet<String> {
-    static S: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+fn force_set() -> &'static HashSet<String> {
+    static S: OnceLock<HashSet<String>> = OnceLock::new();
     S.get_or_init(|| {
-        let mut set: std::collections::HashSet<String> =
-            BUILTIN_FORCE.iter().map(|s| s.to_string()).collect();
+        let mut set: HashSet<String> = BUILTIN_FORCE.iter().map(|s| s.to_string()).collect();
         if let Ok(v) = std::env::var("OJ_PB_ROLLDOWN_FORCE") {
             for name in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 set.insert(name.to_string());
@@ -58,9 +58,9 @@ pub fn is_forced(entry: &Path) -> bool {
 
 // Cache of emitted chunks keyed by their served path (`/@oj-pkg/<filename>`), so
 // a package's sibling chunks are already present when the browser requests them.
-fn chunk_cache() -> &'static Mutex<std::collections::HashMap<String, Bytes>> {
-    static C: OnceLock<Mutex<std::collections::HashMap<String, Bytes>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+fn chunk_cache() -> &'static Mutex<HashMap<String, Bytes>> {
+    static C: OnceLock<Mutex<HashMap<String, Bytes>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// A chunk previously emitted by a rolldown bundle, if any.

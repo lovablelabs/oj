@@ -12,37 +12,9 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
                 if !visited.insert(url.clone()) {
                     continue;
                 }
-                let file = if let Some(abs) = url.strip_prefix("/@fs") {
-                    let f = PathBuf::from(abs);
-                    let ok = {
-                        let a = state.fs_allow.lock().unwrap();
-                        a.iter().any(|r| f.starts_with(r))
-                    };
-                    if !ok {
-                        continue;
-                    }
-                    f
-                } else {
-                    let rel = url.trim_start_matches('/').to_string();
-                    match locate(&state.root, state.public_dir.as_deref(), &rel) {
-                        Some(f) => f,
-                        None => continue,
-                    }
+                let Some(file) = crawl_file(&state, &url) else {
+                    continue;
                 };
-                let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
-                    continue;
-                }
-                // A sass partial is not an entry: it reaches the graph via its
-                // importer, and a standalone compile lacks importer-provided mixins.
-                if matches!(ext, "scss" | "sass")
-                    && file
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with('_'))
-                {
-                    continue;
-                }
                 let state = Arc::clone(&state);
                 tasks.spawn(async move {
                     match ensure_module(&state, &file, &url).await {
@@ -80,6 +52,41 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
         save_graph_snapshot(&state.root, &paths);
         let _ = done_tx.send(true);
     });
+}
+
+/// The file behind a crawled url, when it is one the eager crawl compiles.
+fn crawl_file(state: &ServerState, url: &str) -> Option<PathBuf> {
+    let file = if let Some(abs) = url.strip_prefix("/@fs") {
+        let f = PathBuf::from(abs);
+        let allowed = state
+            .fs_allow
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| f.starts_with(r));
+        if !allowed {
+            return None;
+        }
+        f
+    } else {
+        locate(
+            &state.root,
+            state.public_dir.as_deref(),
+            url.trim_start_matches('/'),
+        )?
+    };
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
+        return None;
+    }
+    // A sass partial is not an entry: it reaches the graph via its
+    // importer, and a standalone compile lacks importer-provided mixins.
+    let partial = matches!(ext, "scss" | "sass")
+        && file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('_'));
+    (!partial).then_some(file)
 }
 
 pub(crate) fn snapshot_path(root: &Path) -> PathBuf {

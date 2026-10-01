@@ -38,8 +38,8 @@ pub fn bundle_url_for(entry_abs: &Path) -> String {
     }
 }
 
-fn version_cell() -> &'static std::sync::OnceLock<String> {
-    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+fn version_cell() -> &'static OnceLock<String> {
+    static V: OnceLock<String> = OnceLock::new();
     &V
 }
 
@@ -86,15 +86,15 @@ fn pb_debug() -> bool {
 #[derive(Default)]
 pub struct OptimizeConfig {
     /// `optimizeDeps.include`: force these packages to be pre-bundled (rolldown).
-    pub include: std::collections::HashSet<String>,
+    pub include: HashSet<String>,
     /// `optimizeDeps.exclude`: never partial-bundle these; serve per-file.
-    pub exclude: std::collections::HashSet<String>,
+    pub exclude: HashSet<String>,
     /// `optimizeDeps.needsInterop`: force CJS->ESM interop for these.
-    pub needs_interop: std::collections::HashSet<String>,
+    pub needs_interop: HashSet<String>,
 }
 
-fn opt_config() -> &'static std::sync::OnceLock<OptimizeConfig> {
-    static C: std::sync::OnceLock<OptimizeConfig> = std::sync::OnceLock::new();
+fn opt_config() -> &'static OnceLock<OptimizeConfig> {
+    static C: OnceLock<OptimizeConfig> = OnceLock::new();
     &C
 }
 
@@ -125,10 +125,7 @@ pub fn package_name(entry: &Path) -> Option<String> {
     }
 }
 
-fn pkg_in(
-    path: &Path,
-    set: impl Fn(&OptimizeConfig) -> &std::collections::HashSet<String>,
-) -> bool {
+fn pkg_in(path: &Path, set: impl Fn(&OptimizeConfig) -> &HashSet<String>) -> bool {
     match (config(), package_name(path)) {
         (Some(c), Some(name)) => set(c).contains(&name),
         _ => false,
@@ -215,235 +212,225 @@ pub fn build(entry: &Path, resolver: &OjResolver, root: &Path) -> BundleOutcome 
         return BundleOutcome::Fallback;
     }
     let pkg_root = package_root(entry);
-
-    let mut modules: Vec<PkgModule> = Vec::new();
-    let mut externals: Vec<String> = Vec::new();
-    let mut ext_seen: HashSet<String> = HashSet::new();
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut queue: VecDeque<PathBuf> = VecDeque::new();
-    queue.push_back(entry.to_path_buf());
-
-    let entry_id = match id_of(&pkg_root, entry) {
-        Some(id) => id,
-        None => return BundleOutcome::Fallback,
+    let Some(entry_id) = id_of(&pkg_root, entry) else {
+        return BundleOutcome::Fallback;
     };
-    // id -> (direct named exports, internal re-export target ids): lets the
-    // entry's export set follow `__exportStar` barrels with no direct names.
-    let mut export_info: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
-
-    while let Some(file) = queue.pop_front() {
+    let mut walk = Walk {
+        pkg_root,
+        resolver,
+        root,
+        modules: Vec::new(),
+        externals: Vec::new(),
+        ext_seen: HashSet::new(),
+        export_info: HashMap::new(),
+        queue: VecDeque::from([entry.to_path_buf()]),
+    };
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    while let Some(file) = walk.queue.pop_front() {
         if !visited.insert(file.clone()) {
             continue;
         }
-        let Some(id) = id_of(&pkg_root, &file) else {
-            return bail("path escaped the package", &file);
-        };
-        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let Some(src) = read(&file) else {
-            return bail("could not read file", &file);
-        };
-
-        // JSON internal module: expose the parsed value as module.exports.
-        if ext == "json" {
-            export_info.insert(id.clone(), (Vec::new(), Vec::new()));
-            modules.push(PkgModule {
-                id,
-                kind: ModuleKind::Cjs,
-                body: format!("module.exports = {};", src.trim()),
-                deps: Vec::new(),
-            });
-            continue;
+        if let Err(reason) = walk.visit(&file) {
+            return bail(&reason, &file);
         }
-
-        // Internal ES module: compile to an ESM factory; the resolve callback
-        // rewrites each import to "#id" (internal) or "@url" (cross-package).
-        if ext == "mjs" || is_esm(&file, &src) {
-            // import.meta.url / .resolve can't be honored inside a factory function.
-            if src.contains("import.meta.url") || src.contains("import.meta.resolve") {
-                return bail("uses import.meta.url/resolve", &file);
-            }
-            let file_url = url_of(root, &file);
-            let dir = file.parent().unwrap_or(&pkg_root).to_path_buf();
-            let mut bail_spec: Option<String> = None;
-            let mut discovered: Vec<PathBuf> = Vec::new();
-            let factory = {
-                let mut resolve = |spec: &str| -> Option<String> {
-                    if spec.starts_with('.') {
-                        let Some(target) = resolve_relative(&dir, spec) else {
-                            bail_spec = Some(format!("unresolved import {spec:?}"));
-                            return None;
-                        };
-                        let Some(tid) = id_of(&pkg_root, &target) else {
-                            bail_spec = Some(format!("import {spec:?} escapes package"));
-                            return None;
-                        };
-                        let t_ext = target.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        if !INTERNAL_EXTS.contains(&t_ext) {
-                            bail_spec = Some(format!("import {spec:?} -> unsupported .{t_ext}"));
-                            return None;
-                        }
-                        discovered.push(target);
-                        Some(format!("#{tid}"))
-                    } else if let Some(target) =
-                        resolve_same_package(&pkg_root, &dir, spec, resolver)
-                    {
-                        // Same-package subpath (`jotai/react`): treat as internal.
-                        match id_of(&pkg_root, &target) {
-                            Some(tid) => {
-                                discovered.push(target);
-                                Some(format!("#{tid}"))
-                            }
-                            None => {
-                                bail_spec = Some(format!("same-package import {spec:?} has no id"));
-                                None
-                            }
-                        }
-                    } else {
-                        match external_url(spec, &dir, resolver, root) {
-                            Some(u) => {
-                                if ext_seen.insert(u.clone()) {
-                                    externals.push(u.clone());
-                                }
-                                Some(format!("@{u}"))
-                            }
-                            None => {
-                                bail_spec = Some(format!("unresolvable import {spec:?}"));
-                                None
-                            }
-                        }
-                    }
-                };
-                oj_compiler::bundle::compile_factory(&file, &file_url, &src, &mut resolve)
-            };
-            if let Some(reason) = bail_spec {
-                return bail(&reason, &file);
-            }
-            let factory = match factory {
-                Ok(f) => f,
-                Err(e) => {
-                    if pb_debug() {
-                        eprintln!(
-                            "oj[pb] fallback: esm compile error ({e}) @ {}",
-                            file.display()
-                        );
-                    }
-                    return BundleOutcome::Fallback;
-                }
-            };
-            // Dynamic imports were lowered to `__oj_import_lazy("#id"|"@url")`,
-            // which the emitted bundle runtime resolves.
-            if factory.kind != oj_compiler::bundle::FactoryKind::Esm {
-                return bail("compiled as CJS unexpectedly", &file);
-            }
-            for target in discovered {
-                queue.push_back(target);
-            }
-            let reexport_ids: Vec<String> = factory
-                .esm_star_targets
-                .iter()
-                .filter_map(|t| t.strip_prefix('#').map(|s| s.to_string()))
-                .collect();
-            export_info.insert(id.clone(), (factory.esm_named.clone(), reexport_ids));
-            modules.push(PkgModule {
-                id,
-                kind: ModuleKind::Esm,
-                body: factory.code,
-                deps: Vec::new(),
-            });
-            continue;
-        }
-
-        let analysis = match oj_compiler::cjs::analyze_for_factory(&file, &src) {
-            Ok(a) => a,
-            Err(e) => {
-                if pb_debug() {
-                    eprintln!(
-                        "oj[pb] fallback: cjs analyze error ({e}) @ {}",
-                        file.display()
-                    );
-                }
-                return BundleOutcome::Fallback;
-            }
-        };
-
-        let dir = file.parent().unwrap_or(&pkg_root).to_path_buf();
-        let mut deps: Vec<(String, DepTarget)> = Vec::new();
-        for spec in &analysis.requires {
-            if spec.starts_with('.') {
-                // Relative: stay inside the package or bail.
-                let Some(target) = resolve_relative(&dir, spec) else {
-                    return bail(&format!("unresolved relative require({spec:?})"), &file);
-                };
-                let Some(tid) = id_of(&pkg_root, &target) else {
-                    return bail(
-                        &format!("relative require({spec:?}) escapes package"),
-                        &file,
-                    );
-                };
-                let t_ext = target.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if !INTERNAL_EXTS.contains(&t_ext) {
-                    return bail(
-                        &format!("relative require({spec:?}) -> unsupported .{t_ext}"),
-                        &file,
-                    );
-                }
-                deps.push((spec.clone(), DepTarget::Internal(tid)));
-                queue.push_back(target);
-            } else if let Some(target) = resolve_same_package(&pkg_root, &dir, spec, resolver) {
-                // Same-package subpath require: internal.
-                let Some(tid) = id_of(&pkg_root, &target) else {
-                    return bail(&format!("same-package require({spec:?}) has no id"), &file);
-                };
-                deps.push((spec.clone(), DepTarget::Internal(tid)));
-                queue.push_back(target);
-            } else {
-                // Bare: another package (its own bundle) or a node builtin (stub).
-                let url = external_url(spec, &dir, resolver, root);
-                let Some(url) = url else {
-                    return bail(&format!("unresolvable bare require({spec:?})"), &file);
-                };
-                if ext_seen.insert(url.clone()) {
-                    externals.push(url.clone());
-                }
-                deps.push((spec.clone(), DepTarget::External(url)));
-            }
-        }
-
-        // Internal re-export targets (for the transitive export-name walk).
-        let reexport_ids: Vec<String> = analysis
-            .reexport_requires
-            .iter()
-            .filter_map(|spec| {
-                deps.iter()
-                    .find(|(s, _)| s == spec)
-                    .and_then(|(_, t)| match t {
-                        DepTarget::Internal(id) => Some(id.clone()),
-                        DepTarget::External(_) => None,
-                    })
-            })
-            .collect();
-        export_info.insert(id.clone(), (analysis.named_exports.clone(), reexport_ids));
-        modules.push(PkgModule {
-            id,
-            kind: ModuleKind::Cjs,
-            body: analysis.body,
-            deps,
-        });
     }
 
-    let entry_named = collect_exports(&entry_id, &export_info);
-    externals.sort();
+    let entry_named = collect_exports(&entry_id, &walk.export_info);
+    walk.externals.sort();
     BundleOutcome::Bundle(emit_package_bundle(
-        &modules,
+        &walk.modules,
         &entry_id,
-        &externals,
+        &walk.externals,
         &entry_named,
     ))
 }
 
+/// A module's direct named exports plus the internal ids it re-exports: lets
+/// the entry's export set follow `__exportStar` barrels with no direct names.
+struct ExportInfo {
+    named: Vec<String>,
+    reexports: Vec<String>,
+}
+
+/// Where an import/require inside the package points.
+enum Edge {
+    /// Another file of this package: its id and path.
+    Internal(String, PathBuf),
+    /// Another package's bundle, a builtin stub, or a source file URL.
+    External(String),
+}
+
+/// State of the package graph walk in `build`.
+struct Walk<'a> {
+    pkg_root: PathBuf,
+    resolver: &'a OjResolver,
+    root: &'a Path,
+    modules: Vec<PkgModule>,
+    externals: Vec<String>,
+    ext_seen: HashSet<String>,
+    export_info: HashMap<String, ExportInfo>,
+    queue: VecDeque<PathBuf>,
+}
+
+impl Walk<'_> {
+    /// Compile one file into `modules`, queueing its internal deps. `Err` is the
+    /// fallback reason.
+    fn visit(&mut self, file: &Path) -> Result<(), String> {
+        let id = id_of(&self.pkg_root, file).ok_or("path escaped the package")?;
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let src = read(file).ok_or("could not read file")?;
+        if ext == "json" {
+            // JSON internal module: expose the parsed value as module.exports.
+            self.push(
+                id,
+                ModuleKind::Cjs,
+                format!("module.exports = {};", src.trim()),
+                Vec::new(),
+                ExportInfo {
+                    named: Vec::new(),
+                    reexports: Vec::new(),
+                },
+            );
+            Ok(())
+        } else if ext == "mjs" || is_esm(file, &src) {
+            self.visit_esm(file, id, &src)
+        } else {
+            self.visit_cjs(file, id, &src)
+        }
+    }
+
+    fn push(
+        &mut self,
+        id: String,
+        kind: ModuleKind,
+        body: String,
+        deps: Vec<(String, DepTarget)>,
+        info: ExportInfo,
+    ) {
+        self.export_info.insert(id.clone(), info);
+        self.modules.push(PkgModule {
+            id,
+            kind,
+            body,
+            deps,
+        });
+    }
+
+    /// Classify `spec` imported from `dir`: relative (must stay inside the
+    /// package), a same-package subpath (`jotai/react`, internal), or another
+    /// package / node builtin (external). `what` labels the fallback reason.
+    fn edge(&mut self, dir: &Path, spec: &str, what: &str) -> Result<Edge, String> {
+        if spec.starts_with('.') {
+            let target =
+                resolve_relative(dir, spec).ok_or_else(|| format!("unresolved {what} {spec:?}"))?;
+            let tid = id_of(&self.pkg_root, &target)
+                .ok_or_else(|| format!("{what} {spec:?} escapes package"))?;
+            let t_ext = target.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !INTERNAL_EXTS.contains(&t_ext) {
+                return Err(format!("{what} {spec:?} -> unsupported .{t_ext}"));
+            }
+            Ok(Edge::Internal(tid, target))
+        } else if let Some(target) = resolve_same_package(&self.pkg_root, dir, spec, self.resolver)
+        {
+            let tid = id_of(&self.pkg_root, &target)
+                .ok_or_else(|| format!("same-package {what} {spec:?} has no id"))?;
+            Ok(Edge::Internal(tid, target))
+        } else {
+            let url = external_url(spec, dir, self.resolver, self.root)
+                .ok_or_else(|| format!("unresolvable {what} {spec:?}"))?;
+            if self.ext_seen.insert(url.clone()) {
+                self.externals.push(url.clone());
+            }
+            Ok(Edge::External(url))
+        }
+    }
+
+    /// Internal ES module: compile to an ESM factory; the resolve callback
+    /// rewrites each import to "#id" (internal) or "@url" (cross-package).
+    fn visit_esm(&mut self, file: &Path, id: String, src: &str) -> Result<(), String> {
+        // import.meta.url / .resolve can't be honored inside a factory function.
+        if src.contains("import.meta.url") || src.contains("import.meta.resolve") {
+            return Err("uses import.meta.url/resolve".into());
+        }
+        let file_url = url_of(self.root, file);
+        let dir = file.parent().unwrap_or(&self.pkg_root).to_path_buf();
+        let mut bail_spec: Option<String> = None;
+        let mut discovered: Vec<PathBuf> = Vec::new();
+        let factory = {
+            let mut resolve = |spec: &str| -> Option<String> {
+                match self.edge(&dir, spec, "import") {
+                    Ok(Edge::Internal(tid, target)) => {
+                        discovered.push(target);
+                        Some(format!("#{tid}"))
+                    }
+                    Ok(Edge::External(url)) => Some(format!("@{url}")),
+                    Err(reason) => {
+                        bail_spec = Some(reason);
+                        None
+                    }
+                }
+            };
+            oj_compiler::bundle::compile_factory(file, &file_url, src, &mut resolve)
+        };
+        if let Some(reason) = bail_spec {
+            return Err(reason);
+        }
+        let factory = factory.map_err(|e| format!("esm compile error ({e})"))?;
+        // Dynamic imports were lowered to `__oj_import_lazy("#id"|"@url")`,
+        // which the emitted bundle runtime resolves.
+        if factory.kind != oj_compiler::bundle::FactoryKind::Esm {
+            return Err("compiled as CJS unexpectedly".into());
+        }
+        self.queue.extend(discovered);
+        let reexports = factory
+            .esm_star_targets
+            .iter()
+            .filter_map(|t| t.strip_prefix('#').map(str::to_string))
+            .collect();
+        let info = ExportInfo {
+            named: factory.esm_named,
+            reexports,
+        };
+        self.push(id, ModuleKind::Esm, factory.code, Vec::new(), info);
+        Ok(())
+    }
+
+    fn visit_cjs(&mut self, file: &Path, id: String, src: &str) -> Result<(), String> {
+        let analysis = oj_compiler::cjs::analyze_for_factory(file, src)
+            .map_err(|e| format!("cjs analyze error ({e})"))?;
+        let dir = file.parent().unwrap_or(&self.pkg_root).to_path_buf();
+        let mut deps: Vec<(String, DepTarget)> = Vec::new();
+        // spec -> internal id, for the re-export lookup below.
+        let mut internal: HashMap<&str, String> = HashMap::new();
+        for spec in &analysis.requires {
+            let target = match self.edge(&dir, spec, "require")? {
+                Edge::Internal(tid, target) => {
+                    internal.insert(spec, tid.clone());
+                    self.queue.push_back(target);
+                    DepTarget::Internal(tid)
+                }
+                Edge::External(url) => DepTarget::External(url),
+            };
+            deps.push((spec.clone(), target));
+        }
+        // Internal re-export targets (for the transitive export-name walk).
+        let reexports = analysis
+            .reexport_requires
+            .iter()
+            .filter_map(|spec| internal.get(spec.as_str()).cloned())
+            .collect();
+        let info = ExportInfo {
+            named: analysis.named_exports,
+            reexports,
+        };
+        self.push(id, ModuleKind::Cjs, analysis.body, deps, info);
+        Ok(())
+    }
+}
+
 /// The entry's full ESM export names: its own plus everything transitively
 /// re-exported from internal modules (`__exportStar` / `module.exports = require`).
-fn collect_exports(entry: &str, info: &HashMap<String, (Vec<String>, Vec<String>)>) -> Vec<String> {
+fn collect_exports(entry: &str, info: &HashMap<String, ExportInfo>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut visited: HashSet<String> = HashSet::new();
@@ -452,15 +439,13 @@ fn collect_exports(entry: &str, info: &HashMap<String, (Vec<String>, Vec<String>
         if !visited.insert(id.clone()) {
             continue;
         }
-        if let Some((named, reexports)) = info.get(&id) {
-            for n in named {
+        if let Some(e) = info.get(&id) {
+            for n in &e.named {
                 if seen_names.insert(n.clone()) {
                     out.push(n.clone());
                 }
             }
-            for r in reexports {
-                stack.push(r.clone());
-            }
+            stack.extend(e.reexports.iter().cloned());
         }
     }
     out

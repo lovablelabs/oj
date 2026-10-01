@@ -260,17 +260,19 @@ pub(crate) fn ctx_rpc(
     resolver: &OjResolver,
     root: &Path,
 ) -> Result<serde_json::Value, String> {
+    let arg = |i: usize| args.get(i).and_then(|v| v.as_str()).unwrap_or("");
+    let dir_of = |path: &Path| {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.to_path_buf())
+    };
     match method {
         "resolve" => {
-            let source = args.first().and_then(|v| v.as_str()).unwrap_or("");
-            let importer = args.get(1).and_then(|v| v.as_str()).unwrap_or("");
+            let (source, importer) = (arg(0), arg(1));
             let dir = if importer.is_empty() {
                 root.to_path_buf()
             } else {
-                Path::new(importer)
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| root.to_path_buf())
+                dir_of(Path::new(importer))
             };
             Ok(match resolver.resolve(&dir, source) {
                 Ok(p) => serde_json::Value::String(p.display().to_string()),
@@ -278,35 +280,27 @@ pub(crate) fn ctx_rpc(
             })
         }
         "moduleInfo" => {
-            let id = args.first().and_then(|v| v.as_str()).unwrap_or("");
+            let id = arg(0);
             let path = Path::new(id);
-            match std::fs::read_to_string(path) {
-                Ok(src) => {
-                    let dir = path
-                        .parent()
-                        .map(Path::to_path_buf)
-                        .unwrap_or_else(|| root.to_path_buf());
-                    let (code, imports) = match oj_compiler::compile(
-                        path,
-                        &src,
-                        &oj_compiler::CompileOptions::prod(),
-                    ) {
-                        Ok(out) => (out.code, out.imports),
-                        Err(_) => (src, Vec::new()),
-                    };
-                    let imported_ids: Vec<String> = imports
-                        .iter()
-                        .map(|spec| {
-                            resolver
-                                .resolve(&dir, spec)
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_else(|_| spec.clone())
-                        })
-                        .collect();
-                    Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
-                }
-                Err(_) => Ok(serde_json::Value::Null),
-            }
+            let Ok(src) = std::fs::read_to_string(path) else {
+                return Ok(serde_json::Value::Null);
+            };
+            let dir = dir_of(path);
+            let (code, imports) =
+                match oj_compiler::compile(path, &src, &oj_compiler::CompileOptions::prod()) {
+                    Ok(out) => (out.code, out.imports),
+                    Err(_) => (src, Vec::new()),
+                };
+            let imported_ids: Vec<String> = imports
+                .iter()
+                .map(|spec| {
+                    resolver
+                        .resolve(&dir, spec)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| spec.clone())
+                })
+                .collect();
+            Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
         }
         other => Err(format!("unknown ctx method: {other}")),
     }
@@ -338,6 +332,36 @@ pub(crate) fn plugin_init_timeout_from(raw: Option<&str>) -> std::time::Duration
         .filter(|s| *s > 0)
         .unwrap_or(300);
     std::time::Duration::from_secs(secs)
+}
+
+/// A `{ ojWs }` push as the HMR payload to broadcast: a custom event when it
+/// names one, else the raw object. Empty means nothing to send.
+fn ws_push_payload(ws: &serde_json::Value) -> String {
+    match ws.get("event").and_then(|e| e.as_str()) {
+        Some(event) => serde_json::json!({
+            "type": "custom",
+            "event": event,
+            "data": ws.get("data").cloned().unwrap_or(serde_json::Value::Null),
+        })
+        .to_string(),
+        None => ws
+            .get("data")
+            .filter(|d| d.is_object())
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// Abandon rides a Drop guard: a cancelled keeper task must still abandon,
+/// or the engine Arc's drop would JOIN a possibly-wedged thread.
+struct AbandonOnDrop(Option<std::sync::Arc<oj_js::JsEngine>>);
+
+impl Drop for AbandonOnDrop {
+    fn drop(&mut self) {
+        if let Some(engine) = self.0.take() {
+            engine.abandon();
+        }
+    }
 }
 
 impl std::fmt::Debug for PluginHost {
@@ -544,47 +568,11 @@ impl PluginHost {
     /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
     /// superseded `generation` abandons the just-spawned engine: racing ignites must never leave a live loser.
     fn ignite(host: &std::sync::Arc<PluginHost>, generation: u64) -> Result<(), String> {
-        let root = host.boot.root.clone();
-        let script = PathBuf::from(&host.host_module);
-        if let Some(parent) = script.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        // Written atomically (tmp + rename): hosts spawn concurrently, and a
-        // truncating write could hand a sibling engine a half-written module.
-        let _ = ensure_asset(
-            oj_cache::cache_root(&root).as_path(),
-            "discovered-deps.mjs",
-            DISCOVERED_DEPS_JS,
-        );
-        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
-            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
-            std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;
-            std::fs::rename(&tmp, &script).map_err(|e| e.to_string())?;
-        }
-
+        host.write_host_module()?;
         // Pushes arrive as values on `post_rx`, so nothing a plugin prints can
         // splice into the protocol.
-        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
-        let resolver = std::sync::Arc::new(OjResolver::new(&root));
-        let rpc_handler: oj_js::RpcHandler = {
-            let resolver = std::sync::Arc::clone(&resolver);
-            let root = root.clone();
-            Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
-        };
-        let mut engine_config = oj_js::EngineConfig::new(&root);
-        engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
-        engine_config.memory_limit_bytes = Some(host.boot.memory_limit_bytes);
-        engine_config.registry = host.boot.registry.clone();
-        let engine = oj_js::JsEngine::spawn(
-            engine_config,
-            None,
-            Some(oj_js::EngineHooks {
-                post: post_tx,
-                rpc: Some(rpc_handler),
-            }),
-        )
-        .map_err(|e| format!("cannot start the embedded plugin host: {e}"))?;
-        let engine = std::sync::Arc::new(engine);
+        let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = std::sync::Arc::new(host.spawn_engine(post_tx)?);
         {
             let revive = host.revive.lock().unwrap();
             // A shutdown racing this boot must not gain a live engine it can no
@@ -598,23 +586,75 @@ impl PluginHost {
             }
             *host.engine.lock().unwrap() = Some(std::sync::Arc::clone(&engine));
         }
+        Self::spawn_boot_task(host, engine, generation);
+        Self::spawn_push_dispatcher(host, post_rx, generation);
+        Self::spawn_stall_monitor(host);
+        Ok(())
+    }
 
-        // BOOT task: seed the host's identity, then trigger top-level init via a trivial
-        // export. No deadline (the Rust-side watches own boot patience); a top-level throw declares the host gone.
-        let boot_ref = std::sync::Arc::clone(host);
-        let boot_engine = std::sync::Arc::clone(&engine);
-        let boot_seed = host.boot.boot_seed.clone();
+    /// Written atomically (tmp + rename): hosts spawn concurrently, and a
+    /// truncating write could hand a sibling engine a half-written module.
+    fn write_host_module(&self) -> Result<(), String> {
+        let script = PathBuf::from(&self.host_module);
+        if let Some(parent) = script.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let _ = ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
+            "discovered-deps.mjs",
+            DISCOVERED_DEPS_JS,
+        );
+        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
+            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
+            std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &script).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// A fresh engine whose pushes arrive on `post_tx` and whose reverse ctx-RPC
+    /// is answered by [`ctx_rpc`].
+    fn spawn_engine(
+        &self,
+        post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) -> Result<oj_js::JsEngine, String> {
+        let root = self.boot.root.clone();
+        let resolver = std::sync::Arc::new(OjResolver::new(&root));
+        let rpc_handler: oj_js::RpcHandler = {
+            let root = root.clone();
+            Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
+        };
+        let mut engine_config = oj_js::EngineConfig::new(&root);
+        engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
+        engine_config.memory_limit_bytes = Some(self.boot.memory_limit_bytes);
+        engine_config.registry = self.boot.registry.clone();
+        oj_js::JsEngine::spawn(
+            engine_config,
+            None,
+            Some(oj_js::EngineHooks {
+                post: post_tx,
+                rpc: Some(rpc_handler),
+            }),
+        )
+        .map_err(|e| format!("cannot start the embedded plugin host: {e}"))
+    }
+
+    /// BOOT task: seed the host's identity, then trigger top-level init via a trivial
+    /// export. No deadline (the Rust-side watches own boot patience); a top-level throw declares the host gone.
+    fn spawn_boot_task(
+        host: &std::sync::Arc<PluginHost>,
+        engine: std::sync::Arc<oj_js::JsEngine>,
+        generation: u64,
+    ) {
+        let host = std::sync::Arc::clone(host);
+        let prelude = format!("globalThis.__ojPluginHost = {};", host.boot.boot_seed);
         let host_module = host.host_module.clone();
         tokio::spawn(async move {
-            let prelude = format!("globalThis.__ojPluginHost = {boot_seed};");
-            if let Err(e) = boot_engine
-                .eval(oj_js::EvalInput::Source(prelude), None)
-                .await
-            {
-                boot_ref.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
+            if let Err(e) = engine.eval(oj_js::EvalInput::Source(prelude), None).await {
+                host.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
                 return;
             }
-            match boot_engine
+            match engine
                 .call(host_module, "ojHostReady", Vec::new(), None)
                 .await
             {
@@ -623,102 +663,93 @@ impl PluginHost {
                 Ok(_) => {
                     let listener = DEV_LISTENER.lock().unwrap().clone();
                     if let Some((port, interface)) = listener {
-                        boot_ref.announce_dev_listener(port, &interface);
+                        host.announce_dev_listener(port, &interface);
                     }
                 }
                 Err(oj_js::EngineError::Closed) => {}
                 Err(e) => {
-                    boot_ref.declare_gone(
+                    host.declare_gone(
                         &format!("plugin host failed to initialize: {e}"),
                         generation,
                     );
                 }
             }
         });
+    }
 
-        // The PUSH DISPATCHER: control pushes arrive whole on the engine channel;
-        // hook replies come back on their own call futures.
-        let reader_ref = std::sync::Arc::clone(host);
+    /// The PUSH DISPATCHER: control pushes arrive whole on the engine channel;
+    /// hook replies come back on their own call futures.
+    fn spawn_push_dispatcher(
+        host: &std::sync::Arc<PluginHost>,
+        mut post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        generation: u64,
+    ) {
+        let host = std::sync::Arc::clone(host);
         tokio::spawn(async move {
             while let Some(msg) = post_rx.recv().await {
                 // Drain and drop pushes from a superseded or declared-dead generation:
                 // a stale `ojInit` would open the call gate before the NEW engine evaluated its module.
-                if *reader_ref.host_gone.borrow()
-                    || reader_ref.revive.lock().unwrap().generation != generation
+                if *host.host_gone.borrow() || host.revive.lock().unwrap().generation != generation
                 {
                     continue;
                 }
-                if let Some(info) = msg.get("ojServeInfo") {
-                    reader_ref
-                        .serve_info_push
-                        .send_replace(Some(ServeInfo::from_json(info)));
-                    let _ = reader_ref.initialized.send_replace(true);
-                    let _ = reader_ref.init_failed.send_replace(false);
-                    continue;
-                }
-                if msg.get("ojInit").is_some() {
-                    // Unconditional init-complete, sent in BOTH modes: build mode
-                    // has no ojServeInfo push, and the gate must not wait for the first reply.
-                    let _ = reader_ref.initialized.send_replace(true);
-                    let _ = reader_ref.init_failed.send_replace(false);
-                    continue;
-                }
-                if msg.get("ojResyncDone").is_some() {
-                    // An enqueued resync actually ran; see resync_done.
-                    reader_ref.resync_done.send_modify(|c| *c += 1);
-                    continue;
-                }
-                if msg.get("ojInitProgress").is_some() {
-                    // Real init milestone: wedge evidence is stale, the stall monitor re-arms.
-                    reader_ref.init_progress_seen.send_modify(|c| *c += 1);
-                    let _ = reader_ref.init_failed.send_replace(false);
-                    continue;
-                }
-                if let Some(ev) = msg.get("ojServer") {
-                    if let Some(tx) = reader_ref.server_events.get() {
-                        let _ = tx.send(ev.clone());
-                    }
-                    continue;
-                }
-                if let Some(ws) = msg.get("ojWs") {
-                    if let Some(tx) = reader_ref.ws_out.get() {
-                        let payload = match ws.get("event").and_then(|e| e.as_str()) {
-                            Some(event) => serde_json::json!({
-                                "type": "custom",
-                                "event": event,
-                                "data": ws.get("data").cloned().unwrap_or(serde_json::Value::Null),
-                            })
-                            .to_string(),
-                            None => ws
-                                .get("data")
-                                .filter(|d| d.is_object())
-                                .map(|d| d.to_string())
-                                .unwrap_or_default(),
-                        };
-                        if !payload.is_empty() {
-                            let _ = tx.send(payload);
-                        }
-                    }
-                    continue;
-                }
+                host.dispatch_push(&msg);
             }
             // Push channel closed = engine thread exited: fail future calls fast.
             // Generation-guarded: an abandoned engine's late exit must not kill the fresh generation.
-            let revive = reader_ref.revive.lock().unwrap();
+            let revive = host.revive.lock().unwrap();
             if revive.generation == generation {
                 drop(revive);
-                let _ = reader_ref.host_gone.send_replace(true);
+                let _ = host.host_gone.send_replace(true);
             }
         });
+    }
 
-        // Init STALL MONITOR, wedge evidence independent of any caller's window: a
-        // full RPC-scale window with NO milestone flips `init_failed`, progress clears it. Calls never consult it.
-        let monitor_ref = std::sync::Arc::clone(host);
+    fn dispatch_push(&self, msg: &serde_json::Value) {
+        if let Some(info) = msg.get("ojServeInfo") {
+            self.serve_info_push
+                .send_replace(Some(ServeInfo::from_json(info)));
+            self.mark_initialized();
+        } else if msg.get("ojInit").is_some() {
+            // Unconditional init-complete, sent in BOTH modes: build mode
+            // has no ojServeInfo push, and the gate must not wait for the first reply.
+            self.mark_initialized();
+        } else if msg.get("ojResyncDone").is_some() {
+            // An enqueued resync actually ran; see resync_done.
+            self.resync_done.send_modify(|c| *c += 1);
+        } else if msg.get("ojInitProgress").is_some() {
+            // Real init milestone: wedge evidence is stale, the stall monitor re-arms.
+            self.init_progress_seen.send_modify(|c| *c += 1);
+            let _ = self.init_failed.send_replace(false);
+        } else if let Some(ev) = msg.get("ojServer") {
+            if let Some(tx) = self.server_events.get() {
+                let _ = tx.send(ev.clone());
+            }
+        } else if let Some(ws) = msg.get("ojWs") {
+            if let Some(tx) = self.ws_out.get() {
+                let payload = ws_push_payload(ws);
+                if !payload.is_empty() {
+                    let _ = tx.send(payload);
+                }
+            }
+        }
+    }
+
+    /// Init completed (or a reply proved it): open the gate, clear the evidence.
+    fn mark_initialized(&self) {
+        let _ = self.initialized.send_replace(true);
+        let _ = self.init_failed.send_replace(false);
+    }
+
+    /// Init STALL MONITOR, wedge evidence independent of any caller's window: a
+    /// full RPC-scale window with NO milestone flips `init_failed`, progress clears it. Calls never consult it.
+    fn spawn_stall_monitor(host: &std::sync::Arc<PluginHost>) {
+        let host = std::sync::Arc::clone(host);
         let stall_wait = host.boot.stall_wait;
         tokio::spawn(async move {
-            let mut init_rx = monitor_ref.initialized.subscribe();
-            let mut gone_rx = monitor_ref.host_gone.subscribe();
-            let mut prog_rx = monitor_ref.init_progress_seen.subscribe();
+            let mut init_rx = host.initialized.subscribe();
+            let mut gone_rx = host.host_gone.subscribe();
+            let mut prog_rx = host.init_progress_seen.subscribe();
             loop {
                 if *init_rx.borrow_and_update() || *gone_rx.borrow_and_update() {
                     return;
@@ -734,7 +765,7 @@ impl PluginHost {
                     _ = tokio::time::sleep_until(deadline) => { stalled = true; }
                 }
                 if stalled {
-                    let _ = monitor_ref.init_failed.send_replace(true);
+                    let _ = host.init_failed.send_replace(true);
                     // Window spent: re-arm only on new progress; the reader clears the evidence.
                     loop {
                         tokio::select! {
@@ -754,7 +785,6 @@ impl PluginHost {
                 }
             }
         });
-        Ok(())
     }
 
     /// Whether a dead host may still come back: budget left, and never after an
@@ -809,19 +839,7 @@ impl PluginHost {
             "oj: respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
             revive.attempts
         );
-        // Reset per-generation state BEFORE the new engine can push: init pending
-        // again, evidence cleared, stale serve info dropped.
-        let _ = self.initialized.send_replace(false);
-        let _ = self.init_failed.send_replace(false);
-        self.serve_info_push.send_replace(None);
-        // The fresh engine re-evaluates the plugins file: fail-open now, the
-        // refetch restores precise gating.
-        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
-        self.hook_plan_fetched
-            .store(false, std::sync::atomic::Ordering::Release);
-        self.hook_plan_prime_started
-            .store(false, std::sync::atomic::Ordering::Release);
-        *self.spawned.lock().unwrap() = tokio::time::Instant::now();
+        self.reset_generation_state();
         let generation = revive.generation;
         drop(revive);
         match Self::ignite(&host, generation) {
@@ -841,6 +859,20 @@ impl PluginHost {
         }
     }
 
+    /// Reset per-generation state BEFORE the new engine can push: init pending
+    /// again, evidence cleared, stale serve info dropped. The fresh engine
+    /// re-evaluates the plugins file: hook plan fail-open now, the refetch restores precise gating.
+    fn reset_generation_state(&self) {
+        use std::sync::atomic::Ordering;
+        let _ = self.initialized.send_replace(false);
+        let _ = self.init_failed.send_replace(false);
+        self.serve_info_push.send_replace(None);
+        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
+        self.hook_plan_fetched.store(false, Ordering::Release);
+        self.hook_plan_prime_started.store(false, Ordering::Release);
+        *self.spawned.lock().unwrap() = tokio::time::Instant::now();
+    }
+
     /// Fire-and-forget `serverListening` delivery (see [`dev_listener_bound`]):
     /// a failure only means this host's plugins never see "listening".
     fn announce_dev_listener(self: &std::sync::Arc<Self>, port: u16, interface: &str) {
@@ -857,75 +889,86 @@ impl PluginHost {
         if *self.host_gone.borrow() && !self.try_revive() {
             return Err("plugin host exited".into());
         }
-        // Init gate, BEFORE anything reaches the engine: the host answers hooks
-        // only after top-level init, and a job submitted to a wedged mid-init
-        // isolate would queue behind the wedge and be blamed on the hook.
-        // Deliberately NO time-based fail-fast latch: an expired window is
-        // evidence of a slow boot, not a wedge, so every call gets its own full
-        // window; only host death (host_gone) fails fast.
+        self.wait_for_init(hook).await?;
+        self.run_hook(hook, args).await
+    }
+
+    /// Init gate, BEFORE anything reaches the engine: the host answers hooks
+    /// only after top-level init, and a job submitted to a wedged mid-init
+    /// isolate would queue behind the wedge and be blamed on the hook.
+    /// Deliberately NO time-based fail-fast latch: an expired window is
+    /// evidence of a slow boot, not a wedge, so every call gets its own full
+    /// window; only host death (host_gone) fails fast.
+    async fn wait_for_init(&self, hook: &str) -> Result<(), String> {
         let mut init_rx = self.initialized.subscribe();
-        if !*init_rx.borrow_and_update() {
-            let deadline = call_init_deadline(
-                self.lazy,
-                *self.spawned.lock().unwrap(),
-                self.init_wait,
-                tokio::time::Instant::now(),
-            );
-            let mut host_gone_rx = self.host_gone.subscribe();
-            // A death flipped before this subscribe is already "seen" (changed()
-            // never fires for it): consult the value once after subscribing.
-            if *host_gone_rx.borrow_and_update() {
-                return Err("plugin host exited".into());
-            }
-            let mut progress = tokio::time::interval_at(
-                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
-                std::time::Duration::from_secs(30),
-            );
-            loop {
-                tokio::select! {
-                    // Deterministic when arms are simultaneously ready: an
-                    // init flip racing an elapsed deadline must win.
-                    biased;
-                    changed = init_rx.changed() => {
-                        if changed.is_err() || *init_rx.borrow() {
-                            break;
-                        }
-                    }
-                    changed = host_gone_rx.changed() => {
-                        if changed.is_err() || *host_gone_rx.borrow() {
-                            return Err("plugin host exited".into());
-                        }
-                    }
-                    _ = tokio::time::sleep_until(deadline) => {
-                        // Full window elapsed with init pending: wedge EVIDENCE,
-                        // never a gate for later calls.
-                        let _ = self.init_failed.send_replace(true);
-                        return Err(format!(
-                            "plugin host still initializing after {}s running {hook} (raise {} for slower boots)",
-                            self.init_wait.as_secs(),
-                            self.init_knob,
-                        ));
-                    }
-                    _ = progress.tick() => {
-                        // One line per interval across concurrent waiters.
-                        let elapsed = self.spawned.lock().unwrap().elapsed().as_secs();
-                        let mut last = self
-                            .init_progress
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if last.elapsed().as_secs() >= 29 {
-                            *last = std::time::Instant::now();
-                            eprintln!("oj: plugin host still initializing ({elapsed}s)…");
-                        }
+        if *init_rx.borrow_and_update() {
+            return Ok(());
+        }
+        let deadline = call_init_deadline(
+            self.lazy,
+            *self.spawned.lock().unwrap(),
+            self.init_wait,
+            tokio::time::Instant::now(),
+        );
+        let mut host_gone_rx = self.host_gone.subscribe();
+        // A death flipped before this subscribe is already "seen" (changed()
+        // never fires for it): consult the value once after subscribing.
+        if *host_gone_rx.borrow_and_update() {
+            return Err("plugin host exited".into());
+        }
+        let mut progress = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(30),
+        );
+        loop {
+            tokio::select! {
+                // Deterministic when arms are simultaneously ready: an
+                // init flip racing an elapsed deadline must win.
+                biased;
+                changed = init_rx.changed() => {
+                    if changed.is_err() || *init_rx.borrow() {
+                        return Ok(());
                     }
                 }
+                changed = host_gone_rx.changed() => {
+                    if changed.is_err() || *host_gone_rx.borrow() {
+                        return Err("plugin host exited".into());
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    // Full window elapsed with init pending: wedge EVIDENCE,
+                    // never a gate for later calls.
+                    let _ = self.init_failed.send_replace(true);
+                    return Err(format!(
+                        "plugin host still initializing after {}s running {hook} (raise {} for slower boots)",
+                        self.init_wait.as_secs(),
+                        self.init_knob,
+                    ));
+                }
+                _ = progress.tick() => self.log_init_progress(),
             }
         }
-        // The engine call carries the per-call deadline itself, and a deadline
-        // failure costs ONE call with the host answering everyone else. The BELT
-        // past it is a second full window with NO reply of any kind: the scheduler
-        // answers at the deadline while alive, so total silence means the isolate
-        // thread is blocked in NATIVE code; declare the host gone.
+    }
+
+    /// One "still initializing" line per interval across concurrent waiters.
+    fn log_init_progress(&self) {
+        let elapsed = self.spawned.lock().unwrap().elapsed().as_secs();
+        let mut last = self
+            .init_progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.elapsed().as_secs() >= 29 {
+            *last = std::time::Instant::now();
+            eprintln!("oj: plugin host still initializing ({elapsed}s)…");
+        }
+    }
+
+    /// The engine call carries the per-call deadline itself, and a deadline
+    /// failure costs ONE call with the host answering everyone else. The BELT
+    /// past it is a second full window with NO reply of any kind: the scheduler
+    /// answers at the deadline while alive, so total silence means the isolate
+    /// thread is blocked in NATIVE code; declare the host gone.
+    async fn run_hook(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
         let deadline = tokio::time::Instant::now() + self.rpc_wait;
         // Generation read before the engine: a racing revive makes the pair stale
         // (belt ignored), never a stale generation blaming a fresh engine.
@@ -950,17 +993,10 @@ impl PluginHost {
             Some(self.rpc_wait),
         );
         tokio::pin!(call);
-        let mut host_gone_rx = self.host_gone.subscribe();
         let result = tokio::select! {
             biased;
             r = &mut call => r,
-            _ = async {
-                while !*host_gone_rx.borrow_and_update() {
-                    if host_gone_rx.changed().await.is_err() {
-                        break;
-                    }
-                }
-            } => return Err("plugin host exited".into()),
+            _ = self.host_gone_wait() => return Err("plugin host exited".into()),
             _ = tokio::time::sleep_until(deadline + self.rpc_wait) => {
                 let msg = format!(
                     "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
@@ -970,13 +1006,22 @@ impl PluginHost {
                 return Err(msg);
             }
         };
+        self.finish_call(hook, generation, result)
+    }
+
+    /// Maps one engine reply to the hook result, latching init or death as it proves.
+    fn finish_call(
+        &self,
+        hook: &str,
+        generation: u64,
+        result: Result<serde_json::Value, oj_js::EngineError>,
+    ) -> Result<Option<String>, String> {
         match result {
             Ok(value) => {
                 // Any reply proves top-level init completed. Generation-guarded: a
                 // reply from a replaced engine must not open the gate for the new one.
                 if self.revive.lock().unwrap().generation == generation {
-                    let _ = self.initialized.send_replace(true);
-                    let _ = self.init_failed.send_replace(false);
+                    self.mark_initialized();
                 }
                 Ok(match value {
                     serde_json::Value::Null => None,
@@ -1002,8 +1047,7 @@ impl PluginHost {
             Err(oj_js::EngineError::Boot(e)) => Err(e),
             Err(oj_js::EngineError::Js(e)) => {
                 // A throwing hook still proves the host is up and serving.
-                let _ = self.initialized.send_replace(true);
-                let _ = self.init_failed.send_replace(false);
+                self.mark_initialized();
                 Err(e)
             }
         }
@@ -1026,38 +1070,32 @@ impl PluginHost {
             .unwrap_or_default();
         eprintln!("oj: {why}; treating the plugin host as gone{rss}");
         if let Some(engine) = self.engine.lock().unwrap().take() {
-            // KEEPER sequence: register live addons BEFORE the abandon (the open job
-            // channel keeps their env alive until then); the spacing stamp defers the first revive past the keeper.
-            let addons = oj_js::addons_with_live_registrations();
-            if addons.is_empty() {
-                engine.abandon();
-            } else {
-                revive.last = Some(std::time::Instant::now());
-                let root = self.boot.root.clone();
-                let registry = self.boot.registry.clone();
-                // Abandon rides a Drop guard: a cancelled task must still abandon,
-                // or the engine Arc's drop would JOIN a possibly-wedged thread.
-                struct AbandonOnDrop(Option<std::sync::Arc<oj_js::JsEngine>>);
-                impl Drop for AbandonOnDrop {
-                    fn drop(&mut self) {
-                        if let Some(engine) = self.0.take() {
-                            engine.abandon();
-                        }
-                    }
-                }
-                let guard = AbandonOnDrop(Some(engine));
-                tokio::spawn(async move {
-                    let _guard = guard;
-                    if let Err(e) = keep_addons_alive(&root, &addons, registry).await {
-                        eprintln!(
-                            "oj: native-addon keeper unavailable ({e}); a plugin host respawn that would re-register an orphaned addon will be refused"
-                        );
-                    }
-                });
-            }
+            self.retire_engine(engine, &mut revive);
         }
         drop(revive);
         let _ = self.host_gone.send_replace(true);
+    }
+
+    /// KEEPER sequence: register live addons BEFORE the abandon (the open job
+    /// channel keeps their env alive until then); the spacing stamp defers the first revive past the keeper.
+    fn retire_engine(&self, engine: std::sync::Arc<oj_js::JsEngine>, revive: &mut ReviveState) {
+        let addons = oj_js::addons_with_live_registrations();
+        if addons.is_empty() {
+            engine.abandon();
+            return;
+        }
+        revive.last = Some(std::time::Instant::now());
+        let root = self.boot.root.clone();
+        let registry = self.boot.registry.clone();
+        let guard = AbandonOnDrop(Some(engine));
+        tokio::spawn(async move {
+            let _guard = guard;
+            if let Err(e) = keep_addons_alive(&root, &addons, registry).await {
+                eprintln!(
+                    "oj: native-addon keeper unavailable ({e}); a plugin host respawn that would re-register an orphaned addon will be refused"
+                );
+            }
+        });
     }
 
     /// Whether the host finished its top-level init (the serve-info push, or
@@ -1116,32 +1154,30 @@ impl PluginHost {
         let Some(raw) = self.call("transform", &[code, id, resolved]).await? else {
             return Ok((code.to_string(), Vec::new(), Vec::new(), Vec::new()));
         };
-        match serde_json::from_str::<serde_json::Value>(&raw) {
-            Ok(v) => {
-                let out = v
-                    .get("code")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or(code)
-                    .to_string();
-                let str_array = |key: &str| {
-                    v.get(key)
-                        .and_then(|w| w.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(str::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                let chunks = v
-                    .get("emittedChunks")
-                    .and_then(|c| c.as_array())
-                    .map(|a| a.iter().filter_map(ChunkEmit::from_value).collect())
-                    .unwrap_or_default();
-                Ok((out, str_array("watchFiles"), str_array("maps"), chunks))
-            }
-            Err(_) => Ok((raw, Vec::new(), Vec::new(), Vec::new())),
-        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Ok((raw, Vec::new(), Vec::new(), Vec::new()));
+        };
+        let out = v
+            .get("code")
+            .and_then(|c| c.as_str())
+            .unwrap_or(code)
+            .to_string();
+        let str_array = |key: &str| {
+            v.get(key)
+                .and_then(|w| w.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Ok((
+            out,
+            str_array("watchFiles"),
+            str_array("maps"),
+            emitted_chunks(&v),
+        ))
     }
 
     pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
@@ -1150,12 +1186,12 @@ impl PluginHost {
 
     #[inline]
     pub async fn has_module_parsed(&self) -> bool {
-        matches!(self.call("hasModuleParsed", &[]).await, Ok(Some(s)) if s == "true")
+        self.call_flag("hasModuleParsed", false).await
     }
 
     #[inline]
     pub async fn module_parsed(&self, id: &str) -> Result<(), String> {
-        self.call("replayModuleParsed", &[id]).await.map(|_| ())
+        self.call_unit("replayModuleParsed", &[id]).await
     }
 
     #[inline]
@@ -1198,15 +1234,9 @@ impl PluginHost {
         let Some(raw) = self.call("buildStart", &[]).await? else {
             return Ok(Vec::new());
         };
-        let chunks = serde_json::from_str::<serde_json::Value>(&raw)
-            .ok()
-            .and_then(|v| {
-                v.get("emittedChunks")
-                    .and_then(|c| c.as_array())
-                    .map(|a| a.iter().filter_map(ChunkEmit::from_value).collect())
-            })
-            .unwrap_or_default();
-        Ok(chunks)
+        Ok(serde_json::from_str::<serde_json::Value>(&raw)
+            .map(|v| emitted_chunks(&v))
+            .unwrap_or_default())
     }
 
     /// `buildEnd(error?)`: Rollup passes the error that failed the build, so
@@ -1214,24 +1244,24 @@ impl PluginHost {
     #[inline]
     pub async fn build_end(&self, error: Option<&str>) -> Result<(), String> {
         match error {
-            Some(e) => self.call("buildEnd", &[e]).await.map(|_| ()),
-            None => self.call("buildEnd", &[]).await.map(|_| ()),
+            Some(e) => self.call_unit("buildEnd", &[e]).await,
+            None => self.call_unit("buildEnd", &[]).await,
         }
     }
 
     #[inline]
     pub async fn render_start(&self) -> Result<(), String> {
-        self.call("renderStart", &[]).await.map(|_| ())
+        self.call_unit("renderStart", &[]).await
     }
 
     #[inline]
     pub async fn watch_change(&self, file: &str, event: &str) -> Result<(), String> {
-        self.call("watchChange", &[file, event]).await.map(|_| ())
+        self.call_unit("watchChange", &[file, event]).await
     }
 
     #[inline]
     pub async fn close_bundle(&self) -> Result<(), String> {
-        self.call("closeBundle", &[]).await.map(|_| ())
+        self.call_unit("closeBundle", &[]).await
     }
 
     #[inline]
@@ -1244,7 +1274,7 @@ impl PluginHost {
 
     #[inline]
     pub async fn has_generate_bundle(&self) -> bool {
-        matches!(self.call("hasGenerateBundle", &[]).await, Ok(Some(s)) if s == "true")
+        self.call_flag("hasGenerateBundle", false).await
     }
 
     /// Fails open: only an explicit "false" skips the hook, so a wedged host
@@ -1295,16 +1325,14 @@ impl PluginHost {
         }
         // Only a successful fetch is cached; a failure leaves the fail-open
         // default in place to be retried on the next call.
-        if let Ok(Some(raw)) = self.call("getBuildHookPlan", &[]).await {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let plan = BuildHookPlan {
-                    transform: HookFilterPlan::from_json(v.get("transform")),
-                    load: HookFilterPlan::from_json(v.get("load")),
-                    resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
-                };
-                *self.hook_plan.write().unwrap() = plan;
-                self.hook_plan_fetched.store(true, Ordering::Release);
-            }
+        if let Some(v) = self.call_json("getBuildHookPlan").await {
+            let plan = BuildHookPlan {
+                transform: HookFilterPlan::from_json(v.get("transform")),
+                load: HookFilterPlan::from_json(v.get("load")),
+                resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
+            };
+            *self.hook_plan.write().unwrap() = plan;
+            self.hook_plan_fetched.store(true, Ordering::Release);
         }
     }
 
@@ -1333,16 +1361,13 @@ impl PluginHost {
         bundle_json: &str,
         is_write: bool,
     ) -> Result<Option<String>, String> {
-        self.call(
-            "generateBundle",
-            &[bundle_json, if is_write { "true" } else { "false" }],
-        )
-        .await
+        self.call("generateBundle", &[bundle_json, bool_arg(is_write)])
+            .await
     }
 
     #[inline]
     pub async fn has_render_chunk(&self) -> bool {
-        matches!(self.call("hasRenderChunk", &[]).await, Ok(Some(s)) if s == "true")
+        self.call_flag("hasRenderChunk", false).await
     }
 
     pub async fn render_chunk(
@@ -1355,17 +1380,13 @@ impl PluginHost {
 
     #[inline]
     pub async fn has_write_bundle(&self) -> bool {
-        matches!(self.call("hasWriteBundle", &[]).await, Ok(Some(s)) if s == "true")
+        self.call_flag("hasWriteBundle", false).await
     }
 
     #[inline]
     pub async fn write_bundle(&self, bundle_json: &str, is_write: bool) -> Result<(), String> {
-        self.call(
-            "writeBundle",
-            &[bundle_json, if is_write { "true" } else { "false" }],
-        )
-        .await
-        .map(|_| ())
+        self.call_unit("writeBundle", &[bundle_json, bool_arg(is_write)])
+            .await
     }
 
     /// How the host serves requests. An already-pushed value returns without a round
@@ -1379,14 +1400,11 @@ impl PluginHost {
         if let Some(info) = *self.serve_info_push.borrow() {
             return info;
         }
-        let Some(v) = rpc
-            .ok()
+        rpc.ok()
             .flatten()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        else {
-            return ServeInfo::default();
-        };
-        ServeInfo::from_json(&v)
+            .map(|v| ServeInfo::from_json(&v))
+            .unwrap_or_default()
     }
 
     /// Subscribe to `{ ojServeInfo }`: `None` until init completes; lets the
@@ -1398,10 +1416,8 @@ impl PluginHost {
     /// Plugins still active after oj filters out natively reimplemented ones.
     /// Defaults to 1 on RPC failure so an uncertain host is never dropped.
     pub async fn plugin_count(&self) -> usize {
-        self.call("getPluginCount", &[])
+        self.call_ok("getPluginCount")
             .await
-            .ok()
-            .flatten()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1)
     }
@@ -1409,10 +1425,7 @@ impl PluginHost {
     /// `define` entries plugin `config()` hooks contributed, as (key, js
     /// expression) pairs, reaching oj's compile like Vite's merged `config.define`. Empty on RPC failure.
     pub async fn config_defines(&self) -> Vec<(String, String)> {
-        let Ok(Some(raw)) = self.call("getPluginConfig", &[]).await else {
-            return Vec::new();
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        let Some(v) = self.call_json("getPluginConfig").await else {
             return Vec::new();
         };
         v.get("define")
@@ -1432,10 +1445,8 @@ impl PluginHost {
     }
 
     pub async fn env_delta(&self) -> std::collections::BTreeMap<String, String> {
-        self.call("getEnvDelta", &[])
+        self.call_ok("getEnvDelta")
             .await
-            .ok()
-            .flatten()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
     }
@@ -1443,70 +1454,50 @@ impl PluginHost {
     /// Whether any active plugin has a `transform` hook. Defaults to true on RPC
     /// failure so the per-module transform pass is never skipped by mistake.
     pub async fn has_transform(&self) -> bool {
-        self.call("getHasTransform", &[])
-            .await
-            .ok()
-            .flatten()
-            .map(|s| s == "true")
-            .unwrap_or(true)
+        self.call_flag("getHasTransform", true).await
     }
 
     /// Whether any active plugin has a `load` hook (Vite runs load before the fs
     /// read). Defaults to false on RPC failure (the fs read alone is always correct).
     pub async fn has_load(&self) -> bool {
-        self.call("getHasLoad", &[])
-            .await
-            .ok()
-            .flatten()
-            .map(|s| s == "true")
-            .unwrap_or(false)
+        self.call_flag("getHasLoad", false).await
     }
 
     /// `filter.code` include patterns of every object-form transform hook, as
     /// regex sources; dependency transforms are gated on these.
     pub async fn dep_transform_filters(&self) -> Vec<String> {
-        let Ok(Some(raw)) = self.call("getDepTransformFilters", &[]).await else {
-            return Vec::new();
-        };
-        serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+        self.call_ok("getDepTransformFilters")
+            .await
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     /// `filter.id` include patterns of every object-form `load` hook: deps cost
     /// no RPC unless a plugin asked for them.
     pub async fn dep_load_filters(&self) -> Vec<String> {
-        let Ok(Some(raw)) = self.call("getDepLoadFilters", &[]).await else {
-            return Vec::new();
-        };
-        serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+        self.call_ok("getDepLoadFilters")
+            .await
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     /// `filter.id` include patterns of every object-form `resolveId` hook: a
     /// non-bare import is offered to plugin resolveId only when it matches one.
     pub async fn resolve_id_filters(&self) -> Vec<String> {
-        let Ok(Some(raw)) = self.call("getResolveIdFilters", &[]).await else {
-            return Vec::new();
-        };
-        serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+        self.call_ok("getResolveIdFilters")
+            .await
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     /// Which HMR hooks any active plugin defines: (watchChange, handleHotUpdate).
     /// Defaults to (true, true) on failure so an HMR RPC is never skipped by mistake.
     pub async fn hmr_hooks(&self) -> (bool, bool) {
-        let raw = match self.call("getHmrHooks", &[]).await {
-            Ok(Some(s)) => s,
-            _ => return (true, true),
+        let Some(v) = self.call_json("getHmrHooks").await else {
+            return (true, true);
         };
-        match serde_json::from_str::<serde_json::Value>(&raw) {
-            Ok(v) => (
-                v.get("watchChange")
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(true),
-                v.get("handleHotUpdate")
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(true),
-            ),
-            Err(_) => (true, true),
-        }
+        let flag = |key: &str| v.get(key).and_then(|b| b.as_bool()).unwrap_or(true);
+        (flag("watchChange"), flag("handleHotUpdate"))
     }
 
     /// Retire the engine now. Abandon, not drop: dropping joins the thread; the
@@ -1535,14 +1526,14 @@ impl PluginHost {
 
     #[inline]
     pub async fn ws_message(&self, event: &str, data: &str) -> Result<(), String> {
-        self.call("wsMessage", &[event, data]).await.map(|_| ())
+        self.call_unit("wsMessage", &[event, data]).await
     }
 
     /// An HMR client connected: the host fires `server.ws.on("connection")`
     /// listeners (Vite's ws server emits one per accepted socket).
     #[inline]
     pub async fn ws_connection(&self) -> Result<(), String> {
-        self.call("wsConnection", &[]).await.map(|_| ())
+        self.call_unit("wsConnection", &[]).await
     }
 
     #[inline]
@@ -1565,11 +1556,8 @@ impl PluginHost {
     /// CSS that plugins (e.g. UnoCSS) routed through oj's `vite:css-post` shim.
     /// Returned as `(source_id, css)` pairs.
     pub async fn get_plugin_css(&self) -> Vec<(String, String)> {
-        let Some(json) = self.call("getPluginCss", &[]).await.ok().flatten() else {
-            return Vec::new();
-        };
-        serde_json::from_str::<serde_json::Value>(&json)
-            .ok()
+        self.call_json("getPluginCss")
+            .await
             .and_then(|v| {
                 v.as_array().map(|a| {
                     a.iter()
@@ -1587,4 +1575,42 @@ impl PluginHost {
             })
             .unwrap_or_default()
     }
+
+    async fn call_unit(&self, hook: &str, args: &[&str]) -> Result<(), String> {
+        self.call(hook, args).await.map(|_| ())
+    }
+
+    /// A no-arg query, with any failure or empty reply as `None`.
+    async fn call_ok(&self, hook: &str) -> Option<String> {
+        self.call(hook, &[]).await.ok().flatten()
+    }
+
+    /// A no-arg query parsed as JSON; `None` on failure or bad JSON.
+    async fn call_json(&self, hook: &str) -> Option<serde_json::Value> {
+        serde_json::from_str(&self.call_ok(hook).await?).ok()
+    }
+
+    /// A no-arg `"true"` query; `default` when the call fails or returns nothing.
+    async fn call_flag(&self, hook: &str, default: bool) -> bool {
+        match self.call(hook, &[]).await {
+            Ok(Some(s)) => s == "true",
+            _ => default,
+        }
+    }
+}
+
+fn bool_arg(b: bool) -> &'static str {
+    if b {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+/// The `emittedChunks` of a transform or buildStart reply.
+fn emitted_chunks(v: &serde_json::Value) -> Vec<ChunkEmit> {
+    v.get("emittedChunks")
+        .and_then(|c| c.as_array())
+        .map(|a| a.iter().filter_map(ChunkEmit::from_value).collect())
+        .unwrap_or_default()
 }

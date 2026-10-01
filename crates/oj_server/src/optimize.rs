@@ -73,25 +73,19 @@ impl OptimizedDeps {
         let (tx, rx) = watch::channel(None);
 
         // optimizeDeps.force: ignore any cached pre-bundle and always rebuild.
-        if !input.force {
-            if let Some(map) = load_manifest(&dir, &hash) {
-                let _ = tx.send(Some(Arc::new(map)));
-                return OptimizedDeps {
-                    rx,
-                    dir,
-                    version: short,
-                };
-            }
-        }
-
-        let root = root.to_path_buf();
-        let dir_task = dir.clone();
-        tokio::spawn(async move {
-            let map = run_optimizer(&root, &dir_task, &hash, &input)
-                .await
-                .unwrap_or_default();
+        let cached = (!input.force).then(|| load_manifest(&dir, &hash)).flatten();
+        if let Some(map) = cached {
             let _ = tx.send(Some(Arc::new(map)));
-        });
+        } else {
+            let root = root.to_path_buf();
+            let dir_task = dir.clone();
+            tokio::spawn(async move {
+                let map = run_optimizer(&root, &dir_task, &hash, &input)
+                    .await
+                    .unwrap_or_default();
+                let _ = tx.send(Some(Arc::new(map)));
+            });
+        }
         OptimizedDeps {
             rx,
             dir,
@@ -194,6 +188,16 @@ fn hash_lockfiles(root: &Path, hasher: &mut blake3::Hasher) {
     }
 }
 
+/// Folds each entry of each list into `hasher`, prefixed by its list's tag.
+fn hash_tagged_lists(hasher: &mut blake3::Hasher, lists: &[(&[u8], &Vec<String>)]) {
+    for (tag, list) in lists {
+        for entry in *list {
+            hasher.update(tag);
+            hasher.update(entry.as_bytes());
+        }
+    }
+}
+
 fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(version.as_bytes());
@@ -206,18 +210,16 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     hasher.update(input.mode.as_bytes());
     // Fold the optimizer config into the key so include/exclude/entries/dedupe/alias
     // changes invalidate a stale prebundle.
-    for (tag, list) in [
-        (b"\0i".as_slice(), &input.include),
-        (b"\0x".as_slice(), &input.exclude),
-        (b"\0e".as_slice(), &input.entries),
-        (b"\0d".as_slice(), &input.dedupe),
-        (b"\0n".as_slice(), &input.needs_interop),
-    ] {
-        for entry in list {
-            hasher.update(tag);
-            hasher.update(entry.as_bytes());
-        }
-    }
+    hash_tagged_lists(
+        &mut hasher,
+        &[
+            (b"\0i", &input.include),
+            (b"\0x", &input.exclude),
+            (b"\0e", &input.entries),
+            (b"\0d", &input.dedupe),
+            (b"\0n", &input.needs_interop),
+        ],
+    );
     for (find, replacement) in &input.alias {
         hasher.update(b"\0a");
         hasher.update(find.as_bytes());
@@ -237,16 +239,14 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         hasher.update(b"\0o");
         hasher.update(opts.to_string().as_bytes());
     }
-    for (tag, list) in [
-        (b"\0c".as_slice(), &input.conditions),
-        (b"\0m".as_slice(), &input.main_fields),
-        (b"\0t".as_slice(), &input.extensions),
-    ] {
-        for entry in list {
-            hasher.update(tag);
-            hasher.update(entry.as_bytes());
-        }
-    }
+    hash_tagged_lists(
+        &mut hasher,
+        &[
+            (b"\0c", &input.conditions),
+            (b"\0m", &input.main_fields),
+            (b"\0t", &input.extensions),
+        ],
+    );
     hasher.update(&[b'\0', b's', input.preserve_symlinks as u8]);
     hasher.finalize().to_hex().to_string()
 }
@@ -312,12 +312,8 @@ async fn run_optimizer(
     std::fs::create_dir_all(&cache).ok()?;
     // Atomic rename: an engine could import the script while a concurrent oj
     // process rewrites it.
+    crate::plugins::ensure_asset(&cache, "optimize-deps.mjs", OPTIMIZE_JS).ok()?;
     let script = cache.join("optimize-deps.mjs");
-    if std::fs::read(&script).ok().as_deref() != Some(OPTIMIZE_JS.as_bytes()) {
-        let tmp = cache.join(format!("optimize-deps-{}.tmp.mjs", std::process::id()));
-        std::fs::write(&tmp, OPTIMIZE_JS).ok()?;
-        std::fs::rename(&tmp, &script).ok()?;
-    }
     // react/jsx-dev-runtime is always prebundled (oj injects the dev JSX runtime);
     // merge it with any user optimizeDeps.include.
     let mut include = vec!["react/jsx-dev-runtime".to_string()];

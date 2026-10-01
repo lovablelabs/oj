@@ -230,7 +230,7 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
                         .iter()
                         .map(|t| update_entry_for(t, timestamp, Some(first)))
                         .collect();
-                    serde_json::json!({ "type": "update", "updates": updates }).to_string()
+                    update_frame(updates)
                 }
                 Err(reason) => {
                     println!("oj: invalidate {path} -> full-reload ({reason})");
@@ -394,6 +394,21 @@ pub(crate) fn update_entry(kind: &str, path: &str, timestamp: u64) -> serde_json
     })
 }
 
+/// Vite's `UpdatePayload`.
+fn update_frame(updates: Vec<serde_json::Value>) -> String {
+    serde_json::json!({ "type": "update", "updates": updates }).to_string()
+}
+
+/// A boundary's url in an update: stylesheets are named by their `?import` wrapper.
+fn boundary_url(p: &Path) -> String {
+    let p = p.display().to_string();
+    if is_style_url(&p) {
+        format!("{p}?import")
+    } else {
+        p
+    }
+}
+
 /// The `js-update` entry for a boundary: stylesheet boundaries are named by their
 /// `?import` wrapper; carries `isWithinCircularImport` and `firstInvalidatedBy` like Vite's `Update`.
 pub(crate) fn update_entry_for(
@@ -401,16 +416,8 @@ pub(crate) fn update_entry_for(
     timestamp: u64,
     first_invalidated_by: Option<&str>,
 ) -> serde_json::Value {
-    let style = |p: &Path| {
-        let p = p.display().to_string();
-        if is_style_url(&p) {
-            format!("{p}?import")
-        } else {
-            p
-        }
-    };
-    let mut entry = update_entry("js-update", &style(&target.boundary), timestamp);
-    entry["acceptedPath"] = serde_json::Value::String(style(&target.accepted));
+    let mut entry = update_entry("js-update", &boundary_url(&target.boundary), timestamp);
+    entry["acceptedPath"] = serde_json::Value::String(boundary_url(&target.accepted));
     if target.within_circular_import {
         entry["isWithinCircularImport"] = serde_json::Value::Bool(true);
     }
@@ -683,6 +690,16 @@ pub(crate) fn parse_hmr_filter(raw: &str) -> Option<Vec<PathBuf>> {
     )
 }
 
+/// What `decide` does next with a changed path.
+enum Flow {
+    /// Keep deciding this path.
+    Next,
+    /// This path is handled; go to the next one.
+    Done,
+    /// Stop: send what was collected plus this full-reload frame.
+    Reload(String),
+}
+
 /// `created`: watcher-reported new paths among `paths` (the rest are edits, or
 /// removals). Async, not block_on: also reached from async handlers, and block_on inside panicked (runtime within a runtime).
 pub(crate) async fn decide(
@@ -695,33 +712,13 @@ pub(crate) async fn decide(
     }
     let mut messages: Vec<String> = Vec::new();
     let mut updates: Vec<serde_json::Value> = Vec::new();
-
-    let plugin_watched: std::collections::HashSet<PathBuf> = {
-        let mut raw: Vec<String> = match &state.plugins {
-            Some(host) => host.watch_files().await.unwrap_or_default(),
-            None => Vec::new(),
-        };
-        raw.extend(
-            state
-                .plugin_watched
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned()),
-        );
-        raw.into_iter()
-            .map(|p| canonicalize_memo(state, &p))
-            .collect()
-    };
+    let plugin_watched = plugin_watched_files(state).await;
 
     let source_changed = paths.iter().any(|p| {
-        !p.components().any(|c| {
-            let c = c.as_os_str();
-            c == "node_modules" || c == ".oj-cache" || c == "dist"
-        }) && p
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| COMPILABLE.contains(&e))
+        gate_relevant(p)
+            && p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| COMPILABLE.contains(&e))
     });
     if source_changed {
         let timestamp = now_millis() as u64;
@@ -730,59 +727,9 @@ pub(crate) async fn decide(
         }
     }
 
-    // A created file may be one a module failed to import: re-process those importers
-    // (Vite's `_hasResolveFailedErrorModules`); notify can't tell create from modify, so exists-but-not-in-graph counts as new.
     let mut paths: Vec<PathBuf> = paths.to_vec();
-    let new_file = paths.iter().any(|p| {
-        p.is_file()
-            && !state
-                .graph
-                .lock()
-                .unwrap()
-                .contains(Path::new(&url_of(&state.root, p)))
-    });
-    if new_file {
-        // The resolver caches misses too: without this a created `./dir/index.ts`
-        // or extension-probed file stays "not found" for the importer's retry.
-        state.resolver.clear_cache();
-        state.ssr_resolver.clear_cache();
-        let failed: Vec<String> = state.resolve_failed.lock().unwrap().drain().collect();
-        for url in failed {
-            paths.push(state.root.join(url.trim_start_matches('/')));
-        }
-    }
-    // A file created/deleted under an `import.meta.glob` pattern re-expands the
-    // importer: update it as if edited (Vite's importMetaGlob hotUpdate).
-    let glob_importers: Vec<String> = {
-        let globs = state.glob_importers.lock().unwrap();
-        if globs.is_empty() {
-            Vec::new()
-        } else {
-            let graph = state.graph.lock().unwrap();
-            // `*` stops at `/`, as the directory walk expanding the glob does.
-            let opts = glob::MatchOptions {
-                require_literal_separator: true,
-                ..Default::default()
-            };
-            let mut hit: Vec<String> = Vec::new();
-            for p in &paths {
-                let known = graph.contains(Path::new(&url_of(&state.root, p)));
-                let added_or_removed = !p.exists() || !known;
-                if !added_or_removed {
-                    continue;
-                }
-                for (importer, patterns) in globs.iter() {
-                    if patterns.iter().any(|pat| pat.matches_path_with(p, opts))
-                        && !hit.contains(importer)
-                    {
-                        hit.push(importer.clone());
-                    }
-                }
-            }
-            hit
-        }
-    };
-    for importer in glob_importers {
+    retry_failed_resolves(state, &mut paths);
+    for importer in glob_importers_hit(state, &paths) {
         println!("oj: glob importer {importer} re-expanded");
         state.mtime_keys.lock().unwrap().remove(&importer);
         state.memory.lock().unwrap().remove(&importer);
@@ -795,264 +742,385 @@ pub(crate) async fn decide(
     for path in &paths {
         // Vite's default watch ignores: `**/node_modules/**` and `**/.git/**`
         // at any depth (a nested package's node_modules included).
-        if path.components().any(|c| {
-            let c = c.as_os_str();
-            c == "node_modules" || c == ".oj-cache" || c == "dist" || c == ".git"
-        }) {
+        if !gate_relevant(path) || path.components().any(|c| c.as_os_str() == ".git") {
             continue;
         }
-
-        if let Some(host) = &state.plugins {
-            let file = path.display().to_string();
-            // Vite hands plugins the change kind: "create" (chokidar add),
-            // "update", and a removed file still reaches the hooks as "delete".
-            let change_type = if !path.exists() {
-                "delete"
-            } else if created.contains(path)
-                && !state
-                    .graph
-                    .lock()
-                    .unwrap()
-                    .contains(Path::new(&url_of(&state.root, path)))
-            {
-                // Newly created and never served: a file the graph already holds
-                // was only rewritten (editors that replace files on save).
-                "create"
-            } else {
-                "update"
-            };
-            // The ssr environment's plugin instances (Vite dispatches hotUpdate
-            // and watchChange to every environment) when that host is up.
-            let ssr_host = state.plugins_ssr.get().and_then(|h| h.clone());
-            // Pre-init fast-skip: each hook toward a still-initializing lazy host
-            // would await a full per-call init window on this serial path (a wedged
-            // init froze every save's HMR). Queue a watchChange catch-up instead,
-            // replayed at host init; the re-check after queuing closes the race
-            // where init lands between the decision and the push.
-            let ssr_host = match ssr_host {
-                Some(ssr)
-                    if !ssr.is_initialized()
-                        && (state.plugins_watch_change || state.plugins_hot_update) =>
-                {
-                    note_ssr_watch_skip(&state.ssr_watch, &file, change_type);
-                    if ssr.is_initialized() {
-                        replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
-                    }
-                    None
-                }
-                Some(ssr) if state.plugins_watch_change || state.plugins_hot_update => {
-                    // Initialized: replay queued catch-up events FIRST, under the
-                    // queue's order lock, so a stale queued watchChange never
-                    // lands after this newer live event for the same file.
-                    replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
-                    Some(ssr)
-                }
-                other => other,
-            };
-            if state.plugins_watch_change {
-                if let Err(e) = host.watch_change(&file, change_type).await {
-                    eprintln!("oj: watchChange failed for {file}: {e}");
-                }
-                if let Some(ssr) = &ssr_host {
-                    if let Err(e) = ssr.watch_change(&file, change_type).await {
-                        eprintln!("oj: watchChange (ssr) failed for {file}: {e}");
-                    }
-                }
+        let mut flow = match &state.plugins {
+            Some(host) => {
+                run_plugin_hooks(state, host, path, created, &mut messages, &mut updates).await
             }
-            if state.plugins_hot_update {
-                let ts = now_millis() as u64;
-                let hmr_url = url_of(&state.root, path);
-                let modules_json = {
-                    let g = state.graph.lock().unwrap();
-                    match g.node(Path::new(&hmr_url)) {
-                        Some(n) => serde_json::json!([{
-                            "url": hmr_url,
-                            "id": hmr_url,
-                            "isSelfAccepting": n.is_self_accepting,
-                            "importers": n
-                                .importers
-                                .iter()
-                                .map(|p| p.display().to_string())
-                                .collect::<Vec<_>>(),
-                        }])
-                        .to_string(),
-                        None => "[]".to_string(),
-                    }
-                };
-                if let Some(ssr) = &ssr_host {
-                    // Its result steers no client update (the ssr environment has
-                    // no browser); only a throwing hook is worth reporting.
-                    if let Err(e) = ssr
-                        .handle_hot_update(&file, ts, change_type, &modules_json)
-                        .await
-                    {
-                        eprintln!("oj: hotUpdate (ssr) failed for {file}: {e}");
-                    }
-                }
-                match host
-                    .handle_hot_update(&file, ts, change_type, &modules_json)
-                    .await
-                {
-                    // Vite (hmr.ts): a throwing hotUpdate is logged, sent as an
-                    // error payload, and no update is dispatched for that file.
-                    Err(e) => {
-                        eprintln!("oj: hotUpdate failed for {file}: {e}");
-                        messages.push(error_frame(&e));
-                        continue;
-                    }
-                    Ok(Some(d)) if d == "skip" => {
-                        println!("oj: change {file} -> HMR suppressed by plugin");
-                        continue;
-                    }
-                    Ok(Some(d)) if d == "full-reload" => {
-                        println!("oj: change {file} -> full-reload (plugin)");
-                        messages.push(full_reload_frame("plugin", None, Some(path)));
-                        return messages;
-                    }
-                    Ok(Some(d)) => {
-                        if let Some(seeds) = parse_hmr_filter(&d) {
-                            let seed_refs: Vec<&Path> =
-                                seeds.iter().map(PathBuf::as_path).collect();
-                            let decision =
-                                state.graph.lock().unwrap().propagate_from_seeds(&seed_refs);
-                            match decision {
-                                HmrDecision::Update { boundaries } => {
-                                    println!(
-                                        "oj: change {file} -> plugin-filtered update {boundaries:?}"
-                                    );
-                                    let timestamp = now_millis() as u64;
-                                    updates.extend(boundaries.iter().map(|b| {
-                                        let mut p = format!("{}", b.display());
-                                        if is_style_url(&p) {
-                                            p.push_str("?import");
-                                        }
-                                        update_entry("js-update", &p, timestamp)
-                                    }));
-                                    continue;
-                                }
-                                HmrDecision::FullReload { reason } => {
-                                    println!("oj: change {file} -> full-reload ({reason})");
-                                    messages.push(full_reload_frame(&reason, None, Some(path)));
-                                    return messages;
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            None => Flow::Next,
+        };
+        if let Flow::Next = flow {
+            flow = decide_file(state, path, &plugin_watched, &mut updates);
         }
-
-        if !plugin_watched.is_empty() {
-            let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-            if plugin_watched.contains(&canon) {
-                println!(
-                    "oj: change {} -> full-reload (plugin watch)",
-                    path.display()
-                );
-                messages.push(full_reload_frame("plugin-watch", None, Some(path)));
-                return messages;
-            }
-        }
-
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if is_style_ext(ext) {
-            let url = url_of(&state.root, path);
-            // A stylesheet nothing imports is loaded by a `<link>`: swap the link
-            // rather than dispatching a JS update it has no handler for.
-            let link_loaded = {
-                let g = state.graph.lock().unwrap();
-                match g.node(Path::new(&url)) {
-                    None => true,
-                    Some(n) => n.importers.is_empty(),
-                }
-            };
-            if link_loaded {
-                println!("oj: change {url} -> css-update");
-                updates.push(update_entry("css-update", &url, now_millis() as u64));
-                continue;
-            }
-        }
-        if ext == "html" {
-            // Vite names the edited page so only the tab showing it reloads; the
-            // reason keeps the absolute path oj's own tooling reads.
-            let page = url_of(&state.root, path);
-            println!("oj: change {} -> full-reload", path.display());
-            messages.push(full_reload_frame(
-                &path.display().to_string(),
-                Some(&page),
-                Some(path),
-            ));
+        if let Flow::Reload(frame) = flow {
+            messages.push(frame);
             return messages;
-        }
-        if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
-            continue;
-        }
-
-        let url = url_of(&state.root, path);
-        if !state.graph.lock().unwrap().contains(Path::new(&url)) {
-            continue;
-        }
-        let targets = state.graph.lock().unwrap().update_targets(Path::new(&url));
-        // A changed stylesheet may also be inlined into OTHER sheets (@import, sass @use):
-        // each importer must hot-swap too; oj keeps one node per path, so css importers are seeded explicitly.
-        let targets = targets.and_then(|mut targets| {
-            if is_style_ext(ext) {
-                let css_importers: Vec<PathBuf> = {
-                    let g = state.graph.lock().unwrap();
-                    g.node(Path::new(&url))
-                        .map(|n| {
-                            n.importers
-                                .iter()
-                                .filter(|p| is_style_url(&p.to_string_lossy()))
-                                .cloned()
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                for importer in css_importers {
-                    // A css importer that cannot reach a boundary needs the
-                    // same full reload the direct walk would force.
-                    targets.extend(state.graph.lock().unwrap().update_targets(&importer)?);
-                }
-                targets.sort();
-                targets.dedup();
-            }
-            Ok(targets)
-        });
-        match targets {
-            Ok(targets) => {
-                let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
-                println!("oj: change {url} -> update {boundaries:?}");
-                let timestamp = now_millis() as u64;
-                // Stamp the invalidated chain so re-fetched importers point at new versions
-                // of unchanged deps; drop their mtime fast-path keys so they recompile with the stamps.
-                let dirty = state
-                    .graph
-                    .lock()
-                    .unwrap()
-                    .stamp_update(Path::new(&url), timestamp);
-                {
-                    let mut keys = state.mtime_keys.lock().unwrap();
-                    for d in &dirty {
-                        keys.remove(&d.display().to_string());
-                    }
-                }
-                if targets.is_empty() {
-                    println!("oj: change {url} -> no update (nothing loaded imports it)");
-                }
-                updates.extend(targets.iter().map(|t| update_entry_for(t, timestamp, None)));
-            }
-            Err(reason) => {
-                println!("oj: change {url} -> full-reload ({reason})");
-                messages.push(full_reload_frame(&reason, None, Some(path)));
-                return messages;
-            }
         }
     }
 
     if !updates.is_empty() {
-        messages.push(serde_json::json!({ "type": "update", "updates": updates }).to_string());
+        messages.push(update_frame(updates));
     }
     messages
+}
+
+/// Files plugins asked to watch (`addWatchFile`, `server.watcher.add`), canonicalized
+/// (memoized); a change to one reloads the page.
+async fn plugin_watched_files(state: &ServerState) -> std::collections::HashSet<PathBuf> {
+    let mut raw: Vec<String> = match &state.plugins {
+        Some(host) => host.watch_files().await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    raw.extend(
+        state
+            .plugin_watched
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned()),
+    );
+    raw.into_iter()
+        .map(|p| canonicalize_memo(state, &p))
+        .collect()
+}
+
+/// A created file may be one a module failed to import: re-process those importers
+/// (Vite's `_hasResolveFailedErrorModules`); notify can't tell create from modify, so exists-but-not-in-graph counts as new.
+fn retry_failed_resolves(state: &ServerState, paths: &mut Vec<PathBuf>) {
+    let new_file = paths.iter().any(|p| {
+        p.is_file()
+            && !state
+                .graph
+                .lock()
+                .unwrap()
+                .contains(Path::new(&url_of(&state.root, p)))
+    });
+    if !new_file {
+        return;
+    }
+    // The resolver caches misses too: without this a created `./dir/index.ts`
+    // or extension-probed file stays "not found" for the importer's retry.
+    state.resolver.clear_cache();
+    state.ssr_resolver.clear_cache();
+    let failed: Vec<String> = state.resolve_failed.lock().unwrap().drain().collect();
+    for url in failed {
+        paths.push(state.root.join(url.trim_start_matches('/')));
+    }
+}
+
+/// A file created/deleted under an `import.meta.glob` pattern re-expands the
+/// importer: update it as if edited (Vite's importMetaGlob hotUpdate).
+fn glob_importers_hit(state: &ServerState, paths: &[PathBuf]) -> Vec<String> {
+    let globs = state.glob_importers.lock().unwrap();
+    if globs.is_empty() {
+        return Vec::new();
+    }
+    let graph = state.graph.lock().unwrap();
+    // `*` stops at `/`, as the directory walk expanding the glob does.
+    let opts = glob::MatchOptions {
+        require_literal_separator: true,
+        ..Default::default()
+    };
+    let mut hit: Vec<String> = Vec::new();
+    for p in paths {
+        let known = graph.contains(Path::new(&url_of(&state.root, p)));
+        if p.exists() && known {
+            continue;
+        }
+        for (importer, patterns) in globs.iter() {
+            if patterns.iter().any(|pat| pat.matches_path_with(p, opts)) && !hit.contains(importer)
+            {
+                hit.push(importer.clone());
+            }
+        }
+    }
+    hit
+}
+
+/// Vite hands plugins the change kind: "create" (chokidar add), "update", and a
+/// removed file still reaches the hooks as "delete".
+fn change_type(
+    state: &ServerState,
+    path: &PathBuf,
+    created: &std::collections::HashSet<PathBuf>,
+) -> &'static str {
+    if !path.exists() {
+        "delete"
+    } else if created.contains(path)
+        && !state
+            .graph
+            .lock()
+            .unwrap()
+            .contains(Path::new(&url_of(&state.root, path)))
+    {
+        // Newly created and never served: a file the graph already holds
+        // was only rewritten (editors that replace files on save).
+        "create"
+    } else {
+        "update"
+    }
+}
+
+/// The ssr environment's plugin instances (Vite dispatches hotUpdate and
+/// watchChange to every environment) when that host is up.
+async fn ssr_host_for_hooks(
+    state: &ServerState,
+    file: &str,
+    change_type: &str,
+) -> Option<Arc<PluginHost>> {
+    let ssr = state.plugins_ssr.get().and_then(|h| h.clone())?;
+    if !(state.plugins_watch_change || state.plugins_hot_update) {
+        return Some(ssr);
+    }
+    // Pre-init fast-skip: each hook toward a still-initializing lazy host
+    // would await a full per-call init window on this serial path (a wedged
+    // init froze every save's HMR). Queue a watchChange catch-up instead,
+    // replayed at host init; the re-check after queuing closes the race
+    // where init lands between the decision and the push.
+    if !ssr.is_initialized() {
+        note_ssr_watch_skip(&state.ssr_watch, file, change_type);
+        if ssr.is_initialized() {
+            replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
+        }
+        return None;
+    }
+    // Initialized: replay queued catch-up events FIRST, under the
+    // queue's order lock, so a stale queued watchChange never
+    // lands after this newer live event for the same file.
+    replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
+    Some(ssr)
+}
+
+/// The `modules` argument of `hotUpdate` for a path, as JSON.
+fn hot_update_modules_json(state: &ServerState, path: &Path) -> String {
+    let hmr_url = url_of(&state.root, path);
+    let g = state.graph.lock().unwrap();
+    match g.node(Path::new(&hmr_url)) {
+        Some(n) => serde_json::json!([{
+            "url": hmr_url,
+            "id": hmr_url,
+            "isSelfAccepting": n.is_self_accepting,
+            "importers": n
+                .importers
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>(),
+        }])
+        .to_string(),
+        None => "[]".to_string(),
+    }
+}
+
+/// Dispatch `watchChange` and `hotUpdate` for a path to the client and ssr plugin hosts.
+async fn run_plugin_hooks(
+    state: &ServerState,
+    host: &PluginHost,
+    path: &PathBuf,
+    created: &std::collections::HashSet<PathBuf>,
+    messages: &mut Vec<String>,
+    updates: &mut Vec<serde_json::Value>,
+) -> Flow {
+    let file = path.display().to_string();
+    let change_type = change_type(state, path, created);
+    let ssr_host = ssr_host_for_hooks(state, &file, change_type).await;
+    if state.plugins_watch_change {
+        if let Err(e) = host.watch_change(&file, change_type).await {
+            eprintln!("oj: watchChange failed for {file}: {e}");
+        }
+        if let Some(ssr) = &ssr_host {
+            if let Err(e) = ssr.watch_change(&file, change_type).await {
+                eprintln!("oj: watchChange (ssr) failed for {file}: {e}");
+            }
+        }
+    }
+    if !state.plugins_hot_update {
+        return Flow::Next;
+    }
+    let ts = now_millis() as u64;
+    let modules_json = hot_update_modules_json(state, path);
+    if let Some(ssr) = &ssr_host {
+        // Its result steers no client update (the ssr environment has
+        // no browser); only a throwing hook is worth reporting.
+        if let Err(e) = ssr
+            .handle_hot_update(&file, ts, change_type, &modules_json)
+            .await
+        {
+            eprintln!("oj: hotUpdate (ssr) failed for {file}: {e}");
+        }
+    }
+    match host
+        .handle_hot_update(&file, ts, change_type, &modules_json)
+        .await
+    {
+        // Vite (hmr.ts): a throwing hotUpdate is logged, sent as an
+        // error payload, and no update is dispatched for that file.
+        Err(e) => {
+            eprintln!("oj: hotUpdate failed for {file}: {e}");
+            messages.push(error_frame(&e));
+            Flow::Done
+        }
+        Ok(Some(d)) if d == "skip" => {
+            println!("oj: change {file} -> HMR suppressed by plugin");
+            Flow::Done
+        }
+        Ok(Some(d)) if d == "full-reload" => {
+            println!("oj: change {file} -> full-reload (plugin)");
+            Flow::Reload(full_reload_frame("plugin", None, Some(path)))
+        }
+        Ok(Some(d)) => match parse_hmr_filter(&d) {
+            Some(seeds) => plugin_filtered_update(state, &file, path, &seeds, updates),
+            None => Flow::Next,
+        },
+        Ok(None) => Flow::Next,
+    }
+}
+
+/// A `hotUpdate` that returned a module subset: propagate from those seeds.
+fn plugin_filtered_update(
+    state: &ServerState,
+    file: &str,
+    path: &Path,
+    seeds: &[PathBuf],
+    updates: &mut Vec<serde_json::Value>,
+) -> Flow {
+    let seed_refs: Vec<&Path> = seeds.iter().map(PathBuf::as_path).collect();
+    let decision = state.graph.lock().unwrap().propagate_from_seeds(&seed_refs);
+    match decision {
+        HmrDecision::Update { boundaries } => {
+            println!("oj: change {file} -> plugin-filtered update {boundaries:?}");
+            let timestamp = now_millis() as u64;
+            updates.extend(
+                boundaries
+                    .iter()
+                    .map(|b| update_entry("js-update", &boundary_url(b), timestamp)),
+            );
+            Flow::Done
+        }
+        HmrDecision::FullReload { reason } => {
+            println!("oj: change {file} -> full-reload ({reason})");
+            Flow::Reload(full_reload_frame(&reason, None, Some(path)))
+        }
+    }
+}
+
+/// The non-plugin decision for a path: plugin-watched files, `<link>`
+/// stylesheets, html pages, then a graph walk to the accepting boundaries.
+fn decide_file(
+    state: &ServerState,
+    path: &PathBuf,
+    plugin_watched: &std::collections::HashSet<PathBuf>,
+    updates: &mut Vec<serde_json::Value>,
+) -> Flow {
+    if !plugin_watched.is_empty() {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        if plugin_watched.contains(&canon) {
+            println!(
+                "oj: change {} -> full-reload (plugin watch)",
+                path.display()
+            );
+            return Flow::Reload(full_reload_frame("plugin-watch", None, Some(path)));
+        }
+    }
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if is_style_ext(ext) {
+        let url = url_of(&state.root, path);
+        // A stylesheet nothing imports is loaded by a `<link>`: swap the link
+        // rather than dispatching a JS update it has no handler for.
+        let link_loaded = {
+            let g = state.graph.lock().unwrap();
+            match g.node(Path::new(&url)) {
+                None => true,
+                Some(n) => n.importers.is_empty(),
+            }
+        };
+        if link_loaded {
+            println!("oj: change {url} -> css-update");
+            updates.push(update_entry("css-update", &url, now_millis() as u64));
+            return Flow::Done;
+        }
+    }
+    if ext == "html" {
+        // Vite names the edited page so only the tab showing it reloads; the
+        // reason keeps the absolute path oj's own tooling reads.
+        let page = url_of(&state.root, path);
+        println!("oj: change {} -> full-reload", path.display());
+        return Flow::Reload(full_reload_frame(
+            &path.display().to_string(),
+            Some(&page),
+            Some(path),
+        ));
+    }
+    if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
+        return Flow::Done;
+    }
+
+    let url = url_of(&state.root, path);
+    if !state.graph.lock().unwrap().contains(Path::new(&url)) {
+        return Flow::Done;
+    }
+    match graph_update_targets(state, &url, is_style_ext(ext)) {
+        Ok(targets) => {
+            let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
+            println!("oj: change {url} -> update {boundaries:?}");
+            let timestamp = now_millis() as u64;
+            // Stamp the invalidated chain so re-fetched importers point at new versions
+            // of unchanged deps; drop their mtime fast-path keys so they recompile with the stamps.
+            let dirty = state
+                .graph
+                .lock()
+                .unwrap()
+                .stamp_update(Path::new(&url), timestamp);
+            {
+                let mut keys = state.mtime_keys.lock().unwrap();
+                for d in &dirty {
+                    keys.remove(&d.display().to_string());
+                }
+            }
+            if targets.is_empty() {
+                println!("oj: change {url} -> no update (nothing loaded imports it)");
+            }
+            updates.extend(targets.iter().map(|t| update_entry_for(t, timestamp, None)));
+            Flow::Done
+        }
+        Err(reason) => {
+            println!("oj: change {url} -> full-reload ({reason})");
+            Flow::Reload(full_reload_frame(&reason, None, Some(path)))
+        }
+    }
+}
+
+/// A changed stylesheet may also be inlined into OTHER sheets (@import, sass @use):
+/// each importer must hot-swap too; oj keeps one node per path, so css importers are seeded explicitly.
+fn graph_update_targets(
+    state: &ServerState,
+    url: &str,
+    is_style: bool,
+) -> Result<Vec<oj_graph::UpdateTarget>, String> {
+    let mut targets = state.graph.lock().unwrap().update_targets(Path::new(url))?;
+    if !is_style {
+        return Ok(targets);
+    }
+    let css_importers: Vec<PathBuf> = {
+        let g = state.graph.lock().unwrap();
+        g.node(Path::new(url))
+            .map(|n| {
+                n.importers
+                    .iter()
+                    .filter(|p| is_style_url(&p.to_string_lossy()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for importer in css_importers {
+        // A css importer that cannot reach a boundary needs the
+        // same full reload the direct walk would force.
+        targets.extend(state.graph.lock().unwrap().update_targets(&importer)?);
+    }
+    targets.sort();
+    targets.dedup();
+    Ok(targets)
 }

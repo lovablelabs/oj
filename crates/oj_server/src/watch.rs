@@ -89,16 +89,22 @@ pub(crate) mod child_groups {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    static CHILDREN: Mutex<Vec<(u32, bool)>> = Mutex::new(Vec::new());
+    struct Child {
+        pid: u32,
+        /// Leads its own process group (killed as a group).
+        own_group: bool,
+    }
+
+    static CHILDREN: Mutex<Vec<Child>> = Mutex::new(Vec::new());
 
     pub fn register(pid: u32, own_group: bool) {
-        CHILDREN.lock().unwrap().push((pid, own_group));
+        CHILDREN.lock().unwrap().push(Child { pid, own_group });
     }
 
     /// Retiring a reaped (or fork-owned) child keeps a later sweep from ever
     /// aiming at a recycled pid.
     pub fn unregister(pid: u32) {
-        CHILDREN.lock().unwrap().retain(|(p, _)| *p != pid);
+        CHILDREN.lock().unwrap().retain(|c| c.pid != pid);
     }
 
     /// SIGKILL every registered child (its whole group when it leads one) and
@@ -107,17 +113,17 @@ pub(crate) mod child_groups {
         let mut killed = 0usize;
         #[cfg(unix)]
         for _round in 0..3 {
-            let children: Vec<(u32, bool)> = std::mem::take(&mut *CHILDREN.lock().unwrap());
+            let children: Vec<Child> = std::mem::take(&mut *CHILDREN.lock().unwrap());
             if children.is_empty() {
                 break;
             }
-            for (pid, own_group) in &children {
-                let pid_i = *pid as i32;
+            for &Child { pid, own_group } in &children {
+                let pid_i = pid as i32;
                 // Verify before signaling (second lock against pid recycling):
                 // an own-group child must still lead its group (getpgid == pid),
                 // a direct child must still exist; a recycled pid leading its
                 // own new group remains a theoretical TOCTOU.
-                let target = if *own_group {
+                let target = if own_group {
                     if unsafe { libc::getpgid(pid_i) } != pid_i {
                         continue;
                     }
@@ -134,11 +140,12 @@ pub(crate) mod child_groups {
             }
             // Reap OUR direct children only, each with a small bound; a
             // waitpid(-1) sweep stalled on unrelated live children.
-            for (pid, _) in &children {
+            for child in &children {
                 let deadline = Instant::now() + Duration::from_millis(200);
                 loop {
-                    let r =
-                        unsafe { libc::waitpid(*pid as i32, std::ptr::null_mut(), libc::WNOHANG) };
+                    let r = unsafe {
+                        libc::waitpid(child.pid as i32, std::ptr::null_mut(), libc::WNOHANG)
+                    };
                     if r != 0 || Instant::now() >= deadline {
                         break;
                     }
@@ -230,9 +237,108 @@ fn watch_served_dir(
     }
 }
 
+/// Top-level entries never watched: recursively watching node_modules/.oj-cache/dist/.git
+/// floods inotify with self-inflicted events (.oj-cache is rewritten on every compile).
+fn is_unwatched_dir(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("node_modules" | ".oj-cache" | "dist" | ".git")
+    )
+}
+
+/// Watch each top-level root entry except the unwatched dirs; fall back to a
+/// recursive root watch only if nothing else could be watched.
+fn watch_root(watcher: &mut notify::RecommendedWatcher, root: &Path) -> notify::Result<()> {
+    use notify::{RecursiveMode, Watcher};
+    let mut watched_any = false;
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if is_unwatched_dir(&entry.file_name()) {
+                continue;
+            }
+            let path = entry.path();
+            let mode = if path.is_dir() {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            if watcher.watch(&path, mode).is_ok() {
+                watched_any = true;
+            }
+        }
+    }
+    if watched_any {
+        Ok(())
+    } else {
+        watcher.watch(root, RecursiveMode::Recursive)
+    }
+}
+
+/// One debounced set of changes.
+#[derive(Default)]
+struct Batch {
+    paths: std::collections::HashSet<PathBuf>,
+    /// Paths the watcher saw come into existence: plugins get "create" for
+    /// those, "update" for edits, "delete" for removals.
+    created: std::collections::HashSet<PathBuf>,
+}
+
+impl Batch {
+    fn add(&mut self, changes: &mut ContentChanges, ev: &notify::Event) {
+        let changed = changes.changed_paths(ev);
+        if matches!(ev.kind, notify::EventKind::Create(_)) {
+            self.created.extend(changed.iter().cloned());
+        }
+        self.paths.extend(changed);
+    }
+}
+
+/// Act on a debounced batch: restart on config changes, full reload on
+/// tsconfig changes, otherwise gate or dispatch HMR.
+fn handle_batch(
+    state: &Arc<ServerState>,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) {
+    // Config/.env can't be hot-applied (read once at startup): restart, as Vite does.
+    if paths
+        .iter()
+        .any(|p| is_restart_trigger(p) || is_config_dependency(p))
+    {
+        restart_process();
+    }
+    // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
+    // key folds class-field semantics in, so stale persistent-cache entries
+    // become unreachable once discovery is cleared.
+    if paths.iter().any(|p| is_tsconfig_file(p)) {
+        oj_compiler::tsconfig::clear_cache();
+        state.mtime_keys.lock().unwrap().clear();
+        state.memory.lock().unwrap().clear();
+        let _ = state
+            .reload_tx
+            .send(full_reload_frame("tsconfig change", None, None));
+    }
+    if !state.hmr_enabled {
+        return;
+    }
+    if let Some(gate) = &state.hmr_gate {
+        if gate.hold(state, paths) {
+            return;
+        }
+    }
+    let messages = state.rt.block_on(decide(state, paths, created));
+    if messages.is_empty() {
+        return;
+    }
+    state.dir_cache.lock().unwrap().clear();
+    for message in messages {
+        let _ = state.reload_tx.send(message);
+    }
+}
+
 pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiver<WatchMsg>) {
     std::thread::spawn(move || {
-        use notify::{RecursiveMode, Watcher};
+        use std::sync::mpsc::RecvTimeoutError;
 
         let tx = state.watch_tx.clone();
         let mut watcher = match notify::recommended_watcher(move |ev| {
@@ -245,41 +351,11 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
             }
         };
         let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
-        // Watch top-level entries except node_modules/.oj-cache/dist/.git:
-        // recursively watching those floods inotify with self-inflicted events
-        // (.oj-cache is rewritten on every compile).
-        let ignore = |name: &std::ffi::OsStr| {
-            matches!(
-                name.to_str(),
-                Some("node_modules" | ".oj-cache" | "dist" | ".git")
-            )
-        };
-        let mut watched_any = false;
-        if let Ok(entries) = std::fs::read_dir(&state.root) {
-            for entry in entries.flatten() {
-                if ignore(&entry.file_name()) {
-                    continue;
-                }
-                let path = entry.path();
-                let mode = if path.is_dir() {
-                    RecursiveMode::Recursive
-                } else {
-                    RecursiveMode::NonRecursive
-                };
-                if watcher.watch(&path, mode).is_ok() {
-                    watched_any = true;
-                }
-            }
-        }
-        // Fall back to a recursive root watch only if nothing else could be watched.
-        if !watched_any {
-            if let Err(err) = watcher.watch(&state.root, RecursiveMode::Recursive) {
-                eprintln!("oj: cannot watch {}: {err}", state.root.display());
-                return;
-            }
+        if let Err(err) = watch_root(&mut watcher, &state.root) {
+            eprintln!("oj: cannot watch {}: {err}", state.root.display());
+            return;
         }
 
-        use std::sync::mpsc::RecvTimeoutError;
         let debounce_ms: u64 = std::env::var("OJ_HMR_DEBOUNCE_MS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -298,32 +374,21 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
                 }
                 Err(_) => break,
             };
-            let first_paths = changes.changed_paths(&first);
-            if first_paths.is_empty() {
+            let mut batch = Batch::default();
+            batch.add(&mut changes, &first);
+            if batch.paths.is_empty() {
                 continue;
             }
-            // Debounced paths the watcher saw come into existence: plugins get
-            // "create" for those, "update" for edits, "delete" for removals.
-            let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-            if matches!(first.kind, notify::EventKind::Create(_)) {
-                created.extend(first_paths.iter().cloned());
-            }
-            let mut paths: std::collections::HashSet<PathBuf> = first_paths.into_iter().collect();
             loop {
                 match rx.recv_timeout(Duration::from_millis(debounce_ms)) {
-                    Ok(WatchMsg::Fs(Ok(ev))) => {
-                        let changed = changes.changed_paths(&ev);
-                        if matches!(ev.kind, notify::EventKind::Create(_)) {
-                            created.extend(changed.iter().cloned());
-                        }
-                        paths.extend(changed);
-                    }
+                    Ok(WatchMsg::Fs(Ok(ev))) => batch.add(&mut changes, &ev),
                     Ok(WatchMsg::Fs(Err(_))) => {}
                     Ok(WatchMsg::Dir(dir)) => watch_served_dir(&mut watcher, &mut served_dirs, dir),
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
+            let Batch { paths, mut created } = batch;
             let paths: Vec<PathBuf> = paths
                 .into_iter()
                 .filter(|p| !is_watch_ignored(&state.watch_ignored, &state.root, p))
@@ -333,40 +398,7 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
             }
             created.retain(|p| !seen_paths.contains(p));
             seen_paths.extend(paths.iter().cloned());
-            // Config/.env can't be hot-applied (read once at startup): restart, as Vite does.
-            if paths
-                .iter()
-                .any(|p| is_restart_trigger(p) || is_config_dependency(p))
-            {
-                restart_process();
-            }
-            // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
-            // key folds class-field semantics in, so stale persistent-cache entries
-            // become unreachable once discovery is cleared.
-            if paths.iter().any(|p| is_tsconfig_file(p)) {
-                oj_compiler::tsconfig::clear_cache();
-                state.mtime_keys.lock().unwrap().clear();
-                state.memory.lock().unwrap().clear();
-                let _ = state
-                    .reload_tx
-                    .send(full_reload_frame("tsconfig change", None, None));
-            }
-            if !state.hmr_enabled {
-                continue;
-            }
-            if let Some(gate) = &state.hmr_gate {
-                if gate.hold(&state, &paths) {
-                    continue;
-                }
-            }
-            let messages = state.rt.block_on(decide(&state, &paths, &created));
-            if messages.is_empty() {
-                continue;
-            }
-            state.dir_cache.lock().unwrap().clear();
-            for message in messages {
-                let _ = state.reload_tx.send(message);
-            }
+            handle_batch(&state, &paths, &created);
         }
     });
 }

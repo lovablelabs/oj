@@ -34,15 +34,8 @@ pub(crate) async fn preview_host_check(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if let Some(raw) = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-    {
-        let host = HostPolicy::host_header_name(raw);
-        if !policy.hostname_allowed(host) {
-            return (StatusCode::FORBIDDEN, HostPolicy::reject_message(host)).into_response();
-        }
+    if let Some(resp) = policy.reject_host(req.headers()) {
+        return resp;
     }
     next.run(req).await
 }

@@ -5,19 +5,23 @@
 //! (Tailwind/PostCSS, Less, Stylus, Svelte); gates the lazy engine spawn in
 //! [`crate::css_engine`], so a plain app never boots one.
 
+fn without_query(url: &str) -> &str {
+    url.split('?').next().unwrap_or(url)
+}
+
 #[inline]
 pub fn is_svelte(url: &str) -> bool {
-    url.split('?').next().unwrap_or(url).ends_with(".svelte")
+    without_query(url).ends_with(".svelte")
 }
 
 #[inline]
 pub fn is_less(url: &str) -> bool {
-    url.split('?').next().unwrap_or(url).ends_with(".less")
+    without_query(url).ends_with(".less")
 }
 
 #[inline]
 pub fn is_stylus(url: &str) -> bool {
-    let f = url.split('?').next().unwrap_or(url);
+    let f = without_query(url);
     f.ends_with(".styl") || f.ends_with(".stylus")
 }
 

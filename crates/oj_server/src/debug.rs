@@ -7,17 +7,27 @@ pub(crate) fn debug_mem() -> bool {
     *ON
 }
 
+/// 404 unless OJ_DEBUG_MEM is set; 403 for anything carrying an `Origin`.
+/// Probes send no Origin header; a hostile page's cross-origin fetch always
+/// does, and GC-hammering from a tab is the only remote vector here.
+fn debug_gate(headers: &axum::http::HeaderMap) -> Option<Response> {
+    if !debug_mem() {
+        return Some((axum::http::StatusCode::NOT_FOUND, "").into_response());
+    }
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return Some((axum::http::StatusCode::FORBIDDEN, "").into_response());
+    }
+    None
+}
+
 /// Deterministic resident-byte split (OJ_DEBUG_MEM=1): budgeted module cache
 /// plus served-dep store, so soaks measure retention without RSS noise.
 pub(crate) async fn debug_mem_stats(
     headers: axum::http::HeaderMap,
     State(state): State<Arc<ServerState>>,
 ) -> Response {
-    if !debug_mem() {
-        return (axum::http::StatusCode::NOT_FOUND, "").into_response();
-    }
-    if headers.contains_key(axum::http::header::ORIGIN) {
-        return (axum::http::StatusCode::FORBIDDEN, "").into_response();
+    if let Some(resp) = debug_gate(&headers) {
+        return resp;
     }
     let (entries, total, code, map) = state.memory.lock().unwrap().stats();
     let (pb_entries, pb_bytes) = pkg_bundle::debug_stats();
@@ -38,13 +48,8 @@ pub(crate) async fn debug_gc(
     State(state): State<Arc<ServerState>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    if !debug_mem() {
-        return (axum::http::StatusCode::NOT_FOUND, "").into_response();
-    }
-    // Probes send no Origin header; a hostile page's cross-origin fetch always
-    // does, and GC-hammering from a tab is the only remote vector here.
-    if headers.contains_key(axum::http::header::ORIGIN) {
-        return (axum::http::StatusCode::FORBIDDEN, "").into_response();
+    if let Some(resp) = debug_gate(&headers) {
+        return resp;
     }
     // Barrier across every registered engine: returns only after each one
     // acknowledged its collection, so a probe reading RSS next sees post-GC numbers.

@@ -16,52 +16,63 @@ pub(crate) fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Op
     Some(Redirect::temporary(&url).into_response())
 }
 
-pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
+/// A `text/javascript`, `no-cache` response.
+fn js_response(body: String) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Loads a resolved plugin id, falling back to the file on disk.
+async fn load_plugin_id(state: &Arc<ServerState>, id: &str) -> Result<String, Response> {
     let Some(host) = &state.plugins else {
-        return (StatusCode::NOT_FOUND, "oj: no plugin host").into_response();
+        return Err((StatusCode::NOT_FOUND, "oj: no plugin host").into_response());
     };
-    let source = match host.load(id).await {
-        Ok(Some(src)) => src,
-        Ok(None) => {
-            if let Some(response) = serve_resolved_from_disk(state, id) {
-                return response;
-            }
-            return (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}")).into_response();
-        }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
-    let dep_map = state.optimized.ready().await;
+    match host.load(id).await {
+        Ok(Some(src)) => Ok(src),
+        Ok(None) => Err(serve_resolved_from_disk(state, id).unwrap_or_else(|| {
+            (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}")).into_response()
+        })),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e).into_response()),
+    }
+}
+
+/// Compiles plugin-loaded source. Imports go through `pre` first, then the normal
+/// specifier rewrite. A plugin virtual can import another plugin virtual: leftover
+/// bare specifiers route back through the plugin, never `virtual:...` to the browser.
+async fn compile_plugin_source(
+    state: &Arc<ServerState>,
+    source: String,
+    importer: String,
+    pre: impl Fn(&str) -> Option<String> + Send + 'static,
+) -> Result<String, String> {
     let root = state.root.clone();
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let virtual_ids = Arc::clone(&state.virtual_ids);
-    let plugin_fallback = state.plugins.is_some();
-    let importer_abs = format!("\0{id}");
     let compile_opts = dev_compile_opts(state);
-    let compiled = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut rewrite = |spec: &str| {
-            if virtual_ids.contains(spec) {
-                return Some(format!("/@virtual/{spec}"));
-            }
-            if let Some(meta) = dep_map.get(spec) {
-                if !meta.needs_interop {
-                    return Some(meta.url.clone());
-                }
+            if let Some(url) = pre(spec) {
+                return Some(url);
             }
             if let Some(url) =
                 rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, spec, true)
             {
                 return Some(url);
             }
-            if plugin_fallback && is_bare_specifier(spec) {
-                return Some(format!(
+            is_bare_specifier(spec).then(|| {
+                format!(
                     "/@id/{}?importer={}",
                     hex_encode(spec),
-                    hex_encode(&importer_abs)
-                ));
-            }
-            None
+                    hex_encode(&importer)
+                )
+            })
         };
         let source = interop_node_builtins(&source, Path::new("plugin.tsx")).unwrap_or(source);
         oj_compiler::compile_module(
@@ -73,23 +84,34 @@ pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> 
         .map(|o| o.code_with_inline_map())
         .map_err(|e| format!("{e}"))
     })
-    .await;
+    .await
+    .unwrap_or_else(|e| Err(format!("compile task failed: {e}")))
+}
+
+fn compiled_response(compiled: Result<String, String>) -> Response {
     match compiled {
-        Ok(Ok(code)) => (
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            code,
-        )
-            .into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("compile task failed: {e}"),
-        )
-            .into_response(),
+        Ok(code) => js_response(code),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
+}
+
+pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
+    let source = match load_plugin_id(state, id).await {
+        Ok(src) => src,
+        Err(response) => return response,
+    };
+    let dep_map = state.optimized.ready().await;
+    let virtual_ids = Arc::clone(&state.virtual_ids);
+    let pre = move |spec: &str| {
+        if virtual_ids.contains(spec) {
+            return Some(format!("/@virtual/{spec}"));
+        }
+        dep_map
+            .get(spec)
+            .filter(|meta| !meta.needs_interop)
+            .map(|meta| meta.url.clone())
+    };
+    compiled_response(compile_plugin_source(state, source, format!("\0{id}"), pre).await)
 }
 
 /// Vite's browser-externalized node builtin: a Proxy whose property reads warn
@@ -111,14 +133,7 @@ pub(crate) fn browser_external_stub_source(spec: &str) -> String {
 }
 
 pub(crate) fn browser_external_stub(spec: &str) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        browser_external_stub_source(spec),
-    )
-        .into_response()
+    js_response(browser_external_stub_source(spec))
 }
 
 pub(crate) async fn serve_plugin_id(
@@ -136,108 +151,55 @@ pub(crate) async fn serve_plugin_id(
     };
     let id = match host.resolve_id(spec, importer).await {
         Ok(Some(id)) => id,
-        Ok(None) => {
-            // The plugin's resolveId declined a relative/absolute import:
-            // resolve it against the importer like the native path would.
-            if !is_bare_specifier(spec) {
-                let (base, query) = spec.split_once('?').unwrap_or((spec, ""));
-                let dir = Path::new(importer)
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| state.root.clone());
-                if let Ok(abs) = state.resolver.resolve(&dir, base) {
-                    if abs.is_file() {
-                        allow_root(&state.fs_allow, package_root(&abs));
-                        let mut url = dep_serve_url(&abs, &state.root);
-                        if !query.is_empty() {
-                            url.push('?');
-                            url.push_str(query);
-                        }
-                        return Redirect::temporary(&url).into_response();
-                    }
+        Ok(None) => return serve_unclaimed_id(state, spec, importer),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let source = match load_plugin_id(state, &id).await {
+        Ok(src) => src,
+        Err(response) => return response,
+    };
+    compiled_response(compile_plugin_source(state, source, id, |_| None).await)
+}
+
+/// No plugin's resolveId claimed `spec`.
+fn serve_unclaimed_id(state: &Arc<ServerState>, spec: &str, importer: &str) -> Response {
+    // The plugin's resolveId declined a relative/absolute import:
+    // resolve it against the importer like the native path would.
+    if !is_bare_specifier(spec) {
+        let (base, query) = spec.split_once('?').unwrap_or((spec, ""));
+        let dir = Path::new(importer)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| state.root.clone());
+        if let Ok(abs) = state.resolver.resolve(&dir, base) {
+            if abs.is_file() {
+                allow_root(&state.fs_allow, package_root(&abs));
+                let mut url = dep_serve_url(&abs, &state.root);
+                if !query.is_empty() {
+                    url.push('?');
+                    url.push_str(query);
                 }
+                return Redirect::temporary(&url).into_response();
             }
-            if is_node_builtin(spec) {
-                return browser_external_stub(spec);
-            }
-            // No plugin claimed the deferred bare id: Vite's "Failed to resolve
-            // import" (500 + overlay naming the import site), not a bare 404.
-            if is_bare_specifier(spec) && !importer.is_empty() {
-                let importer_file = Path::new(importer);
-                let source = std::fs::read_to_string(importer_file).unwrap_or_default();
-                let err = unresolved_import_error(&state.root, importer_file, &source, spec);
-                send_error(state, &err);
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {err}")).into_response();
-            }
-            return (
-                StatusCode::NOT_FOUND,
-                format!("oj: no plugin resolved {spec}"),
-            )
-                .into_response();
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
-    let source = match host.load(&id).await {
-        Ok(Some(src)) => src,
-        Ok(None) => {
-            if let Some(response) = serve_resolved_from_disk(state, &id) {
-                return response;
-            }
-            return (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}")).into_response();
-        }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
-    let root = state.root.clone();
-    let resolver = Arc::clone(&state.resolver);
-    let fs_allow = Arc::clone(&state.fs_allow);
-    let dir_cache = Arc::clone(&state.dir_cache);
-    let importer_id = id.clone();
-    let compile_opts = dev_compile_opts(state);
-    let compiled = tokio::task::spawn_blocking(move || {
-        let mut rewrite = |s: &str| {
-            if let Some(u) =
-                rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, s, true)
-            {
-                return Some(u);
-            }
-            // A plugin virtual can import another plugin virtual: route bare
-            // specifiers back through the plugin, never `virtual:...` to the browser.
-            if is_bare_specifier(s) {
-                return Some(format!(
-                    "/@id/{}?importer={}",
-                    hex_encode(s),
-                    hex_encode(&importer_id)
-                ));
-            }
-            None
-        };
-        let source = interop_node_builtins(&source, Path::new("plugin.tsx")).unwrap_or(source);
-        oj_compiler::compile_module(
-            Path::new("plugin.tsx"),
-            &source,
-            &compile_opts,
-            Some(&mut rewrite),
-        )
-        .map(|o| o.code_with_inline_map())
-        .map_err(|e| format!("{e}"))
-    })
-    .await;
-    match compiled {
-        Ok(Ok(code)) => (
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            code,
-        )
-            .into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("compile task failed: {e}"),
-        )
-            .into_response(),
     }
+    if is_node_builtin(spec) {
+        return browser_external_stub(spec);
+    }
+    // No plugin claimed the deferred bare id: Vite's "Failed to resolve
+    // import" (500 + overlay naming the import site), not a bare 404.
+    if is_bare_specifier(spec) && !importer.is_empty() {
+        let importer_file = Path::new(importer);
+        let source = std::fs::read_to_string(importer_file).unwrap_or_default();
+        let err = unresolved_import_error(&state.root, importer_file, &source, spec);
+        send_error(state, &err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {err}")).into_response();
+    }
+    (
+        StatusCode::NOT_FOUND,
+        format!("oj: no plugin resolved {spec}"),
+    )
+        .into_response()
 }
 
 // Serve a `/@oj-pkg/<hex>` bundle (a CJS package's whole internal graph). An
@@ -346,65 +308,12 @@ pub(crate) async fn serve_plugin_load_fallback(
              import.meta.hot.accept(() => {{}});\n",
             css = serde_json::Value::String(source),
         );
-        return Some(
-            (
-                [
-                    (header::CONTENT_TYPE, "text/javascript"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                body,
-            )
-                .into_response(),
-        );
+        return Some(js_response(body));
     }
-    let root = state.root.clone();
-    let resolver = Arc::clone(&state.resolver);
-    let fs_allow = Arc::clone(&state.fs_allow);
-    let dir_cache = Arc::clone(&state.dir_cache);
-    let importer_id = id.clone();
-    let compile_opts = dev_compile_opts(state);
-    let compiled = tokio::task::spawn_blocking(move || {
-        let mut rewrite = |s: &str| {
-            if let Some(u) =
-                rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, s, true)
-            {
-                return Some(u);
-            }
-            // A plugin virtual can import another plugin virtual: route bare
-            // specifiers back through the plugin, never `virtual:...` to the browser.
-            if is_bare_specifier(s) {
-                return Some(format!(
-                    "/@id/{}?importer={}",
-                    hex_encode(s),
-                    hex_encode(&importer_id)
-                ));
-            }
-            None
-        };
-        let source = interop_node_builtins(&source, Path::new("plugin.tsx")).unwrap_or(source);
-        oj_compiler::compile_module(
-            Path::new("plugin.tsx"),
-            &source,
-            &compile_opts,
-            Some(&mut rewrite),
-        )
-        .map(|o| o.code_with_inline_map())
-        .map_err(|e| format!("{e}"))
-    })
-    .await;
-    match compiled {
-        Ok(Ok(code)) => Some(
-            (
-                [
-                    (header::CONTENT_TYPE, "text/javascript"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                code,
-            )
-                .into_response(),
-        ),
-        _ => None,
-    }
+    compile_plugin_source(state, source, id, |_| None)
+        .await
+        .ok()
+        .map(js_response)
 }
 
 pub(crate) fn is_bare_specifier(spec: &str) -> bool {

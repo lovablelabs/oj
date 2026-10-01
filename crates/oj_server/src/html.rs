@@ -95,15 +95,20 @@ pub fn inject_csp_nonce(html: &str, nonce: &str) -> String {
     out.push_str(rest);
     if !out.contains("property=\"csp-nonce\"") {
         let meta = format!("<meta property=\"csp-nonce\" nonce=\"{nonce}\">");
-        out = match out.find("<head>") {
-            Some(i) => {
-                let at = i + "<head>".len();
-                format!("{}\n{meta}{}", &out[..at], &out[at..])
-            }
-            None => format!("{meta}\n{out}"),
-        };
+        out = insert_after_head(&out, &meta);
     }
     out
+}
+
+/// `html` with `tags` on a new line right after `<head>`, else prepended.
+pub(crate) fn insert_after_head(html: &str, tags: &str) -> String {
+    match html.find("<head>") {
+        Some(idx) => {
+            let at = idx + "<head>".len();
+            format!("{}\n{tags}{}", &html[..at], &html[at..])
+        }
+        None => format!("{tags}\n{html}"),
+    }
 }
 
 pub(crate) async fn serve_index_html(state: &ServerState) -> Response {
@@ -268,17 +273,18 @@ pub(crate) fn html_entries(root: &Path) -> Vec<String> {
 /// around `=`, case-insensitive whole-word names (`data-src` is not `src`).
 pub(crate) fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let bytes = tag.as_bytes();
-    let mut i = tag.find(char::is_whitespace)?;
-    while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+    let len = bytes.len();
+    let skip_ws = |mut i: usize| {
+        while i < len && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
+        i
+    };
+    let mut i = tag.find(char::is_whitespace)?;
+    while i < len {
+        i = skip_ws(i);
         let start = i;
-        while i < bytes.len()
-            && !bytes[i].is_ascii_whitespace()
-            && bytes[i] != b'='
-            && bytes[i] != b'/'
-        {
+        while i < len && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'=' | b'/') {
             i += 1;
         }
         if i == start {
@@ -286,32 +292,27 @@ pub(crate) fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
             continue;
         }
         let attr = &tag[start..i];
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() || bytes[i] != b'=' {
+        i = skip_ws(i);
+        if i >= len || bytes[i] != b'=' {
             continue;
         }
-        i += 1;
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() {
+        i = skip_ws(i + 1);
+        if i >= len {
             return None;
         }
         let (vs, ve) = if matches!(bytes[i], b'"' | b'\'') {
             let q = bytes[i];
             let s = i + 1;
             i = s;
-            while i < bytes.len() && bytes[i] != q {
+            while i < len && bytes[i] != q {
                 i += 1;
             }
             let e = i;
-            i += usize::from(i < bytes.len());
+            i += usize::from(i < len);
             (s, e)
         } else {
             let s = i;
-            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            while i < len && !bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
             (s, i)

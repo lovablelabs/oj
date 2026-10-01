@@ -77,6 +77,16 @@ impl HostPolicy {
         )
     }
 
+    /// 403 for a `Host` header outside the policy; `None` lets the request through.
+    pub(crate) fn reject_host(&self, headers: &HeaderMap) -> Option<Response> {
+        let raw = headers.get(header::HOST)?.to_str().ok()?;
+        let host = Self::host_header_name(raw);
+        if self.hostname_allowed(host) {
+            return None;
+        }
+        Some((StatusCode::FORBIDDEN, Self::reject_message(host)).into_response())
+    }
+
     pub(crate) fn reject_ws_origin(&self, headers: &HeaderMap) -> Option<Response> {
         let origin = headers.get(header::ORIGIN)?.to_str().ok()?;
         let host = origin
@@ -97,15 +107,8 @@ pub(crate) async fn host_check_middleware(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if let Some(raw) = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-    {
-        let host = HostPolicy::host_header_name(raw);
-        if !state.host_policy.hostname_allowed(host) {
-            return (StatusCode::FORBIDDEN, HostPolicy::reject_message(host)).into_response();
-        }
+    if let Some(resp) = state.host_policy.reject_host(req.headers()) {
+        return resp;
     }
     next.run(req).await
 }
@@ -129,8 +132,18 @@ pub(crate) enum CorsOrigin {
 }
 
 impl CorsPolicy {
+    /// Vite's defaults for everything but the origin rule.
+    fn with_origin(origin: CorsOrigin) -> Self {
+        Self {
+            origin,
+            methods: "GET,HEAD,PUT,PATCH,POST,DELETE".to_string(),
+            allowed_headers: None,
+            credentials: false,
+            max_age: None,
+        }
+    }
+
     pub(crate) fn from_config(cfg: Option<&oj_config::CorsConfig>) -> Option<Self> {
-        let default_methods = "GET,HEAD,PUT,PATCH,POST,DELETE".to_string();
         let list_or_str = |v: &serde_json::Value| -> Option<String> {
             match v {
                 serde_json::Value::String(s) => Some(s.clone()),
@@ -145,13 +158,7 @@ impl CorsPolicy {
         };
         match cfg {
             Some(oj_config::CorsConfig::Toggle(false)) => None,
-            Some(oj_config::CorsConfig::Toggle(true)) => Some(Self {
-                origin: CorsOrigin::Any,
-                methods: default_methods,
-                allowed_headers: None,
-                credentials: false,
-                max_age: None,
-            }),
+            Some(oj_config::CorsConfig::Toggle(true)) => Some(Self::with_origin(CorsOrigin::Any)),
             Some(oj_config::CorsConfig::Options(o)) => {
                 let origin = match &o.origin {
                     Some(serde_json::Value::Bool(true)) | Some(serde_json::Value::String(_))
@@ -169,25 +176,16 @@ impl CorsPolicy {
                     ),
                     _ => CorsOrigin::LocalhostDefault,
                 };
-                Some(Self {
-                    origin,
-                    methods: o
-                        .methods
-                        .as_ref()
-                        .and_then(list_or_str)
-                        .unwrap_or(default_methods),
-                    allowed_headers: o.allowed_headers.as_ref().and_then(list_or_str),
-                    credentials: o.credentials.unwrap_or(false),
-                    max_age: o.max_age,
-                })
+                let mut policy = Self::with_origin(origin);
+                if let Some(methods) = o.methods.as_ref().and_then(list_or_str) {
+                    policy.methods = methods;
+                }
+                policy.allowed_headers = o.allowed_headers.as_ref().and_then(list_or_str);
+                policy.credentials = o.credentials.unwrap_or(false);
+                policy.max_age = o.max_age;
+                Some(policy)
             }
-            None => Some(Self {
-                origin: CorsOrigin::LocalhostDefault,
-                methods: default_methods,
-                allowed_headers: None,
-                credentials: false,
-                max_age: None,
-            }),
+            None => Some(Self::with_origin(CorsOrigin::LocalhostDefault)),
         }
     }
 
