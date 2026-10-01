@@ -16,11 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CSS modules with `localsConvention`: two class names that convert to the same key (`foo-bar` and `fooBar` under `camelCase`) no longer emit the same named export twice; the later one wins, as postcss-modules assigns them.
 - An `@import` that follows a comment is now hoisted above the inlined rules like any other surviving import.
 - A composed source map whose intermediate map fails to re-parse falls back to oj's own map as raw JSON instead of a data URL that the server would encode a second time.
+- `oj build` now applies env vars that plugin `config()` hooks set (`process.env.VITE_X = ...`) to `import.meta.env` and `%VITE_X%` in index.html, as `oj dev` and Vite do. The plugin host keeps a private `process.env`, so the build never saw those writes.
 
 ### Changed
 
 - CSS compiles are faster: a file referenced by `composes: x from "./file"` is compiled once per stylesheet instead of once per reference; Sass resolution probes fewer paths and caches file checks for the length of a compile; inlined `@import` files have their urls rebased with a text rewrite, like Vite's `rebaseUrls`, instead of a full parse and print; `css.modules.globalModulePaths` regexes are compiled once.
 - Internal restructuring of the dev server, compiler, CSS pipeline, resolver, module graph, caches and config crates: large files split into focused modules, long functions split into named steps, duplicated code folded into shared helpers. Process-global state (the `import.meta.env` defines, the CJS-dependency memo) is now owned by the dev server and passed explicitly, and the plugin host's push senders are set once. No behavior changes intended.
+- Every environment variable oj reads now comes from one immutable snapshot taken at startup (the `oj_env` crate), and the app env (`.env` files, NODE_ENV, `import.meta.env`) is resolved once per command instead of once per build phase or per Start rebundle. Start dev's NODE_ENV now reads `.env` files from `envDir` like every other `.env` read.
 
 ## [0.2.15] - 2026-09-30
 
