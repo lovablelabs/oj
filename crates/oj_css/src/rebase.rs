@@ -54,9 +54,11 @@ static URL_RE: LazyLock<Regex> =
 static IMPORT_CSS_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"@import\s+(?:url\()?('[^']+\.css'|"[^"]+\.css"|[^'"\s)]+\.css)"#).unwrap()
 });
-/// Vite's `cssImageSetRE` (its `{1,256}` guards JS backtracking; this engine is linear).
-static IMAGE_SET_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"image-set\(((?:[\w-]+\([^)]*\)|[^)])*)\)"#).unwrap());
+/// Vite's `cssImageSetRE`. JS `\w` is ASCII; a Unicode `\w{1,256}` is too
+/// big to compile.
+static IMAGE_SET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"image-set\(((?:[A-Za-z0-9_-]{1,256}\([^)]*\)|[^)])*)\)"#).unwrap()
+});
 
 /// `css` with each match of `re` replaced by `f(match, match start)` (None
 /// keeps it). Plain matches, no capture groups: those need the slower engine.
