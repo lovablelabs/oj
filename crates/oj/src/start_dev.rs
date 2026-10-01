@@ -19,8 +19,9 @@ use tokio::sync::broadcast;
 use crate::start_host::{ScriptEngine, StartEngine, StartRequest, StartResponse};
 
 struct StartState {
-    /// The CLI's `--config` (resolved), for the watch-reload codegen.
-    config_file: Option<PathBuf>,
+    /// The scripts' env (see `script_env`), resolved once at boot for the
+    /// watch-reload codegen and rebundles.
+    script_env: Arc<[(String, String)]>,
     proxy_prefixes: Vec<String>,
     /// Live plugin-middleware state, shared with oj_server: the middleware port
     /// and whether worker environments serve the documents. A slow plugin host
@@ -163,42 +164,29 @@ pub async fn start_dev(
     // resolver's codegen cache hashes those same files as its key. Running
     // them concurrently would let the resolver scan half-written files and
     // persist a cache key over content that was still moving.
+    // The scripts' env, resolved once and shared by boot and every rebundle.
+    let script_vars: Arc<[(String, String)]> =
+        script_env(oj_env::get(), &root, config_file.as_deref(), "serve", &mode)?.into();
     let route_tree = {
-        let (root, cache, cfg, mode) = (
-            root.clone(),
-            cache.clone(),
-            config_file.clone(),
-            mode.clone(),
-        );
-        tokio::task::spawn_blocking(move || {
-            generate_route_tree(&root, &cache, cfg.as_deref(), &mode)
-        })
+        let (root, cache, env) = (root.clone(), cache.clone(), Arc::clone(&script_vars));
+        tokio::task::spawn_blocking(move || generate_route_tree(&root, &cache, &env))
     };
     route_tree.await??;
     oj_server::boot_phase("route tree ready");
     let resolver = {
-        let (root, cache, cfg, mode) = (
-            root.clone(),
-            cache.clone(),
-            config_file.clone(),
-            mode.clone(),
-        );
-        tokio::task::spawn_blocking(move || {
-            generate_server_fn_resolver(&root, &cache, cfg.as_deref(), &mode)
-        })
+        let (root, cache, env) = (root.clone(), cache.clone(), Arc::clone(&script_vars));
+        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, &env))
     };
     resolver.await??;
     oj_server::boot_phase("resolver ready");
     let bundle = {
-        let (root, cache, cfg, mode) = (
+        let (root, cache, env, mode) = (
             root.clone(),
             cache.clone(),
-            config_file.clone(),
+            Arc::clone(&script_vars),
             mode.clone(),
         );
-        tokio::task::spawn_blocking(move || {
-            bundle_client_entry_cached(&root, &cache, cfg.as_deref(), &mode)
-        })
+        tokio::task::spawn_blocking(move || bundle_client_entry_cached(&root, &cache, &env, &mode))
     };
     let (reload_tx, _) = broadcast::channel::<()>(16);
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
@@ -228,27 +216,7 @@ pub async fn start_dev(
         };
         let entry = configured_start_server_entry(&config, &root)
             .unwrap_or_else(|| cache.join("server-entry.tsx"));
-        let mut init_env = vec![
-            (
-                "OJ_APP_ROOT".to_string(),
-                root.to_string_lossy().into_owned(),
-            ),
-            (
-                "OJ_CACHE_ROOT".to_string(),
-                oj_cache::cache_root(&root).to_string_lossy().into_owned(),
-            ),
-            (
-                "NODE_ENV".to_string(),
-                dev_node_env(oj_env::get(), &root, &mode),
-            ),
-            ("OJ_MODE".to_string(), mode.clone()),
-        ];
-        init_env.extend(start_script_env(
-            &root,
-            config_file.as_deref(),
-            "serve",
-            &mode,
-        )?);
+        let init_env = script_vars.to_vec();
         Arc::new(StartEngine::new(
             root.clone(),
             &cache,
@@ -377,7 +345,7 @@ pub async fn start_dev(
         None
     };
     let state = Arc::new(StartState {
-        config_file: config_file.clone(),
+        script_env: Arc::clone(&script_vars),
         proxy_prefixes: built.proxy_prefixes.clone(),
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
@@ -900,14 +868,14 @@ async fn rebundle_worker(
         let regen_files = regen_output_files(&root, &cache);
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
-            let cfg = state.config_file.clone();
+            let env = Arc::clone(&state.script_env);
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
             tokio::task::spawn_blocking(move || {
                 let routes_now = list_route_files(&r);
                 let routes_changed = routes_now != routes_prev;
                 if routes_changed {
-                    let _ = generate_route_tree(&r, &c, cfg.as_deref(), &m);
+                    let _ = generate_route_tree(&r, &c, &env);
                 }
                 let server_fn_changed = changed.iter().any(|p| {
                     let is_ts = p.extension().is_some_and(|e| e == "ts" || e == "tsx");
@@ -917,9 +885,9 @@ async fn rebundle_worker(
                                 .is_ok_and(|s| s.contains("createServerFn")))
                 });
                 if routes_changed || server_fn_changed {
-                    let _ = generate_server_fn_resolver(&r, &c, cfg.as_deref(), &m);
+                    let _ = generate_server_fn_resolver(&r, &c, &env);
                 }
-                let pinned = if bundle_client_entry(&r, &c, cfg.as_deref(), &m).is_err() {
+                let pinned = if bundle_client_entry(&r, &c, &env).is_err() {
                     None
                 } else {
                     match start_bundle_store(&r, &m).persist(&c) {
@@ -1002,34 +970,22 @@ async fn rebundle_worker(
     }
 }
 
-/// The `.env` vars with one of `prefixes` that the shell does not already set
-/// (the scripts inherit the shell's own value).
-fn prefixed_dotenv_vars(
-    env: &oj_env::Env,
-    env_dir: &Path,
-    mode: &str,
-    prefixes: &[String],
-) -> Vec<(String, String)> {
-    oj_env::load_with(env, env_dir, mode)
-        .into_iter()
-        .filter(|(k, _)| {
-            prefixes.iter().any(|p| k.starts_with(p.as_str())) && env.var_os(k).is_none()
-        })
-        .collect()
+/// The config and app env a Start command's scripts are built from, resolved
+/// once per command.
+struct ScriptInputs {
+    root: PathBuf,
+    command: String,
+    config: oj_config::OjConfig,
+    app_env: oj_env::AppEnv,
 }
 
-/// Environment handed to the Start node scripts: the mode's `.env` vars with an
-/// `envPrefix` (shell wins, as in Vite's loadEnv), the prefixes themselves
-/// (`OJ_ENV_PREFIX`), the per-environment defines (`OJ_DEFINE_CLIENT` /
-/// `OJ_DEFINE_SSR`, Vite's `environments.<name>.define`) and the JSX settings
-/// from the config (`OJ_JSX`, consumed by `jsxTransformOptions` in
-/// resolve-pkg.mjs).
-fn start_script_env(
+fn script_inputs(
+    env: &oj_env::Env,
     root: &Path,
     config_file: Option<&Path>,
     command: &str,
     mode: &str,
-) -> anyhow::Result<Vec<(String, String)>> {
+) -> anyhow::Result<ScriptInputs> {
     let mut config = oj_config::load(root).unwrap_or_default();
     oj_server::plugins::adopt_vite_config_values(&mut config, root, config_file, command, mode)
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -1039,8 +995,49 @@ fn start_script_env(
         Some(d) => root.join(d),
         None => root.to_path_buf(),
     };
-    let prefixes = oj_config::env_prefixes(&config);
-    let mut vars = prefixed_dotenv_vars(oj_env::get(), &env_dir, mode, &prefixes);
+    let app_env = oj_env::AppEnv::resolve(
+        env,
+        &env_dir,
+        mode,
+        oj_config::env_prefixes(&config),
+        "development",
+    );
+    Ok(ScriptInputs {
+        root: root.to_path_buf(),
+        command: command.to_string(),
+        config,
+        app_env,
+    })
+}
+
+/// The `.env` vars with an `envPrefix` that the shell does not already set
+/// (the scripts inherit the shell's own value).
+fn prefixed_dotenv_vars(env: &oj_env::Env, app_env: &oj_env::AppEnv) -> Vec<(String, String)> {
+    app_env
+        .loaded()
+        .iter()
+        .filter(|(k, _)| app_env.has_prefix(k) && env.var_os(k).is_none())
+        .cloned()
+        .collect()
+}
+
+/// Environment handed to the Start node scripts: the mode's `.env` vars with an
+/// `envPrefix` (shell wins, as in Vite's loadEnv), the prefixes themselves
+/// (`OJ_ENV_PREFIX`), the per-environment defines (`OJ_DEFINE_CLIENT` /
+/// `OJ_DEFINE_SSR`, Vite's `environments.<name>.define`) and the JSX settings
+/// from the config (`OJ_JSX`, consumed by `jsxTransformOptions` in
+/// resolve-pkg.mjs).
+fn start_script_vars(
+    env: &oj_env::Env,
+    inputs: &ScriptInputs,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let (root, command, config) = (
+        inputs.root.as_path(),
+        inputs.command.as_str(),
+        &inputs.config,
+    );
+    let prefixes = inputs.app_env.prefixes();
+    let mut vars = prefixed_dotenv_vars(env, &inputs.app_env);
     if prefixes != ["VITE_"] {
         vars.push((
             "OJ_ENV_PREFIX".into(),
@@ -1049,7 +1046,7 @@ fn start_script_env(
     }
     for (env_name, var) in [("client", "OJ_DEFINE_CLIENT"), ("ssr", "OJ_DEFINE_SSR")] {
         let defines: serde_json::Map<String, serde_json::Value> =
-            oj_config::environment_defines(&config, env_name)
+            oj_config::environment_defines(config, env_name)
                 .into_iter()
                 .map(|(k, v)| (k, serde_json::Value::String(v)))
                 .collect();
@@ -1057,7 +1054,7 @@ fn start_script_env(
             vars.push((var.into(), serde_json::Value::Object(defines).to_string()));
         }
     }
-    let jsx = oj_config::jsx_settings(&config);
+    let jsx = oj_config::jsx_settings(config);
     if jsx != oj_config::JsxSettings::default() {
         vars.push((
             "OJ_JSX".into(),
@@ -1066,7 +1063,7 @@ fn start_script_env(
     }
     // The config's `define` map (values are JS expressions), applied by the SSR
     // loader and the production bundles like Vite's define plugin.
-    let defines: serde_json::Map<String, serde_json::Value> = oj_config::config_defines(&config)
+    let defines: serde_json::Map<String, serde_json::Value> = oj_config::config_defines(config)
         .into_iter()
         .map(|(k, v)| (k, serde_json::Value::String(v)))
         .collect();
@@ -1101,11 +1098,11 @@ fn start_script_env(
             })
             .collect()
     };
-    let runner_backed = oj_config::ssr_runner_backed(&config);
+    let runner_backed = oj_config::ssr_runner_backed(config);
     let resolve_conditions = if runner_backed {
-        Some(oj_config::node_server_conditions(&config, dev))
+        Some(oj_config::node_server_conditions(config, dev))
     } else {
-        oj_config::user_resolve_conditions(&config, "ssr").map(&map_dev)
+        oj_config::user_resolve_conditions(config, "ssr").map(&map_dev)
     };
     if let Some(conditions) = resolve_conditions.filter(|c| !c.is_empty()) {
         vars.push((
@@ -1114,9 +1111,9 @@ fn start_script_env(
         ));
     }
     let external_conditions = if runner_backed {
-        Some(oj_config::node_server_external_conditions(&config, dev))
+        Some(oj_config::node_server_external_conditions(config, dev))
     } else {
-        oj_config::user_external_conditions(&config, "ssr").map(&map_dev)
+        oj_config::user_external_conditions(config, "ssr").map(&map_dev)
     };
     if let Some(conditions) = external_conditions.filter(|c| !c.is_empty()) {
         vars.push((
@@ -1126,7 +1123,7 @@ fn start_script_env(
     }
     // `ssr.noExternal`/`external`, consumed by the SSR loader to transform (rather
     // than hand to Node) the dependencies Vite would bundle.
-    let externals = oj_config::ssr_externals(&config);
+    let externals = oj_config::ssr_externals(config);
     if externals != oj_config::SsrExternals::default() {
         vars.push((
             "OJ_SSR_EXTERNALS".into(),
@@ -1140,13 +1137,13 @@ fn start_script_env(
     vars.push((
         "OJ_CLIENT_CONDITIONS".into(),
         serde_json::to_string(&oj_config::resolve_conditions_for(
-            &config,
+            config,
             "client",
             command != "build",
         ))
         .unwrap_or_default(),
     ));
-    if let Some(entry) = configured_start_server_entry(&config, root) {
+    if let Some(entry) = configured_start_server_entry(config, root) {
         vars.push((
             "OJ_START_SERVER_ENTRY".into(),
             entry.to_string_lossy().into_owned(),
@@ -1176,6 +1173,17 @@ fn start_script_env(
         }
     }
     Ok(vars)
+}
+
+/// [`start_script_vars`] for one command, resolved against the process snapshot.
+fn start_script_env(
+    root: &Path,
+    config_file: Option<&Path>,
+    command: &str,
+    mode: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let env = oj_env::get();
+    start_script_vars(env, &script_inputs(env, root, config_file, command, mode)?)
 }
 
 /// The app's own TanStack Start server entry (`tanstackStart({ server: { entry } })`),
@@ -1220,10 +1228,17 @@ pub async fn start_build(
     oj_server::write_start_assets(&cache)?;
     let scripts = Arc::new(ScriptEngine::new(&root)?);
     {
-        let (r, c, cfg) = (root.clone(), cache.clone(), config_file.clone());
+        let gen_env = script_env(
+            oj_env::get(),
+            &root,
+            config_file.as_deref(),
+            "serve",
+            "development",
+        )?;
+        let (r, c) = (root.clone(), cache.clone());
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            generate_route_tree(&r, &c, cfg.as_deref(), "development")?;
-            generate_server_fn_resolver(&r, &c, cfg.as_deref(), "development")
+            generate_route_tree(&r, &c, &gen_env)?;
+            generate_server_fn_resolver(&r, &c, &gen_env)
         })
         .await??;
     }
@@ -1366,8 +1381,7 @@ fn codegen_store(
 fn generate_route_tree(
     root: &Path,
     cache: &Path,
-    config_file: Option<&Path>,
-    mode: &str,
+    script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
     let store = codegen_store(root, cache, "route-tree", "generate.mjs", None);
     let dest = root.join("src").join("routeTree.gen.ts");
@@ -1388,7 +1402,7 @@ fn generate_route_tree(
     run_script_process(
         root,
         &cache.join("generate.mjs"),
-        &script_env(root, config_file, "serve", mode)?,
+        script_env,
         "route tree generation",
     )?;
     let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
@@ -1399,8 +1413,7 @@ fn generate_route_tree(
 fn generate_server_fn_resolver(
     root: &Path,
     cache: &Path,
-    config_file: Option<&Path>,
-    mode: &str,
+    script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
     let store = codegen_store(
         root,
@@ -1429,7 +1442,7 @@ fn generate_server_fn_resolver(
     run_script_process(
         root,
         &cache.join("gen-resolver.mjs"),
-        &script_env(root, config_file, "serve", mode)?,
+        script_env,
         "server-fn resolver",
     )?;
     store.persist(&inputs, &outputs);
@@ -1505,13 +1518,12 @@ fn run_script_process(
 fn bundle_client_entry(
     root: &Path,
     cache: &Path,
-    config_file: Option<&Path>,
-    mode: &str,
+    script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
     run_script_process(
         root,
         &cache.join("bundle-client.mjs"),
-        &script_env(root, config_file, "serve", mode)?,
+        script_env,
         "client entry bundling",
     )
 }
@@ -1528,7 +1540,7 @@ fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartB
 fn bundle_client_entry_cached(
     root: &Path,
     cache: &Path,
-    config_file: Option<&Path>,
+    script_env: &[(String, String)],
     mode: &str,
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
     let store = start_bundle_store(root, mode);
@@ -1549,7 +1561,7 @@ fn bundle_client_entry_cached(
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
-    bundle_client_entry(root, cache, config_file, mode)?;
+    bundle_client_entry(root, cache, script_env)?;
     if let Some((key, pinned)) = store.persist(cache) {
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
@@ -1573,21 +1585,18 @@ fn client_module_count(cache: &Path) -> usize {
 /// Vite's rule for the dev server too: the shell's NODE_ENV wins (so
 /// `NODE_ENV=production oj dev` is PROD, as in Vite and oj's generic server),
 /// else `.env[.mode]` NODE_ENV=development, else development.
-fn dev_node_env(env: &oj_env::Env, root: &Path, mode: &str) -> String {
-    oj_env::AppEnv::resolve(env, root, mode, Vec::new(), "development")
-        .node_env()
-        .to_string()
-}
-
 /// The environment the one-shot scripts receive as their `run(env)` argument:
-/// the same values `node` used to get as spawn env.
+/// the same values `node` used to get as spawn env. Resolved once per command;
+/// `.env` edits restart the process, so it never goes stale.
 fn script_env(
+    env: &oj_env::Env,
     root: &Path,
     config_file: Option<&Path>,
     command: &str,
     mode: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
-    let mut env = vec![
+    let inputs = script_inputs(env, root, config_file, command, mode)?;
+    let mut vars = vec![
         (
             "OJ_APP_ROOT".to_string(),
             root.to_string_lossy().into_owned(),
@@ -1598,12 +1607,12 @@ fn script_env(
         ),
         (
             "NODE_ENV".to_string(),
-            dev_node_env(oj_env::get(), root, mode),
+            inputs.app_env.node_env().to_string(),
         ),
         ("OJ_MODE".to_string(), mode.to_string()),
     ];
-    env.extend(start_script_env(root, config_file, command, mode)?);
-    Ok(env)
+    vars.extend(start_script_vars(env, &inputs)?);
+    Ok(vars)
 }
 
 fn app_uses_tailwind(root: &Path) -> bool {
@@ -2917,20 +2926,34 @@ mod tests {
     }
 
     // Vite's NODE_ENV rule for the dev server: the shell wins (so
-    // `NODE_ENV=production oj dev` is PROD), else `.env[.mode]` may only pick
-    // development, else development.
+    // `NODE_ENV=production oj dev` is PROD), else `.env[.mode]` from `envDir`
+    // may only pick development, else development.
     #[test]
-    fn dev_node_env_shell_wins_then_env_files() {
+    fn script_env_node_env_shell_wins_then_env_files() {
+        let node_env = |env: &oj_env::Env, root: &Path, mode: &str| -> String {
+            let vars = script_env(env, root, None, "serve", mode).unwrap();
+            vars.into_iter()
+                .find(|(k, _)| k == "NODE_ENV")
+                .map(|(_, v)| v)
+                .unwrap()
+        };
         let silent = oj_env::Env::from_vars([("NODE_ENV", "")]);
         let root = tmp("node-env");
-        assert_eq!(dev_node_env(&silent, &root, "development"), "development");
+        assert_eq!(node_env(&silent, &root, "development"), "development");
         std::fs::write(root.join(".env.staging"), "NODE_ENV=development\n").unwrap();
-        assert_eq!(dev_node_env(&silent, &root, "staging"), "development");
+        assert_eq!(node_env(&silent, &root, "staging"), "development");
         std::fs::write(root.join(".env.prodlike"), "NODE_ENV=production\n").unwrap();
         // Only development is honored from a .env file (Vite warns and ignores).
-        assert_eq!(dev_node_env(&silent, &root, "prodlike"), "development");
+        assert_eq!(node_env(&silent, &root, "prodlike"), "development");
         let shell = oj_env::Env::from_vars([("NODE_ENV", "production")]);
-        assert_eq!(dev_node_env(&shell, &root, "staging"), "production");
+        assert_eq!(node_env(&shell, &root, "staging"), "production");
+        // The files come from `envDir`, like every other `.env` read.
+        let with_dir = tmp("node-env-dir");
+        std::fs::create_dir_all(with_dir.join("env")).unwrap();
+        std::fs::write(with_dir.join("oj.config.json"), r#"{"envDir":"env"}"#).unwrap();
+        std::fs::write(with_dir.join("env/.env.staging"), "NODE_ENV=development\n").unwrap();
+        let prod_default = oj_env::Env::from_vars([("NODE_ENV", "")]);
+        assert_eq!(node_env(&prod_default, &with_dir, "staging"), "development");
     }
 
     // A `.env` value reaches the scripts only when the shell lacks the key.
@@ -2939,7 +2962,14 @@ mod tests {
         let root = tmp("dotenv-shell");
         std::fs::write(root.join(".env"), "VITE_A=file\nVITE_B=file\nOTHER=x\n").unwrap();
         let env = oj_env::Env::from_vars([("VITE_B", "shell")]);
-        let vars = prefixed_dotenv_vars(&env, &root, "development", &["VITE_".to_string()]);
+        let app_env = oj_env::AppEnv::resolve(
+            &env,
+            &root,
+            "development",
+            vec!["VITE_".into()],
+            "development",
+        );
+        let vars = prefixed_dotenv_vars(&env, &app_env);
         assert_eq!(vars, vec![("VITE_A".to_string(), "file".to_string())]);
     }
 
