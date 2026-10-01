@@ -33,11 +33,10 @@ const MISSING_PACKAGE_MARKER: &str = "OJ_MISSING_PACKAGE ";
 /// compile runs on a clean heap. Callers hold this struct in once-cells; the
 /// swap lives inside so every one of them heals.
 pub struct CssEngine {
-    /// Generation-stamped so concurrent memory-limit failures revive once.
     /// Compiles hold the read guard across the whole engine call on purpose:
     /// cloning an Arc under a short lock would let a replaced engine's isolate
     /// be dropped from an async context by whichever compile finishes last.
-    engine: tokio::sync::RwLock<(u64, JsEngine)>,
+    engine: tokio::sync::RwLock<Slot>,
     root: PathBuf,
     script: String,
     base: String,
@@ -54,6 +53,12 @@ pub struct CssEngine {
     /// Rides into every spawned and revived engine, so the debug GC fan-out
     /// keeps reaching this slot across revives.
     registry: Option<oj_js::EngineRegistry>,
+}
+
+/// The live engine, generation-stamped so concurrent failures revive once.
+struct Slot {
+    generation: u64,
+    engine: JsEngine,
 }
 
 /// One engine flavor's identity: the script it runs and its diagnostics
@@ -153,7 +158,10 @@ impl CssEngine {
             .await
             .map_err(|e| anyhow::anyhow!("cannot start the {kind} engine: {e}"))?;
         Ok(std::sync::Arc::new(CssEngine {
-            engine: tokio::sync::RwLock::new((0, engine)),
+            engine: tokio::sync::RwLock::new(Slot {
+                generation: 0,
+                engine,
+            }),
             root: root.to_path_buf(),
             script: script.to_string_lossy().into_owned(),
             base: root.display().to_string(),
@@ -201,7 +209,7 @@ impl CssEngine {
             }
         }
         let mut slot = self.engine.write().await;
-        if slot.0 != seen_generation {
+        if slot.generation != seen_generation {
             return;
         }
         if let Ok(mut last) = self.last_revive.lock() {
@@ -216,8 +224,8 @@ impl CssEngine {
         .await
         {
             Ok(fresh) => {
-                slot.0 += 1;
-                slot.1 = fresh;
+                slot.generation += 1;
+                slot.engine = fresh;
                 let attempts = self.revive_attempts.fetch_add(1, Ordering::SeqCst) + 1;
                 let cause = match trigger {
                     EngineError::MemoryLimit => format!(
@@ -285,8 +293,8 @@ impl CssEngine {
         let (generation, result) = {
             let slot = self.engine.read().await;
             (
-                slot.0,
-                slot.1
+                slot.generation,
+                slot.engine
                     .call(self.script.clone(), "compile", vec![request], None)
                     .await,
             )
@@ -518,6 +526,10 @@ mod tests {
         // revive() ran inside the failing call: the replacement compiles.
         let out = engine.compile(".fine {}", "/src/a.less").await.unwrap();
         assert_eq!(out, ".fine {}/*ok*/");
-        assert_eq!(engine.engine.read().await.0, 1, "one revive, stamped");
+        assert_eq!(
+            engine.engine.read().await.generation,
+            1,
+            "one revive, stamped"
+        );
     }
 }

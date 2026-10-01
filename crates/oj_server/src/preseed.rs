@@ -184,12 +184,8 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
     std::fs::create_dir_all(&cache)?;
     // Atomic rename: an engine could import the script while a concurrent oj
     // process rewrites it.
+    crate::plugins::ensure_asset(&cache, "optimize-env.mjs", OPTIMIZE_ENV_JS)?;
     let script = cache.join("optimize-env.mjs");
-    if std::fs::read(&script).ok().as_deref() != Some(OPTIMIZE_ENV_JS.as_bytes()) {
-        let tmp = cache.join(format!("optimize-env-{}.tmp.mjs", std::process::id()));
-        std::fs::write(&tmp, OPTIMIZE_ENV_JS)?;
-        std::fs::rename(&tmp, &script)?;
-    }
     crate::plugins::ensure_asset(
         &cache,
         "discovered-deps.mjs",
@@ -202,7 +198,6 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
     // retention. Env pairs travel on stdin (argv would print values in `ps`).
     let mut child = tokio::process::Command::new(exe)
         .arg("start-script")
-        .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(&script)
         .arg("--root")
         .arg(root)

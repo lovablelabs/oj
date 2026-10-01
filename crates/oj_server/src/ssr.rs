@@ -57,28 +57,14 @@ impl SsrBridge {
         importer: &str,
         spec: &str,
     ) -> Result<StartResolution, String> {
-        let state = &self.state;
-        let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
-        match state.ssr_resolver.resolve(importer_dir, spec) {
-            Ok(p) => {
-                if p.to_string_lossy().contains("/node_modules/") {
-                    Ok(StartResolution::Dependency(p))
-                } else {
-                    Ok(StartResolution::Module(p.to_string_lossy().into_owned()))
-                }
+        Ok(match ssr_resolve_raw(&self.state, importer, spec).await? {
+            RawResolution::Path(p) if p.to_string_lossy().contains("/node_modules/") => {
+                StartResolution::Dependency(p)
             }
-            Err(e) => {
-                if let Some(host) = ssr_plugin_host(state).await {
-                    if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
-                        return Ok(StartResolution::Module(id));
-                    }
-                }
-                if !spec.starts_with('.') && !spec.starts_with('/') {
-                    return Ok(StartResolution::Bare(spec.to_string()));
-                }
-                Err(format!("cannot resolve {spec}: {}", e.reason))
-            }
-        }
+            RawResolution::Path(p) => StartResolution::Module(p.to_string_lossy().into_owned()),
+            RawResolution::PluginId(id) => StartResolution::Module(id),
+            RawResolution::Bare => StartResolution::Bare(spec.to_string()),
+        })
     }
 
     /// Plugin-transform + compile tail on a pre-read source; `run_plugins:
@@ -118,33 +104,54 @@ pub enum StartResolution {
     Bare(String),
 }
 
+/// What the SSR resolve ladder found, before each caller classifies it.
+enum RawResolution {
+    Path(PathBuf),
+    PluginId(String),
+    /// Unresolved bare specifier, left to the runtime's own resolution.
+    Bare,
+}
+
+/// The ssr resolver, then the ssr plugin host's `resolveId`, then a bare
+/// specifier passthrough.
+async fn ssr_resolve_raw(
+    state: &Arc<ServerState>,
+    importer: &str,
+    spec: &str,
+) -> Result<RawResolution, String> {
+    let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
+    let err = match state.ssr_resolver.resolve(importer_dir, spec) {
+        Ok(p) => return Ok(RawResolution::Path(p)),
+        Err(e) => e,
+    };
+    if let Some(host) = ssr_plugin_host(state).await {
+        if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
+            return Ok(RawResolution::PluginId(id));
+        }
+    }
+    if !spec.starts_with('.') && !spec.starts_with('/') {
+        return Ok(RawResolution::Bare);
+    }
+    Err(format!("cannot resolve {spec}: {}", err.reason))
+}
+
 pub(crate) async fn ssr_resolve_inner(
     state: &Arc<ServerState>,
     importer: &str,
     spec: &str,
 ) -> Result<SsrResolution, String> {
-    let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
-    match state.ssr_resolver.resolve(importer_dir, spec) {
-        Ok(p) => {
+    Ok(match ssr_resolve_raw(state, importer, spec).await? {
+        RawResolution::Path(p) => {
             let s = p.to_string_lossy();
             if s.contains("/node_modules/") {
-                Ok(SsrResolution::External(spec.to_string()))
+                SsrResolution::External(spec.to_string())
             } else {
-                Ok(SsrResolution::Module(s.into_owned()))
+                SsrResolution::Module(s.into_owned())
             }
         }
-        Err(e) => {
-            if let Some(host) = ssr_plugin_host(state).await {
-                if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
-                    return Ok(SsrResolution::Module(id));
-                }
-            }
-            if !spec.starts_with('.') && !spec.starts_with('/') {
-                return Ok(SsrResolution::External(spec.to_string()));
-            }
-            Err(format!("cannot resolve {spec}: {}", e.reason))
-        }
-    }
+        RawResolution::PluginId(id) => SsrResolution::Module(id),
+        RawResolution::Bare => SsrResolution::External(spec.to_string()),
+    })
 }
 
 pub(crate) async fn ssr_resolve(

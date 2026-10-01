@@ -117,17 +117,7 @@ pub(crate) async fn run_css_engine(
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let engine = state
-        .tailwind
-        .get_or_try_init(|| {
-            CssEngine::tailwind(
-                &state.root,
-                css_engine::DEV_DEADLINE,
-                Some(state.engine_registry.clone()),
-            )
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+    let engine = lazy_engine(state, EngineKind::Tailwind).await?;
     engine.compile(source, url).await
 }
 
@@ -170,17 +160,7 @@ pub(crate) async fn run_preprocess_engine(
     source: &str,
     options: serde_json::Value,
 ) -> Result<String, String> {
-    let engine = state
-        .preprocess
-        .get_or_try_init(|| {
-            CssEngine::preprocess(
-                &state.root,
-                css_engine::DEV_DEADLINE,
-                Some(state.engine_registry.clone()),
-            )
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+    let engine = lazy_engine(state, EngineKind::Preprocess).await?;
     engine.compile_with(source, url, options).await
 }
 
@@ -189,17 +169,7 @@ pub(crate) async fn run_svelte_engine(
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let engine = state
-        .svelte
-        .get_or_try_init(|| {
-            CssEngine::svelte(
-                &state.root,
-                css_engine::DEV_DEADLINE,
-                Some(state.engine_registry.clone()),
-            )
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+    let engine = lazy_engine(state, EngineKind::Svelte).await?;
     engine.compile(source, url).await
 }
 
@@ -211,4 +181,30 @@ pub(crate) async fn compile_tailwind(
     let css = run_css_engine(state, url, source).await?;
     state.tailwind_urls.lock().unwrap().insert(url.to_string());
     Ok(css)
+}
+
+enum EngineKind {
+    Tailwind,
+    Preprocess,
+    Svelte,
+}
+
+/// The dev engine of `kind`, booted on first use.
+async fn lazy_engine(state: &ServerState, kind: EngineKind) -> Result<&Arc<CssEngine>, String> {
+    let cell = match kind {
+        EngineKind::Tailwind => &state.tailwind,
+        EngineKind::Preprocess => &state.preprocess,
+        EngineKind::Svelte => &state.svelte,
+    };
+    cell.get_or_try_init(|| async {
+        let (root, deadline) = (&state.root, css_engine::DEV_DEADLINE);
+        let registry = Some(state.engine_registry.clone());
+        match kind {
+            EngineKind::Tailwind => CssEngine::tailwind(root, deadline, registry).await,
+            EngineKind::Preprocess => CssEngine::preprocess(root, deadline, registry).await,
+            EngineKind::Svelte => CssEngine::svelte(root, deadline, registry).await,
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }

@@ -1,7 +1,12 @@
+/// Styled output only on a terminal, and never with `NO_COLOR` set.
+fn styled() -> bool {
+    use std::io::IsTerminal;
+    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+}
+
 #[inline]
 pub fn cobalt(s: &str) -> String {
-    use std::io::IsTerminal;
-    if std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal() {
+    if styled() {
         format!("\x1b[1;38;2;42;51;212m{s}\x1b[0m")
     } else {
         s.to_string()
@@ -10,8 +15,7 @@ pub fn cobalt(s: &str) -> String {
 
 #[inline]
 pub fn cell(s: &str) -> String {
-    use std::io::IsTerminal;
-    if std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal() {
+    if styled() {
         format!("\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m {s} \x1b[0m")
     } else {
         s.to_string()
@@ -24,8 +28,7 @@ pub fn oj_brand() -> String {
 }
 
 pub fn link(url: &str, text: &str) -> String {
-    use std::io::IsTerminal;
-    if std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal() {
+    if styled() {
         format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
     } else {
         text.to_string()
@@ -33,8 +36,7 @@ pub fn link(url: &str, text: &str) -> String {
 }
 
 pub(crate) fn oj_tag() -> String {
-    use std::io::IsTerminal;
-    if std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal() {
+    if styled() {
         format!("{} ", oj_brand())
     } else {
         "oj:".to_string()

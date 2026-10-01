@@ -195,7 +195,6 @@ pub(crate) fn run_engine_job_subprocess(
     let mut child = std::process::Command::new(exe)
         .arg("engine-job")
         .current_dir(&job_cwd)
-        .env("OJ_PARENT_PID", std::process::id().to_string())
         .arg(module)
         .arg("--root")
         .arg(root)
@@ -306,19 +305,7 @@ pub(crate) fn extract_vite_values_with(
     }
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
-    // Extractions run concurrently at boot, so the script lands via rename: a
-    // plain write truncates it under a concurrent engine's import.
-    static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let script = cache.join("oj-vite-extract.mjs");
-    if std::fs::read(&script).ok().as_deref() != Some(VITE_EXTRACT_JS.as_bytes()) {
-        let tmp = cache.join(format!(
-            "oj-vite-extract-{}-{seq}.tmp.mjs",
-            std::process::id()
-        ));
-        std::fs::write(&tmp, VITE_EXTRACT_JS).ok()?;
-        std::fs::rename(&tmp, &script).ok()?;
-    }
+    let script = materialize_extract_script(&cache)?;
     // Bounded: config plugin code must never wedge boot forever.
     let timeout = extraction_timeout();
     let payload = serde_json::json!({
@@ -357,8 +344,41 @@ pub(crate) fn extract_vite_values_with(
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
-    // Stored under the same (config, command, mode_key) the lookup uses; a
-    // default-mode evaluation must not masquerade as the explicit-mode entry.
+    store_extraction(&store, &vite, command, mode_key, &json, &stderr);
+    EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::boot_phase("vite-extract cache miss (engine ran)");
+    Some(parse_vite_values(&json))
+}
+
+/// Writes the extractor script into `cache`. Extractions run concurrently at
+/// boot, so it lands via rename: a plain write truncates it under a concurrent
+/// engine's import.
+fn materialize_extract_script(cache: &Path) -> Option<PathBuf> {
+    static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let script = cache.join("oj-vite-extract.mjs");
+    if std::fs::read(&script).ok().as_deref() != Some(VITE_EXTRACT_JS.as_bytes()) {
+        let tmp = cache.join(format!(
+            "oj-vite-extract-{}-{seq}.tmp.mjs",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, VITE_EXTRACT_JS).ok()?;
+        std::fs::rename(&tmp, &script).ok()?;
+    }
+    Some(script)
+}
+
+/// Records `__deps` and caches the result under the same (config, command,
+/// mode_key) the lookup uses; a default-mode evaluation must not masquerade as
+/// the explicit-mode entry.
+fn store_extraction(
+    store: &oj_cache::config_extract::ConfigExtractStore,
+    vite: &Path,
+    command: &str,
+    mode_key: &str,
+    json: &serde_json::Value,
+    stderr: &str,
+) {
     let deps: Vec<PathBuf> = json
         .get("__deps")
         .and_then(|v| v.as_array())
@@ -369,31 +389,21 @@ pub(crate) fn extract_vite_values_with(
         })
         .unwrap_or_default();
     let _ = CONFIG_DEPS.set(deps.clone());
-    if extraction_deps_truncated(&json) {
+    if extraction_deps_truncated(json) {
         // Read recorder hit its cap: `__deps` is incomplete, so serve the
         // result but never cache it.
         eprintln!(
             "oj: extracting {}: the config evaluation read more config-shaped files than the recorder tracks; result not cached",
             vite.display()
         );
-    } else {
-        // Stderr transcript lives in its own field, not inside the cached output.
-        let mut stored = json.clone();
-        if let Some(obj) = stored.as_object_mut() {
-            obj.remove("__stderr");
-        }
-        store.store(
-            &vite,
-            command,
-            mode_key,
-            &deps,
-            &stored.to_string(),
-            &stderr,
-        );
+        return;
     }
-    EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
-    crate::boot_phase("vite-extract cache miss (engine ran)");
-    Some(parse_vite_values(&json))
+    // Stderr transcript lives in its own field, not inside the cached output.
+    let mut stored = json.clone();
+    if let Some(obj) = stored.as_object_mut() {
+        obj.remove("__stderr");
+    }
+    store.store(vite, command, mode_key, &deps, &stored.to_string(), stderr);
 }
 
 /// Whether any config extraction ran the engine (cache miss): caches derived
@@ -474,71 +484,77 @@ pub fn config_dependencies() -> &'static [PathBuf] {
     CONFIG_DEPS.get().map(Vec::as_slice).unwrap_or(&[])
 }
 
+fn str_field(json: &serde_json::Value, key: &str) -> Option<String> {
+    json.get(key).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+fn non_null(json: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
+    json.get(key).filter(|v| !v.is_null()).cloned()
+}
+
+/// The string entries of an array value (non-strings skipped).
+fn string_list(v: &serde_json::Value) -> Option<Vec<String>> {
+    v.as_array().map(|a| {
+        a.iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+fn bool_or_string(v: Option<&serde_json::Value>) -> Option<oj_config::BoolOrString> {
+    match v {
+        Some(serde_json::Value::Bool(b)) => Some(oj_config::BoolOrString::Bool(*b)),
+        Some(serde_json::Value::String(s)) => Some(oj_config::BoolOrString::Str(s.clone())),
+        _ => None,
+    }
+}
+
+fn string_or_list(v: Option<&serde_json::Value>) -> Option<oj_config::StringOrList> {
+    match v {
+        Some(serde_json::Value::String(s)) => Some(oj_config::StringOrList::One(s.clone())),
+        Some(a @ serde_json::Value::Array(_)) => string_list(a).map(oj_config::StringOrList::Many),
+        _ => None,
+    }
+}
+
 #[inline]
 pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
     ViteValues {
-        base: json
-            .get("base")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        base: str_field(json, "base"),
         public_dir: match json.get("publicDir") {
             Some(serde_json::Value::String(s)) => Some(oj_config::BoolOrString::Str(s.clone())),
             Some(serde_json::Value::Bool(false)) => Some(oj_config::BoolOrString::Bool(false)),
             _ => None,
         },
         port: json.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
-        host: json
-            .get("host")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        host: str_field(json, "host"),
         hmr_disabled: json.get("hmr").and_then(|v| v.as_bool()) == Some(false),
-        fs_allow: json.get("fsAllow").and_then(|v| v.as_array()).map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        }),
+        fs_allow: json.get("fsAllow").and_then(string_list),
         fs_strict: json.get("fsStrict").and_then(|v| v.as_bool()),
         define: json.get("define").and_then(|v| v.as_object()).cloned(),
         alias: json.get("alias").and_then(|v| v.as_object()).cloned(),
         headers: json.get("headers").and_then(|v| v.as_object()).cloned(),
-        rollup_options: json.get("rollupOptions").filter(|v| !v.is_null()).cloned(),
+        rollup_options: non_null(json, "rollupOptions"),
         assets_inline_limit: json.get("assetsInlineLimit").and_then(|v| v.as_u64()),
-        proxy: json.get("proxy").filter(|v| !v.is_null()).cloned(),
-        dedupe: json.get("dedupe").and_then(|v| v.as_array()).map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        }),
-        optimize_deps: json.get("optimizeDeps").filter(|v| !v.is_null()).cloned(),
-        build: json.get("build").filter(|v| !v.is_null()).cloned(),
-        oxc: json.get("oxc").filter(|v| !v.is_null()).cloned(),
-        esbuild: json.get("esbuild").filter(|v| !v.is_null()).cloned(),
-        ssr: json.get("ssr").filter(|v| !v.is_null()).cloned(),
-        mode: json
-            .get("mode")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        resolve: json.get("resolve").filter(|v| !v.is_null()).cloned(),
-        raw_resolve: json.get("rawResolve").filter(|v| !v.is_null()).cloned(),
-        server_flags: json.get("serverFlags").filter(|v| !v.is_null()).cloned(),
-        css: json.get("css").filter(|v| !v.is_null()).cloned(),
-        env_prefix: json.get("envPrefix").and_then(|v| v.as_array()).map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        }),
-        env_dir: json
-            .get("envDir")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        cors: json.get("cors").filter(|v| !v.is_null()).cloned(),
-        allowed_hosts: json.get("allowedHosts").filter(|v| !v.is_null()).cloned(),
-        preview: json.get("preview").filter(|v| !v.is_null()).cloned(),
-        app_type: json
-            .get("appType")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        html: json.get("html").filter(|v| !v.is_null()).cloned(),
+        proxy: non_null(json, "proxy"),
+        dedupe: json.get("dedupe").and_then(string_list),
+        optimize_deps: non_null(json, "optimizeDeps"),
+        build: non_null(json, "build"),
+        oxc: non_null(json, "oxc"),
+        esbuild: non_null(json, "esbuild"),
+        ssr: non_null(json, "ssr"),
+        mode: str_field(json, "mode"),
+        resolve: non_null(json, "resolve"),
+        raw_resolve: non_null(json, "rawResolve"),
+        server_flags: non_null(json, "serverFlags"),
+        css: non_null(json, "css"),
+        env_prefix: json.get("envPrefix").and_then(string_list),
+        env_dir: str_field(json, "envDir"),
+        cors: non_null(json, "cors"),
+        allowed_hosts: non_null(json, "allowedHosts"),
+        preview: non_null(json, "preview"),
+        app_type: str_field(json, "appType"),
+        html: non_null(json, "html"),
     }
 }
 
@@ -551,22 +567,7 @@ pub fn adopt_vite_config_values(
     mode: &str,
 ) -> Result<(), String> {
     let Some(v) = extract_vite_values(root, config_file, command, mode) else {
-        // No vite.config: nothing to adopt. A present-but-broken vite.config fails
-        // hard like Vite; an oj.plugins file takes precedence (extractor skips it).
-        if let Some(named) = config_file {
-            if !named.is_file() {
-                return Err(format!(
-                    "failed to load config from {}: --config names a file that does not exist",
-                    named.display()
-                ));
-            }
-        }
-        if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root, config_file) {
-                return Err(format!("failed to load config from {}", path.display()));
-            }
-        }
-        return Ok(());
+        return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
     Ok(())
@@ -582,26 +583,33 @@ pub fn adopt_vite_config_values_default_mode(
     mode: &str,
 ) -> Result<(), String> {
     let Some(v) = extract_vite_values_with(root, config_file, command, mode, false) else {
-        // Same rule: a present-but-broken vite.config is an error, a missing one is fine.
-        if let Some(named) = config_file {
-            if !named.is_file() {
-                return Err(format!(
-                    "failed to load config from {}: --config names a file that does not exist",
-                    named.display()
-                ));
-            }
-        }
-        if plugins_file(root).is_none() {
-            if let Some(path) = vite_config_file(root, config_file) {
-                return Err(format!("failed to load config from {}", path.display()));
-            }
-        }
-        return Ok(());
+        return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
     Ok(())
 }
 
+/// No values extracted: no vite.config means nothing to adopt, but a
+/// present-but-broken one fails hard like Vite. An oj.plugins file takes
+/// precedence (the extractor skips it).
+fn no_values_verdict(root: &Path, config_file: Option<&Path>) -> Result<(), String> {
+    if let Some(named) = config_file {
+        if !named.is_file() {
+            return Err(format!(
+                "failed to load config from {}: --config names a file that does not exist",
+                named.display()
+            ));
+        }
+    }
+    if plugins_file(root).is_none() {
+        if let Some(path) = vite_config_file(root, config_file) {
+            return Err(format!("failed to load config from {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// Fills every field oj's own config left unset from the vite.config values.
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     if config.base.is_none() {
         config.base = v.base;
@@ -621,36 +629,16 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
             sc.hmr = Some(oj_config::HmrConfig::Toggle(false));
         }
     }
-    if v.port.is_some()
-        || v.host.is_some()
-        || v.headers.is_some()
-        || v.fs_allow.is_some()
-        || v.fs_strict.is_some()
-    {
-        let sc = config.server.get_or_insert_with(Default::default);
-        if sc.port.is_none() {
-            sc.port = v.port;
-        }
-        if sc.host.is_none() {
-            sc.host = v.host;
-        }
-        if v.fs_allow.is_some() || v.fs_strict.is_some() {
-            let fs = sc.fs.get_or_insert_with(Default::default);
-            fs.allow = fs.allow.take().or(v.fs_allow);
-            fs.strict = fs.strict.or(v.fs_strict);
-        }
-        if sc.headers.is_none() {
-            if let Some(vheaders) = v.headers {
-                let map = vheaders
-                    .into_iter()
-                    .filter_map(|(k, val)| val.as_str().map(|s| (k, s.to_string())))
-                    .collect::<std::collections::BTreeMap<_, _>>();
-                if !map.is_empty() {
-                    sc.headers = Some(map);
-                }
-            }
-        }
-    }
+    merge_server_basics(
+        config,
+        ServerBasics {
+            port: v.port,
+            host: v.host,
+            headers: v.headers,
+            fs_allow: v.fs_allow,
+            fs_strict: v.fs_strict,
+        },
+    );
     if let Some(valias) = v.alias {
         if !valias.is_empty() {
             let rc = config.resolve.get_or_insert_with(Default::default);
@@ -692,110 +680,10 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
         }
     }
     if let Some(od) = v.optimize_deps {
-        if let Ok(parsed) = serde_json::from_value::<oj_config::OptimizeDepsConfig>(od) {
-            let o = config.optimize_deps.get_or_insert_with(Default::default);
-            o.include = o.include.take().or(parsed.include);
-            o.exclude = o.exclude.take().or(parsed.exclude);
-            o.entries = o.entries.take().or(parsed.entries);
-            o.needs_interop = o.needs_interop.take().or(parsed.needs_interop);
-            o.force = o.force.or(parsed.force);
-            o.no_discovery = o.no_discovery.or(parsed.no_discovery);
-            o.esbuild_options = o.esbuild_options.take().or(parsed.esbuild_options);
-            o.rolldown_options = o.rolldown_options.take().or(parsed.rolldown_options);
-        }
+        merge_optimize_deps(config, od);
     }
     if let Some(vb) = v.build.as_ref().and_then(|b| b.as_object()) {
-        let build = config.build.get_or_insert_with(Default::default);
-        let str_of = |k: &str| vb.get(k).and_then(|v| v.as_str()).map(str::to_string);
-        let bool_of = |k: &str| vb.get(k).and_then(|v| v.as_bool());
-        if build.out_dir.is_none() {
-            build.out_dir = str_of("outDir");
-        }
-        let bool_or_str = |k: &str| match vb.get(k) {
-            Some(serde_json::Value::Bool(b)) => Some(oj_config::BoolOrString::Bool(*b)),
-            Some(serde_json::Value::String(s)) => Some(oj_config::BoolOrString::Str(s.clone())),
-            _ => None,
-        };
-        if build.sourcemap.is_none() {
-            build.sourcemap = bool_or_str("sourcemap");
-        }
-        if build.minify.is_none() {
-            build.minify = bool_or_str("minify");
-        }
-        if build.css_code_split.is_none() {
-            build.css_code_split = bool_of("cssCodeSplit");
-        }
-        if build.target.is_none() {
-            build.target = match vb.get("target") {
-                Some(serde_json::Value::String(s)) => Some(oj_config::StringOrList::One(s.clone())),
-                Some(serde_json::Value::Array(a)) => Some(oj_config::StringOrList::Many(
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect(),
-                )),
-                _ => None,
-            };
-        }
-        if build.empty_out_dir.is_none() {
-            build.empty_out_dir = bool_of("emptyOutDir");
-        }
-        if build.module_preload.is_none() {
-            build.module_preload = vb.get("modulePreload").filter(|v| !v.is_null()).cloned();
-        }
-        if build.ssr.is_none() {
-            build.ssr = bool_or_str("ssr");
-        }
-        if build.copy_public_dir.is_none() {
-            build.copy_public_dir = bool_of("copyPublicDir");
-        }
-        if build.ssr_manifest.is_none() {
-            build.ssr_manifest = bool_or_str("ssrManifest");
-        }
-        if build.manifest.is_none() {
-            build.manifest = bool_or_str("manifest");
-        }
-        if build.css_minify.is_none() {
-            build.css_minify = bool_or_str("cssMinify");
-        }
-        if build.assets_dir.is_none() {
-            build.assets_dir = str_of("assetsDir");
-        }
-        if build.report_compressed_size.is_none() {
-            build.report_compressed_size = bool_of("reportCompressedSize");
-        }
-        if build.chunk_size_warning_limit.is_none() {
-            build.chunk_size_warning_limit =
-                vb.get("chunkSizeWarningLimit").and_then(|v| v.as_f64());
-        }
-        if build.write.is_none() {
-            build.write = bool_of("write");
-        }
-        for (key, slot) in [
-            ("watch", &mut build.watch),
-            ("license", &mut build.license),
-            ("commonjsOptions", &mut build.commonjs_options),
-        ] {
-            if slot.is_none() {
-                *slot = vb.get(key).filter(|v| !v.is_null()).cloned();
-            }
-        }
-        if build.css_target.is_none() {
-            build.css_target = match vb.get("cssTarget") {
-                Some(serde_json::Value::String(s)) => Some(oj_config::StringOrList::One(s.clone())),
-                Some(serde_json::Value::Array(a)) => Some(oj_config::StringOrList::Many(
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect(),
-                )),
-                _ => None,
-            };
-        }
-        if build.lib.is_none() {
-            build.lib = vb
-                .get("lib")
-                .cloned()
-                .and_then(|l| serde_json::from_value::<oj_config::LibConfig>(l).ok());
-        }
+        merge_build_block(config.build.get_or_insert_with(Default::default), vb);
     }
     if v.cors.is_some() || v.allowed_hosts.is_some() {
         let sc = config.server.get_or_insert_with(Default::default);
@@ -807,18 +695,9 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
         }
     }
     if let Some(preview) = v.preview {
-        if let Ok(parsed) = serde_json::from_value::<oj_config::PreviewConfig>(preview) {
-            let pc = config.preview.get_or_insert_with(Default::default);
-            pc.port = pc.port.or(parsed.port);
-            pc.host = pc.host.take().or(parsed.host);
-            pc.strict_port = pc.strict_port.or(parsed.strict_port);
-            pc.open = pc.open.take().or(parsed.open);
-            pc.cors = pc.cors.take().or(parsed.cors);
-            pc.allowed_hosts = pc.allowed_hosts.take().or(parsed.allowed_hosts);
-            pc.headers = pc.headers.take().or(parsed.headers);
-            pc.proxy = pc.proxy.take().or(parsed.proxy);
-        }
+        merge_preview(config, preview);
     }
+    // Before the server flags: a top-level `appType` wins over theirs.
     if config.app_type.is_none() {
         config.app_type = v.app_type;
     }
@@ -831,76 +710,12 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     if config.esbuild.is_none() {
         config.esbuild = v.esbuild;
     }
-    // ssr merges PER-KEY: `runnerBacked` (only extraction produces it) is always
-    // adopted; `resolve` recurses one level so oj sub-keys keep the extractor's others.
-    match (config.ssr.as_mut(), v.ssr) {
-        (None, vssr) => config.ssr = vssr,
-        (Some(existing), Some(vssr)) => {
-            if !existing.is_object() {
-                // Nothing to merge per-key into; adopt the extractor block (keeps runnerBacked).
-                eprintln!(
-                    "oj: config: the ssr block in oj's config is not an object; the vite.config ssr block is used"
-                );
-                *existing = vssr;
-            } else if let (Some(obj), Some(vobj)) = (existing.as_object_mut(), vssr.as_object()) {
-                for (k, val) in vobj {
-                    if k == "runnerBacked" || !obj.contains_key(k) {
-                        obj.insert(k.clone(), val.clone());
-                    } else if k == "resolve" {
-                        let Some(vsub) = val.as_object() else {
-                            continue;
-                        };
-                        if obj.get(k).is_some_and(serde_json::Value::is_object) {
-                            let eobj = obj
-                                .get_mut(k)
-                                .and_then(serde_json::Value::as_object_mut)
-                                .expect("checked is_object above");
-                            for (sk, sval) in vsub {
-                                if !eobj.contains_key(sk) {
-                                    eobj.insert(sk.clone(), sval.clone());
-                                }
-                            }
-                        } else {
-                            // Nothing to merge into: adopt the extractor block
-                            // over dropping the sugar's conditions.
-                            eprintln!(
-                                "oj: config: ssr.resolve in oj's config is not an object; the vite.config ssr.resolve block is used"
-                            );
-                            obj.insert(k.clone(), val.clone());
-                        }
-                    }
-                }
-            }
-        }
-        (Some(_), None) => {}
-    }
+    merge_ssr_block(config, v.ssr);
     if config.mode.is_none() {
         config.mode = v.mode;
     }
     if let Some(vr) = v.resolve.as_ref().and_then(|r| r.as_object()) {
-        let rc = config.resolve.get_or_insert_with(Default::default);
-        let list = |k: &str| {
-            vr.get(k).and_then(|x| x.as_array()).map(|a| {
-                a.iter()
-                    .filter_map(|s| s.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-        };
-        if rc.extensions.is_none() {
-            rc.extensions = list("extensions");
-        }
-        if rc.main_fields.is_none() {
-            rc.main_fields = list("mainFields");
-        }
-        if rc.conditions.is_none() {
-            rc.conditions = list("conditions");
-        }
-        if rc.external_conditions.is_none() {
-            rc.external_conditions = list("externalConditions");
-        }
-        if rc.preserve_symlinks.is_none() {
-            rc.preserve_symlinks = vr.get("preserveSymlinks").and_then(|b| b.as_bool());
-        }
+        merge_resolve_block(config.resolve.get_or_insert_with(Default::default), vr);
     }
     if config.raw_resolve.is_none() {
         config.raw_resolve = v
@@ -908,80 +723,10 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
             .and_then(|r| serde_json::from_value::<oj_config::ResolveConfig>(r).ok());
     }
     if let Some(sf) = v.server_flags.as_ref().and_then(|s| s.as_object()) {
-        if config.app_type.is_none() {
-            config.app_type = sf
-                .get("appType")
-                .and_then(|a| a.as_str())
-                .map(str::to_string);
-        }
-        let sc = config.server.get_or_insert_with(Default::default);
-        if sc.strict_port.is_none() {
-            sc.strict_port = sf.get("strictPort").and_then(|b| b.as_bool());
-        }
-        if sc.open.is_none() {
-            sc.open = sf.get("open").and_then(|b| b.as_bool());
-        }
-        if sc.hmr.is_none() {
-            sc.hmr = sf
-                .get("hmr")
-                .and_then(|h| serde_json::from_value::<oj_config::HmrOptions>(h.clone()).ok())
-                .map(oj_config::HmrConfig::Options);
-        }
-        if sc.watch.is_none() {
-            sc.watch = sf
-                .get("watch")
-                .and_then(|w| serde_json::from_value::<oj_config::WatchConfig>(w.clone()).ok());
-        }
-        if let Some(w) = sf
-            .get("warmup")
-            .and_then(|w| serde_json::from_value::<oj_config::WarmupConfig>(w.clone()).ok())
-        {
-            let warmup = sc.warmup.get_or_insert_with(Default::default);
-            warmup.client_files = warmup.client_files.take().or(w.client_files);
-            warmup.ssr_files = warmup.ssr_files.take().or(w.ssr_files);
-        }
-        if let Some(deny) = sf
-            .get("fsDeny")
-            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        {
-            sc.fs
-                .get_or_insert_with(Default::default)
-                .deny
-                .get_or_insert(deny);
-        }
-        if let Some(strict) = sf.get("fsStrict").and_then(|b| b.as_bool()) {
-            let fs = sc.fs.get_or_insert_with(Default::default);
-            if fs.strict.is_none() {
-                fs.strict = Some(strict);
-            }
-        }
-        if sf.get("skipWebSocketTokenCheck").and_then(|b| b.as_bool()) == Some(true) {
-            let legacy = config.legacy.get_or_insert_with(Default::default);
-            if legacy.skip_web_socket_token_check.is_none() {
-                legacy.skip_web_socket_token_check = Some(true);
-            }
-        }
+        merge_server_flags(config, sf);
     }
     if let Some(css) = v.css.as_ref() {
-        if let Some(cfg) = config.css.as_mut() {
-            if let Some(po) = css.get("preprocessorOptions").and_then(|p| p.as_object()) {
-                let map = cfg
-                    .preprocessor_options
-                    .get_or_insert_with(Default::default);
-                for (lang, opts) in po {
-                    let Some(data) = opts.get("additionalData").and_then(|d| d.as_str()) else {
-                        continue;
-                    };
-                    let entry = map.entry(lang.clone()).or_default();
-                    if entry.additional_data.is_none() {
-                        entry.additional_data = Some(data.to_string());
-                    }
-                }
-            }
-        } else {
-            // The whole block (preprocessorOptions, devSourcemap, modules).
-            config.css = serde_json::from_value::<oj_config::CssConfig>(css.clone()).ok();
-        }
+        merge_css(config, css);
     }
     if config.env_prefix.is_none() {
         if let Some(p) = v.env_prefix.filter(|p| !p.is_empty()) {
@@ -990,5 +735,309 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if config.env_dir.is_none() {
         config.env_dir = v.env_dir;
+    }
+}
+
+/// The vite.config's `server.{port,host,headers,fs.allow,fs.strict}`.
+struct ServerBasics {
+    port: Option<u16>,
+    host: Option<String>,
+    headers: Option<serde_json::Map<String, serde_json::Value>>,
+    fs_allow: Option<Vec<String>>,
+    fs_strict: Option<bool>,
+}
+
+fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
+    if v.port.is_none()
+        && v.host.is_none()
+        && v.headers.is_none()
+        && v.fs_allow.is_none()
+        && v.fs_strict.is_none()
+    {
+        return;
+    }
+    let sc = config.server.get_or_insert_with(Default::default);
+    if sc.port.is_none() {
+        sc.port = v.port;
+    }
+    if sc.host.is_none() {
+        sc.host = v.host;
+    }
+    if v.fs_allow.is_some() || v.fs_strict.is_some() {
+        let fs = sc.fs.get_or_insert_with(Default::default);
+        fs.allow = fs.allow.take().or(v.fs_allow);
+        fs.strict = fs.strict.or(v.fs_strict);
+    }
+    if sc.headers.is_none() {
+        if let Some(vheaders) = v.headers {
+            let map = vheaders
+                .into_iter()
+                .filter_map(|(k, val)| val.as_str().map(|s| (k, s.to_string())))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if !map.is_empty() {
+                sc.headers = Some(map);
+            }
+        }
+    }
+}
+
+fn merge_optimize_deps(config: &mut oj_config::OjConfig, od: serde_json::Value) {
+    let Ok(parsed) = serde_json::from_value::<oj_config::OptimizeDepsConfig>(od) else {
+        return;
+    };
+    let o = config.optimize_deps.get_or_insert_with(Default::default);
+    o.include = o.include.take().or(parsed.include);
+    o.exclude = o.exclude.take().or(parsed.exclude);
+    o.entries = o.entries.take().or(parsed.entries);
+    o.needs_interop = o.needs_interop.take().or(parsed.needs_interop);
+    o.force = o.force.or(parsed.force);
+    o.no_discovery = o.no_discovery.or(parsed.no_discovery);
+    o.esbuild_options = o.esbuild_options.take().or(parsed.esbuild_options);
+    o.rolldown_options = o.rolldown_options.take().or(parsed.rolldown_options);
+}
+
+/// The extractor-normalized `build` block (see `extractBuild` in vite-extract.mjs).
+fn merge_build_block(
+    build: &mut oj_config::BuildConfig,
+    vb: &serde_json::Map<String, serde_json::Value>,
+) {
+    let str_of = |k: &str| vb.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let bool_of = |k: &str| vb.get(k).and_then(|v| v.as_bool());
+    let bool_or_str = |k: &str| bool_or_string(vb.get(k));
+    if build.out_dir.is_none() {
+        build.out_dir = str_of("outDir");
+    }
+    if build.sourcemap.is_none() {
+        build.sourcemap = bool_or_str("sourcemap");
+    }
+    if build.minify.is_none() {
+        build.minify = bool_or_str("minify");
+    }
+    if build.css_code_split.is_none() {
+        build.css_code_split = bool_of("cssCodeSplit");
+    }
+    if build.target.is_none() {
+        build.target = string_or_list(vb.get("target"));
+    }
+    if build.empty_out_dir.is_none() {
+        build.empty_out_dir = bool_of("emptyOutDir");
+    }
+    if build.module_preload.is_none() {
+        build.module_preload = vb.get("modulePreload").filter(|v| !v.is_null()).cloned();
+    }
+    if build.ssr.is_none() {
+        build.ssr = bool_or_str("ssr");
+    }
+    if build.copy_public_dir.is_none() {
+        build.copy_public_dir = bool_of("copyPublicDir");
+    }
+    if build.ssr_manifest.is_none() {
+        build.ssr_manifest = bool_or_str("ssrManifest");
+    }
+    if build.manifest.is_none() {
+        build.manifest = bool_or_str("manifest");
+    }
+    if build.css_minify.is_none() {
+        build.css_minify = bool_or_str("cssMinify");
+    }
+    if build.assets_dir.is_none() {
+        build.assets_dir = str_of("assetsDir");
+    }
+    if build.report_compressed_size.is_none() {
+        build.report_compressed_size = bool_of("reportCompressedSize");
+    }
+    if build.chunk_size_warning_limit.is_none() {
+        build.chunk_size_warning_limit = vb.get("chunkSizeWarningLimit").and_then(|v| v.as_f64());
+    }
+    if build.write.is_none() {
+        build.write = bool_of("write");
+    }
+    for (key, slot) in [
+        ("watch", &mut build.watch),
+        ("license", &mut build.license),
+        ("commonjsOptions", &mut build.commonjs_options),
+    ] {
+        if slot.is_none() {
+            *slot = vb.get(key).filter(|v| !v.is_null()).cloned();
+        }
+    }
+    if build.css_target.is_none() {
+        build.css_target = string_or_list(vb.get("cssTarget"));
+    }
+    if build.lib.is_none() {
+        build.lib = vb
+            .get("lib")
+            .cloned()
+            .and_then(|l| serde_json::from_value::<oj_config::LibConfig>(l).ok());
+    }
+}
+
+fn merge_preview(config: &mut oj_config::OjConfig, preview: serde_json::Value) {
+    let Ok(parsed) = serde_json::from_value::<oj_config::PreviewConfig>(preview) else {
+        return;
+    };
+    let pc = config.preview.get_or_insert_with(Default::default);
+    pc.port = pc.port.or(parsed.port);
+    pc.host = pc.host.take().or(parsed.host);
+    pc.strict_port = pc.strict_port.or(parsed.strict_port);
+    pc.open = pc.open.take().or(parsed.open);
+    pc.cors = pc.cors.take().or(parsed.cors);
+    pc.allowed_hosts = pc.allowed_hosts.take().or(parsed.allowed_hosts);
+    pc.headers = pc.headers.take().or(parsed.headers);
+    pc.proxy = pc.proxy.take().or(parsed.proxy);
+}
+
+/// ssr merges PER-KEY: `runnerBacked` (only extraction produces it) is always
+/// adopted; `resolve` recurses one level so oj sub-keys keep the extractor's others.
+fn merge_ssr_block(config: &mut oj_config::OjConfig, vssr: Option<serde_json::Value>) {
+    let Some(vssr) = vssr else {
+        return;
+    };
+    let Some(existing) = config.ssr.as_mut() else {
+        config.ssr = Some(vssr);
+        return;
+    };
+    if !existing.is_object() {
+        // Nothing to merge per-key into; adopt the extractor block (keeps runnerBacked).
+        eprintln!(
+            "oj: config: the ssr block in oj's config is not an object; the vite.config ssr block is used"
+        );
+        *existing = vssr;
+        return;
+    }
+    let (Some(obj), Some(vobj)) = (existing.as_object_mut(), vssr.as_object()) else {
+        return;
+    };
+    for (k, val) in vobj {
+        if k == "runnerBacked" || !obj.contains_key(k) {
+            obj.insert(k.clone(), val.clone());
+        } else if k == "resolve" {
+            let Some(vsub) = val.as_object() else {
+                continue;
+            };
+            if let Some(eobj) = obj.get_mut(k).and_then(serde_json::Value::as_object_mut) {
+                for (sk, sval) in vsub {
+                    if !eobj.contains_key(sk) {
+                        eobj.insert(sk.clone(), sval.clone());
+                    }
+                }
+            } else {
+                // Nothing to merge into: adopt the extractor block
+                // over dropping the sugar's conditions.
+                eprintln!(
+                    "oj: config: ssr.resolve in oj's config is not an object; the vite.config ssr.resolve block is used"
+                );
+                obj.insert(k.clone(), val.clone());
+            }
+        }
+    }
+}
+
+/// `resolve.{extensions,mainFields,conditions,externalConditions,preserveSymlinks}`.
+fn merge_resolve_block(
+    rc: &mut oj_config::ResolveConfig,
+    vr: &serde_json::Map<String, serde_json::Value>,
+) {
+    let list = |k: &str| vr.get(k).and_then(string_list);
+    if rc.extensions.is_none() {
+        rc.extensions = list("extensions");
+    }
+    if rc.main_fields.is_none() {
+        rc.main_fields = list("mainFields");
+    }
+    if rc.conditions.is_none() {
+        rc.conditions = list("conditions");
+    }
+    if rc.external_conditions.is_none() {
+        rc.external_conditions = list("externalConditions");
+    }
+    if rc.preserve_symlinks.is_none() {
+        rc.preserve_symlinks = vr.get("preserveSymlinks").and_then(|b| b.as_bool());
+    }
+}
+
+/// The extractor's `serverFlags`. Runs after the vite `fsStrict` value, so that
+/// one wins and this is only a fallback.
+fn merge_server_flags(
+    config: &mut oj_config::OjConfig,
+    sf: &serde_json::Map<String, serde_json::Value>,
+) {
+    if config.app_type.is_none() {
+        config.app_type = sf
+            .get("appType")
+            .and_then(|a| a.as_str())
+            .map(str::to_string);
+    }
+    let sc = config.server.get_or_insert_with(Default::default);
+    if sc.strict_port.is_none() {
+        sc.strict_port = sf.get("strictPort").and_then(|b| b.as_bool());
+    }
+    if sc.open.is_none() {
+        sc.open = sf.get("open").and_then(|b| b.as_bool());
+    }
+    if sc.hmr.is_none() {
+        sc.hmr = sf
+            .get("hmr")
+            .and_then(|h| serde_json::from_value::<oj_config::HmrOptions>(h.clone()).ok())
+            .map(oj_config::HmrConfig::Options);
+    }
+    if sc.watch.is_none() {
+        sc.watch = sf
+            .get("watch")
+            .and_then(|w| serde_json::from_value::<oj_config::WatchConfig>(w.clone()).ok());
+    }
+    if let Some(w) = sf
+        .get("warmup")
+        .and_then(|w| serde_json::from_value::<oj_config::WarmupConfig>(w.clone()).ok())
+    {
+        let warmup = sc.warmup.get_or_insert_with(Default::default);
+        warmup.client_files = warmup.client_files.take().or(w.client_files);
+        warmup.ssr_files = warmup.ssr_files.take().or(w.ssr_files);
+    }
+    if let Some(deny) = sf
+        .get("fsDeny")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+    {
+        sc.fs
+            .get_or_insert_with(Default::default)
+            .deny
+            .get_or_insert(deny);
+    }
+    if let Some(strict) = sf.get("fsStrict").and_then(|b| b.as_bool()) {
+        let fs = sc.fs.get_or_insert_with(Default::default);
+        if fs.strict.is_none() {
+            fs.strict = Some(strict);
+        }
+    }
+    if sf.get("skipWebSocketTokenCheck").and_then(|b| b.as_bool()) == Some(true) {
+        let legacy = config.legacy.get_or_insert_with(Default::default);
+        if legacy.skip_web_socket_token_check.is_none() {
+            legacy.skip_web_socket_token_check = Some(true);
+        }
+    }
+}
+
+/// With an oj-side css block only `preprocessorOptions.<lang>.additionalData`
+/// fills in; otherwise the whole block (preprocessorOptions, devSourcemap,
+/// modules) is adopted.
+fn merge_css(config: &mut oj_config::OjConfig, css: &serde_json::Value) {
+    let Some(cfg) = config.css.as_mut() else {
+        config.css = serde_json::from_value::<oj_config::CssConfig>(css.clone()).ok();
+        return;
+    };
+    let Some(po) = css.get("preprocessorOptions").and_then(|p| p.as_object()) else {
+        return;
+    };
+    let map = cfg
+        .preprocessor_options
+        .get_or_insert_with(Default::default);
+    for (lang, opts) in po {
+        let Some(data) = opts.get("additionalData").and_then(|d| d.as_str()) else {
+            continue;
+        };
+        let entry = map.entry(lang.clone()).or_default();
+        if entry.additional_data.is_none() {
+            entry.additional_data = Some(data.to_string());
+        }
     }
 }
