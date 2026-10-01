@@ -40,6 +40,7 @@ pub fn module(code: &str) -> CachedModule {
         import_bindings: vec![("/src/dep.js".into(), vec!["a".into()])],
         hot: None,
         stylex_rules: Vec::new(),
+        trace: Vec::new(),
     }
 }
 

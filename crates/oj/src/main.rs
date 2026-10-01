@@ -34,6 +34,20 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum StoreCommand {
+    /// Serve DIR as a remote oj store (the six-endpoint substituter).
+    Serve {
+        /// Directory holding the served entries (created if missing).
+        #[arg(long, default_value = "oj-store")]
+        dir: PathBuf,
+        #[arg(long, default_value_t = 5399)]
+        port: u16,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     Dev {
         root: Option<PathBuf>,
@@ -48,6 +62,12 @@ enum Command {
         /// Vite's `--mode` for the dev server (default `development`).
         #[arg(long)]
         mode: Option<String>,
+        /// Use the oj store: persist compiled modules and share build output
+        /// across worktrees through the per-user store. An optional DIR
+        /// overrides the store location (also OJ_STORE_DIR). Implies
+        /// --enable-cache; --no-cache still wins.
+        #[arg(long, value_name = "DIR", num_args = 0..=1, require_equals = true)]
+        store: Option<Option<PathBuf>>,
         /// Enable the experimental on-disk module cache.
         /// Off by default; warm restarts then re-serve compiled modules from disk.
         #[arg(long)]
@@ -66,6 +86,14 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         prod: bool,
+    },
+    /// The oj store's wire: serve a store directory over HTTP so worktrees,
+    /// CI, and sandboxes share one substituter. Reads are public unless
+    /// OJ_STORE_READ_TOKEN is set; writes require OJ_STORE_WRITE_TOKEN.
+    #[command(name = "store")]
+    Store {
+        #[command(subcommand)]
+        action: StoreCommand,
     },
     /// Internal: run an ES module on the embedded JS engine and print its
     /// default export as JSON. Used by oj's own tests (the napi symbols the
@@ -483,6 +511,18 @@ fn main() -> anyhow::Result<()> {
         reap_on_parent_death();
         std::env::remove_var(PARENT_PID_ENV);
     }
+    // `--store=DIR` relocates the shared store for this process and every
+    // child (the engine, the plugin host, one-shot builders all read
+    // OJ_STORE_DIR), so it is exported before the snapshot below.
+    if let Command::Dev {
+        store: Some(Some(dir)),
+        ..
+    } = &cli.command
+    {
+        if !dir.as_os_str().is_empty() {
+            std::env::set_var("OJ_STORE_DIR", dir);
+        }
+    }
     // The startup writes above are oj's only direct process-env access. Snapshot
     // the env now, still single-threaded: everything after reads `oj_env::get()`.
     oj_env::init();
@@ -510,10 +550,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             host,
             config,
             mode,
+            store,
             enable_cache,
             no_cache,
             lazy,
         } => {
+            // --store is the one switch for the oj store: it enables the
+            // persistent module cache (its DIR was exported in `main`).
+            let enable_cache = enable_cache || store.is_some();
             let root = root.unwrap_or_else(|| {
                 let playground = PathBuf::from("playground");
                 if playground.join("index.html").is_file() {
@@ -594,6 +638,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 .context("engine-job result write")?;
             Ok(())
         }
+        Command::Store { action } => match action {
+            StoreCommand::Serve { dir, port, host } => {
+                if let Err(e) = oj_server::store_server::serve(dir, &host, port).await {
+                    eprintln!("oj store: {e}");
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+        },
         Command::Compile { file, prod } => {
             let source = std::fs::read_to_string(&file)
                 .with_context(|| format!("cannot read {}", file.display()))?;
@@ -769,6 +822,71 @@ fn resolve_config_arg(root: &std::path::Path, config: Option<PathBuf>) -> Option
             root.join(cfg)
         }
     })
+}
+
+#[cfg(test)]
+mod store_flag_tests {
+    use super::*;
+    use clap::Parser;
+    use std::path::Path;
+
+    fn parse_dev(args: &[&str]) -> (Option<Option<PathBuf>>, bool, Option<PathBuf>) {
+        let cli = Cli::try_parse_from(args).expect("parse");
+        match cli.command {
+            Command::Dev {
+                store,
+                enable_cache,
+                root,
+                ..
+            } => (store, enable_cache, root),
+            _ => panic!("expected dev"),
+        }
+    }
+
+    #[test]
+    fn bare_store_enables_without_eating_the_root() {
+        let (store, enable_cache, root) = parse_dev(&["oj", "dev", "--store", "app"]);
+        assert_eq!(store, Some(None), "bare --store carries no dir");
+        assert!(
+            !enable_cache,
+            "--store implies caching at runtime, not by aliasing the flag"
+        );
+        assert_eq!(
+            root.as_deref(),
+            Some(Path::new("app")),
+            "the positional stays the root"
+        );
+    }
+
+    #[test]
+    fn store_with_a_dir_requires_equals_and_carries_it() {
+        let (store, _, root) = parse_dev(&["oj", "dev", "--store=/shared/oj", "app"]);
+        assert_eq!(store, Some(Some(PathBuf::from("/shared/oj"))));
+        assert_eq!(root.as_deref(), Some(Path::new("app")));
+    }
+
+    #[test]
+    fn absent_store_stays_none() {
+        let (store, enable_cache, _) = parse_dev(&["oj", "dev"]);
+        assert_eq!(store, None);
+        assert!(!enable_cache);
+    }
+
+    #[test]
+    fn store_and_no_cache_can_coexist_in_parsing() {
+        // Precedence (--no-cache wins) is runtime policy in oj_server; the
+        // CLI must simply accept both.
+        let cli = Cli::try_parse_from(["oj", "dev", "--store", "--no-cache"]).expect("parse");
+        match cli.command {
+            Command::Dev {
+                store, no_cache, ..
+            } => {
+                assert_eq!(store, Some(None));
+                assert!(no_cache);
+            }
+            _ => panic!("expected dev"),
+        }
+    }
 }
 
 #[cfg(test)]

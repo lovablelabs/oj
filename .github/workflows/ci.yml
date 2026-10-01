@@ -101,6 +101,14 @@ jobs:
         run: node e2e/run.mjs
       - name: wasm playground (editor, preview, error strip)
         run: node e2e/wasm-playground.mjs
+      - name: cross-worktree shared module store
+        run: node e2e/cross-worktree-cache.mjs
+      - name: oj store flag
+        run: node e2e/store-flag.mjs
+      - name: constructive trace staleness
+        run: node e2e/trace-staleness.mjs
+      - name: remote store wire
+        run: node e2e/store-remote.mjs
       - name: warm-cache plugin side effects
         run: node e2e/warm-cache.mjs
       - name: ssr dev + hydration

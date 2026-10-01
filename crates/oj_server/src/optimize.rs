@@ -1097,7 +1097,7 @@ const LOCKFILES: &[(&str, Option<&str>)] = &[
 
 /// Fold every lockfile in the nearest ancestor directory that has one (Vite's
 /// lookupFile), plus its patch-package dir mtime, into `hasher`.
-fn hash_lockfiles(root: &Path, hasher: &mut blake3::Hasher) {
+pub(crate) fn hash_lockfiles(root: &Path, hasher: &mut blake3::Hasher) {
     let mut dir = Some(root);
     while let Some(d) = dir {
         let mut found = false;
@@ -1166,11 +1166,16 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     );
     hasher.update(b"\0bo=");
     hasher.update(input.build_out_dir.as_bytes());
+    let workspace = crate::rewrite::workspace_of(root);
     for (find, replacement) in &input.alias {
         hasher.update(b"\0a");
         hasher.update(find.as_bytes());
         hasher.update(b"=");
-        hasher.update(replacement.as_bytes());
+        // Alias targets are absolute paths inside the app or, in a monorepo,
+        // a workspace sibling: hash the worktree-independent spelling so the
+        // same vite.config in two worktrees yields one prebundle key.
+        hasher
+            .update(oj_cache::store::salt_key(root, &workspace, Path::new(replacement)).as_bytes());
     }
     hasher.update(
         format!(

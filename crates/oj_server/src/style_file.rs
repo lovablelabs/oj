@@ -128,9 +128,19 @@ pub fn start_dev_url_base(base: &str) -> String {
 }
 
 /// Where Start's unbundled dev serves a file (the Start bundles' fsBase),
-/// under `url_base` (see [`start_dev_url_base`]).
-pub fn start_dev_file_url(url_base: &str, file: &Path) -> String {
-    format!("{url_base}/@oj-start/fs{}", file.display())
+/// under `url_base` (see [`start_dev_url_base`]). In-root files get the
+/// worktree-independent `@ws/<rel>` form, so chunk bytes and css manifests
+/// are the same in every checkout; the dev server resolves `@ws/` against
+/// its own root. SSR and the client bundle both build URLs here, so they
+/// agree byte for byte. Out-of-root files keep the absolute form (correct,
+/// merely unshareable).
+pub fn start_dev_file_url(url_base: &str, root: &Path, file: &Path) -> String {
+    match file.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => {
+            format!("{url_base}/@oj-start/fs/@ws/{}", rel.display())
+        }
+        _ => format!("{url_base}/@oj-start/fs{}", file.display()),
+    }
 }
 
 /// Vite's `?inline` stylesheet under Start dev: the module whose default
@@ -157,7 +167,7 @@ pub async fn start_dev_inline_style(
             .await?;
     }
     let dir = path.parent().unwrap_or(Path::new("/"));
-    let css = rewrite_relative_urls(&css, dir, |file| start_dev_file_url(url_base, file));
+    let css = rewrite_relative_urls(&css, dir, |f| start_dev_file_url(url_base, inputs.root, f));
     Ok(format!(
         "export default {};",
         serde_json::Value::String(css)

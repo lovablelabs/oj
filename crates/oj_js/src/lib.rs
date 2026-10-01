@@ -19,6 +19,7 @@ mod isolate;
 mod loader;
 mod scheduler;
 mod stand_ins;
+pub mod tracing_fs;
 mod watchdog;
 mod worker;
 
@@ -68,6 +69,10 @@ pub struct EngineConfig {
     /// can fan a GC over the engine. Long-lived engines set it; one-shots
     /// leave it out.
     pub registry: Option<EngineRegistry>,
+    /// When set, every content read the isolates perform through the fs ops
+    /// layer is recorded into this log (pulp P2 TracingFs): the safety net
+    /// that sees reads whatever binding style the JS used.
+    pub trace_reads: Option<std::sync::Arc<crate::tracing_fs::ReadLog>>,
 }
 
 impl EngineConfig {
@@ -78,6 +83,7 @@ impl EngineConfig {
             default_deadline: None,
             code_cache_dir: None,
             registry: None,
+            trace_reads: None,
         }
     }
 }

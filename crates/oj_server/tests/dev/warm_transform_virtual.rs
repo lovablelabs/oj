@@ -118,7 +118,11 @@ async fn plugin_virtual_still_serves_after_a_warm_start() {
         );
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while !cached_module_contains(&cache, ".stateful.css") {
+        // Relocatable entries persist to the shared store, pinned ones to
+        // the app's cache.
+        while !cached_module_contains(&cache, ".stateful.css")
+            && !cached_module_contains(&crate::store_modules_dir(), ".stateful.css")
+        {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "the cold run never persisted main.tsx under {}",

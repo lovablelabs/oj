@@ -741,7 +741,7 @@ environment.transformRequest = async (rawId) => {
     // BEFORE treating a leading `/` as root-relative (Vite's asSrc).
     let filePath = null;
     if (bareId.startsWith("/@fs/")) {
-      const p = bareId.slice(4);
+      const p = fsUrlPath(bareId.slice(4), root);
       if (existsSync(p)) filePath = p;
     } else if (isAbsolute(bareId) && existsSync(bareId)) {
       filePath = bareId;
@@ -1300,6 +1300,33 @@ let emitCounter = 0;
 // `chunkFileNames` before generateBundle so `this.getFileName(refId)` resolves.
 const transformEmitStore = new AsyncLocalStorage();
 
+// Patch the shared node:fs CJS object so plugin reads during a transform land
+// in the active read bucket. The host's own reads use named ESM imports bound
+// before this patch, so they are never recorded.
+(() => {
+  try {
+    const req = createRequire(import.meta.url);
+    const fsmod = req("fs");
+    const record = (p) => {
+      const bucket = transformReadStore.getStore();
+      if (bucket && typeof p === "string") bucket.add(p);
+    };
+    const wrap = (obj, name, pathArg) => {
+      const orig = obj[name];
+      if (typeof orig !== "function" || orig.__ojTraced) return;
+      const patched = function (...args) {
+        record(args[pathArg]);
+        return orig.apply(this, args);
+      };
+      patched.__ojTraced = true;
+      obj[name] = patched;
+    };
+    wrap(fsmod, "readFileSync", 0);
+    wrap(fsmod, "readFile", 0);
+    if (fsmod.promises) wrap(fsmod.promises, "readFile", 0);
+  } catch {}
+})();
+
 // A minimal stand-in for Vite's `vite:css-post` plugin. UnoCSS (and similar)
 // look up a plugin named "vite:css-post" in `config.plugins` during their build
 // hook and call its `transform` with the CSS they generate, to route it into
@@ -1395,6 +1422,13 @@ function decoratePluginError(e, plugin, id) {
 
 const watchedFiles = new Set();
 const transformWatchStore = new AsyncLocalStorage();
+// Files a plugin hook READS during a transform (pulp P2 constructive traces):
+// the dev server digests them into the cached entry so a warm hit re-verifies
+// them instead of serving output whose side inputs changed. Recording happens
+// by patching the node:fs module object below; plugins that bind NAMED esm
+// imports of node:fs bypass the patch (Deno's syncBuiltinESMExports is a
+// no-op) and are covered by the Rust TracingFs ops layer instead.
+const transformReadStore = new AsyncLocalStorage();
 // Per-transform map of oj-resolved imports (spec -> id) the Rust side computes and
 // passes in, so a plugin's `this.resolve` during transform is a local lookup rather
 // than a host round-trip. ctx.resolve consults it first.
@@ -1895,11 +1929,39 @@ function knownModuleId(id) {
     return false;
   }
 }
+// The workspace an app belongs to, as the dev server's `workspace_of` finds
+// it: the farthest ancestor holding a node_modules dir, canonical.
+const workspaceRoots = new Map();
+function workspaceRootOf(root) {
+  let ws = workspaceRoots.get(root);
+  if (ws === undefined) {
+    ws = root;
+    for (let dir = dirname(root); ; dir = dirname(dir)) {
+      try {
+        if (statSync(join(dir, "node_modules")).isDirectory()) ws = dir;
+      } catch {}
+      if (dirname(dir) === dir) break;
+    }
+    try {
+      ws = realpathSync(ws);
+    } catch {}
+    workspaceRoots.set(root, ws);
+  }
+  return ws;
+}
+
+// The file behind the part of a `/@fs` url after `/@fs`: the dev server
+// serves in-workspace files outside the root as `/@fs/@mono/<rel>`.
+function fsUrlPath(afterFs, root) {
+  return afterFs.startsWith("/@mono/") ? join(workspaceRootOf(root), afterFs.slice("/@mono/".length)) : afterFs;
+}
+
 // Vite graph nodes carry the module's served URL beside its resolved id: HMR
 // update frames are built from `node.url`, and the client matches them against
 // the URLs it imported. A resolved id that names a plain app file maps to the
-// URL oj serves it at (root-relative, or /@fs for an outside-root file);
-// everything else (virtuals, queries, dependencies) keeps the id, as before.
+// URL oj serves it at (root-relative, `/@fs/@mono/<rel>` for an outside-root
+// file in the workspace, else `/@fs/<abs>`); everything else (virtuals,
+// queries, dependencies) keeps the id, as before.
 function applicationModuleUrl(id) {
   const file = String(id);
   if (!isAbsolute(file) || file.includes("?") || file.split(/[\\/]/).includes("node_modules")) return id;
@@ -1909,10 +1971,19 @@ function applicationModuleUrl(id) {
     return id;
   }
   const root = main.resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
+  const outside = (rel) => rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
   const rel = relative(root, file);
-  return rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)
-    ? `/@fs${file.replaceAll("\\", "/")}`
-    : `/${rel.replaceAll("\\", "/")}`;
+  if (!outside(rel)) return `/${rel.replaceAll("\\", "/")}`;
+  const ws = workspaceRootOf(root);
+  let real = file;
+  try {
+    real = realpathSync(file);
+  } catch {}
+  for (const candidate of [file, real]) {
+    const inWs = relative(ws, candidate);
+    if (!outside(inWs)) return `/@fs/@mono/${inWs.replaceAll("\\", "/")}`;
+  }
+  return `/@fs${file.replaceAll("\\", "/")}`;
 }
 function createModuleGraph() {
   const graphNodes = new Map();
@@ -3839,14 +3910,18 @@ async function transform(c, code, id, resolvedJson) {
     return JSON.stringify({
       code: current,
       watchFiles: [...bucket],
+      readFiles: [...readBucket],
       maps,
       mapPlugins,
       mapBroken,
       emittedChunks: chunkBucket,
     });
   };
+  const readBucket = new Set();
   return transformWatchStore.run(bucket, () =>
-    transformEmitStore.run(chunkBucket, () => transformResolveStore.run(resolveMap, runLoop)),
+    transformEmitStore.run(chunkBucket, () =>
+      transformResolveStore.run(resolveMap, () => transformReadStore.run(readBucket, runLoop)),
+    ),
   );
 }
 

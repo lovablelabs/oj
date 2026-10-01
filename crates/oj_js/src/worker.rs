@@ -64,7 +64,12 @@ fn engine_loaders(
 ) -> Result<EngineLoaders, EngineError> {
     let sys = Sys::default();
 
-    let code_cache = code_cache_dir.map(|dir| Arc::new(FsCodeCache::new(dir)));
+    // Keys relative to the app root: the code cache lives in the shared
+    // per-user store, where an absolute key would pin entries to one
+    // worktree. Scratch scripts under `<root>/.oj-cache` relativize the same
+    // way, since the default cache_base is inside the root.
+    let code_cache =
+        code_cache_dir.map(|dir| Arc::new(FsCodeCache::with_roots(dir, vec![root.to_path_buf()])));
 
     let workspace_factory = Arc::new(WorkspaceFactory::new(
         sys.clone(),
@@ -131,6 +136,7 @@ fn engine_loaders(
 struct WorkerShared {
     root: PathBuf,
     code_cache_dir: Option<PathBuf>,
+    trace_reads: Option<Arc<crate::tracing_fs::ReadLog>>,
     memory_limit_bytes: Option<usize>,
     blob_store: Arc<BlobStore>,
     broadcast_channel: InMemoryBroadcastChannel,
@@ -154,6 +160,7 @@ pub(crate) fn build_worker(
     let shared = WorkerShared {
         root: config.root.clone(),
         code_cache_dir: config.code_cache_dir.clone(),
+        trace_reads: config.trace_reads.clone(),
         memory_limit_bytes: config.memory_limit_bytes,
         blob_store: Arc::new(BlobStore::default()),
         broadcast_channel: InMemoryBroadcastChannel::default(),
@@ -166,7 +173,13 @@ pub(crate) fn build_worker(
         broadcast_channel: shared.broadcast_channel.clone(),
         deno_rt_native_addon_loader: None,
         feature_checker: Default::default(),
-        fs: Arc::new(RealFs),
+        fs: match &shared.trace_reads {
+            // The one seam every fs binding crosses: Deno.* ops, node:fs CJS,
+            // and named ESM imports all route through this trait object, so
+            // TracingFs sees reads the JS-level patch cannot.
+            Some(log) => Arc::new(crate::tracing_fs::TracingFs::new(log.clone())),
+            None => Arc::new(RealFs),
+        },
         module_loader: loaders.module_loader,
         node_services: Some(loaders.node_services),
         npm_process_state_provider: None,
@@ -239,7 +252,13 @@ fn create_web_worker_cb(
             deno_rt_native_addon_loader: None,
             compiled_wasm_module_store: Some(shared.compiled_wasm_module_store.clone()),
             feature_checker: Default::default(),
-            fs: Arc::new(RealFs),
+            fs: match &shared.trace_reads {
+                // The one seam every fs binding crosses: Deno.* ops, node:fs CJS,
+                // and named ESM imports all route through this trait object, so
+                // TracingFs sees reads the JS-level patch cannot.
+                Some(log) => Arc::new(crate::tracing_fs::TracingFs::new(log.clone())),
+                None => Arc::new(RealFs),
+            },
             main_inspector_session_tx: Default::default(),
             module_loader: loaders.module_loader,
             node_services: Some(loaders.node_services),

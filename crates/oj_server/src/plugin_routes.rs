@@ -80,7 +80,7 @@ async fn compile_plugin_source(
                 format!(
                     "/@id/{}?importer={}",
                     hex_encode(spec),
-                    hex_encode(&importer)
+                    crate::rewrite::encode_importer(&root, &importer)
                 )
             })
         };

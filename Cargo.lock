@@ -6562,6 +6562,7 @@ dependencies = [
 name = "oj_js"
 version = "0.2.45"
 dependencies = [
+ "async-trait",
  "deno_config",
  "deno_core",
  "deno_error",

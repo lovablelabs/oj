@@ -25,6 +25,10 @@ pub struct PluginHost {
 /// A plugin host's engine and its lifecycle (boot, pushes, revive), shared by
 /// every container on it.
 pub(crate) struct HostCore {
+    /// TracingFs sink (pulp P2): content reads the isolates perform while a
+    /// transform window is open, the safety net under the JS-level
+    /// AsyncLocalStorage attribution.
+    read_log: std::sync::Arc<oj_js::tracing_fs::ReadLog>,
     /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
     /// take + abandon it. A thread wedged in NATIVE code leaks with its isolate.
     engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
@@ -107,6 +111,7 @@ pub struct HostPrewarm {
     post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
     registry: Option<oj_js::EngineRegistry>,
+    read_log: Arc<oj_js::tracing_fs::ReadLog>,
 }
 
 fn new_host_engine(
@@ -114,6 +119,7 @@ fn new_host_engine(
     memory_limit_bytes: usize,
     registry: Option<oj_js::EngineRegistry>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    read_log: Arc<oj_js::tracing_fs::ReadLog>,
     post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
 ) -> Result<oj_js::JsEngine, String> {
     let root = root.to_path_buf();
@@ -124,6 +130,7 @@ fn new_host_engine(
     };
     let mut engine_config = oj_js::EngineConfig::new(&root);
     engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
+    engine_config.trace_reads = Some(read_log);
     engine_config.memory_limit_bytes = Some(memory_limit_bytes);
     engine_config.registry = registry;
     oj_js::JsEngine::spawn(
@@ -542,11 +549,13 @@ impl PluginHost {
         let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
         let import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>> =
             Arc::default();
+        let read_log: Arc<oj_js::tracing_fs::ReadLog> = Arc::default();
         let engine = new_host_engine(
             root,
             plugin_host_memory_mb() * 1024 * 1024,
             registry.clone(),
             Arc::clone(&import_meta_env),
+            Arc::clone(&read_log),
             post_tx,
         )
         .ok()?;
@@ -563,6 +572,7 @@ impl PluginHost {
             post_rx,
             import_meta_env,
             registry,
+            read_log,
         })
     }
 
@@ -594,6 +604,11 @@ impl PluginHost {
             "cacheRoot": oj_cache::cache_root(root),
         });
         let core = std::sync::Arc::new(HostCore {
+            // A prewarmed engine already records into its own log.
+            read_log: prewarm
+                .as_ref()
+                .map(|p| Arc::clone(&p.read_log))
+                .unwrap_or_default(),
             engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
             ws_out: std::sync::OnceLock::new(),
@@ -654,8 +669,26 @@ impl PluginHost {
         id: &str,
         resolved: &str,
     ) -> Result<HostTransform, String> {
-        let raw = self.call("transform", &[code, id, resolved]).await?;
-        Ok(HostTransform::parse(raw, code))
+        // TracingFs window: every content read the isolates perform while
+        // this call is in flight is charged to it (and to any concurrent
+        // transform — sound over-approximation; the JS AsyncLocalStorage
+        // buckets carry the precise attribution for everything they see).
+        let window = self.core.read_log.begin();
+        let called = self.call("transform", &[code, id, resolved]).await;
+        let fs_reads = self.core.read_log.finish(window);
+        let raw = called?;
+        let had_reply = raw.is_some();
+        let mut t = HostTransform::parse(raw, code);
+        if had_reply {
+            t.reads.extend(
+                fs_reads
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            );
+            t.reads.sort();
+            t.reads.dedup();
+        }
+        Ok(t)
     }
 
     pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
@@ -1479,6 +1512,7 @@ impl HostCore {
             self.boot.memory_limit_bytes,
             self.boot.registry.clone(),
             Arc::clone(&self.boot.import_meta_env),
+            Arc::clone(&self.read_log),
             post_tx,
         )
     }
@@ -2167,6 +2201,9 @@ pub struct HostTransform {
     /// chain as in Rollup (`map: null` does not).
     pub map_broken: Option<String>,
     pub chunks: Vec<ChunkEmit>,
+    /// Side files the transform hooks read (pulp P2): the host's
+    /// per-hook `readFiles` plus the TracingFs window, sorted and deduped.
+    pub reads: Vec<String>,
 }
 
 impl HostTransform {
@@ -2209,6 +2246,7 @@ impl HostTransform {
                 .and_then(|n| n.as_str())
                 .map(str::to_string),
             chunks: emitted_chunks(&v),
+            reads: str_array("readFiles"),
         }
     }
 }

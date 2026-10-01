@@ -23,6 +23,29 @@ pub struct Knobs {
 
     /// `OJ_CACHE_DIR`, when non-empty: the cache base instead of `<app>/.oj-cache`.
     pub cache_dir: Option<PathBuf>,
+    /// The shared oj store's base dir: `OJ_STORE_DIR`, else
+    /// `$XDG_CACHE_HOME/oj/store`, else `$HOME/.cache/oj/store`. An EMPTY
+    /// `OJ_STORE_DIR` turns the shared store off (`None`), as does having no
+    /// usable location at all.
+    pub store_dir: Option<PathBuf>,
+    /// `OJ_STORE_REMOTE`, when non-empty: the remote store dev servers read
+    /// through (and push to under `store_push`).
+    pub store_remote: Option<String>,
+    /// `OJ_STORE_TOKEN`, when non-empty: the bearer the remote store gets.
+    pub store_token: Option<String>,
+    /// `OJ_STORE_PUSH` truthy: relocatable entries are pushed to the remote.
+    pub store_push: bool,
+    /// `OJ_STORE_READ_TOKEN`, when non-empty: `oj store serve` requires it on
+    /// reads (unset = public reads).
+    pub store_read_token: Option<String>,
+    /// `OJ_STORE_WRITE_TOKEN`, when non-empty: `oj store serve` requires it on
+    /// writes (unset = writes refused).
+    pub store_write_token: Option<String>,
+    /// `OJ_VERIFY_HITS` in `0..=1`: the share of persistent module-cache hits
+    /// recompiled and compared anyway (`0` = off).
+    pub verify_hits: f64,
+    /// `OJ_DEBUG_SALT` truthy: the module-cache salt's components are logged.
+    pub debug_salt: bool,
 
     /// `OJ_HMR_GATE` or `LOVABLE_DEV_SERVER` is `1` / `true`.
     pub hmr_gate: bool,
@@ -80,6 +103,27 @@ impl Knobs {
             cache_dir: get("OJ_CACHE_DIR")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
+            store_dir: match get("OJ_STORE_DIR") {
+                Some(dir) if dir.is_empty() => None,
+                Some(dir) => Some(PathBuf::from(dir)),
+                None => match (get("XDG_CACHE_HOME"), get("HOME")) {
+                    (Some(xdg), _) if !xdg.is_empty() => Some(PathBuf::from(xdg).join("oj/store")),
+                    (_, Some(home)) if !home.is_empty() => {
+                        Some(PathBuf::from(home).join(".cache/oj/store"))
+                    }
+                    _ => None,
+                },
+            },
+            store_remote: var("OJ_STORE_REMOTE").filter(|v| !v.is_empty()),
+            store_token: var("OJ_STORE_TOKEN").filter(|v| !v.is_empty()),
+            store_push: truthy("OJ_STORE_PUSH"),
+            store_read_token: var("OJ_STORE_READ_TOKEN").filter(|v| !v.is_empty()),
+            store_write_token: var("OJ_STORE_WRITE_TOKEN").filter(|v| !v.is_empty()),
+            verify_hits: var("OJ_VERIFY_HITS")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| !v.is_nan())
+                .map_or(0.0, |v| v.clamp(0.0, 1.0)),
+            debug_salt: truthy("OJ_DEBUG_SALT"),
             hmr_gate: one_or_true("OJ_HMR_GATE") || one_or_true("LOVABLE_DEV_SERVER"),
             hmr_full_reload: var("OJ_HMR_FULL_RELOAD")
                 .or_else(|| var("LOVABLE_HMR_FULL_RELOAD"))
@@ -137,6 +181,48 @@ mod tests {
 
     fn knobs(vars: &[(&str, &str)]) -> super::Knobs {
         Env::from_vars(vars.iter().map(|(k, v)| (*k, *v))).knobs
+    }
+
+    #[test]
+    fn the_store_dir_resolves_override_then_xdg_then_home() {
+        use std::path::Path;
+        let all = [
+            ("OJ_STORE_DIR", "/shared/oj"),
+            ("XDG_CACHE_HOME", "/xdg"),
+            ("HOME", "/home/u"),
+        ];
+        assert_eq!(
+            knobs(&all).store_dir.as_deref(),
+            Some(Path::new("/shared/oj"))
+        );
+        assert_eq!(
+            knobs(&all[1..]).store_dir.as_deref(),
+            Some(Path::new("/xdg/oj/store"))
+        );
+        assert_eq!(
+            knobs(&all[2..]).store_dir.as_deref(),
+            Some(Path::new("/home/u/.cache/oj/store"))
+        );
+        // An empty override is the opt-out, not a store at "".
+        assert_eq!(
+            knobs(&[("OJ_STORE_DIR", ""), all[1], all[2]]).store_dir,
+            None
+        );
+        assert_eq!(
+            knobs(&[("XDG_CACHE_HOME", ""), ("HOME", "")]).store_dir,
+            None
+        );
+        assert_eq!(knobs(&[]).store_dir, None);
+    }
+
+    #[test]
+    fn verify_hits_is_a_clamped_share() {
+        assert_eq!(knobs(&[]).verify_hits, 0.0);
+        assert_eq!(knobs(&[("OJ_VERIFY_HITS", "0.25")]).verify_hits, 0.25);
+        assert_eq!(knobs(&[("OJ_VERIFY_HITS", "7")]).verify_hits, 1.0);
+        assert_eq!(knobs(&[("OJ_VERIFY_HITS", "-1")]).verify_hits, 0.0);
+        assert_eq!(knobs(&[("OJ_VERIFY_HITS", "NaN")]).verify_hits, 0.0);
+        assert_eq!(knobs(&[("OJ_VERIFY_HITS", "x")]).verify_hits, 0.0);
     }
 
     #[test]

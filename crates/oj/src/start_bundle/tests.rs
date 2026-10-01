@@ -137,10 +137,7 @@ console.log(raw, url, inline, icon, worker, styles.card);
         "?raw exports the text:\n{code}"
     );
     assert!(
-        code.contains(&format!(
-            "\"/@oj-start/fs{}\"",
-            src.join("logo.png").display()
-        )),
+        code.contains("\"/@oj-start/fs/@ws/src/logo.png\""),
         "{code}"
     );
     assert!(
@@ -148,10 +145,7 @@ console.log(raw, url, inline, icon, worker, styles.card);
         "?inline is a data URI:\n{code}"
     );
     assert!(
-        code.contains(&format!(
-            "\"/@oj-start/fs{}\"",
-            src.join("icon.svg").display()
-        )),
+        code.contains("\"/@oj-start/fs/@ws/src/icon.svg\""),
         "{code}"
     );
     let rel = src

@@ -52,6 +52,8 @@ struct StartState {
     live_reload: PathBuf,
     /// `server.hmr.overlay` (default true), filled into the live-reload client.
     hmr_overlay: bool,
+    /// The app root: `/@oj-start/fs/@ws/<rel>` asset URLs resolve against it.
+    root: PathBuf,
     workspace_root: PathBuf,
     reload_tx: broadcast::Sender<()>,
     /// The client bundle's last failure as a `{type:"error", err}` frame,
@@ -548,6 +550,7 @@ pub async fn start_dev(
         gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
         hmr_overlay,
+        root: root.clone(),
         workspace_root: workspace_root(&root),
         reload_tx: reload_tx.clone(),
         build_error: std::sync::RwLock::new(boot_error.clone()),
@@ -842,15 +845,7 @@ fn list_route_files(root: &Path) -> std::collections::BTreeSet<PathBuf> {
 }
 
 fn workspace_root(app: &Path) -> PathBuf {
-    let mut best = app.to_path_buf();
-    let mut cur = app;
-    while let Some(parent) = cur.parent() {
-        if parent.join("node_modules").is_dir() {
-            best = parent.to_path_buf();
-        }
-        cur = parent;
-    }
-    best
+    oj_cache::store::workspace_root(app)
 }
 
 fn asset_mime(ext: &str) -> &'static str {
@@ -949,10 +944,11 @@ fn load_client_glob_scopes(cache: &Path) -> Vec<oj_compiler::glob::GlobMatcher> 
 /// the closure check still rebundles for every known input, and the
 /// bundle-ok flag for every failed one.
 fn load_glob_calls(file: &Path) -> Vec<oj_compiler::glob::GlobCall> {
-    let Some(entries) = std::fs::read_to_string(file)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
-    else {
+    std::fs::read_to_string(file).map_or_else(|_| Vec::new(), |s| parse_glob_calls(&s))
+}
+
+fn parse_glob_calls(json: &str) -> Vec<oj_compiler::glob::GlobCall> {
+    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
         return Vec::new();
     };
     entries
@@ -1038,12 +1034,12 @@ impl KnownFiles {
     }
 }
 
-/// The files a stored generation's globs expand to today that its closure
-/// could hold: the client bundle leaves the generated route tree and its own
-/// directory (`cache`) out of closure.json, so a glob reaching them has not
-/// grown, or every restore of such an app would miss.
-fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
-    load_glob_calls(scopes)
+/// The files a stored generation's globs (its glob-scopes.json) expand to
+/// today that its closure could hold: the client bundle leaves the generated
+/// route tree and its own directory (`cache`) out of closure.json, so a glob
+/// reaching them has not grown, or every restore of such an app would miss.
+fn restorable_glob_members(scopes: &str, cache: &Path) -> Vec<PathBuf> {
+    parse_glob_calls(scopes)
         .iter()
         .flat_map(oj_compiler::glob::GlobCall::files)
         .filter(|f| !f.starts_with(cache) && !is_route_tree_gen(f))
@@ -2914,7 +2910,13 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
 
 async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
     let decoded = percent_decode(abs);
-    let path = PathBuf::from(&decoded);
+    // `@ws/<rel>` is the worktree-independent form the bundle emits for
+    // in-root assets: resolve it against THIS server's root, so a restored
+    // bundle can never point into another checkout.
+    let path = match decoded.strip_prefix("/@ws/") {
+        Some(rel) => state.root.join(rel),
+        None => PathBuf::from(&decoded),
+    };
     let canon = match tokio::fs::canonicalize(&path).await {
         Ok(c) => c,
         Err(e) => return (StatusCode::NOT_FOUND, format!("oj start: asset: {e}")).into_response(),
@@ -4213,14 +4215,9 @@ mod tests {
         file("src/.oj/start/manifest.ts");
         let kept = file("src/routeTree.generated.ts");
         let cache = app.join("src/.oj/start");
-        let scopes = app.join("glob-scopes.json");
         let a = app.to_string_lossy().replace('\\', "/");
-        std::fs::write(
-            &scopes,
-            serde_json::json!([{"patterns": [format!("{a}/src/**/*.ts")], "exhaustive": true, "caseSensitive": true}])
-                .to_string(),
-        )
-        .unwrap();
+        let scopes = serde_json::json!([{"patterns": [format!("{a}/src/**/*.ts")], "exhaustive": true, "caseSensitive": true}])
+            .to_string();
         let mut got = restorable_glob_members(&scopes, &cache);
         got.sort();
         assert_eq!(got, [member, kept]);

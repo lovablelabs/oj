@@ -415,6 +415,11 @@ pub(crate) fn app_start_entry(root: &Path) -> Option<PathBuf> {
     start_file(root)
 }
 
+/// A Start dev asset's served URL; the client bundle builds the same one.
+fn fs_asset_url(url_base: &str, root: &Path, abs: &str) -> String {
+    oj_server::start_dev_file_url(url_base, root, Path::new(abs))
+}
+
 fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
     vec![
         ("#tanstack-router-entry".into(), root.join("src/router")),
@@ -823,9 +828,10 @@ impl StartHost {
             let code = loaded.unwrap_or_else(|| {
                 format!(
                     "export default {};",
-                    json_str(&format!(
-                        "{}/@oj-start/fs{clean}",
-                        self.bridge.start_url_base()
+                    json_str(&fs_asset_url(
+                        &self.bridge.start_url_base(),
+                        &self.root,
+                        &clean
                     ))
                 )
             });
@@ -1022,9 +1028,10 @@ impl StartHost {
             // "url" and anything unrecognized: the served-URL module.
             _ => Ok(format!(
                 "export default {};",
-                json_str(&format!(
-                    "{}/@oj-start/fs{path}",
-                    self.bridge.start_url_base()
+                json_str(&fs_asset_url(
+                    &self.bridge.start_url_base(),
+                    &self.root,
+                    path
                 ))
             )),
         }
@@ -1355,6 +1362,42 @@ fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_root_assets_get_the_worktree_independent_url_form() {
+        let root = Path::new("/work/wt-a");
+        assert_eq!(
+            fs_asset_url("", root, "/work/wt-a/styles/app.css"),
+            "/@oj-start/fs/@ws/styles/app.css"
+        );
+        // Under Vite's `base`, the prefix leads; the rest is the same.
+        assert_eq!(
+            fs_asset_url("/app", root, "/work/wt-a/styles/app.css"),
+            "/app/@oj-start/fs/@ws/styles/app.css"
+        );
+        // Two worktrees, one URL: the byte-identity that makes bundle chunks
+        // and css manifests shareable — and the SSR side must agree with the
+        // client bundle exactly, or hydration diffs.
+        assert_eq!(
+            fs_asset_url("", Path::new("/work/wt-b"), "/work/wt-b/styles/app.css"),
+            fs_asset_url("", root, "/work/wt-a/styles/app.css"),
+        );
+    }
+
+    #[test]
+    fn out_of_root_assets_keep_the_absolute_url_form() {
+        let root = Path::new("/work/wt-a");
+        assert_eq!(
+            fs_asset_url("", root, "/elsewhere/logo.svg"),
+            "/@oj-start/fs/elsewhere/logo.svg"
+        );
+        // A sibling worktree sharing the prefix must not relativize: the
+        // match is on `root + "/"`, never a bare prefix.
+        assert_eq!(
+            fs_asset_url("", root, "/work/wt-a2/x.css"),
+            "/@oj-start/fs/work/wt-a2/x.css"
+        );
+    }
 
     #[test]
     fn intent_queries_split_like_the_loader() {

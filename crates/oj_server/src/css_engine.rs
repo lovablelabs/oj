@@ -201,6 +201,7 @@ impl CssEngine {
         registry: Option<oj_js::EngineRegistry>,
     ) -> Result<JsEngine, EngineError> {
         let config = EngineConfig {
+            trace_reads: None,
             root: root.to_path_buf(),
             memory_limit_bytes: Some(memory_limit_bytes),
             default_deadline: None,
@@ -384,7 +385,10 @@ fn strip_stack(message: &str) -> &str {
 fn absolute_from(base: &str, from: &str) -> String {
     let clean = from.split(['?', '#']).next().unwrap_or(from);
     if let Some(fs) = clean.strip_prefix("/@fs") {
-        return fs.to_string();
+        let workspace = crate::rewrite::workspace_of(Path::new(base));
+        return crate::rewrite::fs_url_to_path(&workspace, fs)
+            .display()
+            .to_string();
     }
     if let Some(rel) = clean.strip_prefix('/') {
         return Path::new(base).join(rel).display().to_string();
@@ -410,6 +414,12 @@ mod tests {
         assert_eq!(
             absolute_from("/app/web", "/@fs/pkg/dist/theme.css"),
             "/pkg/dist/theme.css"
+        );
+        // The worktree-independent form expands against the workspace (no
+        // node_modules ancestor here, so the app itself).
+        assert_eq!(
+            absolute_from("/app/web", "/@fs/@mono/pkg/theme.css"),
+            "/app/web/pkg/theme.css"
         );
         assert_eq!(
             absolute_from("/app/web", "relative/x.css"),
