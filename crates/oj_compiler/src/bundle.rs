@@ -15,7 +15,7 @@ use oxc_span::SourceType;
 use oxc_syntax::reference::ReferenceId;
 use oxc_transformer::{JsxRuntime, ReactRefreshOptions, TransformOptions, Transformer};
 
-use crate::{CompileError, ImportRewriter};
+use crate::{CompileError, ImportMetaEnv, ImportRewriter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FactoryKind {
@@ -45,17 +45,32 @@ impl FactoryOutput {
     }
 }
 
+/// What an ESM factory compile varies on.
+#[derive(Clone, Copy)]
+struct FactoryOptions<'e> {
+    refresh: bool,
+    /// The dev server's defines (dev client variant); `None` uses the fallback.
+    env: Option<&'e ImportMetaEnv>,
+}
+
 pub fn compile_factory(
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut ImportRewriter,
+    env: Option<&ImportMetaEnv>,
 ) -> Result<FactoryOutput, CompileError> {
     let is_dep = url.starts_with("/node_modules/")
         || (url.starts_with("/@fs/") && url.contains("/node_modules/"));
     if !is_dep {
         // App source is ESM.
-        return compile_esm_factory(path, url, source_text, resolve, true);
+        return compile_esm_factory(
+            path,
+            url,
+            source_text,
+            resolve,
+            FactoryOptions { refresh: true, env },
+        );
     }
 
     // Dependency: parse once to decide ESM vs CJS, and reuse that parse for the
@@ -103,7 +118,10 @@ pub fn compile_factory(
         url,
         source_text,
         resolve,
-        false,
+        FactoryOptions {
+            refresh: false,
+            env,
+        },
     )
 }
 
@@ -145,7 +163,7 @@ fn compile_esm_factory(
     url: &str,
     source_text: &str,
     resolve: &mut ImportRewriter,
-    refresh: bool,
+    opts: FactoryOptions,
 ) -> Result<FactoryOutput, CompileError> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
@@ -169,7 +187,7 @@ fn compile_esm_factory(
         url,
         source_text,
         resolve,
-        refresh,
+        opts,
     )
 }
 
@@ -183,8 +201,9 @@ fn compile_esm_factory_from_parsed<'a>(
     url: &str,
     source_text: &str,
     resolve: &mut ImportRewriter,
-    refresh: bool,
+    opts: FactoryOptions,
 ) -> Result<FactoryOutput, CompileError> {
+    let FactoryOptions { refresh, env } = opts;
     let mut program = program;
 
     let scoping = SemanticBuilder::new()
@@ -231,7 +250,7 @@ fn compile_esm_factory_from_parsed<'a>(
     // snapshot serves both the gate and the config, so a concurrent re-set of
     // the defines can never let the gate pass on one list and the replacer
     // apply another.
-    let defines = crate::import_meta_env_defines(true, false);
+    let defines = crate::defines_for(env, true, false);
     if defines.needed_by(source_text) {
         use oxc_transformer_plugins::ReplaceGlobalDefines;
         let scoping = SemanticBuilder::new()
@@ -627,7 +646,10 @@ mod tests {
             "/src/Mod.tsx",
             src,
             &mut resolve,
-            true,
+            FactoryOptions {
+                refresh: true,
+                env: None,
+            },
         )
         .unwrap()
     }

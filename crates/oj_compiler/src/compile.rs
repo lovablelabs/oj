@@ -1,4 +1,4 @@
-use crate::env::import_meta_env_defines;
+use crate::env::{defines_for, ImportMetaEnv};
 use crate::hot::lex_hot_accept;
 use crate::rewrite::rewrite_module_specifiers;
 use crate::scan::{export_names, scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};
@@ -13,6 +13,7 @@ use oxc_span::SourceType;
 use oxc_transformer::{JsxRuntime, ReactRefreshOptions, TransformOptions, Transformer};
 use oxc_transformer_plugins::ReplaceGlobalDefines;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub type ImportRewriter<'r> = dyn FnMut(&str) -> Option<String> + 'r;
 
@@ -78,6 +79,8 @@ pub struct CompileOptions {
     /// synthetic one (`x.svg` -> `x.svg.tsx`) can never disagree; `None` asks
     /// the compiler to consult the nearest tsconfig itself.
     pub class_field_set_semantics: Option<bool>,
+    /// The dev server's defines; `None` uses the mode-derived fallback.
+    pub env: Option<Arc<ImportMetaEnv>>,
 }
 
 impl CompileOptions {
@@ -89,6 +92,7 @@ impl CompileOptions {
             ssr: false,
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
+            env: None,
         }
     }
 
@@ -100,6 +104,7 @@ impl CompileOptions {
             ssr: false,
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
+            env: None,
         }
     }
 }
@@ -262,7 +267,7 @@ pub fn compile_module_with_maps(
         });
     }
 
-    let defines = import_meta_env_defines(opts.dev, opts.ssr);
+    let defines = defines_for(opts.env.as_deref(), opts.dev, opts.ssr);
     if defines.needed_by(source_text) {
         if let Some(config) = defines.config() {
             let scoping = SemanticBuilder::new()
@@ -503,6 +508,7 @@ import React from "react";
                 ssr: false,
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
+                env: None,
             },
             None,
         )
@@ -590,6 +596,7 @@ import React from "react";
                 ssr: false,
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
+                env: None,
             },
             None,
         )

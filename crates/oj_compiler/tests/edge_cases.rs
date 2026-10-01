@@ -116,6 +116,7 @@ fn typescript_enums_are_lowered_rather_than_dropped() {
         "/src/App.ts",
         "export enum Direction { Up, Down }",
         &mut resolve,
+        None,
     )
     .unwrap();
     assert!(factory.code.contains("Direction"), "{}", factory.code);
@@ -446,6 +447,7 @@ fn a_bundle_factory_of_an_app_module_is_an_esm_factory() {
         "/src/App.tsx",
         "import React from \"react\";\nexport function App() { return <div />; }",
         &mut resolve,
+        None,
     )
     .unwrap();
     assert_eq!(factory.kind, bundle::FactoryKind::Esm);
@@ -461,6 +463,7 @@ fn a_bundle_factory_of_a_cjs_dep_is_a_cjs_factory() {
         "/node_modules/pkg/index.js",
         "module.exports = require(\"./inner\");",
         &mut resolve,
+        None,
     )
     .unwrap();
     assert_eq!(factory.kind, bundle::FactoryKind::Cjs);
@@ -479,6 +482,7 @@ fn a_dep_reached_through_at_fs_is_still_a_dep() {
         "/@fs/link/node_modules/pkg/index.js",
         "module.exports = 1;",
         &mut resolve,
+        None,
     )
     .unwrap();
     assert_eq!(factory.kind, bundle::FactoryKind::Cjs);

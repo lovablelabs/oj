@@ -720,11 +720,10 @@ impl CompileJob {
             &|spec: &str| rw.cjs_interop_url(spec),
             &mut warn_interop_once,
         );
-        let mut opts = oj_compiler::CompileOptions::dev();
+        let mut opts = dev_compile_opts(&self.state);
         if self.is_svelte {
             opts.refresh = false;
         }
-        opts.jsx = self.state.jsx.clone();
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);

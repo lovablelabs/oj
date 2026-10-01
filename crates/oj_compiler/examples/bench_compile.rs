@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use oj_compiler::{compile, set_import_meta_env, CompileOptions};
+use oj_compiler::{compile, CompileOptions, ImportMetaEnv};
 
 /// App module reading `import.meta.env.*` (gated by the SIMD finder).
 const SRC_ENV: &str = r#"
@@ -143,9 +143,13 @@ fn main() {
             "default; pass --big-env for 40 VITE vars"
         }
     );
-    set_import_meta_env(env);
+    let import_meta_env = ImportMetaEnv::default();
+    import_meta_env.set(env);
 
-    let opts = CompileOptions::dev();
+    let opts = CompileOptions {
+        env: Some(std::sync::Arc::new(import_meta_env)),
+        ..CompileOptions::dev()
+    };
 
     let out = compile(Path::new("Widget.tsx"), SRC_ENV, &opts).expect("compile");
     assert!(

@@ -22,8 +22,8 @@ pub use compile::{
     compile, compile_module, compile_module_with_maps, CompileError, CompileOptions, CompileOutput,
     HotAccept, ImportRewriter, JsxConfig, COMPILE_STACK_SIZE,
 };
-pub(crate) use env::import_meta_env_defines;
-pub use env::{merge_import_meta_env_ssr, set_import_meta_env, set_import_meta_env_ssr};
+pub(crate) use env::defines_for;
+pub use env::ImportMetaEnv;
 pub(crate) use rewrite::rewrite_module_specifiers_pub;
 pub use scan::{exports, imports};
 pub(crate) use scan::{scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};
