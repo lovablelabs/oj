@@ -122,12 +122,17 @@ export default { base: a.base + b.base };"#);
 #[test]
 fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
     let _g = lock();
-    std::env::set_var("OJ_EXTRACT_TIMEOUT", "2");
     let dir = app("await new Promise(() => {});\nexport default {};");
     let root = dir.path();
     let started = std::time::Instant::now();
-    let result = extract_vite_values_with(root, None, "serve", "development", true);
-    std::env::remove_var("OJ_EXTRACT_TIMEOUT");
+    let result = extract_vite_values_timed(
+        root,
+        None,
+        "serve",
+        "development",
+        true,
+        extraction_timeout_from(Some("2")),
+    );
     assert!(result.is_none(), "a wedged config evaluation is a failure");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(30),

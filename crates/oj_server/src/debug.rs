@@ -1,10 +1,7 @@
 use super::*;
 
 pub(crate) fn debug_mem() -> bool {
-    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-        std::env::var("OJ_DEBUG_MEM").is_ok_and(|v| !v.is_empty() && v != "0")
-    });
-    *ON
+    oj_env::get().knobs.debug_mem
 }
 
 /// 404 unless OJ_DEBUG_MEM is set; 403 for anything carrying an `Origin`.

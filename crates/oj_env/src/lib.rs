@@ -1,259 +1,30 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-use std::collections::BTreeMap;
-use std::path::Path;
+//! Every environment variable oj reads, from one immutable snapshot: oj's own
+//! settings ([`Knobs`]) and the app's env as Vite resolves it ([`AppEnv`]:
+//! `.env` files, NODE_ENV, `import.meta.env` defines, `%KEY%` in index.html).
 
-pub fn parse(contents: &str, base: &BTreeMap<String, String>) -> Vec<(String, String)> {
-    let mut acc = base.clone();
-    let mut out = Vec::new();
-    for raw in contents.lines() {
-        let line = raw.trim_start();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, rest)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            continue;
-        }
-        let value = parse_value(rest.trim(), &acc);
-        acc.insert(key.to_string(), value.clone());
-        out.push((key.to_string(), value));
-    }
-    out
-}
+mod app;
+mod defines;
+mod dotenv;
+mod html;
+mod knobs;
+mod snapshot;
 
-fn parse_value(raw: &str, vars: &BTreeMap<String, String>) -> String {
-    let bytes = raw.as_bytes();
-    if bytes.first() == Some(&b'\'') {
-        let inner = &raw[1..];
-        return inner
-            .split_once('\'')
-            .map(|(v, _)| v)
-            .unwrap_or(inner)
-            .to_string();
-    }
-    if bytes.first() == Some(&b'"') {
-        let inner = &raw[1..];
-        let inner = inner.split_once('"').map(|(v, _)| v).unwrap_or(inner);
-        let unescaped = inner
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace("\\\"", "\"");
-        return expand(&unescaped, vars);
-    }
-    let end = raw.find(" #").unwrap_or(raw.len());
-    expand(raw[..end].trim(), vars)
-}
-
-fn expand(input: &str, vars: &BTreeMap<String, String>) -> String {
-    let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if c == b'\\' && bytes.get(i + 1) == Some(&b'$') {
-            out.push('$');
-            i += 2;
-            continue;
-        }
-        if c == b'$' {
-            let reference: Option<(&str, usize)> = if bytes.get(i + 1) == Some(&b'{') {
-                input[i + 2..]
-                    .find('}')
-                    .map(|rel| (&input[i + 2..i + 2 + rel], i + 2 + rel + 1))
-                    .filter(|(name, _)| !name.is_empty())
-            } else {
-                let start = i + 1;
-                let mut end = start;
-                while end < bytes.len()
-                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
-                {
-                    end += 1;
-                }
-                (end > start).then(|| (&input[start..end], end))
-            };
-            if let Some((name, next)) = reference {
-                out.push_str(vars.get(name).map(String::as_str).unwrap_or(""));
-                i = next;
-                continue;
-            }
-        }
-        let ch = input[i..]
-            .chars()
-            .next()
-            .expect("loop only advances to char boundaries");
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-pub fn load(dir: &Path, mode: &str) -> Vec<(String, String)> {
-    let mut base: BTreeMap<String, String> = std::env::vars().collect();
-    let mut merged: BTreeMap<String, String> = BTreeMap::new();
-    for name in [
-        ".env",
-        ".env.local",
-        &format!(".env.{mode}"),
-        &format!(".env.{mode}.local"),
-    ] {
-        let Ok(contents) = std::fs::read_to_string(dir.join(name)) else {
-            continue;
-        };
-        for (k, v) in parse(&contents, &base) {
-            base.insert(k.clone(), v.clone());
-            merged.insert(k, v);
-        }
-    }
-    merged.into_iter().collect()
-}
-
-/// Vite parity: the actual process environment (and any plugin `config()` env
-/// mutations layered on top of it) wins over `.env` files for prefixed vars.
-pub fn with_process_env(
-    loaded: Vec<(String, String)>,
-    process_env: impl IntoIterator<Item = (String, String)>,
-    prefixes: &[&str],
-) -> Vec<(String, String)> {
-    let mut map: BTreeMap<String, String> = loaded.into_iter().collect();
-    for (k, v) in process_env {
-        if prefixes.iter().any(|p| k.starts_with(p)) {
-            map.insert(k, v);
-        }
-    }
-    map.into_iter().collect()
-}
-
-/// Vite's NODE_ENV rule (config.ts): the shell's `NODE_ENV` wins when set;
-/// otherwise a `NODE_ENV=development` in a loaded `.env` file makes this a
-/// development build (`vite build --mode development` with `.env.development`
-/// carrying it), any other `.env` value is ignored with a warning as Vite does;
-/// otherwise the command's default (`production` for build, `development` for
-/// serve). `import.meta.env.DEV`/`PROD` and `process.env.NODE_ENV` follow it.
-pub fn resolve_node_env(shell: Option<&str>, loaded: &[(String, String)], default: &str) -> String {
-    if let Some(v) = shell.filter(|v| !v.is_empty()) {
-        return v.to_string();
-    }
-    if let Some((_, v)) = loaded.iter().find(|(k, _)| k == "NODE_ENV") {
-        if v == "development" {
-            return v.clone();
-        }
-        // The dev server recomputes its defines after the plugin host boots; warn once.
-        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!(
-                "oj: NODE_ENV={v} is not supported in the .env file. Only NODE_ENV=development is supported to create a development build of your project."
-            );
-        }
-    }
-    default.to_string()
-}
-
-pub fn import_meta_env_defines(
-    loaded: &[(String, String)],
-    mode: &str,
-    dev: bool,
-    base_url: &str,
-    prefixes: &[&str],
-) -> Vec<(String, String)> {
-    import_meta_env_defines_with(loaded, mode, dev, base_url, prefixes, false)
-}
-
-/// `import_meta_env_defines` for a chosen environment: `ssr` sets
-/// `import.meta.env.SSR` (Vite defines the same object for the ssr environment
-/// with `SSR: true`).
-pub fn import_meta_env_defines_with(
-    loaded: &[(String, String)],
-    mode: &str,
-    dev: bool,
-    base_url: &str,
-    prefixes: &[&str],
-    ssr: bool,
-) -> Vec<(String, String)> {
-    let mut obj = serde_json::Map::new();
-    obj.insert("MODE".into(), mode.into());
-    obj.insert("BASE_URL".into(), base_url.into());
-    obj.insert("DEV".into(), dev.into());
-    obj.insert("PROD".into(), (!dev).into());
-    obj.insert("SSR".into(), ssr.into());
-    for (k, v) in loaded {
-        if prefixes.iter().any(|p| k.starts_with(p)) {
-            obj.insert(k.clone(), serde_json::Value::String(v.clone()));
-        }
-    }
-
-    let mut defines = Vec::new();
-    for (k, v) in &obj {
-        defines.push((format!("import.meta.env.{k}"), v.to_string()));
-    }
-    defines.push((
-        "import.meta.env".into(),
-        serde_json::Value::Object(obj).to_string(),
-    ));
-    defines
-}
-
-/// The `%KEY%` substitution map for index.html, derived from the import.meta.env
-/// defines (Vite's htmlEnvHook: env = loadEnv + import.meta.env.* defines, with
-/// string values unwrapped from their JSON literal).
-pub fn html_env_map(defines: &[(String, String)]) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::new();
-    for (k, v) in defines {
-        if let Some(name) = k.strip_prefix("import.meta.env.") {
-            let raw = match serde_json::from_str::<serde_json::Value>(v) {
-                Ok(serde_json::Value::String(s)) => s,
-                Ok(other) => other.to_string(),
-                Err(_) => v.clone(),
-            };
-            env.insert(name.to_string(), raw);
-        }
-    }
-    env
-}
-
-/// Replace `%KEY%` placeholders in HTML with env values (Vite parity: regex
-/// `/%(\S+?)%/g`, only keys present in the map; unknown placeholders are left).
-pub fn replace_html_env(html: &str, env: &BTreeMap<String, String>) -> String {
-    if env.is_empty() || !html.contains('%') {
-        return html.to_string();
-    }
-    let mut out = String::with_capacity(html.len());
-    let mut rest = html;
-    loop {
-        match rest.find('%') {
-            Some(start) => {
-                out.push_str(&rest[..start]);
-                let after = &rest[start + 1..];
-                if let Some(end) = after.find('%') {
-                    let key = &after[..end];
-                    if !key.is_empty() && !key.chars().any(char::is_whitespace) {
-                        if let Some(val) = env.get(key) {
-                            out.push_str(val);
-                            rest = &after[end + 1..];
-                            continue;
-                        }
-                    }
-                }
-                out.push('%');
-                rest = after;
-            }
-            None => {
-                out.push_str(rest);
-                break;
-            }
-        }
-    }
-    out
-}
+pub use app::AppEnv;
+pub use defines::{
+    import_meta_env_defines, import_meta_env_defines_with, resolve_node_env, with_process_env,
+};
+pub use dotenv::{load, load_with, parse};
+pub use html::{html_env_map, replace_html_env};
+pub use knobs::Knobs;
+pub use snapshot::{get, init, Env};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn ssr_variant_flips_only_the_ssr_flag() {

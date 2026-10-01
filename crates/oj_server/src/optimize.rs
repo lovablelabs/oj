@@ -139,9 +139,9 @@ impl OptimizedDeps {
 /// `optimizeDeps.noDiscovery` when set, else the OJ_OPTIMIZE_SCAN opt-in. One
 /// function so the optimizer run and its cache key can never disagree on mode.
 fn effective_auto_discover(no_discovery: Option<bool>) -> bool {
-    no_discovery.map(|disabled| !disabled).unwrap_or_else(|| {
-        std::env::var("OJ_OPTIMIZE_SCAN").is_ok_and(|v| !v.is_empty() && v != "0")
-    })
+    no_discovery
+        .map(|disabled| !disabled)
+        .unwrap_or_else(|| oj_env::get().knobs.optimize_scan)
 }
 
 #[derive(Default, Clone)]
@@ -333,7 +333,7 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<DepMap> {
 /// Deadline for the dep pre-bundle (a wedged esbuild service must not stall it
 /// forever): 120 s default, raised via `OJ_OPTIMIZE_TIMEOUT=<seconds>`.
 fn optimizer_timeout() -> std::time::Duration {
-    optimizer_timeout_from(std::env::var("OJ_OPTIMIZE_TIMEOUT").ok().as_deref())
+    optimizer_timeout_from(oj_env::get().knobs.optimize_timeout.as_deref())
 }
 
 fn optimizer_timeout_from(raw: Option<&str>) -> std::time::Duration {

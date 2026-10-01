@@ -1,7 +1,7 @@
 /// Styled output only on a terminal, and never with `NO_COLOR` set.
 fn styled() -> bool {
     use std::io::IsTerminal;
-    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+    !oj_env::get().knobs.no_color && std::io::stdout().is_terminal()
 }
 
 #[inline]
@@ -44,7 +44,7 @@ pub(crate) fn oj_tag() -> String {
 }
 
 pub fn boot_phase(label: &str) {
-    if std::env::var_os("OJ_BOOT_PHASES").is_none() {
+    if !oj_env::get().knobs.boot_phases {
         return;
     }
     let ms = std::time::SystemTime::now()
@@ -57,9 +57,7 @@ pub fn boot_phase(label: &str) {
 /// Vite's `server.open`: launch the browser once bound. `BROWSER=none` disables,
 /// any other `BROWSER` value names the command (the `open` package's convention).
 pub fn open_browser(url: &str) {
-    let browser = std::env::var("BROWSER")
-        .ok()
-        .filter(|b| !b.trim().is_empty());
+    let browser = oj_env::get().knobs.browser.clone();
     if browser.as_deref() == Some("none") {
         return;
     }

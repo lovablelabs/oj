@@ -1,9 +1,9 @@
 use crate::scan::{scan, F_IMPORT_META_ENV};
 use oxc_transformer_plugins::ReplaceGlobalDefinesConfig;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
-/// What a compile derives from one resolved define list, built once per
-/// `set_*` call rather than per compile: the plain-text gate keys and the oxc
+/// What a compile derives from one resolved define list, built once when the
+/// [`ImportMetaEnv`] is constructed rather than per compile: the plain-text gate keys and the oxc
 /// config (parsed once, `Clone` over an `Arc`).
 pub(crate) struct EnvDefines {
     /// Keys outside `import.meta.env*`, which the SIMD `F_IMPORT_META_ENV`
@@ -43,54 +43,54 @@ impl EnvDefines {
     }
 }
 
-/// The raw define lists and both compile variants derived from them.
-#[derive(Default)]
-struct EnvState {
-    /// `None` until set; compiles then use the mode-derived fallback.
-    client_pairs: Option<Vec<(String, String)>>,
-    /// `environments.ssr.define`, layered over the shared list for SSR
-    /// compiles only, so a key defined differently per side keeps both values.
-    ssr_overrides: Vec<(String, String)>,
-    client: Option<Arc<EnvDefines>>,
-    ssr: Option<Arc<EnvDefines>>,
+/// The SSR define list: the shared list with the `SSR` flag flipped, then
+/// `overrides` layered over it (a key defined differently per side keeps both).
+fn ssr_pairs(client: &[(String, String)], overrides: &[(String, String)]) -> Vec<(String, String)> {
+    let mut ssr = client.to_vec();
+    for (k, v) in ssr.iter_mut() {
+        if k == "import.meta.env.SSR" {
+            *v = "true".into();
+        } else if k == "import.meta.env" {
+            *v = v.replace("\"SSR\":false", "\"SSR\":true");
+        }
+    }
+    for (k, v) in overrides {
+        if let Some(slot) = ssr.iter_mut().find(|(ek, _)| ek == k) {
+            slot.1 = v.clone();
+        } else {
+            ssr.push((k.clone(), v.clone()));
+        }
+    }
+    ssr
 }
 
-impl EnvState {
-    /// Rederives both variants. Config parsing costs ~100us for 40 vars, so it
-    /// runs in the setters, off the compile path.
-    fn rebuild(&mut self) {
-        let Some(pairs) = &self.client_pairs else {
-            self.client = None;
-            self.ssr = None;
-            return;
-        };
-        let mut ssr = pairs.clone();
-        for (k, v) in ssr.iter_mut() {
-            if k == "import.meta.env.SSR" {
-                *v = "true".into();
-            } else if k == "import.meta.env" {
-                *v = v.replace("\"SSR\":false", "\"SSR\":true");
-            }
+/// Folds `more` over `base`, later winning.
+fn merged(base: &[(String, String)], more: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut out = base.to_vec();
+    for (k, v) in more {
+        if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k) {
+            slot.1 = v;
+        } else {
+            out.push((k, v));
         }
-        for (k, v) in &self.ssr_overrides {
-            if let Some(slot) = ssr.iter_mut().find(|(ek, _)| ek == k) {
-                slot.1 = v.clone();
-            } else {
-                ssr.push((k.clone(), v.clone()));
-            }
-        }
-        self.client = Some(EnvDefines::build(pairs.clone()));
-        self.ssr = Some(EnvDefines::build(ssr));
     }
+    out
 }
 
 /// The dev server's `import.meta.env` / `define` replacements, shared with
 /// every compile through [`CompileOptions::env`](crate::CompileOptions).
-/// Re-set when plugin `config()` hooks change env; setters rebuild both
-/// variants, so call them at boot, not per request.
-#[derive(Default)]
+/// Built once from the final define list and never replaced; the only late
+/// input is the lazy SSR plugin host's defines, a set-once overlay
+/// ([`merge_ssr`](Self::merge_ssr)).
 pub struct ImportMetaEnv {
-    state: RwLock<EnvState>,
+    client_pairs: Vec<(String, String)>,
+    /// `environments.ssr.define`, layered over the shared list for SSR
+    /// compiles only.
+    ssr_overrides: Vec<(String, String)>,
+    client: Arc<EnvDefines>,
+    ssr: Arc<EnvDefines>,
+    /// The SSR variant with the late overrides folded in, once they arrive.
+    late_ssr: OnceLock<Arc<EnvDefines>>,
 }
 
 impl std::fmt::Debug for ImportMetaEnv {
@@ -100,45 +100,41 @@ impl std::fmt::Debug for ImportMetaEnv {
 }
 
 impl ImportMetaEnv {
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, EnvState> {
-        self.state.write().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// The shared define list (client and SSR).
-    pub fn set(&self, defines: Vec<(String, String)>) {
-        let mut state = self.write();
-        state.client_pairs = Some(defines);
-        state.rebuild();
-    }
-
-    /// Replaces the SSR-only overrides.
-    pub fn set_ssr(&self, overrides: Vec<(String, String)>) {
-        let mut state = self.write();
-        state.ssr_overrides = overrides;
-        state.rebuild();
-    }
-
-    /// Folds more SSR overrides over the current ones (later wins): the
-    /// resolved-config defines arrive when the lazy SSR plugin host spawns.
-    pub fn merge_ssr(&self, overrides: Vec<(String, String)>) {
-        let mut state = self.write();
-        for (k, v) in overrides {
-            if let Some(slot) = state.ssr_overrides.iter_mut().find(|(ek, _)| *ek == k) {
-                slot.1 = v;
-            } else {
-                state.ssr_overrides.push((k, v));
-            }
+    /// `client`: the shared define list (client and SSR); `ssr_overrides`:
+    /// the SSR-only layer. Config parsing costs ~100us for 40 vars, so both
+    /// variants are derived here, off the compile path.
+    pub fn new(client: Vec<(String, String)>, ssr_overrides: Vec<(String, String)>) -> Self {
+        let ssr = EnvDefines::build(ssr_pairs(&client, &ssr_overrides));
+        ImportMetaEnv {
+            client: EnvDefines::build(client.clone()),
+            client_pairs: client,
+            ssr_overrides,
+            ssr,
+            late_ssr: OnceLock::new(),
         }
-        state.rebuild();
     }
 
-    fn variant(&self, ssr: bool) -> Option<Arc<EnvDefines>> {
-        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-        if ssr { &state.ssr } else { &state.client }.clone()
+    /// Folds more SSR overrides over the constructed ones (later wins): the
+    /// resolved-config defines arrive when the lazy SSR plugin host spawns.
+    /// Set once: the first call wins and later calls are ignored.
+    pub fn merge_ssr(&self, overrides: Vec<(String, String)>) {
+        self.late_ssr.get_or_init(|| {
+            let layered = merged(&self.ssr_overrides, overrides);
+            EnvDefines::build(ssr_pairs(&self.client_pairs, &layered))
+        });
+    }
+
+    fn variant(&self, ssr: bool) -> Arc<EnvDefines> {
+        if ssr {
+            self.late_ssr.get().unwrap_or(&self.ssr)
+        } else {
+            &self.client
+        }
+        .clone()
     }
 }
 
-/// Mode-derived defines for compiles without a set [`ImportMetaEnv`] (`oj build`,
+/// Mode-derived defines for compiles without an [`ImportMetaEnv`] (`oj build`,
 /// unit tests), one per (dev, ssr) variant, indexed by `fallback_idx`.
 static FALLBACK_DEFINES: [LazyLock<Arc<EnvDefines>>; 4] = [
     LazyLock::new(|| fallback_defines(false, false)),
@@ -170,9 +166,9 @@ fn fallback_defines(dev: bool, ssr: bool) -> Arc<EnvDefines> {
     ])
 }
 
-/// The defines a compile applies: `env`'s variant once set, else the fallback.
+/// The defines a compile applies: `env`'s variant, else the fallback.
 pub(crate) fn defines_for(env: Option<&ImportMetaEnv>, dev: bool, ssr: bool) -> Arc<EnvDefines> {
-    env.and_then(|e| e.variant(ssr))
+    env.map(|e| e.variant(ssr))
         .unwrap_or_else(|| Arc::clone(&FALLBACK_DEFINES[fallback_idx(dev, ssr)]))
 }
 

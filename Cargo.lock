@@ -6062,6 +6062,7 @@ name = "oj_cache"
 version = "0.2.16"
 dependencies = [
  "blake3",
+ "oj_env",
  "proptest",
  "serde",
  "serde_json",
@@ -6075,6 +6076,7 @@ dependencies = [
  "base64 0.22.1",
  "glob",
  "memchr",
+ "oj_env",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
@@ -6099,6 +6101,7 @@ dependencies = [
 name = "oj_config"
 version = "0.2.16"
 dependencies = [
+ "oj_env",
  "oxc_allocator",
  "oxc_codegen",
  "oxc_parser",

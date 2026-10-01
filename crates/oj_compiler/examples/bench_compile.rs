@@ -127,7 +127,9 @@ fn bench_shape(name: &str, path: &Path, src: &str, opts: &CompileOptions, iters:
 
 fn main() {
     let big = std::env::args().any(|a| a == "--big-env")
-        || std::env::var_os("BENCH_BIG_ENV").is_some_and(|v| v != "0" && !v.is_empty());
+        || oj_env::get()
+            .var_os("BENCH_BIG_ENV")
+            .is_some_and(|v| v != "0" && !v.is_empty());
     let env = if big { big_env() } else { small_env() };
     let blob = env
         .iter()
@@ -143,8 +145,7 @@ fn main() {
             "default; pass --big-env for 40 VITE vars"
         }
     );
-    let import_meta_env = ImportMetaEnv::default();
-    import_meta_env.set(env);
+    let import_meta_env = ImportMetaEnv::new(env, vec![]);
 
     let opts = CompileOptions {
         env: Some(std::sync::Arc::new(import_meta_env)),

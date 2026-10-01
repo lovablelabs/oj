@@ -100,9 +100,7 @@ impl HookFilterPlan {
 /// OJ_DEBUG_HOOK_GATE=1: gates log/count skipped RPCs so a test can assert a
 /// skip happened (output alone cannot, the host's filters produce identical bytes).
 pub fn hook_gate_debug() -> bool {
-    static ON: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var("OJ_DEBUG_HOOK_GATE").is_ok_and(|v| v == "1"));
-    *ON
+    oj_env::get().knobs.debug_hook_gate
 }
 
 impl BuildHookPlan {

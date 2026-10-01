@@ -31,7 +31,7 @@ fs.writeFileSync(
 );
 fs.writeFileSync(
   path.join(app, "src", "main.js"),
-  `window.__P = __FROM_PLUGIN__;\nwindow.__U = __FROM_USER__;\nwindow.__S = __SHARED__;\nwindow.__N = __PLUGIN_NUM__ + 1;\n`,
+  `window.__P = __FROM_PLUGIN__;\nwindow.__U = __FROM_USER__;\nwindow.__S = __SHARED__;\nwindow.__N = __PLUGIN_NUM__ + 1;\nwindow.__E = import.meta.env.VITE_FROM_HOOK;\n`,
 );
 fs.writeFileSync(
   path.join(app, "index.html"),
@@ -42,10 +42,17 @@ fs.writeFileSync(
   `export default [{
     name: "definer",
     config() {
+      process.env.VITE_FROM_HOOK = "hook-env";
       return { define: { __FROM_PLUGIN__: JSON.stringify("plugin-define"), __SHARED__: JSON.stringify("plugin-shared"), __PLUGIN_NUM__: 41 } };
     },
   }];\n`,
 );
+
+// A prefixed var a config() hook sets reaches import.meta.env in dev and in the
+// build, as in Vite (env is loaded after the config hooks run).
+function checkHookEnv(code, label) {
+  assert.match(code, /["'`]hook-env["'`]/, `${label}: config() hook env reaches import.meta.env:\n${code}`);
+}
 
 // The minifier may re-quote string literals; accept any quote style.
 function check(code, label) {
@@ -64,7 +71,9 @@ let failed = false;
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
 try {
   await waitUp(`http://localhost:${PORT}/`);
-  check(await (await fetch(`http://localhost:${PORT}/src/main.js`)).text(), "dev");
+  const devCode = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
+  check(devCode, "dev");
+  checkHookEnv(devCode, "dev");
   srv.kill("SIGKILL");
   await sleep(300);
 
@@ -77,6 +86,7 @@ try {
     .map((f) => fs.readFileSync(path.join(app, "dist", "assets", f), "utf8"))
     .join("\n");
   check(js, "build");
+  checkHookEnv(js, "build");
 
   // Slow boot: the host's top-level init (a 5s configureServer, standing in for
   // plugin fleets / Miniflare) outlives a shrunk per-RPC timeout. RPC sends are

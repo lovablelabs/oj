@@ -142,6 +142,10 @@ fn file_digest(path: &Path) -> String {
 }
 
 fn env_epoch(root: &Path) -> String {
+    env_epoch_in(oj_env::get(), root)
+}
+
+fn env_epoch_in(env: &oj_env::Env, root: &Path) -> String {
     let mut hasher = blake3::Hasher::new();
     // A present file feeds name+content and an absent one feeds nothing, so
     // create and delete both change the epoch.
@@ -168,15 +172,13 @@ fn env_epoch(root: &Path) -> String {
             hasher.update(&bytes);
         }
     }
-    let mut env: Vec<(String, String)> = std::env::vars()
-        .filter(|(k, _)| {
-            ["VITE_", "LOVABLE_", "LOVBOX_", "TSS_"]
-                .iter()
-                .any(|p| k.starts_with(p))
-                || matches!(k.as_str(), "NODE_ENV" | "CI" | "ANALYZE")
-        })
-        .collect();
-    env.sort();
+    // Env::vars() is sorted by name, as the old explicit sort was.
+    let env = env.vars().filter(|(k, _)| {
+        ["VITE_", "LOVABLE_", "LOVBOX_", "TSS_"]
+            .iter()
+            .any(|p| k.starts_with(p))
+            || matches!(*k, "NODE_ENV" | "CI" | "ANALYZE")
+    });
     for (k, v) in env {
         hasher.update(b"\0e");
         hasher.update(k.as_bytes());
@@ -250,6 +252,27 @@ mod tests {
         assert!(store.lookup(&config, "serve", "development").is_some());
         fs::write(root.join(".env.local"), "VITE_X=1").unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
+    }
+
+    #[test]
+    fn env_epoch_keys_on_the_listed_vars_only() {
+        let root = temp_root("env-vars");
+        let of = |vars: &[(&str, &str)]| {
+            env_epoch_in(&oj_env::Env::from_vars(vars.iter().copied()), &root)
+        };
+        let base = of(&[]);
+        assert_eq!(base, of(&[("UNRELATED", "1")]));
+        for var in [
+            "VITE_X",
+            "LOVABLE_X",
+            "LOVBOX_X",
+            "TSS_X",
+            "NODE_ENV",
+            "CI",
+            "ANALYZE",
+        ] {
+            assert_ne!(base, of(&[(var, "1")]), "{var} must be in the key");
+        }
     }
 
     // A wrangler config is read by the Cloudflare plugin's config hook, not
