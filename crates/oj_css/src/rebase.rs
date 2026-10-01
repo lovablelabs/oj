@@ -1,43 +1,232 @@
-//! `url()` / `@import` rewriting through lightningcss dependency placeholders.
+//! `url()` / `@import` rewriting: lightningcss placeholders for a compile,
+//! Vite's text rewrite for inlined imports.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 
-use lightningcss::dependencies::{Dependency, DependencyOptions};
-use lightningcss::printer::PrinterOptions;
+use lightningcss::dependencies::Dependency;
+use regex::Regex;
 
-use crate::compile::parse_stylesheet;
-use crate::path::{is_external, posix_join, relative_path, split_query};
+use crate::path::{is_external, join_relative, posix_join, relative_path, split_query};
 use crate::resolve::CssResolve;
 
 /// Rewrite the relative urls of a stylesheet in `from_dir` so they are
-/// correct from `to_dir`, where it is being inlined.
+/// correct from `to_dir`, where it is being inlined. Text-based like Vite's
+/// `rebaseUrls`: `url()`, `@import "x.css"` and `image-set()` strings.
 pub(crate) fn rebase_to_dir(
     css: &str,
-    file: &Path,
     from_dir: &Path,
     to_dir: &Path,
     resolve: &CssResolve<'_>,
-) -> Result<String, String> {
-    if !(css.contains("url(") || css.contains("@import")) || from_dir == to_dir {
-        return Ok(css.to_string());
+) -> String {
+    if from_dir == to_dir {
+        return css.to_string();
     }
-    let name = file.to_string_lossy();
-    let result = parse_stylesheet(css, &name, None)?
-        .to_css(PrinterOptions {
-            analyze_dependencies: Some(DependencyOptions::default()),
-            ..PrinterOptions::default()
-        })
-        .map_err(|err| format!("css print error in {name}: {err}"))?;
-    let deps = result.dependencies.unwrap_or_default();
-    Ok(rewrite_dependencies(result.code, deps, |url| {
+    let base = relative_path(to_dir, from_dir);
+    let rebase = |url: &str| -> Option<String> {
         // Aliased specs keep their spelling for the entry's own resolution.
-        if rebase_relative(&url, "/x").is_none() || resolve.alias_spec(&url).is_some() {
-            return url;
+        if rebase_relative(url, "/x").is_none() || resolve.alias_spec(url).is_some() {
+            return None;
         }
-        let (path, suffix) = split_query(&url);
-        format!("{}{suffix}", relative_path(to_dir, &from_dir.join(path)))
-    }))
+        let (path, suffix) = split_query(url);
+        Some(format!("{}{suffix}", join_relative(&base, path)))
+    };
+    let mut out = css.to_string();
+    if out.contains("@import") {
+        out = rewrite_import_css(&out, &rebase);
+    }
+    if out.contains("url(") {
+        out = rewrite_css_urls(&out, &rebase);
+    }
+    if out.contains("image-set(") {
+        out = rewrite_image_set_strings(&out, &rebase);
+    }
+    out
+}
+
+type Rebase<'a> = dyn Fn(&str) -> Option<String> + 'a;
+
+/// Vite's `cssUrlRE` minus its lookbehinds, which are checked by hand.
+static URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"url\((\s*('[^']+'|"[^"]+")\s*|(?:\\.|[^'")\\])+)\)"#).unwrap());
+/// Vite's `importCssRE`.
+static IMPORT_CSS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"@import\s+(?:url\()?('[^']+\.css'|"[^"]+\.css"|[^'"\s)]+\.css)"#).unwrap()
+});
+/// Vite's `cssImageSetRE` (its `{1,256}` guards JS backtracking; this engine is linear).
+static IMAGE_SET_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"image-set\(((?:[\w-]+\([^)]*\)|[^)])*)\)"#).unwrap());
+
+/// `css` with each match of `re` replaced by `f(match, match start)` (None
+/// keeps it). Plain matches, no capture groups: those need the slower engine.
+fn replace_matches(
+    css: &str,
+    re: &Regex,
+    mut f: impl FnMut(&str, usize) -> Option<String>,
+) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut copied = 0;
+    for m in re.find_iter(css) {
+        if let Some(replacement) = f(m.as_str(), m.start()) {
+            out.push_str(&css[copied..m.start()]);
+            out.push_str(&replacement);
+            copied = m.end();
+        }
+    }
+    out.push_str(&css[copied..]);
+    out
+}
+
+fn rewrite_css_urls(css: &str, rebase: &Rebase<'_>) -> String {
+    replace_matches(css, &URL_RE, |m, start| {
+        let before = &css[..start];
+        // `(?<=^|[^\w\-\u0080-\uffff])`: not the tail of a longer name.
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-' || !c.is_ascii();
+        if before.chars().next_back().is_some_and(ident) {
+            return None;
+        }
+        // `(?<!@import\s+)`: an import's url is the import rewrite's business.
+        let trimmed = before.trim_end();
+        if trimmed.len() < before.len() && trimmed.ends_with("@import") {
+            return None;
+        }
+        let inner = &m["url(".len()..m.len() - 1];
+        url_replace(inner.trim(), rebase).map(|(wrap, url)| format!("url({wrap}{url}{wrap})"))
+    })
+}
+
+fn rewrite_import_css(css: &str, rebase: &Rebase<'_>) -> String {
+    replace_matches(css, &IMPORT_CSS_RE, |m, _| {
+        let spec = m["@import".len()..].trim_start();
+        let (prefix, spec) = match spec.strip_prefix("url(") {
+            Some(rest) => ("url(", rest),
+            None => ("", spec),
+        };
+        let (wrap, unquoted) = unquote(spec);
+        if skip_url(unquoted) {
+            return None;
+        }
+        let url = rebase(unquoted)?;
+        Some(format!("@import {prefix}{wrap}{url}{wrap}"))
+    })
+}
+
+/// The bare `"x" 1x` candidates of `image-set()`; its `url()` ones were
+/// already rewritten.
+fn rewrite_image_set_strings(css: &str, rebase: &Rebase<'_>) -> String {
+    replace_matches(css, &IMAGE_SET_RE, |m, _| {
+        let body = &m["image-set(".len()..m.len() - 1];
+        let mut out = String::with_capacity(body.len());
+        let mut depth = 0usize;
+        let mut chars = body.char_indices();
+        let mut changed = false;
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                '"' | '\'' if depth == 0 => {
+                    if let Some(close) = body[i + 1..].find(c) {
+                        let raw = &body[i..i + close + 2];
+                        if let Some((wrap, url)) = url_replace(raw, rebase) {
+                            let wrap = if wrap.is_empty() { "\"" } else { wrap };
+                            out.push_str(&format!("{wrap}{url}{wrap}"));
+                            changed = true;
+                        } else {
+                            out.push_str(raw);
+                        }
+                        for _ in 0..raw.chars().count() - 1 {
+                            chars.next();
+                        }
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            out.push(c);
+        }
+        changed.then(|| format!("image-set({out})"))
+    })
+}
+
+/// Vite's `doUrlReplace`: the new url and the quote to wrap it in, or None to
+/// keep the original.
+fn url_replace(raw: &str, rebase: &Rebase<'_>) -> Option<(&'static str, String)> {
+    let (wrap, unquoted) = unquote(raw);
+    if skip_url(unquoted) {
+        return None;
+    }
+    let mut url = rebase(&unescape(unquoted))?;
+    let mut wrap = wrap;
+    if wrap.is_empty() && (needs_uri_encoding(&url) || url.contains(')')) {
+        wrap = "\"";
+    }
+    if wrap == "'" && url.contains('\'') {
+        wrap = "\"";
+    }
+    if wrap == "\"" && url.contains('"') {
+        url = escape_double_quotes(&url);
+    }
+    Some((wrap, url))
+}
+
+fn unquote(raw: &str) -> (&'static str, &str) {
+    match raw.as_bytes() {
+        [b'"', .., b'"'] if raw.len() >= 2 => ("\"", &raw[1..raw.len() - 1]),
+        [b'\'', .., b'\''] if raw.len() >= 2 => ("'", &raw[1..raw.len() - 1]),
+        _ => ("", raw),
+    }
+}
+
+/// Vite's `skipUrlReplacer`: external, data, `#fragment` and `fn(...)` urls.
+fn skip_url(url: &str) -> bool {
+    let function_call = url.find('(').is_some_and(|i| {
+        let name = &url[..i];
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    });
+    is_external(url)
+        || url.trim_start().starts_with("data:")
+        || url.starts_with('#')
+        || function_call
+}
+
+/// `\(\W)` -> `$1`.
+fn unescape(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    let mut chars = url.chars().peekable();
+    while let Some(c) = chars.next() {
+        match chars.peek() {
+            Some(&n) if c == '\\' && !(n.is_alphanumeric() || n == '_') => {
+                out.push(n);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether `encodeURI` would change `url`.
+fn needs_uri_encoding(url: &str) -> bool {
+    !url.chars()
+        .all(|c| c.is_ascii_alphanumeric() || ";,/?:@&=+$-_.!~*'()#".contains(c))
+}
+
+/// `"` not already escaped, escaped.
+fn escape_double_quotes(url: &str) -> String {
+    let mut out = String::with_capacity(url.len() + 2);
+    let mut prev = '\0';
+    for c in url.chars() {
+        if c == '"' && prev != '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
 }
 
 /// Swap every printed placeholder for `rewrite(original url)`.
@@ -135,6 +324,8 @@ pub(crate) fn substitute_placeholders(code: String, pairs: &[(String, String)]) 
 mod tests {
     use super::*;
     use crate::*;
+    use lightningcss::dependencies::DependencyOptions;
+    use lightningcss::printer::PrinterOptions;
     use lightningcss::stylesheet::{ParserOptions, StyleSheet};
 
     /// The sequential `str::replace` loop `substitute_placeholders` replaced.
@@ -325,5 +516,78 @@ mod tests {
             quoted_six_char_tokens(&out).is_empty(),
             "a placeholder survived substitution: {out}"
         );
+    }
+
+    #[test]
+    fn rebase_to_dir_rewrites_like_vite_rebase_urls() {
+        let resolve = CssResolveConfig {
+            alias: vec![("@".into(), "/abs/src".into())],
+            ..Default::default()
+        };
+        let rebase = |css: &str| {
+            rebase_to_dir(
+                css,
+                Path::new("/p/src/base"),
+                Path::new("/p/src"),
+                &resolve.as_ref(),
+            )
+        };
+        assert_eq!(
+            rebase(".a{background:url(./x.png)}"),
+            ".a{background:url(./base/x.png)}"
+        );
+        assert_eq!(
+            rebase(".a{background:url( 'x.png?v=1#h' )}"),
+            ".a{background:url('./base/x.png?v=1#h')}"
+        );
+        assert_eq!(
+            rebase(r#".a{background:url("../up.png")}"#),
+            r#".a{background:url("./up.png")}"#
+        );
+        // A space in the new url needs quotes.
+        assert_eq!(
+            rebase(r".a{background:url(my\ file.png)}"),
+            r#".a{background:url("./base/my file.png")}"#
+        );
+        // Not a `url(` token, external, data, fragments, functions, aliases, root-absolute.
+        for kept in [
+            ".a{b:myurl(x.png)}",
+            ".a{b:url(https://cdn.test/x.png)}",
+            ".a{b:url(//cdn.test/x.png)}",
+            ".a{b:url(data:image/png;base64,AAAA)}",
+            ".a{b:url(#grad)}",
+            ".a{b:url(var(--x))}",
+            ".a{b:url(@/x.png)}",
+            ".a{b:url(/x.png)}",
+        ] {
+            assert_eq!(rebase(kept), kept);
+        }
+        // `@import` urls go through the import rewrite only (`.css` specs).
+        assert_eq!(
+            rebase("@import url(./a.css) print;"),
+            "@import url(./base/a.css) print;"
+        );
+        assert_eq!(rebase("@import \"./a.css\";"), "@import \"./base/a.css\";");
+        assert_eq!(
+            rebase("@import url(https://x.test/a.css);"),
+            "@import url(https://x.test/a.css);"
+        );
+        // image-set: bare strings and url() candidates, each rewritten once.
+        assert_eq!(
+            rebase(r#".a{b:image-set("x.png" 1x, url(y.png) 2x, "z.png" type("image/png"))}"#),
+            r#".a{b:image-set("./base/x.png" 1x, url(./base/y.png) 2x, "./base/z.png" type("image/png"))}"#
+        );
+        assert_eq!(
+            rebase(".a{b:url(x.png)}").len(),
+            ".a{b:url(./base/x.png)}".len()
+        );
+        // Same directory: untouched.
+        let same = rebase_to_dir(
+            ".a{b:url(x.png)}",
+            Path::new("/p"),
+            Path::new("/p"),
+            &resolve.as_ref(),
+        );
+        assert_eq!(same, ".a{b:url(x.png)}");
     }
 }

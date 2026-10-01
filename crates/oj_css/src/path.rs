@@ -60,6 +60,30 @@ pub(crate) fn relative_path(from_dir: &Path, target: &Path) -> String {
     }
 }
 
+/// The relative path `rel` joined onto the relative path `base` (a
+/// `relative_path` result), in the same `./` / `../` form.
+pub(crate) fn join_relative(base: &str, rel: &str) -> String {
+    let mut segments: Vec<&str> = base
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    for part in rel.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if segments.last().is_some_and(|s| *s != "..") => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    let joined = segments.join("/");
+    if joined.starts_with("..") {
+        joined
+    } else {
+        format!("./{joined}")
+    }
+}
+
 /// `rel` joined onto the url directory `base_dir`, resolving `.` and `..`.
 pub(crate) fn posix_join(base_dir: &str, rel: &str) -> String {
     let mut segments: Vec<&str> = base_dir.split('/').filter(|s| !s.is_empty()).collect();

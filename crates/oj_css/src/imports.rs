@@ -95,7 +95,7 @@ impl Inliner<'_, '_> {
             let child = self.inline(&child, &target)?;
             self.stack.pop();
             let child_dir = target.parent().unwrap_or(Path::new("."));
-            let rebased = rebase_to_dir(&child, &target, child_dir, dir, self.resolve)?;
+            let rebased = rebase_to_dir(&child, child_dir, dir, self.resolve);
             match import.media {
                 // `@import "x" print;` becomes `@media print { ... }`.
                 Some(media) => {

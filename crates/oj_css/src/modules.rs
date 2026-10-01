@@ -4,9 +4,10 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 use lightningcss::css_modules::{self, CssModuleExport, CssModuleExports, CssModuleReference};
+use regex::Regex;
 
 use crate::compile::{compile_css_depth, Mode};
 use crate::path::{normalize, strip_query};
@@ -81,9 +82,19 @@ pub(crate) fn module_is_scoped(url: &str, resolve: &CssResolve<'_>) -> bool {
     let path = strip_query(url);
     let abs = module_file_path(url, resolve).map(|p| p.to_string_lossy().into_owned());
     !modules.global_module_paths.iter().any(|src| {
-        regex::Regex::new(src)
-            .is_ok_and(|re| re.is_match(path) || abs.as_deref().is_some_and(|a| re.is_match(a)))
+        compiled(src)
+            .is_some_and(|re| re.is_match(path) || abs.as_deref().is_some_and(|a| re.is_match(a)))
     })
+}
+
+/// `globalModulePaths` sources compiled once per process (None: invalid).
+fn compiled(src: &str) -> Option<Regex> {
+    static CACHE: LazyLock<Mutex<HashMap<String, Option<Regex>>>> = LazyLock::new(Default::default);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry(src.to_string())
+        .or_insert_with(|| Regex::new(src).ok())
+        .clone()
 }
 
 /// `generateScopedName` as a lightningcss pattern. postcss-modules tokens map
