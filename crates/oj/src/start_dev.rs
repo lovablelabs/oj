@@ -237,7 +237,10 @@ pub async fn start_dev(
                 "OJ_CACHE_ROOT".to_string(),
                 oj_cache::cache_root(&root).to_string_lossy().into_owned(),
             ),
-            ("NODE_ENV".to_string(), dev_node_env(&root, &mode)),
+            (
+                "NODE_ENV".to_string(),
+                dev_node_env(oj_env::get(), &root, &mode),
+            ),
             ("OJ_MODE".to_string(), mode.clone()),
         ];
         init_env.extend(start_script_env(
@@ -999,6 +1002,22 @@ async fn rebundle_worker(
     }
 }
 
+/// The `.env` vars with one of `prefixes` that the shell does not already set
+/// (the scripts inherit the shell's own value).
+fn prefixed_dotenv_vars(
+    env: &oj_env::Env,
+    env_dir: &Path,
+    mode: &str,
+    prefixes: &[String],
+) -> Vec<(String, String)> {
+    oj_env::load_with(env, env_dir, mode)
+        .into_iter()
+        .filter(|(k, _)| {
+            prefixes.iter().any(|p| k.starts_with(p.as_str())) && env.var_os(k).is_none()
+        })
+        .collect()
+}
+
 /// Environment handed to the Start node scripts: the mode's `.env` vars with an
 /// `envPrefix` (shell wins, as in Vite's loadEnv), the prefixes themselves
 /// (`OJ_ENV_PREFIX`), the per-environment defines (`OJ_DEFINE_CLIENT` /
@@ -1021,12 +1040,7 @@ fn start_script_env(
         None => root.to_path_buf(),
     };
     let prefixes = oj_config::env_prefixes(&config);
-    let mut vars: Vec<(String, String)> = oj_env::load(&env_dir, mode)
-        .into_iter()
-        .filter(|(k, _)| {
-            prefixes.iter().any(|p| k.starts_with(p.as_str())) && std::env::var_os(k).is_none()
-        })
-        .collect();
+    let mut vars = prefixed_dotenv_vars(oj_env::get(), &env_dir, mode, &prefixes);
     if prefixes != ["VITE_"] {
         vars.push((
             "OJ_ENV_PREFIX".into(),
@@ -1204,11 +1218,6 @@ pub async fn start_build(
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
-    // Resolved BEFORE any script runs, as a belt: the ScriptEngine shadows
-    // process.env on its isolate (a script's env writes stay private), but
-    // snapshotting the shell's NODE_ENV here keeps the build's env rule
-    // independent of anything any engine might still write process-wide.
-    let shell_node_env = std::env::var("NODE_ENV").ok().filter(|v| !v.is_empty());
     let scripts = Arc::new(ScriptEngine::new(&root)?);
     {
         let (r, c, cfg) = (root.clone(), cache.clone(), config_file.clone());
@@ -1265,11 +1274,17 @@ pub async fn start_build(
         Some(d) => root.join(d),
         None => root.to_path_buf(),
     };
-    let node_env = oj_env::resolve_node_env(
-        shell_node_env.as_deref(),
-        &oj_env::load(&env_dir, mode),
+    // The shell's NODE_ENV comes from the startup snapshot, so nothing an engine
+    // writes process-wide can change the build's env rule.
+    let node_env = oj_env::AppEnv::resolve(
+        oj_env::get(),
+        &env_dir,
+        mode,
+        oj_config::env_prefixes(&config),
         "production",
-    );
+    )
+    .node_env()
+    .to_string();
     let mut env = vec![
         (
             "OJ_APP_ROOT".to_string(),
@@ -1558,12 +1573,10 @@ fn client_module_count(cache: &Path) -> usize {
 /// Vite's rule for the dev server too: the shell's NODE_ENV wins (so
 /// `NODE_ENV=production oj dev` is PROD, as in Vite and oj's generic server),
 /// else `.env[.mode]` NODE_ENV=development, else development.
-fn dev_node_env(root: &Path, mode: &str) -> String {
-    oj_env::resolve_node_env(
-        std::env::var("NODE_ENV").ok().as_deref(),
-        &oj_env::load(root, mode),
-        "development",
-    )
+fn dev_node_env(env: &oj_env::Env, root: &Path, mode: &str) -> String {
+    oj_env::AppEnv::resolve(env, root, mode, Vec::new(), "development")
+        .node_env()
+        .to_string()
 }
 
 /// The environment the one-shot scripts receive as their `run(env)` argument:
@@ -1583,7 +1596,10 @@ fn script_env(
             "OJ_CACHE_ROOT".to_string(),
             oj_cache::cache_root(root).to_string_lossy().into_owned(),
         ),
-        ("NODE_ENV".to_string(), dev_node_env(root, mode)),
+        (
+            "NODE_ENV".to_string(),
+            dev_node_env(oj_env::get(), root, mode),
+        ),
         ("OJ_MODE".to_string(), mode.to_string()),
     ];
     env.extend(start_script_env(root, config_file, command, mode)?);
@@ -1792,9 +1808,9 @@ async fn forward_document(
 fn start_max_body_bytes() -> usize {
     static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {
-        std::env::var("OJ_START_MAX_BODY")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
+        oj_env::get()
+            .knobs
+            .start_max_body
             .unwrap_or(128 * 1024 * 1024)
     })
 }
@@ -2902,20 +2918,29 @@ mod tests {
 
     // Vite's NODE_ENV rule for the dev server: the shell wins (so
     // `NODE_ENV=production oj dev` is PROD), else `.env[.mode]` may only pick
-    // development, else development. The shell value is read live, so the
-    // test only covers the two file-driven branches.
+    // development, else development.
     #[test]
-    fn dev_node_env_follows_env_files_when_shell_is_silent() {
-        if std::env::var_os("NODE_ENV").is_some_and(|v| !v.is_empty()) {
-            return;
-        }
+    fn dev_node_env_shell_wins_then_env_files() {
+        let silent = oj_env::Env::from_vars([("NODE_ENV", "")]);
         let root = tmp("node-env");
-        assert_eq!(dev_node_env(&root, "development"), "development");
+        assert_eq!(dev_node_env(&silent, &root, "development"), "development");
         std::fs::write(root.join(".env.staging"), "NODE_ENV=development\n").unwrap();
-        assert_eq!(dev_node_env(&root, "staging"), "development");
+        assert_eq!(dev_node_env(&silent, &root, "staging"), "development");
         std::fs::write(root.join(".env.prodlike"), "NODE_ENV=production\n").unwrap();
         // Only development is honored from a .env file (Vite warns and ignores).
-        assert_eq!(dev_node_env(&root, "prodlike"), "development");
+        assert_eq!(dev_node_env(&silent, &root, "prodlike"), "development");
+        let shell = oj_env::Env::from_vars([("NODE_ENV", "production")]);
+        assert_eq!(dev_node_env(&shell, &root, "staging"), "production");
+    }
+
+    // A `.env` value reaches the scripts only when the shell lacks the key.
+    #[test]
+    fn prefixed_dotenv_vars_skip_keys_the_shell_sets() {
+        let root = tmp("dotenv-shell");
+        std::fs::write(root.join(".env"), "VITE_A=file\nVITE_B=file\nOTHER=x\n").unwrap();
+        let env = oj_env::Env::from_vars([("VITE_B", "shell")]);
+        let vars = prefixed_dotenv_vars(&env, &root, "development", &["VITE_".to_string()]);
+        assert_eq!(vars, vec![("VITE_A".to_string(), "file".to_string())]);
     }
 
     #[test]

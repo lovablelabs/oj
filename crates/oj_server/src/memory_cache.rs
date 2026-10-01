@@ -133,10 +133,7 @@ pub(crate) fn module_weight(module: &CachedModule) -> usize {
 }
 
 pub(crate) fn memory_cache_budget() -> usize {
-    if let Some(mb) = std::env::var("OJ_MEMORY_CACHE_MB")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-    {
+    if let Some(mb) = oj_env::get().knobs.memory_cache_mb {
         return if mb == 0 {
             usize::MAX
         } else {

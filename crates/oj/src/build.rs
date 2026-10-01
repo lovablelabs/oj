@@ -531,10 +531,6 @@ fn import_meta_hot_define() -> (String, String) {
     ("import.meta.hot".to_string(), "undefined".to_string())
 }
 
-fn shell_node_env() -> Option<String> {
-    std::env::var("NODE_ENV").ok().filter(|v| !v.is_empty())
-}
-
 /// `.env` files are read from `envDir` (default the root) and only `envPrefix`
 /// variables (default `VITE_`) are exposed, as in dev; the build used to
 /// hardcode both.
@@ -543,6 +539,18 @@ fn env_dir_of(root: &Path, config: &oj_config::OjConfig) -> PathBuf {
         Some(d) => root.join(d),
         None => root.to_path_buf(),
     }
+}
+
+/// The app's env for a build: its `.env` files and NODE_ENV (default
+/// `production`), against the startup snapshot.
+fn build_app_env(root: &Path, config: &oj_config::OjConfig, mode: &str) -> oj_env::AppEnv {
+    oj_env::AppEnv::resolve(
+        oj_env::get(),
+        &env_dir_of(root, config),
+        mode,
+        env_prefixes_of(config),
+        "production",
+    )
 }
 
 fn env_prefixes_of(config: &oj_config::OjConfig) -> Vec<String> {
@@ -2291,6 +2299,15 @@ async fn plugin_config_defines(host: &Option<Arc<PluginHost>>) -> Vec<(String, S
     }
 }
 
+/// The env changes plugin `config()` hooks made (they write the host's private
+/// `process.env`), layered over the startup snapshot in the build's defines.
+async fn plugin_env_delta(host: &Option<Arc<PluginHost>>) -> Vec<(String, String)> {
+    match host {
+        Some(h) => h.env_delta().await.into_iter().collect(),
+        None => Vec::new(),
+    }
+}
+
 /// `oj build` command-line options that override the config file, as Vite's
 /// CLI merges its `build.*` flags and `--base` over the resolved config.
 #[derive(Debug, Default, Clone)]
@@ -2477,11 +2494,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let minify = oj_config::build_minify(&config);
     let sourcemap = oj_config::build_sourcemap(&config);
     let empty_out_dir = build_cfg.empty_out_dir;
-    let loaded_env = oj_env::load(&env_dir_of(&root, &config), mode);
-    let env_prefixes = env_prefixes_of(&config);
-    let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
-    let node_env = oj_env::resolve_node_env(shell_node_env().as_deref(), &loaded_env, "production");
-    let is_production = node_env == "production";
+    let app_env = build_app_env(&root, &config, mode);
+    let node_env = app_env.node_env().to_string();
+    let is_production = app_env.is_production();
 
     let config_ssr_entry =
         oj_config::build_ssr_entry(&config).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2634,6 +2649,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     )
     .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
+    let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
     if let Some(host) = &plugin_host {
@@ -2646,16 +2662,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let client_minify =
         oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
     let client_define: Vec<(String, String)> = {
-        let env = oj_env::with_process_env(loaded_env.clone(), std::env::vars(), &env_prefix_refs);
         let mut pairs: Vec<(String, String)> = process_env_defines(&node_env);
         pairs.push(import_meta_hot_define());
-        pairs.extend(oj_env::import_meta_env_defines(
-            &env,
-            mode,
-            !is_production,
-            &base,
-            &env_prefix_refs,
-        ));
+        pairs.extend(app_env.import_meta_env_defines(oj_env::get(), &env_delta, &base, false));
         pairs.extend(oj_config::config_defines(&config));
         pairs.extend(oj_config::environment_defines(&config, "client"));
         pairs.extend(plugin_defines);
@@ -2823,9 +2832,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     // %VITE_*% / import.meta.env substitution (Vite's htmlEnvHook), applied to
     // each page before the plugin transformIndexHtml below.
     let html_env = {
-        let env = oj_env::with_process_env(loaded_env.clone(), std::env::vars(), &env_prefix_refs);
-        let mut defines =
-            oj_env::import_meta_env_defines(&env, mode, !is_production, &base, &env_prefix_refs);
+        let mut defines = app_env.import_meta_env_defines(oj_env::get(), &env_delta, &base, false);
         defines.extend(oj_config::config_defines(&config));
         oj_env::html_env_map(&defines)
     };
@@ -3866,11 +3873,9 @@ pub(crate) async fn build_ssr(
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     apply_cli_options(&mut config, cli);
-    let loaded_env = oj_env::load(&env_dir_of(root, &config), mode);
-    let env_prefixes = env_prefixes_of(&config);
-    let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
-    let node_env = oj_env::resolve_node_env(shell_node_env().as_deref(), &loaded_env, "production");
-    let is_production = node_env == "production";
+    let app_env = build_app_env(root, &config, mode);
+    let node_env = app_env.node_env().to_string();
+    let is_production = app_env.is_production();
     let ssr_base = config.base.clone().unwrap_or_else(|| "/".into());
     let plugin_host = user_plugin_host(
         cli.config.as_deref(),
@@ -3883,6 +3888,7 @@ pub(crate) async fn build_ssr(
     )
     .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
+    let env_delta = plugin_env_delta(&plugin_host).await;
 
     // Vite's SSR externalization: dependencies stay external unless
     // `ssr.noExternal` (or a webworker target) bundles them; `ssr.external` wins.
@@ -3968,11 +3974,6 @@ pub(crate) async fn build_ssr(
             )),
             sourcemap: env_sourcemap(&config, "ssr", sourcemap),
             define: Some({
-                let env = oj_env::with_process_env(
-                    loaded_env.clone(),
-                    std::env::vars(),
-                    &env_prefix_refs,
-                );
                 // `keepProcessEnv` defaults to true for a server consumer, so only
                 // the webworker target gets Vite's `process.env` -> `{}` defines.
                 let mut pairs = if externals.webworker() {
@@ -3981,12 +3982,10 @@ pub(crate) async fn build_ssr(
                     node_env_defines(&node_env)
                 };
                 pairs.push(import_meta_hot_define());
-                pairs.extend(oj_env::import_meta_env_defines_with(
-                    &env,
-                    mode,
-                    !is_production,
+                pairs.extend(app_env.import_meta_env_defines(
+                    oj_env::get(),
+                    &env_delta,
                     &ssr_base,
-                    &env_prefix_refs,
                     true,
                 ));
                 pairs.extend(oj_config::config_defines(&config));
@@ -4091,12 +4090,9 @@ async fn build_server_fns(
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     apply_cli_options(&mut config, cli);
-    let node_env = oj_env::resolve_node_env(
-        shell_node_env().as_deref(),
-        &oj_env::load(&env_dir_of(root, &config), mode),
-        "production",
-    );
-    let is_production = node_env == "production";
+    let app_env = build_app_env(root, &config, mode);
+    let node_env = app_env.node_env().to_string();
+    let is_production = app_env.is_production();
     let entry_path = root.join("_oj_server_fns_entry.tsx");
     fs::write(&entry_path, OJ_SERVER_FNS_JS)?;
     let collected: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -4481,11 +4477,9 @@ async fn build_client_entry(
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     apply_cli_options(&mut config, cli);
-    let loaded_env = oj_env::load(&env_dir_of(root, &config), mode);
-    let env_prefixes = env_prefixes_of(&config);
-    let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
-    let node_env = oj_env::resolve_node_env(shell_node_env().as_deref(), &loaded_env, "production");
-    let is_production = node_env == "production";
+    let app_env = build_app_env(root, &config, mode);
+    let node_env = app_env.node_env().to_string();
+    let is_production = app_env.is_production();
     let client_base = normalize_base(config.base.as_deref().unwrap_or("/"));
     let assets_dir = oj_config::build_assets_dir(&config);
     let plugin_host = user_plugin_host(
@@ -4499,6 +4493,7 @@ async fn build_client_entry(
     )
     .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
+    let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
     if let Some(host) = &plugin_host {
@@ -4546,19 +4541,13 @@ async fn build_client_entry(
             )),
             sourcemap: env_sourcemap(&config, "client", sourcemap),
             define: Some({
-                let env = oj_env::with_process_env(
-                    loaded_env.clone(),
-                    std::env::vars(),
-                    &env_prefix_refs,
-                );
                 let mut pairs = process_env_defines(&node_env);
                 pairs.push(import_meta_hot_define());
-                pairs.extend(oj_env::import_meta_env_defines(
-                    &env,
-                    mode,
-                    !is_production,
+                pairs.extend(app_env.import_meta_env_defines(
+                    oj_env::get(),
+                    &env_delta,
                     &client_base,
-                    &env_prefix_refs,
+                    false,
                 ));
                 pairs.extend(oj_config::config_defines(&config));
                 pairs.extend(oj_config::environment_defines(&config, "client"));
@@ -4634,11 +4623,9 @@ async fn build_library(
     minify: bool,
     sourcemap: oj_config::Sourcemap,
 ) -> anyhow::Result<()> {
-    let loaded_env = oj_env::load(&env_dir_of(root, config), mode);
-    let node_env = oj_env::resolve_node_env(shell_node_env().as_deref(), &loaded_env, "production");
-    let is_production = node_env == "production";
-    let env_prefixes = env_prefixes_of(config);
-    let env_prefix_refs: Vec<&str> = env_prefixes.iter().map(String::as_str).collect();
+    // No plugin host runs for a library build, so no config() env delta.
+    let app_env = build_app_env(root, config, mode);
+    let is_production = app_env.is_production();
     let import_of = |p: &str| {
         if p.starts_with('.') {
             p.to_string()
@@ -4819,18 +4806,7 @@ async fn build_library(
                 // (rolldown's own browser-platform NODE_ENV default still applies,
                 // as under Vite); import.meta.env and the user's `define` do.
                 define: Some({
-                    let env = oj_env::with_process_env(
-                        loaded_env.clone(),
-                        std::env::vars(),
-                        &env_prefix_refs,
-                    );
-                    let mut pairs = oj_env::import_meta_env_defines(
-                        &env,
-                        mode,
-                        !is_production,
-                        "/",
-                        &env_prefix_refs,
-                    );
+                    let mut pairs = app_env.import_meta_env_defines(oj_env::get(), &[], "/", false);
                     pairs.push(import_meta_hot_define());
                     pairs.extend(oj_config::config_defines(config));
                     pairs.extend(oj_config::environment_defines(config, "client"));

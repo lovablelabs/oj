@@ -356,10 +356,7 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
             return;
         }
 
-        let debounce_ms: u64 = std::env::var("OJ_HMR_DEBOUNCE_MS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(10);
+        let debounce_ms: u64 = oj_env::get().knobs.hmr_debounce_ms.unwrap_or(10);
         // FSEvents keeps a file's "created" flag on later events for a while, so
         // a Create for a path seen before is an edit (chokidar: add once, change after).
         let mut seen_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();

@@ -31,7 +31,12 @@ pub const CACHE_ROOT_VERSION: u32 = 1;
 /// layout inert rather than misread, and a caller pointing at one directory for
 /// several apps still gets that.
 pub fn cache_root(app_root: &Path) -> PathBuf {
-    cache_base(app_root).join(format!("v{CACHE_ROOT_VERSION}"))
+    cache_root_in(app_root, oj_env::get().knobs.cache_dir.as_deref())
+}
+
+/// [`cache_root`] with `OJ_CACHE_DIR` given as `dir`.
+pub fn cache_root_in(app_root: &Path, dir: Option<&Path>) -> PathBuf {
+    cache_base_in(app_root, dir).join(format!("v{CACHE_ROOT_VERSION}"))
 }
 
 /// The directory `cache_root` versions inside. Callers that manage the cache
@@ -39,8 +44,13 @@ pub fn cache_root(app_root: &Path) -> PathBuf {
 /// want this rather than the versioned path, and they have to agree with
 /// `cache_root` about where it is.
 pub fn cache_base(app_root: &Path) -> PathBuf {
-    match std::env::var_os("OJ_CACHE_DIR") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+    cache_base_in(app_root, oj_env::get().knobs.cache_dir.as_deref())
+}
+
+/// [`cache_base`] with `OJ_CACHE_DIR` given as `dir` (an empty one is unset).
+pub fn cache_base_in(app_root: &Path, dir: Option<&Path>) -> PathBuf {
+    match dir {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => app_root.join(".oj-cache"),
     }
 }
@@ -327,8 +337,7 @@ mod tests {
 
     #[test]
     fn cache_root_is_versioned() {
-        let _g = env_guard(); // reads the default; must not race an OJ_CACHE_DIR setter
-        let root = cache_root(Path::new("/app"));
+        let root = cache_root_in(Path::new("/app"), None);
         assert_eq!(
             root,
             Path::new("/app")
@@ -339,7 +348,6 @@ mod tests {
 
     #[test]
     fn heal_removes_legacy_layout_and_keeps_the_rest() {
-        let _g = env_guard(); // uses cache_root(default); must not race an OJ_CACHE_DIR setter
         let app = std::env::temp_dir().join(format!("oj-heal-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&app);
         let cache = app.join(".oj-cache");
@@ -379,45 +387,23 @@ mod tests {
         let app = Path::new("/srv/app");
         let versioned = format!("v{CACHE_ROOT_VERSION}");
 
-        temp_env_var("OJ_CACHE_DIR", None, || {
-            assert_eq!(cache_root(app), app.join(".oj-cache").join(&versioned));
-        });
-        temp_env_var("OJ_CACHE_DIR", Some("/out/oj"), || {
-            assert_eq!(cache_root(app), Path::new("/out/oj").join(&versioned));
-        });
+        let out = Some(Path::new("/out/oj"));
+        assert_eq!(
+            cache_root_in(app, None),
+            app.join(".oj-cache").join(&versioned)
+        );
+        assert_eq!(
+            cache_root_in(app, out),
+            Path::new("/out/oj").join(&versioned)
+        );
         // An empty value is not a directory; it must not put the cache at "/v1".
-        temp_env_var("OJ_CACHE_DIR", Some(""), || {
-            assert_eq!(cache_root(app), app.join(".oj-cache").join(&versioned));
-        });
+        assert_eq!(
+            cache_root_in(app, Some(Path::new(""))),
+            app.join(".oj-cache").join(&versioned)
+        );
         // Whoever creates and marks the cache area has to land in the same
         // place, or a relocated cache still leaves a directory in the app.
-        temp_env_var("OJ_CACHE_DIR", Some("/out/oj"), || {
-            assert_eq!(cache_base(app), Path::new("/out/oj"));
-            assert!(cache_root(app).starts_with(cache_base(app)));
-        });
-    }
-
-    // `OJ_CACHE_DIR` is process-wide, and cargo runs these tests as threads in
-    // one process, so a test that sets it races a test that reads the default.
-    // Every test touching `OJ_CACHE_DIR` (setters via temp_env_var, readers via
-    // this guard) serializes on one lock; a setter restores the var before it
-    // releases the lock, so the next reader sees the ambient (unset) value.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn temp_env_var(key: &str, value: Option<&str>, f: impl FnOnce()) {
-        let _guard = env_guard();
-        let previous = std::env::var_os(key);
-        match value {
-            Some(v) => unsafe { std::env::set_var(key, v) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-        f();
-        match previous {
-            Some(v) => unsafe { std::env::set_var(key, v) },
-            None => unsafe { std::env::remove_var(key) },
-        }
+        assert_eq!(cache_base_in(app, out), Path::new("/out/oj"));
+        assert!(cache_root_in(app, out).starts_with(cache_base_in(app, out)));
     }
 }

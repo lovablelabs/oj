@@ -17,9 +17,14 @@ pub enum VerifyMode {
 
 impl VerifyMode {
     pub fn from_env() -> Self {
-        match std::env::var("OJ_CACHE_VERIFY") {
-            Ok(v) if v.eq_ignore_ascii_case("full") => VerifyMode::Full,
-            _ => VerifyMode::Standard,
+        Self::from_knobs(&oj_env::get().knobs)
+    }
+
+    pub fn from_knobs(knobs: &oj_env::Knobs) -> Self {
+        if knobs.cache_verify_full {
+            VerifyMode::Full
+        } else {
+            VerifyMode::Standard
         }
     }
 }

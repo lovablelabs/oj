@@ -10,6 +10,7 @@ description = "Content-addressed persistent cache for compiled module outputs"
 blake3.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+oj_env.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

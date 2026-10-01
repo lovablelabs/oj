@@ -171,11 +171,7 @@ fn parse_report(raw: &str) -> Option<Vec<SeededEnv>> {
 }
 
 fn preseed_timeout() -> std::time::Duration {
-    let secs = std::env::var("OJ_PRESEED_TIMEOUT")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(300);
+    let secs = oj_env::get().knobs.preseed_timeout_secs.unwrap_or(300);
     std::time::Duration::from_secs(secs)
 }
 
@@ -255,7 +251,7 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
 /// Pre-seed the deps caches for runner-backed vite configs, before the host
 /// spawns. Failure is never fatal: the host's own optimizer remains the fallback.
 pub(crate) async fn preseed_server_deps(root: &Path, env_mode: &str) {
-    if std::env::var("OJ_NO_DEPS_PRESEED").is_ok_and(|v| !v.is_empty() && v != "0") {
+    if oj_env::get().knobs.no_deps_preseed {
         return;
     }
     // A fresh config extraction means the config inputs changed (or were never

@@ -134,16 +134,14 @@ pub(crate) const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration =
 /// Plugin-host heap cap, Node parity: `OJ_PLUGIN_MEMORY_MB`, then NODE_OPTIONS
 /// `--max-old-space-size`, then 4096MB. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
 pub(crate) fn plugin_host_memory_mb() -> usize {
-    if let Some(mb) = std::env::var("OJ_PLUGIN_MEMORY_MB")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|m| *m > 0)
-    {
+    let knobs = &oj_env::get().knobs;
+    if let Some(mb) = knobs.plugin_memory_mb {
         return mb;
     }
-    std::env::var("NODE_OPTIONS")
-        .ok()
-        .and_then(|opts| max_old_space_mb(&opts))
+    knobs
+        .node_options
+        .as_deref()
+        .and_then(max_old_space_mb)
         .unwrap_or(4096)
 }
 
@@ -316,7 +314,7 @@ pub(crate) fn ctx_rpc(
 /// How long one plugin hook may run (default 20s, `OJ_PLUGIN_TIMEOUT` raises it);
 /// Vite has no hook timeout at all.
 pub fn plugin_rpc_timeout() -> std::time::Duration {
-    plugin_rpc_timeout_from(std::env::var("OJ_PLUGIN_TIMEOUT").ok().as_deref())
+    plugin_rpc_timeout_from(oj_env::get().knobs.plugin_timeout.as_deref())
 }
 
 pub(crate) fn plugin_rpc_timeout_from(raw: Option<&str>) -> std::time::Duration {
@@ -330,7 +328,7 @@ pub(crate) fn plugin_rpc_timeout_from(raw: Option<&str>) -> std::time::Duration 
 /// How long the host may take to finish top-level init before a waiting RPC
 /// gives up (`OJ_PLUGIN_INIT_TIMEOUT`); gates `call` instead of racing the per-call timeout.
 pub fn plugin_init_timeout() -> std::time::Duration {
-    plugin_init_timeout_from(std::env::var("OJ_PLUGIN_INIT_TIMEOUT").ok().as_deref())
+    plugin_init_timeout_from(oj_env::get().knobs.plugin_init_timeout.as_deref())
 }
 
 pub(crate) fn plugin_init_timeout_from(raw: Option<&str>) -> std::time::Duration {

@@ -465,6 +465,9 @@ fn main() -> anyhow::Result<()> {
         reap_on_parent_death();
         std::env::remove_var(PARENT_PID_ENV);
     }
+    // The startup writes above are oj's only direct process-env access. Snapshot
+    // the env now, still single-threaded: everything after reads `oj_env::get()`.
+    oj_env::init();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)

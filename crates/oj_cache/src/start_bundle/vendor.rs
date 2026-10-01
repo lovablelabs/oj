@@ -30,8 +30,8 @@ pub fn vendored_rolldown() -> &'static VendoredRolldown {
 }
 
 /// The configured vendor path, or the variant to return without probing.
-fn configured_vendor() -> Result<String, VendoredRolldown> {
-    match std::env::var_os("OJ_VENDORED_ROLLDOWN") {
+fn configured_vendor(env: Option<&std::ffi::OsStr>) -> Result<String, VendoredRolldown> {
+    match env.map(std::ffi::OsStr::to_os_string) {
         Some(v) if v.is_empty() => Err(VendoredRolldown::None),
         Some(v) => v.into_string().map_err(|raw| VendoredRolldown::Broken {
             path: raw.to_string_lossy().into_owned(),
@@ -45,7 +45,7 @@ fn configured_vendor() -> Result<String, VendoredRolldown> {
 }
 
 fn resolve_vendored_rolldown() -> VendoredRolldown {
-    let configured = match configured_vendor() {
+    let configured = match configured_vendor(oj_env::get().knobs.vendored_rolldown.as_deref()) {
         Ok(path) => path,
         Err(resolved) => return resolved,
     };
@@ -108,6 +108,16 @@ impl VendoredRolldown {
 /// bundle. Order of the files, env pairs and vendor identity is part of the
 /// key and must not change.
 pub(super) fn epoch(root: &Path, mode: &str, vendored_rolldown_identity: Option<&str>) -> String {
+    epoch_in(oj_env::get(), root, mode, vendored_rolldown_identity)
+}
+
+/// [`epoch`] with the process env given as `env`.
+pub(super) fn epoch_in(
+    env: &oj_env::Env,
+    root: &Path,
+    mode: &str,
+    vendored_rolldown_identity: Option<&str>,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     let mode_env = [format!(".env.{mode}"), format!(".env.{mode}.local")];
     for name in [
@@ -137,10 +147,10 @@ pub(super) fn epoch(root: &Path, mode: &str, vendored_rolldown_identity: Option<
         }
     }
     // NODE_ENV decides DEV/PROD and the React build, as under Vite.
-    let mut env: Vec<(String, String)> = std::env::vars()
-        .filter(|(k, _)| k.starts_with("VITE_") || k == "TSS_SERVER_FN_BASE" || k == "NODE_ENV")
-        .collect();
-    env.sort();
+    // Env::vars() is sorted by name, as the old explicit sort was.
+    let env = env
+        .vars()
+        .filter(|(k, _)| k.starts_with("VITE_") || *k == "TSS_SERVER_FN_BASE" || *k == "NODE_ENV");
     for (k, v) in env {
         hasher.update(b"\0e");
         hasher.update(k.as_bytes());
@@ -154,4 +164,44 @@ pub(super) fn epoch(root: &Path, mode: &str, vendored_rolldown_identity: Option<
         hasher.update(identity.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oj_env::Env;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn configured_vendor_reads_the_given_value() {
+        assert!(matches!(
+            configured_vendor(Some(OsStr::new(""))),
+            Err(VendoredRolldown::None)
+        ));
+        assert_eq!(
+            configured_vendor(Some(OsStr::new("/opt/vendor")))
+                .ok()
+                .as_deref(),
+            Some("/opt/vendor")
+        );
+    }
+
+    #[test]
+    fn epoch_keys_on_vite_and_node_env_vars_only() {
+        let root = std::env::temp_dir().join(format!("oj-vendor-epoch-{}", std::process::id()));
+        let of = |vars: &[(&str, &str)]| {
+            epoch_in(
+                &Env::from_vars(vars.iter().copied()),
+                &root,
+                "development",
+                None,
+            )
+        };
+        let base = of(&[]);
+        assert_eq!(base, of(&[("UNRELATED", "1")]));
+        assert_ne!(base, of(&[("VITE_API", "x")]));
+        assert_ne!(base, of(&[("NODE_ENV", "production")]));
+        assert_ne!(base, of(&[("TSS_SERVER_FN_BASE", "/fn")]));
+        assert_eq!(base, of(&[("TSS_OTHER", "1")]));
+    }
 }

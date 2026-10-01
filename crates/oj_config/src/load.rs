@@ -27,6 +27,16 @@ pub fn load(root: &Path) -> Result<OjConfig, ConfigError> {
 }
 
 pub fn load_with(root: &Path, command: &str, mode: &str) -> Result<OjConfig, ConfigError> {
+    load_in(oj_env::get(), root, command, mode)
+}
+
+/// [`load_with`] against `env`, whose variables the config sees as `process.env`.
+pub fn load_in(
+    env: &oj_env::Env,
+    root: &Path,
+    command: &str,
+    mode: &str,
+) -> Result<OjConfig, ConfigError> {
     let Some(path) = CANDIDATES
         .iter()
         .map(|c| root.join(c))
@@ -40,7 +50,7 @@ pub fn load_with(root: &Path, command: &str, mode: &str) -> Result<OjConfig, Con
     let json = if path.extension().and_then(|e| e.to_str()) == Some("json") {
         source
     } else {
-        evaluate(&path, &source, command, mode)?
+        evaluate(env, &path, &source, command, mode)?
     };
 
     let value: serde_json::Value = serde_json::from_str(&json)
@@ -73,9 +83,15 @@ fn json_type_name(value: &serde_json::Value) -> &'static str {
 
 /// Evaluates a JS/TS config in a sandboxed QuickJS runtime (time and memory
 /// capped, no module imports) and returns the exported config as JSON.
-fn evaluate(path: &Path, source: &str, command: &str, mode: &str) -> Result<String, ConfigError> {
+fn evaluate(
+    env: &oj_env::Env,
+    path: &Path,
+    source: &str,
+    command: &str,
+    mode: &str,
+) -> Result<String, ConfigError> {
     let eval_err = |e: rquickjs::Error| ConfigError::Eval(path.to_path_buf(), e.to_string());
-    let script = config_script(&to_script(&strip_types(path, source)?), command, mode);
+    let script = config_script(env, &to_script(&strip_types(path, source)?), command, mode);
 
     let rt = rquickjs::Runtime::new().map_err(eval_err)?;
     rt.set_memory_limit(EVAL_MEMORY_LIMIT);
@@ -101,8 +117,9 @@ fn evaluate(path: &Path, source: &str, command: &str, mode: &str) -> Result<Stri
 /// The full script: a prelude (`defineConfig`, `process.env`), the config, a
 /// call with Vite's `ConfigEnv` when it exports a function, function/RegExp
 /// markers for the option bags that carry them, and the JSON result.
-fn config_script(script: &str, command: &str, mode: &str) -> String {
-    let env_obj: String = std::env::vars()
+fn config_script(env: &oj_env::Env, script: &str, command: &str, mode: &str) -> String {
+    let env_obj: String = env
+        .vars()
         .map(|(k, v)| {
             format!(
                 "{}:{}",
@@ -249,10 +266,14 @@ mod tests {
     }
 
     fn eval_config_in(label: &str, src: &str) -> OjConfig {
+        eval_config_with(oj_env::get(), label, src)
+    }
+
+    fn eval_config_with(env: &oj_env::Env, label: &str, src: &str) -> OjConfig {
         let dir = std::env::temp_dir().join(format!("oj-cfg-{}-{label}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         std::fs::write(dir.join("oj.config.ts"), src).unwrap();
-        let cfg = load(&dir).unwrap();
+        let cfg = load_in(env, &dir, "serve", "development").unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         cfg
     }
@@ -317,6 +338,7 @@ mod tests {
     #[test]
     fn undefined_reference_config_gives_plugins_hint() {
         let err = evaluate(
+            oj_env::get(),
             std::path::Path::new("oj.config.mjs"),
             "export default [tailwindcss()];\n",
             "serve",
@@ -339,8 +361,9 @@ mod tests {
 
     #[test]
     fn computed_values_and_process_env_work() {
-        unsafe { std::env::set_var("OJ_TEST_PORT", "4321") };
-        let cfg = eval_config_in(
+        let env = oj_env::Env::from_vars([("OJ_TEST_PORT", "4321")]);
+        let cfg = eval_config_with(
+            &env,
             "computed",
             "export default { server: { port: Number(process.env.OJ_TEST_PORT), open: 1 > 0 } };\n",
         );

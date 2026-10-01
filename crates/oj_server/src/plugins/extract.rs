@@ -54,7 +54,7 @@ pub struct ViteValues {
 /// Bound on config extraction (default 60s, `OJ_EXTRACT_TIMEOUT` raises it):
 /// a config hook that opens a socket or timer must not wedge boot forever.
 pub(crate) fn extraction_timeout() -> std::time::Duration {
-    extraction_timeout_from(std::env::var("OJ_EXTRACT_TIMEOUT").ok().as_deref())
+    extraction_timeout_from(oj_env::get().knobs.extract_timeout.as_deref())
 }
 
 pub(crate) fn extraction_timeout_from(raw: Option<&str>) -> std::time::Duration {
@@ -283,6 +283,25 @@ pub(crate) fn extract_vite_values_with(
     mode: &str,
     mode_explicit: bool,
 ) -> Option<ViteValues> {
+    extract_vite_values_timed(
+        root,
+        config,
+        command,
+        mode,
+        mode_explicit,
+        extraction_timeout(),
+    )
+}
+
+/// [`extract_vite_values_with`] bounded by `timeout` instead of `OJ_EXTRACT_TIMEOUT`.
+pub(crate) fn extract_vite_values_timed(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+    mode_explicit: bool,
+    timeout: std::time::Duration,
+) -> Option<ViteValues> {
     if plugins_file(root).is_some() {
         return None;
     }
@@ -306,8 +325,6 @@ pub(crate) fn extract_vite_values_with(
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
     let script = materialize_extract_script(&cache)?;
-    // Bounded: config plugin code must never wedge boot forever.
-    let timeout = extraction_timeout();
     let payload = serde_json::json!({
         "vite": vite.to_string_lossy(),
         "root": root.to_string_lossy(),
@@ -454,7 +471,11 @@ pub(crate) fn extraction_store(root: &Path) -> oj_cache::config_extract::ConfigE
             "{}:deno:{}:{}",
             env!("CARGO_PKG_VERSION"),
             blake3::hash(VITE_EXTRACT_JS.as_bytes()).to_hex(),
-            extraction_env_hash(std::env::vars())
+            extraction_env_hash(
+                oj_env::get()
+                    .vars()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+            )
         ),
     )
 }
