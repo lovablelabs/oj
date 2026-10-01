@@ -297,6 +297,9 @@ struct ServerState {
     /// The keys of `virtual_modules`, shared with per-request rewrite closures
     /// (the map is fixed at boot; cloning the keyset per compile was waste).
     virtual_ids: Arc<std::collections::BTreeSet<String>>,
+    /// Memo of is_cjs_dep_file's per-file verdict (a read + syntax probe):
+    /// dep files do not change within a session, like `dir_cache`.
+    cjs_dep_memo: Mutex<HashMap<PathBuf, bool>>,
     /// See `canonicalize_memo`.
     canon_memo: Mutex<std::collections::HashMap<String, PathBuf>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
@@ -1496,6 +1499,7 @@ impl DevServer {
                     .flat_map(|m| m.keys().cloned())
                     .collect(),
             ),
+            cjs_dep_memo: Mutex::new(HashMap::new()),
             canon_memo: Mutex::new(std::collections::HashMap::new()),
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
             jsx_overrides,

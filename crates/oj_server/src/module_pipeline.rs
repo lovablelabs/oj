@@ -852,7 +852,7 @@ impl ImportRewrite<'_> {
         // optimizeDeps.needsInterop forces the interop rewrite even
         // when static analysis reads the dep as ESM.
         if in_node_modules
-            && (is_cjs_dep_file(&resolved)
+            && (is_cjs_dep_file(&job.state.cjs_dep_memo, &resolved)
                 || job.state.optimize_view.needs_forced_interop(&resolved))
         {
             allow_root(&job.state.fs_allow, package_root(&resolved));

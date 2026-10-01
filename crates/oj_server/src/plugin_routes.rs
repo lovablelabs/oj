@@ -252,10 +252,8 @@ pub(crate) fn is_lingui_macro_specifier(spec: &str) -> bool {
     )
 }
 
-pub(crate) fn is_cjs_dep_file(path: &Path) -> bool {
-    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, bool>>> = std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(&v) = cache.lock().unwrap().get(path) {
+pub(crate) fn is_cjs_dep_file(memo: &Mutex<HashMap<PathBuf, bool>>, path: &Path) -> bool {
+    if let Some(&v) = memo.lock().unwrap().get(path) {
         return v;
     }
     // Only JS files can be CJS: a css/json/asset dep has no ESM syntax either,
@@ -269,7 +267,7 @@ pub(crate) fn is_cjs_dep_file(path: &Path) -> bool {
             Ok(src) => !oj_compiler::cjs::has_module_syntax_pub(path, &src),
             Err(_) => false,
         };
-    cache.lock().unwrap().insert(path.to_path_buf(), v);
+    memo.lock().unwrap().insert(path.to_path_buf(), v);
     v
 }
 
