@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+//! The dev server's module graph: who imports whom, what each module accepts,
+//! and the HMR timestamps that tell importers to re-fetch.
+
+mod propagate;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+pub use propagate::{HmrDecision, UpdateTarget};
 
 #[derive(Debug, Default)]
 pub struct ModuleNode {
@@ -35,24 +42,6 @@ pub struct ModuleNode {
 #[derive(Debug, Default)]
 pub struct ModuleGraph {
     modules: HashMap<PathBuf, ModuleNode>,
-}
-
-/// One boundary an update stops at (Vite's `PropagationBoundary`): the module
-/// that accepts, the module it accepts (itself, or a declared dependency), and
-/// whether the boundary sits inside an import cycle with the changed chain, in
-/// which case a failed re-import must reset the page instead of surfacing an
-/// error (Vite's `isWithinCircularImport`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct UpdateTarget {
-    pub boundary: PathBuf,
-    pub accepted: PathBuf,
-    pub within_circular_import: bool,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum HmrDecision {
-    Update { boundaries: Vec<PathBuf> },
-    FullReload { reason: String },
 }
 
 impl ModuleGraph {
@@ -137,75 +126,16 @@ impl ModuleGraph {
             .collect();
     }
 
-    /// Whether every binding `importer` uses from `dep` falls inside `dep`'s
-    /// accepted exports (Vite's `areAllImportsAccepted`): the update then
-    /// never climbs through this importer.
-    fn all_imports_accepted(
-        &self,
-        importer: &Path,
-        dep: &Path,
-        accepted: &HashSet<String>,
-    ) -> bool {
-        self.modules
-            .get(importer)
-            .and_then(|n| n.imported_bindings.get(dep))
-            .is_some_and(|bindings| bindings.iter().all(|b| accepted.contains(b)))
-    }
-
-    fn accepts_dep(&self, importer: &Path, dep: &Path) -> bool {
-        self.modules
-            .get(importer)
-            .is_some_and(|n| n.accepted_hmr_deps.contains(dep))
-    }
-
-    /// The update targets for a change. A self-accepting boundary accepts
-    /// itself; an importer that declared the changed module (or a module on the
-    /// way up) in `hot.accept(deps)` is the boundary for that dependency. `Err`
-    /// means a full reload.
-    pub fn update_targets(&self, changed: &Path) -> Result<Vec<UpdateTarget>, String> {
-        if !self.modules.contains_key(changed) {
-            return Err(format!("{} is not in the module graph", changed.display()));
-        }
-        let mut targets = self.collect_boundaries(&[changed], &[])?;
-        targets.sort();
-        targets.dedup();
-        Ok(targets)
-    }
-
-    /// The update targets when a module calls `import.meta.hot.invalidate()`:
-    /// its own acceptance is skipped and the walk starts at its importers, as
-    /// Vite's `updateModules(..., [...mod.importers])` does. A module nothing
-    /// imports is an entry, so the page must reload.
-    pub fn update_targets_from_importers(
-        &self,
-        changed: &Path,
-    ) -> Result<Vec<UpdateTarget>, String> {
-        let Some(node) = self.modules.get(changed) else {
-            return Err(format!("{} is not in the module graph", changed.display()));
-        };
-        if node.importers.is_empty() {
-            return Err(format!("{} invalidated at an entry", changed.display()));
-        }
-        let seeds: Vec<&Path> = node.importers.iter().map(PathBuf::as_path).collect();
-        let mut targets = self.collect_boundaries(&seeds, &[changed])?;
-        targets.sort();
-        targets.dedup();
-        Ok(targets)
-    }
-
     /// Record a module's imports, returning the dependencies it no longer
     /// imports that nothing else imports either (Vite's `prunedImports` in
     /// `updateModuleInfo`): the client is told to prune them so their side
     /// effects (an injected stylesheet) are undone.
     pub fn set_imports<P: AsRef<Path>>(&mut self, importer: &Path, imports: &[P]) -> Vec<PathBuf> {
         let listed = |old: &Path| imports.iter().any(|i| i.as_ref() == old);
-        // Re-registering a module with the imports it already has (every warm
-        // request in dev) changes nothing: skip building anything. `imports`
-        // may repeat a path (`./a.css` and `./a.css?inline` key the same one),
-        // so equality is set-shaped. Typical modules take the allocation-free
-        // double scan (the warm path must not touch the heap, see
-        // tests/warm_path.rs); a barrel-sized list amortizes one borrowed set
-        // against the O(n*m) the scan would cost per request.
+        // Every warm request re-registers the same imports: return without
+        // allocating (tests/warm_path.rs). `imports` may repeat a path, so the
+        // comparison is set-shaped; barrel-sized lists use one borrowed set
+        // instead of the O(n*m) double scan.
         const SCAN_LIMIT: usize = 32;
         let unchanged = self.modules.get(importer).is_some_and(|node| {
             if imports.len() <= SCAN_LIMIT && node.imports.len() <= SCAN_LIMIT {
@@ -254,6 +184,11 @@ impl ModuleGraph {
     /// Stamp pruned modules so a later re-import fetches and re-runs them
     /// (their side effects were undone), as Vite's `handlePrunedModules`.
     pub fn stamp_pruned(&mut self, paths: &[PathBuf], timestamp: u64) {
+        self.stamp_all(paths, timestamp);
+    }
+
+    /// A new HMR timestamp on `paths`, which re-arms their invalidation.
+    fn stamp_all(&mut self, paths: &[PathBuf], timestamp: u64) {
         for path in paths {
             if let Some(node) = self.modules.get_mut(path) {
                 node.last_hmr_timestamp = timestamp;
@@ -283,12 +218,7 @@ impl ModuleGraph {
             .into_iter()
             .filter(|p| p != changed)
             .collect();
-        for path in &dirty {
-            if let Some(node) = self.modules.get_mut(path) {
-                node.last_hmr_timestamp = timestamp;
-                node.last_hmr_invalidation_received = false;
-            }
-        }
+        self.stamp_all(&dirty, timestamp);
         Some(dirty)
     }
 
@@ -302,24 +232,6 @@ impl ModuleGraph {
         paths
     }
 
-    pub fn propagate_update(&self, changed: &Path) -> HmrDecision {
-        if !self.modules.contains_key(changed) {
-            return HmrDecision::FullReload {
-                reason: format!("{} is not in the module graph", changed.display()),
-            };
-        }
-        match self.collect_boundaries(&[changed], &[]) {
-            Ok(targets) => {
-                let mut boundaries: Vec<PathBuf> =
-                    targets.into_iter().map(|t| t.boundary).collect();
-                boundaries.sort();
-                boundaries.dedup();
-                HmrDecision::Update { boundaries }
-            }
-            Err(reason) => HmrDecision::FullReload { reason },
-        }
-    }
-
     pub fn node(&self, path: &Path) -> Option<&ModuleNode> {
         self.modules.get(path)
     }
@@ -330,12 +242,7 @@ impl ModuleGraph {
     /// `moduleGraph.invalidateModule` walking importers.
     pub fn stamp_update(&mut self, changed: &Path, timestamp: u64) -> Vec<PathBuf> {
         let dirty = self.dirty_closure(changed);
-        for path in &dirty {
-            if let Some(node) = self.modules.get_mut(path) {
-                node.last_hmr_timestamp = timestamp;
-                node.last_hmr_invalidation_received = false;
-            }
-        }
+        self.stamp_all(&dirty, timestamp);
         dirty
     }
 
@@ -361,201 +268,6 @@ impl ModuleGraph {
             })
             .unwrap_or(0)
     }
-
-    pub fn propagate_from_seeds(&self, seeds: &[&Path]) -> HmrDecision {
-        for seed in seeds {
-            if !self.modules.contains_key(*seed) {
-                return HmrDecision::FullReload {
-                    reason: format!("{} is not in the module graph", seed.display()),
-                };
-            }
-        }
-        match self.collect_boundaries(seeds, &[]) {
-            Ok(targets) => {
-                let mut boundaries: Vec<PathBuf> =
-                    targets.into_iter().map(|t| t.boundary).collect();
-                boundaries.sort();
-                boundaries.dedup();
-                HmrDecision::Update { boundaries }
-            }
-            Err(reason) => HmrDecision::FullReload { reason },
-        }
-    }
-
-    /// The dirty set an update of `changed` would stamp (its importers up to
-    /// and including the accepting boundaries), without mutating anything.
-    pub fn dirty_closure(&self, changed: &Path) -> Vec<PathBuf> {
-        let mut dirty: Vec<PathBuf> = vec![changed.to_path_buf()];
-        let mut queue = vec![changed.to_path_buf()];
-        let mut seen: HashSet<PathBuf> = queue.iter().cloned().collect();
-        while let Some(current) = queue.pop() {
-            let Some(node) = self.modules.get(&current) else {
-                continue;
-            };
-            if node.is_self_accepting && current != changed {
-                continue;
-            }
-            for importer in &node.importers {
-                // A dep-accepting importer is not re-fetched: its callback receives
-                // the new dependency module instead.
-                if self.accepts_dep(importer, &current) {
-                    continue;
-                }
-                if seen.insert(importer.clone()) {
-                    dirty.push(importer.clone());
-                    queue.push(importer.clone());
-                }
-            }
-        }
-        dirty.sort();
-        dirty
-    }
-
-    fn collect_boundaries<'a>(
-        &'a self,
-        seeds: &[&'a Path],
-        pre_stack: &[&'a Path],
-    ) -> Result<Vec<UpdateTarget>, String> {
-        let mut colors: HashMap<&'a Path, Color> = HashMap::new();
-        for module in pre_stack {
-            colors.insert(module, Color::Gray);
-        }
-        let mut boundaries: Vec<UpdateTarget> = Vec::new();
-        for seed in seeds {
-            self.climb(seed, &mut colors, &mut boundaries)?;
-        }
-        Ok(boundaries)
-    }
-
-    /// Whether `boundary` is imported, directly or through other modules, by a
-    /// module on the current change chain (the gray nodes of the walk, plus the
-    /// boundary itself): Vite's `isNodeWithinCircularImports`. Stylesheet
-    /// importers are skipped as there, and a module's direct self-import is not
-    /// a cycle.
-    fn is_within_circular_imports(&self, boundary: &Path, colors: &HashMap<&Path, Color>) -> bool {
-        let mut stack = vec![boundary];
-        let mut seen: HashSet<&Path> = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !seen.insert(current) {
-                continue;
-            }
-            let Some(node) = self.modules.get(current) else {
-                continue;
-            };
-            for importer in &node.importers {
-                let importer = importer.as_path();
-                if importer == current || is_css_path(importer) {
-                    continue;
-                }
-                if importer == boundary || colors.get(importer) == Some(&Color::Gray) {
-                    return true;
-                }
-                stack.push(importer);
-            }
-        }
-        false
-    }
-
-    fn climb<'a>(
-        &'a self,
-        seed: &'a Path,
-        colors: &mut HashMap<&'a Path, Color>,
-        boundaries: &mut Vec<UpdateTarget>,
-    ) -> Result<(), String> {
-        enum Step<'s> {
-            Enter(&'s Path),
-            Blacken(&'s Path),
-        }
-
-        let mut stack = vec![Step::Enter(seed)];
-        while let Some(step) = stack.pop() {
-            let current = match step {
-                Step::Blacken(path) => {
-                    colors.insert(path, Color::Black);
-                    continue;
-                }
-                Step::Enter(path) => path,
-            };
-            match colors.get(current) {
-                Some(Color::Black) => continue,
-                // An importer already on the current path is a circular import.
-                // Vite skips it (flagging `isWithinCircularImport`) and keeps
-                // searching the other importers for a boundary; only reaching an
-                // entry with no accepting module forces a full reload. Barrel-file
-                // cycles are common and must not turn every edit into a reload.
-                Some(Color::Gray) => continue,
-                None => {}
-            }
-            let Some(node) = self.modules.get(current) else {
-                return Err(format!("{} is not in the module graph", current.display()));
-            };
-            if node.is_self_accepting {
-                boundaries.push(UpdateTarget {
-                    boundary: current.to_path_buf(),
-                    accepted: current.to_path_buf(),
-                    within_circular_import: self.is_within_circular_imports(current, colors),
-                });
-                colors.insert(current, Color::Black);
-                continue;
-            }
-            // A partially accepting module (`acceptExports`) is itself a
-            // boundary — its callback receives the new module — and the walk
-            // then gates each importer on the bindings it actually uses
-            // (Vite's propagateUpdate: acceptedHmrExports + importedBindings).
-            // With no importers it counts as self-accepting, never a dead end.
-            let accepted_exports = node.accepted_exports.as_ref();
-            if accepted_exports.is_some() {
-                boundaries.push(UpdateTarget {
-                    boundary: current.to_path_buf(),
-                    accepted: current.to_path_buf(),
-                    within_circular_import: self.is_within_circular_imports(current, colors),
-                });
-            } else if node.importers.is_empty() {
-                return Err(format!(
-                    "update reached entry {} with no accepting boundary",
-                    current.display()
-                ));
-            }
-            colors.insert(current, Color::Gray);
-            stack.push(Step::Blacken(current));
-            let mut importers: Vec<&Path> = node.importers.iter().map(PathBuf::as_path).collect();
-            importers.sort_unstable();
-            for importer in importers.into_iter().rev() {
-                // An importer that accepts `current` via hot.accept(deps) is the
-                // boundary for this change; the walk does not continue above it.
-                if self.accepts_dep(importer, current) {
-                    boundaries.push(UpdateTarget {
-                        boundary: importer.to_path_buf(),
-                        accepted: current.to_path_buf(),
-                        within_circular_import: self.is_within_circular_imports(importer, colors),
-                    });
-                    continue;
-                }
-                // An importer using only accepted exports is already covered by
-                // the partial boundary above (Vite's areAllImportsAccepted).
-                if let Some(accepted) = accepted_exports {
-                    if self.all_imports_accepted(importer, current, accepted) {
-                        continue;
-                    }
-                }
-                stack.push(Step::Enter(importer));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn is_css_path(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("css" | "scss" | "sass" | "less" | "styl" | "stylus" | "pcss" | "postcss" | "sss")
-    )
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Color {
-    Gray,
-    Black,
 }
 
 #[cfg(test)]
