@@ -1,11 +1,20 @@
 use crate::schema::*;
 use std::path::{Path, PathBuf};
 
-fn define_value(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
+/// `define` entries as `(key, replacement)`: strings verbatim, anything else
+/// as its JSON text.
+fn defines_of<'a>(
+    entries: impl Iterator<Item = (&'a String, &'a serde_json::Value)>,
+) -> Vec<(String, String)> {
+    entries
+        .map(|(k, v)| {
+            let value = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            (k.clone(), value)
+        })
+        .collect()
 }
 
 /// `html.cspNonce`, when set and non-empty.
@@ -27,6 +36,7 @@ pub fn public_dir(config: &OjConfig, root: &Path) -> Option<PathBuf> {
     }
 }
 
+/// `server.strictPort` (Vite default false: try the next free port).
 pub fn server_strict_port(config: &OjConfig) -> bool {
     config
         .server
@@ -35,6 +45,7 @@ pub fn server_strict_port(config: &OjConfig) -> bool {
         .unwrap_or(false)
 }
 
+/// `envPrefix` as a list; unset or empty means Vite's `VITE_`.
 pub fn env_prefixes(config: &OjConfig) -> Vec<String> {
     config
         .env_prefix
@@ -44,6 +55,7 @@ pub fn env_prefixes(config: &OjConfig) -> Vec<String> {
         .unwrap_or_else(|| vec!["VITE_".to_string()])
 }
 
+/// `server.fs.deny` as written (Vite's defaults are applied by the caller).
 pub fn server_fs_deny(config: &OjConfig) -> Vec<String> {
     config
         .server
@@ -54,20 +66,17 @@ pub fn server_fs_deny(config: &OjConfig) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Top-level `define`.
 pub fn config_defines(config: &OjConfig) -> Vec<(String, String)> {
     config
         .define
         .as_ref()
-        .map(|d| {
-            d.iter()
-                .map(|(k, v)| (k.clone(), define_value(v)))
-                .collect()
-        })
+        .map(|d| defines_of(d.iter()))
         .unwrap_or_default()
 }
 
-/// `server.warmup.clientFiles` / `server.warmup.ssrFiles`: modules to compile
-/// eagerly at startup so their first request is already warm.
+/// `server.warmup.clientFiles` / `server.warmup.ssrFiles`: modules compiled
+/// eagerly at startup.
 pub fn server_warmup_files(config: &OjConfig) -> (Vec<String>, Vec<String>) {
     let w = config.server.as_ref().and_then(|s| s.warmup.as_ref());
     let take = |f: Option<&Vec<String>>| f.cloned().unwrap_or_default();
@@ -77,6 +86,7 @@ pub fn server_warmup_files(config: &OjConfig) -> (Vec<String>, Vec<String>) {
     )
 }
 
+/// `environments.<env_name>.define`.
 pub fn environment_defines(config: &OjConfig, env_name: &str) -> Vec<(String, String)> {
     config
         .environments
@@ -84,11 +94,7 @@ pub fn environment_defines(config: &OjConfig, env_name: &str) -> Vec<(String, St
         .and_then(|envs| envs.get(env_name))
         .and_then(|env| env.get("define"))
         .and_then(|d| d.as_object())
-        .map(|d| {
-            d.iter()
-                .map(|(k, v)| (k.clone(), define_value(v)))
-                .collect()
-        })
+        .map(|d| defines_of(d.iter()))
         .unwrap_or_default()
 }
 

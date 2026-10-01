@@ -71,85 +71,96 @@ fn json_type_name(value: &serde_json::Value) -> &'static str {
     }
 }
 
+/// Evaluates a JS/TS config in a sandboxed QuickJS runtime (time and memory
+/// capped, no module imports) and returns the exported config as JSON.
 fn evaluate(path: &Path, source: &str, command: &str, mode: &str) -> Result<String, ConfigError> {
-    let js = strip_types(path, source)?;
-    let script = to_script(&js);
+    let eval_err = |e: rquickjs::Error| ConfigError::Eval(path.to_path_buf(), e.to_string());
+    let script = config_script(&to_script(&strip_types(path, source)?), command, mode);
 
-    let rt = rquickjs::Runtime::new()
-        .map_err(|e| ConfigError::Eval(path.to_path_buf(), e.to_string()))?;
+    let rt = rquickjs::Runtime::new().map_err(eval_err)?;
     rt.set_memory_limit(EVAL_MEMORY_LIMIT);
     let deadline = std::time::Instant::now() + EVAL_TIME_LIMIT;
     rt.set_interrupt_handler(Some(Box::new(move || {
         std::time::Instant::now() >= deadline
     })));
-    let ctx = rquickjs::Context::full(&rt)
-        .map_err(|e| ConfigError::Eval(path.to_path_buf(), e.to_string()))?;
+    let ctx = rquickjs::Context::full(&rt).map_err(eval_err)?;
 
     ctx.with(|ctx| {
-        let env_obj: String = std::env::vars()
-            .map(|(k, v)| {
-                format!(
-                    "{}:{}",
-                    serde_json::to_string(&k).unwrap(),
-                    serde_json::to_string(&v).unwrap()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let prelude = format!(
-            "var defineConfig = function (x) {{ return x; }};\n\
-             var process = {{ env: {{ {env_obj} }} }};\n\
-             var globalThis = globalThis || this;\n"
-        );
-        let env_arg = format!(
-            "{{ command: {}, mode: {}, isSsrBuild: false, isPreview: false }}",
-            serde_json::to_string(command).unwrap(),
-            serde_json::to_string(mode).unwrap()
-        );
-        let full = format!(
-            "{prelude}{script}\n\
-             var __ojC = globalThis.__ojConfig;\n\
-             if (typeof __ojC === 'function') __ojC = __ojC({env_arg});\n\
-             function __ojMark(o) {{\n\
-               if (!o || typeof o !== 'object') return;\n\
-               for (var k in o) {{\n\
-                 var v = o[k];\n\
-                 if (typeof v === 'function') o[k] = '__oj_fn__';\n\
-                 else if (v instanceof RegExp) o[k] = {{ __oj_regex__: v.source }};\n\
-                 else __ojMark(v);\n\
-               }}\n\
-             }}\n\
-             __ojMark(__ojC && __ojC.build && (__ojC.build.rolldownOptions || __ojC.build.rollupOptions));\n\
-             __ojMark(__ojC && __ojC.css && __ojC.css.modules);\n\
-             JSON.stringify(__ojC ?? null)"
-        );
-        let result: rquickjs::Value = ctx.eval(full).map_err(|e| {
+        let result: rquickjs::Value = ctx.eval(script).map_err(|e| {
             let caught = ctx.catch();
-            let mut detail = caught
+            let detail = caught
                 .as_exception()
                 .map(|ex| ex.to_string())
                 .unwrap_or_else(|| format!("{e}"));
-            if std::time::Instant::now() >= deadline {
-                detail = format!(
-                    "evaluation exceeded the {}s limit; a config file must not \
-                     block (no infinite loops, no blocking work)",
-                    EVAL_TIME_LIMIT.as_secs()
-                );
-            }
-            if detail.contains("is not defined") {
-                detail.push_str(
-                    "\nnote: oj.config is evaluated in a sandbox without module imports; \
-                     if this file is a plugins array, put it in oj.plugins.mjs instead",
-                );
-            }
-            ConfigError::Eval(path.to_path_buf(), detail)
+            ConfigError::Eval(path.to_path_buf(), eval_error_detail(detail, deadline))
         })?;
-        result
-            .get::<String>()
-            .map_err(|e| ConfigError::Eval(path.to_path_buf(), e.to_string()))
+        result.get::<String>().map_err(eval_err)
     })
 }
 
+/// The full script: a prelude (`defineConfig`, `process.env`), the config, a
+/// call with Vite's `ConfigEnv` when it exports a function, function/RegExp
+/// markers for the option bags that carry them, and the JSON result.
+fn config_script(script: &str, command: &str, mode: &str) -> String {
+    let env_obj: String = std::env::vars()
+        .map(|(k, v)| {
+            format!(
+                "{}:{}",
+                serde_json::to_string(&k).unwrap(),
+                serde_json::to_string(&v).unwrap()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let prelude = format!(
+        "var defineConfig = function (x) {{ return x; }};\n\
+         var process = {{ env: {{ {env_obj} }} }};\n\
+         var globalThis = globalThis || this;\n"
+    );
+    let env_arg = format!(
+        "{{ command: {}, mode: {}, isSsrBuild: false, isPreview: false }}",
+        serde_json::to_string(command).unwrap(),
+        serde_json::to_string(mode).unwrap()
+    );
+    format!(
+        "{prelude}{script}\n\
+         var __ojC = globalThis.__ojConfig;\n\
+         if (typeof __ojC === 'function') __ojC = __ojC({env_arg});\n\
+         function __ojMark(o) {{\n\
+           if (!o || typeof o !== 'object') return;\n\
+           for (var k in o) {{\n\
+             var v = o[k];\n\
+             if (typeof v === 'function') o[k] = '__oj_fn__';\n\
+             else if (v instanceof RegExp) o[k] = {{ __oj_regex__: v.source }};\n\
+             else __ojMark(v);\n\
+           }}\n\
+         }}\n\
+         __ojMark(__ojC && __ojC.build && (__ojC.build.rolldownOptions || __ojC.build.rollupOptions));\n\
+         __ojMark(__ojC && __ojC.css && __ojC.css.modules);\n\
+         JSON.stringify(__ojC ?? null)"
+    )
+}
+
+/// An evaluation error's message: a timeout replaces it, and an undefined
+/// reference gets a hint about the import-free sandbox.
+fn eval_error_detail(mut detail: String, deadline: std::time::Instant) -> String {
+    if std::time::Instant::now() >= deadline {
+        detail = format!(
+            "evaluation exceeded the {}s limit; a config file must not \
+             block (no infinite loops, no blocking work)",
+            EVAL_TIME_LIMIT.as_secs()
+        );
+    }
+    if detail.contains("is not defined") {
+        detail.push_str(
+            "\nnote: oj.config is evaluated in a sandbox without module imports; \
+             if this file is a plugins array, put it in oj.plugins.mjs instead",
+        );
+    }
+    detail
+}
+
+/// TypeScript -> JavaScript via oxc (enums need `with_enum_eval` scoping).
 fn strip_types(path: &Path, source: &str) -> Result<String, ConfigError> {
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
@@ -188,6 +199,8 @@ fn strip_types(path: &Path, source: &str) -> Result<String, ConfigError> {
     Ok(Codegen::new().build(&program).code)
 }
 
+/// Turns the stripped module into a plain script: imports dropped, `export
+/// default` assigned to `globalThis.__ojConfig`.
 fn to_script(js: &str) -> String {
     let mut out = String::with_capacity(js.len());
     for line in js.lines() {
@@ -215,9 +228,8 @@ mod tests {
     use crate::resolve::{resolve_alias, resolve_conditions};
     use crate::server::{config_defines, environment_defines};
 
-    /// A config may declare a TypeScript `enum`, and lowering one needs scoping
-    /// built with `with_enum_eval`: without it the transform aborts the process
-    /// instead of loading the config.
+    /// Lowering a TypeScript `enum` needs `with_enum_eval` scoping, or the
+    /// transform aborts the process.
     #[test]
     fn a_config_that_declares_an_enum_loads() {
         static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

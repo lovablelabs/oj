@@ -19,47 +19,61 @@ pub struct SsrExternals {
     pub target: Option<String>,
 }
 
-pub fn ssr_externals(config: &OjConfig) -> SsrExternals {
-    let mut out = SsrExternals::default();
-    let Some(ssr) = config.ssr.as_ref().and_then(|s| s.as_object()) else {
-        return out;
-    };
-    fn entries(v: Option<&serde_json::Value>) -> (bool, Vec<String>, Vec<String>) {
-        let mut names = Vec::new();
-        let mut regexes = Vec::new();
-        let items: Vec<&serde_json::Value> = match v {
-            Some(serde_json::Value::Bool(true)) => return (true, names, regexes),
-            Some(serde_json::Value::Array(a)) => a.iter().collect(),
-            Some(other @ (serde_json::Value::String(_) | serde_json::Value::Object(_))) => {
-                vec![other]
-            }
-            _ => Vec::new(),
-        };
-        for item in items {
-            match item {
-                serde_json::Value::String(s) => names.push(s.clone()),
-                serde_json::Value::Object(o) => {
-                    if let Some(src) = o.get("regex").and_then(|r| r.as_str()) {
-                        regexes.push(src.to_string());
-                    }
-                }
-                _ => {}
-            }
+/// A parsed `ssr.noExternal` / `ssr.external` value.
+#[derive(Default)]
+struct ExternalEntries {
+    /// The value was `true`.
+    all: bool,
+    names: Vec<String>,
+    /// RegExp sources (`{ regex }` objects from the extractor).
+    regexes: Vec<String>,
+}
+
+/// `true`, a string, a RegExp object, or an array of strings / RegExps.
+fn external_entries(v: Option<&serde_json::Value>) -> ExternalEntries {
+    let mut out = ExternalEntries::default();
+    let items: Vec<&serde_json::Value> = match v {
+        Some(serde_json::Value::Bool(true)) => {
+            out.all = true;
+            return out;
         }
-        (false, names, regexes)
+        Some(serde_json::Value::Array(a)) => a.iter().collect(),
+        Some(other @ (serde_json::Value::String(_) | serde_json::Value::Object(_))) => {
+            vec![other]
+        }
+        _ => Vec::new(),
+    };
+    for item in items {
+        match item {
+            serde_json::Value::String(s) => out.names.push(s.clone()),
+            serde_json::Value::Object(o) => {
+                if let Some(src) = o.get("regex").and_then(|r| r.as_str()) {
+                    out.regexes.push(src.to_string());
+                }
+            }
+            _ => {}
+        }
     }
-    let (all, names, regexes) = entries(ssr.get("noExternal"));
-    out.no_external_all = all;
-    out.no_external = names;
-    out.no_external_regex = regexes;
-    let (all, names, _) = entries(ssr.get("external"));
-    out.external_all = all;
-    out.external = names;
-    out.target = ssr
-        .get("target")
-        .and_then(|t| t.as_str())
-        .map(str::to_string);
     out
+}
+
+pub fn ssr_externals(config: &OjConfig) -> SsrExternals {
+    let Some(ssr) = config.ssr.as_ref().and_then(|s| s.as_object()) else {
+        return SsrExternals::default();
+    };
+    let no_external = external_entries(ssr.get("noExternal"));
+    let external = external_entries(ssr.get("external"));
+    SsrExternals {
+        no_external_all: no_external.all,
+        no_external: no_external.names,
+        no_external_regex: no_external.regexes,
+        external_all: external.all,
+        external: external.names,
+        target: ssr
+            .get("target")
+            .and_then(|t| t.as_str())
+            .map(str::to_string),
+    }
 }
 
 /// The package name an import specifier or a `node_modules` path names
@@ -84,8 +98,7 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
     if !pattern.contains('*') {
         return pattern == value;
     }
-    // A `*` matches any run of characters (Vite's picomatch use on package
-    // names is effectively this).
+    // `*` matches any run of characters (all Vite's picomatch use needs here).
     let mut rest = value;
     let mut pieces = pattern.split('*').peekable();
     let first = pieces.next().unwrap_or("");
@@ -196,19 +209,14 @@ impl SsrExternals {
 }
 
 /// Whether the ssr environment is "runner-backed": its modules execute in a
-/// plugin-driven runtime (e.g. the Cloudflare plugin's workerd
-/// DevEnvironments), not in oj's own Node SSR runner. The extractor decides it
-/// the way Vite does — the raw config, or a plugin's `config` hook return
-/// merged Vite-style, declares `environments.<name>.dev.createEnvironment`
-/// (the same declaration plugin-host.mjs's buildEnvironments gate reads) —
-/// and publishes it as `ssr.runnerBacked` (see detectSsrRunnerBacked in
-/// vite-extract.mjs).
+/// plugin-driven runtime (e.g. workerd DevEnvironments), not oj's Node SSR
+/// runner. The extractor publishes it as `ssr.runnerBacked` when the merged
+/// config declares `environments.<name>.dev.createEnvironment` (see
+/// detectSsrRunnerBacked in vite-extract.mjs).
 ///
-/// Vite-shaped rule: conditions never cross runtimes. An environment's
-/// `resolve.conditions` steer resolution only for code executing in that
-/// environment's own runtime, so when ssr is runner-backed its list describes
-/// workerd and every Node-executing consumer takes Vite's Node server
-/// semantics (`node_server_conditions`) instead.
+/// Conditions never cross runtimes: when ssr is runner-backed its
+/// `resolve.conditions` describe that runtime, and Node-executing consumers use
+/// `node_server_conditions` instead.
 pub fn ssr_runner_backed(config: &OjConfig) -> bool {
     config
         .ssr
@@ -382,11 +390,7 @@ mod ssr_option_tests {
 mod tests {
     use super::*;
 
-    // Conditions never cross runtimes: `ssr.runnerBacked` (published by the
-    // extractor from a structural signal — the raw config's
-    // `environments.ssr.dev.createEnvironment` or the Cloudflare dev plugin in
-    // the plugin list) tells every Node-executing consumer to take Vite's Node
-    // server semantics instead of the runner environment's own list.
+    // Only an explicit `ssr.runnerBacked: true` counts.
     #[test]
     fn ssr_runner_backed_reads_the_extractor_flag() {
         let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };

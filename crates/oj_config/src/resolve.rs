@@ -5,29 +5,31 @@ pub fn resolve_conditions(config: &OjConfig, env_name: &str) -> Vec<String> {
     resolve_conditions_for(config, env_name, true)
 }
 
-/// The user's own `resolve.conditions` for an environment (its
-/// `environments.<name>.resolve.conditions` first, then — for the ssr
-/// environment — the `ssr.resolve` sugar, then the top-level list), verbatim,
-/// or None when the config leaves the defaults in place. The ssr sugar must
-/// win over the top-level list: the extractor publishes the resolved ssr
-/// environment's conditions there (e.g. a Cloudflare workerd set), while the
-/// resolved top-level list carries Vite's client defaults (`browser` et al),
-/// which must never steer server-side resolution.
-pub fn user_resolve_conditions(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
-    let str_list = |c: &serde_json::Value| {
-        c.as_array().map(|c| {
-            c.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
-        })
-    };
+/// `environments.<env_name>.resolve`, if set.
+fn env_resolve<'a>(config: &'a OjConfig, env_name: &str) -> Option<&'a serde_json::Value> {
     config
         .environments
         .as_ref()
         .and_then(|e| e.get(env_name))
         .and_then(|e| e.get("resolve"))
-        .and_then(|r| r.get("conditions"))
-        .and_then(&str_list)
+}
+
+/// The string items of a JSON array (non-strings skipped), or None when not an array.
+fn str_list(v: &serde_json::Value) -> Option<Vec<String>> {
+    v.as_array().map(|a| {
+        a.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    })
+}
+
+/// A resolve list's environment-level value: `environments.<name>.resolve.<key>`,
+/// then for the ssr environment only the `ssr.resolve.<key>` sugar. Callers fall
+/// back to the top-level `resolve` list.
+fn env_resolve_list(config: &OjConfig, env_name: &str, key: &str) -> Option<Vec<String>> {
+    env_resolve(config, env_name)
+        .and_then(|r| r.get(key))
+        .and_then(str_list)
         .or_else(|| {
             if env_name != "ssr" {
                 return None;
@@ -36,107 +38,33 @@ pub fn user_resolve_conditions(config: &OjConfig, env_name: &str) -> Option<Vec<
                 .ssr
                 .as_ref()
                 .and_then(|s| s.get("resolve"))
-                .and_then(|r| r.get("conditions"))
-                .and_then(&str_list)
-        })
-        .or_else(|| config.resolve.as_ref().and_then(|r| r.conditions.clone()))
-}
-
-/// The user's `resolve.externalConditions` for an environment (Vite: the
-/// conditions externalized SSR deps resolve with, replacing — never merging —
-/// the environment's `resolve.conditions`).
-pub fn user_external_conditions(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
-    let str_list = |c: &serde_json::Value| {
-        c.as_array().map(|c| {
-            c.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
-        })
-    };
-    // Most specific wins, as in Vite: the environment's list, then (for the ssr
-    // environment) the `ssr.resolve` sugar, then the top-level `resolve` list.
-    config
-        .environments
-        .as_ref()
-        .and_then(|e| e.get(env_name))
-        .and_then(|e| e.get("resolve"))
-        .and_then(|r| r.get("externalConditions"))
-        .and_then(&str_list)
-        .or_else(|| {
-            if env_name != "ssr" {
-                return None;
-            }
-            config
-                .ssr
-                .as_ref()
-                .and_then(|s| s.get("resolve"))
-                .and_then(|r| r.get("externalConditions"))
-                .and_then(&str_list)
-        })
-        .or_else(|| {
-            config
-                .resolve
-                .as_ref()
-                .and_then(|r| r.external_conditions.clone())
+                .and_then(|r| r.get(key))
+                .and_then(str_list)
         })
 }
 
-/// Export conditions for an environment, as Vite resolves them: the default set
-/// is `browser`/`node`, `module`, and `development` or `production` (per `dev`),
-/// plus `import` and `default`, which the resolver always matches. A user
-/// `resolve.conditions` list replaces the defaults (Vite parity: no implicit
-/// `module` or dev/prod) but Vite's `development|production` placeholder is
-/// mapped to the active one, and `import`/`default` are always kept so a
-/// dual-package `exports` map still resolves.
-pub fn resolve_conditions_for(config: &OjConfig, env_name: &str, dev: bool) -> Vec<String> {
-    let dev_prod = if dev { "development" } else { "production" };
-    if let Some(user) = user_resolve_conditions(config, env_name) {
-        let mut out: Vec<String> = Vec::new();
-        for c in user {
-            let c = if c == "development|production" {
-                dev_prod.to_string()
-            } else {
-                c
-            };
-            if !out.contains(&c) {
-                out.push(c);
-            }
-        }
-        for always in ["import", "default"] {
-            if !out.iter().any(|c| c == always) {
-                out.push(always.to_string());
-            }
-        }
-        return out;
+fn dev_prod(dev: bool) -> &'static str {
+    if dev {
+        "development"
+    } else {
+        "production"
     }
-    let base = if env_name == "ssr" { "node" } else { "browser" };
-    [base, "import", "module", dev_prod, "default"]
-        .map(String::from)
-        .to_vec()
 }
 
-/// Conditions for a Node-executing SSR consumer (the Start loader, the
-/// unbundled SSR resolver) when the ssr environment is runner-backed: Vite's
-/// Node server semantics instead of the foreign runtime's list.
-/// DEFAULT_SERVER_CONDITIONS (`module`, `node`, `development|production` —
-/// vite 8.2.1 dist node.js) plus the user's RAW top-level `resolve.conditions`
-/// (user-authored and runtime-neutral; the resolved top-level list is the
-/// client environment's and never crosses), plus `import`/`default`, which the
-/// resolver always matches.
-pub fn node_server_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
-    let dev_prod = if dev { "development" } else { "production" };
-    let mut out: Vec<String> = ["module", "node", dev_prod].map(String::from).to_vec();
-    let user = config
-        .raw_resolve
-        .as_ref()
-        .and_then(|r| r.conditions.clone())
-        .unwrap_or_default();
+/// Vite's `development|production` placeholder mapped to the active one.
+fn map_dev_prod(c: String, dev_prod: &str) -> String {
+    if c == "development|production" {
+        dev_prod.to_string()
+    } else {
+        c
+    }
+}
+
+/// Appends `user` (placeholder mapped, deduped), then `import`/`default`, which
+/// the resolver always matches.
+fn extend_conditions(out: &mut Vec<String>, user: Vec<String>, dev_prod: &str) {
     for c in user {
-        let c = if c == "development|production" {
-            dev_prod.to_string()
-        } else {
-            c
-        };
+        let c = map_dev_prod(c, dev_prod);
         if !out.contains(&c) {
             out.push(c);
         }
@@ -146,15 +74,75 @@ pub fn node_server_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
             out.push(always.to_string());
         }
     }
+}
+
+/// The user's own `resolve.conditions` for an environment, verbatim, or None
+/// when the config leaves the defaults in place. Precedence: environment, then
+/// (ssr only) the `ssr.resolve` sugar, then the top-level list. The sugar must
+/// win over the top level: it carries the resolved ssr environment's conditions,
+/// while the resolved top-level list is Vite's client defaults (`browser` et al),
+/// which must never steer server-side resolution.
+pub fn user_resolve_conditions(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
+    env_resolve_list(config, env_name, "conditions")
+        .or_else(|| config.resolve.as_ref().and_then(|r| r.conditions.clone()))
+}
+
+/// The user's `resolve.externalConditions` for an environment (Vite: the
+/// conditions externalized SSR deps resolve with, replacing, never merging, the
+/// environment's `resolve.conditions`). Same precedence as
+/// `user_resolve_conditions`.
+pub fn user_external_conditions(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
+    env_resolve_list(config, env_name, "externalConditions").or_else(|| {
+        config
+            .resolve
+            .as_ref()
+            .and_then(|r| r.external_conditions.clone())
+    })
+}
+
+/// Export conditions for an environment, as Vite resolves them. Default:
+/// `browser`/`node`, `module`, `development` or `production` (per `dev`), plus
+/// `import` and `default`. A user `resolve.conditions` list replaces the
+/// defaults (no implicit `module` or dev/prod, like Vite), with the
+/// `development|production` placeholder mapped and `import`/`default` always
+/// kept so a dual-package `exports` map still resolves.
+pub fn resolve_conditions_for(config: &OjConfig, env_name: &str, dev: bool) -> Vec<String> {
+    let dev_prod = dev_prod(dev);
+    if let Some(user) = user_resolve_conditions(config, env_name) {
+        let mut out = Vec::new();
+        extend_conditions(&mut out, user, dev_prod);
+        return out;
+    }
+    let base = if env_name == "ssr" { "node" } else { "browser" };
+    [base, "import", "module", dev_prod, "default"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// Conditions for a Node-executing SSR consumer (Start loader, unbundled SSR
+/// resolver) when the ssr environment is runner-backed: Vite's Node server
+/// semantics, not the foreign runtime's list. DEFAULT_SERVER_CONDITIONS
+/// (`module`, `node`, `development|production`) plus the user's RAW top-level
+/// `resolve.conditions` (the resolved top-level list is the client's and never
+/// crosses), plus `import`/`default`.
+pub fn node_server_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
+    let dev_prod = dev_prod(dev);
+    let mut out: Vec<String> = ["module", "node", dev_prod].map(String::from).to_vec();
+    let user = config
+        .raw_resolve
+        .as_ref()
+        .and_then(|r| r.conditions.clone())
+        .unwrap_or_default();
+    extend_conditions(&mut out, user, dev_prod);
     out
 }
 
 /// `externalConditions` for the same consumers: the user's RAW top-level
-/// `resolve.externalConditions` when set (in Vite, top-level externalConditions
-/// DO inherit into every environment and a user list replaces the default),
-/// else Vite's DEFAULT_EXTERNAL_CONDITIONS (`node`, `module-sync`).
+/// `resolve.externalConditions` when set (in Vite these inherit into every
+/// environment and replace the default), else DEFAULT_EXTERNAL_CONDITIONS
+/// (`node`, `module-sync`).
 pub fn node_server_external_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
-    let dev_prod = if dev { "development" } else { "production" };
+    let dev_prod = dev_prod(dev);
     match config
         .raw_resolve
         .as_ref()
@@ -162,13 +150,7 @@ pub fn node_server_external_conditions(config: &OjConfig, dev: bool) -> Vec<Stri
     {
         Some(user) => user
             .into_iter()
-            .map(|c| {
-                if c == "development|production" {
-                    dev_prod.to_string()
-                } else {
-                    c
-                }
-            })
+            .map(|c| map_dev_prod(c, dev_prod))
             .collect(),
         None => ["node", "module-sync"].map(String::from).to_vec(),
     }
@@ -199,6 +181,7 @@ pub fn resolve_preserve_symlinks(config: &OjConfig) -> bool {
         .unwrap_or(false)
 }
 
+/// Top-level `resolve.alias`, overlaid by the environment's string entries.
 pub fn resolve_alias(config: &OjConfig, env_name: &str) -> Vec<(String, String)> {
     let mut merged: std::collections::BTreeMap<String, String> = config
         .resolve
@@ -206,11 +189,7 @@ pub fn resolve_alias(config: &OjConfig, env_name: &str) -> Vec<(String, String)>
         .and_then(|r| r.alias.as_ref())
         .map(|a| a.clone().into_iter().collect())
         .unwrap_or_default();
-    if let Some(env_alias) = config
-        .environments
-        .as_ref()
-        .and_then(|e| e.get(env_name))
-        .and_then(|e| e.get("resolve"))
+    if let Some(env_alias) = env_resolve(config, env_name)
         .and_then(|r| r.get("alias"))
         .and_then(|a| a.as_object())
     {
@@ -268,12 +247,9 @@ mod tests {
         );
     }
 
-    // `resolve.conditions` falls back the same way: environment, then the ssr
-    // sugar, then the top-level list. The sugar carries the resolved ssr
-    // environment's conditions (e.g. the Cloudflare plugin's workerd set),
-    // while the resolved top-level list is Vite's client defaults (`browser`);
-    // reading the top-level list for the ssr environment steered the Node SSR
-    // loader into browser builds (`document is not defined`).
+    // Same fallback as externalConditions. The sugar carries the resolved ssr
+    // environment's conditions; the resolved top-level list is Vite's client
+    // defaults (`browser`) and must not win for ssr.
     #[test]
     fn resolve_conditions_fall_back_from_environment_to_ssr_sugar_to_top_level() {
         let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
@@ -319,11 +295,9 @@ mod tests {
         );
     }
 
-    // The exact composition the unbundled SSR path (oj_server's ssr_resolver)
-    // uses on a runner-backed (workerd) config: the ssr environment's workerd
-    // set (browser included) never crosses into the Node resolver — Vite's
-    // DEFAULT_SERVER_CONDITIONS equivalents apply, plus the user's RAW
-    // top-level extras, plus import/default.
+    // Runner-backed (workerd) ssr: its set never crosses into the Node
+    // resolver; Vite's DEFAULT_SERVER_CONDITIONS plus RAW top-level extras
+    // plus import/default apply.
     #[test]
     fn a_runner_backed_workerd_config_gets_node_server_conditions() {
         let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -346,10 +320,8 @@ mod tests {
             list(&["node", "module-sync"])
         );
 
-        // The user's RAW top-level resolve lists are the one user-authored,
-        // runtime-neutral source: conditions join the Node defaults (deduped,
-        // dev|prod mapped); externalConditions replace the default, as a user
-        // list does in Vite.
+        // RAW top-level lists: conditions join the Node defaults (deduped,
+        // dev|prod mapped); externalConditions replace the default, as in Vite.
         let with_user: OjConfig = serde_json::from_str(
             r#"{ "ssr": { "runnerBacked": true },
                  "rawResolve": { "conditions": ["custom", "module", "development|production"],
@@ -373,9 +345,8 @@ mod tests {
             list(&["custom-ext", "development"])
         );
 
-        // NOT runner-backed: the environment chain passes verbatim — an
-        // explicit user `browser` (happy-dom-style Node SSR) stays honored, as
-        // Vite honors user conditions.
+        // Not runner-backed: the environment chain passes verbatim, so an
+        // explicit user `browser` stays honored, as in Vite.
         let browser: OjConfig = serde_json::from_str(
             r#"{ "ssr": { "resolve": { "conditions": ["browser", "module"] } } }"#,
         )
@@ -431,8 +402,7 @@ mod tests {
 
     #[test]
     fn unknown_vite_keys_are_ignored_not_rejected() {
-        // Vite never validates config-file keys; a config carrying options oj
-        // doesn't model must load and keep its known fields, not hard-fail.
+        // Vite never validates config keys; unknown options must not fail the load.
         let json = r#"{
             "base": "/app/",
             "resolve": { "dedupe": ["react"], "mainFields": ["module","browser"], "preserveSymlinks": true },

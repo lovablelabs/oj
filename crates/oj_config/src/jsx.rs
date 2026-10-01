@@ -31,22 +31,15 @@ pub fn jsx_settings(config: &OjConfig) -> JsxSettings {
         s.pragma_frag = str_of(jsx, "pragmaFrag");
     }
     if let Some(es) = config.esbuild.as_ref().and_then(|e| e.as_object()) {
-        if s.runtime.is_none() {
-            s.runtime = match str_of(es, "jsx").as_deref() {
-                Some("transform") => Some("classic".into()),
-                Some("automatic") => Some("automatic".into()),
-                _ => None,
-            };
-        }
-        if s.import_source.is_none() {
-            s.import_source = str_of(es, "jsxImportSource");
-        }
-        if s.pragma.is_none() {
-            s.pragma = str_of(es, "jsxFactory");
-        }
-        if s.pragma_frag.is_none() {
-            s.pragma_frag = str_of(es, "jsxFragment");
-        }
+        let runtime = || match str_of(es, "jsx").as_deref() {
+            Some("transform") => Some("classic".into()),
+            Some("automatic") => Some("automatic".into()),
+            _ => None,
+        };
+        s.runtime = s.runtime.or_else(runtime);
+        s.import_source = s.import_source.or_else(|| str_of(es, "jsxImportSource"));
+        s.pragma = s.pragma.or_else(|| str_of(es, "jsxFactory"));
+        s.pragma_frag = s.pragma_frag.or_else(|| str_of(es, "jsxFragment"));
     }
     s
 }

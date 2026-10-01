@@ -1,23 +1,30 @@
 use crate::schema::*;
 
+/// An `optimizeDeps.*` list, empty when unset.
+fn od_list(
+    config: &OjConfig,
+    f: impl FnOnce(&OptimizeDepsConfig) -> Option<&Vec<String>>,
+) -> Vec<String> {
+    config
+        .optimize_deps
+        .as_ref()
+        .and_then(f)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// `optimizeDeps.include`, `exclude` and `entries`, in that order.
 pub fn optimize_deps_lists(config: &OjConfig) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let od = config.optimize_deps.as_ref();
-    let take = |f: Option<&Vec<String>>| f.cloned().unwrap_or_default();
     (
-        take(od.and_then(|o| o.include.as_ref())),
-        take(od.and_then(|o| o.exclude.as_ref())),
-        take(od.and_then(|o| o.entries.as_ref())),
+        od_list(config, |o| o.include.as_ref()),
+        od_list(config, |o| o.exclude.as_ref()),
+        od_list(config, |o| o.entries.as_ref()),
     )
 }
 
 /// `optimizeDeps.needsInterop`: deps forced through CJS->ESM interop.
 pub fn optimize_deps_needs_interop(config: &OjConfig) -> Vec<String> {
-    config
-        .optimize_deps
-        .as_ref()
-        .and_then(|o| o.needs_interop.as_ref())
-        .cloned()
-        .unwrap_or_default()
+    od_list(config, |o| o.needs_interop.as_ref())
 }
 
 /// `optimizeDeps.force`: ignore any cached pre-bundle and rebuild.
@@ -36,8 +43,8 @@ pub fn optimize_deps_bundler_options(config: &OjConfig) -> Option<serde_json::Va
     let Some(options) = od.rolldown_options.as_ref() else {
         return od.esbuild_options.clone();
     };
-    // The optimizer uses esbuild. Translate the nested Rolldown transform and
-    // resolver options instead of dropping them at the sidecar boundary.
+    // The optimizer takes esbuild-shaped options: lift rolldown's nested
+    // `transform` and `resolve` keys to their esbuild names.
     let mut out = options.as_object()?.clone();
     if let Some(transform) = options.get("transform").and_then(|v| v.as_object()) {
         for key in ["define", "target", "keepNames", "drop"] {
@@ -45,9 +52,8 @@ pub fn optimize_deps_bundler_options(config: &OjConfig) -> Option<serde_json::Va
                 out.insert(key.to_string(), value.clone());
             }
         }
-        // rolldown's transform.jsx is often an object (the oxc shape); esbuild's
-        // `jsx` is a string enum and rejects anything else, failing the whole
-        // optimizer run. Only the string form can cross.
+        // esbuild's `jsx` is a string enum; rolldown's object form would fail
+        // the whole optimizer run, so only a string crosses.
         if let Some(jsx) = transform.get("jsx").filter(|v| v.is_string()) {
             out.insert("jsx".to_string(), jsx.clone());
         }

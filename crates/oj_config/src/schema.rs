@@ -18,12 +18,10 @@ pub struct OjConfig {
     pub public_dir: Option<BoolOrString>,
     pub server: Option<ServerConfig>,
     pub resolve: Option<ResolveConfig>,
-    /// The RAW config file's top-level `resolve` block (the extractor's
-    /// `rawResolve`). The extracted `resolve` above comes from Vite's RESOLVED
-    /// config, whose top-level conditions are the client environment's
-    /// (browser-bearing) list; this one is the user-authored, runtime-neutral
-    /// list the Node SSR consumers may add to their Node defaults when the ssr
-    /// environment is runner-backed. See `node_server_conditions`.
+    /// The user-authored top-level `resolve` (the extractor's `rawResolve`).
+    /// `resolve` above is Vite's resolved one, whose conditions are the client
+    /// environment's; this runtime-neutral list is what Node SSR adds to its
+    /// defaults for a runner-backed ssr environment. See `node_server_conditions`.
     pub raw_resolve: Option<ResolveConfig>,
     pub css: Option<CssConfig>,
     pub define: Option<BTreeMap<String, serde_json::Value>>,
@@ -273,9 +271,8 @@ pub struct FsConfig {
     pub deny: Option<Vec<String>>,
 }
 
-// Serialize too: an oj-config-format app's `server.proxy` is forwarded to the
-// plugin host (which hosts the single proxy) in the spawn payload; only a
-// FUNCTION rewrite cannot cross, and the {from,to} form here does.
+// Serialize too: `server.proxy` from an oj config is forwarded to the plugin
+// host, which runs the proxy. A function rewrite cannot cross; `{from,to}` can.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ProxyEntry {

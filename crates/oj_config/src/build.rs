@@ -1,5 +1,35 @@
 use crate::schema::*;
 
+/// A `build.*` option, if the config has a `build` block.
+fn build_opt<'a, T>(
+    config: &'a OjConfig,
+    f: impl FnOnce(&'a BuildConfig) -> Option<T>,
+) -> Option<T> {
+    config.build.as_ref().and_then(f)
+}
+
+/// A `true`/`false`/minifier-name flag: any string but `"false"` means on.
+fn flag_on(v: &BoolOrString) -> bool {
+    match v {
+        BoolOrString::Bool(b) => *b,
+        BoolOrString::Str(s) => s != "false",
+    }
+}
+
+/// A manifest option: `true` (or `"true"`) writes `default`, a string names the
+/// file, unset or `false` writes none.
+fn manifest_name(v: Option<&BoolOrString>, default: &str) -> Option<String> {
+    match v? {
+        BoolOrString::Bool(false) => None,
+        BoolOrString::Bool(true) => Some(default.to_string()),
+        BoolOrString::Str(s) => match s.as_str() {
+            "false" => None,
+            "true" => Some(default.to_string()),
+            _ => Some(s.clone()),
+        },
+    }
+}
+
 /// `build.sourcemap` resolved: Vite's `true` -> separate `.map` files, `"inline"`,
 /// `"hidden"` (maps written, no `sourceMappingURL` comment), default off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,7 +41,7 @@ pub enum Sourcemap {
 }
 
 pub fn build_sourcemap(config: &OjConfig) -> Sourcemap {
-    match config.build.as_ref().and_then(|b| b.sourcemap.as_ref()) {
+    match build_opt(config, |b| b.sourcemap.as_ref()) {
         None | Some(BoolOrString::Bool(false)) => Sourcemap::Off,
         Some(BoolOrString::Bool(true)) => Sourcemap::File,
         Some(BoolOrString::Str(s)) => match s.as_str() {
@@ -26,22 +56,14 @@ pub fn build_sourcemap(config: &OjConfig) -> Sourcemap {
 /// `build.minify`: Vite's default is on; a minifier name (`"oxc"`, `"esbuild"`,
 /// `"terser"`) selects the tool in Vite and just means "on" here.
 pub fn build_minify(config: &OjConfig) -> bool {
-    match config.build.as_ref().and_then(|b| b.minify.as_ref()) {
-        None => true,
-        Some(BoolOrString::Bool(b)) => *b,
-        Some(BoolOrString::Str(s)) => s != "false",
-    }
+    build_opt(config, |b| b.minify.as_ref()).is_none_or(flag_on)
 }
 
 /// `build.assetsDir`, normalized to a `/`-separated outDir-relative directory
 /// with no surrounding slashes (Vite's default is `assets`; an empty string
 /// puts hashed files at the outDir root).
 pub fn build_assets_dir(config: &OjConfig) -> String {
-    let raw = config
-        .build
-        .as_ref()
-        .and_then(|b| b.assets_dir.as_deref())
-        .unwrap_or("assets");
+    let raw = build_opt(config, |b| b.assets_dir.as_deref()).unwrap_or("assets");
     raw.replace('\\', "/")
         .trim_start_matches("./")
         .trim_matches('/')
@@ -61,33 +83,20 @@ pub fn assets_dir_path(assets_dir: &str, tail: &str) -> String {
 /// `build.manifest`: the manifest file name to write, if any (Vite writes none
 /// by default; `true` means `.vite/manifest.json`).
 pub fn build_manifest_name(config: &OjConfig) -> Option<String> {
-    match config.build.as_ref().and_then(|b| b.manifest.as_ref()) {
-        None | Some(BoolOrString::Bool(false)) => None,
-        Some(BoolOrString::Bool(true)) => Some(".vite/manifest.json".to_string()),
-        Some(BoolOrString::Str(s)) => match s.as_str() {
-            "false" => None,
-            "true" => Some(".vite/manifest.json".to_string()),
-            _ => Some(s.clone()),
-        },
-    }
+    manifest_name(
+        build_opt(config, |b| b.manifest.as_ref()),
+        ".vite/manifest.json",
+    )
 }
 
 /// `build.reportCompressedSize` (Vite default true).
 pub fn build_report_compressed_size(config: &OjConfig) -> bool {
-    config
-        .build
-        .as_ref()
-        .and_then(|b| b.report_compressed_size)
-        .unwrap_or(true)
+    build_opt(config, |b| b.report_compressed_size).unwrap_or(true)
 }
 
 /// `build.chunkSizeWarningLimit` in kB (Vite default 500).
 pub fn build_chunk_size_warning_limit(config: &OjConfig) -> f64 {
-    config
-        .build
-        .as_ref()
-        .and_then(|b| b.chunk_size_warning_limit)
-        .unwrap_or(500.0)
+    build_opt(config, |b| b.chunk_size_warning_limit).unwrap_or(500.0)
 }
 
 /// Vite 8's `'baseline-widely-available'` default target (constants.ts).
@@ -102,14 +111,8 @@ pub const BASELINE_WIDELY_AVAILABLE: &[&str] = &[
 /// Vite's legacy `'modules'` target.
 pub const MODULES_TARGET: &[&str] = &["es2020", "edge88", "firefox78", "chrome87", "safari14"];
 
-/// `build.target` as the engine list oxc lowers to. Vite's named presets expand
-/// to their browser lists; unset means Vite's default baseline (Vite lowers to
-/// it by default too, oj used to emit `esnext`).
-pub fn build_targets(config: &OjConfig) -> Vec<String> {
-    let raw: Vec<String> = match config.build.as_ref().and_then(|b| b.target.as_ref()) {
-        None => vec!["baseline-widely-available".into()],
-        Some(t) => t.to_vec(),
-    };
+/// Expands Vite's named target presets to their browser lists.
+fn expand_targets(raw: Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
     for t in raw {
         match t.as_str() {
@@ -123,56 +126,48 @@ pub fn build_targets(config: &OjConfig) -> Vec<String> {
     out
 }
 
-/// `build.cssTarget` as an engine list for CSS lowering: Vite defaults it to
-/// `build.target`, so unset means the same baseline JS lowers to. Named
-/// presets expand as for `build_targets`.
+/// `build.target` as the engine list oxc lowers to, presets expanded; unset
+/// means Vite's default baseline.
+pub fn build_targets(config: &OjConfig) -> Vec<String> {
+    let raw = build_opt(config, |b| b.target.as_ref()).map_or_else(
+        || vec!["baseline-widely-available".into()],
+        StringOrList::to_vec,
+    );
+    expand_targets(raw)
+}
+
+/// `build.cssTarget` as an engine list for CSS lowering, presets expanded;
+/// unset follows `build.target` (Vite).
 pub fn build_css_targets(config: &OjConfig) -> Vec<String> {
-    let Some(raw) = config.build.as_ref().and_then(|b| b.css_target.as_ref()) else {
-        return build_targets(config);
-    };
-    let mut out = Vec::new();
-    for t in raw.to_vec() {
-        match t.as_str() {
-            "baseline-widely-available" => {
-                out.extend(BASELINE_WIDELY_AVAILABLE.iter().map(|s| s.to_string()))
-            }
-            "modules" => out.extend(MODULES_TARGET.iter().map(|s| s.to_string())),
-            _ => out.push(t),
-        }
+    match build_opt(config, |b| b.css_target.as_ref()) {
+        Some(raw) => expand_targets(raw.to_vec()),
+        None => build_targets(config),
     }
-    out
 }
 
 /// `build.cssMinify` (Vite build.ts): unset follows `build.minify` for the
 /// client and is on for a server (SSR) build; a minifier name means "on".
 pub fn build_css_minify(config: &OjConfig, server: bool) -> bool {
-    match config.build.as_ref().and_then(|b| b.css_minify.as_ref()) {
+    match build_opt(config, |b| b.css_minify.as_ref()) {
         None => server || build_minify(config),
-        Some(BoolOrString::Bool(b)) => *b,
-        Some(BoolOrString::Str(s)) => s != "false",
+        Some(v) => flag_on(v),
     }
+}
+
+fn module_preload(config: &OjConfig) -> Option<&serde_json::Value> {
+    build_opt(config, |b| b.module_preload.as_ref())
 }
 
 /// Whether pages get `<link rel="modulepreload">` for their entry chunks' static
 /// imports: on unless `build.modulePreload` is `false` (Vite's html plugin).
 pub fn module_preload_links(config: &OjConfig) -> bool {
-    !matches!(
-        config
-            .build
-            .as_ref()
-            .and_then(|b| b.module_preload.as_ref()),
-        Some(serde_json::Value::Bool(false))
-    )
+    !matches!(module_preload(config), Some(serde_json::Value::Bool(false)))
 }
 
 /// Whether page entries get Vite's modulepreload polyfill: on unless
 /// `build.modulePreload` is `false` or `{ polyfill: false }`.
 pub fn module_preload_polyfill(config: &OjConfig) -> bool {
-    match config
-        .build
-        .as_ref()
-        .and_then(|b| b.module_preload.as_ref())
-    {
+    match module_preload(config) {
         Some(serde_json::Value::Bool(false)) => false,
         Some(serde_json::Value::Object(o)) => {
             o.get("polyfill").and_then(|v| v.as_bool()) != Some(false)
@@ -181,55 +176,50 @@ pub fn module_preload_polyfill(config: &OjConfig) -> bool {
     }
 }
 
+/// The first entry of a `rollupOptions.input` string, array or object.
+fn first_input(input: Option<&serde_json::Value>) -> Option<String> {
+    let first = match input? {
+        serde_json::Value::String(s) => return Some(s.clone()),
+        serde_json::Value::Array(a) => a.first(),
+        serde_json::Value::Object(o) => o.values().next(),
+        _ => None,
+    };
+    first.and_then(|v| v.as_str()).map(str::to_string)
+}
+
 /// The SSR entry `oj build` uses when none is given on the command line:
 /// `build.ssr` as a path, or with `build.ssr: true` the `rollupOptions.input`
 /// entry (Vite's contract).
 pub fn build_ssr_entry(config: &OjConfig) -> Result<Option<String>, String> {
-    match config.build.as_ref().and_then(|b| b.ssr.as_ref()) {
+    match build_opt(config, |b| b.ssr.as_ref()) {
         None | Some(BoolOrString::Bool(false)) => Ok(None),
         Some(BoolOrString::Str(s)) => Ok(Some(s.clone())),
         Some(BoolOrString::Bool(true)) => {
-            let input = rolldown_options(config).and_then(|ro| ro.get("input"));
-            let entry = match input {
-                Some(serde_json::Value::String(s)) => Some(s.clone()),
-                Some(serde_json::Value::Array(a)) => {
-                    a.first().and_then(|v| v.as_str()).map(str::to_string)
-                }
-                Some(serde_json::Value::Object(o)) => o
-                    .values()
-                    .next()
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                _ => None,
-            };
-            entry.map(Some).ok_or_else(|| {
-                "build.ssr: true needs the SSR entry in build.rollupOptions.input".to_string()
-            })
+            first_input(rolldown_options(config).and_then(|ro| ro.get("input")))
+                .map(Some)
+                .ok_or_else(|| {
+                    "build.ssr: true needs the SSR entry in build.rollupOptions.input".to_string()
+                })
         }
     }
 }
 
 /// `build.ssrManifest`: the manifest file name to write, if any.
 pub fn ssr_manifest_name(config: &OjConfig) -> Option<String> {
-    match config.build.as_ref().and_then(|b| b.ssr_manifest.as_ref()) {
-        None | Some(BoolOrString::Bool(false)) => None,
-        Some(BoolOrString::Bool(true)) => Some(".vite/ssr-manifest.json".to_string()),
-        Some(BoolOrString::Str(s)) => match s.as_str() {
-            "false" => None,
-            "true" => Some(".vite/ssr-manifest.json".to_string()),
-            _ => Some(s.clone()),
-        },
-    }
+    manifest_name(
+        build_opt(config, |b| b.ssr_manifest.as_ref()),
+        ".vite/ssr-manifest.json",
+    )
 }
 
+/// `build.rolldownOptions`, else `build.rollupOptions`.
 pub fn rolldown_options(config: &OjConfig) -> Option<&serde_json::Value> {
-    let build = config.build.as_ref()?;
-    build
-        .rolldown_options
-        .as_ref()
-        .or(build.rollup_options.as_ref())
+    build_opt(config, |b| {
+        b.rolldown_options.as_ref().or(b.rollup_options.as_ref())
+    })
 }
 
+/// `environments.<env_name>.build.<field>` as a bool.
 pub fn environment_build_bool(config: &OjConfig, env_name: &str, field: &str) -> Option<bool> {
     config
         .environments

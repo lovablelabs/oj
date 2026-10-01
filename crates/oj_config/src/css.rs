@@ -41,23 +41,24 @@ pub fn css_modules(config: &OjConfig) -> CssModulesSettings {
     }
 }
 
-pub fn css_additional_data(config: &OjConfig, lang: &str) -> Option<String> {
+/// `css.preprocessorOptions.<lang>`, if set.
+fn preprocessor_entry<'a>(config: &'a OjConfig, lang: &str) -> Option<&'a PreprocessorEntry> {
     config
         .css
         .as_ref()
         .and_then(|c| c.preprocessor_options.as_ref())
         .and_then(|m| m.get(lang))
-        .and_then(|e| e.additional_data.clone())
 }
 
-/// `css.preprocessorOptions.<lang>` minus `additionalData`, as JSON for the
-/// preprocessor (Less/Stylus run in a node sidecar and take the object as-is).
+/// `css.preprocessorOptions.<lang>.additionalData`.
+pub fn css_additional_data(config: &OjConfig, lang: &str) -> Option<String> {
+    preprocessor_entry(config, lang).and_then(|e| e.additional_data.clone())
+}
+
+/// `css.preprocessorOptions.<lang>` minus `additionalData`, as JSON passed to
+/// the preprocessor as-is (Vite forwards these options verbatim).
 pub fn css_preprocessor_json(config: &OjConfig, lang: &str) -> serde_json::Value {
-    config
-        .css
-        .as_ref()
-        .and_then(|c| c.preprocessor_options.as_ref())
-        .and_then(|m| m.get(lang))
+    preprocessor_entry(config, lang)
         .map(|e| {
             serde_json::Value::Object(e.rest.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         })
@@ -66,20 +67,16 @@ pub fn css_preprocessor_json(config: &OjConfig, lang: &str) -> serde_json::Value
 
 /// Sass `loadPaths` (Vite 5+) and the legacy `includePaths`, in order.
 pub fn css_load_paths(config: &OjConfig, lang: &str) -> Vec<String> {
-    let entry = config
-        .css
-        .as_ref()
-        .and_then(|c| c.preprocessor_options.as_ref())
-        .and_then(|m| m.get(lang));
-    let mut out = Vec::new();
-    if let Some(e) = entry {
-        for key in ["loadPaths", "includePaths"] {
-            if let Some(arr) = e.rest.get(key).and_then(|v| v.as_array()) {
-                out.extend(arr.iter().filter_map(|v| v.as_str()).map(str::to_string));
-            }
-        }
-    }
-    out
+    let Some(e) = preprocessor_entry(config, lang) else {
+        return Vec::new();
+    };
+    ["loadPaths", "includePaths"]
+        .iter()
+        .filter_map(|key| e.rest.get(*key).and_then(|v| v.as_array()))
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
