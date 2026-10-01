@@ -11,10 +11,11 @@ pub struct PluginHost {
     hook_plan: std::sync::RwLock<BuildHookPlan>,
     hook_plan_fetched: std::sync::atomic::AtomicBool,
     hook_plan_prime_started: std::sync::atomic::AtomicBool,
-    ws_out: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
+    /// Wired once at server boot (the reader clones per push, lock-free).
+    ws_out: std::sync::OnceLock<tokio::sync::broadcast::Sender<String>>,
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
-    /// a module via server.moduleGraph, or server.restart().
-    server_events: Mutex<Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>>,
+    /// a module via server.moduleGraph, or server.restart(). Wired once.
+    server_events: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
     /// Host's `{ ojServeInfo }` push: None until top-level init completes; late
     /// subscribers can still activate the middleware path.
     serve_info_push: tokio::sync::watch::Sender<Option<ServeInfo>>,
@@ -498,8 +499,8 @@ impl PluginHost {
             hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
             hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
             hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
-            ws_out: Mutex::new(None),
-            server_events: Mutex::new(None),
+            ws_out: std::sync::OnceLock::new(),
+            server_events: std::sync::OnceLock::new(),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
@@ -674,15 +675,13 @@ impl PluginHost {
                     continue;
                 }
                 if let Some(ev) = msg.get("ojServer") {
-                    let tx = reader_ref.server_events.lock().unwrap().clone();
-                    if let Some(tx) = tx {
+                    if let Some(tx) = reader_ref.server_events.get() {
                         let _ = tx.send(ev.clone());
                     }
                     continue;
                 }
                 if let Some(ws) = msg.get("ojWs") {
-                    let tx = reader_ref.ws_out.lock().unwrap().clone();
-                    if let Some(tx) = tx {
+                    if let Some(tx) = reader_ref.ws_out.get() {
                         let payload = match ws.get("event").and_then(|e| e.as_str()) {
                             Some(event) => serde_json::json!({
                                 "type": "custom",
@@ -1527,11 +1526,11 @@ impl PluginHost {
         &self,
         tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     ) {
-        *self.server_events.lock().unwrap() = Some(tx);
+        let _ = self.server_events.set(tx);
     }
 
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
-        *self.ws_out.lock().unwrap() = Some(tx);
+        let _ = self.ws_out.set(tx);
     }
 
     #[inline]
