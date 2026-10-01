@@ -5,18 +5,22 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- Dependencies that ship separate Node and browser files now load the browser files in dev, as in Vite. A package can list swaps in its package.json `browser` field (e.g. `"./lib/node.js": "./lib/browser.js"`), but oj served a package's own `./` and `../` imports straight from disk without checking that list, so the Node file (and the Node built-ins it imports) reached the browser and the page failed to load. Imports from inside `node_modules` now go through the resolver, which applies the swaps; app source keeps the direct-from-disk shortcut.
-- Edits to a linked workspace package (a monorepo package symlinked into `node_modules` from outside the app root and served through `/@fs`) now trigger HMR. The watcher only watched the app root's own entries, so such edits never reached the page; Vite watches every served file outside the root.
-
-## [Unreleased]
+## [0.2.16] - 2026-10-01
 
 ### Removed
 
 - Partial bundling (the experimental per-package `/@oj-pkg` dep bundler behind `OJ_PARTIAL_BUNDLE`, its rolldown fallback behind `OJ_PB_ROLLDOWN`, and the compiler's package-bundle emitter). The dep optimizer is the one dep-serving story; nothing set these flags.
+
+### Fixed
+
+- CSS modules with `localsConvention`: two class names that convert to the same key (`foo-bar` and `fooBar` under `camelCase`) no longer emit the same named export twice; the later one wins, as postcss-modules assigns them.
+- An `@import` that follows a comment is now hoisted above the inlined rules like any other surviving import.
+- A composed source map whose intermediate map fails to re-parse falls back to oj's own map as raw JSON instead of a data URL that the server would encode a second time.
+
+### Changed
+
+- CSS compiles are faster: a file referenced by `composes: x from "./file"` is compiled once per stylesheet instead of once per reference; Sass resolution probes fewer paths and caches file checks for the length of a compile; inlined `@import` files have their urls rebased with a text rewrite, like Vite's `rebaseUrls`, instead of a full parse and print; `css.modules.globalModulePaths` regexes are compiled once.
+- Internal restructuring of the dev server, compiler, CSS pipeline, resolver, module graph, caches and config crates: large files split into focused modules, long functions split into named steps, duplicated code folded into shared helpers. Process-global state (the `import.meta.env` defines, the CJS-dependency memo) is now owned by the dev server and passed explicitly, and the plugin host's push senders are set once. No behavior changes intended.
 
 ## [0.2.15] - 2026-09-30
 
