@@ -13,9 +13,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod start_codegen;
 
-// 7: map_json became raw map_json (encode-at-serve). 6: HotMeta semantics
-// changed (acceptExports = partial accept) and CachedModule grew
-// import_bindings; older entries would deserialize with the old meaning.
+// Bump whenever CachedModule/HotMeta meaning changes, so older entries are
+// never deserialized with the new meaning.
 pub const CACHE_FORMAT: u32 = 7;
 
 pub const CACHE_ROOT_VERSION: u32 = 1;
@@ -69,6 +68,9 @@ const LEGACY_TOP_LEVEL: &[&str] = &[
     "ssr-bridge-pack.jsonl",
 ];
 
+/// Removes what pre-versioned layouts left at the top of the cache base:
+/// the names in `LEGACY_TOP_LEVEL` and the old two-hex-digit shard dirs.
+/// Anything else (including the versioned root) is left alone.
 pub fn heal_legacy_layout(app_root: &Path) {
     let root = cache_base(app_root);
     for name in LEGACY_TOP_LEVEL {
@@ -85,15 +87,27 @@ pub fn heal_legacy_layout(app_root: &Path) {
     for e in entries.flatten() {
         let name = e.file_name();
         let Some(name) = name.to_str() else { continue };
-        if name.len() == 2
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-            && e.path().is_dir()
-        {
+        if name.len() == 2 && is_lower_hex(name) && e.path().is_dir() {
             let _ = fs::remove_dir_all(e.path());
         }
     }
+}
+
+fn is_lower_hex(s: &str) -> bool {
+    s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// blake3 over `fields` joined by NUL bytes. The separators keep field
+/// boundaries unambiguous ("a","bc" vs "ab","c").
+pub(crate) fn hash_nul_joined(fields: &[&[u8]]) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    for (i, field) in fields.iter().enumerate() {
+        if i > 0 {
+            hasher.update(&[0]);
+        }
+        hasher.update(field);
+    }
+    hasher.finalize()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -159,27 +173,18 @@ impl PersistentCache {
     }
 
     pub fn key(&self, source: &[u8], url: &str, mode: &str) -> String {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(self.salt.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(mode.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(url.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(source);
-        hasher.finalize().to_hex().to_string()
+        hash_nul_joined(&[
+            self.salt.as_bytes(),
+            mode.as_bytes(),
+            url.as_bytes(),
+            source,
+        ])
+        .to_hex()
+        .to_string()
     }
 
     pub fn get(&self, key: &str) -> Option<CachedModule> {
-        let path = self.path_for(key)?;
-        let bytes = fs::read(&path).ok()?;
-        match serde_json::from_slice(&bytes) {
-            Ok(module) => Some(module),
-            Err(_) => {
-                let _ = fs::remove_file(&path);
-                None
-            }
-        }
+        integrity::read_json_or_remove(&self.path_for(key)?)
     }
 
     pub fn put(&self, key: &str, module: &CachedModule) {
@@ -190,23 +195,18 @@ impl PersistentCache {
         if fs::create_dir_all(parent).is_err() {
             return;
         }
+        // Per-write sequence: threads of one process may put the same key
+        // concurrently and must not share a temp file.
         let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
         let tmp = path.with_extension(format!("tmp-{}-{seq}", std::process::id()));
-        if fs::write(&tmp, serde_json::to_vec(module).unwrap_or_default()).is_ok() {
-            if fs::rename(&tmp, &path).is_err() {
-                let _ = fs::remove_file(&tmp);
-            }
-        } else {
-            let _ = fs::remove_file(&tmp);
-        }
+        let bytes = serde_json::to_vec(module).unwrap_or_default();
+        let _ = integrity::write_via_tmp(&tmp, &path, &bytes);
     }
 
+    /// `<dir>/<key[..2]>/<key>.json`; `None` for anything but a lowercase
+    /// blake3 hex digest, so a key can never escape the cache dir.
     fn path_for(&self, key: &str) -> Option<PathBuf> {
-        let is_digest = key.len() == 64
-            && key
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-        if !is_digest {
+        if key.len() != 64 || !is_lower_hex(key) {
             return None;
         }
         Some(self.dir.join(&key[..2]).join(format!("{key}.json")))

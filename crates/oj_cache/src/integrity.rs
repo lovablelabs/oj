@@ -6,6 +6,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyMode {
     Standard,
@@ -21,10 +24,20 @@ impl VerifyMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serialized as `{"size":..,"hash":..}`, the on-disk manifest record shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectedFile {
     pub size: u64,
     pub hash: String,
+}
+
+impl ExpectedFile {
+    pub(crate) fn of(bytes: &[u8]) -> Self {
+        Self {
+            size: bytes.len() as u64,
+            hash: blake3::hash(bytes).to_hex().to_string(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -65,10 +78,34 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("artifact");
     let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
+    write_via_tmp(&tmp, path, bytes)
+}
+
+/// Writes `bytes` to `tmp`, then renames it over `path`, so readers see the
+/// old file or the new one, never a partial write. `tmp` is removed on failure.
+pub(crate) fn write_via_tmp(tmp: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let result = fs::write(tmp, bytes).and_then(|()| fs::rename(tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    result
+}
+
+/// Parses a JSON cache file. An unparseable file is removed, so a corrupt
+/// entry is a miss once and then gone, never served.
+pub(crate) fn read_json_or_remove<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    let bytes = fs::read(path).ok()?;
+    parse_json_or_remove(path, &bytes)
+}
+
+pub(crate) fn parse_json_or_remove<T: DeserializeOwned>(path: &Path, bytes: &[u8]) -> Option<T> {
+    match serde_json::from_slice(bytes) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            let _ = fs::remove_file(path);
+            None
+        }
+    }
 }
 
 pub fn verify_file(
@@ -152,10 +189,7 @@ mod tests {
     }
 
     fn expected_for(bytes: &[u8]) -> ExpectedFile {
-        ExpectedFile {
-            size: bytes.len() as u64,
-            hash: blake3::hash(bytes).to_hex().to_string(),
-        }
+        ExpectedFile::of(bytes)
     }
 
     #[test]
