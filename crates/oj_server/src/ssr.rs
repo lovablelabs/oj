@@ -344,6 +344,7 @@ pub(crate) async fn ssr_plugin_host(
             .await
             {
                 Ok(host) => {
+                    host.set_import_meta_env(Arc::clone(&state.import_meta_env));
                     eprintln!("oj ssr: plugins (ssr environment) from {}", file.display());
                     // Catch-up half of the watcher's pre-init fast-skip
                     // (see SsrWatchQueue).

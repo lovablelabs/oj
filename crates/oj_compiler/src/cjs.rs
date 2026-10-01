@@ -19,16 +19,20 @@ use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 
 use crate::{CompileError, CompileOutput};
 
+/// A dependency file: ESM goes through the normal compile with `env`'s
+/// defines (so `process.env.NODE_ENV` is replaced), CJS is wrapped.
 pub fn compile_dep(
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut dyn FnMut(&str) -> Option<String>,
+    env: Option<std::sync::Arc<crate::ImportMetaEnv>>,
 ) -> Result<CompileOutput, CompileError> {
     if has_module_syntax(path, source_text) {
         let opts = crate::CompileOptions {
             refresh: false,
             sourcemap: false,
+            env,
             ..crate::CompileOptions::dev()
         };
         crate::compile_module(path, source_text, &opts, Some(resolve))
@@ -585,7 +589,7 @@ exports.named = 1;
     fn esm_deps_bypass_the_cjs_wrapper() {
         let src = r#"export const x = 1;"#;
         let mut resolve = |_: &str| None;
-        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve).unwrap();
+        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve, None).unwrap();
         assert!(out.code.contains("export const x = 1"));
         assert!(!out.code.contains("__cjs_exports"));
     }

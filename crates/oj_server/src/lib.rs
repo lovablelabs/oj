@@ -823,12 +823,16 @@ async fn spawn_plugin_host(
     file: &PluginFile,
     payload: &str,
     registry: &oj_js::EngineRegistry,
+    import_meta_env: &Arc<oj_compiler::ImportMetaEnv>,
     keep_for_proxy: bool,
     is_start: bool,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
     let host = match PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await {
-        Ok(host) => host,
+        Ok(host) => {
+            host.set_import_meta_env(Arc::clone(import_meta_env));
+            host
+        }
         Err(e) => {
             eprintln!("oj: plugin host failed to start: {e}");
             return Ok(None);
@@ -1380,6 +1384,7 @@ impl DevServer {
                     file,
                     &payloads.client,
                     &engine_registry,
+                    &import_meta_env,
                     keep_for_proxy,
                     is_start,
                 )

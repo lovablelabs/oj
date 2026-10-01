@@ -393,6 +393,7 @@ fn a_cjs_dep_with_module_syntax_is_treated_as_esm() {
         "/node_modules/pkg/index.js",
         "export const a = 1;\nimport b from \"./b\";",
         &mut resolve,
+        None,
     )
     .unwrap();
     assert_eq!(out.imports, vec!["/@id/./b".to_string()]);
@@ -407,6 +408,7 @@ fn a_cjs_dep_without_module_syntax_is_wrapped() {
         "/node_modules/pkg/index.js",
         "const dep = require(\"./dep\");\nmodule.exports = dep;",
         &mut resolve,
+        None,
     )
     .unwrap();
     assert!(

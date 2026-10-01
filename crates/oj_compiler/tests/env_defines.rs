@@ -225,3 +225,21 @@ fn a_non_env_import_meta_define_still_gates_and_replaces() {
         out.code
     );
 }
+
+#[test]
+fn an_esm_dependency_gets_the_server_defines() {
+    // Deps served unbundled compile through `cjs::compile_dep`; its ESM branch
+    // must carry the env, or `process.env.NODE_ENV` reaches the browser.
+    let env = Arc::new(ImportMetaEnv::default());
+    env.set(client());
+    let src = r#"export const dev = process.env.NODE_ENV !== "production";"#;
+    let out = oj_compiler::cjs::compile_dep(
+        Path::new("/app/node_modules/d/index.mjs"),
+        "/node_modules/d/index.mjs",
+        src,
+        &mut |_| None,
+        Some(Arc::clone(&env)),
+    )
+    .expect("dep compiles");
+    assert!(!out.code.contains("process.env"), "{}", out.code);
+}

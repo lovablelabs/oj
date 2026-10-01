@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 pub struct PluginHost {
     /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
@@ -93,6 +94,8 @@ pub(crate) struct BootContext {
     /// Rides into every generation's engine (and the addon keeper), so the
     /// debug GC fan-out keeps reaching this host across respawns.
     registry: Option<oj_js::EngineRegistry>,
+    /// The dev server's defines, for `moduleInfo` compiles; set once after spawn.
+    import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
 }
 
 /// See [`PluginHost::revive`].
@@ -259,6 +262,7 @@ pub(crate) fn ctx_rpc(
     args: &[serde_json::Value],
     resolver: &OjResolver,
     root: &Path,
+    env: Option<&Arc<oj_compiler::ImportMetaEnv>>,
 ) -> Result<serde_json::Value, String> {
     let arg = |i: usize| args.get(i).and_then(|v| v.as_str()).unwrap_or("");
     let dir_of = |path: &Path| {
@@ -286,11 +290,14 @@ pub(crate) fn ctx_rpc(
                 return Ok(serde_json::Value::Null);
             };
             let dir = dir_of(path);
-            let (code, imports) =
-                match oj_compiler::compile(path, &src, &oj_compiler::CompileOptions::prod()) {
-                    Ok(out) => (out.code, out.imports),
-                    Err(_) => (src, Vec::new()),
-                };
+            let opts = oj_compiler::CompileOptions {
+                env: env.cloned(),
+                ..oj_compiler::CompileOptions::prod()
+            };
+            let (code, imports) = match oj_compiler::compile(path, &src, &opts) {
+                Ok(out) => (out.code, out.imports),
+                Err(_) => (src, Vec::new()),
+            };
             let imported_ids: Vec<String> = imports
                 .iter()
                 .map(|spec| {
@@ -545,6 +552,7 @@ impl PluginHost {
                     .memory
                     .unwrap_or_else(|| plugin_host_memory_mb() * 1024 * 1024),
                 registry,
+                import_meta_env: Arc::default(),
             },
             revive: Mutex::new(ReviveState {
                 generation: 0,
@@ -622,7 +630,8 @@ impl PluginHost {
         let resolver = std::sync::Arc::new(OjResolver::new(&root));
         let rpc_handler: oj_js::RpcHandler = {
             let root = root.clone();
-            Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root))
+            let env = Arc::clone(&self.boot.import_meta_env);
+            Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root, env.get()))
         };
         let mut engine_config = oj_js::EngineConfig::new(&root);
         engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
@@ -1518,6 +1527,11 @@ impl PluginHost {
         tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     ) {
         let _ = self.server_events.set(tx);
+    }
+
+    /// The dev server's defines for `moduleInfo` compiles (`oj build` leaves it unset).
+    pub fn set_import_meta_env(&self, env: Arc<oj_compiler::ImportMetaEnv>) {
+        let _ = self.boot.import_meta_env.set(env);
     }
 
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
