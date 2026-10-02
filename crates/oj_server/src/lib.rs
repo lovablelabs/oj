@@ -19,6 +19,7 @@ use axum::{
 use oj_cache::{CachedModule, PersistentCache};
 
 pub mod css_engine;
+pub mod etag;
 pub mod optimize;
 pub mod plugins;
 mod preseed;

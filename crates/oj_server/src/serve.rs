@@ -348,22 +348,15 @@ pub(crate) async fn serve_compiled(
     };
 
     let etag = format!("\"{key}\"");
-    if query.is_none() {
-        if let Some(inm) = headers
-            .get(header::IF_NONE_MATCH)
-            .and_then(|v| v.to_str().ok())
-        {
-            if inm == etag {
-                return (
-                    StatusCode::NOT_MODIFIED,
-                    [
-                        (header::ETAG, etag),
-                        (header::CACHE_CONTROL, "no-cache".to_string()),
-                    ],
-                )
-                    .into_response();
-            }
-        }
+    if query.is_none() && crate::etag::not_modified(headers, &etag) {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [
+                (header::ETAG, etag),
+                (header::CACHE_CONTROL, "no-cache".to_string()),
+            ],
+        )
+            .into_response();
     }
 
     let mut body = if module.kind == "svelte" {

@@ -4,6 +4,7 @@
 mod build;
 mod ssr_dev;
 mod ssr_host;
+mod start_chunks;
 mod start_dev;
 mod start_host;
 

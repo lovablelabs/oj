@@ -76,6 +76,18 @@ impl PinnedBundle {
         self.chunks.len()
     }
 
+    /// Whether `name` is the entry chunk (also served as `client-entry.js`).
+    pub fn is_entry(&self, name: &str) -> bool {
+        name == self.entry || name == "client-entry.js"
+    }
+
+    /// Whether any chunk of this bundle has content hash `hash`.
+    pub fn has_hash(&self, hash: &str) -> bool {
+        self.chunks
+            .values()
+            .any(|c| c.hash.as_deref() == Some(hash))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
