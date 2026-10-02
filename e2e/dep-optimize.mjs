@@ -56,11 +56,7 @@ const get = async (route) => {
 let server;
 let failed = false;
 try {
-  // Auto-discovery is opt-in (include-only pre-bundling is the default); this test covers the discovered path.
-  server = spawn(oj, ["dev", app, "--port", String(port)], {
-    stdio: "ignore",
-    env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" },
-  });
+  server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   await waitUp(`http://localhost:${port}/`);
 
   const main = await get("/main.js");

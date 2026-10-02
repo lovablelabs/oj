@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..", "..");
 const sidecar = path.join(repo, "crates/oj_server/src/assets/optimize-deps.mjs");
+const fixtureModules = path.join(repo, "e2e/fixtures/start-app/node_modules");
 
 // Runs the module's exported optimize() the way oj's in-process engine calls
 // it, in a fresh node child per run (isolation for module caches and cwd).
@@ -25,39 +26,62 @@ process.exit(0);
 `;
 const runOptimize = (cfg) =>
   JSON.parse(
-    execFileSync(
-      "node",
-      ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, typeof cfg === "string" ? cfg : JSON.stringify(cfg)],
-      {
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-      },
-    ),
+    execFileSync("node", ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, JSON.stringify(cfg)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    }),
   );
-const esbuildSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/esbuild");
 
-// The pre-bundler shells out to esbuild via the start-app fixture's install;
-// skip (rather than hard-fail) where that fixture has no node_modules, matching
-// the rolldown-fixture convention in asset-routing.test.mjs.
-const it = fs.existsSync(esbuildSrc)
-  ? test
-  : (name, fn) => test(name, { skip: "fixture esbuild not installed" }, () => {});
+// One app shape per bundler Vite has used for its optimizer: a Vite 8 app
+// (its vite brings rolldown, the app has no esbuild) and an app that only has
+// esbuild. Both borrow the start-app fixture's install.
+const BUNDLERS = {
+  rolldown: fs.existsSync(path.join(fixtureModules, "vite", "package.json")),
+  esbuild: fs.existsSync(path.join(fixtureModules, "esbuild")),
+};
+const skipFor = (bundler) => (BUNDLERS[bundler] ? false : `fixture ${bundler} not installed`);
+const each = (name, fn) => {
+  for (const bundler of Object.keys(BUNDLERS)) {
+    test(`[${bundler}] ${name}`, { skip: skipFor(bundler) }, () => fn(bundler));
+  }
+};
+const only = (bundler, name, fn) => test(`[${bundler}] ${name}`, { skip: skipFor(bundler) }, fn);
 
-const pkg = (nm, root, main, files) => {
+function makeRoot(bundler, prefix = "oj-optdeps-") {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const nm = path.join(root, "node_modules");
+  fs.mkdirSync(nm, { recursive: true });
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx" }));
+  if (bundler === "rolldown") {
+    fs.symlinkSync(path.join(fixtureModules, "vite"), path.join(nm, "vite"));
+  } else if (bundler === "esbuild") {
+    fs.symlinkSync(path.join(fixtureModules, "esbuild"), path.join(nm, "esbuild"));
+    const scoped = path.join(fixtureModules, "@esbuild");
+    if (fs.existsSync(scoped)) fs.symlinkSync(scoped, path.join(nm, "@esbuild"));
+  }
+  return root;
+}
+
+const pkg = (nm, root, main, files, extra = {}) => {
   const dir = path.join(root, "node_modules", nm);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: nm, version: "1.0.0", main }));
-  for (const [f, c] of Object.entries(files)) fs.writeFileSync(path.join(dir, f), c);
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: nm, version: "1.0.0", main, ...extra }));
+  for (const [f, c] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+    fs.writeFileSync(path.join(dir, f), c);
+  }
 };
+const esmPkg = (nm, root, files, extra = {}) => pkg(nm, root, "index.js", files, { type: "module", ...extra });
+const write = (root, rel, content) => {
+  fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+  fs.writeFileSync(path.join(root, rel), content);
+};
+const outDirOf = (root) => path.join(root, ".oj-cache", "deps");
+const cleanup = (dir) => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
-function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdeps-"));
-  fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx" }));
-
+each("scans + pre-bundles CJS deps with correct interop", async (bundler) => {
+  const root = makeRoot(bundler);
   pkg("defprop", root, "index.js", {
     "index.js":
       `"use strict";\n` +
@@ -73,25 +97,19 @@ function fixture() {
       `var _default = function () { return 42; };\n` +
       `exports.default = _default;\n`,
   });
-  pkg("plaincjs", root, "index.js", {
-    "index.js": `exports.a = 1;\nexports.b = 2;\n`,
-  });
-
-  fs.writeFileSync(
-    path.join(root, "entry.js"),
+  pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\nexports.b = 2;\n` });
+  write(
+    root,
+    "entry.js",
     `import { greet } from "defprop";\n` +
       `import fortytwo from "babeldefault";\n` +
       `import { a, b } from "plaincjs";\n` +
       `export const out = greet("x") + "|" + fortytwo() + "|" + a + "|" + b;\n`,
   );
-  return root;
-}
-
-it("optimize-deps: scans + pre-bundles CJS deps with correct interop", async () => {
-  const root = fixture();
-  const outDir = path.join(root, ".oj-cache", "deps");
-  const cfg = JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], autoDiscover: true });
-  const { metadata } = runOptimize(cfg);
+  const outDir = outDirOf(root);
+  const result = runOptimize({ root, outDir, entries: [path.join(root, "entry.js")] });
+  assert.equal(result.bundler, bundler);
+  const { metadata } = result;
 
   assert.deepEqual(Object.keys(metadata).sort(), ["babeldefault", "defprop", "plaincjs"]);
   for (const m of Object.values(metadata)) {
@@ -100,7 +118,6 @@ it("optimize-deps: scans + pre-bundles CJS deps with correct interop", async () 
   }
 
   const load = (dep) => import(pathToFileURL(path.join(outDir, metadata[dep].file)).href);
-
   const defprop = await load("defprop");
   assert.equal(defprop.default.greet("x"), "hi x", "Object.defineProperty export preserved through CJS->ESM");
   const babel = await load("babeldefault");
@@ -109,151 +126,85 @@ it("optimize-deps: scans + pre-bundles CJS deps with correct interop", async () 
   const plain = await load("plaincjs");
   assert.equal(plain.default.a, 1);
   assert.equal(plain.default.b, 2);
-
-  fs.rmSync(root, { recursive: true, force: true });
+  cleanup(root);
 });
 
-it("optimize-deps: resolves tsconfig `paths` with /* and externalizes a dep's CSS/font", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdeps2-"));
-  fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx2" }));
-
-  // A tsconfig `paths` value contains `/*` — the exact shape a naive JSONC
-  // comment stripper corrupts. If stripJsonc mishandles it, the alias never
-  // loads, `@/aliased` is treated as an external bare dep, and `defprop`
-  // (reachable ONLY through the alias) is never discovered.
-  fs.writeFileSync(
-    path.join(root, "tsconfig.json"),
-    JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }),
-  );
+each("resolves tsconfig `paths` with /* and externalizes a dep's CSS/font", (bundler) => {
+  const root = makeRoot(bundler, "oj-optdeps2-");
+  // A tsconfig `paths` value contains `/*`, the exact shape a naive JSONC
+  // comment stripper corrupts; `defprop` is reachable ONLY through the alias.
+  write(root, "tsconfig.json", JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }));
   pkg("defprop", root, "index.js", {
     "index.js":
       `"use strict";\nObject.defineProperty(exports, "__esModule", { value: true });\n` +
       `Object.defineProperty(exports, "greet", { enumerable: true, get: function () { return greet; } });\n` +
       `function greet(n) { return "hi " + n; }\n`,
   });
-  // A JS dep whose (relative) CSS pulls a (relative) .woff2. If those are not
-  // externalized, esbuild fails the whole pre-bundle with "No loader is
-  // configured for .woff2" and nothing gets optimized.
+  // A JS dep whose CSS pulls a .woff2: bundling either would fail the whole
+  // pre-bundle, so both stay external.
   pkg("uikit", root, "index.js", {
     "index.js": `import "./style.css";\nexport const ok = 1;\n`,
     "style.css": `@font-face { font-family: x; src: url(./f.woff2) format("woff2"); }\n`,
     "f.woff2": "not-a-real-font",
   });
-  fs.mkdirSync(path.join(root, "src"), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, "src", "aliased.js"),
-    `import { greet } from "defprop";\nexport const v = greet("z");\n`,
-  );
-  fs.writeFileSync(
-    path.join(root, "entry.js"),
-    `import { v } from "@/aliased";\nimport { ok } from "uikit";\nexport const out = v + ok;\n`,
-  );
+  write(root, "src/aliased.js", `import { greet } from "defprop";\nexport const v = greet("z");\n`);
+  write(root, "entry.js", `import { v } from "@/aliased";\nimport { ok } from "uikit";\nexport const out = v + ok;\n`);
 
-  const outDir = path.join(root, ".oj-cache", "deps");
-  const cfg = JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], autoDiscover: true });
-  const { metadata } = runOptimize(cfg);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir, entries: [path.join(root, "entry.js")] });
   const names = Object.keys(metadata).sort();
-
-  assert.ok(
-    names.includes("defprop"),
-    `dep reached only through the tsconfig \`@/\` alias must be discovered (stripJsonc + alias traversal); got ${names.join(", ")}`,
-  );
-  assert.ok(
-    names.includes("uikit"),
-    `JS dep with a CSS/font import must still pre-bundle (assets externalized); got ${names.join(", ")}`,
-  );
-  for (const m of Object.values(metadata)) {
-    assert.ok(fs.existsSync(path.join(outDir, m.file)), `missing ${m.file}`);
-  }
-
-  fs.rmSync(root, { recursive: true, force: true });
+  assert.ok(names.includes("defprop"), `dep reached only through the tsconfig alias; got ${names.join(", ")}`);
+  assert.ok(names.includes("uikit"), `JS dep with a CSS/font import still pre-bundles; got ${names.join(", ")}`);
+  for (const m of Object.values(metadata)) assert.ok(fs.existsSync(path.join(outDir, m.file)), `missing ${m.file}`);
+  cleanup(root);
 });
 
-it("optimize-deps: never pre-bundles a queried specifier (?worker/?url)", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdeps3-"));
-  fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx3" }));
-
+each("never pre-bundles a queried specifier (?worker/?url)", (bundler) => {
+  const root = makeRoot(bundler, "oj-optdeps3-");
   pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\n` });
   pkg("wk", root, "index.js", { "index.js": `export default 1;\n`, "worker.js": `self.onmessage = () => {};\n` });
-
-  // A `?worker` import must be externalized, not recorded as a dep (Vite's
-  // SPECIAL_QUERY_RE does the same). If it were pre-bundled, the browser would
-  // request /@oj-deps/wk_worker.js and 404, breaking the app (the twenty
-  // monaco-graphql worker regression).
-  fs.writeFileSync(
-    path.join(root, "entry.js"),
+  // Vite's SPECIAL_QUERY_RE: a pre-bundled `?worker` import would 404 at
+  // /@oj-deps/wk_worker.js.
+  write(
+    root,
+    "entry.js",
     `import { a } from "plaincjs";\nimport Worker from "wk/worker.js?worker";\nexport const out = a + typeof Worker;\n`,
   );
-
-  const outDir = path.join(root, ".oj-cache", "deps");
-  const cfg = JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], autoDiscover: true });
-  const { metadata } = runOptimize(cfg);
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")] });
   const names = Object.keys(metadata);
-
   assert.ok(names.includes("plaincjs"), `plain dep still pre-bundled; got ${names.join(", ")}`);
-  assert.ok(
-    !names.some((n) => n.includes("?") || n.includes("worker")),
-    `queried/worker specifier must NOT be pre-bundled; got ${names.join(", ")}`,
-  );
-
-  fs.rmSync(root, { recursive: true, force: true });
+  assert.ok(!names.some((n) => n.includes("?") || n.includes("worker")), `queried specifier pre-bundled: ${names}`);
+  cleanup(root);
 });
 
-it("optimize-deps: does NOT auto-discover by default; only the include list is pre-bundled", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdeps4-"));
-  fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx4" }));
-
+each("discovers deps by default; noDiscovery leaves only the include list", (bundler) => {
+  const root = makeRoot(bundler, "oj-optdeps4-");
   pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\n` });
   pkg("other", root, "index.js", { "index.js": `exports.b = 2;\n` });
-  fs.writeFileSync(
-    path.join(root, "entry.js"),
-    `import { a } from "plaincjs";\nimport { b } from "other";\nexport const out = a + b;\n`,
-  );
-  const outDir = path.join(root, ".oj-cache", "deps");
+  write(root, "entry.js", `import { a } from "plaincjs";\nimport { b } from "other";\nexport const out = a + b;\n`);
+  const outDir = outDirOf(root);
+  const entries = [path.join(root, "entry.js")];
 
-  // Default (no autoDiscover): the esbuild scan does not run, so a dep reached
-  // only from the entry graph is NOT pre-bundled — it is served individually via
-  // wrap_cjs. This gate keeps a dep's CJS/UMD interop quirks from breaking an app.
-  const gated = runOptimize(JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")] })).metadata;
-  assert.equal(Object.keys(gated).length, 0, `default must not auto-discover; got ${Object.keys(gated).join(", ")}`);
+  const discovered = runOptimize({ root, outDir, entries }).metadata;
+  assert.deepEqual(Object.keys(discovered).sort(), ["other", "plaincjs"], "Vite's default crawls the entries");
 
-  // The explicit include list is always pre-bundled, even without autoDiscover.
-  const included = runOptimize(
-    JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], include: ["plaincjs"] }),
-  ).metadata;
-  assert.deepEqual(Object.keys(included), ["plaincjs"], "explicit include is pre-bundled");
+  const gated = runOptimize({ root, outDir, entries, autoDiscover: false }).metadata;
+  assert.equal(Object.keys(gated).length, 0, `noDiscovery must not crawl; got ${Object.keys(gated)}`);
 
-  fs.rmSync(root, { recursive: true, force: true });
+  const included = runOptimize({ root, outDir, entries, autoDiscover: false, include: ["plaincjs"] }).metadata;
+  assert.deepEqual(Object.keys(included), ["plaincjs"], "the include list is pre-bundled either way");
+  cleanup(root);
 });
 
-it("optimize-deps: expands include globs like Vite and honors needsInterop", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdeps5-"));
-  fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx5" }));
-
+each("expands include globs like Vite and honors needsInterop", (bundler) => {
+  const root = makeRoot(bundler, "oj-optdeps5-");
   // No exports map: the glob runs over the package's files (Vite expandGlobIds).
   pkg("plainglob", root, "index.js", {
     "index.js": `exports.root = 1;\n`,
     "alpha.js": `exports.alpha = 1;\n`,
     "beta.js": `exports.beta = 2;\n`,
   });
-  // Exports map with a subpath pattern: the glob is matched against the export
-  // keys, resolved through the pattern's target files.
+  // Exports map with a subpath pattern: the glob matches the export keys.
   const withExports = path.join(root, "node_modules", "exportsglob");
   fs.mkdirSync(path.join(withExports, "dist", "icons"), { recursive: true });
   fs.writeFileSync(
@@ -267,19 +218,10 @@ it("optimize-deps: expands include globs like Vite and honors needsInterop", asy
   fs.writeFileSync(path.join(withExports, "dist", "index.js"), `exports.idx = 1;\n`);
   fs.writeFileSync(path.join(withExports, "dist", "icons", "sun.js"), `exports.sun = 1;\n`);
   fs.writeFileSync(path.join(withExports, "dist", "icons", "moon.js"), `exports.moon = 1;\n`);
-  // A real ESM dep: interop is only forced through optimizeDeps.needsInterop.
-  const esm = path.join(root, "node_modules", "esmlib");
-  fs.mkdirSync(esm, { recursive: true });
-  fs.writeFileSync(
-    path.join(esm, "package.json"),
-    JSON.stringify({ name: "esmlib", version: "1.0.0", type: "module", main: "index.js" }),
-  );
-  fs.writeFileSync(path.join(esm, "index.js"), `export const named = 1;\nexport default { named };\n`);
-  fs.writeFileSync(path.join(root, "entry.js"), `export const out = 1;\n`);
-  const outDir = path.join(root, ".oj-cache", "deps");
-
+  esmPkg("esmlib", root, { "index.js": `export const named = 1;\nexport default { named };\n` });
+  write(root, "entry.js", `export const out = 1;\n`);
   const run = (extra) =>
-    runOptimize(JSON.stringify({ root, outDir, entries: [path.join(root, "entry.js")], ...extra })).metadata;
+    runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")], ...extra }).metadata;
 
   const globbed = run({ include: ["plainglob/*.js", "exportsglob/icons/*"] });
   assert.deepEqual(
@@ -295,64 +237,182 @@ it("optimize-deps: expands include globs like Vite and honors needsInterop", asy
     ],
     "the package itself plus every subpath the glob matches",
   );
-  for (const m of Object.values(globbed)) assert.ok(fs.existsSync(path.join(outDir, m.file)), `missing ${m.file}`);
+  for (const m of Object.values(globbed)) assert.ok(fs.existsSync(path.join(outDirOf(root), m.file)));
 
-  const plain = run({ include: ["esmlib"] });
-  assert.equal(plain.esmlib.needsInterop, false, "an ESM dep with named exports needs no interop");
-  const forced = run({ include: ["esmlib"], needsInterop: ["esmlib"] });
-  assert.equal(forced.esmlib.needsInterop, true, "optimizeDeps.needsInterop forces it in the metadata");
-
-  fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(run({ include: ["esmlib"] }).esmlib.needsInterop, false, "an ESM dep needs no interop");
+  assert.equal(
+    run({ include: ["esmlib"], needsInterop: ["esmlib"] }).esmlib.needsInterop,
+    true,
+    "optimizeDeps.needsInterop forces it in the metadata",
+  );
+  cleanup(root);
 });
 
-it("optimize-deps: resolve.dedupe bundles the root copy; entries are globs", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdeps6-"));
-  fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(root, "node_modules", "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(root, "node_modules", "@esbuild"));
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx6" }));
+each("resolve.dedupe bundles the root copy; entries are globs", (bundler) => {
+  const root = makeRoot(bundler, "oj-optdeps6-");
+  esmPkg("shared", root, { "index.js": `export const copy = "ROOT_COPY";\n` });
+  esmPkg("consumer", root, {
+    "index.js": `import { copy } from "shared";\nexport const via = copy;\n`,
+    "node_modules/shared/package.json": JSON.stringify({ name: "shared", type: "module", main: "index.js" }),
+    "node_modules/shared/index.js": `export const copy = "NESTED_COPY";\n`,
+  });
+  write(root, "src/pages/home.js", `import { via } from "consumer";\nexport const out = via;\n`);
+  const outDir = outDirOf(root);
+  const run = (extra) => runOptimize({ root, outDir, ...extra }).metadata;
+  const entries = [path.join(root, "src/pages/home.js")];
 
-  const esmPkg = (dir, name, code) => {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, "package.json"),
-      JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js" }),
-    );
-    fs.writeFileSync(path.join(dir, "index.js"), code);
-  };
-  // `shared` exists twice: at the root and nested under `consumer`.
-  esmPkg(path.join(root, "node_modules", "shared"), "shared", `export const copy = "ROOT_COPY";\n`);
-  esmPkg(
-    path.join(root, "node_modules", "consumer"),
-    "consumer",
-    `import { copy } from "shared";\nexport const via = copy;\n`,
-  );
-  esmPkg(
-    path.join(root, "node_modules", "consumer", "node_modules", "shared"),
-    "shared",
-    `export const copy = "NESTED_COPY";\n`,
-  );
-  fs.mkdirSync(path.join(root, "src", "pages"), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, "src", "pages", "home.js"),
-    `import { via } from "consumer";\nexport const out = via;\n`,
-  );
-  const outDir = path.join(root, ".oj-cache", "deps");
-  const run = (extra) => runOptimize(JSON.stringify({ root, outDir, ...extra })).metadata;
-
-  // Node resolution alone picks the nested copy; resolve.dedupe re-resolves the
-  // bare import from the project root (Vite: dedupe -> basedir = root).
-  const plain = run({ include: ["consumer"], entries: [path.join(root, "src/pages/home.js")] });
+  const plain = run({ include: ["consumer"], entries, autoDiscover: false });
   assert.match(fs.readFileSync(path.join(outDir, plain.consumer.file), "utf8"), /NESTED_COPY/);
-  const deduped = run({ include: ["consumer"], dedupe: ["shared"], entries: [path.join(root, "src/pages/home.js")] });
+  const deduped = run({ include: ["consumer"], dedupe: ["shared"], entries, autoDiscover: false });
   const bundled = fs.readFileSync(path.join(outDir, deduped.consumer.file), "utf8");
   assert.match(bundled, /ROOT_COPY/, `dedupe must bundle the root copy:\n${bundled}`);
   assert.doesNotMatch(bundled, /NESTED_COPY/);
 
-  // optimizeDeps.entries as a glob (relative to root) feeds the scan.
-  const globbed = run({ entries: ["src/**/*.js"], autoDiscover: true });
-  assert.deepEqual(Object.keys(globbed).sort(), ["consumer"], "the glob-matched entry was scanned");
+  // Vite's nested-dependency syntax: "consumer > shared" pre-bundles the copy
+  // nested under consumer and registers it under what the app imports.
+  const nested = run({ include: ["consumer > shared"], entries, autoDiscover: false });
+  assert.deepEqual(Object.keys(nested), ["shared"]);
+  assert.match(fs.readFileSync(path.join(outDir, nested.shared.file), "utf8"), /NESTED_COPY/);
 
-  fs.rmSync(root, { recursive: true, force: true });
+  const globbed = run({ entries: ["src/**/*.js"] });
+  assert.deepEqual(Object.keys(globbed).sort(), ["consumer"], "the glob-matched entry was scanned");
+  cleanup(root);
+});
+
+each("a CJS react-family dep gets a named-export facade over its bundle", async (bundler) => {
+  const root = makeRoot(bundler, "oj-optdeps7-");
+  pkg("react", root, "index.js", { "index.js": `exports.useState = function () { return "state"; };\n` });
+  write(root, "entry.js", `import { useState } from "react";\nexport const out = useState();\n`);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir, entries: [path.join(root, "entry.js")] });
+  assert.equal(metadata.react.needsInterop, false, "the facade links as ESM");
+  const facade = await import(pathToFileURL(path.join(outDir, metadata.react.file)).href);
+  assert.equal(facade.useState(), "state");
+  assert.equal(facade.default.useState, facade.useState, "default is module.exports");
+  cleanup(root);
+});
+
+only("rolldown", "a Vite 8 app without esbuild pre-bundles with its vite's rolldown", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-v8-");
+  pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { a } from "plaincjs";\nconsole.log(a);\n`);
+  assert.throws(
+    () => execFileSync("node", ["-e", "require.resolve('esbuild')"], { cwd: root, stdio: "ignore" }),
+    "the app itself has no esbuild",
+  );
+  const outDir = outDirOf(root);
+  const { metadata, bundler } = runOptimize({ root, outDir });
+  assert.equal(bundler, "rolldown");
+  assert.deepEqual(Object.keys(metadata), ["plaincjs"], "discovered from index.html");
+  assert.match(
+    fs.readFileSync(path.join(outDir, metadata.plaincjs.file), "utf8"),
+    /export default require_plaincjs\(\)/,
+  );
+  cleanup(root);
+});
+
+only("esbuild", "a Vite <= 7 app keeps its vite's esbuild", () => {
+  const root = makeRoot(null, "oj-optdeps-v7-");
+  const vite = path.join(root, "node_modules", "vite");
+  fs.mkdirSync(path.join(vite, "node_modules"), { recursive: true });
+  fs.writeFileSync(
+    path.join(vite, "package.json"),
+    JSON.stringify({ name: "vite", version: "7.1.0", exports: { "./package.json": "./package.json" } }),
+  );
+  fs.symlinkSync(path.join(fixtureModules, "esbuild"), path.join(vite, "node_modules", "esbuild"));
+  const scoped = path.join(fixtureModules, "@esbuild");
+  if (fs.existsSync(scoped)) fs.symlinkSync(scoped, path.join(vite, "node_modules", "@esbuild"));
+  pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\n` });
+  write(root, "entry.js", `import { a } from "plaincjs";\nexport const out = a;\n`);
+  const { metadata, bundler } = runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")] });
+  assert.equal(bundler, "esbuild");
+  assert.deepEqual(Object.keys(metadata), ["plaincjs"]);
+  cleanup(root);
+});
+
+only("rolldown", "an app without vite uses the rolldown vendored next to oj", () => {
+  const root = makeRoot(null, "oj-optdeps-vendor-");
+  const vendor = fs.mkdtempSync(path.join(os.tmpdir(), "oj-vendor-"));
+  fs.mkdirSync(path.join(vendor, "node_modules"));
+  fs.writeFileSync(path.join(vendor, "package.json"), JSON.stringify({ name: "oj-vendor", private: true }));
+  fs.symlinkSync(path.join(fixtureModules, "rolldown"), path.join(vendor, "node_modules", "rolldown"));
+  pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\n` });
+  write(root, "entry.js", `import { a } from "plaincjs";\nexport const out = a;\n`);
+  const run = (vendoredRolldown) =>
+    runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")], vendoredRolldown });
+  const { metadata, bundler } = run(vendor);
+  assert.equal(bundler, "rolldown");
+  assert.deepEqual(Object.keys(metadata), ["plaincjs"]);
+  assert.throws(() => run(undefined), /no dependency bundler found/, "nothing to bundle with: a clear error");
+  cleanup(root);
+  cleanup(vendor);
+});
+
+only("rolldown", "what a bundle keeps external is a URL oj serves (Vite runs importAnalysis there)", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-ext-");
+  esmPkg("styled", root, {
+    "index.js":
+      `import "./s.css";\n` +
+      `export const wasm = new URL("./w.wasm", import.meta.url).href;\n` +
+      `export const remote = new URL("https://example.com/x.png", import.meta.url).href;\n` +
+      `export { x } from "excluded";\n`,
+    "s.css": "a{}",
+    "w.wasm": "",
+  });
+  esmPkg("excluded", root, { "index.js": `export const x = 1;\n` });
+  pkg("usesfs", root, "index.js", { "index.js": `exports.read = require("fs").readFileSync;\n` });
+  esmPkg(
+    "peery",
+    root,
+    { "index.js": `import m from "missing-peer";\nexport const p = m;\n` },
+    { peerDependencies: { "missing-peer": "*" }, peerDependenciesMeta: { "missing-peer": { optional: true } } },
+  );
+  write(
+    root,
+    "entry.js",
+    `import { wasm, x } from "styled";\nimport { read } from "usesfs";\nimport { p } from "peery";\nexport default [wasm, x, read, p];\n`,
+  );
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir, entries: [path.join(root, "entry.js")], exclude: ["excluded"] });
+  assert.deepEqual(Object.keys(metadata).sort(), ["peery", "styled", "usesfs"]);
+
+  const styled = fs.readFileSync(path.join(outDir, metadata.styled.file), "utf8");
+  assert.match(styled, /import "\/node_modules\/styled\/s\.css";/, `CSS kept as its served URL:\n${styled}`);
+  assert.match(styled, /from "\/node_modules\/excluded\/index\.js"/, "an excluded dep is its served URL");
+  assert.match(styled, /new URL\("\/node_modules\/styled\/w\.wasm", import\.meta\.url\)/, "new URL rebased");
+  assert.match(styled, /new URL\("https:\/\/example\.com\/x\.png", import\.meta\.url\)/, "remote URL untouched");
+
+  const usesfs = fs.readFileSync(path.join(outDir, metadata.usesfs.file), "utf8");
+  assert.match(usesfs, /has been externalized for browser compatibility/, "a node builtin is a browser stub");
+  assert.doesNotMatch(usesfs, /from "fs"|require\("fs"\)/, "no bare builtin left for the browser");
+
+  const peery = fs.readFileSync(path.join(outDir, metadata.peery.file), "utf8");
+  assert.match(peery, /Could not resolve \\"missing-peer\\" imported by \\"peery\\"/, "optional peer stub");
+  cleanup(root);
+});
+
+only("rolldown", "ESM entries need no interop; linked packages are crawled, not bundled", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-esm-");
+  esmPkg("esmdefault", root, { "index.js": `export default function hi() { return 1; }\n` });
+  esmPkg("reexports", root, { "index.js": `export * from "./inner.js";\n`, "inner.js": `export const z = 1;\n` });
+  pkg("deep", root, "index.js", { "index.js": `exports.d = 1;\n` });
+  // A workspace package symlinked into node_modules: Vite keeps crawling it and
+  // pre-bundles what IT imports, never the linked source itself. Its own
+  // import of `deep` resolves from the app root (a hoisted install).
+  const ws = path.join(root, "packages", "linked");
+  write(root, "packages/linked/package.json", JSON.stringify({ name: "linked", type: "module", main: "index.js" }));
+  write(root, "packages/linked/index.js", `export { d } from "deep";\n`);
+  fs.symlinkSync(ws, path.join(root, "node_modules", "linked"));
+  write(
+    root,
+    "entry.js",
+    `import hi from "esmdefault";\nimport { z } from "reexports";\nimport { d } from "linked";\nexport default [hi, z, d];\n`,
+  );
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")] });
+  assert.deepEqual(Object.keys(metadata).sort(), ["deep", "esmdefault", "reexports"]);
+  assert.equal(metadata.esmdefault.needsInterop, false, "a default-only ESM entry is ESM (Vite's hasModuleSyntax)");
+  assert.equal(metadata.reexports.needsInterop, false);
+  assert.equal(metadata.deep.needsInterop, true);
+  cleanup(root);
 });

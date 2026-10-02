@@ -50,8 +50,6 @@ pub struct Knobs {
     pub no_deps_preseed: bool,
     /// `OJ_PRESEED_TIMEOUT` seconds, when positive.
     pub preseed_timeout_secs: Option<u64>,
-    /// `OJ_OPTIMIZE_SCAN` truthy.
-    pub optimize_scan: bool,
     /// Raw timeouts, parsed by the consumers' `*_from` helpers.
     pub optimize_timeout: Option<String>,
     pub plugin_timeout: Option<String>,
@@ -99,7 +97,6 @@ impl Knobs {
             debug_hook_gate: var("OJ_DEBUG_HOOK_GATE").as_deref() == Some("1"),
             no_deps_preseed: truthy("OJ_NO_DEPS_PRESEED"),
             preseed_timeout_secs: trimmed("OJ_PRESEED_TIMEOUT").filter(|s| *s > 0),
-            optimize_scan: truthy("OJ_OPTIMIZE_SCAN"),
             optimize_timeout: var("OJ_OPTIMIZE_TIMEOUT"),
             plugin_timeout: var("OJ_PLUGIN_TIMEOUT"),
             plugin_init_timeout: var("OJ_PLUGIN_INIT_TIMEOUT"),

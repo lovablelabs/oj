@@ -136,12 +136,21 @@ impl OptimizedDeps {
     }
 }
 
-/// `optimizeDeps.noDiscovery` when set, else the OJ_OPTIMIZE_SCAN opt-in. One
-/// function so the optimizer run and its cache key can never disagree on mode.
+/// Vite's default: the optimizer crawls the app for deps unless
+/// `optimizeDeps.noDiscovery` is set, which leaves only `include`.
 fn effective_auto_discover(no_discovery: Option<bool>) -> bool {
-    no_discovery
-        .map(|disabled| !disabled)
-        .unwrap_or_else(|| oj_env::get().knobs.optimize_scan)
+    !no_discovery.unwrap_or(false)
+}
+
+/// The rolldown vendored next to the binary, for apps whose own Vite brings
+/// no bundler; `None` when this build vendors none or the vendor is unusable.
+fn vendored_rolldown() -> Option<(&'static str, &'static str)> {
+    match oj_cache::start_bundle::vendored_rolldown() {
+        oj_cache::start_bundle::VendoredRolldown::Resolved { path, version } => {
+            Some((path.as_str(), version.as_str()))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Default, Clone)]
@@ -268,8 +277,6 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         hasher.update(b"=");
         hasher.update(replacement.as_bytes());
     }
-    // Key the EFFECTIVE decision: hashing the raw Option let an OJ_OPTIMIZE_SCAN
-    // toggle serve the other mode's stale prebundle.
     hasher.update(
         format!(
             "\0discovery:{}",
@@ -277,6 +284,9 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         )
         .as_bytes(),
     );
+    if let Some((path, version)) = vendored_rolldown() {
+        hasher.update(format!("\0vendor:{version}\0{path}").as_bytes());
+    }
     if let Some(opts) = &input.bundler_options {
         hasher.update(b"\0o");
         hasher.update(opts.to_string().as_bytes());
@@ -330,7 +340,7 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<DepMap> {
     Some(map)
 }
 
-/// Deadline for the dep pre-bundle (a wedged esbuild service must not stall it
+/// Deadline for the dep pre-bundle (a wedged bundler must not stall it
 /// forever): 120 s default, raised via `OJ_OPTIMIZE_TIMEOUT=<seconds>`.
 fn optimizer_timeout() -> std::time::Duration {
     optimizer_timeout_from(oj_env::get().knobs.optimize_timeout.as_deref())
@@ -369,8 +379,6 @@ async fn run_optimizer(
         .iter()
         .map(|(f, r)| [f.as_str(), r.as_str()])
         .collect();
-    // Full-graph auto-discovery is opt-in (OJ_OPTIMIZE_SCAN=1): it can break
-    // UMD/CJS interop, so default = explicit include list, rest via wrap_cjs.
     let auto_discover = effective_auto_discover(input.no_discovery);
     // Config as JSON engine-call argument, metadata as the return value: argv
     // has an OS length limit and stdout broke when a dep printed on require.
@@ -385,6 +393,7 @@ async fn run_optimizer(
         "needsInterop": input.needs_interop,
         "autoDiscover": auto_discover,
         "esbuildOptions": input.bundler_options,
+        "vendoredRolldown": vendored_rolldown().map(|(path, _)| path),
         "resolve": {
             "conditions": input.conditions,
             "mainFields": input.main_fields,
@@ -775,6 +784,34 @@ mod tests {
         // The manifest makes the next boot a warm cache.
         let warm = load_manifest(&out_dir, "0123456789abcdef").expect("manifest written");
         assert!(warm.contains_key("plaincjs"));
+    }
+
+    #[test]
+    fn discovery_is_on_unless_no_discovery_is_set() {
+        assert!(effective_auto_discover(None));
+        assert!(effective_auto_discover(Some(false)));
+        assert!(!effective_auto_discover(Some(true)));
+        let dir = project(&[("package.json", r#"{"name":"app"}"#)]);
+        let key = |no_discovery| {
+            lockfile_hash(
+                dir.path(),
+                "v",
+                &OptimizeInput {
+                    no_discovery,
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(
+            key(None),
+            key(Some(false)),
+            "unset is the discovering default"
+        );
+        assert_ne!(
+            key(None),
+            key(Some(true)),
+            "noDiscovery is its own prebundle"
+        );
     }
 
     #[test]

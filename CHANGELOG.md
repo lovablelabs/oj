@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Start dev serves the client bundle with an ETag from each chunk's content hash (a reload revalidates to a 304 instead of re-downloading), `immutable` caching for its hashed chunks, and gzip for browsers that accept it. On a 2000-component app the entry goes from 2.7 MB to about 340 KB on the wire.
 - The dev server's module 304s follow `If-None-Match` the way HTTP defines it: a list of tags, `*`, and weak (`W/`) tags all match, where only the exact single tag did before.
+- Dependency pre-bundling follows the app's own Vite: a Vite 8 app pre-bundles with the rolldown its vite brings (Vite 8's optimizer engine), a Vite 7 or older app keeps esbuild, and an app without Vite uses the rolldown vendored with oj. Vite 8 apps ship no esbuild, so until now their deps were never pre-bundled and every dependency file was its own request.
+- Dependency discovery is on by default, as in Vite: oj crawls the app from its entries and pre-bundles every dependency it imports. `optimizeDeps.noDiscovery: true` limits pre-bundling to `optimizeDeps.include`.
+- What a rolldown pre-bundle leaves external is written as the URL oj serves it at: a dependency's CSS and assets, `optimizeDeps.exclude`d packages, and `new URL("./file", import.meta.url)` references. Node builtins become Vite's browser-external stub and a missing optional peer dependency throws only when evaluated, both inside the bundle.
+
+### Removed
+
+- `OJ_OPTIMIZE_SCAN`. Discovery is the default; `optimizeDeps.noDiscovery` turns it off.
 
 ## [0.2.16] - 2026-10-01
 
