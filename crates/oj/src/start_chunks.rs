@@ -72,7 +72,10 @@ pub(crate) fn etag_of(hash: &str) -> String {
 /// Whether the request's `If-None-Match` names `etag`, by the weak comparison
 /// `If-None-Match` uses.
 pub(crate) fn not_modified(req: &HeaderMap, etag: &str) -> bool {
-    let opaque = |t: &str| t.trim().trim_start_matches("W/").to_string();
+    let opaque = |t: &str| {
+        let t = t.trim();
+        t.strip_prefix("W/").unwrap_or(t).to_string()
+    };
     let ours = opaque(etag);
     req.get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())

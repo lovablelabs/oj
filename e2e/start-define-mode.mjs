@@ -90,7 +90,7 @@ try {
       "default: client bundle did not apply the config define (hydration would throw)",
     );
     must(!/\b__FIXTURE_DEFINE__\b/.test(js), "default: client bundle still references the bare define identifier");
-    must(/"?MODE"?:\s*["`]development["`]/.test(js), "default: client import.meta.env.MODE is not development");
+    must(/"MODE":\s*"development"/.test(js), "default: client import.meta.env.MODE is not development");
     must(js.includes("default-flavor"), "default: client did not get .env.development VITE_ var");
     must(!js.includes("staging-flavor"), "default: .env.staging leaked into the default mode");
     // envPrefix: a FIXTURE_ var reaches both sides, an unprefixed one neither.
@@ -106,7 +106,7 @@ try {
     // environments.{ssr,client}.define: each bundle gets its own value.
     must(html.includes(">server-side<"), "default: SSR did not apply environments.ssr.define");
     must(
-      /["`]client-side["`]/.test(js) && !/["`]server-side["`]/.test(js),
+      js.includes('"client-side"') && !js.includes('"server-side"'),
       "default: client bundle did not apply environments.client.define",
     );
     must(!/\b__FIXTURE_SIDE__\b/.test(js), "default: client bundle still references the bare environment define");
@@ -121,8 +121,8 @@ try {
     );
     must(html.includes("fixture-define-marker"), "--mode staging: SSR lost the config define");
     const js = await clientBundle();
-    must(/"?MODE"?:\s*["`]staging["`]/.test(js), "--mode staging: client import.meta.env.MODE is not staging");
-    must(/"?DEV"?:\s*(true|!0)/.test(js), "--mode staging: a non-production dev mode is still DEV");
+    must(/"MODE":\s*"staging"/.test(js), "--mode staging: client import.meta.env.MODE is not staging");
+    must(/"DEV":\s*true/.test(js), "--mode staging: a non-production dev mode is still DEV");
     must(js.includes("staging-flavor"), "--mode staging: client did not get .env.staging VITE_ var");
     must(!js.includes("default-flavor"), "--mode staging: .env.development leaked into staging");
     must(js.includes("fixture-define-marker"), "--mode staging: client lost the config define");

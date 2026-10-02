@@ -1966,6 +1966,8 @@ async fn serve_client_chunk(
     let mime = asset_mime(ext);
     // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
     let immutable = !bundle.is_entry(&name);
+    // This request's snapshot: racing a rebundle it may prune a fresh gzip
+    // body or keep a dead one, and the next miss repairs either.
     let live = |h: &str| bundle.has_hash(h);
     match chunk.hash.clone() {
         Some(hash) => {

@@ -145,7 +145,8 @@ async function main() {
       jsx: jsxTransformOptions(NODE_ENV !== "production"),
       define: {
         "process.env": JSON.stringify({ NODE_ENV, TSS_SERVER_FN_BASE: SERVER_FN_BASE }),
-        // Explicit, like Vite: rolldown's minifier otherwise folds this key to
+        // Explicit, like Vite's define plugin. It also guards a regression if
+        // minify is ever enabled: rolldown's minifier folds the key to
         // "production" and React picks its prod jsx runtime (no jsxDEV).
         "process.env.NODE_ENV": JSON.stringify(NODE_ENV),
         global: "globalThis",
