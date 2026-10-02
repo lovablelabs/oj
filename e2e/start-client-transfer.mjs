@@ -43,7 +43,7 @@ try {
   const plain = await fetch(ENTRY, { headers: { "accept-encoding": "identity" } });
   must(plain.status === 200, `entry returned ${plain.status}`);
   const etag = plain.headers.get("etag");
-  must(/^"[^"]+"$/.test(etag ?? ""), `entry has no strong ETag: ${etag}`);
+  must(/^W\/"[^"]+"$/.test(etag ?? ""), `entry has no ETag: ${etag}`);
   must(plain.headers.get("cache-control") === "no-cache", "the entry must revalidate, it keeps a fixed name");
   must(!plain.headers.get("content-encoding"), "gzip served to a client that did not ask for it");
   const body = await plain.text();

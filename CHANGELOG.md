@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Start dev serves the client bundle with a content-hash ETag (a reload revalidates to a 304 instead of re-downloading), `immutable` caching for content-hashed chunk names, gzip for browsers that accept it, and whitespace-minified output (names are kept). On a 2000-component app the entry goes from 2.75 MB to about 430 KB on the wire.
+- Start dev serves the client bundle with an ETag from each chunk's content hash (a reload revalidates to a 304 instead of re-downloading), `immutable` caching for its hashed chunks, and gzip for browsers that accept it. On a 2000-component app the entry goes from 2.7 MB to about 340 KB on the wire.
 
 ## [0.2.16] - 2026-10-01
 

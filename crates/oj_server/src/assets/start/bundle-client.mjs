@@ -145,8 +145,8 @@ async function main() {
       jsx: jsxTransformOptions(NODE_ENV !== "production"),
       define: {
         "process.env": JSON.stringify({ NODE_ENV, TSS_SERVER_FN_BASE: SERVER_FN_BASE }),
-        // Explicit, like Vite: with `minify` on, rolldown otherwise folds this
-        // key to "production" and React picks its prod jsx runtime (no jsxDEV).
+        // Explicit, like Vite: rolldown's minifier otherwise folds this key to
+        // "production" and React picks its prod jsx runtime (no jsxDEV).
         "process.env.NODE_ENV": JSON.stringify(NODE_ENV),
         global: "globalThis",
         ...viteEnvDefine({ ssr: false, mode: MODE }),
@@ -174,7 +174,6 @@ async function main() {
     ],
     output: {
       format: "esm",
-      minify: { compress: false, mangle: false, codegen: { removeWhitespace: true } },
       banner:
         `globalThis.process=globalThis.process||{env:{NODE_ENV:${JSON.stringify(NODE_ENV)},TSS_SERVER_FN_BASE:${JSON.stringify(SERVER_FN_BASE)}}};` +
         "globalThis.global=globalThis.global||globalThis;",

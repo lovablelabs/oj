@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! How the Start client bundle goes over the wire: a strong ETag from the
-//! chunk's content hash (a reload revalidates to a 304), immutable caching for
-//! content-hashed chunk names, and gzip for clients that accept it.
+//! How the Start client bundle goes over the wire: an ETag from the chunk's
+//! content hash (a reload revalidates to a 304), immutable caching for the
+//! bundle's hashed chunks, and gzip for clients that accept it.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -23,18 +23,19 @@ pub(crate) struct GzipCache {
 }
 
 impl GzipCache {
-    /// The gzip body for `hash`, compressing `plain` on first use. Entries for
-    /// hashes outside `live` (an older bundle) are dropped on insert.
-    fn get_or_compress(
+    /// The gzip body for `hash`, compressing `plain` off the async workers on
+    /// first use. Entries for hashes outside `live` (an older bundle) are
+    /// dropped on insert.
+    async fn get_or_compress(
         &self,
         hash: &str,
-        plain: &[u8],
+        plain: Bytes,
         live: &(dyn Fn(&str) -> bool + Sync),
     ) -> Bytes {
         if let Some(hit) = self.lock().get(hash) {
             return hit.clone();
         }
-        let gz = gzip(plain);
+        let gz = compress(plain).await;
         let mut map = self.lock();
         map.retain(|h, _| live(h));
         map.insert(hash.to_string(), gz.clone());
@@ -46,37 +47,36 @@ impl GzipCache {
     }
 }
 
+/// A multi-MB bundle takes tens of milliseconds at the default level.
+async fn compress(plain: Bytes) -> Bytes {
+    tokio::task::spawn_blocking(move || gzip(&plain))
+        .await
+        .expect("gzip task must not panic")
+}
+
 fn gzip(plain: &[u8]) -> Bytes {
     let mut enc = flate2::write::GzEncoder::new(
         Vec::with_capacity(plain.len() / 4),
-        flate2::Compression::fast(),
+        flate2::Compression::default(),
     );
     enc.write_all(plain).expect("writing to a Vec");
     Bytes::from(enc.finish().expect("writing to a Vec"))
 }
 
+/// Weak: the plain and gzip bodies share it, and a strong validator must
+/// differ between content codings (RFC 9110 8.8.1).
 pub(crate) fn etag_of(hash: &str) -> String {
-    format!("\"{hash}\"")
+    format!("W/\"{hash}\"")
 }
 
-/// Whether the request's `If-None-Match` names `etag`.
+/// Whether the request's `If-None-Match` names `etag`, by the weak comparison
+/// `If-None-Match` uses.
 pub(crate) fn not_modified(req: &HeaderMap, etag: &str) -> bool {
+    let opaque = |t: &str| t.trim().trim_start_matches("W/").to_string();
+    let ours = opaque(etag);
     req.get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"))
-}
-
-/// Rolldown's default chunk and asset names end in `-<hash>`; those never
-/// change content, so the browser may keep them without revalidating. The
-/// entry keeps its fixed name and is revalidated.
-pub(crate) fn content_hashed(name: &str) -> bool {
-    let file = name.rsplit('/').next().unwrap_or(name);
-    let stem = file.split('.').next().unwrap_or(file);
-    stem.rsplit_once('-').is_some_and(|(_, h)| {
-        h.len() >= 8
-            && h.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    })
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == "*" || opaque(t) == ours))
 }
 
 fn accepts_gzip(req: &HeaderMap) -> bool {
@@ -100,29 +100,38 @@ fn compressible(mime: &str) -> bool {
         || mime.contains("svg")
 }
 
+/// One chunk of the client bundle. `immutable`: its name carries its content
+/// hash (every chunk but the entry, named by rolldown's `[name]-[hash]`).
+pub(crate) struct Chunk<'a> {
+    pub mime: &'static str,
+    pub hash: &'a str,
+    pub immutable: bool,
+}
+
+/// Where gzip bodies are kept, and which hashes are still live.
+pub(crate) type GzipStore<'a> = (&'a GzipCache, &'a (dyn Fn(&str) -> bool + Sync));
+
 /// The response for a chunk whose content hash is known. `body` is only
-/// called when the bytes are needed (a 304 never reads the file).
+/// called when the bytes are needed (a 304 never reads the file). Without a
+/// `store` a gzip body is compressed per request and not kept.
 pub(crate) async fn respond<F, Fut>(
     req: &HeaderMap,
-    name: &str,
-    mime: &'static str,
-    hash: &str,
-    gzip_cache: &GzipCache,
-    live: &(dyn Fn(&str) -> bool + Sync),
+    chunk: Chunk<'_>,
+    store: Option<GzipStore<'_>>,
     body: F,
 ) -> Response
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<Bytes, Response>>,
 {
-    let etag = etag_of(hash);
-    let cache_control = if content_hashed(name) {
+    let etag = etag_of(chunk.hash);
+    let cache_control = if chunk.immutable {
         "max-age=31536000, immutable"
     } else {
         "no-cache"
     };
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(chunk.mime));
     headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static(cache_control),
@@ -139,9 +148,13 @@ where
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    if plain.len() >= MIN_GZIP_BYTES && compressible(mime) && accepts_gzip(req) {
+    if plain.len() >= MIN_GZIP_BYTES && compressible(chunk.mime) && accepts_gzip(req) {
+        let gz = match store {
+            Some((cache, live)) => cache.get_or_compress(chunk.hash, plain, live).await,
+            None => compress(plain).await,
+        };
         headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-        return (headers, gzip_cache.get_or_compress(hash, &plain, live)).into_response();
+        return (headers, gz).into_response();
     }
     (headers, plain).into_response()
 }
@@ -158,54 +171,56 @@ mod tests {
         h
     }
 
-    async fn serve(req: &HeaderMap, name: &str, cache: &GzipCache) -> Response {
-        let body = Bytes::from("console.log('chunk');".repeat(200));
-        respond(
-            req,
-            name,
-            "text/javascript",
-            "abc123",
-            cache,
-            &|_| true,
-            move || async move { Ok(body) },
-        )
-        .await
+    fn body() -> Bytes {
+        Bytes::from("console.log('chunk');".repeat(200))
     }
 
-    #[test]
-    fn hashed_names_are_recognized() {
-        assert!(content_hashed("index-B2E7EObn.js"));
-        assert!(content_hashed("assets/logo-DQ2Nmene.svg"));
-        assert!(!content_hashed("client-entry.js"));
-        assert!(!content_hashed("vendor-x.js"));
+    fn chunk(immutable: bool) -> Chunk<'static> {
+        Chunk {
+            mime: "text/javascript",
+            hash: "abc123",
+            immutable,
+        }
+    }
+
+    async fn serve(req: &HeaderMap, immutable: bool, cache: &GzipCache) -> Response {
+        respond(req, chunk(immutable), Some((cache, &|_| true)), || async {
+            Ok(body())
+        })
+        .await
     }
 
     #[tokio::test]
     async fn a_matching_etag_is_a_304_without_reading_the_body() {
         let cache = GzipCache::default();
-        let r = req(&[(header::IF_NONE_MATCH, "\"abc123\"")]);
-        let resp = respond(
-            &r,
-            "client-entry.js",
-            "text/javascript",
-            "abc123",
-            &cache,
-            &|_| true,
-            || async { panic!("a 304 must not read the chunk") },
-        )
+        let r = req(&[(header::IF_NONE_MATCH, "W/\"abc123\"")]);
+        let resp = respond(&r, chunk(false), Some((&cache, &|_| true)), || async {
+            panic!("a 304 must not read the chunk")
+        })
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
-        assert_eq!(resp.headers()[header::ETAG], "\"abc123\"");
+        assert_eq!(resp.headers()[header::ETAG], "W/\"abc123\"");
+    }
+
+    #[test]
+    fn if_none_match_compares_weakly() {
+        let etag = etag_of("abc123");
+        let inm = |v: &str| req(&[(header::IF_NONE_MATCH, v)]);
+        assert!(not_modified(&inm("\"abc123\""), &etag));
+        assert!(not_modified(&inm("\"x\", W/\"abc123\""), &etag));
+        assert!(not_modified(&inm("*"), &etag));
+        assert!(!not_modified(&inm("W/\"abc124\""), &etag));
+        assert!(!not_modified(&HeaderMap::new(), &etag));
     }
 
     #[tokio::test]
     async fn the_entry_revalidates_and_hashed_chunks_are_immutable() {
         let cache = GzipCache::default();
-        let entry = serve(&HeaderMap::new(), "client-entry.js", &cache).await;
+        let entry = serve(&HeaderMap::new(), false, &cache).await;
         assert_eq!(entry.headers()[header::CACHE_CONTROL], "no-cache");
-        let chunk = serve(&HeaderMap::new(), "dist-D79n85g1.js", &cache).await;
+        let hashed = serve(&HeaderMap::new(), true, &cache).await;
         assert_eq!(
-            chunk.headers()[header::CACHE_CONTROL],
+            hashed.headers()[header::CACHE_CONTROL],
             "max-age=31536000, immutable"
         );
     }
@@ -213,11 +228,11 @@ mod tests {
     #[tokio::test]
     async fn gzip_only_when_accepted_and_round_trips() {
         let cache = GzipCache::default();
-        let plain = serve(&HeaderMap::new(), "client-entry.js", &cache).await;
+        let plain = serve(&HeaderMap::new(), false, &cache).await;
         assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
         let refused = serve(
             &req(&[(header::ACCEPT_ENCODING, "gzip;q=0, br")]),
-            "client-entry.js",
+            false,
             &cache,
         )
         .await;
@@ -225,7 +240,7 @@ mod tests {
 
         let gz = serve(
             &req(&[(header::ACCEPT_ENCODING, "gzip, deflate, br")]),
-            "client-entry.js",
+            false,
             &cache,
         )
         .await;
@@ -239,11 +254,22 @@ mod tests {
         assert_eq!(out, "console.log('chunk');".repeat(200));
     }
 
-    #[test]
-    fn the_cache_keeps_only_live_hashes() {
+    #[tokio::test]
+    async fn without_a_store_gzip_is_served_but_not_kept() {
+        let r = req(&[(header::ACCEPT_ENCODING, "gzip")]);
+        let resp = respond(&r, chunk(false), None, || async { Ok(body()) }).await;
+        assert_eq!(resp.headers()[header::CONTENT_ENCODING], "gzip");
+    }
+
+    #[tokio::test]
+    async fn the_cache_keeps_only_live_hashes() {
         let cache = GzipCache::default();
-        cache.get_or_compress("old", b"a", &|_| true);
-        cache.get_or_compress("new", b"b", &|h| h == "new");
+        cache
+            .get_or_compress("old", Bytes::from_static(b"a"), &|_| true)
+            .await;
+        cache
+            .get_or_compress("new", Bytes::from_static(b"b"), &|h| h == "new")
+            .await;
         let map = cache.lock();
         assert!(map.contains_key("new") && !map.contains_key("old"));
     }

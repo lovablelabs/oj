@@ -16,6 +16,7 @@ use axum::{
 use futures_util::SinkExt;
 use tokio::sync::broadcast;
 
+use crate::start_chunks::{respond, Chunk};
 use crate::start_host::{ScriptEngine, StartEngine, StartRequest, StartResponse};
 
 struct StartState {
@@ -1963,24 +1964,32 @@ async fn serve_client_chunk(
     };
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
+    // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
+    let immutable = !bundle.is_entry(&name);
     let live = |h: &str| bundle.has_hash(h);
     match chunk.hash.clone() {
         Some(hash) => {
-            crate::start_chunks::respond(req, &name, mime, &hash, &state.gzip, &live, read).await
+            let chunk = Chunk {
+                mime,
+                hash: &hash,
+                immutable,
+            };
+            respond(req, chunk, Some((&state.gzip, &live)), read).await
         }
-        // A bundle rebuilt in place (not restored from the store) carries no
-        // hash: read first and hash the bytes.
+        // A bundle the store could not persist carries no hash: read first,
+        // hash the bytes, and keep no gzip body for it.
         None => {
             let bytes = match read().await {
                 Ok(b) => b,
                 Err(resp) => return resp,
             };
             let hash = blake3::hash(&bytes).to_hex().to_string();
-            let live = |h: &str| h == hash;
-            crate::start_chunks::respond(req, &name, mime, &hash, &state.gzip, &live, || async {
-                Ok(bytes)
-            })
-            .await
+            let chunk = Chunk {
+                mime,
+                hash: &hash,
+                immutable,
+            };
+            respond(req, chunk, None, || async { Ok(bytes) }).await
         }
     }
 }
