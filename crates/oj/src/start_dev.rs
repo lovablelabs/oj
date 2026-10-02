@@ -913,7 +913,9 @@ async fn rebundle_worker(
         if let Ok((routes_now, pinned)) = client {
             prev_routes = routes_now;
             if let Some(pinned) = pinned {
-                *state.bundle.write().unwrap() = Arc::new(pinned);
+                let pinned = Arc::new(pinned);
+                state.gzip.retain(|h| pinned.has_hash(h));
+                *state.bundle.write().unwrap() = pinned;
             }
         }
         // Regenerated outputs are edits the watcher never forwards: push the
@@ -1966,9 +1968,6 @@ async fn serve_client_chunk(
     let mime = asset_mime(ext);
     // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
     let immutable = !bundle.is_entry(&name);
-    // This request's snapshot: racing a rebundle it may prune a fresh gzip
-    // body or keep a dead one, and the next miss repairs either.
-    let live = |h: &str| bundle.has_hash(h);
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {
@@ -1976,7 +1975,7 @@ async fn serve_client_chunk(
                 hash: &hash,
                 immutable,
             };
-            respond(req, chunk, Some((&state.gzip, &live)), read).await
+            respond(req, chunk, Some(&state.gzip), read).await
         }
         // A bundle the store could not persist carries no hash: read first,
         // hash the bytes, and keep no gzip body for it.

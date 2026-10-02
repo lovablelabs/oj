@@ -7,42 +7,42 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use oj_server::etag::{not_modified, weak_etag};
 
 /// Below this a gzip frame costs more than it saves.
 const MIN_GZIP_BYTES: usize = 1024;
 
-/// Compressed chunk bodies by content hash, kept only for the live bundle.
+/// Compressed chunk bodies by content hash, pruned to the live bundle at each
+/// rebundle swap ([`GzipCache::retain`]).
 #[derive(Default)]
 pub(crate) struct GzipCache {
-    by_hash: Mutex<HashMap<String, Bytes>>,
+    by_hash: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Bytes>>>>,
 }
 
 impl GzipCache {
     /// The gzip body for `hash`, compressing `plain` off the async workers on
-    /// first use. Entries for hashes outside `live` (an older bundle) are
-    /// dropped on insert.
-    async fn get_or_compress(
-        &self,
-        hash: &str,
-        plain: Bytes,
-        live: &(dyn Fn(&str) -> bool + Sync),
-    ) -> Bytes {
-        if let Some(hit) = self.lock().get(hash) {
-            return hit.clone();
-        }
-        let gz = compress(plain).await;
-        let mut map = self.lock();
-        map.retain(|h, _| live(h));
-        map.insert(hash.to_string(), gz.clone());
-        gz
+    /// first use. Concurrent first requests share one compression.
+    async fn get_or_compress(&self, hash: &str, plain: Bytes) -> Bytes {
+        let cell = self.lock().entry(hash.to_string()).or_default().clone();
+        cell.get_or_init(|| compress(plain)).await.clone()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Bytes>> {
+    /// Drop bodies whose hash is no longer `live`. Called at the rebundle
+    /// swap; a request still serving the old bundle can re-insert a dead hash
+    /// after it, which the next swap removes.
+    pub(crate) fn retain(&self, live: impl Fn(&str) -> bool) {
+        self.lock().retain(|h, _| live(h));
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<tokio::sync::OnceCell<Bytes>>>> {
         self.by_hash.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -63,36 +63,34 @@ fn gzip(plain: &[u8]) -> Bytes {
     Bytes::from(enc.finish().expect("writing to a Vec"))
 }
 
-/// Weak: the plain and gzip bodies share it, and a strong validator must
-/// differ between content codings (RFC 9110 8.8.1).
-pub(crate) fn etag_of(hash: &str) -> String {
-    format!("W/\"{hash}\"")
-}
-
-/// Whether the request's `If-None-Match` names `etag`, by the weak comparison
-/// `If-None-Match` uses.
-pub(crate) fn not_modified(req: &HeaderMap, etag: &str) -> bool {
-    let opaque = |t: &str| {
-        let t = t.trim();
-        t.strip_prefix("W/").unwrap_or(t).to_string()
-    };
-    let ours = opaque(etag);
-    req.get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == "*" || opaque(t) == ours))
-}
-
+/// Whether `Accept-Encoding` accepts gzip: an explicit `gzip` entry decides,
+/// else a `*` wildcard; `q=0` refuses either (the parameter name is
+/// case-insensitive, RFC 9110 5.6.6).
 fn accepts_gzip(req: &HeaderMap) -> bool {
-    req.get(header::ACCEPT_ENCODING)
+    let Some(v) = req
+        .get(header::ACCEPT_ENCODING)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| {
-            v.split(',').any(|e| {
-                let mut parts = e.trim().split(';');
-                let name = parts.next().unwrap_or("").trim();
-                let q0 = parts.any(|p| matches!(p.trim(), "q=0" | "q=0.0" | "q=0.00" | "q=0.000"));
-                name.eq_ignore_ascii_case("gzip") && !q0
-            })
-        })
+    else {
+        return false;
+    };
+    let mut wildcard = false;
+    for entry in v.split(',') {
+        let mut parts = entry.trim().split(';');
+        let name = parts.next().unwrap_or("").trim();
+        let refused = parts.any(|p| {
+            let mut kv = p.splitn(2, '=');
+            kv.next()
+                .is_some_and(|k| k.trim().eq_ignore_ascii_case("q"))
+                && kv.next().and_then(|q| q.trim().parse::<f32>().ok()) == Some(0.0)
+        });
+        if name.eq_ignore_ascii_case("gzip") {
+            return !refused;
+        }
+        if name == "*" {
+            wildcard = !refused;
+        }
+    }
+    wildcard
 }
 
 /// Compressible text types.
@@ -111,23 +109,20 @@ pub(crate) struct Chunk<'a> {
     pub immutable: bool,
 }
 
-/// Where gzip bodies are kept, and which hashes are still live.
-pub(crate) type GzipStore<'a> = (&'a GzipCache, &'a (dyn Fn(&str) -> bool + Sync));
-
 /// The response for a chunk whose content hash is known. `body` is only
 /// called when the bytes are needed (a 304 never reads the file). Without a
 /// `store` a gzip body is compressed per request and not kept.
 pub(crate) async fn respond<F, Fut>(
     req: &HeaderMap,
     chunk: Chunk<'_>,
-    store: Option<GzipStore<'_>>,
+    store: Option<&GzipCache>,
     body: F,
 ) -> Response
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<Bytes, Response>>,
 {
-    let etag = etag_of(chunk.hash);
+    let etag = weak_etag(chunk.hash);
     let cache_control = if chunk.immutable {
         "max-age=31536000, immutable"
     } else {
@@ -153,7 +148,7 @@ where
     };
     if plain.len() >= MIN_GZIP_BYTES && compressible(chunk.mime) && accepts_gzip(req) {
         let gz = match store {
-            Some((cache, live)) => cache.get_or_compress(chunk.hash, plain, live).await,
+            Some(cache) => cache.get_or_compress(chunk.hash, plain).await,
             None => compress(plain).await,
         };
         headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
@@ -187,33 +182,19 @@ mod tests {
     }
 
     async fn serve(req: &HeaderMap, immutable: bool, cache: &GzipCache) -> Response {
-        respond(req, chunk(immutable), Some((cache, &|_| true)), || async {
-            Ok(body())
-        })
-        .await
+        respond(req, chunk(immutable), Some(cache), || async { Ok(body()) }).await
     }
 
     #[tokio::test]
     async fn a_matching_etag_is_a_304_without_reading_the_body() {
         let cache = GzipCache::default();
         let r = req(&[(header::IF_NONE_MATCH, "W/\"abc123\"")]);
-        let resp = respond(&r, chunk(false), Some((&cache, &|_| true)), || async {
+        let resp = respond(&r, chunk(false), Some(&cache), || async {
             panic!("a 304 must not read the chunk")
         })
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()[header::ETAG], "W/\"abc123\"");
-    }
-
-    #[test]
-    fn if_none_match_compares_weakly() {
-        let etag = etag_of("abc123");
-        let inm = |v: &str| req(&[(header::IF_NONE_MATCH, v)]);
-        assert!(not_modified(&inm("\"abc123\""), &etag));
-        assert!(not_modified(&inm("\"x\", W/\"abc123\""), &etag));
-        assert!(not_modified(&inm("*"), &etag));
-        assert!(!not_modified(&inm("W/\"abc124\""), &etag));
-        assert!(!not_modified(&HeaderMap::new(), &etag));
     }
 
     #[tokio::test]
@@ -257,6 +238,17 @@ mod tests {
         assert_eq!(out, "console.log('chunk');".repeat(200));
     }
 
+    #[test]
+    fn accept_encoding_wildcard_and_q_casing() {
+        let ae = |v: &str| req(&[(header::ACCEPT_ENCODING, v)]);
+        assert!(accepts_gzip(&ae("*")));
+        assert!(accepts_gzip(&ae("br, *;q=0.5")));
+        assert!(!accepts_gzip(&ae("*;q=0")));
+        assert!(!accepts_gzip(&ae("gzip;Q=0, *")));
+        assert!(accepts_gzip(&ae("GZIP;q=0.5")));
+        assert!(!accepts_gzip(&ae("identity")));
+    }
+
     #[tokio::test]
     async fn without_a_store_gzip_is_served_but_not_kept() {
         let r = req(&[(header::ACCEPT_ENCODING, "gzip")]);
@@ -265,14 +257,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_cache_keeps_only_live_hashes() {
+    async fn retain_keeps_only_live_hashes() {
         let cache = GzipCache::default();
-        cache
-            .get_or_compress("old", Bytes::from_static(b"a"), &|_| true)
-            .await;
-        cache
-            .get_or_compress("new", Bytes::from_static(b"b"), &|h| h == "new")
-            .await;
+        cache.get_or_compress("old", body()).await;
+        cache.get_or_compress("new", body()).await;
+        cache.retain(|h| h == "new");
         let map = cache.lock();
         assert!(map.contains_key("new") && !map.contains_key("old"));
     }

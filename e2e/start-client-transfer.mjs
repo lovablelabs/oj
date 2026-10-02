@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
-import { waitUp } from "./util.mjs";
+import { settles, sleep, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -28,7 +28,6 @@ if (!installed) {
 }
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };
@@ -65,13 +64,20 @@ try {
   must(zlib.gunzipSync(raw.bytes).toString() === body, "gzip body does not round-trip to the plain entry");
   must(raw.bytes.length < body.length / 2, "gzip body is not meaningfully smaller");
 
-  fs.writeFileSync(about, original.replace("about-page-marker", "about-page-edited"));
-  let next = etag;
-  for (let i = 0; i < 100 && next === etag; i++) {
-    await sleep(200);
-    next = (await fetch(ENTRY, { headers: { "if-none-match": etag } })).headers.get("etag");
-  }
-  must(next !== etag, "the entry ETag did not change after an edit rebundled it");
+  const edit = () => fs.writeFileSync(about, original.replace("about-page-marker", "about-page-edited"));
+  edit();
+  // An error response carries no ETag: only a served entry with a different
+  // one counts as rebundled, so a transient failure can't pass this vacuously.
+  const rotated = await settles(
+    async () => {
+      const r = await fetch(ENTRY, { headers: { "if-none-match": etag } });
+      if (r.status !== 200 && r.status !== 304) return false;
+      const next = r.headers.get("etag");
+      return next !== null && next !== etag;
+    },
+    { pollMs: 200, touch: edit },
+  );
+  must(rotated, "the entry ETag did not change after an edit rebundled it");
   console.log("start-dev: client chunks revalidate by ETag, gzip, and change ETag on edit");
 } finally {
   fs.writeFileSync(about, original);
