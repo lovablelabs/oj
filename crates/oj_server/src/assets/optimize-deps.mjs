@@ -18,12 +18,18 @@ let exclude;
 let dedupe;
 let alias;
 let autoDiscover;
+// Vite's `process.env.NODE_ENV || mode`, defined into every dep bundle.
+let nodeEnv;
 let resolveSettings;
 // optimizeDeps.needsInterop: Vite's needsInterop() returns true for these before
 // looking at the bundle's export shape, so the metadata must say so too.
 let NEEDS_INTEROP;
 let resolveConditions;
 let esbuildOptions;
+// optimizeDeps.rolldownOptions minus plugins and output (Vite spreads the rest
+// into both the scan and the bundle); output options go to bundle.write.
+let rolldownInput;
+let rolldownOutput;
 let DEDUPE;
 let req;
 let excludeSet;
@@ -525,7 +531,7 @@ const SCAN_INCLUDE_ID = "\0oj-scan-include";
 /// linked packages, externalize everything that is not JS. The include list
 /// rides along as one virtual entry, so every pre-bundled dep is resolved by
 /// the same resolver the bundle uses (Vite's addManuallyIncludedOptimizeDeps).
-async function rolldownScan(rd, discover) {
+async function rolldownScan(rd, discover, host) {
   const found = new Map();
   const input = [...(discover ? entryList : [])];
   const plainIncludes = includeIds.filter((i) => !i.includes(">"));
@@ -538,6 +544,18 @@ async function rolldownScan(rd, discover) {
     const key = `${id}\0${from ? path.dirname(from) : ""}`;
     if (seen.has(key)) return seen.get(key);
     let out = null;
+    // The app's plugins first, as Vite's scan resolves through its plugin
+    // container; a plugin's virtual or external answer is not crawled.
+    if (host) {
+      try {
+        const r = await host.resolveId(id, from);
+        if (r) {
+          out = !r.external && path.isAbsolute(cleanUrl(r.id)) ? r.id : null;
+          seen.set(key, out);
+          return out;
+        }
+      } catch {}
+    }
     try {
       const r = await ctx.resolve(aliasResolve(id) ?? id, from, { skipSelf: true });
       if (r && !r.external) out = r.id;
@@ -579,15 +597,16 @@ async function rolldownScan(rd, discover) {
   };
   try {
     await rd.scan({
+      ...rolldownInput,
       input,
       cwd: root,
       logLevel: "silent",
-      platform: esbuildOptions.platform ?? "browser",
-      plugins: [plugin],
-      resolve: rolldownResolveOptions(),
-      transform: { jsx: { runtime: "automatic", development: true } },
+      platform: rolldownInput.platform ?? esbuildOptions.platform ?? "browser",
+      plugins: [...(host?.plugins ?? []), plugin],
+      resolve: { ...rolldownResolveOptions(), ...rolldownInput.resolve },
+      transform: { jsx: { runtime: "automatic", development: true }, ...rolldownInput.transform },
       // oj compiles JSX in plain .js app files; the scan must parse them too.
-      moduleTypes: { ".js": "jsx" },
+      moduleTypes: { ".js": "jsx", ...rolldownInput.moduleTypes },
     });
   } catch (e) {
     console.warn(`oj: dependency scan stopped early (${String(e?.message ?? e).split("\n")[0]})`);
@@ -745,21 +764,29 @@ function entryNeedsInterop(parseSync, facade, generated) {
 /// plus shared chunks, ESM. Returns `{ [name]: { file, exports, cjs } }`.
 async function rolldownBundle(rd, entryPoints) {
   const bundle = await rd.rolldown({
+    ...rolldownInput,
     input: entryPoints,
     cwd: root,
     logLevel: "silent",
-    platform: esbuildOptions.platform ?? "browser",
+    platform: rolldownInput.platform ?? esbuildOptions.platform ?? "browser",
     plugins: rolldownDepPlugins(),
     ...(esbuildOptions.external ? { external: esbuildOptions.external } : {}),
     transform: {
       target: esbuildOptions.target ?? BASELINE_TARGET,
-      define: { "process.env.NODE_ENV": JSON.stringify("development"), ...(esbuildOptions.define ?? {}) },
+      ...rolldownInput.transform,
+      define: {
+        "process.env.NODE_ENV": JSON.stringify(nodeEnv),
+        ...(esbuildOptions.define ?? {}),
+        ...rolldownInput.transform?.define,
+      },
     },
-    resolve: rolldownResolveOptions(),
+    resolve: { ...rolldownResolveOptions(), ...rolldownInput.resolve },
+    ...(rolldownInput.moduleTypes ? { moduleTypes: rolldownInput.moduleTypes } : {}),
   });
   let output;
   try {
     ({ output } = await bundle.write({
+      ...rolldownOutput,
       format: "esm",
       dir: outDir,
       entryFileNames: "[name].mjs",
@@ -800,7 +827,7 @@ async function esbuildBundle(entryPoints) {
     outdir: outDir,
     outExtension: { ".js": ".mjs" },
     platform: esbuildOptions.platform ?? "browser",
-    define: { "process.env.NODE_ENV": JSON.stringify("development"), ...(esbuildOptions.define ?? {}) },
+    define: { "process.env.NODE_ENV": JSON.stringify(nodeEnv), ...(esbuildOptions.define ?? {}) },
     // A node-oriented dep (e.g. @react-pdf/renderer, cosmiconfig) may import a
     // node builtin; externalize them so one such dep can't fail the whole
     // pre-bundle, matching Vite's esbuildDepPlugin.
@@ -841,7 +868,7 @@ function namedExportsOf(dep) {
 /// the metadata leaves as the return value (no argv, no stdout), so neither an
 /// oversized include list nor a dep that prints on require can break the
 /// channel.
-export async function optimize(input) {
+function configure(input) {
   ({
     root,
     outDir,
@@ -851,8 +878,12 @@ export async function optimize(input) {
     dedupe = [],
     alias = [],
     autoDiscover = true,
+    nodeEnv = "development",
     resolve: resolveSettings = {},
   } = input);
+  const { plugins: _plugins, output = {}, ...rest } = input.rolldownOptions ?? {};
+  rolldownInput = rest;
+  rolldownOutput = output;
   try {
     realRoot = realpathSync(root);
   } catch {
@@ -891,13 +922,31 @@ export async function optimize(input) {
     ...loadTsconfigAliases(root),
     ...(alias || []).map(([find, replacement]) => ({ exact: find, prefix: find + "/", target: replacement })),
   ];
+}
 
+/// The dep scan alone, run inside the plugin host so every import resolves
+/// through the app's plugins first (Vite's scan goes through
+/// `pluginContainer.resolveId(..., { scan: true })`) and the config's live
+/// `optimizeDeps.rolldownOptions.plugins` take part. Only the scan runs there:
+/// a dep bundle in that long-lived isolate keeps hundreds of MB resident. The
+/// result feeds `optimize()` as `scanned`. Null when the app's bundler is
+/// esbuild, whose scan stays in the optimizer job.
+export async function scan(input, host) {
+  configure(input);
+  const bundler = pickBundler(root, input.vendoredRolldown);
+  if (bundler.kind !== "rolldown") return null;
+  const rd = await loadRolldown(bundler);
+  return Object.fromEntries(await rolldownScan(rd, autoDiscover, host));
+}
+
+export async function optimize(input) {
+  configure(input);
   const bundler = pickBundler(root, input.vendoredRolldown);
   let rd = null;
   let candidates;
   if (bundler.kind === "rolldown") {
     rd = await loadRolldown(bundler);
-    candidates = await rolldownScan(rd, autoDiscover);
+    candidates = input.scanned ? new Map(Object.entries(input.scanned)) : await rolldownScan(rd, autoDiscover);
     // "a > b" names a nested copy the scan cannot resolve; it resolves below.
     for (const inc of includeIds) if (inc.includes(">") && !candidates.has(inc)) candidates.set(inc, null);
   } else {

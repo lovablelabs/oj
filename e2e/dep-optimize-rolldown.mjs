@@ -5,7 +5,9 @@
 // oj discovers the deps the app imports and pre-bundles them with that
 // rolldown, the way Vite 8's optimizer does. React, a many-file ESM icon
 // package and a CJS dep must all be served from /@oj-deps (one request per
-// dep, not one per file), and the page must render in a real browser.
+// dep, not one per file), and the page must render in a real browser. An
+// import only a config plugin can resolve is discovered too: the scan goes
+// through the app's plugins with `scan: true`, as in Vite.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -64,6 +66,16 @@ write(
     `function greet(n) { return "hi " + n; }\n`,
 );
 write("package.json", JSON.stringify({ name: "optdep-rd-app", private: true, type: "module" }));
+const scanMarker = path.join(app, "scan-flag.txt");
+write(
+  "vite.config.js",
+  `import fs from "node:fs";\n` +
+    `export default { plugins: [{ name: "app-icons", resolveId(id, importer, opts) {\n` +
+    `  if (id !== "app-icons") return null;\n` +
+    `  if (opts && opts.scan) fs.writeFileSync(${JSON.stringify(scanMarker)}, "scan");\n` +
+    `  return ${JSON.stringify(path.join(app, "node_modules", "icons", "index.js"))};\n` +
+    `} }] };\n`,
+);
 write(
   "index.html",
   `<!doctype html><html><head><title>t</title></head><body><div id="root"></div><script type="module" src="/main.jsx"></script></body></html>`,
@@ -72,8 +84,9 @@ write(
   "main.jsx",
   `import { createRoot } from "react-dom/client";\n` +
     `import { Icon0, Icon7 } from "icons";\n` +
+    `import { Icon3 } from "app-icons";\n` +
     `import { greet } from "cjs-lib";\n` +
-    `function App() { return <p id="out">{greet("world")} <Icon0 /><Icon7 /></p>; }\n` +
+    `function App() { return <p id="out">{greet("world")} <Icon0 /><Icon7 /><Icon3 /></p>; }\n` +
     `createRoot(document.getElementById("root")).render(<App />);\n`,
 );
 
@@ -94,14 +107,20 @@ try {
     );
   }
   const iconsUrl = main.match(/"(\/@oj-deps\/icons\.mjs\?v=[0-9a-f]{8})"/)[1];
-  const icons = await (await fetch(`http://localhost:${port}${iconsUrl}`)).text();
+  // `icons` and the plugin-resolved `app-icons` are one file: both entries
+  // re-export one shared chunk (one module instance), so follow its imports.
+  let icons = await (await fetch(`http://localhost:${port}${iconsUrl}`)).text();
+  for (const [, rel] of icons.matchAll(/from "\.\/([^"]+)"/g)) {
+    icons += await (await fetch(`http://localhost:${port}/@oj-deps/${rel}`)).text();
+  }
   assert.match(icons, /\/\/#region/, "bundled by rolldown");
   assert.match(icons, /function Icon39\b/, "the whole barrel is in one module");
 
   const manifest = JSON.parse(fs.readFileSync(path.join(app, ".oj-cache", "v1", "deps", "manifest.json"), "utf8"));
-  for (const dep of ["react-dom/client", "icons", "cjs-lib", "react/jsx-dev-runtime"]) {
+  for (const dep of ["react-dom/client", "icons", "app-icons", "cjs-lib", "react/jsx-dev-runtime"]) {
     assert.ok(manifest.metadata[dep], `${dep} in the prebundle manifest: ${Object.keys(manifest.metadata)}`);
   }
+  assert.ok(fs.existsSync(scanMarker), "the scan asked the plugin with scan: true");
 
   let chromium;
   try {
@@ -122,7 +141,7 @@ try {
       await page.waitForFunction(() => document.getElementById("out")?.textContent.includes("hi world"), null, {
         timeout: 30000,
       });
-      assert.equal(await page.textContent("#out"), "hi world 07");
+      assert.equal(await page.textContent("#out"), "hi world 073");
       assert.deepEqual(errors, [], "no page errors");
       const fromNodeModules = requests.filter((p) => p.includes("/node_modules/"));
       assert.deepEqual(fromNodeModules, [], "no dep file is served one by one");

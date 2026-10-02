@@ -108,7 +108,13 @@ impl OptimizedDeps {
         }
     }
 
-    pub fn prepare(root: &Path, version: &str, input: OptimizeInput) -> Self {
+    /// `host`: the app's plugin host, which runs the scan when there is one.
+    pub fn prepare(
+        root: &Path,
+        version: &str,
+        input: OptimizeInput,
+        host: Option<Arc<crate::plugins::PluginHost>>,
+    ) -> Self {
         let dir = oj_cache::cache_root(root).join("deps");
         let hash = lockfile_hash(root, version, &input);
         let short = hash[..8].to_string();
@@ -122,7 +128,7 @@ impl OptimizedDeps {
             let root = root.to_path_buf();
             let dir_task = dir.clone();
             tokio::spawn(async move {
-                let map = run_optimizer(&root, &dir_task, &hash, &input)
+                let map = run_optimizer(&root, &dir_task, &hash, &input, host.as_deref())
                     .await
                     .unwrap_or_default();
                 let _ = tx.send(Some(Arc::new(map)));
@@ -165,6 +171,9 @@ pub struct OptimizeInput {
     pub force: bool,
     /// `optimizeDeps.esbuildOptions`/`rolldownOptions`: forwarded to the sidecar.
     pub bundler_options: Option<serde_json::Value>,
+    /// `optimizeDeps.rolldownOptions` as written; Vite spreads it into the
+    /// scan and the bundle.
+    pub rolldown_options: Option<serde_json::Value>,
     /// The Rust resolver's settings, so the pre-bundle resolves every dep to the
     /// same file the dev server serves (Vite uses one resolver for both).
     pub conditions: Vec<String>,
@@ -174,6 +183,8 @@ pub struct OptimizeInput {
     /// Vite's `--mode` (getConfigHash folds `define: NODE_ENV || mode`): a dep
     /// prebundled for `development` is not the `production` one.
     pub mode: String,
+    /// Vite's `process.env.NODE_ENV || mode`, defined into every dep bundle.
+    pub node_env: String,
     /// `optimizeDeps.needsInterop`: force `needsInterop: true` whatever the
     /// bundle's export shape (Vite's needsInterop()).
     pub needs_interop: Vec<String>,
@@ -259,6 +270,8 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     }
     hasher.update(b"\0mode=");
     hasher.update(input.mode.as_bytes());
+    hasher.update(b"\0node_env=");
+    hasher.update(input.node_env.as_bytes());
     // Fold the optimizer config into the key so include/exclude/entries/dedupe/alias
     // changes invalidate a stale prebundle.
     hash_tagged_lists(
@@ -359,6 +372,7 @@ async fn run_optimizer(
     dir: &Path,
     hash: &str,
     input: &OptimizeInput,
+    host: Option<&crate::plugins::PluginHost>,
 ) -> Option<DepMap> {
     let cache = oj_cache::cache_root(root);
     std::fs::create_dir_all(&cache).ok()?;
@@ -382,7 +396,7 @@ async fn run_optimizer(
     let auto_discover = effective_auto_discover(input.no_discovery);
     // Config as JSON engine-call argument, metadata as the return value: argv
     // has an OS length limit and stdout broke when a dep printed on require.
-    let cfg = serde_json::json!({
+    let mut cfg = serde_json::json!({
         "root": root.to_string_lossy(),
         "outDir": dir.to_string_lossy(),
         "entries": input.entries,
@@ -392,7 +406,9 @@ async fn run_optimizer(
         "alias": alias,
         "needsInterop": input.needs_interop,
         "autoDiscover": auto_discover,
+        "nodeEnv": input.node_env,
         "esbuildOptions": input.bundler_options,
+        "rolldownOptions": input.rolldown_options,
         "vendoredRolldown": vendored_rolldown().map(|(path, _)| path),
         "resolve": {
             "conditions": input.conditions,
@@ -401,6 +417,11 @@ async fn run_optimizer(
             "preserveSymlinks": input.preserve_symlinks,
         },
     });
+    if auto_discover {
+        if let Some(host) = host {
+            cfg["scanned"] = scan_through_plugins(host, &cfg).await;
+        }
+    }
     let timeout = optimizer_timeout();
     let job_root = root.to_path_buf();
     let job_script = script.clone();
@@ -430,6 +451,23 @@ async fn run_optimizer(
     let manifest = serde_json::json!({ "hash": hash, "metadata": metadata });
     let _ = std::fs::write(dir.join("manifest.json"), manifest.to_string());
     Some(map)
+}
+
+/// The scan run in the plugin host (see `optimizeScan` in plugin-host.mjs).
+/// Null keeps the scan in the optimizer job: an esbuild app, or a host that
+/// failed, which is logged and costs only plugin-aware resolution.
+async fn scan_through_plugins(
+    host: &crate::plugins::PluginHost,
+    cfg: &serde_json::Value,
+) -> serde_json::Value {
+    match host.optimize_scan(&cfg.to_string()).await {
+        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
+        Ok(None) => serde_json::Value::Null,
+        Err(e) => {
+            eprintln!("oj: dependency scan through plugins failed ({e}); scanning without them");
+            serde_json::Value::Null
+        }
+    }
 }
 
 #[cfg(test)]
@@ -560,6 +598,15 @@ mod tests {
             lockfile_hash(root, "0.0.1", &dev),
             lockfile_hash(root, "0.0.1", &prod),
             "mode"
+        );
+        let prod_env = OptimizeInput {
+            node_env: "production".into(),
+            ..OptimizeInput::default()
+        };
+        assert_ne!(
+            lockfile_hash(root, "0.0.1", &empty),
+            lockfile_hash(root, "0.0.1", &prod_env),
+            "NODE_ENV"
         );
 
         let aliased = OptimizeInput {
@@ -773,7 +820,7 @@ mod tests {
             extensions: vec![".mjs".into(), ".js".into(), ".ts".into(), ".json".into()],
             ..Default::default()
         };
-        let map = run_optimizer(root, &out_dir, "0123456789abcdef", &input)
+        let map = run_optimizer(root, &out_dir, "0123456789abcdef", &input, None)
             .await
             .expect("the engine-run pre-bundle must produce metadata");
         let meta = map.get("plaincjs").expect("the included dep is bundled");

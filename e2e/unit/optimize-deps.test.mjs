@@ -416,3 +416,96 @@ only("rolldown", "ESM entries need no interop; linked packages are crawled, not 
   assert.equal(metadata.deep.needsInterop, true);
   cleanup(root);
 });
+
+// Runs the exported scan() with a host object the way the plugin host hands
+// it over: `hostModule` exports `host` ({ resolveId, plugins }).
+const SCAN_WRAPPER = `
+import { writeSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [script, hostModule, cfg] = process.argv.slice(1);
+const { scan } = await import(pathToFileURL(script).href);
+const { host } = await import(pathToFileURL(hostModule).href);
+writeSync(1, JSON.stringify(await scan(JSON.parse(cfg), host)));
+process.exit(0);
+`;
+const runScan = (root, hostSource, cfg) => {
+  const hostModule = path.join(root, "host.mjs");
+  fs.writeFileSync(hostModule, hostSource);
+  return JSON.parse(
+    execFileSync("node", ["--input-type=module", "-e", SCAN_WRAPPER, sidecar, hostModule, JSON.stringify(cfg)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+};
+
+only("rolldown", "the scan resolves through the app's plugins first, with scan: true", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-hostscan-");
+  esmPkg("realicons", root, { "index.js": `export const Icon = 1;\n` });
+  esmPkg("hidden", root, { "index.js": `export const h = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { Icon } from "virtual-icons";\nimport "./server-only.js";\nconsole.log(Icon);\n`);
+  write(root, "server-only.js", `import { h } from "hidden";\nconsole.log(h);\n`);
+  const real = path.join(root, "node_modules", "realicons", "index.js");
+  const deps = runScan(
+    root,
+    `export const host = {
+      plugins: [],
+      async resolveId(id) {
+        if (id === "virtual-icons") return { id: ${JSON.stringify(real)} };
+        if (id === "./server-only.js") return { id: "server-only", external: true };
+        return null;
+      },
+    };`,
+    { root, outDir: outDirOf(root) },
+  );
+  assert.deepEqual(Object.keys(deps), ["virtual-icons"], "plugin alias found, plugin external not crawled");
+  assert.equal(fs.realpathSync(deps["virtual-icons"]), fs.realpathSync(real));
+  cleanup(root);
+});
+
+only("rolldown", "live optimizeDeps.rolldownOptions.plugins join the scan", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-roplugins-");
+  esmPkg("injected", root, { "index.js": `export const i = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `console.log(1);\n`);
+  const deps = runScan(
+    root,
+    `export const host = {
+      plugins: [{ name: "inject", transform(code, id) { if (id.endsWith("main.js")) return code + 'import "injected";'; } }],
+      async resolveId() { return null; },
+    };`,
+    { root, outDir: outDirOf(root) },
+  );
+  assert.deepEqual(Object.keys(deps), ["injected"]);
+  cleanup(root);
+});
+
+only("rolldown", "optimize bundles a scan it is handed without scanning again", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-scanned-");
+  esmPkg("plain", root, { "index.js": `export const p = 1;\n` });
+  const file = path.join(root, "node_modules", "plain", "index.js");
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root), scanned: { plain: file } });
+  assert.deepEqual(Object.keys(metadata), ["plain"], "no index.html: only the handed scan can name it");
+  cleanup(root);
+});
+
+only("rolldown", "rolldownOptions and NODE_ENV reach the dep bundle", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-ro-");
+  esmPkg("envy", root, {
+    "index.js": `export const env = process.env.NODE_ENV;\nexport const flag = __FLAG__;\n`,
+  });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { env, flag } from "envy";\nconsole.log(env, flag);\n`);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({
+    root,
+    outDir,
+    nodeEnv: "production",
+    rolldownOptions: { transform: { define: { __FLAG__: '"from-rolldown-options"' } } },
+  });
+  const code = fs.readFileSync(path.join(outDir, metadata.envy.file), "utf8");
+  assert.match(code, /"production"/, "process.env.NODE_ENV follows nodeEnv");
+  assert.match(code, /from-rolldown-options/, "rolldownOptions.transform.define applied");
+  cleanup(root);
+});

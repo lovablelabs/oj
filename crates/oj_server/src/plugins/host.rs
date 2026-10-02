@@ -1206,6 +1206,12 @@ impl PluginHost {
         self.call("resolveId", &[source, importer]).await
     }
 
+    /// The dep optimizer's scan, resolved through the plugins (optimize-deps.mjs
+    /// `scan`): JSON `{ dep: file }`, or None when the app bundles deps with esbuild.
+    pub async fn optimize_scan(&self, input: &str) -> Result<Option<String>, String> {
+        self.call("optimizeScan", &[input]).await
+    }
+
     #[inline]
     pub async fn load(&self, id: &str) -> Result<Option<String>, String> {
         self.call("load", &[id]).await
