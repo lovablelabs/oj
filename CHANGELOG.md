@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Start dev serves the client bundle with an ETag from each chunk's content hash (a reload revalidates to a 304 instead of re-downloading), `immutable` caching for its hashed chunks, and gzip for browsers that accept it. On a 2000-component app the entry goes from 2.7 MB to about 340 KB on the wire.
+- The dev server's module 304s follow `If-None-Match` the way HTTP defines it: a list of tags, `*`, and weak (`W/`) tags all match, where only the exact single tag did before.
 
 ## [0.2.16] - 2026-10-01
 

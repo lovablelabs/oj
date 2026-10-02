@@ -21,8 +21,11 @@ const MIN_GZIP_BYTES: usize = 1024;
 /// rebundle swap ([`GzipCache::retain`]).
 #[derive(Default)]
 pub(crate) struct GzipCache {
-    by_hash: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Bytes>>>>,
+    by_hash: Mutex<GzipBodies>,
 }
+
+/// One body per hash, compressed once even under concurrent first requests.
+type GzipBodies = HashMap<String, Arc<tokio::sync::OnceCell<Bytes>>>;
 
 impl GzipCache {
     /// The gzip body for `hash`, compressing `plain` off the async workers on
@@ -39,10 +42,7 @@ impl GzipCache {
         self.lock().retain(|h, _| live(h));
     }
 
-    #[allow(clippy::type_complexity)]
-    fn lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<tokio::sync::OnceCell<Bytes>>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, GzipBodies> {
         self.by_hash.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
