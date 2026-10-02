@@ -76,6 +76,13 @@ impl PinnedBundle {
         self.chunks.len()
     }
 
+    /// Whether any chunk of this bundle has content hash `hash`.
+    pub fn has_hash(&self, hash: &str) -> bool {
+        self.chunks
+            .values()
+            .any(|c| c.hash.as_deref() == Some(hash))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }

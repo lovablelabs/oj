@@ -42,6 +42,8 @@ struct StartState {
     regen_hashes: std::sync::Mutex<std::collections::HashMap<PathBuf, Option<u64>>>,
     bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
     verify: oj_cache::integrity::VerifyMode,
+    /// Gzip bodies of the live client chunks, by content hash.
+    gzip: crate::start_chunks::GzipCache,
     live_reload: PathBuf,
     workspace_root: PathBuf,
     reload_tx: broadcast::Sender<()>,
@@ -352,6 +354,7 @@ pub async fn start_dev(
         loopback_port,
         bundle: std::sync::RwLock::new(Arc::new(pinned)),
         verify: oj_cache::integrity::VerifyMode::from_env(),
+        gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
         workspace_root: workspace_root(&root),
         reload_tx: reload_tx.clone(),
@@ -1717,7 +1720,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         return serve_fs_asset(&state, &format!("/{rest}")).await;
     }
     if let Some(name) = req.uri().path().strip_prefix("/@oj-start/") {
-        return serve_client_chunk(&state, name).await;
+        return serve_client_chunk(&state, req.headers(), name).await;
     }
     if req.uri().path().starts_with("/_serverFn/") {
         return forward_with_body(&state, req).await;
@@ -1908,7 +1911,11 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     }
 }
 
-async fn serve_client_chunk(state: &StartState, name: &str) -> Response {
+async fn serve_client_chunk(
+    state: &StartState,
+    req: &axum::http::HeaderMap,
+    name: &str,
+) -> Response {
     let name = percent_decode(name);
     let bundle = state
         .bundle
@@ -1931,35 +1938,50 @@ async fn serve_client_chunk(state: &StartState, name: &str) -> Response {
         hash: chunk.hash.clone().unwrap_or_default(),
     };
     let path = chunk.path.clone();
-    let read = tokio::task::spawn_blocking(move || {
-        oj_cache::integrity::verified_read(&path, &expected, mode)
-    })
-    .await;
-    match read {
-        Ok(Ok(bytes)) => {
-            let ext = name.rsplit('.').next().unwrap_or("");
-            (
-                [
-                    (header::CONTENT_TYPE, asset_mime(ext)),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                bytes,
-            )
-                .into_response()
-        }
-        Ok(Err(e)) => {
-            eprintln!("oj start: chunk {name} failed verification ({e}); refusing to serve");
-            (
+    let what = name.clone();
+    let read = move || async move {
+        match tokio::task::spawn_blocking(move || {
+            oj_cache::integrity::verified_read(&path, &expected, mode)
+        })
+        .await
+        {
+            Ok(Ok(bytes)) => Ok(axum::body::Bytes::from(bytes)),
+            Ok(Err(e)) => {
+                eprintln!("oj start: chunk {what} failed verification ({e}); refusing to serve");
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("oj start: chunk {what}: {e}"),
+                )
+                    .into_response())
+            }
+            Err(_) => Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("oj start: chunk {name}: {e}"),
+                "oj start: chunk read task failed".to_string(),
             )
-                .into_response()
+                .into_response()),
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "oj start: chunk read task failed".to_string(),
-        )
-            .into_response(),
+    };
+    let ext = name.rsplit('.').next().unwrap_or("");
+    let mime = asset_mime(ext);
+    let live = |h: &str| bundle.has_hash(h);
+    match chunk.hash.clone() {
+        Some(hash) => {
+            crate::start_chunks::respond(req, &name, mime, &hash, &state.gzip, &live, read).await
+        }
+        // A bundle rebuilt in place (not restored from the store) carries no
+        // hash: read first and hash the bytes.
+        None => {
+            let bytes = match read().await {
+                Ok(b) => b,
+                Err(resp) => return resp,
+            };
+            let hash = blake3::hash(&bytes).to_hex().to_string();
+            let live = |h: &str| h == hash;
+            crate::start_chunks::respond(req, &name, mime, &hash, &state.gzip, &live, || async {
+                Ok(bytes)
+            })
+            .await
+        }
     }
 }
 

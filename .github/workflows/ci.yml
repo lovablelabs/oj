@@ -162,6 +162,8 @@ jobs:
         run: node e2e/plugin-hot-update-delete.mjs
       - name: start dev applies config define to the client bundle; --mode selects .env.<mode>
         run: node e2e/start-define-mode.mjs
+      - name: start dev client chunks revalidate by ETag and gzip
+        run: node e2e/start-client-transfer.mjs
       - name: start prod build honors ssr.external (bare imports, server still renders)
         run: node e2e/start-ssr-external.mjs
       - name: tanstack start ssr worker queries + post plugins see JS

@@ -308,7 +308,7 @@ try {
     let js = "";
     for (const f of index.files)
       if (f.name.endsWith(".js")) js += await (await fetch(`http://localhost:${PORT}/@oj-start/${f.name}`)).text();
-    must(js.includes('"/src/lib/wk/worker.ts"'), "the dev client bundle does not carry the worker URL");
+    must(/["`]\/src\/lib\/wk\/worker\.ts["`]/.test(js), "the dev client bundle does not carry the worker URL");
     must(/new Worker\(/.test(js), "the dev client bundle has no ?worker constructor");
     clientResolvedLikeVite(js, "start-dev");
     const devPage = await rendered();
