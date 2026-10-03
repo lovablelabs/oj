@@ -3539,7 +3539,7 @@ async function resolveIdFull(source, importer, opts) {
     custom: (opts && opts.custom) || {},
     isEntry: !!(opts && opts.isEntry),
     ssr: environment.config?.consumer === "server",
-    scan: false,
+    scan: !!(opts && opts.scan),
   };
   const skip = opts && opts.skip;
   const skipCalls = (opts && opts.skipCalls) || null;
@@ -3574,6 +3574,26 @@ async function resolveIdFull(source, importer, opts) {
 async function resolveId(source, importer, opts) {
   const r = await resolveIdFull(source, importer, opts);
   return r == null ? null : r.id;
+}
+
+// The dep optimizer's scan (optimize-deps.mjs, written next to this module):
+// run here so imports resolve through the plugins with `scan: true` and the
+// config's live optimizeDeps.rolldownOptions.plugins join it, as in Vite. The
+// bundle step stays in its own short-lived process.
+// Vite's asyncFlatten: plugin options may nest arrays and promises.
+async function flattenPlugins(value) {
+  const v = await value;
+  if (Array.isArray(v)) return (await Promise.all(v.map(flattenPlugins))).flat();
+  return v ? [v] : [];
+}
+async function optimizeScan(inputJson) {
+  const { scan } = await import(new URL("./optimize-deps.mjs", import.meta.url).href);
+  const ro = resolvedConfig?.optimizeDeps?.rolldownOptions;
+  const deps = await scan(JSON.parse(inputJson), {
+    plugins: await flattenPlugins(ro?.plugins),
+    resolveId: (id, importer) => resolveIdFull(id, importer, { scan: true }),
+  });
+  return deps == null ? null : JSON.stringify(deps);
 }
 
 // The load chain (Vite pluginContainer.load): `{ ssr }` options, the first
@@ -3872,6 +3892,7 @@ async function run(hook, args) {
   }
   if (hook === "transform") return gateOnBuildStart().then(() => transform(args[0], args[1], args[2]));
   if (hook === "resolveId") return gateOnBuildStart().then(() => resolveId(args[0], args[1]));
+  if (hook === "optimizeScan") return gateOnBuildStart().then(() => optimizeScan(args[0]));
   if (hook === "load") return gateOnBuildStart().then(() => load(args[0]));
   if (hook === "handleHotUpdate") return handleHotUpdate(args[0], args[1], args[2], args[3]);
   if (hook === "transformIndexHtml") return gateOnBuildStart().then(() => transformIndexHtml(args[0], args[1]));
@@ -4020,6 +4041,7 @@ async function run(hook, args) {
   }
   if (hook === "writeBundle") return writeBundle(args[0], args[1] === "true");
   if (hook === "getPluginCount") return String(plugins.length);
+  if (hook === "getPluginNames") return JSON.stringify(plugins.map((p) => p.name ?? ""));
   if (hook === "getPluginConfig") {
     // JSON-safe subset of what config() hooks returned (functions/RegExps
     // drop), plus THIS environment's `environments.<name>.define` from the

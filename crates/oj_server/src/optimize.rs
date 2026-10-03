@@ -108,7 +108,13 @@ impl OptimizedDeps {
         }
     }
 
-    pub fn prepare(root: &Path, version: &str, input: OptimizeInput) -> Self {
+    /// `host`: the app's plugin host, which runs the scan when there is one.
+    pub fn prepare(
+        root: &Path,
+        version: &str,
+        input: OptimizeInput,
+        host: Option<Arc<crate::plugins::PluginHost>>,
+    ) -> Self {
         let dir = oj_cache::cache_root(root).join("deps");
         let hash = lockfile_hash(root, version, &input);
         let short = hash[..8].to_string();
@@ -122,7 +128,7 @@ impl OptimizedDeps {
             let root = root.to_path_buf();
             let dir_task = dir.clone();
             tokio::spawn(async move {
-                let map = run_optimizer(&root, &dir_task, &hash, &input)
+                let map = run_optimizer(&root, &dir_task, &hash, &input, host.as_deref())
                     .await
                     .unwrap_or_default();
                 let _ = tx.send(Some(Arc::new(map)));
@@ -136,12 +142,21 @@ impl OptimizedDeps {
     }
 }
 
-/// `optimizeDeps.noDiscovery` when set, else the OJ_OPTIMIZE_SCAN opt-in. One
-/// function so the optimizer run and its cache key can never disagree on mode.
+/// Vite's default: the optimizer crawls the app for deps unless
+/// `optimizeDeps.noDiscovery` is set, which leaves only `include`.
 fn effective_auto_discover(no_discovery: Option<bool>) -> bool {
-    no_discovery
-        .map(|disabled| !disabled)
-        .unwrap_or_else(|| oj_env::get().knobs.optimize_scan)
+    !no_discovery.unwrap_or(false)
+}
+
+/// The rolldown vendored next to the binary, for apps whose own Vite brings
+/// no bundler; `None` when this build vendors none or the vendor is unusable.
+fn vendored_rolldown() -> Option<(&'static str, &'static str)> {
+    match oj_cache::start_bundle::vendored_rolldown() {
+        oj_cache::start_bundle::VendoredRolldown::Resolved { path, version } => {
+            Some((path.as_str(), version.as_str()))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Default, Clone)]
@@ -156,6 +171,9 @@ pub struct OptimizeInput {
     pub force: bool,
     /// `optimizeDeps.esbuildOptions`/`rolldownOptions`: forwarded to the sidecar.
     pub bundler_options: Option<serde_json::Value>,
+    /// `optimizeDeps.rolldownOptions` as written; Vite spreads it into the
+    /// scan and the bundle.
+    pub rolldown_options: Option<serde_json::Value>,
     /// The Rust resolver's settings, so the pre-bundle resolves every dep to the
     /// same file the dev server serves (Vite uses one resolver for both).
     pub conditions: Vec<String>,
@@ -165,6 +183,11 @@ pub struct OptimizeInput {
     /// Vite's `--mode` (getConfigHash folds `define: NODE_ENV || mode`): a dep
     /// prebundled for `development` is not the `production` one.
     pub mode: String,
+    /// Vite's `process.env.NODE_ENV || mode`, defined into every dep bundle.
+    pub node_env: String,
+    /// The app's plugin names (Vite's getConfigHash `plugins`): the scan
+    /// resolves through them, so a plugin change can change the dep set.
+    pub plugin_names: Vec<String>,
     /// `optimizeDeps.needsInterop`: force `needsInterop: true` whatever the
     /// bundle's export shape (Vite's needsInterop()).
     pub needs_interop: Vec<String>,
@@ -250,6 +273,8 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     }
     hasher.update(b"\0mode=");
     hasher.update(input.mode.as_bytes());
+    hasher.update(b"\0node_env=");
+    hasher.update(input.node_env.as_bytes());
     // Fold the optimizer config into the key so include/exclude/entries/dedupe/alias
     // changes invalidate a stale prebundle.
     hash_tagged_lists(
@@ -260,6 +285,7 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
             (b"\0e", &input.entries),
             (b"\0d", &input.dedupe),
             (b"\0n", &input.needs_interop),
+            (b"\0p", &input.plugin_names),
         ],
     );
     for (find, replacement) in &input.alias {
@@ -268,8 +294,6 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         hasher.update(b"=");
         hasher.update(replacement.as_bytes());
     }
-    // Key the EFFECTIVE decision: hashing the raw Option let an OJ_OPTIMIZE_SCAN
-    // toggle serve the other mode's stale prebundle.
     hasher.update(
         format!(
             "\0discovery:{}",
@@ -277,6 +301,9 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         )
         .as_bytes(),
     );
+    if let Some((path, version)) = vendored_rolldown() {
+        hasher.update(format!("\0vendor:{version}\0{path}").as_bytes());
+    }
     if let Some(opts) = &input.bundler_options {
         hasher.update(b"\0o");
         hasher.update(opts.to_string().as_bytes());
@@ -330,7 +357,7 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<DepMap> {
     Some(map)
 }
 
-/// Deadline for the dep pre-bundle (a wedged esbuild service must not stall it
+/// Deadline for the dep pre-bundle (a wedged bundler must not stall it
 /// forever): 120 s default, raised via `OJ_OPTIMIZE_TIMEOUT=<seconds>`.
 fn optimizer_timeout() -> std::time::Duration {
     optimizer_timeout_from(oj_env::get().knobs.optimize_timeout.as_deref())
@@ -349,6 +376,7 @@ async fn run_optimizer(
     dir: &Path,
     hash: &str,
     input: &OptimizeInput,
+    host: Option<&crate::plugins::PluginHost>,
 ) -> Option<DepMap> {
     let cache = oj_cache::cache_root(root);
     std::fs::create_dir_all(&cache).ok()?;
@@ -369,12 +397,10 @@ async fn run_optimizer(
         .iter()
         .map(|(f, r)| [f.as_str(), r.as_str()])
         .collect();
-    // Full-graph auto-discovery is opt-in (OJ_OPTIMIZE_SCAN=1): it can break
-    // UMD/CJS interop, so default = explicit include list, rest via wrap_cjs.
     let auto_discover = effective_auto_discover(input.no_discovery);
     // Config as JSON engine-call argument, metadata as the return value: argv
     // has an OS length limit and stdout broke when a dep printed on require.
-    let cfg = serde_json::json!({
+    let mut cfg = serde_json::json!({
         "root": root.to_string_lossy(),
         "outDir": dir.to_string_lossy(),
         "entries": input.entries,
@@ -384,7 +410,10 @@ async fn run_optimizer(
         "alias": alias,
         "needsInterop": input.needs_interop,
         "autoDiscover": auto_discover,
+        "nodeEnv": input.node_env,
         "esbuildOptions": input.bundler_options,
+        "rolldownOptions": input.rolldown_options,
+        "vendoredRolldown": vendored_rolldown().map(|(path, _)| path),
         "resolve": {
             "conditions": input.conditions,
             "mainFields": input.main_fields,
@@ -392,6 +421,11 @@ async fn run_optimizer(
             "preserveSymlinks": input.preserve_symlinks,
         },
     });
+    if auto_discover {
+        if let Some(host) = host {
+            cfg["scanned"] = scan_through_plugins(host, &cfg).await;
+        }
+    }
     let timeout = optimizer_timeout();
     let job_root = root.to_path_buf();
     let job_script = script.clone();
@@ -421,6 +455,23 @@ async fn run_optimizer(
     let manifest = serde_json::json!({ "hash": hash, "metadata": metadata });
     let _ = std::fs::write(dir.join("manifest.json"), manifest.to_string());
     Some(map)
+}
+
+/// The scan run in the plugin host (see `optimizeScan` in plugin-host.mjs).
+/// Null keeps the scan in the optimizer job: an esbuild app, or a host that
+/// failed, which is logged and costs only plugin-aware resolution.
+async fn scan_through_plugins(
+    host: &crate::plugins::PluginHost,
+    cfg: &serde_json::Value,
+) -> serde_json::Value {
+    match host.optimize_scan(&cfg.to_string()).await {
+        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
+        Ok(None) => serde_json::Value::Null,
+        Err(e) => {
+            eprintln!("oj: dependency scan through plugins failed ({e}); scanning without them");
+            serde_json::Value::Null
+        }
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +557,14 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(base, key(&forced), "needsInterop is part of the key");
+        // A plugin added or removed can change what the scan resolves (Vite's
+        // getConfigHash keys on the plugin names).
+        let with_plugin = OptimizeInput {
+            include: vec!["react".into()],
+            plugin_names: vec!["app-icons".into()],
+            ..Default::default()
+        };
+        assert_ne!(base, key(&with_plugin), "plugin names are part of the key");
         // ...and neither may a list boundary that merely moves an item across it.
         assert_ne!(
             key(&input(&["a"], &["b"], &[], &[])),
@@ -551,6 +610,15 @@ mod tests {
             lockfile_hash(root, "0.0.1", &dev),
             lockfile_hash(root, "0.0.1", &prod),
             "mode"
+        );
+        let prod_env = OptimizeInput {
+            node_env: "production".into(),
+            ..OptimizeInput::default()
+        };
+        assert_ne!(
+            lockfile_hash(root, "0.0.1", &empty),
+            lockfile_hash(root, "0.0.1", &prod_env),
+            "NODE_ENV"
         );
 
         let aliased = OptimizeInput {
@@ -764,7 +832,7 @@ mod tests {
             extensions: vec![".mjs".into(), ".js".into(), ".ts".into(), ".json".into()],
             ..Default::default()
         };
-        let map = run_optimizer(root, &out_dir, "0123456789abcdef", &input)
+        let map = run_optimizer(root, &out_dir, "0123456789abcdef", &input, None)
             .await
             .expect("the engine-run pre-bundle must produce metadata");
         let meta = map.get("plaincjs").expect("the included dep is bundled");
@@ -775,6 +843,34 @@ mod tests {
         // The manifest makes the next boot a warm cache.
         let warm = load_manifest(&out_dir, "0123456789abcdef").expect("manifest written");
         assert!(warm.contains_key("plaincjs"));
+    }
+
+    #[test]
+    fn discovery_is_on_unless_no_discovery_is_set() {
+        assert!(effective_auto_discover(None));
+        assert!(effective_auto_discover(Some(false)));
+        assert!(!effective_auto_discover(Some(true)));
+        let dir = project(&[("package.json", r#"{"name":"app"}"#)]);
+        let key = |no_discovery| {
+            lockfile_hash(
+                dir.path(),
+                "v",
+                &OptimizeInput {
+                    no_discovery,
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(
+            key(None),
+            key(Some(false)),
+            "unset is the discovering default"
+        );
+        assert_ne!(
+            key(None),
+            key(Some(true)),
+            "noDiscovery is its own prebundle"
+        );
     }
 
     #[test]

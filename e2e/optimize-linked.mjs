@@ -59,10 +59,7 @@ try {
     'import { hi as h1 } from "norm-lib";\nimport { hi as h2 } from "link-lib";\nwindow.__R = h1() + h2();\n',
   );
 
-  server = spawn(oj, ["dev", app, "--port", String(port)], {
-    stdio: "ignore",
-    env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" },
-  });
+  server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   await waitUp(`http://localhost:${port}/`);
   // let the optimizer settle
   await new Promise((r) => setTimeout(r, 800));

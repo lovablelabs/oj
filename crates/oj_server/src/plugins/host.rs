@@ -1206,6 +1206,12 @@ impl PluginHost {
         self.call("resolveId", &[source, importer]).await
     }
 
+    /// The dep optimizer's scan, resolved through the plugins (optimize-deps.mjs
+    /// `scan`): JSON `{ dep: file }`, or None when the app bundles deps with esbuild.
+    pub async fn optimize_scan(&self, input: &str) -> Result<Option<String>, String> {
+        self.call("optimizeScan", &[input]).await
+    }
+
     #[inline]
     pub async fn load(&self, id: &str) -> Result<Option<String>, String> {
         self.call("load", &[id]).await
@@ -1427,6 +1433,15 @@ impl PluginHost {
             .await
             .and_then(|s| s.parse().ok())
             .unwrap_or(1)
+    }
+
+    /// The active plugins' names, in order (Vite keys its dep pre-bundle on
+    /// them). Empty on RPC failure.
+    pub async fn plugin_names(&self) -> Vec<String> {
+        self.call_json("getPluginNames")
+            .await
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
     }
 
     /// `define` entries plugin `config()` hooks contributed, as (key, js

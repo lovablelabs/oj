@@ -1057,6 +1057,9 @@ fn optimized_deps(
     root: &Path,
     config: &oj_config::OjConfig,
     dev_mode: &str,
+    node_env: &str,
+    host: Option<Arc<plugins::PluginHost>>,
+    plugin_names: Vec<String>,
 ) -> optimize::OptimizedDeps {
     let (include, exclude, entries) = oj_config::optimize_deps_lists(config);
     optimize::OptimizedDeps::prepare(
@@ -1071,14 +1074,21 @@ fn optimized_deps(
             alias: oj_config::resolve_alias(config, "client"),
             force: oj_config::optimize_deps_force(config),
             bundler_options: oj_config::optimize_deps_bundler_options(config),
+            rolldown_options: config
+                .optimize_deps
+                .as_ref()
+                .and_then(|o| o.rolldown_options.clone()),
             conditions: oj_config::resolve_conditions(config, "client"),
             main_fields: optimize::optimizer_main_fields(config),
             extensions: oj_config::resolve_extensions(config)
                 .unwrap_or_else(oj_resolver::default_extensions),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             mode: dev_mode.to_string(),
+            node_env: node_env.to_string(),
+            plugin_names,
             needs_interop: oj_config::optimize_deps_needs_interop(config),
         },
+        host,
     )
 }
 
@@ -1361,6 +1371,10 @@ impl DevServer {
             None => None,
         };
         boot_phase("plugin host ready");
+        let plugin_names = match &plugin_host {
+            Some(host) => host.plugin_names().await,
+            None => Vec::new(),
+        };
         let serve_info = match &plugin_host {
             Some(host) => host.serve_info().await,
             None => plugins::ServeInfo::default(),
@@ -1541,7 +1555,14 @@ impl DevServer {
             watch_ignored,
             ws_token: hmr.ws_token,
             ws_token_check: hmr.ws_token_check,
-            optimized: Arc::new(optimized_deps(&root, &config, &dev_mode)),
+            optimized: Arc::new(optimized_deps(
+                &root,
+                &config,
+                &dev_mode,
+                client_defines.app.node_env(),
+                plugin_host.clone(),
+                plugin_names,
+            )),
             optimize_view: {
                 let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
                 Arc::new(optimize::OptimizeView::new(
