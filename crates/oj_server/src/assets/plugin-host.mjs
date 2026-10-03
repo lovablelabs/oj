@@ -4041,6 +4041,7 @@ async function run(hook, args) {
   }
   if (hook === "writeBundle") return writeBundle(args[0], args[1] === "true");
   if (hook === "getPluginCount") return String(plugins.length);
+  if (hook === "getPluginNames") return JSON.stringify(plugins.map((p) => p.name ?? ""));
   if (hook === "getPluginConfig") {
     // JSON-safe subset of what config() hooks returned (functions/RegExps
     // drop), plus THIS environment's `environments.<name>.define` from the

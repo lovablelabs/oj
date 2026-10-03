@@ -629,6 +629,7 @@ const BROWSER_EXTERNAL = "\0oj-dep:browser-external:";
 const OPTIONAL_PEER = "\0oj-dep:optional-peer:";
 const CONVERT_EXTERNAL = "\0oj-dep:external-conversion:";
 const CONVERTED_PREFIX = "oj-dep-external:";
+const CJS_EXTERNAL_FACADE = "\0oj-dep:cjs-external:";
 const ASSET_IMPORT_META_URL_RE = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\)/g;
 
 /// Vite's rolldownDepPlugin, with one difference: oj serves the bundle
@@ -671,11 +672,16 @@ function rolldownDepPlugins() {
       name: "oj:dep-pre-bundle",
       resolveId: {
         filter: { id: BARE_RE },
-        async handler(id, importer) {
+        async handler(id, importer, opts) {
+          if (id.startsWith(CONVERTED_PREFIX)) return { id: id.slice(CONVERTED_PREFIX.length), external: "absolute" };
           if (!importer) return null;
           if (moduleListContains(exclude, id)) {
             const r = await this.resolve(id, importer, { skipSelf: true });
-            return { id: r && !r.external ? urlOf(r.id) : id, external: "absolute" };
+            const url = r && !r.external ? urlOf(r.id) : id;
+            // An ESM bundle has no require(): Vite's cjs-external plugin turns
+            // a require() of an excluded dep into an import through a facade.
+            if (opts?.kind === "require-call") return { id: CJS_EXTERNAL_FACADE + url };
+            return { id: url, external: "absolute" };
           }
           const aliased = aliasResolve(id);
           if (aliased) {
@@ -694,8 +700,12 @@ function rolldownDepPlugins() {
         },
       },
       load: {
-        filter: { id: /^\0oj-dep:(browser-external|optional-peer):/ },
+        filter: { id: /^\0oj-dep:(browser-external|optional-peer|cjs-external):/ },
         handler(id) {
+          if (id.startsWith(CJS_EXTERNAL_FACADE)) {
+            const spec = JSON.stringify(CONVERTED_PREFIX + id.slice(CJS_EXTERNAL_FACADE.length));
+            return `import * as m from ${spec};\nmodule.exports = { ...m };\n`;
+          }
           if (id.startsWith(BROWSER_EXTERNAL)) {
             const name = id.slice(BROWSER_EXTERNAL.length);
             return (
@@ -762,7 +772,32 @@ function entryNeedsInterop(parseSync, facade, generated) {
 
 /// Vite's prepareRolldownOptimizerRun: one rolldown build, one entry per dep
 /// plus shared chunks, ESM. Returns `{ [name]: { file, exports, cjs } }`.
+/// Vite's extractExportsData fallback: a dep entry that only parses as JSX
+/// (JSX shipped in a .js file) switches the whole bundle to `.js: "jsx"`.
+function needsJsxLoader(parseSync, entryPoints) {
+  if (!parseSync) return false;
+  return Object.values(entryPoints).some((file) => {
+    if (!file.endsWith(".js")) return false;
+    let code;
+    try {
+      code = readFileSync(file, "utf8");
+    } catch {
+      return false;
+    }
+    const failed = (lang) => {
+      try {
+        return parseSync(file, code, { lang }).errors.length > 0;
+      } catch {
+        return true;
+      }
+    };
+    return failed("js") && !failed("jsx");
+  });
+}
+
 async function rolldownBundle(rd, entryPoints) {
+  const jsxLoader = needsJsxLoader(rd.parseSync, entryPoints);
+  const moduleTypes = { ...rolldownInput.moduleTypes, ...(jsxLoader ? { ".js": "jsx" } : {}) };
   const bundle = await rd.rolldown({
     ...rolldownInput,
     input: entryPoints,
@@ -781,7 +816,7 @@ async function rolldownBundle(rd, entryPoints) {
       },
     },
     resolve: { ...rolldownResolveOptions(), ...rolldownInput.resolve },
-    ...(rolldownInput.moduleTypes ? { moduleTypes: rolldownInput.moduleTypes } : {}),
+    ...(Object.keys(moduleTypes).length ? { moduleTypes } : {}),
   });
   let output;
   try {

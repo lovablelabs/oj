@@ -185,6 +185,9 @@ pub struct OptimizeInput {
     pub mode: String,
     /// Vite's `process.env.NODE_ENV || mode`, defined into every dep bundle.
     pub node_env: String,
+    /// The app's plugin names (Vite's getConfigHash `plugins`): the scan
+    /// resolves through them, so a plugin change can change the dep set.
+    pub plugin_names: Vec<String>,
     /// `optimizeDeps.needsInterop`: force `needsInterop: true` whatever the
     /// bundle's export shape (Vite's needsInterop()).
     pub needs_interop: Vec<String>,
@@ -282,6 +285,7 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
             (b"\0e", &input.entries),
             (b"\0d", &input.dedupe),
             (b"\0n", &input.needs_interop),
+            (b"\0p", &input.plugin_names),
         ],
     );
     for (find, replacement) in &input.alias {
@@ -553,6 +557,14 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(base, key(&forced), "needsInterop is part of the key");
+        // A plugin added or removed can change what the scan resolves (Vite's
+        // getConfigHash keys on the plugin names).
+        let with_plugin = OptimizeInput {
+            include: vec!["react".into()],
+            plugin_names: vec!["app-icons".into()],
+            ..Default::default()
+        };
+        assert_ne!(base, key(&with_plugin), "plugin names are part of the key");
         // ...and neither may a list boundary that merely moves an item across it.
         assert_ne!(
             key(&input(&["a"], &["b"], &[], &[])),

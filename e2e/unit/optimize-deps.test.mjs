@@ -509,3 +509,37 @@ only("rolldown", "rolldownOptions and NODE_ENV reach the dep bundle", () => {
   assert.match(code, /from-rolldown-options/, "rolldownOptions.transform.define applied");
   cleanup(root);
 });
+
+only("rolldown", "a CJS dep that require()s an excluded package imports it through a facade", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-cjs-excl-");
+  pkg("cjsdep", root, "index.js", { "index.js": `const e = require("excluded");\nmodule.exports = { v: e.v };\n` });
+  pkg("excluded", root, "index.js", { "index.js": `exports.v = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import x from "cjsdep";\nconsole.log(x);\n`);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir, exclude: ["excluded"] });
+  assert.deepEqual(Object.keys(metadata), ["cjsdep"]);
+  const code = fs.readFileSync(path.join(outDir, metadata.cjsdep.file), "utf8");
+  assert.doesNotMatch(code, /__require\(/, "a browser bundle cannot require() at run time");
+  assert.match(
+    code,
+    /import \* as \w+ from "\/node_modules\/excluded\/index\.js"/,
+    "the excluded dep is imported by its URL",
+  );
+  cleanup(root);
+});
+
+only("rolldown", "a dep entry that ships JSX in a .js file still pre-bundles", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-jsx-");
+  esmPkg("jsxdep", root, { "index.js": `export default function J() { return <div>hi</div>; }\n` });
+  esmPkg("plain", root, { "index.js": `export const p = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import J from "jsxdep";\nimport { p } from "plain";\nconsole.log(J, p);\n`);
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root) });
+  assert.deepEqual(
+    Object.keys(metadata).sort(),
+    ["jsxdep", "plain"],
+    "one JSX entry must not fail the whole pre-bundle",
+  );
+  cleanup(root);
+});

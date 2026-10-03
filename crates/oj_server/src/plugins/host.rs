@@ -1435,6 +1435,15 @@ impl PluginHost {
             .unwrap_or(1)
     }
 
+    /// The active plugins' names, in order (Vite keys its dep pre-bundle on
+    /// them). Empty on RPC failure.
+    pub async fn plugin_names(&self) -> Vec<String> {
+        self.call_json("getPluginNames")
+            .await
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
+    }
+
     /// `define` entries plugin `config()` hooks contributed, as (key, js
     /// expression) pairs, reaching oj's compile like Vite's merged `config.define`. Empty on RPC failure.
     pub async fn config_defines(&self) -> Vec<(String, String)> {

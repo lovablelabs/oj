@@ -1059,6 +1059,7 @@ fn optimized_deps(
     dev_mode: &str,
     node_env: &str,
     host: Option<Arc<plugins::PluginHost>>,
+    plugin_names: Vec<String>,
 ) -> optimize::OptimizedDeps {
     let (include, exclude, entries) = oj_config::optimize_deps_lists(config);
     optimize::OptimizedDeps::prepare(
@@ -1084,6 +1085,7 @@ fn optimized_deps(
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             mode: dev_mode.to_string(),
             node_env: node_env.to_string(),
+            plugin_names,
             needs_interop: oj_config::optimize_deps_needs_interop(config),
         },
         host,
@@ -1369,6 +1371,10 @@ impl DevServer {
             None => None,
         };
         boot_phase("plugin host ready");
+        let plugin_names = match &plugin_host {
+            Some(host) => host.plugin_names().await,
+            None => Vec::new(),
+        };
         let serve_info = match &plugin_host {
             Some(host) => host.serve_info().await,
             None => plugins::ServeInfo::default(),
@@ -1555,6 +1561,7 @@ impl DevServer {
                 &dev_mode,
                 client_defines.app.node_env(),
                 plugin_host.clone(),
+                plugin_names,
             )),
             optimize_view: {
                 let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
