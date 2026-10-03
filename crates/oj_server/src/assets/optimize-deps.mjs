@@ -345,9 +345,13 @@ const EXTERNAL_TYPES = [
   "astro",
   "imba",
   "marko",
+  "apng",
   "png",
   "jpg",
   "jpeg",
+  "jfif",
+  "pjpeg",
+  "pjp",
   "gif",
   "svg",
   "ico",
@@ -355,6 +359,7 @@ const EXTERNAL_TYPES = [
   "avif",
   "bmp",
   "cur",
+  "jxl",
   "woff",
   "woff2",
   "ttf",
@@ -367,8 +372,13 @@ const EXTERNAL_TYPES = [
   "wav",
   "flac",
   "aac",
+  "opus",
   "mov",
   "m4a",
+  "vtt",
+  "webmanifest",
+  "pdf",
+  "txt",
 ];
 const EXTERNAL_RE = new RegExp(`\\.(${EXTERNAL_TYPES.join("|")})(\\?.*)?$`, "i");
 const externalizeNonJs = {
@@ -541,7 +551,9 @@ async function rolldownScan(rd, discover, host) {
   const seen = new Map();
   const resolve = async (ctx, id, importer) => {
     const from = importer === SCAN_INCLUDE_ID ? includeImporter : importer;
-    const key = `${id}\0${from ? path.dirname(from) : ""}`;
+    // Keyed on the importer file, not its directory: a plugin may resolve the
+    // same id differently per importer.
+    const key = `${id}\0${from ?? ""}`;
     if (seen.has(key)) return seen.get(key);
     let out = null;
     // The app's plugins first, as Vite's scan resolves through its plugin
@@ -574,7 +586,11 @@ async function rolldownScan(rd, discover, host) {
         if (SPECIAL_QUERY_RE.test(id)) return externalize(id);
         if (BARE_RE.test(id) && !aliasResolve(id)) {
           if (id.includes("?") || moduleListContains(exclude, id) || found.has(id)) return externalize(id);
-          const resolved = await resolve(this, id, importer);
+          // resolve.dedupe from the root here too: the recorded file becomes
+          // the bundle ENTRY, so a deduped dep first seen from a linked
+          // package must still pin the root copy.
+          const from = DEDUPE_PKGS.has(npmPackageName(id)) ? SCAN_INCLUDE_ID : importer;
+          const resolved = await resolve(this, id, from);
           if (!resolved || !path.isAbsolute(resolved) || resolved.includes("\0")) return externalize(id);
           if (isInNodeModules(resolved) || includeIds.includes(id)) {
             if (OPTIMIZABLE_ENTRY_RE.test(cleanUrl(resolved))) found.set(id, resolved);
@@ -630,7 +646,99 @@ const OPTIONAL_PEER = "\0oj-dep:optional-peer:";
 const CONVERT_EXTERNAL = "\0oj-dep:external-conversion:";
 const CONVERTED_PREFIX = "oj-dep-external:";
 const CJS_EXTERNAL_FACADE = "\0oj-dep:cjs-external:";
-const ASSET_IMPORT_META_URL_RE = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\)/g;
+const ASSET_IMPORT_META_URL_RE = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\)/dg;
+const VITE_IGNORE_RE = /\/\*\s*@vite-ignore\s*\*\//;
+
+// strip-literal, small (Vite masks code with it before this match): string,
+// comment and regex-literal interiors become spaces, positions kept, so the
+// URL pattern never matches inside one. Quotes stay so the pattern still
+// matches real code. A `/` opens a regex only where an expression may start.
+const REGEX_PRECEDING_WORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "do",
+  "else",
+  "case",
+  "yield",
+  "throw",
+]);
+function maskLiterals(code) {
+  const out = code.split("");
+  const n = code.length;
+  const mask = (j) => {
+    if (out[j] !== "\n") out[j] = " ";
+  };
+  // The last non-space, non-masked char and trailing word decide whether a
+  // `/` can start a regex (after `(,=:[!&|?{};+-*%<>~^` or a keyword).
+  let prev = "";
+  let word = "";
+  const regexCanStart = () =>
+    prev === "" || "(,=:[!&|?{};+-*%<>~^".includes(prev) || (word && REGEX_PRECEDING_WORDS.has(word));
+  for (let i = 0; i < n;) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === "/" && c2 === "/") {
+      while (i < n && code[i] !== "\n") mask(i++);
+    } else if (c === "/" && c2 === "*") {
+      while (i < n && !(code[i] === "*" && code[i + 1] === "/")) mask(i++);
+      if (i < n) mask(i++);
+      if (i < n) mask(i++);
+    } else if (c === '"' || c === "'") {
+      i++;
+      while (i < n && code[i] !== c && code[i] !== "\n") {
+        if (code[i] === "\\") mask(i++);
+        if (i < n) mask(i++);
+      }
+      i++;
+      prev = c;
+      word = "";
+    } else if (c === "`") {
+      i++;
+      // `${expr}` interiors stay code (they may hold strings themselves);
+      // the literal parts are masked.
+      while (i < n && code[i] !== "`") {
+        if (code[i] === "\\") {
+          mask(i++);
+          if (i < n) mask(i++);
+        } else if (code[i] === "$" && code[i + 1] === "{") {
+          i += 2;
+          for (let depth = 1; i < n && depth > 0; i++) {
+            if (code[i] === "{") depth++;
+            else if (code[i] === "}") depth--;
+          }
+        } else {
+          mask(i++);
+        }
+      }
+      i++;
+      prev = "`";
+      word = "";
+    } else if (c === "/" && regexCanStart()) {
+      mask(i++);
+      let inClass = false;
+      while (i < n && code[i] !== "\n" && (inClass || code[i] !== "/")) {
+        if (code[i] === "\\") mask(i++);
+        else if (code[i] === "[") inClass = true;
+        else if (code[i] === "]") inClass = false;
+        if (i < n) mask(i++);
+      }
+      if (i < n && code[i] === "/") mask(i++);
+      prev = "/";
+      word = "";
+    } else {
+      if (/[A-Za-z0-9_$]/.test(c)) word = /[A-Za-z0-9_$]/.test(code[i - 1] ?? "") ? word + c : c;
+      if (!/\s/.test(c)) prev = c;
+      i++;
+    }
+  }
+  return out.join("");
+}
 
 /// Vite's rolldownDepPlugin, with one difference: oj serves the bundle
 /// verbatim (Vite runs importAnalysis over it), so whatever stays external
@@ -638,6 +746,13 @@ const ASSET_IMPORT_META_URL_RE = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s
 function rolldownDepPlugins() {
   const rootImporter = path.join(root, "package.json");
   const rootDirs = new Set([root, realRoot]);
+  // Vite's resolveResult: a bare import can RESOLVE to a non-JS file (a
+  // css-main package); that file is externalized like an asset, not bundled.
+  const assetOrModule = (r, kind) => {
+    if (!r || r.external || !EXTERNAL_RE.test(r.id)) return r;
+    const url = urlOf(r.id);
+    return kind === "require-call" ? { id: CONVERT_EXTERNAL + url } : { id: url, external: "absolute" };
+  };
   return [
     {
       name: "oj:dep-pre-bundle-assets",
@@ -686,13 +801,13 @@ function rolldownDepPlugins() {
           const aliased = aliasResolve(id);
           if (aliased) {
             const r = await this.resolve(aliased, importer, { skipSelf: true });
-            if (r) return r;
+            if (r) return assetOrModule(r, opts?.kind);
           }
           // resolve.dedupe: resolve from the project root wherever the
           // importer sits (Vite resolve.ts: dedupe -> basedir = root).
           const fromRoot = DEDUPE_PKGS.has(npmPackageName(id)) && !rootDirs.has(path.dirname(importer));
           const r = await this.resolve(id, fromRoot ? rootImporter : importer, { skipSelf: true });
-          if (r) return r;
+          if (r) return assetOrModule(r, opts?.kind);
           if (NODE_BUILTINS.has(id)) return { id: BROWSER_EXTERNAL + id };
           const peer = optionalPeerOf(id, importer);
           if (peer) return { id: OPTIONAL_PEER + peer };
@@ -727,19 +842,30 @@ function rolldownDepPlugins() {
       },
       // `new URL("./x.wasm", import.meta.url)` in a dep is relative to the
       // dep's own file; the bundle lives elsewhere, so point it at the URL oj
-      // serves that file at (Vite rewrites it relative to its deps dir).
+      // serves that file at (Vite rewrites it relative to its deps dir). The
+      // match runs over literal-masked code, as Vite's does over strip-literal,
+      // so the pattern inside a string or comment is left alone, and
+      // `/* @vite-ignore */` skips a site.
       transform: {
         filter: { code: /import\.meta\.url/ },
         handler(code, id) {
-          let changed = false;
-          const out = code.replace(ASSET_IMPORT_META_URL_RE, (m, raw) => {
-            if (raw[0] === "`" && raw.includes("${")) return m;
+          const masked = maskLiterals(code);
+          let out = "";
+          let last = 0;
+          ASSET_IMPORT_META_URL_RE.lastIndex = 0;
+          for (let m; (m = ASSET_IMPORT_META_URL_RE.exec(masked));) {
+            const [start, end] = m.indices[0];
+            const [rawStart, rawEnd] = m.indices[1];
+            const raw = code.slice(rawStart, rawEnd);
+            if (VITE_IGNORE_RE.test(code.slice(start, rawStart))) continue;
+            if (raw[0] === "`" && raw.includes("${")) continue;
             const url = raw.slice(1, -1);
-            if (url.startsWith("data:") || url.startsWith("/") || EXTERNAL_URL_RE.test(url)) return m;
-            changed = true;
-            return `new URL('' + ${JSON.stringify(urlOf(path.resolve(path.dirname(id), url)))}, import.meta.url)`;
-          });
-          return changed ? { code: out } : null;
+            if (url.startsWith("data:") || url.startsWith("/") || EXTERNAL_URL_RE.test(url)) continue;
+            out += code.slice(last, start);
+            out += `new URL('' + ${JSON.stringify(urlOf(path.resolve(path.dirname(id), url)))}, import.meta.url)`;
+            last = end;
+          }
+          return last ? { code: out + code.slice(last) } : null;
         },
       },
     },
@@ -797,7 +923,10 @@ function needsJsxLoader(parseSync, entryPoints) {
 
 async function rolldownBundle(rd, entryPoints) {
   const jsxLoader = needsJsxLoader(rd.parseSync, entryPoints);
-  const moduleTypes = { ...rolldownInput.moduleTypes, ...(jsxLoader ? { ".js": "jsx" } : {}) };
+  // `.css: "js"` is Vite's guard (prepareRolldownOptimizerRun): CSS is
+  // externalized at resolve, so none should load; one that slips through must
+  // not wake rolldown's own CSS handling, whose output nothing here serves.
+  const moduleTypes = { ".css": "js", ...rolldownInput.moduleTypes, ...(jsxLoader ? { ".js": "jsx" } : {}) };
   const bundle = await rd.rolldown({
     ...rolldownInput,
     input: entryPoints,
@@ -816,7 +945,7 @@ async function rolldownBundle(rd, entryPoints) {
       },
     },
     resolve: { ...rolldownResolveOptions(), ...rolldownInput.resolve },
-    ...(Object.keys(moduleTypes).length ? { moduleTypes } : {}),
+    moduleTypes,
   });
   let output;
   try {
@@ -994,6 +1123,13 @@ export async function optimize(input) {
 
   const entryPoints = {};
   const nameOf = {};
+  // Vite's unableToOptimize: a dep named in `optimizeDeps.include` that does
+  // not resolve is dropped with a warning, never silently.
+  const unableToOptimize = (dep) => {
+    if (includeIds.includes(dep) || dep.includes(">")) {
+      console.warn(`oj: failed to resolve dependency "${dep}", present in 'optimizeDeps.include'`);
+    }
+  };
   for (const dep of deps) {
     // Vite's nested-dependency syntax: "a > b" pre-bundles the copy of `b` nested
     // inside `a` (each segment resolved from the previous one's directory). The
@@ -1013,6 +1149,7 @@ export async function optimize(input) {
           fromDir = path.dirname(resolved);
         }
       } catch {
+        unableToOptimize(dep);
         continue;
       }
       const last = parts[parts.length - 1];
@@ -1028,9 +1165,15 @@ export async function optimize(input) {
     // rolldown entries are resolved by the scan with the bundle's own resolver;
     // one that did not resolve there would fail the whole build.
     const scanned = candidates.get(dep);
-    if (bundler.kind === "rolldown" && !scanned) continue;
+    if (bundler.kind === "rolldown" && !scanned) {
+      unableToOptimize(dep);
+      continue;
+    }
     const entry = scanned ?? tryResolve(req, dep);
-    if (!entry) continue;
+    if (!entry) {
+      unableToOptimize(dep);
+      continue;
+    }
     // Skip linked / workspace packages (symlinked into node_modules): pre-bundling
     // freezes their source so edits to them stop HMR-ing. Vite excludes these too.
     // An explicit optimizeDeps.include still forces optimization.

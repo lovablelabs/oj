@@ -543,3 +543,97 @@ only("rolldown", "a dep entry that ships JSX in a .js file still pre-bundles", (
   );
   cleanup(root);
 });
+
+only("rolldown", "a bare import that resolves to a non-JS file is externalized, not bundled", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-cssmain-");
+  pkg("theme", root, "theme.css", { "theme.css": `body { color: red; }\n` });
+  esmPkg("widget", root, { "index.js": `import "theme";\nexport const w = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { w } from "widget";\nconsole.log(w);\n`);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir });
+  assert.deepEqual(Object.keys(metadata), ["widget"]);
+  const code = fs.readFileSync(path.join(outDir, metadata.widget.file), "utf8");
+  assert.match(code, /import "\/node_modules\/theme\/theme\.css"/, `the css-main package is its URL:\n${code}`);
+  cleanup(root);
+});
+
+only("rolldown", "Vite's full asset-type list is externalized (.vtt, .txt)", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-assets2-");
+  esmPkg("player", root, {
+    "index.js":
+      `import captions from "./media/captions.vtt";\n` +
+      `import notes from "./notes.txt";\n` +
+      `export const p = [captions, notes];\n`,
+    "media/captions.vtt": "WEBVTT\n",
+    "notes.txt": "notes\n",
+  });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { p } from "player";\nconsole.log(p);\n`);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir });
+  const code = fs.readFileSync(path.join(outDir, metadata.player.file), "utf8");
+  assert.match(code, /from "\/node_modules\/player\/media\/captions\.vtt"/, `captions externalized:\n${code}`);
+  assert.match(code, /from "\/node_modules\/player\/notes\.txt"/, "notes externalized");
+  cleanup(root);
+});
+
+only("rolldown", "new URL(..., import.meta.url) inside a string, comment or @vite-ignore is left alone", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-urlmask-");
+  esmPkg("urls", root, {
+    "index.js":
+      `export const re = /['"]/.test("q");\n` +
+      `export const real = new URL("./data.bin", import.meta.url).href;\n` +
+      `export const doc = "example: new URL('./fake.bin', import.meta.url)";\n` +
+      `// new URL('./comment.bin', import.meta.url)\n` +
+      `export const skipped = new URL(/* @vite-ignore */ "./skipped.bin", import.meta.url).href;\n`,
+    "data.bin": "x",
+    "skipped.bin": "x",
+  });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { real } from "urls";\nconsole.log(real);\n`);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir });
+  const code = fs.readFileSync(path.join(outDir, metadata.urls.file), "utf8");
+  // rolldown folds the `'' +` opt-out prefix away in codegen.
+  assert.match(
+    code,
+    /new URL\(('' \+ )?"\/node_modules\/urls\/data\.bin", import\.meta\.url\)/,
+    `real one rewritten:\n${code}`,
+  );
+  assert.match(code, /new URL\('\.\/fake\.bin', import\.meta\.url\)/, "string content untouched");
+  assert.doesNotMatch(code, /fake\.bin", import\.meta\.url\)|\/node_modules\/urls\/fake\.bin/, "string not rewritten");
+  assert.doesNotMatch(code, /\/node_modules\/urls\/comment\.bin/, "comment not rewritten");
+  assert.match(code, /\.\/skipped\.bin/, "@vite-ignore keeps the raw URL");
+  assert.doesNotMatch(code, /\/node_modules\/urls\/skipped\.bin/, "@vite-ignore skips the rewrite");
+  cleanup(root);
+});
+
+only("rolldown", "a deduped dep reached only from a linked package pre-bundles the root copy", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-dedupescan-");
+  esmPkg("shared", root, { "index.js": `export const copy = "ROOT_COPY";\n` });
+  // A workspace link: the package lives outside node_modules and carries its
+  // own nested copy of `shared`, which is the one its imports resolve to.
+  const libDir = path.join(root, "lib", "linked-lib");
+  fs.mkdirSync(path.join(libDir, "node_modules", "shared"), { recursive: true });
+  fs.writeFileSync(
+    path.join(libDir, "package.json"),
+    JSON.stringify({ name: "linked-lib", type: "module", main: "index.js" }),
+  );
+  fs.writeFileSync(path.join(libDir, "index.js"), `import { copy } from "shared";\nexport const via = copy;\n`);
+  fs.writeFileSync(
+    path.join(libDir, "node_modules", "shared", "package.json"),
+    JSON.stringify({ name: "shared", type: "module", main: "index.js" }),
+  );
+  fs.writeFileSync(path.join(libDir, "node_modules", "shared", "index.js"), `export const copy = "NESTED_COPY";\n`);
+  fs.symlinkSync(libDir, path.join(root, "node_modules", "linked-lib"));
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { via } from "linked-lib";\nconsole.log(via);\n`);
+  const outDir = outDirOf(root);
+  const { metadata } = runOptimize({ root, outDir, dedupe: ["shared"] });
+  assert.ok(metadata.shared, `shared discovered through the linked package: ${Object.keys(metadata)}`);
+  const code = fs.readFileSync(path.join(outDir, metadata.shared.file), "utf8");
+  assert.match(code, /ROOT_COPY/, "the scan pinned the root copy as the bundle entry");
+  assert.doesNotMatch(code, /NESTED_COPY/);
+  cleanup(root);
+});
