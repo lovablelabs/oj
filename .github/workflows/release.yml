@@ -1,33 +1,190 @@
 name: release
 
-# Pushing a version tag creates the GitHub release with that
-# version's CHANGELOG section as notes, then publishes the workspace crates to
-# crates.io (cargo publish --workspace resolves the dependency order itself
+# Pushing a version tag builds oj for every supported target, smoke-tests each
+# archive on the runner that built it, and only then creates the GitHub
+# release in one step with all binaries, checksums and provenance attached
+# (the "build everything, publish once" shape of uv and cargo-dist), with that
+# version's CHANGELOG section as notes. It then publishes the workspace crates
+# to crates.io (cargo publish --workspace resolves the dependency order itself
 # and skips publish = false). After a partial failure, re-run with
 # --exclude <already-published> if cargo refuses the duplicates. Auth is
 # crates.io Trusted Publishing (OIDC): each crate lists this repo+workflow as
 # a publisher, and the auth action mints a run-scoped token — no stored
 # secret. A crate's very first publish cannot be trust-configured yet; do
 # that one manually with a scoped token, then it joins the flow.
+#
+# A pull request that touches this file, or a manual run, is a dry run: it
+# builds and smoke-tests every archive and uploads them as workflow artifacts,
+# but creates no release and publishes nothing.
+#
+# Archives: oj-<target>.tar.xz, holding oj-<target>/{oj,LICENSE,README.md}.
+# The name carries no version, so
+# releases/latest/download/oj-<target>.tar.xz is a stable URL (install
+# scripts, cargo-binstall's default lookup). Each ships with a .sha256, the
+# release carries a combined sha256.sum, and every archive has a GitHub build
+# provenance attestation: `gh attestation verify oj-<target>.tar.xz -R lovablelabs/oj`.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: github release
+  check:
+    name: tag matches the workspace version
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           [ "$tag" = "$ver" ] || { echo "tag v$tag != workspace version $ver" >&2; exit 1; }
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners only: rusty_v8 ships a prebuilt static V8 per
+          # target, and the V8 snapshot is produced at build time by running
+          # V8 on the build host, so cross-compiling is not an option.
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          # Linux builds run in Ubuntu 22.04 (glibc 2.35), so the binary runs
+          # on any distro with glibc >= 2.35, not just the runner's newer one;
+          # the smoke test below runs inside that same userland. (A supported
+          # release: Debian bullseye's archive went away at its end of life.)
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest-m-public
+            container: ubuntu:22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            container: ubuntu:22.04
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || null }}
+    timeout-minutes: 180
+    env:
+      # oj's minimum macOS; ignored on Linux.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: build dependencies (ubuntu)
+        if: matrix.container
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl git pkg-config python3 cmake \
+            binutils xz-utils file clang libclang-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The toolchain itself comes from rust-toolchain.toml (rustup installs
+      # it on the first cargo call); this only provides rustup.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-${{ matrix.target }}
+      - name: build
+        run: cargo build --release --locked -p oj --target ${{ matrix.target }}
+      - name: strip and package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="oj-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/oj" "dist/$name/oj"
+          cp LICENSE README.md "dist/$name/"
+          bin="dist/$name/oj"
+          # Strip everything native npm addons do not need: they (rolldown's
+          # napi binding) resolve napi_* from this executable at load time.
+          # On Linux those live in .dynsym, which `strip` keeps; on macOS a
+          # plain `strip` removes all of them (145 napi exports to 0), so it
+          # strips only local and debug symbols. Either way, check they survive.
+          if [ "$RUNNER_OS" = macOS ]; then
+            strip -x -S "$bin"
+            exports=$(nm -gU "$bin" | grep -c ' _napi_' || true)
+          else
+            strip "$bin"
+            exports=$(nm -D --defined-only "$bin" | grep -c ' napi_' || true)
+            glibc=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+            echo "newest glibc symbol required: $glibc"
+          fi
+          echo "napi exports: $exports"
+          [ "$exports" -gt 0 ] || { echo "stripping removed the napi exports native addons need" >&2; exit 1; }
+          ls -l "$bin"
+          tar -C dist -cf - "$name" | xz -T0 -6 > "dist/$name.tar.xz"
+          if command -v sha256sum >/dev/null; then sum="sha256sum"; else sum="shasum -a 256"; fi
+          (cd dist && $sum "$name.tar.xz" > "$name.tar.xz.sha256")
+          cat "dist/$name.tar.xz.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      # The archive, not the build tree, is what users get: unpack it fresh
+      # and prove it runs, prints the version the tag promises, and builds a
+      # dependency-free TypeScript app (compiler + bundler, no node_modules).
+      - name: smoke test the archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${{ steps.package.outputs.name }}"
+          work="$(mktemp -d)"
+          tar -C "$work" -xJf "dist/$name.tar.xz"
+          oj="$work/$name/oj"
+          "$oj" --version
+          ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          "$oj" --version | grep -qx "oj $ver" || { echo "archive reports the wrong version" >&2; exit 1; }
+          app="$work/app"
+          mkdir -p "$app/src"
+          printf '<!doctype html><html><body><div id="app"></div><script type="module" src="/src/main.ts"></script></body></html>\n' > "$app/index.html"
+          printf 'const n: number = 41 + 1;\ndocument.getElementById("app")!.textContent = `oj-smoke-${n}`;\n' > "$app/src/main.ts"
+          "$oj" build "$app"
+          grep -q 'oj-smoke-' "$app"/dist/assets/*.js || { echo "the smoke build produced no bundle" >&2; exit 1; }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/${{ steps.package.outputs.name }}.tar.xz
+            dist/${{ steps.package.outputs.name }}.tar.xz.sha256
+          if-no-files-found: error
+
+  release:
+    name: github release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: combined checksums
+        run: |
+          cd dist
+          sha256sum -c ./*.sha256
+          cat ./*.sha256 > sha256.sum
+          cat sha256.sum
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.xz
+      # One create with every asset: a release is never visible half-built.
       - name: create the release with the changelog section
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,9 +193,9 @@ jobs:
           awk -v ver="$ver" '$0 ~ "^## \\[" ver "\\]" {f=1; next} /^## \[/ {f=0} f' \
             CHANGELOG.md > notes.md
           if [ -s notes.md ]; then
-            gh release create "$GITHUB_REF_NAME" --title "oj $GITHUB_REF_NAME" --notes-file notes.md
+            gh release create "$GITHUB_REF_NAME" --title "oj $GITHUB_REF_NAME" --notes-file notes.md dist/*
           else
-            gh release create "$GITHUB_REF_NAME" --title "oj $GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" --title "oj $GITHUB_REF_NAME" --generate-notes dist/*
           fi
 
   publish:
