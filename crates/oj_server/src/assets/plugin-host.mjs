@@ -1267,6 +1267,33 @@ const cssPostShim = {
 };
 
 const moduleInfoCache = new Map();
+// module-info `code` is a SECOND copy of every transformed module (the first
+// lives in the budgeted Rust cache), retained here only for hooks that read
+// `getModuleInfo(id).code` shortly after the module crossed the host (Rollup
+// build semantics; Vite dev's ModuleInfo carries no code). A byte-budgeted
+// recency window keeps those reads working while old code is dropped, so the
+// isolate no longer holds the whole app's transformed source for its lifetime.
+const INFO_CODE_BUDGET = (Number(process.env.OJ_INFO_CODE_MB) || 24) * 1024 * 1024;
+const infoCodeLru = new Map(); // id -> bytes, insertion order = write recency
+let infoCodeBytes = 0;
+function retainInfoCode(id, info) {
+  const had = infoCodeLru.get(id);
+  if (had != null) {
+    infoCodeBytes -= had;
+    infoCodeLru.delete(id);
+  }
+  const len = typeof info.code === "string" ? info.code.length : 0;
+  if (len === 0) return;
+  infoCodeLru.set(id, len);
+  infoCodeBytes += len;
+  for (const [oldId, bytes] of infoCodeLru) {
+    if (infoCodeBytes <= INFO_CODE_BUDGET || oldId === id) break;
+    const oldInfo = moduleInfoCache.get(oldId);
+    if (oldInfo) oldInfo.code = null;
+    infoCodeLru.delete(oldId);
+    infoCodeBytes -= bytes;
+  }
+}
 
 // Vite reports a failing hook as `[plugin:name] message` followed by the module
 // id with `line:column` and the code frame (pluginContainer's formatError), and
@@ -1369,6 +1396,7 @@ function updateModuleInfo(id, result) {
   if (!result || typeof result !== "object") return;
   let info = moduleInfoCache.get(id);
   if (!info) moduleInfoCache.set(id, (info = makeModuleInfo(id, typeof result.code === "string" ? result.code : "")));
+  if (info.code) retainInfoCode(id, info);
   if (result.meta && typeof result.meta === "object") info.meta = { ...(info.meta ?? {}), ...result.meta };
   if (result.moduleSideEffects != null) info.moduleSideEffects = result.moduleSideEffects;
   if (result.syntheticNamedExports != null) info.syntheticNamedExports = result.syntheticNamedExports;
@@ -1488,6 +1516,7 @@ const ctx = {
     }
     if (info) {
       moduleInfoCache.set(info.id, info);
+      retainInfoCode(info.id, info);
       seenIds.add(info.id);
     }
     return info;
@@ -3338,6 +3367,7 @@ async function transform(code, id, resolvedJson) {
         : null,
     );
     moduleInfoCache.set(id, info);
+    retainInfoCode(id, info);
     seenIds.add(id);
     for (const { p, fn } of pluginsWithHook("moduleParsed")) await fn.call(ctxFor(p), info);
     return JSON.stringify({
