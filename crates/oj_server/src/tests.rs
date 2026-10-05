@@ -340,6 +340,93 @@ fn plugin_serve_packs_one_snapshot_and_arms_before_the_flip() {
     assert!(!no_runner.activated_late());
 }
 
+/// A live host whose configureServer middleware answers with a per-generation
+/// id, and the PluginServe the dev server boots with its port already known.
+async fn middleware_host(tag: &str) -> (Arc<plugins::PluginHost>, Arc<PluginServe>) {
+    let root = std::env::temp_dir().join(format!("oj-mw-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        "const id = String(Math.random());\nexport default [{ name: \"mw\", configureServer(s) { s.middlewares.use((req, res) => res.end(id)); } }];\n",
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = plugins::PluginHost::spawn_lazy(&root, &plugins, &config, None)
+        .await
+        .expect("the embedded engine spawns");
+    let info = host.serve_info().await;
+    assert!(
+        info.middleware_port.is_some(),
+        "the middleware reports its port"
+    );
+    (host, Arc::new(PluginServe::from_info(&info)))
+}
+
+/// What the middleware behind the forwarded port answers, if anything does.
+async fn forwarded_id(serve: &PluginServe) -> Option<String> {
+    let port = serve.mw_port()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let resp = client.get(format!("http://127.0.0.1:{port}/")).send().await;
+    resp.ok()?.text().await.ok()
+}
+
+// A host declared gone with nothing calling it (only its middleware serves
+// requests) respawns on its own, and forwarding moves to the new generation.
+#[tokio::test]
+async fn a_dead_middleware_host_respawns_and_forwarding_follows_without_a_call() {
+    let (host, serve) = middleware_host("respawn").await;
+    let generation = host.revive.lock().unwrap().generation;
+    spawn_late_plugin_serve(Arc::clone(&serve), Arc::clone(&host), Some(generation));
+    let dead_id = forwarded_id(&serve)
+        .await
+        .expect("the boot middleware answers");
+    host.declare_gone("test stall", generation);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match forwarded_id(&serve).await {
+            Some(id) if id != dead_id => break,
+            last => assert!(
+                std::time::Instant::now() < deadline,
+                "forwarding never reached a respawned middleware (last answer {last:?}, revive attempts {})",
+                host.revive.lock().unwrap().attempts
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    host.shutdown();
+}
+
+// With no respawn left, requests must stop going to the dead port.
+#[tokio::test]
+async fn a_permanently_dead_host_stops_forwarding_to_its_port() {
+    let (host, serve) = middleware_host("terminal").await;
+    let generation = host.revive.lock().unwrap().generation;
+    spawn_late_plugin_serve(Arc::clone(&serve), Arc::clone(&host), Some(generation));
+    let dead_port = serve.mw_port();
+    host.revive.lock().unwrap().attempts = plugins::PLUGIN_HOST_RESPAWN_LIMIT;
+    host.declare_gone("test stall", generation);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while serve.mw_port().is_some() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        serve.mw_port(),
+        None,
+        "still forwarding to the dead {dead_port:?}"
+    );
+}
+
 #[test]
 fn dep_transform_gate_matches_only_marker_sources() {
     // The plugins' own transform code-filter patterns (getDepTransformFilters).

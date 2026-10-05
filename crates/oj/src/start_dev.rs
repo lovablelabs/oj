@@ -1865,10 +1865,14 @@ async fn read_body_capped(body: axum::body::Body, cap: usize) -> Result<Option<V
 }
 
 async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
+    let mw_port = state.plugin_serve.mw_port();
     // The middleware may pipe an unclaimed request on to the runner
     // (x-oj-forward-to), so start refreshing it — without blocking this
     // request, which the worker middleware typically serves itself.
-    if state.lazy_runner() && state.runner_dirty.load(std::sync::atomic::Ordering::SeqCst) {
+    if mw_port.is_some()
+        && state.lazy_runner()
+        && state.runner_dirty.load(std::sync::atomic::Ordering::SeqCst)
+    {
         let st = Arc::clone(state);
         tokio::spawn(async move { ensure_runner_fresh(&st).await });
     }
@@ -1885,11 +1889,13 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     // request on to the engine's loopback shim (x-oj-forward-to) instead of
     // falling through. Without a middleware the body is read whole and handed
     // to the engine (the call transport is buffered).
-    let Some(port) = state.plugin_serve.mw_port() else {
+    let Some(port) = mw_port else {
         let body = match read_body_capped(req.into_body(), start_max_body_bytes()).await {
             Ok(body) => body,
             Err(resp) => return resp,
         };
+        // No middleware (boot window, or a dead plugin host): the runner serves this request itself.
+        ensure_runner_fresh(state).await;
         return forward(&state.engine, method, url, &headers, body).await;
     };
     if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {

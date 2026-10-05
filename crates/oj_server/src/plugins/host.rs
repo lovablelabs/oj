@@ -125,6 +125,14 @@ pub(crate) fn first_death_report(revive: &mut ReviveState, generation: u64) -> b
     true
 }
 
+/// `try_revive` outcome: the background reviver retries a cooldown, never a refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Revive {
+    Live,
+    Cooldown,
+    Refused,
+}
+
 /// Respawns per host lifetime (see `ReviveState::attempts`).
 pub(crate) const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
 /// Minimum spacing between respawns (see `ReviveState::last`).
@@ -568,7 +576,49 @@ impl PluginHost {
             .unwrap()
             .push(std::sync::Arc::downgrade(&host));
         Self::ignite(&host, 0).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Self::spawn_reviver(&host);
         Ok(host)
+    }
+
+    /// Revives a dead host once spacing allows: a host only its middleware port uses never gets a reviving call.
+    fn spawn_reviver(host: &std::sync::Arc<PluginHost>) {
+        let weak = std::sync::Arc::downgrade(host);
+        let mut gone = host.host_gone.subscribe();
+        tokio::spawn(async move {
+            loop {
+                if gone.wait_for(|g| *g).await.is_err() {
+                    return;
+                }
+                let refused = loop {
+                    let Some(host) = weak.upgrade() else { return };
+                    if !host.can_revive() {
+                        return;
+                    }
+                    let wait = match host.try_revive() {
+                        Revive::Live => break false,
+                        Revive::Refused => break true,
+                        Revive::Cooldown => host.respawn_wait(),
+                    };
+                    drop(host);
+                    tokio::time::sleep(wait).await;
+                };
+                // A refused revive (orphaned addon, failed boot) leaves the next call to retry.
+                if refused && gone.wait_for(|g| !*g).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Time left before `try_revive`'s spacing admits another respawn.
+    fn respawn_wait(&self) -> std::time::Duration {
+        self.revive
+            .lock()
+            .unwrap()
+            .last
+            .map_or(std::time::Duration::ZERO, |last| {
+                PLUGIN_HOST_RESPAWN_SPACING.saturating_sub(last.elapsed())
+            })
     }
 
     /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
@@ -801,27 +851,37 @@ impl PluginHost {
             && self.revive.lock().unwrap().attempts < PLUGIN_HOST_RESPAWN_LIMIT
     }
 
+    /// The live engine generation; a revive bumps it before the new engine can push.
+    pub fn generation(&self) -> u64 {
+        self.revive.lock().unwrap().generation
+    }
+
+    /// Retired on purpose by `shutdown`: never coming back.
+    pub fn is_shut_down(&self) -> bool {
+        self.shut_down.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Revive a dead host with a fresh generation, bounded by lifetime budget and
-    /// spacing (see `ReviveState`). Returns whether the host is now (or already was) live.
-    fn try_revive(&self) -> bool {
+    /// spacing (see `ReviveState`).
+    fn try_revive(&self) -> Revive {
         if self.shut_down.load(std::sync::atomic::Ordering::SeqCst) {
-            return false;
+            return Revive::Refused;
         }
         let Some(host) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
-            return false;
+            return Revive::Refused;
         };
         let mut revive = self.revive.lock().unwrap();
         if !*self.host_gone.borrow() {
             // A concurrent caller already revived it (or the report was stale).
-            return true;
+            return Revive::Live;
         }
         if revive.attempts >= PLUGIN_HOST_RESPAWN_LIMIT {
-            return false;
+            return Revive::Refused;
         }
         if let Some(last) = revive.last {
             if last.elapsed() < PLUGIN_HOST_RESPAWN_SPACING {
                 // Too soon: fail fast instead of stacking engines against a recurring wedge.
-                return false;
+                return Revive::Cooldown;
             }
         }
         // Re-registering an addon whose every runtime is gone can crash the process
@@ -836,7 +896,7 @@ impl PluginHost {
                 "oj: not respawning the plugin host: native addon {} was torn down with it and re-registering can crash (napi-rs before 3.10); restart the dev server to recover",
                 addon.display()
             );
-            return false;
+            return Revive::Refused;
         }
         revive.attempts += 1;
         revive.last = Some(std::time::Instant::now());
@@ -857,11 +917,11 @@ impl PluginHost {
                     let host = std::sync::Arc::clone(&host);
                     handle.spawn(async move { host.ensure_hook_plan().await });
                 }
-                true
+                Revive::Live
             }
             Err(e) => {
                 eprintln!("oj: plugin host respawn failed: {e}");
-                false
+                Revive::Refused
             }
         }
     }
@@ -893,7 +953,7 @@ impl PluginHost {
     }
 
     async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
-        if *self.host_gone.borrow() && !self.try_revive() {
+        if *self.host_gone.borrow() && self.try_revive() != Revive::Live {
             return Err("plugin host exited".into());
         }
         self.wait_for_init(hook).await?;
