@@ -1623,27 +1623,30 @@ pub fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Vite parity: close runs `buildEnd` then `closeBundle`. oj has no graceful drain, so
-/// the hooks run on the signal (bounded) and the process exits with the shell's code.
-async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
+/// Vite parity: close runs the dev server's `close()` (which plugins wrap to dispose
+/// runtimes they started), then `buildEnd` and `closeBundle`. oj has no graceful drain,
+/// so these run on the signal (bounded), plugin-spawned children are killed, and the
+/// process exits with the shell's code. Both `oj dev` and the Start dev server use it.
+pub async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
+    // Held until exit: Deno kills oj for a signal no Deno handler prevents (e.g. signal-exit's re-raise).
     #[cfg(unix)]
-    let code = {
-        use tokio::signal::unix::{signal, SignalKind};
-        // SIGHUP too: own-group children no longer share the terminal's session, so a
-        // closed terminal/SSH drop must be forwarded like ^C or plugin runtimes orphan.
-        match (
-            signal(SignalKind::terminate()),
-            signal(SignalKind::hangup()),
-        ) {
-            (Ok(mut term), Ok(mut hup)) => tokio::select! {
-                _ = tokio::signal::ctrl_c() => 130,
+    let (code, _held) = match (
+        deno_signals::signal_stream(libc::SIGINT),
+        deno_signals::signal_stream(libc::SIGTERM),
+        deno_signals::signal_stream(libc::SIGHUP),
+    ) {
+        (Ok(mut int), Ok(mut term), Ok(mut hup)) => {
+            // SIGHUP too: own-group children don't share the terminal's session.
+            let code = tokio::select! {
+                _ = int.recv() => 130,
                 _ = term.recv() => 143,
                 _ = hup.recv() => 129,
-            },
-            _ => {
-                let _ = tokio::signal::ctrl_c().await;
-                130
-            }
+            };
+            (code, Some((int, term, hup)))
+        }
+        _ => {
+            let _ = tokio::signal::ctrl_c().await;
+            (130, None)
         }
     };
     #[cfg(not(unix))]
@@ -1652,7 +1655,10 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
         130
     };
     if let Some(host) = host {
-        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        if tokio::time::timeout(Duration::from_secs(5), async {
+            if let Err(e) = host.close_dev_server().await {
+                eprintln!("oj: dev server close on shutdown failed: {e}");
+            }
             if let Err(e) = host.build_end(None).await {
                 eprintln!("oj: plugin buildEnd on close failed: {e}");
             }
@@ -1660,7 +1666,11 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
                 eprintln!("oj: plugin closeBundle on close failed: {e}");
             }
         })
-        .await;
+        .await
+        .is_err()
+        {
+            eprintln!("oj: plugin close on shutdown timed out after 5s; killing plugin children");
+        }
     }
     // Own-group children no longer sit in the terminal's foreground group, so
     // the signal that ends oj never reaches them; forward it.
