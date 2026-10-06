@@ -44,6 +44,11 @@ function bytesToB64(bytes) {
 /// is `{ status, headers: [[k, v]...], setCookies: [...], bodyBase64 | null }`.
 /// The response is read to completion (a TanStack stream's deferred content is
 /// present), so the transport is buffered where the loopback runner streamed.
+// Liveness probe: any reply proves the isolate still schedules.
+export function ping() {
+  return 1;
+}
+
 export async function handle(entry, req) {
   const handler = (await import(entry)).default;
   const headers = new Headers();
