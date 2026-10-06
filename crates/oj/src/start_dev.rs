@@ -2161,7 +2161,7 @@ fn engine_response(resp: StartResponse) -> Response {
 }
 
 async fn forward(
-    engine: &StartEngine,
+    engine: &Arc<StartEngine>,
     method: String,
     url: String,
     req_headers: &header::HeaderMap,

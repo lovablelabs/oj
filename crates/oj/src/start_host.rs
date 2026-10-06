@@ -1246,7 +1246,9 @@ pub struct StartEngine {
     entry_id: String,
     bootstrap: String,
     init_env: Vec<(String, String)>,
-    engine: tokio::sync::RwLock<EngineSlot>,
+    engine: tokio::sync::RwLock<Arc<EngineSlot>>,
+    /// Consecutive wedge respawns and when the last ran; a served request resets the count.
+    wedge_respawns: Mutex<(u32, Option<std::time::Instant>)>,
 }
 
 /// A spawned engine plus its one-time bootstrap init (the env priming runs
@@ -1285,7 +1287,8 @@ impl StartEngine {
             entry_id: entry_abs.to_string_lossy().into_owned(),
             bootstrap: bootstrap.to_string_lossy().into_owned(),
             init_env,
-            engine: tokio::sync::RwLock::new(EngineSlot::new(engine)),
+            engine: tokio::sync::RwLock::new(Arc::new(EngineSlot::new(engine))),
+            wedge_respawns: Mutex::new((0, None)),
         })
     }
 
@@ -1309,12 +1312,17 @@ impl StartEngine {
 
     /// One request through the handler; concurrent calls interleave on the
     /// isolate (the engine's call scheduler).
-    pub async fn handle(&self, req: StartRequest) -> Result<StartResponse, String> {
-        let slot = self.engine.read().await;
-        slot.inited
-            .get_or_try_init(|| self.init(&slot.engine))
-            .await?;
-        let engine = &slot.engine;
+    pub async fn handle(self: &Arc<Self>, req: StartRequest) -> Result<StartResponse, String> {
+        // Spawned: the wedge check must outlive a client that disconnects before it can fire.
+        let this = Arc::clone(self);
+        tokio::spawn(async move { this.handle_monitored(req).await })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    async fn handle_monitored(&self, req: StartRequest) -> Result<StartResponse, String> {
+        // Cloned out of the lock: a wedged call must not hold up a respawn or other requests.
+        let slot = Arc::clone(&*self.engine.read().await);
         let entry = self.host.graph().specifier_for(&self.entry_id);
         let payload = serde_json::json!({
             "method": req.method,
@@ -1323,15 +1331,38 @@ impl StartEngine {
             "headers": req.headers,
             "bodyBase64": req.body.map(|b| crate::ssr_host::base64(&b)),
         });
-        let value = engine
-            .call(
-                self.bootstrap.clone(),
-                "handle",
-                vec![entry.into(), payload],
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+        let run = async {
+            slot.inited
+                .get_or_try_init(|| self.init(&slot.engine))
+                .await?;
+            slot.engine
+                .call(
+                    self.bootstrap.clone(),
+                    "handle",
+                    vec![entry.into(), payload],
+                    None,
+                )
+                .await
+                .map_err(|e| e.to_string())
+        };
+        let every = runner_probe_every();
+        let value = match await_unless_wedged(&slot.engine, &self.bootstrap, run, every).await {
+            Ok(result) => result?,
+            Err(Wedged) => {
+                // Abandon first: dropping a still-running wedged engine would join its blocked thread.
+                slot.engine.abandon();
+                let outcome = if self.replace_wedged(&slot).await {
+                    "respawned it; retry the request"
+                } else {
+                    "no respawn this time (spaced, capped, or already replaced)"
+                };
+                return Err(format!(
+                    "oj start: the runner answered no liveness probe within {}s (OJ_START_UNRESPONSIVE); {outcome}",
+                    every.as_secs()
+                ));
+            }
+        };
+        self.wedge_respawns.lock().unwrap().0 = 0;
         let status = value.get("status").and_then(|s| s.as_u64()).unwrap_or(500) as u16;
         let pairs = |key: &str| -> Vec<(String, String)> {
             value
@@ -1389,6 +1420,38 @@ impl StartEngine {
         dropped > 0
     }
 
+    /// Swap in a fresh engine for an abandoned wedged one, spaced and capped; reports whether it respawned.
+    async fn replace_wedged(&self, wedged: &Arc<EngineSlot>) -> bool {
+        let mut engine = self.engine.write().await;
+        if !Arc::ptr_eq(&engine, wedged) {
+            return false;
+        }
+        {
+            let budget = self.wedge_respawns.lock().unwrap();
+            let spaced = budget
+                .1
+                .is_none_or(|at| at.elapsed() >= runner_probe_every());
+            if budget.0 >= RUNNER_WEDGE_RESPAWN_LIMIT || !spaced {
+                eprintln!("oj start: runner wedged again; not respawning (restart the dev server if it persists)");
+                return false;
+            }
+        }
+        match spawn_engine(&self.root, &self.host) {
+            Ok(fresh) => {
+                *engine = Arc::new(EngineSlot::new(fresh));
+                self.host.graph().reset_after_respawn();
+                let mut budget = self.wedge_respawns.lock().unwrap();
+                *budget = (budget.0 + 1, Some(std::time::Instant::now()));
+                eprintln!("oj start: runner stopped scheduling; respawned its engine");
+                true
+            }
+            Err(e) => {
+                eprintln!("oj start: runner respawn failed: {e}");
+                false
+            }
+        }
+    }
+
     async fn maybe_respawn(&self) {
         if !self.host.graph().should_respawn() {
             return;
@@ -1399,11 +1462,53 @@ impl StartEngine {
         }
         match spawn_engine(&self.root, &self.host) {
             Ok(fresh) => {
-                *engine = EngineSlot::new(fresh);
+                *engine = Arc::new(EngineSlot::new(fresh));
                 self.host.graph().reset_after_respawn();
                 eprintln!("oj start: engine respawned to reclaim stale module instances");
             }
             Err(e) => eprintln!("oj start: engine respawn failed: {e}"),
+        }
+    }
+}
+
+/// How long a runner call may stay pending before its isolate is probed, and how long the probe may take
+/// (`OJ_START_UNRESPONSIVE`, default 60s). A synchronous section longer than this counts as wedged.
+fn runner_probe_every() -> std::time::Duration {
+    std::time::Duration::from_secs(oj_env::get().knobs.start_unresponsive_secs.unwrap_or(60))
+}
+
+/// Consecutive wedge respawns before the runner stops respawning: abandoned blocked isolates leak until they unblock.
+const RUNNER_WEDGE_RESPAWN_LIMIT: u32 = 3;
+
+/// The isolate answered no liveness probe: its thread is blocked in native code or a busy loop.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Wedged;
+
+/// Awaits `call`, probing the isolate with `ping_module`'s `ping` whenever it stays pending for
+/// `every`: any probe reply means a slow call, keep waiting; none within `every` means wedged.
+pub(crate) async fn await_unless_wedged<T>(
+    engine: &JsEngine,
+    ping_module: &str,
+    call: impl std::future::Future<Output = T>,
+    every: std::time::Duration,
+) -> Result<T, Wedged> {
+    tokio::pin!(call);
+    loop {
+        tokio::select! {
+            biased;
+            out = &mut call => return Ok(out),
+            _ = tokio::time::sleep(every) => {}
+        }
+        let probe = engine.call(ping_module.to_string(), "ping", Vec::new(), Some(every));
+        tokio::select! {
+            biased;
+            out = &mut call => return Ok(out),
+            answered = tokio::time::timeout(every, probe) => {
+                // Closed is the retired engine failing locally, not the isolate answering.
+                if matches!(answered, Err(_) | Ok(Err(oj_js::EngineError::Closed))) {
+                    return Err(Wedged);
+                }
+            }
         }
     }
 }
@@ -1508,6 +1613,78 @@ fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn probe_engine(tag: &str) -> (JsEngine, String) {
+        let root =
+            std::env::temp_dir().join(format!("oj-runner-probe-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let module = root.join("runner.mjs");
+        std::fs::write(
+            &module,
+            r#"import { execSync } from "node:child_process";
+export function ping() { return 1; }
+export async function slow() { await new Promise((r) => setTimeout(r, 1500)); return 7; }
+export function block() { execSync("sleep 20"); return 0; }
+"#,
+        )
+        .unwrap();
+        let engine = JsEngine::spawn(EngineConfig::new(&root), None, None).unwrap();
+        (engine, module.to_string_lossy().into_owned())
+    }
+
+    // A call that outlives several probe windows but whose isolate still answers is slow, not wedged.
+    #[tokio::test]
+    async fn a_slow_runner_call_is_awaited_not_declared_wedged() {
+        let (engine, module) = probe_engine("slow");
+        let every = std::time::Duration::from_millis(300);
+        let call = engine.call(module.clone(), "slow", Vec::new(), None);
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            await_unless_wedged(&engine, &module, call, every),
+        )
+        .await
+        .expect("bounded");
+        assert_eq!(out.map(|r| r.unwrap()), Ok(serde_json::json!(7)));
+    }
+
+    // A call blocked in native code stops the isolate answering probes: wedged within two windows.
+    #[tokio::test]
+    async fn a_natively_blocked_runner_call_is_declared_wedged() {
+        let (engine, module) = probe_engine("block");
+        let every = std::time::Duration::from_millis(300);
+        let call = engine.call(module.clone(), "block", Vec::new(), None);
+        let t0 = std::time::Instant::now();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            await_unless_wedged(&engine, &module, call, every),
+        )
+        .await;
+        engine.abandon();
+        let out = out.expect("bounded, not waiting out the block");
+        assert_eq!(out.map(|_| ()), Err(Wedged));
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}",
+            t0.elapsed()
+        );
+    }
+
+    // A request still waiting on an engine another request already retired gets Closed from its
+    // probe: that is not a live isolate, so it must not wait forever on its stranded reply.
+    #[tokio::test]
+    async fn a_probe_on_a_retired_engine_counts_as_wedged() {
+        let (engine, module) = probe_engine("retired");
+        engine.abandon();
+        let every = std::time::Duration::from_millis(300);
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            await_unless_wedged(&engine, &module, std::future::pending::<()>(), every),
+        )
+        .await
+        .expect("bounded, not waiting on a stranded reply");
+        assert_eq!(out, Err(Wedged));
+    }
 
     #[test]
     fn server_fn_rewrite_matches_the_node_loader() {

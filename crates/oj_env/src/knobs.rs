@@ -62,6 +62,8 @@ pub struct Knobs {
 
     /// `OJ_START_MAX_BODY` bytes.
     pub start_max_body: Option<usize>,
+    /// `OJ_START_UNRESPONSIVE` seconds, when positive.
+    pub start_unresponsive_secs: Option<u64>,
 }
 
 impl Knobs {
@@ -108,6 +110,7 @@ impl Knobs {
                 .map(|v| v as usize)
                 .filter(|v| *v > 0),
             start_max_body: var("OJ_START_MAX_BODY").and_then(|v| v.trim().parse().ok()),
+            start_unresponsive_secs: trimmed("OJ_START_UNRESPONSIVE").filter(|s| *s > 0),
         }
     }
 }
