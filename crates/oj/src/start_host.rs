@@ -1312,7 +1312,15 @@ impl StartEngine {
 
     /// One request through the handler; concurrent calls interleave on the
     /// isolate (the engine's call scheduler).
-    pub async fn handle(&self, req: StartRequest) -> Result<StartResponse, String> {
+    pub async fn handle(self: &Arc<Self>, req: StartRequest) -> Result<StartResponse, String> {
+        // Spawned: the wedge check must outlive a client that disconnects before it can fire.
+        let this = Arc::clone(self);
+        tokio::spawn(async move { this.handle_monitored(req).await })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    async fn handle_monitored(&self, req: StartRequest) -> Result<StartResponse, String> {
         // Cloned out of the lock: a wedged call must not hold up a respawn or other requests.
         let slot = Arc::clone(&*self.engine.read().await);
         let entry = self.host.graph().specifier_for(&self.entry_id);
