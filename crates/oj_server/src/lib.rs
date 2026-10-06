@@ -433,7 +433,9 @@ impl PluginServe {
         let packed = Self::pack(info);
         // A late activation runs the handler first: a reader seeing the new mode finds
         // the catch-up armed. The flag precedes the handler for late registrars.
-        if packed & 0xFFFF != 0 && self.mw_port().is_none() {
+        // A respawn keeps the runner bit through the down window, so edits there already marked the runner.
+        let was_lazy = self.state.load(std::sync::atomic::Ordering::SeqCst) & RUNNER_ENVS_BIT != 0;
+        if packed & 0xFFFF != 0 && self.mw_port().is_none() && !was_lazy {
             self.late_activated
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             if let Some(hook) = self

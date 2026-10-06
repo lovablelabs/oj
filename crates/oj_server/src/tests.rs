@@ -340,6 +340,34 @@ fn plugin_serve_packs_one_snapshot_and_arms_before_the_flip() {
     assert!(!no_runner.activated_late());
 }
 
+// A respawn re-activates on a cleared port with the runner bit kept: edits in the
+// down window already took the lazy path, so the runner must not be force-dirtied.
+#[test]
+fn reactivation_after_a_death_does_not_dirty_the_runner() {
+    let info = |port: u16| plugins::ServeInfo {
+        middleware_port: Some(port),
+        runner_environments: true,
+    };
+    let serve = Arc::new(PluginServe::from_info(&info(4001)));
+    let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&fired);
+    serve.set_on_activate(Box::new(move || {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    serve.clear_port();
+    assert!(
+        serve.runner_environments(),
+        "the down window keeps the lazy runner"
+    );
+    serve.set(&info(4002));
+    assert_eq!(serve.mw_port(), Some(4002));
+    assert_eq!(
+        fired.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a respawn must not force a runner reload"
+    );
+}
+
 /// A live host whose configureServer middleware answers with a per-generation
 /// id, and the PluginServe the dev server boots with its port already known.
 async fn middleware_host(tag: &str) -> (Arc<plugins::PluginHost>, Arc<PluginServe>) {
