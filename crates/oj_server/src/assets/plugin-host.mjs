@@ -4300,7 +4300,8 @@ async function installSsrTransformCache(server) {
       let source = null;
       try { source = fs.readFileSync(mod.file); } catch {}
       mod.__ojSourceHash = source ? createHash("sha1").update(source).digest("hex") : null;
-      mod.__ojUsesEnv = source ? source.includes("import.meta.env") : true;
+      // Vite injects the resolved env as an object literal; a define can introduce it too.
+      mod.__ojUsesEnv = !source || source.includes("import.meta.env") || String(result.code ?? "").includes('"BASE_URL":');
       mod.__ojDepFiles = undefined;
     }
   };
