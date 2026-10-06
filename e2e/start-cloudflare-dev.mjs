@@ -518,7 +518,7 @@ async function runSlowBootDegradedDev() {
     // The middleware activates late off the host's ojServeInfo push, and the
     // catch-up resync full-reloads the worker environments.
     await waitForLog(
-      /forwarding unmatched requests to :\d+ \(host came up after boot\)/,
+      /forwarding unmatched requests to :\d+ \(host came up after boot or respawned\)/,
       "the worker path never activated after the degraded slow boot",
     );
     await waitForLog(/worker environments resynced/, "no catch-up resync after late activation");
