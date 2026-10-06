@@ -577,7 +577,37 @@ impl PluginHost {
             .push(std::sync::Arc::downgrade(&host));
         Self::ignite(&host, 0).map_err(|e| anyhow::anyhow!("{e}"))?;
         Self::spawn_reviver(&host);
+        Self::spawn_heartbeat(&host);
         Ok(host)
+    }
+
+    /// A cheap hook call every `rpc_wait` puts the run_hook belt on an isolate that only serves its middleware.
+    fn spawn_heartbeat(host: &std::sync::Arc<PluginHost>) {
+        let weak = std::sync::Arc::downgrade(host);
+        let every = host.rpc_wait;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let Some(host) = weak.upgrade() else { return };
+                if host.is_shut_down() {
+                    return;
+                }
+                // One snapshot under the revive lock: never probe a newer generation still booting.
+                let target = {
+                    let revive = host.revive.lock().unwrap();
+                    let ready = !*host.host_gone.borrow() && host.is_initialized();
+                    ready
+                        .then(|| host.engine.lock().unwrap().clone())
+                        .flatten()
+                        .map(|engine| (engine, revive.generation))
+                };
+                if let Some((engine, generation)) = target {
+                    let _ = host
+                        .run_hook_on(engine, generation, "hasModuleParsed", &[])
+                        .await;
+                }
+            }
+        });
     }
 
     /// Revives a dead host once spacing allows: a host only its middleware port uses never gets a reviving call.
@@ -746,17 +776,19 @@ impl PluginHost {
             while let Some(msg) = post_rx.recv().await {
                 // Drain and drop pushes from a superseded or declared-dead generation:
                 // a stale `ojInit` would open the call gate before the NEW engine evaluated its module.
-                if *host.host_gone.borrow() || host.revive.lock().unwrap().generation != generation
-                {
+                // Held across the dispatch: a revive cannot reset the gate between the check and the push.
+                let revive = host.revive.lock().unwrap();
+                if *host.host_gone.borrow() || revive.generation != generation {
                     continue;
                 }
                 host.dispatch_push(&msg);
+                drop(revive);
             }
             // Push channel closed = engine thread exited: fail future calls fast.
             // Generation-guarded: an abandoned engine's late exit must not kill the fresh generation.
-            let revive = host.revive.lock().unwrap();
+            let mut revive = host.revive.lock().unwrap();
             if revive.generation == generation {
-                drop(revive);
+                revive.reported = true;
                 let _ = host.host_gone.send_replace(true);
             }
         });
@@ -793,6 +825,14 @@ impl PluginHost {
     }
 
     /// Init completed (or a reply proved it): open the gate, clear the evidence.
+    /// `mark_initialized` only while `generation` is live, checked and written under the revive lock.
+    fn mark_initialized_for(&self, generation: u64) {
+        let revive = self.revive.lock().unwrap();
+        if revive.generation == generation {
+            self.mark_initialized();
+        }
+    }
+
     fn mark_initialized(&self) {
         let _ = self.initialized.send_replace(true);
         let _ = self.init_failed.send_replace(false);
@@ -911,8 +951,13 @@ impl PluginHost {
         drop(revive);
         match Self::ignite(&host, generation) {
             Ok(()) => {
-                // Lift the death flag last: a caller sees a dead host or a fully re-armed one.
+                // Lift the death flag last, unless this generation already died or was superseded.
+                let revive = self.revive.lock().unwrap();
+                if revive.generation != generation || revive.reported {
+                    return Revive::Cooldown;
+                }
                 let _ = self.host_gone.send_replace(false);
+                drop(revive);
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     let host = std::sync::Arc::clone(&host);
                     handle.spawn(async move { host.ensure_hook_plan().await });
@@ -1036,7 +1081,6 @@ impl PluginHost {
     /// answers at the deadline while alive, so total silence means the isolate
     /// thread is blocked in NATIVE code; declare the host gone.
     async fn run_hook(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
-        let deadline = tokio::time::Instant::now() + self.rpc_wait;
         // Generation read before the engine: a racing revive makes the pair stale
         // (belt ignored), never a stale generation blaming a fresh engine.
         let generation = self.revive.lock().unwrap().generation;
@@ -1046,6 +1090,18 @@ impl PluginHost {
             .unwrap()
             .clone()
             .ok_or_else(|| "plugin host exited".to_string())?;
+        self.run_hook_on(engine, generation, hook, args).await
+    }
+
+    /// `run_hook` against an already captured (engine, generation) pair.
+    async fn run_hook_on(
+        &self,
+        engine: std::sync::Arc<oj_js::JsEngine>,
+        generation: u64,
+        hook: &str,
+        args: &[&str],
+    ) -> Result<Option<String>, String> {
+        let deadline = tokio::time::Instant::now() + self.rpc_wait;
         let call = engine.call(
             self.host_module.clone(),
             "ojRun",
@@ -1085,11 +1141,8 @@ impl PluginHost {
     ) -> Result<Option<String>, String> {
         match result {
             Ok(value) => {
-                // Any reply proves top-level init completed. Generation-guarded: a
-                // reply from a replaced engine must not open the gate for the new one.
-                if self.revive.lock().unwrap().generation == generation {
-                    self.mark_initialized();
-                }
+                // Any reply proves top-level init completed; a replaced engine's reply must not open the new gate.
+                self.mark_initialized_for(generation);
                 Ok(match value {
                     serde_json::Value::Null => None,
                     serde_json::Value::String(s) => Some(s),
@@ -1114,7 +1167,7 @@ impl PluginHost {
             Err(oj_js::EngineError::Boot(e)) => Err(e),
             Err(oj_js::EngineError::Js(e)) => {
                 // A throwing hook still proves the host is up and serving.
-                self.mark_initialized();
+                self.mark_initialized_for(generation);
                 Err(e)
             }
         }
@@ -1139,7 +1192,7 @@ impl PluginHost {
         if let Some(engine) = self.engine.lock().unwrap().take() {
             self.retire_engine(engine, &mut revive);
         }
-        drop(revive);
+        // Published under the lock: a revive cannot interleave and be marked dead by this report.
         let _ = self.host_gone.send_replace(true);
     }
 

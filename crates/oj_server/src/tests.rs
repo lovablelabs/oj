@@ -368,6 +368,68 @@ fn reactivation_after_a_death_does_not_dirty_the_runner() {
     );
 }
 
+// A host whose isolate stops scheduling while only its middleware is in use (no
+// hook call in flight) must still be declared gone, or every forwarded request hangs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_wedged_inside_its_middleware_is_declared_gone_without_a_hook_call() {
+    let root = std::env::temp_dir().join(format!("oj-mw-wedge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        r#"import { execSync } from "node:child_process";
+export default [{ name: "mw", configureServer(s) { s.middlewares.use((req, res) => {
+  if (req.url.includes("__block")) execSync("sleep 30");
+  res.end("ok");
+}); } }];
+"#,
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = plugins::PluginHost::spawn_with_timeouts(
+        &root,
+        &plugins,
+        &config,
+        true,
+        plugins::SpawnTimeouts {
+            init_wait: Some(std::time::Duration::from_secs(30)),
+            rpc: Some(std::time::Duration::from_secs(1)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    let port = host
+        .serve_info()
+        .await
+        .middleware_port
+        .expect("the middleware reports its port");
+    let g0 = host.revive.lock().unwrap().generation;
+    tokio::spawn(reqwest::get(format!("http://127.0.0.1:{port}/__block")));
+
+    // Gone, or already revived past it: the reviver may clear the flag before we look.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let declared = loop {
+        if *host.host_gone_updates().borrow() || host.revive.lock().unwrap().generation > g0 {
+            break true;
+        }
+        if std::time::Instant::now() > deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    host.shutdown();
+    assert!(
+        declared,
+        "an isolate blocked inside its middleware was never declared gone"
+    );
+}
+
 /// A live host whose configureServer middleware answers with a per-generation
 /// id, and the PluginServe the dev server boots with its port already known.
 async fn middleware_host(tag: &str) -> (Arc<plugins::PluginHost>, Arc<PluginServe>) {
