@@ -148,7 +148,8 @@ async function scenario(name, env, check) {
     else child.kill("SIGTERM");
     const result = await Promise.race([exited, sleep(20000).then(() => null)]);
     if (!result) throw new Error("oj did not exit within 20s of SIGTERM");
-    if (result.code !== 143) throw new Error(`exit with the shell's code 143, not ${JSON.stringify(result)}\n${stderr.slice(-3000)}`);
+    if (result.code !== 143)
+      throw new Error(`exit with the shell's code 143, not ${JSON.stringify(result)}\n${stderr.slice(-3000)}`);
     for (const [which, pid] of Object.entries(pids)) {
       if (!(await gone(pid))) throw new Error(`the ${which} child (pid ${pid}) outlived oj`);
     }
@@ -181,7 +182,10 @@ try {
     expect(JSON.stringify(stop) === JSON.stringify(want), `the stop ran ${want.join(", ")}: got ${ev.join(", ")}`);
   });
   await scenario("close hangs", { FAKE_CLOSE_HANGS: "1" }, (ev) => {
-    expect(ev.includes("close-start:alive") && !ev.includes("close-done"), `the close started and never settled: ${ev.join(", ")}`);
+    expect(
+      ev.includes("close-start:alive") && !ev.includes("close-done"),
+      `the close started and never settled: ${ev.join(", ")}`,
+    );
   });
   await scenario("plugin self-SIGTERM", { FAKE_SELF_SIGTERM: "1" }, () => {});
   console.log("START-SHUTDOWN-CHILDREN E2E PASSED");
