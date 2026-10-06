@@ -4220,18 +4220,34 @@ ctl({ ojInit: true });
 async function installSsrTransformCache(server) {
   const env = server.environments?.ssr;
   const mg = env?.moduleGraph;
-  if (!mg || typeof mg._ensureEntryFromUrl !== "function" || typeof mg.resolveUrl !== "function" || typeof mg.updateModuleTransformResult !== "function") return;
+  if (
+    !mg ||
+    typeof mg._ensureEntryFromUrl !== "function" ||
+    typeof mg.resolveUrl !== "function" ||
+    typeof mg.updateModuleTransformResult !== "function"
+  )
+    return;
   const noCache = process.env.OJ_NO_CACHE;
   if (noCache && noCache !== "0") return;
   const fs = await import("node:fs");
   const cfg = env.config ?? server.config;
   const file = join(process.env.OJ_CACHE_ROOT ?? cfg.root, "ssr-transform-cache.json");
   const hashFile = (f) => {
-    try { return createHash("sha1").update(fs.readFileSync(f)).digest("hex"); } catch { return null; }
+    try {
+      return createHash("sha1").update(fs.readFileSync(f)).digest("hex");
+    } catch {
+      return null;
+    }
   };
   const keyInputs = {
     host: hashFile(fileURLToPath(import.meta.url)),
-    vite: (() => { try { return createRequire(join(cfg.root, "package.json"))("vite/package.json").version; } catch { return null; } })(),
+    vite: (() => {
+      try {
+        return createRequire(join(cfg.root, "package.json"))("vite/package.json").version;
+      } catch {
+        return null;
+      }
+    })(),
     root: cfg.root,
     mode: cfg.mode,
     define: cfg.define ?? null,
@@ -4250,17 +4266,24 @@ async function installSsrTransformCache(server) {
           else out.push(r);
         }
       };
-      try { walk(cfg.root, ""); } catch { return null; }
+      try {
+        walk(cfg.root, "");
+      } catch {
+        return null;
+      }
       return createHash("sha1").update(out.sort().join("\n")).digest("hex");
     })(),
   };
   // An unreadable key input disables reuse instead of matching another unreadable one.
-  const keyReadable = keyInputs.host && keyInputs.vite && keyInputs.optimizer && keyInputs.files && keyInputs.config.every(([, h]) => h);
+  const keyReadable =
+    keyInputs.host && keyInputs.vite && keyInputs.optimizer && keyInputs.files && keyInputs.config.every(([, h]) => h);
   const globalKey = createHash("sha1").update(JSON.stringify(keyInputs)).digest("hex");
   const isHash = (h) => typeof h === "string" && /^[0-9a-f]{40}$/.test(h);
   // Imports a module declares after import analysis never reach the graph, so their inputs would go untracked.
-  const postTransform = (cfg.plugins ?? []).some((p) =>
-    !p.name?.startsWith("vite:") && p.transform && typeof p.transform === "object" && p.transform.order === "post");
+  const postTransform = (cfg.plugins ?? []).some(
+    (p) =>
+      !p.name?.startsWith("vite:") && p.transform && typeof p.transform === "object" && p.transform.order === "post",
+  );
   if (postTransform) {
     process.stderr.write(`${OJ} ssr transform cache: off, a plugin transforms after import analysis\n`);
     return;
@@ -4270,19 +4293,31 @@ async function installSsrTransformCache(server) {
   const isStrings = (a) => Array.isArray(a) && a.every((x) => typeof x === "string");
   const isPlain = (o) => o !== null && typeof o === "object" && !Array.isArray(o);
   const isEntry = (e) =>
-    isPlain(e) && typeof e.url === "string" && typeof e.id === "string" && typeof e.file === "string" &&
-    analyzed(e.file) && isHash(e.sha) && (e.meta === null || isPlain(e.meta)) &&
-    isPlain(e.tr) && typeof e.tr.code === "string" &&
+    isPlain(e) &&
+    typeof e.url === "string" &&
+    typeof e.id === "string" &&
+    typeof e.file === "string" &&
+    analyzed(e.file) &&
+    isHash(e.sha) &&
+    (e.meta === null || isPlain(e.meta)) &&
+    isPlain(e.tr) &&
+    typeof e.tr.code === "string" &&
     (e.tr.map === null || (isPlain(e.tr.map) && typeof e.tr.map.mappings === "string")) &&
-    (e.tr.ssr === undefined || typeof e.tr.ssr === "boolean") && isStrings(e.tr.deps) && isStrings(e.tr.dynamicDeps) &&
-    isStrings(e.imports) && Array.isArray(e.depFiles) &&
+    (e.tr.ssr === undefined || typeof e.tr.ssr === "boolean") &&
+    isStrings(e.tr.deps) &&
+    isStrings(e.tr.dynamicDeps) &&
+    isStrings(e.imports) &&
+    Array.isArray(e.depFiles) &&
     e.depFiles.every((d) => Array.isArray(d) && d.length === 2 && typeof d[0] === "string" && isHash(d[1])) &&
     (e.env === null || isHash(e.env));
   // import.meta.env is injected into the modules that read it, so only those depend on it.
-  const envHash = createHash("sha1").update(JSON.stringify(cfg.env ?? null)).digest("hex");
+  const envHash = createHash("sha1")
+    .update(JSON.stringify(cfg.env ?? null))
+    .digest("hex");
 
   const t0 = performance.now();
-  let seeded = 0, stale = 0;
+  let seeded = 0,
+    stale = 0;
   if (keyReadable) {
     try {
       const disk = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -4292,19 +4327,31 @@ async function installSsrTransformCache(server) {
         const wellFormed = entries.every(isEntry);
         if (!wellFormed) throw new Error("malformed snapshot");
         const importers = new Map();
-        for (const e of entries) for (const u of e.imports) {
-          if (!importers.has(u)) importers.set(u, []);
-          importers.get(u).push(e.url);
-        }
+        for (const e of entries)
+          for (const u of e.imports) {
+            if (!importers.has(u)) importers.set(u, []);
+            importers.get(u).push(e.url);
+          }
         const bad = new Set();
         const queue = [];
         const hashes = new Map();
-        const hashOnce = (f) => { if (!hashes.has(f)) hashes.set(f, hashFile(f)); return hashes.get(f); };
+        const hashOnce = (f) => {
+          if (!hashes.has(f)) hashes.set(f, hashFile(f));
+          return hashes.get(f);
+        };
         for (const e of entries) {
           const changed = hashOnce(e.file) !== e.sha || e.depFiles.some(([f, h]) => hashOnce(f) !== h);
-          if (changed) { bad.add(e.url); queue.push(e.url); }
+          if (changed) {
+            bad.add(e.url);
+            queue.push(e.url);
+          }
         }
-        while (queue.length) for (const imp of importers.get(queue.pop()) ?? []) if (!bad.has(imp)) { bad.add(imp); queue.push(imp); }
+        while (queue.length)
+          for (const imp of importers.get(queue.pop()) ?? [])
+            if (!bad.has(imp)) {
+              bad.add(imp);
+              queue.push(imp);
+            }
         const envStale = entries.filter((e) => e.env !== null && e.env !== envHash && !bad.has(e.url)).length;
         stale = bad.size + envStale;
         const fresh = entries.filter((e) => !bad.has(e.url) && (e.env === null || e.env === envHash));
@@ -4330,7 +4377,10 @@ async function installSsrTransformCache(server) {
           deps.set(url, list);
         }
         for (const [url, [mod, e]] of nodes) {
-          for (const dep of deps.get(url)) { mod.importedModules.add(dep); dep.importers.add(mod); }
+          for (const dep of deps.get(url)) {
+            mod.importedModules.add(dep);
+            dep.importers.add(mod);
+          }
           mod.transformResult = e.tr;
           mod.__ojSourceHash = e.sha;
           mod.__ojDepFiles = e.depFiles;
@@ -4340,7 +4390,9 @@ async function installSsrTransformCache(server) {
       }
     } catch {}
   }
-  process.stderr.write(`${OJ} ssr transform cache: seeded ${seeded} module(s), ${stale} stale, ${Math.round(performance.now() - t0)}ms\n`);
+  process.stderr.write(
+    `${OJ} ssr transform cache: seeded ${seeded} module(s), ${stale} stale, ${Math.round(performance.now() - t0)}ms\n`,
+  );
 
   // The hash Vite's result was computed from, taken when Vite stores it.
   const origUpdate = mg.updateModuleTransformResult.bind(mg);
@@ -4348,10 +4400,13 @@ async function installSsrTransformCache(server) {
     origUpdate(mod, result);
     if (result && mod.file && analyzed(mod.file) && !mod.id?.startsWith("\0")) {
       let source = null;
-      try { source = fs.readFileSync(mod.file); } catch {}
+      try {
+        source = fs.readFileSync(mod.file);
+      } catch {}
       mod.__ojSourceHash = source ? createHash("sha1").update(source).digest("hex") : null;
       // Vite injects the resolved env as an object literal; a define can introduce it too.
-      mod.__ojUsesEnv = !source || source.includes("import.meta.env") || String(result.code ?? "").includes('"BASE_URL":');
+      mod.__ojUsesEnv =
+        !source || source.includes("import.meta.env") || String(result.code ?? "").includes('"BASE_URL":');
       // Import analysis has recorded every import by now, including addWatchFile ones.
       mod.__ojDepFiles = undefined;
       mod.__ojImportHashes = new Map();
@@ -4362,7 +4417,10 @@ async function installSsrTransformCache(server) {
   };
   let lastActivity = 0;
   const origFetch = env.fetchModule.bind(env);
-  env.fetchModule = (...a) => { lastActivity = Date.now(); return origFetch(...a); };
+  env.fetchModule = (...a) => {
+    lastActivity = Date.now();
+    return origFetch(...a);
+  };
   if (!keyReadable) return;
   const timer = setInterval(() => {
     if (!lastActivity || Date.now() - lastActivity < 5000) return;
@@ -4377,13 +4435,20 @@ async function installSsrTransformCache(server) {
         for (const dep of mod.importedModules) {
           if (!dep.file || dep.id?.startsWith("\0")) continue;
           const h = mod.__ojImportHashes?.get(dep);
-          if (!isHash(h)) { cacheable = false; break; }
+          if (!isHash(h)) {
+            cacheable = false;
+            break;
+          }
           depFiles.push([dep.file, h]);
         }
       }
       if (!cacheable) continue;
       const entry = {
-        url: mod.url, id: mod.id, file: mod.file, sha: mod.__ojSourceHash, meta: mod.meta ?? null,
+        url: mod.url,
+        id: mod.id,
+        file: mod.file,
+        sha: mod.__ojSourceHash,
+        meta: mod.meta ?? null,
         env: mod.__ojUsesEnv ? envHash : null,
         tr: { code: tr.code, map: tr.map ?? null, ssr: tr.ssr, deps: tr.deps ?? [], dynamicDeps: tr.dynamicDeps ?? [] },
         imports: [...mod.importedModules].map((m) => m.url).filter(Boolean),
