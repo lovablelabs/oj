@@ -63,4 +63,54 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
         Some(&meta.file),
         "warm manifest load returns the same bundle"
     );
+
+    // Vite's registerMissingImport: a dep the scan never saw (installed or
+    // only reachable at serve time) registers, a debounced rerun bundles it,
+    // and every optimized URL moves to the bumped browser version.
+    let late = root.join("node_modules/latedep");
+    std::fs::create_dir_all(&late).unwrap();
+    std::fs::write(
+        late.join("package.json"),
+        r#"{"name":"latedep","version":"1.0.0","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(late.join("index.js"), "exports.l = 1;\n").unwrap();
+    let deps = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let before = deps.ready().await;
+    assert!(!before.contains_key("latedep"), "not scanned, not bundled");
+    let v0 = deps.browser_version();
+    deps.register_missing("latedep");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let map = loop {
+        let m = deps.ready().await;
+        if m.contains_key("latedep") {
+            break m;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the rerun never committed the discovered dep"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let v1 = deps.browser_version();
+    assert_ne!(v1, v0, "a rerun bumps the browser version");
+    assert!(
+        map["latedep"].url.ends_with(&format!("?v={v1}")),
+        "{}",
+        map["latedep"].url
+    );
+    assert!(
+        map["plaincjs"].url.ends_with(&format!("?v={v1}")),
+        "known deps move to the new version too: {}",
+        map["plaincjs"].url
+    );
+
+    // The next boot keeps the discovered dep and its version, no re-register.
+    let after = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let warm2 = after.ready().await;
+    assert!(
+        warm2.contains_key("latedep"),
+        "discovered deps persist in the manifest"
+    );
+    assert_eq!(after.browser_version(), v1, "persisted browser version");
 }

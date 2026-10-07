@@ -355,6 +355,11 @@ fn compile_key(
     if class_field_semantics {
         mode_key.push_str("+setcf");
     }
+    // The pre-bundle's browser version salts the key: a dep re-optimization
+    // changes the optimized URLs, so modules compiled against the old map
+    // must miss (Vite invalidates its whole module graph on that reload).
+    mode_key.push_str("+deps");
+    mode_key.push_str(&state.optimized.browser_version());
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
@@ -802,6 +807,23 @@ impl ImportRewrite<'_> {
             if state.plugins_have_transform {
                 if let Some(base) = url.strip_suffix(".svg?url") {
                     return Some(format!("{base}.svg"));
+                }
+            }
+            // Vite's registerMissingImport: a bare import the pre-bundle does
+            // not cover, resolving into node_modules, queues a debounced dep
+            // re-optimization; until it commits the dep is served per-file.
+            if is_bare_specifier(spec)
+                && !job.is_server
+                && !spec.contains('?')
+                && job.dep_map.get(spec).is_none()
+            {
+                let path = url.split('?').next().unwrap_or(&url);
+                // Vite's OPTIMIZABLE_ENTRY_RE: only script entries pre-bundle.
+                let optimizable = [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]
+                    .iter()
+                    .any(|e| path.ends_with(e));
+                if optimizable && path.contains("/node_modules/") {
+                    state.optimized.register_missing(spec);
                 }
             }
             // Vite's importAnalysis appends `?t=<lastHMRTimestamp>` to imports of

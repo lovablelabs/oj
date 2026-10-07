@@ -1265,7 +1265,10 @@ export async function optimize(input) {
     nameOf[dep] = name;
   }
 
-  rmSync(outDir, { recursive: true, force: true });
+  // A rerun after serve-time discovery keeps the previous bundle's files: a
+  // page that predates it still loads its chunks until the reload lands (the
+  // next cold boot sweeps them). The initial run starts clean.
+  if (!input.keepExisting) rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
 
   const metadata = {};

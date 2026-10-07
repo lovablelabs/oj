@@ -1574,6 +1574,27 @@ impl DevServer {
             },
         });
         spawn_state_tasks(&state, write_rx, watch_rx);
+        // A dep re-optimization (a bare import the pre-bundle missed) commits
+        // a new map and browser version: drop every compiled module (their
+        // rewrites carry the old URLs) and reload the page, Vite's
+        // "optimized dependencies changed. reloading".
+        {
+            let weak = Arc::downgrade(&state);
+            state.optimized.set_on_commit(Box::new(move |newly| {
+                let Some(state) = weak.upgrade() else { return };
+                state.mtime_keys.lock().unwrap().clear();
+                state.memory.lock().unwrap().clear();
+                println!(
+                    "oj: new dependencies optimized: {}; reloading",
+                    newly.join(", ")
+                );
+                let _ = state.reload_tx.send(full_reload_frame(
+                    "new dependencies optimized",
+                    None,
+                    None,
+                ));
+            }));
+        }
         spawn_warmup(&state, &config);
         if self.lazy {
             // Lazy mode (Vite's default): compile on demand. Mark the crawl "done" so
