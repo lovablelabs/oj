@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -318,11 +318,21 @@ only("esbuild", "a Vite <= 7 app keeps its vite's esbuild", () => {
   fs.mkdirSync(path.join(vite, "node_modules"), { recursive: true });
   fs.writeFileSync(
     path.join(vite, "package.json"),
-    JSON.stringify({ name: "vite", version: "7.1.0", exports: { "./package.json": "./package.json" } }),
+    JSON.stringify({
+      name: "vite",
+      version: "7.1.0",
+      dependencies: { esbuild: "^0.25.0" },
+      exports: { "./package.json": "./package.json" },
+    }),
   );
   fs.symlinkSync(path.join(fixtureModules, "esbuild"), path.join(vite, "node_modules", "esbuild"));
   const scoped = path.join(fixtureModules, "@esbuild");
   if (fs.existsSync(scoped)) fs.symlinkSync(scoped, path.join(vite, "node_modules", "@esbuild"));
+  // A hoisted standalone rolldown (tsdown and friends) is resolvable FROM
+  // vite's directory, but vite does not declare it: esbuild must still win.
+  if (fs.existsSync(path.join(fixtureModules, "rolldown"))) {
+    fs.symlinkSync(path.join(fixtureModules, "rolldown"), path.join(root, "node_modules", "rolldown"));
+  }
   pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\n` });
   write(root, "entry.js", `import { a } from "plaincjs";\nexport const out = a;\n`);
   const { metadata, bundler } = runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")] });
@@ -449,10 +459,12 @@ only("rolldown", "the scan resolves through the app's plugins first, with scan: 
   const real = path.join(root, "node_modules", "realicons", "index.js");
   const deps = runScan(
     root,
+    // The plugin answers with a query (as vite-ecosystem plugins do): the
+    // recorded file is a bundle entry, so the query must be stripped.
     `export const host = {
       plugins: [],
       async resolveId(id) {
-        if (id === "virtual-icons") return { id: ${JSON.stringify(real)} };
+        if (id === "virtual-icons") return { id: ${JSON.stringify(real)} + "?v=1" };
         if (id === "./server-only.js") return { id: "server-only", external: true };
         return null;
       },
@@ -460,7 +472,7 @@ only("rolldown", "the scan resolves through the app's plugins first, with scan: 
     { root, outDir: outDirOf(root) },
   );
   assert.deepEqual(Object.keys(deps), ["virtual-icons"], "plugin alias found, plugin external not crawled");
-  assert.equal(fs.realpathSync(deps["virtual-icons"]), fs.realpathSync(real));
+  assert.equal(fs.realpathSync(deps["virtual-icons"]), fs.realpathSync(real), "query stripped from the entry");
   cleanup(root);
 });
 
@@ -583,6 +595,9 @@ only("rolldown", "new URL(..., import.meta.url) inside a string, comment or @vit
   esmPkg("urls", root, {
     "index.js":
       `export const re = /['"]/.test("q");\n` +
+      // A regex after a control-flow `)` and a `}` inside an interpolated
+      // string: both must not derail the mask for what follows.
+      `export function f(s) { if (s) /['"}]/.test(s); return \`\${"}"}\`; }\n` +
       `export const real = new URL("./data.bin", import.meta.url).href;\n` +
       `export const doc = "example: new URL('./fake.bin', import.meta.url)";\n` +
       `// new URL('./comment.bin', import.meta.url)\n` +
@@ -635,5 +650,39 @@ only("rolldown", "a deduped dep reached only from a linked package pre-bundles t
   const code = fs.readFileSync(path.join(outDir, metadata.shared.file), "utf8");
   assert.match(code, /ROOT_COPY/, "the scan pinned the root copy as the bundle entry");
   assert.doesNotMatch(code, /NESTED_COPY/);
+  cleanup(root);
+});
+
+only("rolldown", "an include that does not resolve warns instead of dropping silently", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-incwarn-");
+  write(root, "entry.js", `export const x = 1;\n`);
+  const cfg = { root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")], include: ["ghost-pkg"] };
+  const r = spawnSync("node", ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, JSON.stringify(cfg)], {
+    encoding: "utf8",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /failed to resolve dependency "ghost-pkg"/, "Vite's unableToOptimize warning");
+  assert.deepEqual(Object.keys(JSON.parse(r.stdout).metadata), []);
+  cleanup(root);
+});
+
+only("rolldown", "noDiscovery still resolves the include list through the plugins", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-nodisc-");
+  esmPkg("realicons", root, { "index.js": `export const Icon = 1;\n` });
+  esmPkg("stray", root, { "index.js": `export const s = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { s } from "stray";\nconsole.log(s);\n`);
+  const real = path.join(root, "node_modules", "realicons", "index.js");
+  const deps = runScan(
+    root,
+    `export const host = {
+      plugins: [],
+      async resolveId(id) {
+        return id === "app-icons" ? { id: ${JSON.stringify(real)} } : null;
+      },
+    };`,
+    { root, outDir: outDirOf(root), autoDiscover: false, include: ["app-icons"] },
+  );
+  assert.deepEqual(Object.keys(deps), ["app-icons"], "the include resolved through the plugin, nothing crawled");
   cleanup(root);
 });

@@ -301,8 +301,11 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         )
         .as_bytes(),
     );
-    if let Some((path, version)) = vendored_rolldown() {
-        hasher.update(format!("\0vendor:{version}\0{path}").as_bytes());
+    // The vendor's version can change without an oj version bump only in
+    // development, so it keys the prebundle; its path must not (relocating
+    // the binary would invalidate every app's cache for nothing).
+    if let Some((_, version)) = vendored_rolldown() {
+        hasher.update(format!("\0vendor:{version}").as_bytes());
     }
     if let Some(opts) = &input.bundler_options {
         hasher.update(b"\0o");
@@ -359,7 +362,7 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<DepMap> {
 
 /// Deadline for the dep pre-bundle (a wedged bundler must not stall it
 /// forever): 120 s default, raised via `OJ_OPTIMIZE_TIMEOUT=<seconds>`.
-fn optimizer_timeout() -> std::time::Duration {
+pub(crate) fn optimizer_timeout() -> std::time::Duration {
     optimizer_timeout_from(oj_env::get().knobs.optimize_timeout.as_deref())
 }
 
@@ -421,10 +424,11 @@ async fn run_optimizer(
             "preserveSymlinks": input.preserve_symlinks,
         },
     });
-    if auto_discover {
-        if let Some(host) = host {
-            cfg["scanned"] = scan_through_plugins(host, &cfg).await;
-        }
+    // Not gated on discovery: with noDiscovery the scan still resolves the
+    // include list, and Vite's container resolves manual includes through
+    // plugins either way.
+    if let Some(host) = host {
+        cfg["scanned"] = scan_through_plugins(host, &cfg).await;
     }
     let timeout = optimizer_timeout();
     let job_root = root.to_path_buf();

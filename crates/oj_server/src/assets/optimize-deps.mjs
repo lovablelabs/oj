@@ -457,7 +457,16 @@ export function pickBundler(appRoot, vendoredRolldown) {
   const viteJson = tryResolve(appReq, "vite/package.json");
   if (viteJson) {
     const viteReq = createRequire(viteJson);
-    sources.push(["rolldown", viteReq, "vite"], ["esbuild", viteReq, "vite"]);
+    // Only a bundler vite itself DECLARES: resolving from vite's directory
+    // also walks up into the app's node_modules, and a hoisted standalone
+    // rolldown (tsdown, etc.) must not reclassify a Vite 7 app.
+    let viteDeps = {};
+    try {
+      viteDeps = JSON.parse(readFileSync(viteJson, "utf8")).dependencies ?? {};
+    } catch {}
+    for (const kind of ["rolldown", "esbuild"]) {
+      if (viteDeps[kind]) sources.push([kind, viteReq, "vite"]);
+    }
   }
   if (vendoredRolldown) sources.push(["rolldown", createRequire(path.join(vendoredRolldown, "package.json")), "oj"]);
   sources.push(["rolldown", appReq, "app"], ["esbuild", appReq, "app"]);
@@ -592,11 +601,13 @@ async function rolldownScan(rd, discover, host) {
           const from = DEDUPE_PKGS.has(npmPackageName(id)) ? SCAN_INCLUDE_ID : importer;
           const resolved = await resolve(this, id, from);
           if (!resolved || !path.isAbsolute(resolved) || resolved.includes("\0")) return externalize(id);
+          // Queries stripped: the recorded file is the bundle ENTRY, a path
+          // rolldown must open (and one odd entry would fail the whole build).
           if (isInNodeModules(resolved) || includeIds.includes(id)) {
-            if (OPTIMIZABLE_ENTRY_RE.test(cleanUrl(resolved))) found.set(id, resolved);
+            if (OPTIMIZABLE_ENTRY_RE.test(cleanUrl(resolved))) found.set(id, cleanUrl(resolved));
             return externalize(id);
           }
-          return JS_TYPES_RE.test(cleanUrl(resolved)) ? resolved : externalize(id);
+          return JS_TYPES_RE.test(cleanUrl(resolved)) ? cleanUrl(resolved) : externalize(id);
         }
         if (EXTERNAL_RE.test(id) || SCAN_EXTERNAL_RE.test(cleanUrl(id))) return externalize(id);
         const resolved = await resolve(this, id, importer);
@@ -668,6 +679,9 @@ const REGEX_PRECEDING_WORDS = new Set([
   "yield",
   "throw",
 ]);
+// After `)`, a regex starts only when the `(` belonged to one of these
+// (`if (x) /re/.test(s)` vs the division `f(x) / 2`).
+const CONTROL_PAREN_WORDS = new Set(["if", "for", "while", "with"]);
 function maskLiterals(code) {
   const out = code.split("");
   const n = code.length;
@@ -675,12 +689,41 @@ function maskLiterals(code) {
     if (out[j] !== "\n") out[j] = " ";
   };
   // The last non-space, non-masked char and trailing word decide whether a
-  // `/` can start a regex (after `(,=:[!&|?{};+-*%<>~^` or a keyword).
+  // `/` can start a regex (after `(,=:[!&|?{};+-*%<>~^`, a control-flow `)`,
+  // or a keyword). `stack` pairs braces/parens so a `}` knows whether it
+  // closes a template's `${` (whose tail is a literal again) and a `)` knows
+  // its `(`; template interiors are masked, `${expr}` interiors lexed as code.
   let prev = "";
   let word = "";
+  let afterControlParen = false;
+  let inTemplate = false;
+  const stack = [];
   const regexCanStart = () =>
-    prev === "" || "(,=:[!&|?{};+-*%<>~^".includes(prev) || (word && REGEX_PRECEDING_WORDS.has(word));
+    prev === "" ||
+    (prev === ")" ? afterControlParen : "(,=:[!&|?{};+-*%<>~^".includes(prev)) ||
+    (word && REGEX_PRECEDING_WORDS.has(word));
   for (let i = 0; i < n;) {
+    if (inTemplate) {
+      const t = code[i];
+      if (t === "\\") {
+        mask(i++);
+        if (i < n) mask(i++);
+      } else if (t === "`") {
+        i++;
+        inTemplate = false;
+        prev = "`";
+        word = "";
+      } else if (t === "$" && code[i + 1] === "{") {
+        i += 2;
+        stack.push("template");
+        inTemplate = false;
+        prev = "{";
+        word = "";
+      } else {
+        mask(i++);
+      }
+      continue;
+    }
     const c = code[i];
     const c2 = code[i + 1];
     if (c === "/" && c2 === "/") {
@@ -700,25 +743,7 @@ function maskLiterals(code) {
       word = "";
     } else if (c === "`") {
       i++;
-      // `${expr}` interiors stay code (they may hold strings themselves);
-      // the literal parts are masked.
-      while (i < n && code[i] !== "`") {
-        if (code[i] === "\\") {
-          mask(i++);
-          if (i < n) mask(i++);
-        } else if (code[i] === "$" && code[i + 1] === "{") {
-          i += 2;
-          for (let depth = 1; i < n && depth > 0; i++) {
-            if (code[i] === "{") depth++;
-            else if (code[i] === "}") depth--;
-          }
-        } else {
-          mask(i++);
-        }
-      }
-      i++;
-      prev = "`";
-      word = "";
+      inTemplate = true;
     } else if (c === "/" && regexCanStart()) {
       mask(i++);
       let inClass = false;
@@ -731,6 +756,29 @@ function maskLiterals(code) {
       if (i < n && code[i] === "/") mask(i++);
       prev = "/";
       word = "";
+    } else if (c === "(") {
+      stack.push(CONTROL_PAREN_WORDS.has(word) ? "control-paren" : "paren");
+      prev = c;
+      word = "";
+      i++;
+    } else if (c === ")") {
+      afterControlParen = stack.pop() === "control-paren";
+      prev = c;
+      word = "";
+      i++;
+    } else if (c === "{") {
+      stack.push("block");
+      prev = c;
+      word = "";
+      i++;
+    } else if (c === "}") {
+      if (stack.pop() === "template") {
+        inTemplate = true;
+      } else {
+        prev = c;
+        word = "";
+      }
+      i++;
     } else {
       if (/[A-Za-z0-9_$]/.test(c)) word = /[A-Za-z0-9_$]/.test(code[i - 1] ?? "") ? word + c : c;
       if (!/\s/.test(c)) prev = c;
@@ -1111,8 +1159,10 @@ export async function optimize(input) {
   if (bundler.kind === "rolldown") {
     rd = await loadRolldown(bundler);
     candidates = input.scanned ? new Map(Object.entries(input.scanned)) : await rolldownScan(rd, autoDiscover);
-    // "a > b" names a nested copy the scan cannot resolve; it resolves below.
-    for (const inc of includeIds) if (inc.includes(">") && !candidates.has(inc)) candidates.set(inc, null);
+    // "a > b" names a nested copy the scan cannot resolve (it resolves below),
+    // and a plain include the scan could not resolve must reach the loop too,
+    // so its unableToOptimize warning fires instead of a silent drop.
+    for (const inc of includeIds) if (!candidates.has(inc)) candidates.set(inc, null);
   } else {
     esbuild = await importFile(bundler.entry).then((m) => m.default ?? m);
     // optimizeDeps.noDiscovery: only the include list (Vite parity).
