@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `fs.watch` no longer stalls a plugin host that holds thousands of watchers. Every event was matched against every watcher, opening both files each time, on the notify thread that also registers new watches; under a steady stream of writes that thread never caught up, so the next `fs.watch` call blocked the host forever (a plugin watching each file of a large build-output tree never finished `configureServer`). An event now visits only the watchers registered on its path, an ancestor of it, or the same file.
+
 ### Changed
 
 - Start dev serves the client bundle with an ETag from each chunk's content hash (a reload revalidates to a 304 instead of re-downloading), `immutable` caching for its hashed chunks, and gzip for browsers that accept it. On a 2000-component app the entry goes from 2.7 MB to about 340 KB on the wire.

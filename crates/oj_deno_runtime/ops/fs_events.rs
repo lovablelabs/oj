@@ -82,7 +82,7 @@ impl Drop for FsEventsResource {
   fn drop(&mut self) {
     // Remove this resource's sender from the shared dispatch list so the
     // watcher callback stops trying to deliver events to a dead channel.
-    self.inner.senders.lock().retain(|ws| ws.id != self.id);
+    self.inner.senders.lock().remove(self.id);
 
     // Reference-count the underlying watches: only unwatch when no other
     // resource still depends on this path. Without this, calling
@@ -171,10 +171,14 @@ struct WatchSender {
   /// to avoid repeated syscalls in the event callback hot path.
   /// Entries are `None` if canonicalization failed for that path.
   canonical_paths: Vec<Option<PathBuf>>,
+  /// Identities of `paths`, computed alongside `canonical_paths`.
+  identities: Vec<Option<FileIdentity>>,
   /// Paths whose events should be filtered out (the `ignore` option).
   ignore: Vec<PathBuf>,
   /// Pre-canonicalized versions of `ignore`, mirroring `canonical_paths`.
   canonical_ignore: Vec<Option<PathBuf>>,
+  /// Identities of `ignore`, mirroring `identities`.
+  ignore_identities: Vec<Option<FileIdentity>>,
   sender: mpsc::Sender<Result<FsEvent, NotifyError>>,
   /// See [`FsEventsResource::overflowed`].
   overflowed: Arc<AtomicBool>,
@@ -190,6 +194,96 @@ impl WatchSender {
     if let Err(TrySendError::Full(_)) = self.sender.try_send(msg) {
       self.overflowed.store(true, Ordering::Relaxed);
     }
+  }
+}
+
+/// The live watchers, indexed by what an event can match them on, so the
+/// callback visits only candidates instead of every watcher per event: under
+/// a steady event stream a linear scan over thousands of watchers outruns the
+/// notify thread, which then never gets back to registering the next watch.
+#[derive(Default)]
+struct SenderSet {
+  senders: HashMap<u64, WatchSender>,
+  /// Watchers by each watched path, raw and canonical.
+  by_path: HashMap<PathBuf, Vec<u64>>,
+  by_identity: HashMap<FileIdentity, Vec<u64>>,
+}
+
+impl SenderSet {
+  fn keys(ws: &WatchSender) -> (Vec<PathBuf>, Vec<FileIdentity>) {
+    let paths = ws.paths.iter().chain(ws.canonical_paths.iter().flatten());
+    let identities = ws.identities.iter().flatten().copied();
+    (paths.cloned().collect(), identities.collect())
+  }
+
+  fn insert(&mut self, ws: WatchSender) {
+    let (paths, identities) = Self::keys(&ws);
+    for path in paths {
+      self.by_path.entry(path).or_default().push(ws.id);
+    }
+    for identity in identities {
+      self.by_identity.entry(identity).or_default().push(ws.id);
+    }
+    self.senders.insert(ws.id, ws);
+  }
+
+  fn remove(&mut self, id: u64) {
+    let Some(ws) = self.senders.remove(&id) else {
+      return;
+    };
+    let (paths, identities) = Self::keys(&ws);
+    for path in paths {
+      if let Some(ids) = self.by_path.get_mut(&path) {
+        ids.retain(|other| *other != id);
+        if ids.is_empty() {
+          self.by_path.remove(&path);
+        }
+      }
+    }
+    for identity in identities {
+      if let Some(ids) = self.by_identity.get_mut(&identity) {
+        ids.retain(|other| *other != id);
+        if ids.is_empty() {
+          self.by_identity.remove(&identity);
+        }
+      }
+    }
+  }
+
+  /// Every watcher an event on `event_paths` can match, in registration
+  /// order. A superset: the caller still applies the exact checks.
+  fn candidates(&self, event_paths: &[EventPath]) -> Vec<&WatchSender> {
+    if !cfg!(unix) {
+      let mut all: Vec<&WatchSender> = self.senders.values().collect();
+      all.sort_by_key(|ws| ws.id);
+      return all;
+    }
+    let mut ids = Vec::new();
+    let add_ancestors = |path: &Path, ids: &mut Vec<u64>| {
+      for ancestor in path.ancestors() {
+        if let Some(found) = self.by_path.get(ancestor) {
+          ids.extend_from_slice(found);
+        }
+      }
+    };
+    for event in event_paths {
+      if let Some(found) = self.by_path.get(event.path) {
+        ids.extend_from_slice(found);
+      }
+      if let Some(canonical) = &event.canonical {
+        add_ancestors(canonical, &mut ids);
+      }
+      if let Some(parent) = &event.canonical_parent {
+        add_ancestors(parent, &mut ids);
+      }
+      if let Some(found) = event.identity.and_then(|i| self.by_identity.get(&i))
+      {
+        ids.extend_from_slice(found);
+      }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids.iter().filter_map(|id| self.senders.get(id)).collect()
   }
 }
 
@@ -221,7 +315,7 @@ struct WatcherInner {
   /// list on every event. Wrapped in `Arc<Mutex<...>>` so the watcher
   /// callback (which lives on the notify backend thread) can hold a
   /// reference without keeping the rest of [`WatcherInner`] alive.
-  senders: Arc<Mutex<Vec<WatchSender>>>,
+  senders: Arc<Mutex<SenderSet>>,
   /// The shared `RecommendedWatcher` instance backing every
   /// `Deno.watchFs(...)` call in this OpState.
   watcher: Mutex<RecommendedWatcher>,
@@ -244,22 +338,80 @@ fn canonicalize_path(path: &Path) -> Option<PathBuf> {
   path.canonicalize().ok()
 }
 
+/// A file's (device, inode), compared in place of `same_file::is_same_file`,
+/// which opens both files: per watcher and per event that floods the notify
+/// thread once a process holds thousands of watchers.
+type FileIdentity = (u64, u64);
+
+#[cfg(unix)]
+#[allow(
+  clippy::disallowed_methods,
+  reason = "always using real fs with watcher"
+)]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+  use std::os::unix::fs::MetadataExt;
+  std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_identity(_path: &Path) -> Option<FileIdentity> {
+  None
+}
+
+/// An event path resolved once per event, so matching it against every
+/// watcher costs no syscalls per watcher.
+struct EventPath<'a> {
+  path: &'a Path,
+  canonical: Option<PathBuf>,
+  identity: Option<FileIdentity>,
+  removed: bool,
+  canonical_parent: Option<PathBuf>,
+}
+
+impl<'a> EventPath<'a> {
+  fn new(path: &'a Path) -> Self {
+    let removed = is_file_removed(path);
+    EventPath {
+      path,
+      canonical: canonicalize_path(path),
+      identity: file_identity(path),
+      removed,
+      canonical_parent: if removed {
+        path.parent().and_then(canonicalize_path)
+      } else {
+        None
+      },
+    }
+  }
+
+  fn is_same_file(&self, path: &Path, identity: Option<FileIdentity>) -> bool {
+    match (self.identity, identity) {
+      (Some(event), Some(watched)) => event == watched,
+      _ if cfg!(unix) => false,
+      _ => same_file::is_same_file(self.path, path).unwrap_or(false),
+    }
+  }
+}
+
 /// Check if `event_path` (or its canonicalized form) matches one of the
 /// watched paths. The watched paths are pre-canonicalized to avoid
 /// repeated syscalls in the hot path.
 fn event_matches_watched_paths(
-  event_path: &Path,
+  event: &EventPath,
   paths: &[PathBuf],
   canonical_paths: &[Option<PathBuf>],
+  identities: &[Option<FileIdentity>],
 ) -> bool {
-  // Canonicalize the event path at most once per call.
-  let canonical_event_path = canonicalize_path(event_path);
-  for (path, canonical_path) in paths.iter().zip(canonical_paths.iter()) {
-    if same_file::is_same_file(event_path, path).unwrap_or(false) {
+  for ((path, canonical_path), identity) in paths
+    .iter()
+    .zip(canonical_paths.iter())
+    .zip(identities.iter())
+  {
+    if event.is_same_file(path, *identity) {
       return true;
     }
     if matches!(
-      (&canonical_event_path, canonical_path),
+      (&event.canonical, canonical_path),
       (Some(ce), Some(cp)) if ce.starts_with(cp)
     ) {
       return true;
@@ -275,14 +427,15 @@ fn event_matches_watched_paths(
 /// FSEvents, remove events may arrive as generic events for a path that
 /// no longer exists.
 fn removed_event_matches_watched_paths(
-  event_path: &Path,
+  event: &EventPath,
   paths: &[PathBuf],
   canonical_paths: &[Option<PathBuf>],
 ) -> bool {
-  if !is_file_removed(event_path) {
+  if !event.removed {
     return false;
   }
-  let canonical_parent = event_path.parent().and_then(canonicalize_path);
+  let event_path = event.path;
+  let canonical_parent = &event.canonical_parent;
   for (path, canonical_path) in paths.iter().zip(canonical_paths.iter()) {
     // Direct path comparison: the file is gone so is_same_file won't work,
     // but the event path may match the watched path or its canonical form
@@ -298,7 +451,7 @@ fn removed_event_matches_watched_paths(
     }
     // Check if the removed file's parent is within a watched directory.
     if matches!(
-      (&canonical_parent, canonical_path),
+      (canonical_parent, canonical_path),
       (Some(cp_event), Some(cp_watched)) if cp_event.starts_with(cp_watched)
     ) {
       return true;
@@ -363,13 +516,17 @@ fn make_watch_sender(
   overflowed: Arc<AtomicBool>,
 ) -> WatchSender {
   let canonical_paths = paths.iter().map(|p| canonicalize_path(p)).collect();
+  let identities = paths.iter().map(|p| file_identity(p)).collect();
   let canonical_ignore = ignore.iter().map(|p| canonicalize_path(p)).collect();
+  let ignore_identities = ignore.iter().map(|p| file_identity(p)).collect();
   WatchSender {
     id,
     paths,
     canonical_paths,
+    identities,
     ignore,
     canonical_ignore,
+    ignore_identities,
     sender,
     overflowed,
   }
@@ -382,7 +539,8 @@ fn ensure_watcher(
     return Ok(ws.inner.clone());
   }
 
-  let senders: Arc<Mutex<Vec<WatchSender>>> = Arc::new(Mutex::new(Vec::new()));
+  let senders: Arc<Mutex<SenderSet>> =
+    Arc::new(Mutex::new(SenderSet::default()));
   let sender_clone = senders.clone();
   let watcher: RecommendedWatcher = Watcher::new(
     move |res: Result<NotifyEvent, NotifyError>| {
@@ -391,7 +549,20 @@ fn ensure_watcher(
         Ok(event) => Ok(FsEvent::from(event)),
         Err(e) => Err(e),
       };
-      for ws in sender_clone.lock().iter() {
+      let event_paths: Vec<EventPath> = match &res2 {
+        Ok(event) => event.paths.iter().map(|p| EventPath::new(p)).collect(),
+        Err(_) => Vec::new(),
+      };
+      let senders = sender_clone.lock();
+      let targets = match &res2 {
+        Ok(_) => senders.candidates(&event_paths),
+        Err(_) => {
+          let mut all: Vec<&WatchSender> = senders.senders.values().collect();
+          all.sort_by_key(|ws| ws.id);
+          all
+        }
+      };
+      for ws in targets {
         match &res2 {
           // Only send the event if the path matches one of the paths
           // that the user is watching.
@@ -411,11 +582,12 @@ fn ensure_watcher(
             // `to` path; that is intentional.
             if !ws.ignore.is_empty()
               && !event.paths.is_empty()
-              && event.paths.iter().all(|event_path| {
+              && event_paths.iter().all(|event_path| {
                 event_matches_watched_paths(
                   event_path,
                   &ws.ignore,
                   &ws.canonical_ignore,
+                  &ws.ignore_identities,
                 ) || removed_event_matches_watched_paths(
                   event_path,
                   &ws.ignore,
@@ -425,15 +597,16 @@ fn ensure_watcher(
             {
               continue;
             }
-            if event.paths.iter().any(|event_path| {
+            if event_paths.iter().any(|event_path| {
               event_matches_watched_paths(
                 event_path,
                 &ws.paths,
                 &ws.canonical_paths,
+                &ws.identities,
               )
             }) {
               ws.send_or_record_overflow(Ok(event.clone()));
-            } else if event.paths.iter().any(|event_path| {
+            } else if event_paths.iter().any(|event_path| {
               removed_event_matches_watched_paths(
                 event_path,
                 &ws.paths,
@@ -539,7 +712,7 @@ fn op_fs_events_open(
 
   let id = inner.next_id.fetch_add(1, Ordering::Relaxed);
 
-  inner.senders.lock().push(make_watch_sender(
+  inner.senders.lock().insert(make_watch_sender(
     id,
     resolved_paths.clone(),
     ignore_paths,
@@ -604,7 +777,7 @@ fn rollback_partial_open(
   id: u64,
   watched: &[(PathBuf, RecursiveMode)],
 ) {
-  inner.senders.lock().retain(|ws| ws.id != id);
+  inner.senders.lock().remove(id);
 
   let mut watched_paths = inner.watched_paths.lock();
   let mut watcher = inner.watcher.lock();
