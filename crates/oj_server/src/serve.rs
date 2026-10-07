@@ -43,6 +43,21 @@ async fn serve_internal_route(
             return Some((StatusCode::FORBIDDEN, "oj: bad optimized dep path").into_response());
         }
         state.optimized.ready().await;
+        // A pending (registered, not yet bundled) dep's request waits for the
+        // re-optimization to commit; a `?v=` the committed entry no longer
+        // carries is Vite's outdated-request 504 (the page is mid-reload).
+        let req_version = uri
+            .query()
+            .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("v=")));
+        if let optimize::DepServe::Outdated = state.optimized.await_dep(name, req_version).await {
+            return Some(
+                (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    format!("oj: outdated optimized dep {name}"),
+                )
+                    .into_response(),
+            );
+        }
         return Some(
             match tokio::fs::read(state.optimized.dir().join(name)).await {
                 Ok(bytes) => dep_response(headers, has_version_query(uri.query()), bytes),

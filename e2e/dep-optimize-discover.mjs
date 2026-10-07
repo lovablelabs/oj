@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Raphael Amorim
 //
 // Runtime dep discovery (Vite's registerMissingImport): a module only
-// reachable through a runtime-built import() is invisible to the scan, so its
-// bare dep starts out served per-file. Serving it registers the dep, a
-// debounced re-optimization bundles it, and the module re-serves rewritten to
-// the versioned /@oj-deps URL, with the discovery persisted in the manifest.
+// reachable through a runtime-built import() is invisible to the scan. The
+// first serve rewrites its bare dep to the FUTURE optimized URL, the dep
+// route holds that URL's requests until the debounced re-optimization
+// commits, a stale ?v= is a 504 (Vite's outdated request), and the discovery
+// persists in the manifest.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -13,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { settles, waitUp } from "./util.mjs";
+import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -43,11 +44,13 @@ fs.writeFileSync(
   path.join(app, "index.html"),
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/main.js"></script></body></html>`,
 );
-// The widget is reached only through a runtime-built specifier: the scan
-// cannot follow it, so cjs-lib is not in the initial pre-bundle.
+// The widget is reached only through a runtime-built specifier no static
+// analysis can expand (rolldown's scan follows inline concat and template
+// imports like dynamic-import-vars, so the parts must come from a variable):
+// cjs-lib is not in the initial pre-bundle.
 fs.writeFileSync(
   path.join(app, "main.js"),
-  `const name = "wid" + "get";\nimport("/widgets/" + name + ".js").then((m) => m.run());\n`,
+  `const parts = ["", "widgets", "widget.js"];\nimport(parts.join("/")).then((m) => m.run());\n`,
 );
 fs.mkdirSync(path.join(app, "widgets"));
 fs.writeFileSync(
@@ -63,31 +66,29 @@ try {
   server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   await waitUp(`http://localhost:${port}/`);
 
-  // First serve: the dep is not pre-bundled (the scan never saw the widget),
-  // so the import stays per-file; serving it registers the missing dep.
+  // First serve: the scan never saw the widget, but registration rewrites
+  // the bare import straight to the future optimized URL (Vite's optimistic
+  // getOptimizedDepPath), never to a per-file /node_modules URL.
   const first = await get("/widgets/widget.js");
-  assert.match(first, /\/node_modules\/cjs-lib\//, `dep starts unbundled:\n${first}`);
-  assert.doesNotMatch(first, /@oj-deps\/cjs-lib/);
+  const m = first.match(/\/@oj-deps\/cjs-lib\.mjs\?v=([0-9a-f]{8})/);
+  assert.ok(m, `first serve already carries the optimized URL:\n${first}`);
+  assert.doesNotMatch(first, /\/node_modules\/cjs-lib\//);
 
-  // The debounced rerun commits, caches invalidate, and the module re-serves
-  // against the new map with a versioned optimized URL.
-  let widget = "";
-  const rebundled = await settles(
-    async () => {
-      widget = await get("/widgets/widget.js");
-      return /\/@oj-deps\/cjs-lib\.mjs\?v=[0-9a-f]{8}/.test(widget);
-    },
-    { pollMs: 250 },
-  );
-  assert.ok(rebundled, `widget still imports the unbundled dep:\n${widget}`);
+  // The dep route holds the request until the re-optimization commits.
+  const bundled = await get(`/@oj-deps/cjs-lib.mjs?v=${m[1]}`);
+  assert.match(bundled, /hi /, `the optimized bundle serves once committed:\n${bundled.slice(0, 300)}`);
+
+  // A ?v= the committed entry does not carry is Vite's outdated-request 504.
+  const stale = await fetch(`http://localhost:${port}/@oj-deps/cjs-lib.mjs?v=deadbeef`);
+  assert.equal(stale.status, 504, "stale version query is an outdated request");
 
   const manifest = JSON.parse(fs.readFileSync(path.join(app, ".oj-cache", "v1", "deps", "manifest.json"), "utf8"));
   assert.ok(manifest.metadata["cjs-lib"], `cjs-lib in the manifest: ${Object.keys(manifest.metadata)}`);
   assert.deepEqual(manifest.discovered, ["cjs-lib"], "the discovery is persisted for the next boot");
   assert.equal(typeof manifest.browserHash, "string", "the rerun version is persisted");
 
-  const dep = await get(`/@oj-deps/${manifest.metadata["cjs-lib"].file}?v=${manifest.browserHash}`);
-  assert.match(dep, /hi /, "the optimized bundle serves");
+  assert.equal(manifest.metadata["cjs-lib"].v, m[1], "the committed version is the one served first");
+  assert.ok(manifest.metadata["cjs-lib"].fileHash, "the entry's content hash is persisted");
   console.log("dep-optimize-discover e2e PASSED");
 } catch (err) {
   failed = true;

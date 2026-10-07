@@ -51,12 +51,40 @@ pub(crate) fn package_name(entry: &std::path::Path) -> Option<String> {
     }
 }
 
+#[derive(Clone)]
 pub struct DepMeta {
     pub file: String,
     pub needs_interop: bool,
     /// Importer rewrite target `/@oj-deps/<file>?v=<version>`; the version query
     /// is what lets the response be served immutable (Vite's ensureVersionQuery).
     pub url: String,
+    /// Content hash of the bundled entry (Vite's fileHash): a re-optimization
+    /// whose previously served entries all hash the same commits without a
+    /// reload. Empty for a provisional (registered, not yet bundled) entry.
+    pub file_hash: String,
+}
+
+/// The `?v=` a meta's URL carries.
+fn url_version(url: &str) -> &str {
+    url.rsplit_once("?v=").map(|(_, v)| v).unwrap_or("")
+}
+
+/// The sidecar's entry naming for a bare dep (its `optimize()` mirrors this):
+/// the future bundle file is known at registration, like Vite's
+/// `getOptimizedDepPath`, so the import rewrites to it before any bundling.
+fn flatten_dep_file(dep: &str) -> String {
+    let name: String = dep
+        .trim_start_matches('@')
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{name}.mjs")
 }
 
 pub type DepMap = HashMap<String, DepMeta>;
@@ -71,22 +99,46 @@ pub struct OptimizedDeps {
 }
 
 /// Vite's discovered-deps machinery: a bare import the serve-time rewrite
-/// finds missing from the pre-bundle registers here
-/// (`registerMissingImport`), and a debounced rerun re-optimizes the union.
-/// The committed map carries a bumped browser version, so every optimized URL
-/// (and compile key) changes and no immutable cache serves a stale chunk.
+/// finds missing from the pre-bundle registers here (`registerMissingImport`)
+/// and is rewritten to its FUTURE optimized URL at once; the dep route holds
+/// requests for a pending bundle until the debounced rerun commits. A commit
+/// that changed previously served entries (by `fileHash`) bumps the browser
+/// version everywhere and reloads; one that did not keeps every served URL
+/// valid and reloads nothing, exactly Vite's needsReload split.
 struct RerunState {
-    discovered: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Base prebundle hash, the seed of every browser version.
+    hash: String,
+    tx: watch::Sender<Option<Arc<DepMap>>>,
+    /// Every serve-time-discovered dep with its provisional meta (the version
+    /// its URLs were first served under); persists across reruns.
+    discovered: std::sync::Mutex<std::collections::BTreeMap<String, DepMeta>>,
+    /// Discovered deps whose rerun has not committed yet: the dep route
+    /// blocks on these (Vite awaits the processing promise).
+    pending: std::sync::Mutex<std::collections::HashSet<String>>,
     wake: tokio::sync::mpsc::UnboundedSender<()>,
     browser_version: std::sync::RwLock<String>,
+    /// Deps a rerun could not bundle (or whose rerun failed): registration
+    /// declines them, so their importers keep the per-file path instead of a
+    /// phantom optimized URL. Vite instead resets `discovered` and retries on
+    /// the next request, which can loop a persistently failing dep.
+    failed: std::sync::Mutex<std::collections::HashSet<String>>,
     exclude: Vec<String>,
     discovery: bool,
     on_commit: std::sync::OnceLock<Box<dyn Fn(&[String]) + Send + Sync>>,
 }
 
-/// The rerun's URL version: the base key plus the discovered set, so a page
-/// holding pre-rerun immutable URLs can never be served post-rerun bytes.
-fn browser_hash(hash: &str, discovered: &std::collections::BTreeSet<String>) -> String {
+/// What the dep route should do once `await_dep` settles.
+pub enum DepServe {
+    Ready,
+    /// The request's `?v=` predates the committed pre-bundle (Vite's
+    /// ERR_OUTDATED_OPTIMIZED_DEP): answer 504, the page is mid-reload.
+    Outdated,
+}
+
+/// A discovery's URL version: the base key plus the (sorted) discovered set,
+/// so chunks that change can never be served under a URL a page already holds
+/// (Vite's getDiscoveredBrowserHash).
+fn browser_hash<'a>(hash: &str, discovered: impl Iterator<Item = &'a String>) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(hash.as_bytes());
     for dep in discovered {
@@ -159,22 +211,118 @@ impl OptimizedDeps {
         }
     }
 
+    /// The live map's entry for `dep`, including a provisional one registered
+    /// mid-compile, which a per-compile snapshot cannot see.
+    pub fn meta_now(&self, dep: &str) -> Option<DepMeta> {
+        self.rx.borrow().as_ref().and_then(|m| m.get(dep).cloned())
+    }
+
     /// Vite's registerMissingImport, from the serve-time rewrite: a bare
-    /// import that resolved into node_modules but is not pre-bundled. A
-    /// debounced optimizer rerun picks the whole set up; until it commits the
-    /// dep is served unbundled, exactly as before.
-    pub fn register_missing(&self, dep: &str) {
-        let Some(r) = &self.rerun else { return };
-        if !r.discovery || module_list_contains(&r.exclude, dep) {
-            return;
+    /// import that resolved into node_modules but is not pre-bundled. The
+    /// returned meta points at the FUTURE bundle (file name and version are
+    /// known now, Vite's getOptimizedDepPath), so the import rewrites to the
+    /// optimized URL immediately and the dep route holds its requests until
+    /// the debounced rerun commits. `needs_interop` is read off the resolved
+    /// entry's source (Vite's extractExportsData); a bundle that disagrees
+    /// later forces the reload path.
+    pub fn register_missing(&self, dep: &str, needs_interop: bool) -> Option<DepMeta> {
+        let r = self.rerun.as_ref()?;
+        if !r.discovery
+            || module_list_contains(&r.exclude, dep)
+            || r.failed.lock().unwrap().contains(dep)
+        {
+            return None;
         }
-        if let Some(map) = self.rx.borrow().as_ref() {
-            if map.contains_key(dep) {
-                return;
+        if let Some(meta) = self.meta_now(dep) {
+            return Some(meta);
+        }
+        let meta = {
+            let mut discovered = r.discovered.lock().unwrap();
+            if let Some(meta) = discovered.get(dep) {
+                return Some(meta.clone());
             }
-        }
-        if r.discovered.lock().unwrap().insert(dep.to_string()) {
-            let _ = r.wake.send(());
+            let file = flatten_dep_file(dep);
+            discovered.insert(
+                dep.to_string(),
+                DepMeta {
+                    file: file.clone(),
+                    needs_interop,
+                    url: String::new(),
+                    file_hash: String::new(),
+                },
+            );
+            // Hashing the set it joins (sorted, so registration order is
+            // moot): Vite's getDiscoveredBrowserHash over known + missing.
+            let version = browser_hash(&r.hash, discovered.keys());
+            let meta = DepMeta {
+                url: dep_url(&file, &version),
+                file,
+                needs_interop,
+                file_hash: String::new(),
+            };
+            discovered.insert(dep.to_string(), meta.clone());
+            meta
+        };
+        r.pending.lock().unwrap().insert(dep.to_string());
+        r.tx.send_modify(|cur| {
+            if let Some(map) = cur {
+                Arc::make_mut(map).insert(dep.to_string(), meta.clone());
+            }
+        });
+        let _ = r.wake.send(());
+        Some(meta)
+    }
+
+    /// Route gate for `/@oj-deps/<file>`: a pending dep's request waits for
+    /// its rerun to commit (Vite awaits the dep's processing promise), and a
+    /// `?v=` the committed entry no longer carries is Vite's outdated-request
+    /// 504, which a page mid-reload may still send.
+    pub async fn await_dep(&self, file: &str, req_version: Option<&str>) -> DepServe {
+        let deadline = tokio::time::Instant::now() + optimizer_timeout();
+        let mut rx = self.rx.clone();
+        loop {
+            enum St {
+                Wait,
+                Ready,
+                Outdated,
+            }
+            let st = {
+                let cur = rx.borrow_and_update();
+                match cur
+                    .as_ref()
+                    .and_then(|m| m.iter().find(|(_, meta)| meta.file == file))
+                {
+                    // Not in the map: an older kept bundle file, served as-is.
+                    None => St::Ready,
+                    Some((dep, meta)) => {
+                        let pending = self
+                            .rerun
+                            .as_ref()
+                            .is_some_and(|r| r.pending.lock().unwrap().contains(dep));
+                        if pending {
+                            St::Wait
+                        } else if req_version.is_some_and(|v| v != url_version(&meta.url)) {
+                            St::Outdated
+                        } else {
+                            St::Ready
+                        }
+                    }
+                }
+            };
+            match st {
+                St::Ready => return DepServe::Ready,
+                St::Outdated => return DepServe::Outdated,
+                St::Wait => {
+                    tokio::select! {
+                        changed = rx.changed() => {
+                            if changed.is_err() {
+                                return DepServe::Ready;
+                            }
+                        }
+                        _ = tokio::time::sleep_until(deadline) => return DepServe::Ready,
+                    }
+                }
+            }
         }
     }
 
@@ -193,16 +341,27 @@ impl OptimizedDeps {
         // optimizeDeps.force: ignore any cached pre-bundle and always rebuild.
         let cached = (!input.force).then(|| load_manifest(&dir, &hash)).flatten();
         // A cached manifest restores the previous session's discovered deps
-        // (already in its map) and the version their URLs were written with.
+        // (already committed in its map) and the version they were served under.
         let (initial_discovered, initial_version) = match &cached {
-            Some(m) => (m.discovered.clone(), m.browser_hash.clone()),
-            None => (Default::default(), short.clone()),
+            Some(m) => {
+                let seeded = m
+                    .discovered
+                    .iter()
+                    .filter_map(|d| m.map.get(d).map(|meta| (d.clone(), meta.clone())))
+                    .collect();
+                (seeded, m.browser_hash.clone())
+            }
+            None => (std::collections::BTreeMap::new(), short.clone()),
         };
         let (wake, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
+            hash: hash.clone(),
+            tx,
             discovered: std::sync::Mutex::new(initial_discovered),
+            pending: std::sync::Mutex::new(std::collections::HashSet::new()),
             wake,
             browser_version: std::sync::RwLock::new(initial_version),
+            failed: std::sync::Mutex::new(std::collections::HashSet::new()),
             exclude: input.exclude.clone(),
             discovery: effective_auto_discover(input.no_discovery),
             on_commit: std::sync::OnceLock::new(),
@@ -215,13 +374,12 @@ impl OptimizedDeps {
             tokio::spawn(async move {
                 match cached_map {
                     Some(map) => {
-                        let _ = tx.send(Some(Arc::new(map)));
+                        let _ = rerun.tx.send(Some(Arc::new(map)));
                     }
                     None => {
                         let map = run_optimizer(
                             &root,
                             &dir,
-                            &hash,
                             &input,
                             host.as_deref(),
                             &Default::default(),
@@ -230,7 +388,8 @@ impl OptimizedDeps {
                         )
                         .await
                         .unwrap_or_default();
-                        let _ = tx.send(Some(Arc::new(map)));
+                        write_manifest(&dir, &hash, &hash[..8], [].iter(), &map);
+                        let _ = rerun.tx.send(Some(Arc::new(map)));
                     }
                 }
                 // Vite's debouncedProcessing: collect registrations for a
@@ -238,49 +397,7 @@ impl OptimizedDeps {
                 while wake_rx.recv().await.is_some() {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     while wake_rx.try_recv().is_ok() {}
-                    let discovered = rerun.discovered.lock().unwrap().clone();
-                    let missing: Vec<String> = {
-                        let current = tx.borrow();
-                        let map = current.as_ref();
-                        discovered
-                            .iter()
-                            .filter(|d| map.is_none_or(|m| !m.contains_key(*d)))
-                            .cloned()
-                            .collect()
-                    };
-                    if missing.is_empty() {
-                        continue;
-                    }
-                    let bv = browser_hash(&hash, &discovered);
-                    match run_optimizer(
-                        &root,
-                        &dir,
-                        &hash,
-                        &input,
-                        host.as_deref(),
-                        &discovered,
-                        &bv,
-                        true,
-                    )
-                    .await
-                    {
-                        Some(map) => {
-                            let newly: Vec<String> = missing
-                                .into_iter()
-                                .filter(|d| map.contains_key(d))
-                                .collect();
-                            *rerun.browser_version.write().unwrap() = bv;
-                            let _ = tx.send(Some(Arc::new(map)));
-                            if !newly.is_empty() {
-                                if let Some(cb) = rerun.on_commit.get() {
-                                    cb(&newly);
-                                }
-                            }
-                        }
-                        None => eprintln!(
-                            "oj: re-optimizing after newly discovered dependencies failed; they stay unbundled"
-                        ),
-                    }
+                    rerun_once(&rerun, &root, &dir, &hash, &input, host.as_deref()).await;
                 }
             });
         }
@@ -290,6 +407,144 @@ impl OptimizedDeps {
             version: short,
             rerun: Some(rerun),
         }
+    }
+}
+
+/// One debounced re-optimization: bundle known + discovered, then Vite's
+/// commit split. If no previously served entry changed (`fileHash`) and no
+/// provisional interop guess was contradicted, every served URL stays valid
+/// and nothing reloads; otherwise all URLs move to the batch version and the
+/// commit callback invalidates caches and reloads the page.
+async fn rerun_once(
+    rerun: &Arc<RerunState>,
+    root: &Path,
+    dir: &Path,
+    hash: &str,
+    input: &OptimizeInput,
+    host: Option<&crate::plugins::PluginHost>,
+) {
+    let provisional = rerun.discovered.lock().unwrap().clone();
+    let pending: Vec<String> = rerun.pending.lock().unwrap().iter().cloned().collect();
+    if pending.is_empty() {
+        return;
+    }
+    let names: std::collections::BTreeSet<String> = provisional.keys().cloned().collect();
+    let candidate = browser_hash(hash, names.iter());
+    let Some(new_map) = run_optimizer(root, dir, input, host, &names, &candidate, true).await
+    else {
+        // Park the batch as failed (importers recompile onto the per-file
+        // path) instead of Vite's reset-and-retry, which can reload-loop a
+        // persistently failing dep.
+        eprintln!("oj: re-optimizing newly discovered dependencies failed; serving them per-file");
+        fail_pending(rerun, &pending);
+        return;
+    };
+    // A pending dep the bundle skipped (a linked package, a macro entry) must
+    // not keep its phantom URL either.
+    let skipped: Vec<String> = pending
+        .iter()
+        .filter(|d| !new_map.contains_key(*d))
+        .cloned()
+        .collect();
+    if !skipped.is_empty() {
+        eprintln!(
+            "oj: {} could not be pre-bundled; serving per-file",
+            skipped.join(", ")
+        );
+        fail_pending(rerun, &skipped);
+    }
+    let old = rerun.tx.borrow().clone();
+    let old_map = old.as_deref();
+    // Vite's needsReload: a previously served entry whose bundle changed, a
+    // dep that vanished, or a provisional interop guess the bundle disagrees
+    // with (Vite's needsInteropMismatch).
+    let mut needs_reload = false;
+    if let Some(old_map) = old_map {
+        for (dep, old_meta) in old_map {
+            if pending.contains(dep) {
+                continue;
+            }
+            match new_map.get(dep) {
+                Some(n) if !old_meta.file_hash.is_empty() && n.file_hash == old_meta.file_hash => {}
+                _ => {
+                    needs_reload = true;
+                    break;
+                }
+            }
+        }
+    }
+    let newly: Vec<String> = pending
+        .iter()
+        .filter(|d| new_map.contains_key(*d))
+        .cloned()
+        .collect();
+    for dep in &newly {
+        if provisional.get(dep).map(|p| p.needs_interop)
+            != new_map.get(dep).map(|n| n.needs_interop)
+        {
+            needs_reload = true;
+        }
+    }
+    let final_map: DepMap = if needs_reload {
+        // Every URL moves to the batch version (parse stamped it already).
+        new_map
+    } else {
+        // Served URLs stay valid: committed deps keep the version they were
+        // served under, pending ones their provisional registration version.
+        new_map
+            .into_iter()
+            .map(|(dep, mut meta)| {
+                let keep = old_map
+                    .and_then(|m| m.get(&dep))
+                    .map(|o| url_version(&o.url).to_string())
+                    .unwrap_or_else(|| candidate.clone());
+                meta.url = dep_url(&meta.file, &keep);
+                (dep, meta)
+            })
+            .collect()
+    };
+    let bv = if needs_reload {
+        candidate.clone()
+    } else {
+        rerun.browser_version.read().unwrap().clone()
+    };
+    write_manifest(dir, hash, &bv, names.iter(), &final_map);
+    rerun.pending.lock().unwrap().clear();
+    *rerun.browser_version.write().unwrap() = bv;
+    let _ = rerun.tx.send(Some(Arc::new(final_map)));
+    if needs_reload {
+        if let Some(cb) = rerun.on_commit.get() {
+            cb(&newly);
+        }
+    } else if !newly.is_empty() {
+        println!("oj: new dependencies optimized: {}", newly.join(", "));
+    }
+}
+
+/// A batch (or part of one) that could not bundle: drop the provisional
+/// entries and decline future registrations, then reload so their importers
+/// recompile onto the per-file path.
+fn fail_pending(rerun: &Arc<RerunState>, deps: &[String]) {
+    {
+        let mut discovered = rerun.discovered.lock().unwrap();
+        let mut pending = rerun.pending.lock().unwrap();
+        let mut failed = rerun.failed.lock().unwrap();
+        for dep in deps {
+            discovered.remove(dep);
+            pending.remove(dep);
+            failed.insert(dep.clone());
+        }
+    }
+    rerun.tx.send_modify(|cur| {
+        if let Some(map) = cur {
+            let m = Arc::make_mut(map);
+            for dep in deps {
+                m.remove(dep);
+            }
+        }
+    });
+    if let Some(cb) = rerun.on_commit.get() {
+        cb(&[]);
     }
 }
 
@@ -493,16 +748,57 @@ fn parse_metadata(v: &serde_json::Value, version: &str) -> Option<DepMap> {
             .get("needsInterop")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
+        // Per-dep version override: after a no-reload commit, deps keep the
+        // version they were first served under instead of the batch's.
+        let v = meta.get("v").and_then(|v| v.as_str()).unwrap_or(version);
+        let file_hash = meta
+            .get("fileHash")
+            .and_then(|h| h.as_str())
+            .unwrap_or_default()
+            .to_string();
         map.insert(
             dep.clone(),
             DepMeta {
-                url: dep_url(&file, version),
+                url: dep_url(&file, v),
                 file,
                 needs_interop,
+                file_hash,
             },
         );
     }
     Some(map)
+}
+
+/// The warm-boot manifest, written from the committed map so per-dep versions
+/// and file hashes survive a restart (Vite persists its _metadata the same way).
+fn write_manifest<'a>(
+    dir: &Path,
+    hash: &str,
+    browser_version: &str,
+    discovered: impl Iterator<Item = &'a String>,
+    map: &DepMap,
+) {
+    let metadata: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .map(|(dep, m)| {
+            (
+                dep.clone(),
+                serde_json::json!({
+                    "file": m.file,
+                    "needsInterop": m.needs_interop,
+                    "fileHash": m.file_hash,
+                    "v": url_version(&m.url),
+                }),
+            )
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "hash": hash,
+        "browserHash": browser_version,
+        "discovered": discovered.collect::<Vec<_>>(),
+        "metadata": metadata,
+    });
+    let _ = std::fs::write(dir.join("manifest.json"), manifest.to_string());
 }
 
 struct Manifest {
@@ -571,7 +867,6 @@ fn optimizer_timeout_from(raw: Option<&str>) -> std::time::Duration {
 async fn run_optimizer(
     root: &Path,
     dir: &Path,
-    hash: &str,
     input: &OptimizeInput,
     host: Option<&crate::plugins::PluginHost>,
     discovered: &std::collections::BTreeSet<String>,
@@ -653,15 +948,7 @@ async fn run_optimizer(
         }
     };
     let metadata = v.get("metadata")?;
-    let map = parse_metadata(metadata, browser_version)?;
-    let manifest = serde_json::json!({
-        "hash": hash,
-        "browserHash": browser_version,
-        "discovered": discovered,
-        "metadata": metadata,
-    });
-    let _ = std::fs::write(dir.join("manifest.json"), manifest.to_string());
-    Some(map)
+    parse_metadata(metadata, browser_version)
 }
 
 /// The scan run in the plugin host (see `optimizeScan` in plugin-host.mjs).
@@ -1001,15 +1288,57 @@ mod tests {
 
     #[test]
     fn browser_hash_tracks_the_discovered_set() {
-        let set = |deps: &[&str]| deps.iter().map(|d| d.to_string()).collect();
-        let base = browser_hash("hash", &set(&[]));
-        let one = browser_hash("hash", &set(&["lodash"]));
-        let two = browser_hash("hash", &set(&["lodash", "dayjs"]));
+        let set = |deps: &[&str]| -> std::collections::BTreeSet<String> {
+            deps.iter().map(|d| d.to_string()).collect()
+        };
+        let base = browser_hash("hash", set(&[]).iter());
+        let one = browser_hash("hash", set(&["lodash"]).iter());
+        let two = browser_hash("hash", set(&["lodash", "dayjs"]).iter());
         assert_eq!(base.len(), 8);
         assert_ne!(base, one, "a discovered dep bumps the version");
         assert_ne!(one, two);
-        // BTreeSet: registration order cannot change the hash.
-        assert_eq!(two, browser_hash("hash", &set(&["dayjs", "lodash"])));
+        // The set is sorted: registration order cannot change the hash.
+        assert_eq!(two, browser_hash("hash", set(&["dayjs", "lodash"]).iter()));
+    }
+
+    #[test]
+    fn manifest_round_trips_per_dep_versions_and_file_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = dir.path().join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(deps.join("react.js"), "export default 1;").unwrap();
+        std::fs::write(deps.join("latedep.mjs"), "export default 2;").unwrap();
+        let mut map = DepMap::new();
+        map.insert(
+            "react".into(),
+            DepMeta {
+                file: "react.js".into(),
+                needs_interop: false,
+                url: dep_url("react.js", "11111111"),
+                file_hash: "aaaa".into(),
+            },
+        );
+        map.insert(
+            "latedep".into(),
+            DepMeta {
+                file: "latedep.mjs".into(),
+                needs_interop: true,
+                url: dep_url("latedep.mjs", "22222222"),
+                file_hash: "bbbb".into(),
+            },
+        );
+        let discovered = vec!["latedep".to_string()];
+        write_manifest(&deps, "abc", "11111111", discovered.iter(), &map);
+        let m = load_manifest(&deps, "abc").expect("round trip");
+        assert_eq!(m.browser_hash, "11111111");
+        assert_eq!(m.map["react"].url, "/@oj-deps/react.js?v=11111111");
+        assert_eq!(m.map["latedep"].url, "/@oj-deps/latedep.mjs?v=22222222");
+        assert_eq!(m.map["latedep"].file_hash, "bbbb");
+        assert!(m.map["latedep"].needs_interop);
+        assert_eq!(
+            m.discovered.iter().cloned().collect::<Vec<_>>(),
+            ["latedep"]
+        );
     }
 
     #[test]

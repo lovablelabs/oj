@@ -1574,22 +1574,27 @@ impl DevServer {
             },
         });
         spawn_state_tasks(&state, write_rx, watch_rx);
-        // A dep re-optimization (a bare import the pre-bundle missed) commits
-        // a new map and browser version: drop every compiled module (their
-        // rewrites carry the old URLs) and reload the page, Vite's
-        // "optimized dependencies changed. reloading".
+        // A dep re-optimization that changed previously served chunks (or
+        // whose batch failed) commits a new map: drop every compiled module
+        // (their rewrites carry the old URLs) and reload the page, Vite's
+        // "optimized dependencies changed. reloading". A commit that left
+        // served chunks byte-identical never reaches here.
         {
             let weak = Arc::downgrade(&state);
             state.optimized.set_on_commit(Box::new(move |newly| {
                 let Some(state) = weak.upgrade() else { return };
                 state.mtime_keys.lock().unwrap().clear();
                 state.memory.lock().unwrap().clear();
-                println!(
-                    "oj: new dependencies optimized: {}; reloading",
-                    newly.join(", ")
-                );
+                if newly.is_empty() {
+                    println!("oj: optimized dependencies changed; reloading");
+                } else {
+                    println!(
+                        "oj: new dependencies optimized: {}; reloading",
+                        newly.join(", ")
+                    );
+                }
                 let _ = state.reload_tx.send(full_reload_frame(
-                    "new dependencies optimized",
+                    "optimized dependencies changed",
                     None,
                     None,
                 ));

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, realpathSync, globSync } from "node:fs";
@@ -1295,6 +1296,15 @@ export async function optimize(input) {
         }
       }
       metadata[dep] = { file: out.file, needsInterop: out.cjs || NEEDS_INTEROP.has(dep), exports: out.exports };
+    }
+    // Vite's fileHash: a re-optimization whose previously served entries all
+    // hash the same can commit without a page reload.
+    for (const meta of Object.values(metadata)) {
+      try {
+        meta.fileHash = createHash("sha256").update(readFileSync(path.join(outDir, meta.file))).digest("hex").slice(0, 16);
+      } catch {
+        meta.fileHash = "";
+      }
     }
   }
 
