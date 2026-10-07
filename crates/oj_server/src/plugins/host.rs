@@ -1223,9 +1223,9 @@ impl PluginHost {
     }
 
     /// The dep optimizer's scan, resolved through the plugins (optimize-deps.mjs
-    /// `scan`): JSON `{ dep: file }`, or None when the app bundles deps with
-    /// esbuild. Optimizer work gets the optimizer's budget: a cold scan of a
-    /// large app outlives the per-hook window a stuck plugin gets.
+    /// `scan`): JSON `{ dep: file }`. Optimizer work gets the optimizer's
+    /// budget: a cold scan of a large app outlives the per-hook window a stuck
+    /// plugin gets.
     pub async fn optimize_scan(&self, input: &str) -> Result<Option<String>, String> {
         self.call_with_wait(
             "optimizeScan",

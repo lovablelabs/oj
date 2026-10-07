@@ -462,8 +462,8 @@ async fn run_optimizer(
 }
 
 /// The scan run in the plugin host (see `optimizeScan` in plugin-host.mjs).
-/// Null keeps the scan in the optimizer job: an esbuild app, or a host that
-/// failed, which is logged and costs only plugin-aware resolution.
+/// Null keeps the scan in the optimizer job: a host that failed, which is
+/// logged and costs only plugin-aware resolution.
 async fn scan_through_plugins(
     host: &crate::plugins::PluginHost,
     cfg: &serde_json::Value,
@@ -798,56 +798,9 @@ mod tests {
         assert_eq!(deps.dir(), Path::new(""));
     }
 
-    // Pre-bundle through the REAL engine and REAL esbuild (its JS API spawns a
-    // Go child service); skips quietly when the fixture esbuild is not installed.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn optimizer_prebundles_through_the_engine_with_real_esbuild() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let esbuild = repo.join("e2e/fixtures/start-app/node_modules/esbuild");
-        if !esbuild.exists() {
-            eprintln!("skipping: fixture esbuild not installed");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("node_modules")).unwrap();
-        std::fs::write(root.join("package.json"), r#"{"name":"fx"}"#).unwrap();
-        std::os::unix::fs::symlink(&esbuild, root.join("node_modules/esbuild")).unwrap();
-        let scoped = repo.join("e2e/fixtures/start-app/node_modules/@esbuild");
-        if scoped.exists() {
-            std::os::unix::fs::symlink(&scoped, root.join("node_modules/@esbuild")).unwrap();
-        }
-        let dep = root.join("node_modules/plaincjs");
-        std::fs::create_dir_all(&dep).unwrap();
-        std::fs::write(
-            dep.join("package.json"),
-            r#"{"name":"plaincjs","version":"1.0.0","main":"index.js"}"#,
-        )
-        .unwrap();
-        std::fs::write(dep.join("index.js"), "exports.a = 1;\nexports.b = 2;\n").unwrap();
-
-        let out_dir = root.join(".oj-cache/deps");
-        let input = OptimizeInput {
-            include: vec!["plaincjs".into()],
-            // As the real callers fill them (empty lists would tell esbuild to
-            // resolve with NO mainFields at all).
-            conditions: vec!["browser".into(), "module".into(), "development".into()],
-            main_fields: oj_resolver::default_main_fields(),
-            extensions: vec![".mjs".into(), ".js".into(), ".ts".into(), ".json".into()],
-            ..Default::default()
-        };
-        let map = run_optimizer(root, &out_dir, "0123456789abcdef", &input, None)
-            .await
-            .expect("the engine-run pre-bundle must produce metadata");
-        let meta = map.get("plaincjs").expect("the included dep is bundled");
-        assert!(meta.needs_interop, "a plain-CJS bundle needs interop");
-        assert_eq!(meta.url, format!("/@oj-deps/{}?v=01234567", meta.file));
-        let bundle = std::fs::read_to_string(out_dir.join(&meta.file)).unwrap();
-        assert!(bundle.contains("export"), "an ESM pre-bundle was written");
-        // The manifest makes the next boot a warm cache.
-        let warm = load_manifest(&out_dir, "0123456789abcdef").expect("manifest written");
-        assert!(warm.contains_key("plaincjs"));
-    }
+    // The engine-run pre-bundle itself lives in tests/optimize_prebundle.rs:
+    // rolldown is a napi addon, and only integration-test binaries get the
+    // exported-symbols link flag from build.rs.
 
     #[test]
     fn discovery_is_on_unless_no_discovery_is_set() {

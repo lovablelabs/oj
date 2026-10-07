@@ -33,12 +33,11 @@ const runOptimize = (cfg) =>
     }),
   );
 
-// One app shape per bundler Vite has used for its optimizer: a Vite 8 app
-// (its vite brings rolldown, the app has no esbuild) and an app that only has
-// esbuild. Both borrow the start-app fixture's install.
+// rolldown is the only optimizer engine (Vite 8 dropped esbuild's; so did
+// oj): the app shape is a Vite 8 app whose vite brings rolldown, borrowed
+// from the start-app fixture's install.
 const BUNDLERS = {
   rolldown: fs.existsSync(path.join(fixtureModules, "vite", "package.json")),
-  esbuild: fs.existsSync(path.join(fixtureModules, "esbuild")),
 };
 const skipFor = (bundler) => (BUNDLERS[bundler] ? false : `fixture ${bundler} not installed`);
 const each = (name, fn) => {
@@ -55,10 +54,6 @@ function makeRoot(bundler, prefix = "oj-optdeps-") {
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fx" }));
   if (bundler === "rolldown") {
     fs.symlinkSync(path.join(fixtureModules, "vite"), path.join(nm, "vite"));
-  } else if (bundler === "esbuild") {
-    fs.symlinkSync(path.join(fixtureModules, "esbuild"), path.join(nm, "esbuild"));
-    const scoped = path.join(fixtureModules, "@esbuild");
-    if (fs.existsSync(scoped)) fs.symlinkSync(scoped, path.join(nm, "@esbuild"));
   }
   return root;
 }
@@ -107,9 +102,7 @@ each("scans + pre-bundles CJS deps with correct interop", async (bundler) => {
       `export const out = greet("x") + "|" + fortytwo() + "|" + a + "|" + b;\n`,
   );
   const outDir = outDirOf(root);
-  const result = runOptimize({ root, outDir, entries: [path.join(root, "entry.js")] });
-  assert.equal(result.bundler, bundler);
-  const { metadata } = result;
+  const { metadata } = runOptimize({ root, outDir, entries: [path.join(root, "entry.js")] });
 
   assert.deepEqual(Object.keys(metadata).sort(), ["babeldefault", "defprop", "plaincjs"]);
   for (const m of Object.values(metadata)) {
@@ -302,8 +295,7 @@ only("rolldown", "a Vite 8 app without esbuild pre-bundles with its vite's rolld
     "the app itself has no esbuild",
   );
   const outDir = outDirOf(root);
-  const { metadata, bundler } = runOptimize({ root, outDir });
-  assert.equal(bundler, "rolldown");
+  const { metadata } = runOptimize({ root, outDir });
   assert.deepEqual(Object.keys(metadata), ["plaincjs"], "discovered from index.html");
   assert.match(
     fs.readFileSync(path.join(outDir, metadata.plaincjs.file), "utf8"),
@@ -312,10 +304,10 @@ only("rolldown", "a Vite 8 app without esbuild pre-bundles with its vite's rolld
   cleanup(root);
 });
 
-only("esbuild", "a Vite <= 7 app keeps its vite's esbuild", () => {
+only("rolldown", "a Vite 7 app (its vite declares only esbuild) gets the vendored rolldown", () => {
   const root = makeRoot(null, "oj-optdeps-v7-");
   const vite = path.join(root, "node_modules", "vite");
-  fs.mkdirSync(path.join(vite, "node_modules"), { recursive: true });
+  fs.mkdirSync(vite, { recursive: true });
   fs.writeFileSync(
     path.join(vite, "package.json"),
     JSON.stringify({
@@ -325,20 +317,21 @@ only("esbuild", "a Vite <= 7 app keeps its vite's esbuild", () => {
       exports: { "./package.json": "./package.json" },
     }),
   );
-  fs.symlinkSync(path.join(fixtureModules, "esbuild"), path.join(vite, "node_modules", "esbuild"));
-  const scoped = path.join(fixtureModules, "@esbuild");
-  if (fs.existsSync(scoped)) fs.symlinkSync(scoped, path.join(vite, "node_modules", "@esbuild"));
-  // A hoisted standalone rolldown (tsdown and friends) is resolvable FROM
-  // vite's directory, but vite does not declare it: esbuild must still win.
-  if (fs.existsSync(path.join(fixtureModules, "rolldown"))) {
-    fs.symlinkSync(path.join(fixtureModules, "rolldown"), path.join(root, "node_modules", "rolldown"));
-  }
+  const vendor = fs.mkdtempSync(path.join(os.tmpdir(), "oj-vendor-"));
+  fs.mkdirSync(path.join(vendor, "node_modules"));
+  fs.writeFileSync(path.join(vendor, "package.json"), JSON.stringify({ name: "oj-vendor", private: true }));
+  fs.symlinkSync(path.join(fixtureModules, "rolldown"), path.join(vendor, "node_modules", "rolldown"));
   pkg("plaincjs", root, "index.js", { "index.js": `exports.a = 1;\n` });
   write(root, "entry.js", `import { a } from "plaincjs";\nexport const out = a;\n`);
-  const { metadata, bundler } = runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")] });
-  assert.equal(bundler, "esbuild");
+  const { metadata } = runOptimize({
+    root,
+    outDir: outDirOf(root),
+    entries: [path.join(root, "entry.js")],
+    vendoredRolldown: vendor,
+  });
   assert.deepEqual(Object.keys(metadata), ["plaincjs"]);
   cleanup(root);
+  cleanup(vendor);
 });
 
 only("rolldown", "an app without vite uses the rolldown vendored next to oj", () => {
@@ -351,10 +344,9 @@ only("rolldown", "an app without vite uses the rolldown vendored next to oj", ()
   write(root, "entry.js", `import { a } from "plaincjs";\nexport const out = a;\n`);
   const run = (vendoredRolldown) =>
     runOptimize({ root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")], vendoredRolldown });
-  const { metadata, bundler } = run(vendor);
-  assert.equal(bundler, "rolldown");
+  const { metadata } = run(vendor);
   assert.deepEqual(Object.keys(metadata), ["plaincjs"]);
-  assert.throws(() => run(undefined), /no dependency bundler found/, "nothing to bundle with: a clear error");
+  assert.throws(() => run(undefined), /no rolldown found/, "nothing to bundle with: a clear error");
   cleanup(root);
   cleanup(vendor);
 });

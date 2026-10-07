@@ -5,12 +5,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { runSidecar, tmpProject, testWithEsbuild } from "./harness.mjs";
+import { runSidecar, tmpProject, testWithRolldown, linkRolldown } from "./harness.mjs";
 
-const itEsbuild = testWithEsbuild(test);
+const it = testWithRolldown(test);
 
-// Concatenate every emitted chunk so assertions don't depend on which chunk
-// esbuild happened to place the code in (splitting is on).
+// `optimizeDeps.esbuildOptions` is deprecated but still honored, the way Vite 8
+// maps it onto the rolldown run. Concatenate every emitted chunk so assertions
+// don't depend on which chunk the code landed in.
 const emittedBundleText = (outDir) =>
   fs
     .readdirSync(outDir)
@@ -18,11 +19,12 @@ const emittedBundleText = (outDir) =>
     .map((f) => fs.readFileSync(path.join(outDir, f), "utf8"))
     .join("\n");
 
-itEsbuild("optimize-deps applies user esbuildOptions (define + target) to the pre-bundle", () => {
-  const fx = tmpProject({ prefix: "oj-esbopts-", linkEsbuild: true });
+it("optimize-deps applies user esbuildOptions (define + target) to the pre-bundle", () => {
+  const fx = tmpProject({ prefix: "oj-esbopts-" });
+  linkRolldown(fx.root);
   try {
     // The dep reads a define'd global and uses ES2016 `**` on a non-constant
-    // operand (so esbuild can't fold it away), letting us prove both `define`
+    // operand (so the bundler can't fold it away), letting us prove both `define`
     // substitution and `target` down-leveling reached the emitted bytes.
     fx.pkg("flagdep", "index.js", {
       "index.js": `export const flag = __OJ_FLAG__;\nexport const pow = globalThis.__oj_base__ ** 10;\n`,
@@ -55,8 +57,9 @@ itEsbuild("optimize-deps applies user esbuildOptions (define + target) to the pr
   }
 });
 
-itEsbuild("optimize-deps keeps its NODE_ENV define when the user adds their own", () => {
-  const fx = tmpProject({ prefix: "oj-esbopts2-", linkEsbuild: true });
+it("optimize-deps keeps its NODE_ENV define when the user adds their own", () => {
+  const fx = tmpProject({ prefix: "oj-esbopts2-" });
+  linkRolldown(fx.root);
   try {
     fx.pkg("envdep", "index.js", {
       "index.js": `export const mode = process.env.NODE_ENV;\nexport const extra = __EXTRA__;\n`,
@@ -82,17 +85,16 @@ itEsbuild("optimize-deps keeps its NODE_ENV define when the user adds their own"
   }
 });
 
-itEsbuild("optimize-deps drops non-esbuild option keys instead of crashing the pre-bundle", () => {
-  const fx = tmpProject({ prefix: "oj-esbopts3-", linkEsbuild: true });
+it("optimize-deps drops non-esbuild option keys instead of crashing the pre-bundle", () => {
+  const fx = tmpProject({ prefix: "oj-esbopts3-" });
+  linkRolldown(fx.root);
   try {
     fx.pkg("mixdep", "index.js", { "index.js": `export const v = __MIX__;\n` });
     fx.write("entry.js", `import { v } from "mixdep";\nexport const out = v;\n`);
 
     const outDir = path.join(fx.root, ".oj-cache", "deps");
-    // oj forwards optimizeDeps.rolldownOptions under the same key as
-    // esbuildOptions. Its rolldown-shaped fields (output/resolve/transform/input)
-    // are NOT valid esbuild options and would throw if spread into esbuild.build;
-    // they must be filtered out while a valid esbuild `define` still applies.
+    // Foreign option keys (rolldown-shaped or bogus) must be filtered out of
+    // the esbuildOptions compat channel while a valid `define` still applies.
     const { metadata } = runSidecar("optimize-deps.mjs", {
       root: fx.root,
       outDir,

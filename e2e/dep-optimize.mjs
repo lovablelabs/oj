@@ -12,11 +12,11 @@ import { waitUp } from "./util.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
-const esbuildSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/esbuild");
+const viteSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/vite");
 const port = 5273;
 
-if (!fs.existsSync(esbuildSrc)) {
-  console.log("SKIP dep-optimize: esbuild fixture not installed");
+if (!fs.existsSync(viteSrc)) {
+  console.log("SKIP dep-optimize: vite fixture not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");
   process.exit(0);
 }
@@ -26,9 +26,7 @@ execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdep-"));
 const nm = path.join(app, "node_modules");
 fs.mkdirSync(path.join(nm, "cjs-lib"), { recursive: true });
-fs.symlinkSync(esbuildSrc, path.join(nm, "esbuild"));
-const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(nm, "@esbuild"));
+fs.symlinkSync(viteSrc, path.join(nm, "vite"));
 
 fs.writeFileSync(
   path.join(nm, "cjs-lib", "package.json"),
