@@ -723,3 +723,40 @@ only("rolldown", "build inputs feed the scan before the html glob, as in Vite", 
   assert.deepEqual(Object.keys(metadata), ["frominput"], "build input wins over the html glob");
   cleanup(root);
 });
+
+only("rolldown", "import.meta.glob targets are crawled by the scan, as in Vite", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-glob-");
+  esmPkg("frompage", root, { "index.js": `export const p = 1;\n` });
+  esmPkg("fromadmin", root, { "index.js": `export const a = 1;\n` });
+  esmPkg("fromskipped", root, { "index.js": `export const s = 1;\n` });
+  esmPkg("frominline", root, { "index.js": `export const i = 1;\n` });
+  write(
+    root,
+    "index.html",
+    `<script type="module" src="/main.ts"></script>\n` +
+      // An inline module script's glob resolves against the html's directory.
+      `<script type="module">const w = import.meta.glob("/inline/*.js");\nconsole.log(w);</script>`,
+  );
+  write(
+    root,
+    "main.ts",
+    // Vite's shapes in one file: an array pattern with a negation, a TS
+    // generic call, an options argument, a root-relative pattern, and a
+    // commented-out call that must stay dead.
+    `// const dead = import.meta.glob("./pages/skip.js");\n` +
+      `const pages = import.meta.glob<Record<string, unknown>>(["./pages/**/*.js", "!**/skip.js"], { eager: true });\n` +
+      `const admin = import.meta.glob("/src/admin/*.js");\n` +
+      `export default [pages, admin];\n`,
+  );
+  write(root, "pages/home.js", `import { p } from "frompage";\nconsole.log(p);\n`);
+  write(root, "pages/skip.js", `import { s } from "fromskipped";\nconsole.log(s);\n`);
+  write(root, "src/admin/panel.js", `import { a } from "fromadmin";\nconsole.log(a);\n`);
+  write(root, "inline/widget.js", `import { i } from "frominline";\nconsole.log(i);\n`);
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root) });
+  assert.deepEqual(
+    Object.keys(metadata).sort(),
+    ["fromadmin", "frominline", "frompage"],
+    "glob-matched modules crawled; negated and commented ones not",
+  );
+  cleanup(root);
+});

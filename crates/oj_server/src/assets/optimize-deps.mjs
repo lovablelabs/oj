@@ -466,6 +466,82 @@ const HTML_COMMENT_RE = /<!--.*?-->/gs;
 const SRC_RE = /\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/i;
 const TYPE_RE = /\btype\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/i;
 
+// Vite's scan expands `import.meta.glob` (its js-glob transform and the html
+// script path both run transformGlobImport): the matched files must be
+// crawled, or a dep only a glob-routed page imports is never discovered.
+// Call sites are found on literal-masked code and the patterns read from the
+// raw source. Pattern shapes follow Vite's toAbsoluteGlob: `/x` from the
+// root, `./x` and `../x` from the importer, `**` as-is, `!` negates; alias
+// and `#subpath` patterns need the full resolver and are skipped here.
+const GLOB_CALL_RE = /\bimport\.meta\.glob(?:<[^(]*>)?\s*\(/dg;
+
+/// The string literals of the call's first argument, from `from` (just past
+/// the opening paren): one literal, or an array of them. Anything dynamic
+/// (an expression, a template with `${`) yields none.
+function parseGlobPatterns(code, from) {
+  let i = from;
+  const ws = () => {
+    while (i < code.length && /\s/.test(code[i])) i++;
+  };
+  const literal = () => {
+    const q = code[i];
+    if (q !== "'" && q !== '"' && q !== "`") return null;
+    let out = "";
+    for (i++; i < code.length && code[i] !== q; i++) {
+      if (code[i] === "\\") out += code[++i] ?? "";
+      else if (q === "`" && code[i] === "$" && code[i + 1] === "{") return null;
+      else out += code[i];
+    }
+    i++;
+    return out;
+  };
+  ws();
+  if (code[i] !== "[") {
+    const one = literal();
+    return one == null ? [] : [one];
+  }
+  i++;
+  const out = [];
+  for (;;) {
+    ws();
+    if (code[i] === "]" || i >= code.length) return out;
+    const l = literal();
+    if (l == null) return [];
+    out.push(l);
+    ws();
+    if (code[i] === ",") i++;
+    else if (code[i] !== "]") return [];
+  }
+}
+
+/// The files every `import.meta.glob` in `code` matches, absolute and sorted,
+/// the importer itself excluded (Vite filters it too).
+function globImportTargets(code, importer) {
+  const toPosix = (p) => p.split(path.sep).join("/");
+  const masked = maskLiterals(code);
+  const dir = toPosix(path.dirname(importer));
+  const positive = [];
+  const negative = [];
+  GLOB_CALL_RE.lastIndex = 0;
+  for (let m; (m = GLOB_CALL_RE.exec(masked));) {
+    for (const raw of parseGlobPatterns(code, m.indices[0][1])) {
+      const neg = raw[0] === "!";
+      const p = neg ? raw.slice(1) : raw;
+      let abs;
+      if (p.startsWith("/")) abs = path.posix.join(toPosix(root), p.slice(1));
+      else if (p.startsWith("./") || p.startsWith("../")) abs = path.posix.join(dir, p);
+      else if (p.startsWith("**")) abs = path.posix.join(toPosix(root), p);
+      else continue;
+      (neg ? negative : positive).push(abs);
+    }
+  }
+  if (!positive.length) return [];
+  const files = new Set();
+  for (const p of positive) for (const f of globFiles(p, root)) files.add(f);
+  const self = toPosix(importer);
+  return [...files].filter((f) => f !== self && !negative.some((n) => path.posix.matchesGlob(f, n))).sort();
+}
+
 /// Vite 8's scanImports (optimizer/scan.ts) on rolldown's `scan`: crawl the
 /// app from its entries, record every bare import that resolves into
 /// node_modules (or is listed in `include`) and stop there, keep crawling into
@@ -521,9 +597,13 @@ async function rolldownScan(rd, discover, host) {
     let js = "";
     let n = 0;
     for (const [, openTag, content] of raw.matchAll(SCRIPT_RE)) {
-      const type = TYPE_RE.exec(openTag)?.slice(1).find((v) => v != null);
+      const type = TYPE_RE.exec(openTag)
+        ?.slice(1)
+        .find((v) => v != null);
       if (type !== "module") continue;
-      const src = SRC_RE.exec(openTag)?.slice(1).find((v) => v != null);
+      const src = SRC_RE.exec(openTag)
+        ?.slice(1)
+        .find((v) => v != null);
       if (src) {
         js += `import ${JSON.stringify(src)};\n`;
       } else if (content.trim()) {
@@ -582,6 +662,19 @@ async function rolldownScan(rd, discover, host) {
         if (id.startsWith(HTML_SCRIPT_ID)) return { code: htmlScripts.get(id) ?? "", moduleType: "jsx" };
         if (cleanUrl(id).endsWith(".html")) return { code: htmlToJs(cleanUrl(id)), moduleType: "js" };
         return null;
+      },
+    },
+    // Vite's vite:dep-scan:transform:js-glob, and its html script path: an
+    // import per glob-matched file so the crawl follows them. The call itself
+    // stays in place; the scan never executes the code.
+    transform: {
+      filter: { code: /import\.meta\.glob/ },
+      handler(code, id) {
+        const file = id.startsWith(HTML_SCRIPT_ID) ? cleanUrl(id.slice(HTML_SCRIPT_ID.length)) : cleanUrl(id);
+        if (!JS_TYPES_RE.test(file) && !id.startsWith(HTML_SCRIPT_ID)) return null;
+        const targets = globImportTargets(code, file);
+        if (!targets.length) return null;
+        return { code: `${code}\n${targets.map((f) => `import ${JSON.stringify(f)};`).join("\n")}` };
       },
     },
   };
