@@ -1070,6 +1070,8 @@ fn optimized_deps(
             include,
             exclude,
             entries,
+            build_inputs: oj_config::build_inputs(config),
+            build_out_dir: oj_config::build_out_dir(config),
             dedupe: oj_config::resolve_dedupe(config),
             alias: oj_config::resolve_alias(config, "client"),
             force: oj_config::optimize_deps_force(config),

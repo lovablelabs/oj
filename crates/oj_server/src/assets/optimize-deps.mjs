@@ -76,19 +76,18 @@ const ESBUILD_OPTION_KEYS = new Set([
   "ignoreAnnotations",
 ]);
 
+// Vite's computeEntries fallbacks, in its order: the config's build inputs,
+// else every html file under the root (node_modules, the build outDir, tests
+// and coverage ignored, as globEntries does). The scan itself extracts the
+// html files' module scripts.
 function detectEntries() {
-  const html = path.join(root, "index.html");
-  if (!existsSync(html)) return [];
-  const src = readFileSync(html, "utf8");
-  const found = [];
-  for (const tag of src.match(/<script\b[^>]*>/gi) || []) {
-    if (!/type\s*=\s*["']module["']/i.test(tag)) continue;
-    const m = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
-    if (!m || /^https?:/i.test(m[1])) continue;
-    const abs = path.join(root, m[1].replace(/^\//, ""));
-    if (existsSync(abs)) found.push(abs);
+  if (buildInputs.length) {
+    return buildInputs.map((e) => (path.isAbsolute(e) ? e : path.join(root, e)));
   }
-  return found;
+  const ignored = new Set(["node_modules", buildOutDir, "__tests__", "coverage"]);
+  return globFiles("**/*.html", root)
+    .filter((f) => !f.split("/").some((seg) => ignored.has(seg)))
+    .map((f) => path.join(root, f));
 }
 
 // Vite's expandGlobIds (optimizer/resolve.ts): an include entry with a glob in
@@ -182,7 +181,10 @@ function expandGlobIds(id) {
   return [pkgName, ...globFiles(pattern, pkgDir).map((m) => path.posix.join(pkgName, m))];
 }
 let includeIds;
+let warnIncludes;
 let entryList;
+let buildInputs;
+let buildOutDir;
 
 const NODE_BUILTINS = new Set([
   ...builtinModules.builtinModules,
@@ -456,6 +458,13 @@ function optionalPeerOf(id, importer) {
 }
 
 const SCAN_INCLUDE_ID = "\0oj-scan-include";
+const HTML_SCRIPT_ID = "\0oj-html-script:";
+// Vite's scan.ts html extraction (html only: oj's other pipelines own the
+// vue/svelte html-likes), run over comment-blanked markup.
+const SCRIPT_RE = /(<script(?:\s+[a-z_:][-\w:]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^"'<>=\s]+))?)*\s*>)(.*?)<\/script>/gis;
+const HTML_COMMENT_RE = /<!--.*?-->/gs;
+const SRC_RE = /\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/i;
+const TYPE_RE = /\btype\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/i;
 
 /// Vite 8's scanImports (optimizer/scan.ts) on rolldown's `scan`: crawl the
 /// app from its entries, record every bare import that resolves into
@@ -498,12 +507,41 @@ async function rolldownScan(rd, discover, host) {
     return out;
   };
   const externalize = (id) => ({ id, external: true });
+  // Vite's htmlTypeOnLoadCallback: each `<script type="module">` in an html
+  // entry becomes an import of its src, and each inline one its own virtual
+  // module (variable names may repeat between scripts).
+  const htmlScripts = new Map();
+  const htmlToJs = (file) => {
+    let raw;
+    try {
+      raw = readFileSync(file, "utf8").replace(HTML_COMMENT_RE, "<!---->");
+    } catch {
+      return "";
+    }
+    let js = "";
+    let n = 0;
+    for (const [, openTag, content] of raw.matchAll(SCRIPT_RE)) {
+      const type = TYPE_RE.exec(openTag)?.slice(1).find((v) => v != null);
+      if (type !== "module") continue;
+      const src = SRC_RE.exec(openTag)?.slice(1).find((v) => v != null);
+      if (src) {
+        js += `import ${JSON.stringify(src)};\n`;
+      } else if (content.trim()) {
+        const key = `${HTML_SCRIPT_ID}${file}?id=${n++}`;
+        htmlScripts.set(key, content);
+        js += `export * from ${JSON.stringify(key)};\n`;
+      }
+    }
+    return `${js}\nexport default {}`;
+  };
   const plugin = {
     name: "oj:dep-scan",
     resolveId: {
       async handler(id, importer) {
-        if (id === SCAN_INCLUDE_ID) return id;
+        if (id === SCAN_INCLUDE_ID || id.startsWith(HTML_SCRIPT_ID)) return id;
         if (!importer) return null;
+        // An inline html script imports relative to its html file.
+        if (importer.startsWith(HTML_SCRIPT_ID)) importer = cleanUrl(importer.slice(HTML_SCRIPT_ID.length));
         if (EXTERNAL_URL_RE.test(id) || id.startsWith("data:")) return externalize(id);
         if (SPECIAL_QUERY_RE.test(id)) return externalize(id);
         if (BARE_RE.test(id) && !aliasResolve(id)) {
@@ -523,6 +561,14 @@ async function rolldownScan(rd, discover, host) {
           return JS_TYPES_RE.test(cleanUrl(resolved)) ? cleanUrl(resolved) : externalize(id);
         }
         if (EXTERNAL_RE.test(id) || SCAN_EXTERNAL_RE.test(cleanUrl(id))) return externalize(id);
+        // `<script src="/main.tsx">`: a dev-server-rooted URL, the file under
+        // the root (Vite's resolver maps these the same way).
+        if (id.startsWith("/")) {
+          const abs = path.join(root, cleanUrl(id));
+          if (existsSync(abs)) {
+            return JS_TYPES_RE.test(abs) || abs.endsWith(".html") ? abs : externalize(id);
+          }
+        }
         const resolved = await resolve(this, id, importer);
         if (resolved && path.isAbsolute(resolved) && JS_TYPES_RE.test(cleanUrl(resolved))) return cleanUrl(resolved);
         return externalize(id);
@@ -530,8 +576,12 @@ async function rolldownScan(rd, discover, host) {
     },
     load: {
       handler(id) {
-        if (id !== SCAN_INCLUDE_ID) return null;
-        return { code: plainIncludes.map((i) => `import ${JSON.stringify(i)};`).join("\n"), moduleType: "js" };
+        if (id === SCAN_INCLUDE_ID) {
+          return { code: plainIncludes.map((i) => `import ${JSON.stringify(i)};`).join("\n"), moduleType: "js" };
+        }
+        if (id.startsWith(HTML_SCRIPT_ID)) return { code: htmlScripts.get(id) ?? "", moduleType: "jsx" };
+        if (cleanUrl(id).endsWith(".html")) return { code: htmlToJs(cleanUrl(id)), moduleType: "js" };
+        return null;
       },
     },
   };
@@ -962,6 +1012,8 @@ function configure(input) {
     alias = [],
     autoDiscover = true,
     nodeEnv = "development",
+    buildInputs = [],
+    buildOutDir = "dist",
     resolve: resolveSettings = {},
   } = input);
   const { plugins: _plugins, output = {}, ...rest } = input.rolldownOptions ?? {};
@@ -988,9 +1040,16 @@ function configure(input) {
       if (!includeIds.includes(id)) includeIds.push(id);
     }
   }
+  // The user's list warns when an entry does not resolve; oj's implicit
+  // includes (the injected JSX runtime) only bundle when present.
+  warnIncludes = new Set(includeIds);
+  for (const inc of input.implicitInclude ?? []) {
+    if (!includeIds.includes(inc)) includeIds.push(inc);
+  }
   // optimizeDeps.entries are glob patterns relative to root (Vite scans them with
-  // tinyglobby); a literal path is used as given.
-  entryList =
+  // tinyglobby); a literal path is used as given. Like Vite's isScannable +
+  // exists filter, only JS and html files feed the scan.
+  entryList = (
     entries && entries.length
       ? entries.flatMap((e) =>
           isDynamicPattern(e)
@@ -999,7 +1058,8 @@ function configure(input) {
                 .map((f) => path.join(root, f))
             : [path.isAbsolute(e) ? e : path.join(root, e)],
         )
-      : detectEntries();
+      : detectEntries()
+  ).filter((f) => (JS_TYPES_RE.test(f) || f.endsWith(".html")) && existsSync(f));
   DEDUPE_PKGS = new Set(dedupe.map(npmPackageName).filter(Boolean));
   aliasEntries = [
     ...loadTsconfigAliases(root),
@@ -1034,7 +1094,7 @@ export async function optimize(input) {
   // Vite's unableToOptimize: a dep named in `optimizeDeps.include` that does
   // not resolve is dropped with a warning, never silently.
   const unableToOptimize = (dep) => {
-    if (includeIds.includes(dep) || dep.includes(">")) {
+    if (warnIncludes.has(dep) || dep.includes(">")) {
       console.warn(`oj: failed to resolve dependency "${dep}", present in 'optimizeDeps.include'`);
     }
   };

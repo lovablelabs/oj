@@ -648,12 +648,19 @@ only("rolldown", "a deduped dep reached only from a linked package pre-bundles t
 only("rolldown", "an include that does not resolve warns instead of dropping silently", () => {
   const root = makeRoot("rolldown", "oj-optdeps-incwarn-");
   write(root, "entry.js", `export const x = 1;\n`);
-  const cfg = { root, outDir: outDirOf(root), entries: [path.join(root, "entry.js")], include: ["ghost-pkg"] };
+  const cfg = {
+    root,
+    outDir: outDirOf(root),
+    entries: [path.join(root, "entry.js")],
+    include: ["ghost-pkg"],
+    implicitInclude: ["react/jsx-dev-runtime"],
+  };
   const r = spawnSync("node", ["--input-type=module", "-e", OPTIMIZE_WRAPPER, sidecar, JSON.stringify(cfg)], {
     encoding: "utf8",
   });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stderr, /failed to resolve dependency "ghost-pkg"/, "Vite's unableToOptimize warning");
+  assert.doesNotMatch(r.stderr, /jsx-dev-runtime/, "oj's implicit include stays quiet when absent");
   assert.deepEqual(Object.keys(JSON.parse(r.stdout).metadata), []);
   cleanup(root);
 });
@@ -676,5 +683,43 @@ only("rolldown", "noDiscovery still resolves the include list through the plugin
     { root, outDir: outDirOf(root), autoDiscover: false, include: ["app-icons"] },
   );
   assert.deepEqual(Object.keys(deps), ["app-icons"], "the include resolved through the plugin, nothing crawled");
+  cleanup(root);
+});
+
+only("rolldown", "entries follow Vite's computeEntries: every html file, inline module scripts", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-entries-");
+  esmPkg("fromroot", root, { "index.js": `export const a = 1;\n` });
+  esmPkg("frompage", root, { "index.js": `export const b = 1;\n` });
+  esmPkg("frominline", root, { "index.js": `export const c = 1;\n` });
+  esmPkg("fromdist", root, { "index.js": `export const d = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/main.js"></script>`);
+  write(root, "main.js", `import { a } from "fromroot";\nconsole.log(a);\n`);
+  // A nested page with a relative src, an inline module script, a commented
+  // script and a classic one; only the first two feed the scan.
+  write(
+    root,
+    "pages/about.html",
+    `<script type="module" src="./about.js"></script>\n` +
+      `<script type="module">import { c } from "frominline";\nconsole.log(c);</script>\n` +
+      `<!-- <script type="module">import { d } from "fromdist";</script> -->\n` +
+      `<script>var legacy = 1;</script>`,
+  );
+  write(root, "pages/about.js", `import { b } from "frompage";\nconsole.log(b);\n`);
+  // Build output html must not feed the scan (Vite ignores build.outDir).
+  write(root, "dist/index.html", `<script type="module">import { d } from "fromdist";</script>`);
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root) });
+  assert.deepEqual(Object.keys(metadata).sort(), ["frominline", "frompage", "fromroot"]);
+  cleanup(root);
+});
+
+only("rolldown", "build inputs feed the scan before the html glob, as in Vite", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-binput-");
+  esmPkg("frominput", root, { "index.js": `export const i = 1;\n` });
+  esmPkg("fromhtml", root, { "index.js": `export const h = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/other.js"></script>`);
+  write(root, "other.js", `import { h } from "fromhtml";\nconsole.log(h);\n`);
+  write(root, "src/entry.js", `import { i } from "frominput";\nconsole.log(i);\n`);
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root), buildInputs: ["src/entry.js"] });
+  assert.deepEqual(Object.keys(metadata), ["frominput"], "build input wins over the html glob");
   cleanup(root);
 });

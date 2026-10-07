@@ -165,6 +165,12 @@ pub struct OptimizeInput {
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub entries: Vec<String>,
+    /// `build.rolldownOptions.input`: the scan's entries when
+    /// `optimizeDeps.entries` is unset, before the html glob (Vite's
+    /// computeEntries order).
+    pub build_inputs: Vec<String>,
+    /// `build.outDir`: the scan's html glob skips it.
+    pub build_out_dir: String,
     pub dedupe: Vec<String>,
     pub alias: Vec<(String, String)>,
     /// `optimizeDeps.force`: bypass the cached pre-bundle and rebuild.
@@ -283,11 +289,14 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
             (b"\0i", &input.include),
             (b"\0x", &input.exclude),
             (b"\0e", &input.entries),
+            (b"\0b", &input.build_inputs),
             (b"\0d", &input.dedupe),
             (b"\0n", &input.needs_interop),
             (b"\0p", &input.plugin_names),
         ],
     );
+    hasher.update(b"\0bo=");
+    hasher.update(input.build_out_dir.as_bytes());
     for (find, replacement) in &input.alias {
         hasher.update(b"\0a");
         hasher.update(find.as_bytes());
@@ -387,14 +396,9 @@ async fn run_optimizer(
     // process rewrites it.
     crate::plugins::ensure_asset(&cache, "optimize-deps.mjs", OPTIMIZE_JS).ok()?;
     let script = cache.join("optimize-deps.mjs");
-    // react/jsx-dev-runtime is always prebundled (oj injects the dev JSX runtime);
-    // merge it with any user optimizeDeps.include.
-    let mut include = vec!["react/jsx-dev-runtime".to_string()];
-    for dep in &input.include {
-        if !include.contains(dep) {
-            include.push(dep.clone());
-        }
-    }
+    // react/jsx-dev-runtime is always prebundled (oj injects the dev JSX
+    // runtime), but as oj's own implicit include: unlike the user's list it
+    // must not warn when the app has no React.
     let alias: Vec<[&str; 2]> = input
         .alias
         .iter()
@@ -407,7 +411,10 @@ async fn run_optimizer(
         "root": root.to_string_lossy(),
         "outDir": dir.to_string_lossy(),
         "entries": input.entries,
-        "include": include,
+        "buildInputs": input.build_inputs,
+        "buildOutDir": input.build_out_dir,
+        "include": input.include,
+        "implicitInclude": ["react/jsx-dev-runtime"],
         "exclude": input.exclude,
         "dedupe": input.dedupe,
         "alias": alias,
@@ -623,6 +630,24 @@ mod tests {
             lockfile_hash(root, "0.0.1", &empty),
             lockfile_hash(root, "0.0.1", &prod_env),
             "NODE_ENV"
+        );
+        let with_build_input = OptimizeInput {
+            build_inputs: vec!["src/main.ts".into()],
+            ..OptimizeInput::default()
+        };
+        assert_ne!(
+            lockfile_hash(root, "0.0.1", &empty),
+            lockfile_hash(root, "0.0.1", &with_build_input),
+            "build inputs feed the scan entries"
+        );
+        let with_out_dir = OptimizeInput {
+            build_out_dir: "build".into(),
+            ..OptimizeInput::default()
+        };
+        assert_ne!(
+            lockfile_hash(root, "0.0.1", &empty),
+            lockfile_hash(root, "0.0.1", &with_out_dir),
+            "build outDir shapes the html glob"
         );
 
         let aliased = OptimizeInput {
