@@ -101,7 +101,7 @@ pub(crate) fn hmr_socket(
                 let _ = host.ws_connection().await;
             });
         }
-        let buffered = state.buffered_error.lock().unwrap().take();
+        let buffered = state.buffered_frame.lock().unwrap().take();
         if let Some(frame) = buffered {
             let _ = socket.send(Message::Text(frame.into())).await;
         }
@@ -350,15 +350,22 @@ function $RefreshSig$() {{ return RefreshRuntime.createSignatureFunctionForTrans
     )
 }
 
-/// Broadcast a Vite `ErrorPayload` frame, or hold it for the next client when none
-/// is connected yet (a page whose first module request 500s has no socket open; without the buffered frame, blank page).
-pub(crate) fn send_error(state: &ServerState, message: &str) {
-    let frame = error_frame(message);
+/// Broadcast a frame, or hold it for the next client when none is connected
+/// yet: a page still booting has no socket open, so a frame it must see (an
+/// error from its first module request, a reload from a dep re-optimization
+/// that just outdated its URLs) waits in `buffered_frame` and is delivered
+/// on connect (Vite's ws `bufferedError`, generalized).
+pub(crate) fn send_or_buffer(state: &ServerState, frame: String) {
     if state.reload_tx.receiver_count() == 0 {
-        *state.buffered_error.lock().unwrap() = Some(frame);
+        *state.buffered_frame.lock().unwrap() = Some(frame);
     } else {
         let _ = state.reload_tx.send(frame);
     }
+}
+
+/// A Vite `ErrorPayload` frame for every connected client, or the next one.
+pub(crate) fn send_error(state: &ServerState, message: &str) {
+    send_or_buffer(state, error_frame(message));
 }
 
 pub(crate) fn error_frame(message: &str) -> String {

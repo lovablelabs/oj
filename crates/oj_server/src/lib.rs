@@ -359,9 +359,10 @@ struct ServerState {
     /// dep through plugin hooks; needsInterop forces the interop rewrite) —
     /// threaded, not process-global.
     optimize_view: Arc<optimize::OptimizeView>,
-    /// An error frame broadcast while no client was connected is kept and
-    /// delivered to the next client (Vite's ws `bufferedError`).
-    buffered_error: Mutex<Option<String>>,
+    /// A frame broadcast while no client was connected (an error, or the
+    /// reload after a dep re-optimization) is kept and delivered to the next
+    /// client (Vite's ws `bufferedError`, generalized).
+    buffered_frame: Mutex<Option<String>>,
     /// Modules whose last transform failed on an unresolvable relative import
     /// (Vite's `_hasResolveFailedErrorModules`): a file appearing on disk re-processes them.
     resolve_failed: Mutex<std::collections::HashSet<String>>,
@@ -1545,7 +1546,7 @@ impl DevServer {
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
             base: config.base.clone().filter(|b| b != "/"),
-            buffered_error: Mutex::new(None),
+            buffered_frame: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
             client_js_etag: format!(
                 "\"{}\"",
@@ -1593,16 +1594,10 @@ impl DevServer {
                         newly.join(", ")
                     );
                 }
-                let frame = full_reload_frame("optimized dependencies changed", None, None);
-                // A commit can land while the page is still booting, before
-                // its HMR socket is open; a broadcast then goes nowhere and
-                // the page would keep a half-old module graph. Buffer the
-                // frame for the first client, like send_error does.
-                if state.reload_tx.receiver_count() == 0 {
-                    *state.buffered_error.lock().unwrap() = Some(frame);
-                } else {
-                    let _ = state.reload_tx.send(frame);
-                }
+                hmr::send_or_buffer(
+                    &state,
+                    full_reload_frame("optimized dependencies changed", None, None),
+                );
             }));
         }
         spawn_warmup(&state, &config);
