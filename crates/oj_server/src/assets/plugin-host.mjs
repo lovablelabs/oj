@@ -3045,6 +3045,7 @@ async function setupConfigureServer() {
     for (const name of envNames) server.environments[name] = stubEnvironment(name, server);
   }
   devServer = server;
+  if (process.env.OJ_SSR_TRANSFORM_CACHE === "1") await installSsrTransformCache(server);
   const post = [];
   for (const { p, fn } of pluginsWithHook("configureServer")) {
     let r;
@@ -4228,3 +4229,260 @@ if (!ojEngineBoot) {
 // whichever lands first — as initialized.
 ojInitDone = true;
 ctl({ ojInit: true });
+
+// Persists the ssr environment's transform results across restarts and seeds
+// Vite's module graph with them, so an unchanged file skips every plugin
+// transform on the first request. Each result is stored with the hash of its
+// file taken when Vite stored the result (a transform invalidated mid-flight is
+// never stored), plus the hashes of the module's file-only dependencies
+// (addWatchFile). A changed file or dependency marks the module stale, and so
+// every module that imports it, transitively; a module that reads import.meta.env
+// is also stale when the resolved env changed. Virtual modules are never cached.
+// One snapshot per boot, once the ssr graph has been quiet for 5 s.
+async function installSsrTransformCache(server) {
+  const env = server.environments?.ssr;
+  const mg = env?.moduleGraph;
+  if (
+    !mg ||
+    typeof mg._ensureEntryFromUrl !== "function" ||
+    typeof mg.resolveUrl !== "function" ||
+    typeof mg.updateModuleTransformResult !== "function"
+  )
+    return;
+  const noCache = process.env.OJ_NO_CACHE;
+  if (noCache && noCache !== "0") return;
+  const fs = await import("node:fs");
+  const cfg = env.config ?? server.config;
+  const file = join(process.env.OJ_CACHE_ROOT ?? cfg.root, "ssr-transform-cache.json");
+  const hashFile = (f) => {
+    try {
+      return createHash("sha1").update(fs.readFileSync(f)).digest("hex");
+    } catch {
+      return null;
+    }
+  };
+  const keyInputs = {
+    host: hashFile(fileURLToPath(import.meta.url)),
+    vite: (() => {
+      try {
+        return createRequire(join(cfg.root, "package.json"))("vite/package.json").version;
+      } catch {
+        return null;
+      }
+    })(),
+    root: cfg.root,
+    mode: cfg.mode,
+    define: cfg.define ?? null,
+    plugins: (cfg.plugins ?? []).map((p) => p.name),
+    optimizer: hashFile(join(cfg.cacheDir, "deps_ssr", "_metadata.json")),
+    config: [cfg.configFile, ...(cfg.configFileDependencies ?? [])].filter(Boolean).map((f) => [f, hashFile(f)]),
+    // An added or removed source file can change resolution and glob expansion without touching any cached file.
+    files: (() => {
+      const out = [];
+      const walk = (dir, rel) => {
+        for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (d.name.startsWith(".") || d.name === "node_modules" || d.name === "dist") continue;
+          if (d.name.startsWith("ssr-transform-cache.json") || d.name.includes(".timestamp-")) continue;
+          const r = rel ? `${rel}/${d.name}` : d.name;
+          if (d.isDirectory()) walk(join(dir, d.name), r);
+          else out.push(r);
+        }
+      };
+      try {
+        walk(cfg.root, "");
+      } catch {
+        return null;
+      }
+      return createHash("sha1").update(out.sort().join("\n")).digest("hex");
+    })(),
+  };
+  // An unreadable key input disables reuse instead of matching another unreadable one.
+  const keyReadable =
+    keyInputs.host && keyInputs.vite && keyInputs.optimizer && keyInputs.files && keyInputs.config.every(([, h]) => h);
+  const globalKey = createHash("sha1").update(JSON.stringify(keyInputs)).digest("hex");
+  const isHash = (h) => typeof h === "string" && /^[0-9a-f]{40}$/.test(h);
+  // Imports a module declares after import analysis never reach the graph, so their inputs would go untracked.
+  const postTransform = (cfg.plugins ?? []).some(
+    (p) =>
+      !p.name?.startsWith("vite:") && p.transform && typeof p.transform === "object" && p.transform.order === "post",
+  );
+  if (postTransform) {
+    process.stderr.write(`${OJ} ssr transform cache: off, a plugin transforms after import analysis\n`);
+    return;
+  }
+  // Vite's import analysis skips these, so their watched files are never recorded.
+  const analyzed = (f) => !/\.(json|map)$/.test(f);
+  const isStrings = (a) => Array.isArray(a) && a.every((x) => typeof x === "string");
+  const isPlain = (o) => o !== null && typeof o === "object" && !Array.isArray(o);
+  const isEntry = (e) =>
+    isPlain(e) &&
+    typeof e.url === "string" &&
+    typeof e.id === "string" &&
+    typeof e.file === "string" &&
+    analyzed(e.file) &&
+    isHash(e.sha) &&
+    (e.meta === null || isPlain(e.meta)) &&
+    isPlain(e.tr) &&
+    typeof e.tr.code === "string" &&
+    (e.tr.map === null || (isPlain(e.tr.map) && typeof e.tr.map.mappings === "string")) &&
+    (e.tr.ssr === undefined || typeof e.tr.ssr === "boolean") &&
+    isStrings(e.tr.deps) &&
+    isStrings(e.tr.dynamicDeps) &&
+    isStrings(e.imports) &&
+    Array.isArray(e.depFiles) &&
+    e.depFiles.every((d) => Array.isArray(d) && d.length === 2 && typeof d[0] === "string" && isHash(d[1])) &&
+    (e.env === null || isHash(e.env));
+  // import.meta.env is injected into the modules that read it, so only those depend on it.
+  const envHash = createHash("sha1")
+    .update(JSON.stringify(cfg.env ?? null))
+    .digest("hex");
+
+  const t0 = performance.now();
+  let seeded = 0,
+    stale = 0;
+  if (keyReadable) {
+    try {
+      const disk = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (disk.key === globalKey && Array.isArray(disk.entries)) {
+        const entries = disk.entries;
+        // One malformed entry means the snapshot is not ours to trust, so none of it is used.
+        const wellFormed = entries.every(isEntry);
+        if (!wellFormed) throw new Error("malformed snapshot");
+        const importers = new Map();
+        for (const e of entries)
+          for (const u of e.imports) {
+            if (!importers.has(u)) importers.set(u, []);
+            importers.get(u).push(e.url);
+          }
+        const bad = new Set();
+        const queue = [];
+        const hashes = new Map();
+        const hashOnce = (f) => {
+          if (!hashes.has(f)) hashes.set(f, hashFile(f));
+          return hashes.get(f);
+        };
+        for (const e of entries) {
+          const changed = hashOnce(e.file) !== e.sha || e.depFiles.some(([f, h]) => hashOnce(f) !== h);
+          if (changed) {
+            bad.add(e.url);
+            queue.push(e.url);
+          }
+        }
+        while (queue.length)
+          for (const imp of importers.get(queue.pop()) ?? [])
+            if (!bad.has(imp)) {
+              bad.add(imp);
+              queue.push(imp);
+            }
+        const envStale = entries.filter((e) => e.env !== null && e.env !== envHash && !bad.has(e.url)).length;
+        stale = bad.size + envStale;
+        const fresh = entries.filter((e) => !bad.has(e.url) && (e.env === null || e.env === envHash));
+        const nodes = new Map();
+        for (const e of fresh) {
+          const mod = await mg._ensureEntryFromUrl(e.url, undefined, { id: e.id, meta: e.meta ?? undefined });
+          if (!mod.transformResult) nodes.set(e.url, [mod, e]);
+        }
+        // Every import gets a node before any result is published, so a later edit always reaches its seeded
+        // importers; a throw here leaves the snapshot unused.
+        const deps = new Map();
+        for (const [url, [, e]] of nodes) {
+          const list = [];
+          for (const u of e.imports) {
+            let dep = nodes.get(u)?.[0] ?? mg.urlToModuleMap.get(u);
+            if (!dep) {
+              // Resolving first keeps a failed resolution out of Vite's url promise map, which never retries.
+              const [, id, meta] = await mg.resolveUrl(u);
+              dep = await mg._ensureEntryFromUrl(u, undefined, { id, meta });
+            }
+            list.push(dep);
+          }
+          deps.set(url, list);
+        }
+        for (const [url, [mod, e]] of nodes) {
+          for (const dep of deps.get(url)) {
+            mod.importedModules.add(dep);
+            dep.importers.add(mod);
+          }
+          mod.transformResult = e.tr;
+          mod.__ojSourceHash = e.sha;
+          mod.__ojDepFiles = e.depFiles;
+          mod.__ojUsesEnv = e.env !== null;
+          seeded++;
+        }
+      }
+    } catch {}
+  }
+  process.stderr.write(
+    `${OJ} ssr transform cache: seeded ${seeded} module(s), ${stale} stale, ${Math.round(performance.now() - t0)}ms\n`,
+  );
+
+  // The hash Vite's result was computed from, taken when Vite stores it.
+  const origUpdate = mg.updateModuleTransformResult.bind(mg);
+  mg.updateModuleTransformResult = (mod, result) => {
+    origUpdate(mod, result);
+    if (result && mod.file && analyzed(mod.file) && !mod.id?.startsWith("\0")) {
+      let source = null;
+      try {
+        source = fs.readFileSync(mod.file);
+      } catch {}
+      mod.__ojSourceHash = source ? createHash("sha1").update(source).digest("hex") : null;
+      // Vite injects the resolved env as an object literal; a define can introduce it too.
+      mod.__ojUsesEnv =
+        !source || source.includes("import.meta.env") || String(result.code ?? "").includes('"BASE_URL":');
+      // Import analysis has recorded every import by now, including addWatchFile ones.
+      mod.__ojDepFiles = undefined;
+      mod.__ojImportHashes = new Map();
+      for (const dep of mod.importedModules) {
+        if (dep.file && !dep.id?.startsWith("\0")) mod.__ojImportHashes.set(dep, hashFile(dep.file));
+      }
+    }
+  };
+  let lastActivity = 0;
+  const origFetch = env.fetchModule.bind(env);
+  env.fetchModule = (...a) => {
+    lastActivity = Date.now();
+    return origFetch(...a);
+  };
+  if (!keyReadable) return;
+  const timer = setInterval(() => {
+    if (!lastActivity || Date.now() - lastActivity < 5000) return;
+    clearInterval(timer);
+    const entries = [];
+    for (const mod of mg.idToModuleMap.values()) {
+      const tr = mod.transformResult;
+      if (!tr || !mod.url || !isHash(mod.__ojSourceHash)) continue;
+      const depFiles = mod.__ojDepFiles ?? [];
+      let cacheable = true;
+      if (!mod.__ojDepFiles) {
+        for (const dep of mod.importedModules) {
+          if (!dep.file || dep.id?.startsWith("\0")) continue;
+          const h = mod.__ojImportHashes?.get(dep);
+          if (!isHash(h)) {
+            cacheable = false;
+            break;
+          }
+          depFiles.push([dep.file, h]);
+        }
+      }
+      if (!cacheable) continue;
+      const entry = {
+        url: mod.url,
+        id: mod.id,
+        file: mod.file,
+        sha: mod.__ojSourceHash,
+        meta: mod.meta ?? null,
+        env: mod.__ojUsesEnv ? envHash : null,
+        tr: { code: tr.code, map: tr.map ?? null, ssr: tr.ssr, deps: tr.deps ?? [], dynamicDeps: tr.dynamicDeps ?? [] },
+        imports: [...mod.importedModules].map((m) => m.url).filter(Boolean),
+        depFiles,
+      };
+      if (isEntry(entry)) entries.push(entry);
+    }
+    try {
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ key: globalKey, entries }));
+      fs.renameSync(tmp, file);
+    } catch {}
+  }, 1000);
+  timer.unref?.();
+}
