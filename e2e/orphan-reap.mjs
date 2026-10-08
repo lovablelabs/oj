@@ -20,7 +20,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
-const PORT = 5361;
+const PORT = 5365;
 
 const alive = (pid) => {
   try {
