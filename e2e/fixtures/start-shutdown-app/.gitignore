@@ -1,0 +1,3 @@
+.oj-cache
+*.pid
+src/routeTree.gen.ts

@@ -167,6 +167,8 @@ jobs:
         run: node e2e/start-client-transfer.mjs
       - name: start prod build honors ssr.external (bare imports, server still renders)
         run: node e2e/start-ssr-external.mjs
+      - name: start dev SIGTERM sweeps plugin children; detached child outlives
+        run: node e2e/start-shutdown-children.mjs
       - name: tanstack start ssr worker queries + post plugins see JS
         run: node e2e/start-ssr-worker-url.mjs
       - name: ssr runner module cache + selective invalidation (hmr-ssr core)
@@ -211,6 +213,8 @@ jobs:
         run: node e2e/dep-optimize-discover.mjs
       - name: thousands of plugin fs.watch handles register and deliver under a write storm
         run: node e2e/fs-watch-many-watchers.mjs
+      - name: mid-boot SIGTERM kills plugin children; next boot reaps a SIGKILLed server's orphans
+        run: node e2e/orphan-reap.mjs
       - name: worker build forms (?worker, inline, url, new URL) and worker-only chunks skip document helpers
         run: node e2e/worker-build.mjs
       - name: publicDir files served verbatim; publicDir path and false honored
