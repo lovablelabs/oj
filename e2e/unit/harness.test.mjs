@@ -5,15 +5,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { runSidecar, rpcSidecar, tmpProject, testWithEsbuild } from "./harness.mjs";
+import { runSidecar, rpcSidecar, tmpProject, testWithRolldown, linkRolldown } from "./harness.mjs";
 
-const itEsbuild = testWithEsbuild(test);
+const itRolldown = testWithRolldown(test);
 
 // Shape A: the one-shot helper drives the real optimize-deps sidecar and returns
 // its parsed stdout. An explicit `include` is pre-bundled to an emitted file.
-itEsbuild("harness.runSidecar pre-bundles an included dep via optimize-deps", () => {
-  const fx = tmpProject({ prefix: "oj-harness-a-", linkEsbuild: true });
+// rolldown is the only optimizer engine, so the fixture's rolldown links in.
+itRolldown("harness.runSidecar pre-bundles an included dep via optimize-deps", () => {
+  const fx = tmpProject({ prefix: "oj-harness-a-" });
   try {
+    linkRolldown(fx.root);
     fx.pkg("plaincjs", "index.js", { "index.js": "exports.a = 1;\n" });
     fx.write("entry.js", `import { a } from "plaincjs";\nexport const out = a;\n`);
     const outDir = path.join(fx.root, ".oj-cache", "deps");

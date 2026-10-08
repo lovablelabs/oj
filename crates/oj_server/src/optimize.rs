@@ -98,6 +98,9 @@ pub struct OptimizedDeps {
     rerun: Option<Arc<RerunState>>,
 }
 
+/// Commit callback: the newly optimized deps, empty when a batch failed.
+type OnCommit = Box<dyn Fn(&[String]) + Send + Sync>;
+
 /// Vite's discovered-deps machinery: a bare import the serve-time rewrite
 /// finds missing from the pre-bundle registers here (`registerMissingImport`)
 /// and is rewritten to its FUTURE optimized URL at once; the dep route holds
@@ -122,9 +125,14 @@ struct RerunState {
     /// phantom optimized URL. Vite instead resets `discovered` and retries on
     /// the next request, which can loop a persistently failing dep.
     failed: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Set when the initial pre-bundle could not run at all (no rolldown via
+    /// vite, vendored, or installed): registration declines everything, so
+    /// every dep keeps the per-file path a bundler-less app always had,
+    /// instead of phantom optimized URLs and a failed rerun per batch.
+    dead: std::sync::atomic::AtomicBool,
     exclude: Vec<String>,
     discovery: bool,
-    on_commit: std::sync::OnceLock<Box<dyn Fn(&[String]) + Send + Sync>>,
+    on_commit: std::sync::OnceLock<OnCommit>,
 }
 
 /// What the dep route should do once `await_dep` settles.
@@ -205,10 +213,22 @@ impl OptimizedDeps {
 
     /// After a rerun commits: `&[String]` is the newly optimized deps. The
     /// caller invalidates its module caches and reloads the page here.
-    pub fn set_on_commit(&self, f: Box<dyn Fn(&[String]) + Send + Sync>) {
+    pub fn set_on_commit(&self, f: OnCommit) {
         if let Some(r) = &self.rerun {
             let _ = r.on_commit.set(f);
         }
+    }
+
+    /// Cheap pre-gate for the serve-time rewrite: whether `dep` could register
+    /// at all, checked before the resolve and CJS-sniff work a registration
+    /// needs.
+    pub fn may_register(&self, dep: &str) -> bool {
+        self.rerun.as_ref().is_some_and(|r| {
+            r.discovery
+                && !r.dead.load(std::sync::atomic::Ordering::Acquire)
+                && !module_list_contains(&r.exclude, dep)
+                && !r.failed.lock().unwrap().contains(dep)
+        })
     }
 
     /// The live map's entry for `dep`, including a provisional one registered
@@ -227,10 +247,7 @@ impl OptimizedDeps {
     /// later forces the reload path.
     pub fn register_missing(&self, dep: &str, needs_interop: bool) -> Option<DepMeta> {
         let r = self.rerun.as_ref()?;
-        if !r.discovery
-            || module_list_contains(&r.exclude, dep)
-            || r.failed.lock().unwrap().contains(dep)
-        {
+        if !self.may_register(dep) {
             return None;
         }
         if let Some(meta) = self.meta_now(dep) {
@@ -362,6 +379,7 @@ impl OptimizedDeps {
             wake,
             browser_version: std::sync::RwLock::new(initial_version),
             failed: std::sync::Mutex::new(std::collections::HashSet::new()),
+            dead: std::sync::atomic::AtomicBool::new(false),
             exclude: input.exclude.clone(),
             discovery: effective_auto_discover(input.no_discovery),
             on_commit: std::sync::OnceLock::new(),
@@ -377,7 +395,7 @@ impl OptimizedDeps {
                         let _ = rerun.tx.send(Some(Arc::new(map)));
                     }
                     None => {
-                        let map = run_optimizer(
+                        let map = match run_optimizer(
                             &root,
                             &dir,
                             &input,
@@ -387,8 +405,26 @@ impl OptimizedDeps {
                             false,
                         )
                         .await
-                        .unwrap_or_default();
-                        write_manifest(&dir, &hash, &hash[..8], [].iter(), &map);
+                        {
+                            Some(map) => {
+                                // A failed run writes NO manifest: an empty
+                                // one would warm-boot the next session into
+                                // the same dead optimizer with discovery on.
+                                write_manifest(&dir, &hash, &hash[..8], [].iter(), &map);
+                                map
+                            }
+                            None => {
+                                // No pre-bundle at all (no rolldown via vite,
+                                // vendored, or installed, or the run failed):
+                                // discovery off, deps serve per-file as a
+                                // bundler-less app always did.
+                                rerun.dead.store(true, std::sync::atomic::Ordering::Release);
+                                eprintln!(
+                                    "oj: dep pre-bundling unavailable; serving dependencies per-file"
+                                );
+                                DepMap::new()
+                            }
+                        };
                         let _ = rerun.tx.send(Some(Arc::new(map)));
                     }
                 }
@@ -453,15 +489,27 @@ async fn rerun_once(
         );
         fail_pending(rerun, &skipped);
     }
+    // Only this batch leaves `pending`: a dep registered while the bundle ran
+    // keeps its flag (its wake is already queued, so the next rerun picks it
+    // up), and the commit below carries its provisional entry over so its URL
+    // keeps blocking at the dep route instead of 404ing.
+    let late: std::collections::HashSet<String> = {
+        let mut p = rerun.pending.lock().unwrap();
+        for dep in &pending {
+            p.remove(dep);
+        }
+        p.iter().cloned().collect()
+    };
     let old = rerun.tx.borrow().clone();
     let old_map = old.as_deref();
     // Vite's needsReload: a previously served entry whose bundle changed, a
     // dep that vanished, or a provisional interop guess the bundle disagrees
-    // with (Vite's needsInteropMismatch).
+    // with (Vite's needsInteropMismatch). A still-pending (mid-rerun) dep is
+    // not a vanished one; its own batch decides.
     let mut needs_reload = false;
     if let Some(old_map) = old_map {
         for (dep, old_meta) in old_map {
-            if pending.contains(dep) {
+            if pending.contains(dep) || late.contains(dep) {
                 continue;
             }
             match new_map.get(dep) {
@@ -508,10 +556,18 @@ async fn rerun_once(
     } else {
         rerun.browser_version.read().unwrap().clone()
     };
+    // The manifest holds only bundled entries (a provisional one points at a
+    // file that does not exist yet, which would void the warm boot); the
+    // committed map additionally carries every still-pending provisional
+    // entry, read under the watch lock so a registration can never interleave
+    // between snapshot and commit.
     write_manifest(dir, hash, &bv, names.iter(), &final_map);
-    rerun.pending.lock().unwrap().clear();
     *rerun.browser_version.write().unwrap() = bv;
-    let _ = rerun.tx.send(Some(Arc::new(final_map)));
+    rerun.tx.send_modify(|cur| {
+        let prev = cur.take();
+        let still = rerun.pending.lock().unwrap();
+        *cur = Some(Arc::new(merge_pending(final_map, prev.as_deref(), &still)));
+    });
     if needs_reload {
         if let Some(cb) = rerun.on_commit.get() {
             cb(&newly);
@@ -519,6 +575,27 @@ async fn rerun_once(
     } else if !newly.is_empty() {
         println!("oj: new dependencies optimized: {}", newly.join(", "));
     }
+}
+
+/// The map a rerun commits: the bundle's output plus the provisional entry of
+/// every still-pending dep (one registered while the bundle ran), carried
+/// over from the live map so its URL keeps blocking at the dep route until
+/// its own batch commits.
+fn merge_pending(
+    mut built: DepMap,
+    prev: Option<&DepMap>,
+    still_pending: &std::collections::HashSet<String>,
+) -> DepMap {
+    if let Some(prev) = prev {
+        for dep in still_pending {
+            if !built.contains_key(dep) {
+                if let Some(meta) = prev.get(dep) {
+                    built.insert(dep.clone(), meta.clone());
+                }
+            }
+        }
+    }
+    built
 }
 
 /// A batch (or part of one) that could not bundle: drop the provisional
@@ -1286,6 +1363,97 @@ mod tests {
             .is_empty());
     }
 
+    fn test_deps(discovery: bool, exclude: Vec<String>) -> OptimizedDeps {
+        let (tx, rx) = watch::channel(Some(Arc::new(DepMap::new())));
+        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let rerun = Arc::new(RerunState {
+            hash: "testhash".into(),
+            tx,
+            discovered: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            pending: std::sync::Mutex::new(std::collections::HashSet::new()),
+            wake,
+            browser_version: std::sync::RwLock::new("00000000".into()),
+            failed: std::sync::Mutex::new(std::collections::HashSet::new()),
+            dead: std::sync::atomic::AtomicBool::new(false),
+            exclude,
+            discovery,
+            on_commit: std::sync::OnceLock::new(),
+        });
+        OptimizedDeps {
+            rx,
+            dir: PathBuf::new(),
+            version: "00000000".into(),
+            rerun: Some(rerun),
+        }
+    }
+
+    #[test]
+    fn registration_declines_excluded_failed_dead_and_no_discovery() {
+        let deps = test_deps(true, vec!["left-out".into()]);
+        assert!(deps.may_register("lodash"));
+        assert!(!deps.may_register("left-out"));
+        assert!(
+            !deps.may_register("left-out/sub"),
+            "exclude covers subpaths"
+        );
+        let r = deps.rerun.as_ref().unwrap();
+        r.failed.lock().unwrap().insert("broken".into());
+        assert!(deps.register_missing("broken", false).is_none());
+        // A dead optimizer (no rolldown found, the initial run failed): no
+        // registration, no phantom URL, every dep keeps the per-file path.
+        r.dead.store(true, std::sync::atomic::Ordering::Release);
+        assert!(!deps.may_register("lodash"));
+        assert!(deps.register_missing("lodash", false).is_none());
+        assert!(deps.meta_now("lodash").is_none());
+        let off = test_deps(false, vec![]);
+        assert!(!off.may_register("lodash"), "noDiscovery declines all");
+    }
+
+    #[test]
+    fn registration_rewrites_to_the_future_url() {
+        let deps = test_deps(true, vec![]);
+        let meta = deps.register_missing("@scope/pkg", true).unwrap();
+        assert_eq!(meta.file, "scope_pkg.mjs");
+        assert!(meta.url.starts_with("/@oj-deps/scope_pkg.mjs?v="));
+        assert!(meta.needs_interop);
+        let live = deps.meta_now("@scope/pkg").expect("live map sees it");
+        assert_eq!(live.url, meta.url);
+        let again = deps.register_missing("@scope/pkg", true).unwrap();
+        assert_eq!(again.url, meta.url, "re-registration is idempotent");
+    }
+
+    #[test]
+    fn merge_pending_carries_mid_rerun_registrations() {
+        let meta = |file: &str| DepMeta {
+            file: file.into(),
+            needs_interop: false,
+            url: dep_url(file, "aaaaaaaa"),
+            file_hash: String::new(),
+        };
+        let mut prev = DepMap::new();
+        prev.insert("early".into(), meta("early.mjs"));
+        prev.insert("late".into(), meta("late.mjs"));
+        let mut built = DepMap::new();
+        built.insert(
+            "early".into(),
+            DepMeta {
+                file_hash: "bb".into(),
+                ..meta("early.mjs")
+            },
+        );
+        let still: std::collections::HashSet<String> = ["late".to_string()].into_iter().collect();
+        let out = merge_pending(built.clone(), Some(&prev), &still);
+        assert_eq!(
+            out["late"].url, prev["late"].url,
+            "a dep registered mid-rerun keeps its provisional entry"
+        );
+        assert_eq!(out["early"].file_hash, "bb", "bundled entries win");
+        assert!(
+            !merge_pending(built, None, &still).contains_key("late"),
+            "nothing to carry before the first commit"
+        );
+    }
+
     #[test]
     fn browser_hash_tracks_the_discovered_set() {
         let set = |deps: &[&str]| -> std::collections::BTreeSet<String> {
@@ -1327,7 +1495,7 @@ mod tests {
                 file_hash: "bbbb".into(),
             },
         );
-        let discovered = vec!["latedep".to_string()];
+        let discovered = ["latedep".to_string()];
         write_manifest(&deps, "abc", "11111111", discovered.iter(), &map);
         let m = load_manifest(&deps, "abc").expect("round trip");
         assert_eq!(m.browser_hash, "11111111");

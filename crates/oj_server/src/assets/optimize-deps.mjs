@@ -85,9 +85,12 @@ function detectEntries() {
   if (buildInputs.length) {
     return buildInputs.map((e) => (path.isAbsolute(e) ? e : path.join(root, e)));
   }
-  const ignored = new Set(["node_modules", buildOutDir, "__tests__", "coverage"]);
+  const ignored = new Set(["node_modules", "__tests__", "coverage"]);
+  // Vite ignores `**/${outDir}/**`: the outDir may be nested ("dist/app"),
+  // so it is matched as a path run, not a single segment.
+  const outRun = "/" + buildOutDir.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") + "/";
   return globFiles("**/*.html", root)
-    .filter((f) => !f.split("/").some((seg) => ignored.has(seg)))
+    .filter((f) => !f.split("/").some((seg) => ignored.has(seg)) && !("/" + f + "/").includes(outRun))
     .map((f) => path.join(root, f));
 }
 
@@ -540,7 +543,9 @@ function globImportTargets(code, importer) {
   const files = new Set();
   for (const p of positive) for (const f of globFiles(p, root)) files.add(f);
   const self = toPosix(importer);
-  return [...files].filter((f) => f !== self && !negative.some((n) => path.posix.matchesGlob(f, n))).sort();
+  // matchesGlob (not path.posix.matchesGlob raw): a throwing `!pattern`
+  // must drop that negation, never abort the whole scan transform.
+  return [...files].filter((f) => f !== self && !negative.some((n) => matchesGlob(f, n))).sort();
 }
 
 /// Vite 8's scanImports (optimizer/scan.ts) on rolldown's `scan`: crawl the
@@ -1301,7 +1306,10 @@ export async function optimize(input) {
     // hash the same can commit without a page reload.
     for (const meta of Object.values(metadata)) {
       try {
-        meta.fileHash = createHash("sha256").update(readFileSync(path.join(outDir, meta.file))).digest("hex").slice(0, 16);
+        meta.fileHash = createHash("sha256")
+          .update(readFileSync(path.join(outDir, meta.file)))
+          .digest("hex")
+          .slice(0, 16);
       } catch {
         meta.fileHash = "";
       }

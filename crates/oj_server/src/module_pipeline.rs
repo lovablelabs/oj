@@ -914,6 +914,9 @@ impl ImportRewrite<'_> {
             || spec.contains('?')
             || is_node_builtin(spec)
             || is_lingui_macro_specifier(spec)
+            // The cheap gates (discovery off, optimizer dead, excluded,
+            // failed) before the resolve and CJS sniff below.
+            || !state.optimized.may_register(spec)
         {
             return None;
         }

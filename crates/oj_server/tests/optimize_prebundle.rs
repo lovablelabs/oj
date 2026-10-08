@@ -165,3 +165,33 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
     );
     assert_eq!(after.browser_version(), v2, "persisted browser version");
 }
+
+// An app with no rolldown anywhere (no vite 8, nothing vendored in this test
+// binary, nothing installed): the initial run fails, so discovery must turn
+// itself off. Registration declining is what keeps every bare import on the
+// per-file path instead of a phantom /@oj-deps URL that 404s, and no manifest
+// may be written, or the next boot would warm-load an empty map with
+// discovery back on against the same dead optimizer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_initial_run_turns_discovery_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("node_modules")).unwrap();
+    std::fs::write(root.join("package.json"), r#"{"name":"fx"}"#).unwrap();
+    let deps = OptimizedDeps::prepare(root, "0.0.1", OptimizeInput::default(), None);
+    let map = deps.ready().await;
+    assert!(map.is_empty(), "no bundler: an empty pre-bundle");
+    assert!(!deps.may_register("lodash"), "discovery is dead");
+    assert!(
+        deps.register_missing("lodash", false).is_none(),
+        "no phantom optimized URL"
+    );
+    assert!(
+        deps.meta_now("lodash").is_none(),
+        "the live map stays untouched"
+    );
+    assert!(
+        !deps.dir().join("manifest.json").exists(),
+        "a failed run persists nothing"
+    );
+}
