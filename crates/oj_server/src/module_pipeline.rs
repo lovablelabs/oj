@@ -985,7 +985,8 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
     if !module.fs_allow.is_empty() {
         let mut allow = state.fs_allow.lock().unwrap();
         for p in &module.fs_allow {
-            allow.insert(PathBuf::from(p));
+            // Raw AND canonical: `fs_gate` checks the canonical request path.
+            insert_allow_root(&mut allow, PathBuf::from(p));
         }
     }
     if !module.watch_files.is_empty() {

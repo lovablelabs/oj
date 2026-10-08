@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Editing a file that a plugin's `resolveId` answers for (a framework's generated file, an alias target) now hot-updates. Such files were compiled by the plugin route itself, never watched and absent from the module graph, so saving them changed nothing until a manual reload; a resolved id naming a plain app file now goes through the normal module pipeline, which still asks the plugin's `load` before reading the disk and runs the transform hooks, as Vite does for every real file. Module-graph nodes in the plugin host also carry the module's served URL (root-relative, or `/@fs` outside the root) instead of its filesystem path, so HMR updates built from them name URLs the browser actually imported, and `urlToModuleMap`/`getModuleByUrl` answer by that URL as in Vite.
 
+## [0.2.18] - 2026-10-08
+
+### Fixed
+
+- Plugin-spawned children (a Cloudflare plugin's workerd, a framework's sidecar) no longer outlive the dev server. The shutdown sweep now covers every path that used to strand them: the start and ssr serve modes install the same shutdown handler as plain dev (they exited on a bare signal before); the embedded engine's own signal handling, which terminates the process before any parked shutdown task can run, sweeps children on its exit path too; and the handler is installed before boot begins, as Vite installs its SIGTERM listener inside `createServer` before any `configureServer` hook can spawn, so a signal that lands mid-boot still sweeps. Against SIGKILL, where no handler runs at all (an OOM kill, a supervisor escalating after a grace period), the child registry is persisted per server process with pid plus kernel start-time identities; the next boot reaps the previous server's still-identified children before any engine spawns, the way Bazel- and Gradle-style daemon registries recover, and never signals a recycled pid.
+- A plugin `resolveId` pointing at a file reached through a symlink (a linked workspace package; on macOS any `/var` tmpdir path) was a 403. The serving gate checks the request's canonical path, but the allow-list entry made from the resolved path was stored raw only; those inserts now store the raw and canonical forms like every other allow-root, so the gate's ancestor check matches.
+
 ## [0.2.17] - 2026-10-08
 
 ### Fixed

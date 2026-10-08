@@ -26,6 +26,12 @@ fs.mkdirSync(path.join(app, "src"), { recursive: true });
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "rnl-app", version: "1.0.0" }));
 // The resolved file lives outside the project root, so only the plugin can reach it.
 fs.writeFileSync(path.join(ext, "external-dep.js"), `export const MARK = "external-dep-served-ok";\n`);
+// The plugin resolves THROUGH a symlink (a linked workspace package's shape;
+// macOS tmpdirs are symlinked /var paths anyway): the allow-list entry is made
+// from the raw resolved path while the serving gate checks the request's
+// canonical path, and a raw-only entry 403'd the module.
+const extLink = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "oj-ext-link-")), "pkg");
+fs.symlinkSync(ext, extLink);
 fs.writeFileSync(path.join(app, "src", "entry.js"), `import { MARK } from "my-external-dep";\nwindow.__mark = MARK;\n`);
 fs.writeFileSync(
   path.join(app, "index.html"),
@@ -34,7 +40,7 @@ fs.writeFileSync(
 fs.writeFileSync(
   path.join(app, "oj.plugins.mjs"),
   `import path from "node:path";
-   const target = ${JSON.stringify(path.join(ext, "external-dep.js"))};
+   const target = ${JSON.stringify(path.join(extLink, "external-dep.js"))};
    export default [{
      name: "external-resolver",
      enforce: "pre",
@@ -75,5 +81,6 @@ try {
   await sleep(200);
   fs.rmSync(app, { recursive: true, force: true });
   fs.rmSync(ext, { recursive: true, force: true });
+  fs.rmSync(path.dirname(extLink), { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

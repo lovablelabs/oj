@@ -1241,6 +1241,11 @@ fn load_dev_config(
 
 impl DevServer {
     pub async fn run(self) -> anyhow::Result<()> {
+        // Vite installs its SIGTERM listener inside createServer, before
+        // configureServer hooks can spawn anything; installing ours after
+        // boot left every mid-boot signal killing oj with children stranded.
+        let host_slot: Arc<std::sync::OnceLock<Arc<PluginHost>>> = Arc::default();
+        tokio::spawn(close_plugins_on_shutdown(host_slot.clone()));
         let built = self.build_app().await?;
         let (listener, port) = bind_dev_listener(built.host, built.port, built.strict_port).await?;
         println!("  {} dev server", oj_brand());
@@ -1251,8 +1256,8 @@ impl DevServer {
             println!("  proxy: {}", built.proxy_prefixes.join(", "));
         }
         println!("  ready in {:?}", built.started.elapsed());
-        if built.plugin_host.is_some() {
-            tokio::spawn(close_plugins_on_shutdown(built.plugin_host.clone()));
+        if let Some(host) = built.plugin_host.clone() {
+            let _ = host_slot.set(host);
         }
         if built.open {
             open_browser(&url);
@@ -1295,6 +1300,9 @@ impl DevServer {
 
         boot_phase("build_app begin");
         prepare_cache_root(&root);
+        // Before any engine can spawn: reap children a SIGKILLed predecessor
+        // (OOM kill, supervisor escalation) left behind, then start our file.
+        child_groups::init_registry(&oj_cache::cache_root(&root).join("children"));
         let dev_mode = self.dev_mode();
         let config = load_dev_config(&root, config_file.as_deref(), &dev_mode)?;
 
@@ -1318,6 +1326,12 @@ impl DevServer {
         // BEFORE any engine boots: plugin-hook children register here (own process
         // group each) so restarts and shutdown can kill whole plugin-spawned trees.
         deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
+        // The engine's own signal path (deno_signals) exits the process itself on an
+        // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
+        // too or a supervisor restart strands every plugin child (workerd) on pid 1.
+        deno_process::oj_hook::set_shutdown_sweep(|| {
+            child_groups::kill_all();
+        });
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
@@ -1674,7 +1688,11 @@ pub fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
 
 /// Vite parity: close runs `buildEnd` then `closeBundle`. oj has no graceful drain, so
 /// the hooks run on the signal (bounded) and the process exits with the shell's code.
-async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
+/// Every serving path needs this handler: exiting on a bare signal instead strands
+/// plugin children (miniflare's workerd) as pid-1 orphans on supervisor restarts.
+/// The host arrives through a slot so callers can install the handler before
+/// boot; a signal that lands first still sweeps children, skipping the hooks.
+pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginHost>>>) {
     #[cfg(unix)]
     let code = {
         use tokio::signal::unix::{signal, SignalKind};
@@ -1700,7 +1718,8 @@ async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
         let _ = tokio::signal::ctrl_c().await;
         130
     };
-    if let Some(host) = host {
+    // A signal during boot finds no host yet: skip the hooks, still sweep.
+    if let Some(host) = host.get() {
         let _ = tokio::time::timeout(Duration::from_secs(5), async {
             if let Err(e) = host.build_end(None).await {
                 eprintln!("oj: plugin buildEnd on close failed: {e}");

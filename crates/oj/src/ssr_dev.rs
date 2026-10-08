@@ -28,6 +28,9 @@ pub async fn ssr_dev(
     port: Option<u16>,
     host: Option<String>,
 ) -> anyhow::Result<()> {
+    // Before boot: a signal while plugins are still spawning must still sweep.
+    let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());
+    tokio::spawn(oj_server::close_plugins_on_shutdown(host_slot.clone()));
     let built = oj_server::DevServer {
         root,
         port,
@@ -86,6 +89,9 @@ pub async fn ssr_dev(
 
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
+    if let Some(host) = built.plugin_host.clone() {
+        let _ = host_slot.set(host);
+    }
     println!("  {} dev (ssr + module runner)", oj_server::oj_brand());
     println!("  entry:  {entry}");
     match &client_url {

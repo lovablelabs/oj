@@ -7,11 +7,10 @@ pub(crate) fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Op
     if !resolved.is_absolute() || !resolved.is_file() {
         return None;
     }
-    state
-        .fs_allow
-        .lock()
-        .unwrap()
-        .insert(package_root(resolved));
+    // Raw AND canonical, like every other allow-root insert: `fs_gate` checks
+    // the request's canonical path, so a raw-only entry for a symlinked
+    // resolution (a linked package, a macOS /var tmpdir) still 403'd.
+    allow_root(&state.fs_allow, package_root(resolved));
     let url = url_of(&state.root, resolved);
     Some(Redirect::temporary(&url).into_response())
 }
