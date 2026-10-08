@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `fs.watch` scales to thousands of watchers (a plugin watching each file of a large build-output tree used to wedge the plugin host before the server ever listened). Three independent costs made it quadratic, and each now follows what Node/libuv and chokidar do on the same APIs: matching runs on its own dispatch thread, so the notify backend thread only forwards events and `fs.watch` registration can never stall behind matching (libuv does no per-handle work on its watcher threads); an event visits only the watchers indexed on its path, an ancestor of it, or the same file, instead of every watcher by opening files (libuv filters its shared FSEvents stream per handle the same way); and on macOS, where notify rebuilds its FSEvents stream on every `watch()` call, a watched file registers its parent directory, deduplicated, exactly as chokidar's fsevents handler does, so a directory of watched files costs one registration.
+
 ### Changed
 
 - Start dev serves the client bundle with an ETag from each chunk's content hash (a reload revalidates to a 304 instead of re-downloading), `immutable` caching for its hashed chunks, and gzip for browsers that accept it. On a 2000-component app the entry goes from 2.7 MB to about 340 KB on the wire.

@@ -1,7 +1,11 @@
 # Fork of deno_runtime 0.267.0 (https://github.com/denoland/deno, runtime/)
-# maintained for oj. Only change: it depends on oj_deno_napi (deno_napi
-# 0.190.0 plus oj's finalizer-registry performance patch) instead of upstream
-# deno_napi. All source files are verbatim upstream.
+# maintained for oj. It depends on oj_deno_napi (deno_napi 0.190.0 plus oj's
+# finalizer-registry performance patch) instead of upstream deno_napi, and
+# ops/fs_events.rs scales to thousands of watchers: matching runs on a
+# dispatch thread off the notify backend thread, watchers are indexed so an
+# event visits only the ones it can match, and on macOS a watched file
+# registers its parent directory (FSEvents restarts its stream per watch).
+# Every other source file is verbatim upstream.
 
 [package]
 edition = "2024"
