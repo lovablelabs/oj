@@ -99,8 +99,13 @@ try {
   failed = true;
   console.error(`FS-WATCH-MANY-WATCHERS E2E FAILED: ${err.message}\n--- server log ---\n${log}`);
 } finally {
+  // The writer must be GONE, not just signaled, before the tree is removed:
+  // one more 1ms write recreates out.js in a directory rmSync just emptied
+  // and the whole cleanup dies with ENOTEMPTY after the test already passed.
+  const exited = (p) => new Promise((r) => (p.exitCode !== null ? r() : p.once("exit", r)));
   writer.kill("SIGKILL");
   srv.kill("SIGKILL");
-  fs.rmSync(app, { recursive: true, force: true });
+  await Promise.all([exited(writer), exited(srv)]);
+  fs.rmSync(app, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 process.exit(failed ? 1 : 0);
