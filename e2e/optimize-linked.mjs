@@ -16,11 +16,11 @@ import { waitUp } from "./util.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
-const esbuildSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/esbuild");
+const viteSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/vite");
 const port = 5335;
 
-if (!fs.existsSync(esbuildSrc)) {
-  console.log("SKIP optimize-linked: esbuild fixture not installed");
+if (!fs.existsSync(viteSrc)) {
+  console.log("SKIP optimize-linked: vite fixture not installed");
   process.exit(0);
 }
 
@@ -34,9 +34,7 @@ let failed = false;
 try {
   fs.mkdirSync(path.join(nm, "norm-lib"), { recursive: true });
   fs.mkdirSync(linkSrc, { recursive: true });
-  fs.symlinkSync(esbuildSrc, path.join(nm, "esbuild"));
-  const esbuildScoped = path.join(repo, "e2e/fixtures/start-app/node_modules/@esbuild");
-  if (fs.existsSync(esbuildScoped)) fs.symlinkSync(esbuildScoped, path.join(nm, "@esbuild"));
+  fs.symlinkSync(viteSrc, path.join(nm, "vite"));
 
   // Normal node_modules dep (real dir) -> should be pre-bundled.
   fs.writeFileSync(
@@ -59,10 +57,7 @@ try {
     'import { hi as h1 } from "norm-lib";\nimport { hi as h2 } from "link-lib";\nwindow.__R = h1() + h2();\n',
   );
 
-  server = spawn(oj, ["dev", app, "--port", String(port)], {
-    stdio: "ignore",
-    env: { ...process.env, OJ_OPTIMIZE_SCAN: "1" },
-  });
+  server = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
   await waitUp(`http://localhost:${port}/`);
   // let the optimizer settle
   await new Promise((r) => setTimeout(r, 800));

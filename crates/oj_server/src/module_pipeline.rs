@@ -355,6 +355,11 @@ fn compile_key(
     if class_field_semantics {
         mode_key.push_str("+setcf");
     }
+    // The pre-bundle's browser version salts the key: a dep re-optimization
+    // changes the optimized URLs, so modules compiled against the old map
+    // must miss (Vite invalidates its whole module graph on that reload).
+    mode_key.push_str("+deps");
+    mode_key.push_str(&state.optimized.browser_version());
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
@@ -783,10 +788,26 @@ impl ImportRewrite<'_> {
         if let Some(id) = state.jsx_overrides.get(spec) {
             return Some(format!("/@presolve/{}", hex_encode(id)));
         }
-        if let Some(meta) = job.dep_map.get(spec) {
+        // The snapshot first, then the live map: a dep registered mid-compile
+        // (by this module or a concurrent one) is in the live map only.
+        if let Some(meta) = job
+            .dep_map
+            .get(spec)
+            .cloned()
+            .or_else(|| state.optimized.meta_now(spec))
+        {
             if !meta.needs_interop {
-                return Some(meta.url.clone());
+                return Some(meta.url);
             }
+        } else if let Some(meta) = self.register_missing_dep(spec, resolver) {
+            // Vite's registerMissingImport: the import rewrites to the FUTURE
+            // optimized URL at once; the dep route holds its requests until
+            // the debounced re-optimization commits.
+            if !meta.needs_interop {
+                return Some(meta.url);
+            }
+            // Interop deps rewrite through cjs_interop_url, which sees the
+            // registration through the live map.
         }
         if let Some(url) = rewrite_specifier(
             &state.root,
@@ -844,19 +865,31 @@ impl ImportRewrite<'_> {
         if is_lingui_macro_specifier(spec) {
             return None;
         }
-        if let Some(m) = job.dep_map.get(spec).filter(|m| m.needs_interop) {
-            return Some(m.url.clone());
+        // Snapshot, then the live map: a dep registered mid-compile only
+        // exists in the latter.
+        if let Some(m) = job
+            .dep_map
+            .get(spec)
+            .cloned()
+            .or_else(|| job.state.optimized.meta_now(spec))
+        {
+            return m.needs_interop.then_some(m.url);
         }
-        // Directly-served bare CJS dep: interop at the importer (Vite pre-bundles
-        // these). node_modules-only so aliased app source is never treated as a dep.
-        if !is_bare_specifier(spec) || job.dep_map.get(spec).is_some() {
+        if !is_bare_specifier(spec) {
             return None;
+        }
+        // A CJS dep missing from the pre-bundle registers here too (Vite's
+        // registerMissingImport): the destructure reads off the FUTURE bundle.
+        if let Some(m) = self.register_missing_dep(spec, &job.state.resolver) {
+            return m.needs_interop.then_some(m.url);
         }
         let resolved = job.state.resolver.resolve(&job.dir, spec).ok()?;
         let in_node_modules = resolved
             .components()
             .any(|c| c.as_os_str() == "node_modules");
-        // optimizeDeps.needsInterop forces the interop rewrite even
+        // Directly-served bare CJS dep (excluded, or discovery off): interop
+        // at the importer. node_modules-only so aliased app source is never
+        // treated as a dep; optimizeDeps.needsInterop forces the rewrite even
         // when static analysis reads the dep as ESM.
         if in_node_modules
             && (is_cjs_dep_file(&job.state.cjs_dep_memo, &resolved)
@@ -866,6 +899,48 @@ impl ImportRewrite<'_> {
             return Some(url_of(&job.state.root, &resolved));
         }
         None
+    }
+
+    /// Vite's registerMissingImport gate: a bare, query-free import resolving
+    /// to a script entry under a real node_modules directory (a linked
+    /// package's realpath escapes it, and the optimizer never bundles those).
+    /// The interop guess comes from the entry's source, as Vite reads
+    /// exportsData before bundling.
+    fn register_missing_dep(&self, spec: &str, resolver: &OjResolver) -> Option<optimize::DepMeta> {
+        let job = self.job;
+        let state = &*job.state;
+        if job.is_server
+            || !is_bare_specifier(spec)
+            || spec.contains('?')
+            || is_node_builtin(spec)
+            || is_lingui_macro_specifier(spec)
+            // Vite's skipOptimization (resolve.ts): an importer inside
+            // node_modules never registers a missing dep. Pre-bundling is
+            // driven by user code; an excluded package's own imports (a
+            // tanstack-start tree, say) keep serving per-file. A linked
+            // package's files live outside node_modules and still register.
+            || job.dir.components().any(|c| c.as_os_str() == "node_modules")
+            // The cheap gates (discovery off, optimizer dead, excluded,
+            // failed) before the resolve and CJS sniff below.
+            || !state.optimized.may_register(spec)
+        {
+            return None;
+        }
+        let resolved = resolver.resolve(&job.dir, spec).ok()?;
+        let optimizable = resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts"));
+        if !optimizable {
+            return None;
+        }
+        let real = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+        if !real.components().any(|c| c.as_os_str() == "node_modules") {
+            return None;
+        }
+        let needs_interop = is_cjs_dep_file(&state.cjs_dep_memo, &resolved)
+            || state.optimize_view.needs_forced_interop(&resolved);
+        state.optimized.register_missing(spec, needs_interop)
     }
 }
 

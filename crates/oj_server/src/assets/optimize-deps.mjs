@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import {
-  mkdirSync,
-  rmSync,
-  readFileSync,
-  writeFileSync,
-  renameSync,
-  existsSync,
-  realpathSync,
-  globSync,
-} from "node:fs";
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, realpathSync, globSync } from "node:fs";
 import path from "node:path";
 import builtinModules from "node:module";
 
@@ -27,20 +19,26 @@ let exclude;
 let dedupe;
 let alias;
 let autoDiscover;
+// Vite's `process.env.NODE_ENV || mode`, defined into every dep bundle.
+let nodeEnv;
 let resolveSettings;
 // optimizeDeps.needsInterop: Vite's needsInterop() returns true for these before
 // looking at the bundle's export shape, so the metadata must say so too.
 let NEEDS_INTEROP;
 let resolveConditions;
 let esbuildOptions;
+// optimizeDeps.rolldownOptions minus plugins and output (Vite spreads the rest
+// into both the scan and the bundle); output options go to bundle.write.
+let rolldownInput;
+let rolldownOutput;
 let DEDUPE;
 let req;
 let excludeSet;
 let DEDUPE_PKGS;
 let aliasEntries;
-let esbuild;
 
-// esbuild activates import/require/default itself and rejects them in `conditions`.
+// esbuild activated import/require/default itself and rejected them in
+// `conditions`; the filtered list stays the resolver contract.
 const ESBUILD_IMPLICIT_CONDITIONS = new Set(["import", "require", "default"]);
 
 const ESBUILD_OPTION_KEYS = new Set([
@@ -79,19 +77,21 @@ const ESBUILD_OPTION_KEYS = new Set([
   "ignoreAnnotations",
 ]);
 
+// Vite's computeEntries fallbacks, in its order: the config's build inputs,
+// else every html file under the root (node_modules, the build outDir, tests
+// and coverage ignored, as globEntries does). The scan itself extracts the
+// html files' module scripts.
 function detectEntries() {
-  const html = path.join(root, "index.html");
-  if (!existsSync(html)) return [];
-  const src = readFileSync(html, "utf8");
-  const found = [];
-  for (const tag of src.match(/<script\b[^>]*>/gi) || []) {
-    if (!/type\s*=\s*["']module["']/i.test(tag)) continue;
-    const m = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
-    if (!m || /^https?:/i.test(m[1])) continue;
-    const abs = path.join(root, m[1].replace(/^\//, ""));
-    if (existsSync(abs)) found.push(abs);
+  if (buildInputs.length) {
+    return buildInputs.map((e) => (path.isAbsolute(e) ? e : path.join(root, e)));
   }
-  return found;
+  const ignored = new Set(["node_modules", "__tests__", "coverage"]);
+  // Vite ignores `**/${outDir}/**`: the outDir may be nested ("dist/app"),
+  // so it is matched as a path run, not a single segment.
+  const outRun = "/" + buildOutDir.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") + "/";
+  return globFiles("**/*.html", root)
+    .filter((f) => !f.split("/").some((seg) => ignored.has(seg)) && !("/" + f + "/").includes(outRun))
+    .map((f) => path.join(root, f));
 }
 
 // Vite's expandGlobIds (optimizer/resolve.ts): an include entry with a glob in
@@ -185,54 +185,15 @@ function expandGlobIds(id) {
   return [pkgName, ...globFiles(pattern, pkgDir).map((m) => path.posix.join(pkgName, m))];
 }
 let includeIds;
+let warnIncludes;
 let entryList;
+let buildInputs;
+let buildOutDir;
 
-// resolve.dedupe: a bare import of a deduped package resolves from the project
-// root wherever the importer sits (Vite resolve.ts: dedupe -> basedir = root),
-// so the pre-bundle holds the one copy the dev server also serves, not a copy
-// nested under some dependency.
-const dedupeFromRoot = {
-  name: "oj-dedupe-from-root",
-  setup(build) {
-    if (!DEDUPE_PKGS.size) return;
-    build.onResolve({ filter: /^[^./]/ }, async (args) => {
-      if (args.pluginData?.ojDedupe || args.kind === "entry-point" || path.isAbsolute(args.path)) return null;
-      if (!args.resolveDir || path.resolve(args.resolveDir) === path.resolve(root)) return null;
-      if (!DEDUPE_PKGS.has(npmPackageName(args.path))) return null;
-      const r = await build.resolve(args.path, {
-        kind: args.kind,
-        importer: args.importer,
-        resolveDir: root,
-        pluginData: { ojDedupe: true },
-      });
-      return r.errors.length ? null : { path: r.path, external: r.external, namespace: r.namespace };
-    });
-  },
-};
-// Vite 8 apps use rolldown for optimizeDeps and don't depend on esbuild directly,
-// but esbuild is still a Vite transitive dep -- resolve it from the app's Vite when
-// the app itself doesn't expose it, so the dep pre-bundler still runs.
-function resolveEsbuild() {
-  try {
-    return req.resolve("esbuild");
-  } catch {}
-  // A Vite app rarely depends on esbuild directly but always has it transitively
-  // through Vite, so resolve it from Vite's own directory. When neither is
-  // present there is nothing to pre-bundle with: fail with a clear message (oj
-  // then serves deps natively) instead of a misleading "cannot find
-  // vite/package.json" from an app that simply has no Vite.
-  try {
-    return createRequire(req.resolve("vite/package.json")).resolve("esbuild");
-  } catch {
-    throw new Error("esbuild not found (neither directly nor via vite); dep pre-bundling skipped");
-  }
-}
 const NODE_BUILTINS = new Set([
   ...builtinModules.builtinModules,
   ...builtinModules.builtinModules.map((m) => "node:" + m),
 ]);
-const isBare = (id) =>
-  id && !id.startsWith(".") && !id.startsWith("/") && !id.startsWith("\0") && !NODE_BUILTINS.has(id);
 
 // Strip // and /* */ comments from JSONC, but only outside string literals. A
 // regex stripper is wrong here: a path pattern like "./src/modules/*" contains
@@ -366,9 +327,13 @@ const EXTERNAL_TYPES = [
   "astro",
   "imba",
   "marko",
+  "apng",
   "png",
   "jpg",
   "jpeg",
+  "jfif",
+  "pjpeg",
+  "pjp",
   "gif",
   "svg",
   "ico",
@@ -376,6 +341,7 @@ const EXTERNAL_TYPES = [
   "avif",
   "bmp",
   "cur",
+  "jxl",
   "woff",
   "woff2",
   "ttf",
@@ -388,74 +354,753 @@ const EXTERNAL_TYPES = [
   "wav",
   "flac",
   "aac",
+  "opus",
   "mov",
   "m4a",
+  "vtt",
+  "webmanifest",
+  "pdf",
+  "txt",
 ];
 const EXTERNAL_RE = new RegExp(`\\.(${EXTERNAL_TYPES.join("|")})(\\?.*)?$`, "i");
-const externalizeNonJs = {
-  name: "oj-externalize-non-js",
-  setup(build) {
-    build.onResolve({ filter: EXTERNAL_RE }, (args) => {
-      if (args.path.startsWith(".")) {
-        return { path: path.resolve(args.resolveDir, args.path), external: true };
-      }
-      return { path: args.path, external: true };
-    });
-  },
+
+const tryResolve = (r, spec) => {
+  try {
+    return r.resolve(spec);
+  } catch {
+    return null;
+  }
 };
 
-async function scan() {
-  const found = new Set();
-  const collector = {
-    name: "oj-scan",
-    setup(build) {
-      build.onResolve({ filter: /.*/ }, async (args) => {
-        if (args.kind === "entry-point") return null;
-        const aliased = aliasResolve(args.path);
-        if (aliased) {
-          const r = await build.resolve(aliased, { kind: args.kind, resolveDir: root });
-          if (r.errors && r.errors.length) return null;
-          return { path: r.path, external: r.external };
+/// The rolldown this app pre-bundles with, the only engine (Vite 8 dropped
+/// its esbuild optimizer; so does oj): a Vite 8 app's own vite brings one
+/// (only when vite DECLARES it — resolving from vite's directory also walks
+/// up into the app's node_modules, and a hoisted standalone rolldown must
+/// not win), any other app gets the rolldown vendored next to oj, then one
+/// the app installs itself.
+export function pickRolldown(appRoot, vendoredRolldown) {
+  const appReq = createRequire(path.join(appRoot, "package.json"));
+  const sources = [];
+  const viteJson = tryResolve(appReq, "vite/package.json");
+  if (viteJson) {
+    let viteDeps = {};
+    try {
+      viteDeps = JSON.parse(readFileSync(viteJson, "utf8")).dependencies ?? {};
+    } catch {}
+    if (viteDeps.rolldown) sources.push(createRequire(viteJson));
+  }
+  if (vendoredRolldown) sources.push(createRequire(path.join(vendoredRolldown, "package.json")));
+  sources.push(appReq);
+  for (const from of sources) {
+    const entry = tryResolve(from, "rolldown");
+    if (entry) return { entry, require: from };
+  }
+  throw new Error("no rolldown found (via vite, vendored, or installed); dep pre-bundling skipped");
+}
+
+const importFile = async (file) => import(pathToFileURL(file).href);
+
+async function loadRolldown(bundler) {
+  const main = await importFile(bundler.entry);
+  const experimental = await importFile(bundler.require.resolve("rolldown/experimental"));
+  const utilsPath = tryResolve(bundler.require, "rolldown/utils");
+  const utils = utilsPath ? await importFile(utilsPath).catch(() => null) : null;
+  return {
+    rolldown: main.rolldown,
+    scan: experimental.scan,
+    parseSync: utils?.parseSync ?? experimental.parseSync,
+  };
+}
+
+// Vite's constants: what the scanner follows, what the optimizer bundles,
+// which queries are left to the dev server, and its default build target.
+const JS_TYPES_RE = /\.(?:j|t)sx?$|\.mjs$/;
+const OPTIMIZABLE_ENTRY_RE = /\.[cm]?[jt]s$/;
+const SPECIAL_QUERY_RE = /[?&](?:worker|sharedworker|raw|url)\b/;
+const SCAN_EXTERNAL_RE = /\.(?:json|json5|wasm)$/;
+const BASELINE_TARGET = ["chrome111", "edge111", "firefox114", "safari16.4", "ios16.4"];
+const BARE_RE = /^[\w@][^:]/;
+const EXTERNAL_URL_RE = /^(?:[a-z]+:)?\/\//i;
+const cleanUrl = (id) => id.replace(/[?#].*$/s, "");
+const isInNodeModules = (id) => id.split(/[\\/]/).includes("node_modules");
+const moduleListContains = (list, id) => list.some((m) => m === id || id.startsWith(m + "/"));
+
+let realRoot;
+/// The URL oj's dev server serves a file at (rewrite.rs `url_of`): root-relative
+/// inside the root, `/@fs` outside it. Bundles are served verbatim, so every
+/// import they keep must already be a URL the browser can fetch.
+export function urlOf(file) {
+  for (const base of [root, realRoot]) {
+    const rel = path.relative(base, file);
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return "/" + rel.split(path.sep).join("/");
+  }
+  return "/@fs" + file.split(path.sep).join("/");
+}
+
+// Vite's optionalPeerDepId: a bare import a dep's package.json lists as an
+// optional peer, and which is not installed, becomes a module that throws
+// when evaluated instead of failing the whole pre-bundle.
+function optionalPeerOf(id, importer) {
+  const pkgName = npmPackageName(id);
+  if (!pkgName || !importer || !isInNodeModules(importer)) return null;
+  let dir = path.dirname(importer);
+  for (;;) {
+    const pj = path.join(dir, "package.json");
+    if (existsSync(pj)) {
+      try {
+        const meta = JSON.parse(readFileSync(pj, "utf8"));
+        if (!meta.name) throw 0;
+        return meta.peerDependenciesMeta?.[pkgName]?.optional ? `${pkgName}:${meta.name}` : null;
+      } catch (e) {
+        if (e !== 0) return null;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+const SCAN_INCLUDE_ID = "\0oj-scan-include";
+const HTML_SCRIPT_ID = "\0oj-html-script:";
+// Vite's scan.ts html extraction (html only: oj's other pipelines own the
+// vue/svelte html-likes), run over comment-blanked markup.
+const SCRIPT_RE = /(<script(?:\s+[a-z_:][-\w:]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^"'<>=\s]+))?)*\s*>)(.*?)<\/script>/gis;
+const HTML_COMMENT_RE = /<!--.*?-->/gs;
+const SRC_RE = /\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/i;
+const TYPE_RE = /\btype\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/i;
+
+// Vite's scan expands `import.meta.glob` (its js-glob transform and the html
+// script path both run transformGlobImport): the matched files must be
+// crawled, or a dep only a glob-routed page imports is never discovered.
+// Call sites are found on literal-masked code and the patterns read from the
+// raw source. Pattern shapes follow Vite's toAbsoluteGlob: `/x` from the
+// root, `./x` and `../x` from the importer, `**` as-is, `!` negates; alias
+// and `#subpath` patterns need the full resolver and are skipped here.
+const GLOB_CALL_RE = /\bimport\.meta\.glob(?:<[^(]*>)?\s*\(/dg;
+
+/// The string literals of the call's first argument, from `from` (just past
+/// the opening paren): one literal, or an array of them. Anything dynamic
+/// (an expression, a template with `${`) yields none.
+function parseGlobPatterns(code, from) {
+  let i = from;
+  const ws = () => {
+    while (i < code.length && /\s/.test(code[i])) i++;
+  };
+  const literal = () => {
+    const q = code[i];
+    if (q !== "'" && q !== '"' && q !== "`") return null;
+    let out = "";
+    for (i++; i < code.length && code[i] !== q; i++) {
+      if (code[i] === "\\") out += code[++i] ?? "";
+      else if (q === "`" && code[i] === "$" && code[i + 1] === "{") return null;
+      else out += code[i];
+    }
+    i++;
+    return out;
+  };
+  ws();
+  if (code[i] !== "[") {
+    const one = literal();
+    return one == null ? [] : [one];
+  }
+  i++;
+  const out = [];
+  for (;;) {
+    ws();
+    if (code[i] === "]" || i >= code.length) return out;
+    const l = literal();
+    if (l == null) return [];
+    out.push(l);
+    ws();
+    if (code[i] === ",") i++;
+    else if (code[i] !== "]") return [];
+  }
+}
+
+/// The files every `import.meta.glob` in `code` matches, absolute and sorted,
+/// the importer itself excluded (Vite filters it too).
+function globImportTargets(code, importer) {
+  const toPosix = (p) => p.split(path.sep).join("/");
+  const masked = maskLiterals(code);
+  const dir = toPosix(path.dirname(importer));
+  const positive = [];
+  const negative = [];
+  GLOB_CALL_RE.lastIndex = 0;
+  for (let m; (m = GLOB_CALL_RE.exec(masked));) {
+    for (const raw of parseGlobPatterns(code, m.indices[0][1])) {
+      const neg = raw[0] === "!";
+      const p = neg ? raw.slice(1) : raw;
+      let abs;
+      if (p.startsWith("/")) abs = path.posix.join(toPosix(root), p.slice(1));
+      else if (p.startsWith("./") || p.startsWith("../")) abs = path.posix.join(dir, p);
+      else if (p.startsWith("**")) abs = path.posix.join(toPosix(root), p);
+      else continue;
+      (neg ? negative : positive).push(abs);
+    }
+  }
+  if (!positive.length) return [];
+  const files = new Set();
+  for (const p of positive) for (const f of globFiles(p, root)) files.add(f);
+  const self = toPosix(importer);
+  // matchesGlob (not path.posix.matchesGlob raw): a throwing `!pattern`
+  // must drop that negation, never abort the whole scan transform.
+  return [...files].filter((f) => f !== self && !negative.some((n) => matchesGlob(f, n))).sort();
+}
+
+/// Vite 8's scanImports (optimizer/scan.ts) on rolldown's `scan`: crawl the
+/// app from its entries, record every bare import that resolves into
+/// node_modules (or is listed in `include`) and stop there, keep crawling into
+/// linked packages, externalize everything that is not JS. The include list
+/// rides along as one virtual entry, so every pre-bundled dep is resolved by
+/// the same resolver the bundle uses (Vite's addManuallyIncludedOptimizeDeps).
+async function rolldownScan(rd, discover, host) {
+  const found = new Map();
+  const input = [...(discover ? entryList : [])];
+  const plainIncludes = includeIds.filter((i) => !i.includes(">"));
+  if (plainIncludes.length) input.push(SCAN_INCLUDE_ID);
+  if (!input.length) return found;
+  const includeImporter = path.join(root, "__oj_include__.js");
+  const seen = new Map();
+  const resolve = async (ctx, id, importer) => {
+    const from = importer === SCAN_INCLUDE_ID ? includeImporter : importer;
+    // Keyed on the importer file, not its directory: a plugin may resolve the
+    // same id differently per importer.
+    const key = `${id}\0${from ?? ""}`;
+    if (seen.has(key)) return seen.get(key);
+    let out = null;
+    // The app's plugins first, as Vite's scan resolves through its plugin
+    // container; a plugin's virtual or external answer is not crawled.
+    if (host) {
+      try {
+        const r = await host.resolveId(id, from);
+        if (r) {
+          out = !r.external && path.isAbsolute(cleanUrl(r.id)) ? r.id : null;
+          seen.set(key, out);
+          return out;
         }
-        if (isBare(args.path) && !excludeSet.has(args.path)) {
-          // A specifier with a query (`x?worker`, `x?url`, `x?raw`) is a special
-          // import handled by oj's worker/asset pipeline, not a plain dep — never
-          // pre-bundle it (the optimized-dep URL would 404). Externalize it so it
-          // is served directly. Vite excludes queried imports from the optimizer.
-          if (!args.path.includes("?")) {
-            found.add(args.path);
+      } catch {}
+    }
+    try {
+      const r = await ctx.resolve(aliasResolve(id) ?? id, from, { skipSelf: true });
+      if (r && !r.external) out = r.id;
+    } catch {}
+    seen.set(key, out);
+    return out;
+  };
+  const externalize = (id) => ({ id, external: true });
+  // Vite's htmlTypeOnLoadCallback: each `<script type="module">` in an html
+  // entry becomes an import of its src, and each inline one its own virtual
+  // module (variable names may repeat between scripts).
+  const htmlScripts = new Map();
+  const htmlToJs = (file) => {
+    let raw;
+    try {
+      raw = readFileSync(file, "utf8").replace(HTML_COMMENT_RE, "<!---->");
+    } catch {
+      return "";
+    }
+    let js = "";
+    let n = 0;
+    for (const [, openTag, content] of raw.matchAll(SCRIPT_RE)) {
+      const type = TYPE_RE.exec(openTag)
+        ?.slice(1)
+        .find((v) => v != null);
+      if (type !== "module") continue;
+      const src = SRC_RE.exec(openTag)
+        ?.slice(1)
+        .find((v) => v != null);
+      if (src) {
+        js += `import ${JSON.stringify(src)};\n`;
+      } else if (content.trim()) {
+        const key = `${HTML_SCRIPT_ID}${file}?id=${n++}`;
+        htmlScripts.set(key, content);
+        js += `export * from ${JSON.stringify(key)};\n`;
+      }
+    }
+    return `${js}\nexport default {}`;
+  };
+  const plugin = {
+    name: "oj:dep-scan",
+    resolveId: {
+      async handler(id, importer) {
+        if (id === SCAN_INCLUDE_ID || id.startsWith(HTML_SCRIPT_ID)) return id;
+        if (!importer) return null;
+        // An inline html script imports relative to its html file.
+        if (importer.startsWith(HTML_SCRIPT_ID)) importer = cleanUrl(importer.slice(HTML_SCRIPT_ID.length));
+        if (EXTERNAL_URL_RE.test(id) || id.startsWith("data:")) return externalize(id);
+        if (SPECIAL_QUERY_RE.test(id)) return externalize(id);
+        if (BARE_RE.test(id) && !aliasResolve(id)) {
+          if (id.includes("?") || moduleListContains(exclude, id) || found.has(id)) return externalize(id);
+          // resolve.dedupe from the root here too: the recorded file becomes
+          // the bundle ENTRY, so a deduped dep first seen from a linked
+          // package must still pin the root copy.
+          const from = DEDUPE_PKGS.has(npmPackageName(id)) ? SCAN_INCLUDE_ID : importer;
+          const resolved = await resolve(this, id, from);
+          if (!resolved || !path.isAbsolute(resolved) || resolved.includes("\0")) return externalize(id);
+          // Queries stripped: the recorded file is the bundle ENTRY, a path
+          // rolldown must open (and one odd entry would fail the whole build).
+          if (isInNodeModules(resolved) || includeIds.includes(id)) {
+            if (OPTIMIZABLE_ENTRY_RE.test(cleanUrl(resolved))) found.set(id, cleanUrl(resolved));
+            return externalize(id);
           }
-          return { path: args.path, external: true };
+          return JS_TYPES_RE.test(cleanUrl(resolved)) ? cleanUrl(resolved) : externalize(id);
         }
-        if (!args.path.startsWith(".") && !path.isAbsolute(args.path)) return { path: args.path, external: true };
+        if (EXTERNAL_RE.test(id) || SCAN_EXTERNAL_RE.test(cleanUrl(id))) return externalize(id);
+        // `<script src="/main.tsx">`: a dev-server-rooted URL, the file under
+        // the root (Vite's resolver maps these the same way).
+        if (id.startsWith("/")) {
+          const abs = path.join(root, cleanUrl(id));
+          if (existsSync(abs)) {
+            return JS_TYPES_RE.test(abs) || abs.endsWith(".html") ? abs : externalize(id);
+          }
+        }
+        const resolved = await resolve(this, id, importer);
+        if (resolved && path.isAbsolute(resolved) && JS_TYPES_RE.test(cleanUrl(resolved))) return cleanUrl(resolved);
+        return externalize(id);
+      },
+    },
+    load: {
+      handler(id) {
+        if (id === SCAN_INCLUDE_ID) {
+          return { code: plainIncludes.map((i) => `import ${JSON.stringify(i)};`).join("\n"), moduleType: "js" };
+        }
+        if (id.startsWith(HTML_SCRIPT_ID)) return { code: htmlScripts.get(id) ?? "", moduleType: "jsx" };
+        if (cleanUrl(id).endsWith(".html")) return { code: htmlToJs(cleanUrl(id)), moduleType: "js" };
         return null;
-      });
+      },
+    },
+    // Vite's vite:dep-scan:transform:js-glob, and its html script path: an
+    // import per glob-matched file so the crawl follows them. The call itself
+    // stays in place; the scan never executes the code.
+    transform: {
+      filter: { code: /import\.meta\.glob/ },
+      handler(code, id) {
+        const file = id.startsWith(HTML_SCRIPT_ID) ? cleanUrl(id.slice(HTML_SCRIPT_ID.length)) : cleanUrl(id);
+        if (!JS_TYPES_RE.test(file) && !id.startsWith(HTML_SCRIPT_ID)) return null;
+        const targets = globImportTargets(code, file);
+        if (!targets.length) return null;
+        return { code: `${code}\n${targets.map((f) => `import ${JSON.stringify(f)};`).join("\n")}` };
+      },
     },
   };
   try {
-    await esbuild.build({
-      jsx: "automatic",
-      ...esbuildOptions,
-      entryPoints: entryList,
-      absWorkingDir: root,
-      bundle: true,
-      write: false,
+    await rd.scan({
+      ...rolldownInput,
+      input,
+      cwd: root,
       logLevel: "silent",
-      platform: esbuildOptions.platform ?? "browser",
-      loader: { ".js": "jsx", ".ts": "ts", ".tsx": "tsx", ".jsx": "jsx", ...(esbuildOptions.loader ?? {}) },
-      plugins: [...(esbuildOptions.plugins ?? []), externalizeNonJs, collector],
-      metafile: false,
+      platform: rolldownInput.platform ?? esbuildOptions.platform ?? "browser",
+      plugins: [...(host?.plugins ?? []), plugin],
+      resolve: { ...rolldownResolveOptions(), ...rolldownInput.resolve },
+      transform: { jsx: { runtime: "automatic", development: true }, ...rolldownInput.transform },
+      // oj compiles JSX in plain .js app files; the scan must parse them too.
+      moduleTypes: { ".js": "jsx", ...rolldownInput.moduleTypes },
     });
-  } catch {}
+  } catch (e) {
+    console.warn(`oj: dependency scan stopped early (${String(e?.message ?? e).split("\n")[0]})`);
+  }
   return found;
 }
 
-/// Runs the dep pre-bundle and returns `{ metadata }`. Called by oj through a
-/// short-lived in-process JS engine; the config arrives as a JSON argument and
+function rolldownResolveOptions() {
+  const extensions = esbuildOptions.resolveExtensions ?? resolveSettings.extensions;
+  return {
+    mainFields: esbuildOptions.mainFields ?? resolveSettings.mainFields ?? ["browser", "module", "main"],
+    conditionNames: esbuildOptions.conditions ?? resolveConditions,
+    ...(extensions ? { extensions } : {}),
+    ...(resolveSettings.preserveSymlinks ? { symlinks: false } : {}),
+    ...(esbuildOptions.alias ? { alias: esbuildOptions.alias } : {}),
+  };
+}
+
+const BROWSER_EXTERNAL = "\0oj-dep:browser-external:";
+const OPTIONAL_PEER = "\0oj-dep:optional-peer:";
+const CONVERT_EXTERNAL = "\0oj-dep:external-conversion:";
+const CONVERTED_PREFIX = "oj-dep-external:";
+const CJS_EXTERNAL_FACADE = "\0oj-dep:cjs-external:";
+const ASSET_IMPORT_META_URL_RE = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\)/dg;
+const VITE_IGNORE_RE = /\/\*\s*@vite-ignore\s*\*\//;
+
+// strip-literal, small (Vite masks code with it before this match): string,
+// comment and regex-literal interiors become spaces, positions kept, so the
+// URL pattern never matches inside one. Quotes stay so the pattern still
+// matches real code. A `/` opens a regex only where an expression may start.
+const REGEX_PRECEDING_WORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "do",
+  "else",
+  "case",
+  "yield",
+  "throw",
+]);
+// After `)`, a regex starts only when the `(` belonged to one of these
+// (`if (x) /re/.test(s)` vs the division `f(x) / 2`).
+const CONTROL_PAREN_WORDS = new Set(["if", "for", "while", "with"]);
+function maskLiterals(code) {
+  const out = code.split("");
+  const n = code.length;
+  const mask = (j) => {
+    if (out[j] !== "\n") out[j] = " ";
+  };
+  // The last non-space, non-masked char and trailing word decide whether a
+  // `/` can start a regex (after `(,=:[!&|?{};+-*%<>~^`, a control-flow `)`,
+  // or a keyword). `stack` pairs braces/parens so a `}` knows whether it
+  // closes a template's `${` (whose tail is a literal again) and a `)` knows
+  // its `(`; template interiors are masked, `${expr}` interiors lexed as code.
+  let prev = "";
+  let word = "";
+  let afterControlParen = false;
+  let inTemplate = false;
+  const stack = [];
+  const regexCanStart = () =>
+    prev === "" ||
+    (prev === ")" ? afterControlParen : "(,=:[!&|?{};+-*%<>~^".includes(prev)) ||
+    (word && REGEX_PRECEDING_WORDS.has(word));
+  for (let i = 0; i < n;) {
+    if (inTemplate) {
+      const t = code[i];
+      if (t === "\\") {
+        mask(i++);
+        if (i < n) mask(i++);
+      } else if (t === "`") {
+        i++;
+        inTemplate = false;
+        prev = "`";
+        word = "";
+      } else if (t === "$" && code[i + 1] === "{") {
+        i += 2;
+        stack.push("template");
+        inTemplate = false;
+        prev = "{";
+        word = "";
+      } else {
+        mask(i++);
+      }
+      continue;
+    }
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === "/" && c2 === "/") {
+      while (i < n && code[i] !== "\n") mask(i++);
+    } else if (c === "/" && c2 === "*") {
+      while (i < n && !(code[i] === "*" && code[i + 1] === "/")) mask(i++);
+      if (i < n) mask(i++);
+      if (i < n) mask(i++);
+    } else if (c === '"' || c === "'") {
+      i++;
+      while (i < n && code[i] !== c && code[i] !== "\n") {
+        if (code[i] === "\\") mask(i++);
+        if (i < n) mask(i++);
+      }
+      i++;
+      prev = c;
+      word = "";
+    } else if (c === "`") {
+      i++;
+      inTemplate = true;
+    } else if (c === "/" && regexCanStart()) {
+      mask(i++);
+      let inClass = false;
+      while (i < n && code[i] !== "\n" && (inClass || code[i] !== "/")) {
+        if (code[i] === "\\") mask(i++);
+        else if (code[i] === "[") inClass = true;
+        else if (code[i] === "]") inClass = false;
+        if (i < n) mask(i++);
+      }
+      if (i < n && code[i] === "/") mask(i++);
+      prev = "/";
+      word = "";
+    } else if (c === "(") {
+      stack.push(CONTROL_PAREN_WORDS.has(word) ? "control-paren" : "paren");
+      prev = c;
+      word = "";
+      i++;
+    } else if (c === ")") {
+      afterControlParen = stack.pop() === "control-paren";
+      prev = c;
+      word = "";
+      i++;
+    } else if (c === "{") {
+      stack.push("block");
+      prev = c;
+      word = "";
+      i++;
+    } else if (c === "}") {
+      if (stack.pop() === "template") {
+        inTemplate = true;
+      } else {
+        prev = c;
+        word = "";
+      }
+      i++;
+    } else {
+      if (/[A-Za-z0-9_$]/.test(c)) word = /[A-Za-z0-9_$]/.test(code[i - 1] ?? "") ? word + c : c;
+      if (!/\s/.test(c)) prev = c;
+      i++;
+    }
+  }
+  return out.join("");
+}
+
+/// Vite's rolldownDepPlugin, with one difference: oj serves the bundle
+/// verbatim (Vite runs importAnalysis over it), so whatever stays external
+/// is written as the URL oj serves it at instead of a path or bare name.
+function rolldownDepPlugins() {
+  const rootImporter = path.join(root, "package.json");
+  const rootDirs = new Set([root, realRoot]);
+  // Vite's resolveResult: a bare import can RESOLVE to a non-JS file (a
+  // css-main package); that file is externalized like an asset, not bundled.
+  const assetOrModule = (r, kind) => {
+    if (!r || r.external || !EXTERNAL_RE.test(r.id)) return r;
+    const url = urlOf(r.id);
+    return kind === "require-call" ? { id: CONVERT_EXTERNAL + url } : { id: url, external: "absolute" };
+  };
+  return [
+    {
+      name: "oj:dep-pre-bundle-assets",
+      resolveId: {
+        filter: { id: EXTERNAL_RE },
+        async handler(id, importer, opts) {
+          if (id.startsWith(CONVERTED_PREFIX)) return { id: id.slice(CONVERTED_PREFIX.length), external: "absolute" };
+          if (!importer) return null;
+          const r = await this.resolve(id, importer, { skipSelf: true });
+          let file = r && !r.external ? r.id : null;
+          if (file && JS_TYPES_RE.test(cleanUrl(file))) return r;
+          if (!file && id.startsWith(".")) file = path.resolve(path.dirname(importer), id);
+          const url = file ? urlOf(file) : id;
+          // require() of an external stays a runtime require in rolldown's
+          // output; Vite converts it to an import through a facade module.
+          if (opts?.kind === "require-call") return { id: CONVERT_EXTERNAL + url };
+          return { id: url, external: "absolute" };
+        },
+      },
+      load: {
+        filter: { id: new RegExp(`^${CONVERT_EXTERNAL}`) },
+        handler(id) {
+          const url = id.slice(CONVERT_EXTERNAL.length);
+          const spec = JSON.stringify(CONVERTED_PREFIX + url);
+          return /\.(css|scss|sass|less|styl|stylus|pcss|postcss)(\?|$)/.test(url) && !/\.module\./.test(url)
+            ? `import ${spec};`
+            : `export { default } from ${spec};\nexport * from ${spec};`;
+        },
+      },
+    },
+    {
+      name: "oj:dep-pre-bundle",
+      resolveId: {
+        filter: { id: BARE_RE },
+        async handler(id, importer, opts) {
+          if (id.startsWith(CONVERTED_PREFIX)) return { id: id.slice(CONVERTED_PREFIX.length), external: "absolute" };
+          if (!importer) return null;
+          if (moduleListContains(exclude, id)) {
+            const r = await this.resolve(id, importer, { skipSelf: true });
+            const url = r && !r.external ? urlOf(r.id) : id;
+            // An ESM bundle has no require(): Vite's cjs-external plugin turns
+            // a require() of an excluded dep into an import through a facade.
+            if (opts?.kind === "require-call") return { id: CJS_EXTERNAL_FACADE + url };
+            return { id: url, external: "absolute" };
+          }
+          const aliased = aliasResolve(id);
+          if (aliased) {
+            const r = await this.resolve(aliased, importer, { skipSelf: true });
+            if (r) return assetOrModule(r, opts?.kind);
+          }
+          // resolve.dedupe: resolve from the project root wherever the
+          // importer sits (Vite resolve.ts: dedupe -> basedir = root).
+          const fromRoot = DEDUPE_PKGS.has(npmPackageName(id)) && !rootDirs.has(path.dirname(importer));
+          const r = await this.resolve(id, fromRoot ? rootImporter : importer, { skipSelf: true });
+          if (r) return assetOrModule(r, opts?.kind);
+          if (NODE_BUILTINS.has(id)) return { id: BROWSER_EXTERNAL + id };
+          const peer = optionalPeerOf(id, importer);
+          if (peer) return { id: OPTIONAL_PEER + peer };
+          return null;
+        },
+      },
+      load: {
+        filter: { id: /^\0oj-dep:(browser-external|optional-peer|cjs-external):/ },
+        handler(id) {
+          if (id.startsWith(CJS_EXTERNAL_FACADE)) {
+            const spec = JSON.stringify(CONVERTED_PREFIX + id.slice(CJS_EXTERNAL_FACADE.length));
+            return `import * as m from ${spec};\nmodule.exports = { ...m };\n`;
+          }
+          if (id.startsWith(BROWSER_EXTERNAL)) {
+            const name = id.slice(BROWSER_EXTERNAL.length);
+            return (
+              `module.exports = Object.create(new Proxy({}, {\n` +
+              `  get(_, key) {\n` +
+              `    if (key !== "__esModule" && key !== "__proto__" && key !== "constructor" && key !== "splice") {\n` +
+              `      console.warn(${JSON.stringify(`Module "${name}" has been externalized for browser compatibility. Cannot access "${name}.`)} + String(key) + '" in client code. See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.');\n` +
+              `    }\n` +
+              `  }\n` +
+              `}));\n`
+            );
+          }
+          const [peerDep, parentDep] = id.slice(OPTIONAL_PEER.length).split(":");
+          return (
+            "module.exports = {};" +
+            `throw new Error(${JSON.stringify(`Could not resolve "${peerDep}" imported by "${parentDep}". Is it installed?`)});`
+          );
+        },
+      },
+      // `new URL("./x.wasm", import.meta.url)` in a dep is relative to the
+      // dep's own file; the bundle lives elsewhere, so point it at the URL oj
+      // serves that file at (Vite rewrites it relative to its deps dir). The
+      // match runs over literal-masked code, as Vite's does over strip-literal,
+      // so the pattern inside a string or comment is left alone, and
+      // `/* @vite-ignore */` skips a site.
+      transform: {
+        filter: { code: /import\.meta\.url/ },
+        handler(code, id) {
+          const masked = maskLiterals(code);
+          let out = "";
+          let last = 0;
+          ASSET_IMPORT_META_URL_RE.lastIndex = 0;
+          for (let m; (m = ASSET_IMPORT_META_URL_RE.exec(masked));) {
+            const [start, end] = m.indices[0];
+            const [rawStart, rawEnd] = m.indices[1];
+            const raw = code.slice(rawStart, rawEnd);
+            if (VITE_IGNORE_RE.test(code.slice(start, rawStart))) continue;
+            if (raw[0] === "`" && raw.includes("${")) continue;
+            const url = raw.slice(1, -1);
+            if (url.startsWith("data:") || url.startsWith("/") || EXTERNAL_URL_RE.test(url)) continue;
+            out += code.slice(last, start);
+            out += `new URL('' + ${JSON.stringify(urlOf(path.resolve(path.dirname(id), url)))}, import.meta.url)`;
+            last = end;
+          }
+          return last ? { code: out + code.slice(last) } : null;
+        },
+      },
+    },
+  ];
+}
+
+const isSingleDefaultExport = (exports) => exports.length === 1 && exports[0] === "default";
+
+/// Vite's needsInterop (optimizer/index.ts) minus the forced list: the entry
+/// has no ESM syntax (CJS/UMD), or the bundle collapsed an ESM entry into a
+/// lone default export (a peer require()d it).
+function entryNeedsInterop(parseSync, facade, generated) {
+  let parsed = null;
+  if (parseSync && facade && path.isAbsolute(facade)) {
+    try {
+      parsed = parseSync(facade, readFileSync(facade, "utf8")).module;
+    } catch {}
+  }
+  if (!parsed) return generated.length === 0 || isSingleDefaultExport(generated);
+  if (!parsed.hasModuleSyntax) return true;
+  const entryExports = [];
+  for (const exp of parsed.staticExports ?? []) {
+    for (const e of exp.entries ?? []) {
+      if (e.exportName?.kind === "Default") entryExports.push("default");
+      else if (e.exportName?.name) entryExports.push(e.exportName.name);
+    }
+  }
+  return isSingleDefaultExport(generated) && !isSingleDefaultExport(entryExports);
+}
+
+/// Vite's prepareRolldownOptimizerRun: one rolldown build, one entry per dep
+/// plus shared chunks, ESM. Returns `{ [name]: { file, exports, cjs } }`.
+/// Vite's extractExportsData fallback: a dep entry that only parses as JSX
+/// (JSX shipped in a .js file) switches the whole bundle to `.js: "jsx"`.
+function needsJsxLoader(parseSync, entryPoints) {
+  if (!parseSync) return false;
+  return Object.values(entryPoints).some((file) => {
+    if (!file.endsWith(".js")) return false;
+    let code;
+    try {
+      code = readFileSync(file, "utf8");
+    } catch {
+      return false;
+    }
+    const failed = (lang) => {
+      try {
+        return parseSync(file, code, { lang }).errors.length > 0;
+      } catch {
+        return true;
+      }
+    };
+    return failed("js") && !failed("jsx");
+  });
+}
+
+async function rolldownBundle(rd, entryPoints) {
+  const jsxLoader = needsJsxLoader(rd.parseSync, entryPoints);
+  // `.css: "js"` is Vite's guard (prepareRolldownOptimizerRun): CSS is
+  // externalized at resolve, so none should load; one that slips through must
+  // not wake rolldown's own CSS handling, whose output nothing here serves.
+  const moduleTypes = { ".css": "js", ...rolldownInput.moduleTypes, ...(jsxLoader ? { ".js": "jsx" } : {}) };
+  const bundle = await rd.rolldown({
+    ...rolldownInput,
+    input: entryPoints,
+    cwd: root,
+    logLevel: "silent",
+    platform: rolldownInput.platform ?? esbuildOptions.platform ?? "browser",
+    plugins: rolldownDepPlugins(),
+    ...(esbuildOptions.external ? { external: esbuildOptions.external } : {}),
+    transform: {
+      target: esbuildOptions.target ?? BASELINE_TARGET,
+      ...rolldownInput.transform,
+      define: {
+        "process.env.NODE_ENV": JSON.stringify(nodeEnv),
+        ...(esbuildOptions.define ?? {}),
+        ...rolldownInput.transform?.define,
+      },
+    },
+    resolve: { ...rolldownResolveOptions(), ...rolldownInput.resolve },
+    moduleTypes,
+  });
+  let output;
+  try {
+    ({ output } = await bundle.write({
+      ...rolldownOutput,
+      format: "esm",
+      dir: outDir,
+      entryFileNames: "[name].mjs",
+      chunkFileNames: "[name]-[hash].mjs",
+      sourcemap: false,
+    }));
+  } finally {
+    await bundle.close();
+  }
+  const built = {};
+  for (const chunk of output) {
+    if (chunk.type !== "chunk" || !chunk.isEntry) continue;
+    const exports = chunk.exports ?? [];
+    built[chunk.name] = {
+      file: chunk.fileName,
+      exports,
+      cjs: entryNeedsInterop(rd.parseSync, chunk.facadeModuleId, exports),
+    };
+  }
+  return built;
+}
+
+const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+function namedExportsOf(dep) {
+  try {
+    const m = req(dep);
+    const mod = m && m.__esModule && m.default && typeof m.default === "object" ? m.default : m;
+    if (!mod || (typeof mod !== "object" && typeof mod !== "function")) return [];
+    return [...new Set(Object.keys(mod))].filter((k) => k !== "default" && k !== "__esModule" && IDENT.test(k));
+  } catch {
+    return [];
+  }
+}
+
+/// Runs the dep pre-bundle and returns `{ metadata }`. Called by oj
+/// through a short-lived JS engine; the config arrives as a JSON argument and
 /// the metadata leaves as the return value (no argv, no stdout), so neither an
 /// oversized include list nor a dep that prints on require can break the
 /// channel.
-export async function optimize(input) {
+function configure(input) {
   ({
     root,
     outDir,
@@ -464,9 +1109,20 @@ export async function optimize(input) {
     exclude = [],
     dedupe = [],
     alias = [],
-    autoDiscover = false,
+    autoDiscover = true,
+    nodeEnv = "development",
+    buildInputs = [],
+    buildOutDir = "dist",
     resolve: resolveSettings = {},
   } = input);
+  const { plugins: _plugins, output = {}, ...rest } = input.rolldownOptions ?? {};
+  rolldownInput = rest;
+  rolldownOutput = output;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = root;
+  }
   NEEDS_INTEROP = new Set(input.needsInterop ?? []);
   resolveConditions = (resolveSettings.conditions ?? ["browser", "module", "import", "development"]).filter(
     (c) => !ESBUILD_IMPLICIT_CONDITIONS.has(c),
@@ -483,9 +1139,16 @@ export async function optimize(input) {
       if (!includeIds.includes(id)) includeIds.push(id);
     }
   }
+  // The user's list warns when an entry does not resolve; oj's implicit
+  // includes (the injected JSX runtime) only bundle when present.
+  warnIncludes = new Set(includeIds);
+  for (const inc of input.implicitInclude ?? []) {
+    if (!includeIds.includes(inc)) includeIds.push(inc);
+  }
   // optimizeDeps.entries are glob patterns relative to root (Vite scans them with
-  // tinyglobby); a literal path is used as given.
-  entryList =
+  // tinyglobby); a literal path is used as given. Like Vite's isScannable +
+  // exists filter, only JS and html files feed the scan.
+  entryList = (
     entries && entries.length
       ? entries.flatMap((e) =>
           isDynamicPattern(e)
@@ -494,32 +1157,52 @@ export async function optimize(input) {
                 .map((f) => path.join(root, f))
             : [path.isAbsolute(e) ? e : path.join(root, e)],
         )
-      : detectEntries();
+      : detectEntries()
+  ).filter((f) => (JS_TYPES_RE.test(f) || f.endsWith(".html")) && existsSync(f));
   DEDUPE_PKGS = new Set(dedupe.map(npmPackageName).filter(Boolean));
   aliasEntries = [
     ...loadTsconfigAliases(root),
     ...(alias || []).map(([find, replacement]) => ({ exact: find, prefix: find + "/", target: replacement })),
   ];
-  esbuild = await import(pathToFileURL(resolveEsbuild()).href).then((m) => m.default ?? m);
+}
 
-  // Only pre-bundle the explicit optimizeDeps.include list by default (a small,
-  // author-vetted, well-behaved set). Full-graph auto-discovery via the esbuild
-  // scan is opt-in: converting an entire app's CommonJS/UMD dependency tree to ESM
-  // with esbuild has a real interop tail (UMD `this`->void 0, cross-dep shape) that
-  // can break an app, so oj's robust per-module wrap_cjs serves undiscovered deps
-  // instead. See oj-native partial bundling for the eventual request-count fix.
-  const scanned = autoDiscover ? await scan() : new Set();
-  for (const inc of includeIds) scanned.add(inc);
-  const deps = [...scanned].filter((d) => !excludeSet.has(d));
+/// The dep scan alone, run inside the plugin host so every import resolves
+/// through the app's plugins first (Vite's scan goes through
+/// `pluginContainer.resolveId(..., { scan: true })`) and the config's live
+/// `optimizeDeps.rolldownOptions.plugins` take part. Only the scan runs there:
+/// a dep bundle in that long-lived isolate keeps hundreds of MB resident. The
+/// result feeds `optimize()` as `scanned`.
+export async function scan(input, host) {
+  configure(input);
+  const rd = await loadRolldown(pickRolldown(root, input.vendoredRolldown));
+  return Object.fromEntries(await rolldownScan(rd, autoDiscover, host));
+}
+
+export async function optimize(input) {
+  configure(input);
+  const rd = await loadRolldown(pickRolldown(root, input.vendoredRolldown));
+  const candidates = input.scanned ? new Map(Object.entries(input.scanned)) : await rolldownScan(rd, autoDiscover);
+  // "a > b" names a nested copy the scan cannot resolve (it resolves below),
+  // and a plain include the scan could not resolve must reach the loop too,
+  // so its unableToOptimize warning fires instead of a silent drop.
+  for (const inc of includeIds) if (!candidates.has(inc)) candidates.set(inc, null);
+  const deps = [...candidates.keys()].filter((d) => !excludeSet.has(d));
 
   const entryPoints = {};
   const nameOf = {};
+  // Vite's unableToOptimize: a dep named in `optimizeDeps.include` that does
+  // not resolve is dropped with a warning, never silently.
+  const unableToOptimize = (dep) => {
+    if (warnIncludes.has(dep) || dep.includes(">")) {
+      console.warn(`oj: failed to resolve dependency "${dep}", present in 'optimizeDeps.include'`);
+    }
+  };
   for (const dep of deps) {
     // Vite's nested-dependency syntax: "a > b" pre-bundles the copy of `b` nested
     // inside `a` (each segment resolved from the previous one's directory). The
     // optimized dep registers under the LAST segment, which is what the app imports;
-    // esbuild gets the concrete resolved file for that nested copy. A broken nested
-    // include is dropped, not allowed to fail the whole pre-bundle.
+    // the bundler gets the concrete resolved file for that nested copy. A broken
+    // nested include is dropped, not allowed to fail the whole pre-bundle.
     if (dep.includes(">")) {
       const parts = dep
         .split(">")
@@ -533,6 +1216,7 @@ export async function optimize(input) {
           fromDir = path.dirname(resolved);
         }
       } catch {
+        unableToOptimize(dep);
         continue;
       }
       const last = parts[parts.length - 1];
@@ -541,18 +1225,15 @@ export async function optimize(input) {
       nameOf[last] = name;
       continue;
     }
-    // A package.json `#imports` subpath (e.g. `#shared/i18n/compiled/messages`)
-    // resolves to a file INSIDE the project, not a node_modules dep. Vite's optimizer
-    // targets node_modules; it does not pre-bundle project source, and neither should
-    // oj. These are served as source and handled by the app's own plugins (the
-    // i18n-dev `load` hook collapses the message barrel into grouped virtual modules),
-    // so pre-bundling them would both fight that plugin and split the module instance
-    // between SSR and client.
+    // A package.json `#imports` subpath resolves to a file INSIDE the project, not
+    // a node_modules dep; Vite does not pre-bundle project source and neither does
+    // oj (it would also split the module instance between SSR and client).
     if (dep.startsWith("#")) continue;
-    let entry;
-    try {
-      entry = req.resolve(dep);
-    } catch {
+    // Entries are resolved by the scan with the bundle's own resolver; one
+    // that did not resolve there would fail the whole build.
+    const entry = candidates.get(dep);
+    if (!entry) {
+      unableToOptimize(dep);
       continue;
     }
     // Skip linked / workspace packages (symlinked into node_modules): pre-bundling
@@ -568,18 +1249,14 @@ export async function optimize(input) {
       }
     }
     // The lingui macro entrypoints are served by oj's runtime shim, never bundled:
-    // pre-bundling them would drag in the whole babel macro toolchain (which
-    // imports node builtins) and, worse, route the specifier to the optimized dep
-    // instead of the shim. oj externalizes these at serve time too.
+    // pre-bundling them would drag in the whole babel macro toolchain and route
+    // the specifier to the optimized dep instead of the shim.
     if (/^@lingui\/(macro|core\/macro|react\/macro)$/.test(dep)) {
       continue;
     }
-    // Only pre-bundle JavaScript deps. A CSS-only dep (e.g. `@fontsource/*`) is
-    // not a JS module: esbuild would emit a stray .css and choke on the fonts its
-    // @font-face rules pull in, failing the *whole* build. Vite excludes these
-    // from the dep optimizer too; oj serves them directly through its CSS pipeline.
-    // (`json` too: Vite's OPTIMIZABLE_ENTRY_RE admits only script entries, so an
-    // expanded `pkg/*` include never pre-bundles `pkg/package.json`.)
+    // Only pre-bundle JavaScript deps (Vite's OPTIMIZABLE_ENTRY_RE): a CSS-only dep
+    // (e.g. `@fontsource/*`) or an expanded `pkg/*` include's package.json is
+    // served directly through oj's own pipelines.
     if (
       /\.(css|scss|sass|less|styl|woff2?|ttf|otf|eot|svg|png|jpe?g|gif|webp|avif|mp4|webm|wasm|json|html|md)$/i.test(
         entry,
@@ -588,83 +1265,54 @@ export async function optimize(input) {
       continue;
     }
     const name = dep.replace(/^@/, "").replace(/[^\w.-]/g, "_");
-    // Hand esbuild the BARE specifier, not the Node-resolved path: `req.resolve`
-    // picks the `require`/`node` condition (uuid's ./dist/cjs, which `require`s
-    // node crypto), and bundling that fixed file skips browser resolution. A bare
-    // entry lets esbuild's platform:"browser" pick the browser build. Vite does
-    // the same via its browser-aware resolver in esbuildDepPlugin.
-    entryPoints[name] = dep;
+    // The file the scan's browser resolver picked (Vite's flatIdDeps), never a
+    // `req.resolve` path, which picks the `require`/`node` condition.
+    entryPoints[name] = entry;
     nameOf[dep] = name;
   }
 
-  rmSync(outDir, { recursive: true, force: true });
+  // A rerun after serve-time discovery keeps the previous bundle's files: a
+  // page that predates it still loads its chunks until the reload lands (the
+  // next cold boot sweeps them). The initial run starts clean.
+  if (!input.keepExisting) rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
 
   const metadata = {};
   if (Object.keys(entryPoints).length) {
-    const result = await esbuild.build({
-      // The Rust resolver's settings, so a dual-build dep pre-bundles the same file
-      // the dev server would serve for a source import of it.
-      mainFields: resolveSettings.mainFields ?? ["browser", "module", "main"],
-      conditions: resolveConditions,
-      ...(resolveSettings.extensions ? { resolveExtensions: resolveSettings.extensions } : {}),
-      ...(resolveSettings.preserveSymlinks ? { preserveSymlinks: true } : {}),
-      target: "esnext",
-      ...esbuildOptions,
-      entryPoints,
-      absWorkingDir: root,
-      bundle: true,
-      splitting: true,
-      format: "esm",
-      outdir: outDir,
-      outExtension: { ".js": ".mjs" },
-      platform: esbuildOptions.platform ?? "browser",
-      define: { "process.env.NODE_ENV": JSON.stringify("development"), ...(esbuildOptions.define ?? {}) },
-      // A node-oriented dep (e.g. @react-pdf/renderer, cosmiconfig) may import a
-      // node builtin; externalize them so one such dep can't fail the whole
-      // pre-bundle. The import stays in the output and oj serves a browser stub,
-      // matching Vite's esbuildDepPlugin, which also externalizes builtins.
-      external: [...NODE_BUILTINS, ...(esbuildOptions.external ?? [])],
-      plugins: [...(esbuildOptions.plugins ?? []), dedupeFromRoot, externalizeNonJs],
-      logLevel: "silent",
-      metafile: true,
-      write: true,
-    });
-    const exportsOf = {};
-    for (const [out, meta] of Object.entries(result.metafile.outputs)) {
-      if (meta.entryPoint) exportsOf[path.basename(out)] = meta.exports || [];
-    }
-    const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-    function namedExportsOf(dep) {
-      try {
-        const m = req(dep);
-        const mod = m && m.__esModule && m.default && typeof m.default === "object" ? m.default : m;
-        if (!mod || (typeof mod !== "object" && typeof mod !== "function")) return [];
-        return [...new Set(Object.keys(mod))].filter((k) => k !== "default" && k !== "__esModule" && IDENT.test(k));
-      } catch {
-        return [];
-      }
-    }
+    const built = await rolldownBundle(rd, entryPoints);
     for (const [dep, name] of Object.entries(nameOf)) {
-      const file = `${name}.mjs`;
-      const exports = exportsOf[file] || [];
-      const bundledInterop = exports.length === 0 || (exports.length === 1 && exports[0] === "default");
-      if (bundledInterop && DEDUPE.has(dep)) {
+      const out = built[name];
+      if (!out) continue;
+      // A CJS react-family dep gets a named-export facade next to its bundle,
+      // so modules that link it as ESM (no interop rewrite) still find names.
+      if (out.cjs && DEDUPE.has(dep)) {
         const names = namedExportsOf(dep);
         if (names.length) {
-          const cjsFile = `${name}-cjs.mjs`;
-          renameSync(path.join(outDir, file), path.join(outDir, cjsFile));
-          const proxy =
-            `import __m from "./${cjsFile}";\n` +
-            `export default __m;\n` +
-            `export const __cjs_exports = __m;\n` +
-            `export const { ${names.join(", ")} } = __m;\n`;
-          writeFileSync(path.join(outDir, file), proxy);
-          metadata[dep] = { file, needsInterop: NEEDS_INTEROP.has(dep), exports: ["default", ...names] };
+          const facade = `${name}__oj_named.mjs`;
+          writeFileSync(
+            path.join(outDir, facade),
+            `import __m from "./${out.file}";\n` +
+              `export default __m;\n` +
+              `export const __cjs_exports = __m;\n` +
+              `export const { ${names.join(", ")} } = __m;\n`,
+          );
+          metadata[dep] = { file: facade, needsInterop: NEEDS_INTEROP.has(dep), exports: ["default", ...names] };
           continue;
         }
       }
-      metadata[dep] = { file, needsInterop: bundledInterop || NEEDS_INTEROP.has(dep), exports };
+      metadata[dep] = { file: out.file, needsInterop: out.cjs || NEEDS_INTEROP.has(dep), exports: out.exports };
+    }
+    // Vite's fileHash: a re-optimization whose previously served entries all
+    // hash the same can commit without a page reload.
+    for (const meta of Object.values(metadata)) {
+      try {
+        meta.fileHash = createHash("sha256")
+          .update(readFileSync(path.join(outDir, meta.file)))
+          .digest("hex")
+          .slice(0, 16);
+      } catch {
+        meta.fileHash = "";
+      }
     }
   }
 

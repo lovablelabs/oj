@@ -16,10 +16,10 @@ mod ssr;
 
 pub use build::{
     assets_dir_path, build_assets_dir, build_chunk_size_warning_limit, build_css_minify,
-    build_css_targets, build_manifest_name, build_minify, build_report_compressed_size,
-    build_sourcemap, build_ssr_entry, build_targets, environment_build_bool, module_preload_links,
-    module_preload_polyfill, rolldown_options, ssr_manifest_name, Sourcemap,
-    BASELINE_WIDELY_AVAILABLE, MODULES_TARGET,
+    build_css_targets, build_inputs, build_manifest_name, build_minify, build_out_dir,
+    build_report_compressed_size, build_sourcemap, build_ssr_entry, build_targets,
+    environment_build_bool, module_preload_links, module_preload_polyfill, rolldown_options,
+    ssr_manifest_name, Sourcemap, BASELINE_WIDELY_AVAILABLE, MODULES_TARGET,
 };
 pub use css::{
     css_additional_data, css_load_paths, css_modules, css_preprocessor_json, CssModulesSettings,

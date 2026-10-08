@@ -359,9 +359,10 @@ struct ServerState {
     /// dep through plugin hooks; needsInterop forces the interop rewrite) —
     /// threaded, not process-global.
     optimize_view: Arc<optimize::OptimizeView>,
-    /// An error frame broadcast while no client was connected is kept and
-    /// delivered to the next client (Vite's ws `bufferedError`).
-    buffered_error: Mutex<Option<String>>,
+    /// A frame broadcast while no client was connected (an error, or the
+    /// reload after a dep re-optimization) is kept and delivered to the next
+    /// client (Vite's ws `bufferedError`, generalized).
+    buffered_frame: Mutex<Option<String>>,
     /// Modules whose last transform failed on an unresolvable relative import
     /// (Vite's `_hasResolveFailedErrorModules`): a file appearing on disk re-processes them.
     resolve_failed: Mutex<std::collections::HashSet<String>>,
@@ -1057,6 +1058,9 @@ fn optimized_deps(
     root: &Path,
     config: &oj_config::OjConfig,
     dev_mode: &str,
+    node_env: &str,
+    host: Option<Arc<plugins::PluginHost>>,
+    plugin_names: Vec<String>,
 ) -> optimize::OptimizedDeps {
     let (include, exclude, entries) = oj_config::optimize_deps_lists(config);
     optimize::OptimizedDeps::prepare(
@@ -1067,18 +1071,27 @@ fn optimized_deps(
             include,
             exclude,
             entries,
+            build_inputs: oj_config::build_inputs(config),
+            build_out_dir: oj_config::build_out_dir(config),
             dedupe: oj_config::resolve_dedupe(config),
             alias: oj_config::resolve_alias(config, "client"),
             force: oj_config::optimize_deps_force(config),
             bundler_options: oj_config::optimize_deps_bundler_options(config),
+            rolldown_options: config
+                .optimize_deps
+                .as_ref()
+                .and_then(|o| o.rolldown_options.clone()),
             conditions: oj_config::resolve_conditions(config, "client"),
             main_fields: optimize::optimizer_main_fields(config),
             extensions: oj_config::resolve_extensions(config)
                 .unwrap_or_else(oj_resolver::default_extensions),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             mode: dev_mode.to_string(),
+            node_env: node_env.to_string(),
+            plugin_names,
             needs_interop: oj_config::optimize_deps_needs_interop(config),
         },
+        host,
     )
 }
 
@@ -1361,6 +1374,10 @@ impl DevServer {
             None => None,
         };
         boot_phase("plugin host ready");
+        let plugin_names = match &plugin_host {
+            Some(host) => host.plugin_names().await,
+            None => Vec::new(),
+        };
         let serve_info = match &plugin_host {
             Some(host) => host.serve_info().await,
             None => plugins::ServeInfo::default(),
@@ -1529,7 +1546,7 @@ impl DevServer {
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
             base: config.base.clone().filter(|b| b != "/"),
-            buffered_error: Mutex::new(None),
+            buffered_frame: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
             client_js_etag: format!(
                 "\"{}\"",
@@ -1541,7 +1558,14 @@ impl DevServer {
             watch_ignored,
             ws_token: hmr.ws_token,
             ws_token_check: hmr.ws_token_check,
-            optimized: Arc::new(optimized_deps(&root, &config, &dev_mode)),
+            optimized: Arc::new(optimized_deps(
+                &root,
+                &config,
+                &dev_mode,
+                client_defines.app.node_env(),
+                plugin_host.clone(),
+                plugin_names,
+            )),
             optimize_view: {
                 let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
                 Arc::new(optimize::OptimizeView::new(
@@ -1551,6 +1575,31 @@ impl DevServer {
             },
         });
         spawn_state_tasks(&state, write_rx, watch_rx);
+        // A dep re-optimization that changed previously served chunks (or
+        // whose batch failed) commits a new map: drop every compiled module
+        // (their rewrites carry the old URLs) and reload the page, Vite's
+        // "optimized dependencies changed. reloading". A commit that left
+        // served chunks byte-identical never reaches here.
+        {
+            let weak = Arc::downgrade(&state);
+            state.optimized.set_on_commit(Box::new(move |newly| {
+                let Some(state) = weak.upgrade() else { return };
+                state.mtime_keys.lock().unwrap().clear();
+                state.memory.lock().unwrap().clear();
+                if newly.is_empty() {
+                    println!("oj: optimized dependencies changed; reloading");
+                } else {
+                    println!(
+                        "oj: new dependencies optimized: {}; reloading",
+                        newly.join(", ")
+                    );
+                }
+                hmr::send_or_buffer(
+                    &state,
+                    full_reload_frame("optimized dependencies changed", None, None),
+                );
+            }));
+        }
         spawn_warmup(&state, &config);
         if self.lazy {
             // Lazy mode (Vite's default): compile on demand. Mark the crawl "done" so

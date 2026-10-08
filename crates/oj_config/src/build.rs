@@ -219,6 +219,34 @@ pub fn rolldown_options(config: &OjConfig) -> Option<&serde_json::Value> {
     })
 }
 
+/// `build.rolldownOptions.input` (else rollupOptions), as written: the dep
+/// scan's entries when `optimizeDeps.entries` is unset, before the html-glob
+/// fallback (Vite's computeEntries order).
+pub fn build_inputs(config: &OjConfig) -> Vec<String> {
+    let Some(input) = rolldown_options(config).and_then(|v| v.get("input")) else {
+        return Vec::new();
+    };
+    match input {
+        serde_json::Value::String(s) => vec![s.clone()],
+        serde_json::Value::Array(a) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        serde_json::Value::Object(o) => o
+            .values()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `build.outDir`, defaulted: the dep scan's html glob skips it.
+pub fn build_out_dir(config: &OjConfig) -> String {
+    build_opt(config, |b| b.out_dir.as_ref())
+        .cloned()
+        .unwrap_or_else(|| "dist".to_string())
+}
+
 /// `environments.<env_name>.build.<field>` as a bool.
 pub fn environment_build_bool(config: &OjConfig, env_name: &str, field: &str) -> Option<bool> {
     config
@@ -306,6 +334,35 @@ mod build_option_defaults_tests {
             module_preload_links(&cfg(r#"{"build":{"modulePreload":{"polyfill":false}}}"#)),
             "polyfill off still links"
         );
+    }
+
+    #[test]
+    fn build_inputs_takes_every_rollup_input_shape() {
+        assert_eq!(
+            build_inputs(&cfg(
+                r#"{"build":{"rollupOptions":{"input":"src/main.ts"}}}"#
+            )),
+            vec!["src/main.ts"]
+        );
+        assert_eq!(
+            build_inputs(&cfg(
+                r#"{"build":{"rolldownOptions":{"input":["a.ts","b.ts"]}}}"#
+            )),
+            vec!["a.ts", "b.ts"]
+        );
+        assert_eq!(
+            build_inputs(&cfg(
+                r#"{"build":{"rollupOptions":{"input":{"main":"m.ts","admin":"ad.ts"}}}}"#
+            )),
+            vec!["m.ts", "ad.ts"]
+        );
+        assert!(build_inputs(&cfg("{}")).is_empty());
+    }
+
+    #[test]
+    fn build_out_dir_defaults_to_dist() {
+        assert_eq!(build_out_dir(&cfg("{}")), "dist");
+        assert_eq!(build_out_dir(&cfg(r#"{"build":{"outDir":"out"}}"#)), "out");
     }
 
     #[test]

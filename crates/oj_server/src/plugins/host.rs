@@ -893,11 +893,22 @@ impl PluginHost {
     }
 
     async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+        self.call_with_wait(hook, args, self.rpc_wait).await
+    }
+
+    /// `call` under a caller-chosen RPC window, for a hook whose budget is not
+    /// the per-plugin-hook one (the dep scan runs under the optimizer's).
+    async fn call_with_wait(
+        &self,
+        hook: &str,
+        args: &[&str],
+        wait: std::time::Duration,
+    ) -> Result<Option<String>, String> {
         if *self.host_gone.borrow() && !self.try_revive() {
             return Err("plugin host exited".into());
         }
         self.wait_for_init(hook).await?;
-        self.run_hook(hook, args).await
+        self.run_hook(hook, args, wait).await
     }
 
     /// Init gate, BEFORE anything reaches the engine: the host answers hooks
@@ -975,8 +986,13 @@ impl PluginHost {
     /// past it is a second full window with NO reply of any kind: the scheduler
     /// answers at the deadline while alive, so total silence means the isolate
     /// thread is blocked in NATIVE code; declare the host gone.
-    async fn run_hook(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
-        let deadline = tokio::time::Instant::now() + self.rpc_wait;
+    async fn run_hook(
+        &self,
+        hook: &str,
+        args: &[&str],
+        wait: std::time::Duration,
+    ) -> Result<Option<String>, String> {
+        let deadline = tokio::time::Instant::now() + wait;
         // Generation read before the engine: a racing revive makes the pair stale
         // (belt ignored), never a stale generation blaming a fresh engine.
         let generation = self.revive.lock().unwrap().generation;
@@ -997,17 +1013,17 @@ impl PluginHost {
                         .collect(),
                 ),
             ],
-            Some(self.rpc_wait),
+            Some(wait),
         );
         tokio::pin!(call);
         let result = tokio::select! {
             biased;
             r = &mut call => r,
             _ = self.host_gone_wait() => return Err("plugin host exited".into()),
-            _ = tokio::time::sleep_until(deadline + self.rpc_wait) => {
+            _ = tokio::time::sleep_until(deadline + wait) => {
                 let msg = format!(
                     "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
-                    2 * self.rpc_wait.as_secs()
+                    2 * wait.as_secs()
                 );
                 self.declare_gone(&msg, generation);
                 return Err(msg);
@@ -1204,6 +1220,19 @@ impl PluginHost {
     #[inline]
     pub async fn resolve_id(&self, source: &str, importer: &str) -> Result<Option<String>, String> {
         self.call("resolveId", &[source, importer]).await
+    }
+
+    /// The dep optimizer's scan, resolved through the plugins (optimize-deps.mjs
+    /// `scan`): JSON `{ dep: file }`. Optimizer work gets the optimizer's
+    /// budget: a cold scan of a large app outlives the per-hook window a stuck
+    /// plugin gets.
+    pub async fn optimize_scan(&self, input: &str) -> Result<Option<String>, String> {
+        self.call_with_wait(
+            "optimizeScan",
+            &[input],
+            crate::optimize::optimizer_timeout(),
+        )
+        .await
     }
 
     #[inline]
@@ -1427,6 +1456,15 @@ impl PluginHost {
             .await
             .and_then(|s| s.parse().ok())
             .unwrap_or(1)
+    }
+
+    /// The active plugins' names, in order (Vite keys its dep pre-bundle on
+    /// them). Empty on RPC failure.
+    pub async fn plugin_names(&self) -> Vec<String> {
+        self.call_json("getPluginNames")
+            .await
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
     }
 
     /// `define` entries plugin `config()` hooks contributed, as (key, js

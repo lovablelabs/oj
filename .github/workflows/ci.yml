@@ -32,9 +32,10 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-      # The optimizer + sidecar-harness unit tests shell out to a real esbuild
-      # from the start-app fixture; install it so they run instead of skipping.
-      - name: install start-app fixture (esbuild for optimizer tests)
+      # The optimizer + sidecar-harness unit tests run the real vite/rolldown
+      # (and the config loader's esbuild) from the start-app fixture; install
+      # it so they run instead of skipping.
+      - name: install start-app fixture (bundlers for optimizer + config tests)
         run: npm ci --prefix e2e/fixtures/start-app
       - name: js unit tests (adapter helpers)
         run: node --test e2e/unit/*.test.mjs
@@ -204,6 +205,10 @@ jobs:
         run: node e2e/server-fs-allow.mjs
       - name: optimized deps are versioned and served immutable with an ETag
         run: node e2e/dep-optimize.mjs
+      - name: a Vite 8 app without esbuild discovers and pre-bundles its deps with rolldown
+        run: node e2e/dep-optimize-rolldown.mjs
+      - name: a dep the scan missed is discovered at serve time and re-optimized
+        run: node e2e/dep-optimize-discover.mjs
       - name: worker build forms (?worker, inline, url, new URL) and worker-only chunks skip document helpers
         run: node e2e/worker-build.mjs
       - name: publicDir files served verbatim; publicDir path and false honored
