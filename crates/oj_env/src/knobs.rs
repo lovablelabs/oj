@@ -41,6 +41,9 @@ pub struct Knobs {
     pub hmr_debounce_ms: Option<u64>,
     /// `OJ_MEMORY_CACHE_MB` as an integer (`0` = unlimited, the consumer's rule).
     pub memory_cache_mb: Option<usize>,
+    /// `OJ_CODE_CACHE_MAX_BYTES` as an integer (`0` = unbounded; unset = the
+    /// consumer's default budget).
+    pub code_cache_max_bytes: Option<u64>,
     /// `OJ_DEBUG_MEM` truthy.
     pub debug_mem: bool,
     /// `OJ_DEBUG_HOOK_GATE` is exactly `1`.
@@ -93,6 +96,8 @@ impl Knobs {
                 != Some("false"),
             hmr_debounce_ms: var("OJ_HMR_DEBOUNCE_MS").and_then(|v| v.parse().ok()),
             memory_cache_mb: var("OJ_MEMORY_CACHE_MB").and_then(|v| v.trim().parse().ok()),
+            code_cache_max_bytes: var("OJ_CODE_CACHE_MAX_BYTES")
+                .and_then(|v| v.trim().parse().ok()),
             debug_mem: truthy("OJ_DEBUG_MEM"),
             debug_hook_gate: var("OJ_DEBUG_HOOK_GATE").as_deref() == Some("1"),
             no_deps_preseed: truthy("OJ_NO_DEPS_PRESEED"),
@@ -173,6 +178,15 @@ mod tests {
         );
         assert_eq!(
             knobs(&[("OJ_MEMORY_CACHE_MB", " 0 ")]).memory_cache_mb,
+            Some(0)
+        );
+        assert_eq!(knobs(&[]).code_cache_max_bytes, None);
+        assert_eq!(
+            knobs(&[("OJ_CODE_CACHE_MAX_BYTES", " 1048576 ")]).code_cache_max_bytes,
+            Some(1_048_576)
+        );
+        assert_eq!(
+            knobs(&[("OJ_CODE_CACHE_MAX_BYTES", "0")]).code_cache_max_bytes,
             Some(0)
         );
         // No trim for the debounce, as its consumer did.
