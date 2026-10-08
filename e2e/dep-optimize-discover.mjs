@@ -39,6 +39,21 @@ fs.writeFileSync(
   JSON.stringify({ name: "cjs-lib", version: "1.0.0", main: "index.js" }),
 );
 fs.writeFileSync(path.join(nm, "cjs-lib", "index.js"), `exports.greet = function (n) { return "hi " + n; };\n`);
+// The tanstack-start shape: an optimizeDeps.exclude'd package serves per-file,
+// and its own bare import of a sibling must NOT register (Vite's resolve.ts
+// skips importers inside node_modules), or the sibling gets a phantom bundle.
+for (const [name, code] of [
+  ["wrapper-lib", `import { inner } from "inner-lib";\nexport const viaWrapper = inner + "!";\n`],
+  ["inner-lib", `export const inner = "from-inner";\n`],
+]) {
+  fs.mkdirSync(path.join(nm, name), { recursive: true });
+  fs.writeFileSync(
+    path.join(nm, name, "package.json"),
+    JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js" }),
+  );
+  fs.writeFileSync(path.join(nm, name, "index.js"), code);
+}
+fs.writeFileSync(path.join(app, "oj.config.json"), JSON.stringify({ optimizeDeps: { exclude: ["wrapper-lib"] } }));
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "optdep-disc-app", version: "1.0.0" }));
 fs.writeFileSync(
   path.join(app, "index.html"),
@@ -55,7 +70,8 @@ fs.writeFileSync(
 fs.mkdirSync(path.join(app, "widgets"));
 fs.writeFileSync(
   path.join(app, "widgets", "widget.js"),
-  `import { greet } from "cjs-lib";\nexport function run() { document.body.textContent = greet("world"); }\n`,
+  `import { greet } from "cjs-lib";\nimport { viaWrapper } from "wrapper-lib";\n` +
+    `export function run() { document.body.textContent = greet("world") + viaWrapper; }\n`,
 );
 
 const get = async (route) => (await fetch(`http://localhost:${port}${route}`)).text();
@@ -82,9 +98,15 @@ try {
   const stale = await fetch(`http://localhost:${port}/@oj-deps/cjs-lib.mjs?v=deadbeef`);
   assert.equal(stale.status, 504, "stale version query is an outdated request");
 
+  // The excluded wrapper serves per-file, and the import inside it stays
+  // per-file too: a node_modules importer never registers a missing dep.
+  const wrapper = await get("/node_modules/wrapper-lib/index.js");
+  assert.match(wrapper, /\/node_modules\/inner-lib\//, `excluded dep's import serves per-file:\n${wrapper}`);
+  assert.doesNotMatch(wrapper, /@oj-deps\/inner-lib/);
+
   const manifest = JSON.parse(fs.readFileSync(path.join(app, ".oj-cache", "v1", "deps", "manifest.json"), "utf8"));
   assert.ok(manifest.metadata["cjs-lib"], `cjs-lib in the manifest: ${Object.keys(manifest.metadata)}`);
-  assert.deepEqual(manifest.discovered, ["cjs-lib"], "the discovery is persisted for the next boot");
+  assert.deepEqual(manifest.discovered, ["cjs-lib"], "only the user-code discovery is persisted");
   assert.equal(typeof manifest.browserHash, "string", "the rerun version is persisted");
 
   assert.equal(manifest.metadata["cjs-lib"].v, m[1], "the committed version is the one served first");

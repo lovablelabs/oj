@@ -914,6 +914,12 @@ impl ImportRewrite<'_> {
             || spec.contains('?')
             || is_node_builtin(spec)
             || is_lingui_macro_specifier(spec)
+            // Vite's skipOptimization (resolve.ts): an importer inside
+            // node_modules never registers a missing dep. Pre-bundling is
+            // driven by user code; an excluded package's own imports (a
+            // tanstack-start tree, say) keep serving per-file. A linked
+            // package's files live outside node_modules and still register.
+            || job.dir.components().any(|c| c.as_os_str() == "node_modules")
             // The cheap gates (discovery off, optimizer dead, excluded,
             // failed) before the resolve and CJS sniff below.
             || !state.optimized.may_register(spec)

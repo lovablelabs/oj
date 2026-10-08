@@ -1593,11 +1593,16 @@ impl DevServer {
                         newly.join(", ")
                     );
                 }
-                let _ = state.reload_tx.send(full_reload_frame(
-                    "optimized dependencies changed",
-                    None,
-                    None,
-                ));
+                let frame = full_reload_frame("optimized dependencies changed", None, None);
+                // A commit can land while the page is still booting, before
+                // its HMR socket is open; a broadcast then goes nowhere and
+                // the page would keep a half-old module graph. Buffer the
+                // frame for the first client, like send_error does.
+                if state.reload_tx.receiver_count() == 0 {
+                    *state.buffered_error.lock().unwrap() = Some(frame);
+                } else {
+                    let _ = state.reload_tx.send(frame);
+                }
             }));
         }
         spawn_warmup(&state, &config);

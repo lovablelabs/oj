@@ -489,16 +489,15 @@ async fn rerun_once(
         );
         fail_pending(rerun, &skipped);
     }
-    // Only this batch leaves `pending`: a dep registered while the bundle ran
-    // keeps its flag (its wake is already queued, so the next rerun picks it
-    // up), and the commit below carries its provisional entry over so its URL
-    // keeps blocking at the dep route instead of 404ing.
+    // Deps registered while the bundle ran: their wakes are queued, the next
+    // rerun bundles the union. The commit below carries their provisional
+    // entries over so their URLs keep blocking at the dep route.
     let late: std::collections::HashSet<String> = {
-        let mut p = rerun.pending.lock().unwrap();
-        for dep in &pending {
-            p.remove(dep);
-        }
-        p.iter().cloned().collect()
+        let p = rerun.pending.lock().unwrap();
+        p.iter()
+            .filter(|d| !pending.contains(*d))
+            .cloned()
+            .collect()
     };
     let old = rerun.tx.borrow().clone();
     let old_map = old.as_deref();
@@ -533,9 +532,40 @@ async fn rerun_once(
             needs_reload = true;
         }
     }
+    // Vite's "delaying reload as new dependencies have been found": a reload
+    // commit while discoveries are still arriving would reload once per wave;
+    // drop this result and let the queued wake rerun with the union, so one
+    // reload lands at the end. Everything stays pending, the dep route keeps
+    // holding.
+    if needs_reload && !late.is_empty() {
+        let _ = rerun.wake.send(());
+        return;
+    }
+    {
+        let mut p = rerun.pending.lock().unwrap();
+        for dep in &pending {
+            p.remove(dep);
+        }
+    }
     let final_map: DepMap = if needs_reload {
-        // Every URL moves to the batch version (parse stamped it already).
+        // Every URL moves to the batch version (parse stamped it already),
+        // EXCEPT this batch's own deps: their provisional URLs never served
+        // other bytes, and the first page load is holding exactly those, so
+        // an Outdated 504 there would kill its dynamic imports mid-boot for
+        // nothing (Vite 504s them and leans on the full reload; oj's initial
+        // commit predates serving, so first-load discoveries land mid-crawl
+        // and must survive it). The reload still retires every older URL.
         new_map
+            .into_iter()
+            .map(|(dep, mut meta)| {
+                if pending.contains(&dep) {
+                    if let Some(p) = provisional.get(&dep) {
+                        meta.url = dep_url(&meta.file, url_version(&p.url));
+                    }
+                }
+                (dep, meta)
+            })
+            .collect()
     } else {
         // Served URLs stay valid: committed deps keep the version they were
         // served under, pending ones their provisional registration version.
