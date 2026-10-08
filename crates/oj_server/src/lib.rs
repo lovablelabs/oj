@@ -433,7 +433,9 @@ impl PluginServe {
         let packed = Self::pack(info);
         // A late activation runs the handler first: a reader seeing the new mode finds
         // the catch-up armed. The flag precedes the handler for late registrars.
-        if packed & 0xFFFF != 0 && self.mw_port().is_none() {
+        // A respawn keeps the runner bit through the down window, so edits there already marked the runner.
+        let was_lazy = self.state.load(std::sync::atomic::Ordering::SeqCst) & RUNNER_ENVS_BIT != 0;
+        if packed & 0xFFFF != 0 && self.mw_port().is_none() && !was_lazy {
             self.late_activated
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             if let Some(hook) = self
@@ -462,6 +464,11 @@ impl PluginServe {
         self.late_activated
             .load(std::sync::atomic::Ordering::SeqCst)
     }
+    /// Stop forwarding; the runner bit stays so fallback renders still honour `runner_dirty`.
+    fn clear_port(&self) {
+        self.state
+            .fetch_and(!0xFFFF, std::sync::atomic::Ordering::SeqCst);
+    }
     /// The configureServer middleware's loopback port, when it is up.
     pub fn mw_port(&self) -> Option<u16> {
         match self.state.load(std::sync::atomic::Ordering::SeqCst) & 0xFFFF {
@@ -478,15 +485,28 @@ impl PluginServe {
 
 /// Flips [`PluginServe`] on the host's late `{ ojServeInfo }` push: `set` runs the
 /// activation handler, then one catch-up resync full-reloads runner-backed environments
-/// for edits missed while down. Survives revives; exits only when the host is gone for good.
-fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>) {
+/// for edits missed while down. Clears forwarding on death, re-activates on each respawn, exits on shutdown.
+/// `boot_generation` is the generation `plugin_serve` was filled from, None when unknown.
+fn spawn_late_plugin_serve(
+    plugin_serve: Arc<PluginServe>,
+    host: Arc<PluginHost>,
+    boot_generation: Option<u64>,
+) {
+    if boot_generation.is_none() {
+        // A respawn raced the boot snapshot: the observer activates whichever generation is live.
+        plugin_serve.clear_port();
+    }
+    // Applied (generation, port, runner): a spurious wake re-applies nothing, a new generation always re-activates.
+    let mut applied: Option<(u64, Option<u16>, bool)> = boot_generation.and_then(|g| {
+        plugin_serve
+            .mw_port()
+            .map(|p| (g, Some(p), plugin_serve.runner_environments()))
+    });
     tokio::spawn(async move {
         let mut updates = host.serve_info_updates();
         let mut gone = host.host_gone_updates();
         let mut warned = false;
-        // Last applied info: a spurious wake re-applies nothing, while a revived
-        // generation's new info re-activates (the revive resets the watch to None first).
-        let mut applied: Option<(Option<u16>, bool)> = None;
+        let mut warned_dead = false;
         // Permanent death makes no watch change of its own, so a slow re-check
         // bounds how long the task can pin the host after it.
         let mut recheck = tokio::time::interval_at(
@@ -494,33 +514,46 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
             std::time::Duration::from_secs(60),
         );
         loop {
+            if host.is_shut_down() {
+                return;
+            }
+            // Generation brackets both watch reads: a respawn between them retries the snapshot.
+            let generation = host.generation();
+            let dead = *gone.borrow_and_update();
             let info = *updates.borrow_and_update();
-            if info.is_none() {
-                // The revive reset: whatever the next generation pushes is a
-                // fresh activation, even on a port equal to the last one.
+            if host.generation() != generation {
+                continue;
+            }
+            if dead || info.is_none() || applied.is_some_and(|a| a.0 != generation) {
+                // Never forward to a dead generation's port; the next generation's push re-activates.
+                plugin_serve.clear_port();
                 applied = None;
             }
-            let key = info.map(|i| (i.middleware_port, i.runner_environments));
-            if let Some(info) = info.filter(|_| key != applied) {
+            let key = info.map(|i| (generation, i.middleware_port, i.runner_environments));
+            if let Some(info) = info.filter(|_| !dead && key != applied) {
                 applied = key;
                 plugin_serve.set(&info);
                 if let Some(p) = plugin_serve.mw_port() {
                     println!(
-                        "  plugin middleware: forwarding unmatched requests to :{p} (host came up after boot)"
+                        "  plugin middleware: forwarding unmatched requests to :{p} (host came up after boot or respawned)"
                     );
-                    catch_up_resync(&host, p).await;
+                    // A death mid-resync must clear forwarding now, not after the retries.
+                    tokio::select! {
+                        _ = catch_up_resync(&host, p) => {}
+                        _ = gone.changed() => continue,
+                    }
                 }
             }
-            // A death ends the task only when no revive is left. This task's own Arc keeps
-            // the sender alive, so `updates.changed()` alone can never observe the death.
-            if *gone.borrow_and_update() && !host.can_revive() {
-                if applied.is_none() {
+            // Warn, but keep watching: a final respawn may still be booting with the budget already spent.
+            if dead && !host.can_revive() && !warned_dead {
+                warned_dead = true;
+                if info.is_none() {
                     eprintln!("oj: warning: the plugin host exited before initializing; plugin-served routes will not activate");
                 } else {
                     eprintln!("oj: warning: the plugin host exited with no respawns left; plugin-served routes are down until the dev server restarts");
                 }
-                return;
             }
+            warned_dead &= dead;
             let await_init = !warned && applied.is_none();
             tokio::select! {
                 changed = updates.changed() => {
@@ -1361,17 +1394,23 @@ impl DevServer {
             None => None,
         };
         boot_phase("plugin host ready");
+        let mut boot_generation = None;
         let serve_info = match &plugin_host {
-            Some(host) => host.serve_info().await,
+            Some(host) => {
+                let generation = host.generation();
+                let info = host.serve_info().await;
+                boot_generation = (host.generation() == generation).then_some(generation);
+                info
+            }
             None => plugins::ServeInfo::default(),
         };
         let plugin_serve = Arc::new(PluginServe::from_info(&serve_info));
         if let Some(p) = plugin_serve.mw_port() {
             println!("  plugin middleware: forwarding unmatched requests to :{p}");
-        } else if let Some(host) = &plugin_host {
-            // No middleware port yet: the host's init may outlive the boot deadlines.
-            // Activate on its late serve-info push; never degrade silently.
-            spawn_late_plugin_serve(Arc::clone(&plugin_serve), Arc::clone(host));
+        }
+        if let Some(host) = &plugin_host {
+            // Tracks the live generation: a late first push, a death, every respawn.
+            spawn_late_plugin_serve(Arc::clone(&plugin_serve), Arc::clone(host), boot_generation);
         }
         let mut caps = PluginCaps::default();
         if let Some(host) = &plugin_host {

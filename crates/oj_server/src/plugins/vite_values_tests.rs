@@ -285,6 +285,26 @@ async fn a_gone_host_is_revived_by_the_next_call() {
     assert!(!*host.host_gone.borrow(), "the host is live again");
 }
 
+// A death inside the respawn spacing is a cooldown, not a refusal: the host
+// still revives on its own once the spacing passes, with no call.
+#[tokio::test]
+async fn a_death_inside_respawn_spacing_revives_without_a_call() {
+    let (_root, host) = spawn_live_host("cooldown").await;
+    let generation = host.revive.lock().unwrap().generation;
+    host.declare_gone("test stall", generation);
+    host.revive.lock().unwrap().last = Some(
+        std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING
+            + std::time::Duration::from_millis(300),
+    );
+
+    let mut gone = host.host_gone_updates();
+    tokio::time::timeout(std::time::Duration::from_secs(10), gone.wait_for(|g| !*g))
+        .await
+        .expect("revived after the spacing, without a call")
+        .unwrap();
+    assert_eq!(host.revive.lock().unwrap().generation, generation + 1);
+}
+
 // A death report about a replaced engine (an old call's transport belt
 // firing after a revive) is stale and must not kill the new generation.
 #[tokio::test]

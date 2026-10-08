@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A plugin host declared gone (for example "unresponsive for 40s" after a long stall) now respawns on its own once the respawn spacing allows. Before, only a plugin hook call revived it, and a dev server whose requests go to the plugin middleware never makes one, so the host stayed dead while the server kept running.
+- Requests stop going to a dead plugin host's middleware port and follow each respawn to the new port, including when the port was known at boot. Before, the dev server kept forwarding to the dead port, so requests hung or failed until a restart.
+
 ### Changed
 
 - Start dev serves the client bundle with an ETag from each chunk's content hash (a reload revalidates to a 304 instead of re-downloading), `immutable` caching for its hashed chunks, and gzip for browsers that accept it. On a 2000-component app the entry goes from 2.7 MB to about 340 KB on the wire.
