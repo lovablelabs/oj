@@ -85,26 +85,196 @@ pub(crate) fn is_tsconfig_file(path: &Path) -> bool {
 
 /// Registry of spawned children, SIGKILLed and reaped before the restart
 /// re-exec so the fresh image inherits no survivors or zombies.
+///
+/// The registry is also persisted (one file per oj process, owner and children
+/// identified by pid + kernel start time): a SIGKILLed oj runs no handler, so
+/// the NEXT boot sweeps the predecessor's children instead. Vite leaks workerd
+/// the same way on SIGKILL; the persisted-registry pattern is the Bazel/Gradle
+/// daemon answer, pid files with an identity check.
 pub(crate) mod child_groups {
-    use std::sync::Mutex;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     struct Child {
         pid: u32,
         /// Leads its own process group (killed as a group).
         own_group: bool,
+        /// Kernel start time at registration; a recycled pid never matches.
+        start: Option<u64>,
     }
 
     static CHILDREN: Mutex<Vec<Child>> = Mutex::new(Vec::new());
+    /// This process's registry file, set once by `init_registry`.
+    static REGISTRY: OnceLock<PathBuf> = OnceLock::new();
 
     pub fn register(pid: u32, own_group: bool) {
-        CHILDREN.lock().unwrap().push(Child { pid, own_group });
+        let start = proc_start_time(pid);
+        let mut children = CHILDREN.lock().unwrap();
+        children.push(Child {
+            pid,
+            own_group,
+            start,
+        });
+        persist(&children);
     }
 
     /// Retiring a reaped (or fork-owned) child keeps a later sweep from ever
     /// aiming at a recycled pid.
     pub fn unregister(pid: u32) {
-        CHILDREN.lock().unwrap().retain(|c| c.pid != pid);
+        let mut children = CHILDREN.lock().unwrap();
+        children.retain(|c| c.pid != pid);
+        persist(&children);
+    }
+
+    /// Kernel start time of a live process, the half of the (pid, start)
+    /// identity that pid recycling cannot forge.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn proc_start_time(pid: u32) -> Option<u64> {
+        // starttime is field 22 of /proc/<pid>/stat; comm may contain spaces,
+        // so fields count from after its closing paren (state is field 3).
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = stat.rsplit_once(')')?.1;
+        after_comm.split_whitespace().nth(19)?.parse().ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn proc_start_time(pid: u32) -> Option<u64> {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut libc::c_void,
+                size,
+            )
+        };
+        (got == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(crate) fn proc_start_time(_pid: u32) -> Option<u64> {
+        None
+    }
+
+    fn snapshot(children: &[Child]) -> String {
+        let own = std::process::id();
+        let kids: Vec<serde_json::Value> = children
+            .iter()
+            .map(
+                |c| serde_json::json!({ "pid": c.pid, "own_group": c.own_group, "start": c.start }),
+            )
+            .collect();
+        serde_json::json!({
+            "owner": { "pid": own, "start": proc_start_time(own) },
+            "children": kids,
+        })
+        .to_string()
+    }
+
+    /// Rewrite this process's registry file (write-then-rename, so a crash
+    /// mid-write never leaves a half-parsed file for the next boot).
+    fn persist(children: &[Child]) {
+        let Some(file) = REGISTRY.get() else { return };
+        let tmp = file.with_extension("json.tmp");
+        if std::fs::write(&tmp, snapshot(children)).is_ok() {
+            let _ = std::fs::rename(&tmp, file);
+        }
+    }
+
+    /// Point the registry at `<cache>/children`, sweep every file a dead oj
+    /// left behind (killing its still-identified children), and write ours.
+    /// Must run before any engine can spawn.
+    pub fn init_registry(dir: &Path) {
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        let reaped = sweep_stale(dir);
+        if reaped > 0 {
+            eprintln!("oj: reaped {reaped} orphaned child process(es) from a previous run");
+        }
+        let _ = REGISTRY.set(dir.join(format!("{}.json", std::process::id())));
+        persist(&CHILDREN.lock().unwrap());
+    }
+
+    /// Kill the identity-verified children of every dead owner in `dir` and
+    /// drop their files. A live owner's file (another oj on the same cache
+    /// dir) is left alone.
+    pub fn sweep_stale(dir: &Path) -> usize {
+        let mut reaped = 0usize;
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let own_file = format!("{}.json", std::process::id());
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json")
+                || path.file_name().and_then(|n| n.to_str()) == Some(own_file.as_str())
+            {
+                continue;
+            }
+            let parsed: Option<serde_json::Value> = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok());
+            let Some(doc) = parsed else {
+                // Unreadable registry: nothing identifiable to kill; drop it.
+                let _ = std::fs::remove_file(&path);
+                continue;
+            };
+            if owner_alive(&doc["owner"]) {
+                continue;
+            }
+            for child in doc["children"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                let (Some(pid), Some(start)) = (child["pid"].as_u64(), child["start"].as_u64())
+                else {
+                    continue;
+                };
+                // Never signal without identity: we were not this child's
+                // parent, so a recycled pid is a live risk, not a TOCTOU note.
+                if proc_start_time(pid as u32) != Some(start) {
+                    continue;
+                }
+                reaped += kill_verified(pid as u32, child["own_group"].as_bool().unwrap_or(false));
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+        reaped
+    }
+
+    /// The recorded owner still runs iff its (pid, start) identity matches;
+    /// without a recorded start, plain existence is the best test left.
+    fn owner_alive(owner: &serde_json::Value) -> bool {
+        let Some(pid) = owner["pid"].as_u64() else {
+            return false;
+        };
+        match owner["start"].as_u64() {
+            Some(start) => proc_start_time(pid as u32) == Some(start),
+            #[cfg(unix)]
+            None => unsafe { libc::kill(pid as i32, 0) == 0 },
+            #[cfg(not(unix))]
+            None => false,
+        }
+    }
+
+    #[cfg(unix)]
+    fn kill_verified(pid: u32, own_group: bool) -> usize {
+        let pid_i = pid as i32;
+        let target = if own_group {
+            if unsafe { libc::getpgid(pid_i) } != pid_i {
+                return 0;
+            }
+            -pid_i
+        } else {
+            pid_i
+        };
+        usize::from(unsafe { libc::kill(target, libc::SIGKILL) } == 0)
+    }
+
+    #[cfg(not(unix))]
+    fn kill_verified(_pid: u32, _own_group: bool) -> usize {
+        0
     }
 
     /// SIGKILL every registered child (its whole group when it leads one) and
@@ -117,7 +287,7 @@ pub(crate) mod child_groups {
             if children.is_empty() {
                 break;
             }
-            for &Child { pid, own_group } in &children {
+            for &Child { pid, own_group, .. } in &children {
                 let pid_i = pid as i32;
                 // Verify before signaling (second lock against pid recycling):
                 // an own-group child must still lead its group (getpgid == pid),
@@ -153,6 +323,7 @@ pub(crate) mod child_groups {
                 }
             }
         }
+        persist(&CHILDREN.lock().unwrap());
         killed
     }
 }

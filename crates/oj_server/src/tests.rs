@@ -1720,3 +1720,171 @@ fn spa_navigation_falls_back_only_for_routes() {
     assert!(!is_spa_navigation("src/does-not-exist.tsx", &html));
     assert!(!is_spa_navigation("node_modules/react/missing.js", &html));
 }
+
+// The persisted child registry: a dead owner's identity-verified children are
+// SIGKILLed and the file dropped; a live owner's file is untouched; a child
+// whose recorded start time no longer matches (recycled pid) is never signaled.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn sweep_reaps_only_identified_children_of_dead_owners() {
+    use std::process::Command;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // A pid that is certainly dead: spawn and fully reap a child.
+    let dead = {
+        let mut c = Command::new("true").spawn().unwrap();
+        c.wait().unwrap();
+        c.id()
+    };
+    let mut sleeper = Command::new("sleep").arg("60").spawn().unwrap();
+    let mut survivor = Command::new("sleep").arg("60").spawn().unwrap();
+    let start = child_groups::proc_start_time(sleeper.id()).unwrap();
+    let survivor_start = child_groups::proc_start_time(survivor.id()).unwrap();
+
+    // Dead owner: the identified sleeper dies, the mismatched one survives.
+    let stale = dir.path().join("1.json");
+    std::fs::write(
+        &stale,
+        serde_json::json!({
+            "owner": { "pid": dead, "start": 1 },
+            "children": [
+                { "pid": sleeper.id(), "start": start, "own_group": false },
+                { "pid": survivor.id(), "start": survivor_start + 1, "own_group": false },
+            ],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Live owner (us): its file and children must be left alone entirely.
+    let own = std::process::id();
+    let live = dir.path().join("2.json");
+    std::fs::write(
+        &live,
+        serde_json::json!({
+            "owner": { "pid": own, "start": child_groups::proc_start_time(own) },
+            "children": [{ "pid": survivor.id(), "start": survivor_start, "own_group": false }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(child_groups::sweep_stale(dir.path()), 1);
+    assert!(!stale.exists(), "dead owner's file must be removed");
+    assert!(live.exists(), "live owner's file must be kept");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = sleeper.try_wait().unwrap() {
+            assert!(
+                !status.success(),
+                "sleeper must die from the sweep's SIGKILL"
+            );
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "sleeper not killed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        survivor.try_wait().unwrap().is_none(),
+        "mismatched identity must survive"
+    );
+    survivor.kill().unwrap();
+    survivor.wait().unwrap();
+}
+
+// Start-time identity: stable for a live process, gone once the pid is reaped.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn proc_start_time_identifies_live_processes() {
+    let own = std::process::id();
+    let a = child_groups::proc_start_time(own).unwrap();
+    let b = child_groups::proc_start_time(own).unwrap();
+    assert_eq!(a, b, "identity must be stable across reads");
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    gone.wait().unwrap();
+    assert_eq!(child_groups::proc_start_time(pid), None);
+}
+
+// An unreadable registry file is dropped without signaling anything; our own
+// process's file is never touched by a sweep.
+#[test]
+fn sweep_drops_unreadable_files_and_skips_our_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("7.json");
+    std::fs::write(&bad, "not json").unwrap();
+    let ours = dir.path().join(format!("{}.json", std::process::id()));
+    std::fs::write(&ours, "also not json").unwrap();
+    assert_eq!(child_groups::sweep_stale(dir.path()), 0);
+    assert!(!bad.exists(), "unreadable stale file must be dropped");
+    assert!(ours.exists(), "our own file must never be swept");
+}
+
+// The registry round trip behind the deno_process hook: init writes our file,
+// register records the child with its identity, unregister removes it, and
+// kill_all persists the drained state. The one test allowed to init_registry
+// (the process-global registry path is set once).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn child_registry_lifecycle_persists_and_drains() {
+    let dir = tempfile::tempdir().unwrap();
+    child_groups::init_registry(dir.path());
+    let own_file = dir.path().join(format!("{}.json", std::process::id()));
+    let read = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&own_file).unwrap()).unwrap()
+    };
+    assert!(own_file.exists(), "init must write our registry file");
+    assert_eq!(
+        read()["owner"]["pid"].as_u64(),
+        Some(std::process::id() as u64)
+    );
+    assert!(
+        read()["owner"]["start"].as_u64().is_some(),
+        "owner identity recorded"
+    );
+
+    let mut sleeper = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let pid = sleeper.id();
+    child_groups::register(pid, false);
+    let doc = read();
+    let kid = doc["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["pid"].as_u64() == Some(pid as u64))
+        .expect("registered child must be persisted");
+    assert_eq!(kid["own_group"].as_bool(), Some(false));
+    assert_eq!(
+        kid["start"].as_u64(),
+        child_groups::proc_start_time(pid),
+        "child identity recorded"
+    );
+
+    child_groups::unregister(pid);
+    let no_entry = |doc: serde_json::Value| {
+        doc["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|k| k["pid"].as_u64() != Some(pid as u64))
+    };
+    assert!(
+        no_entry(read()),
+        "unregister must remove the persisted entry"
+    );
+
+    child_groups::register(pid, false);
+    assert!(
+        child_groups::kill_all() >= 1,
+        "kill_all must kill the sleeper"
+    );
+    assert!(
+        no_entry(read()),
+        "kill_all must persist the drained registry"
+    );
+    drop(sleeper.try_wait());
+}

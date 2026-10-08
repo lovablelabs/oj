@@ -145,6 +145,10 @@ pub async fn start_dev(
     oj_server::write_start_assets(&cache)?;
     oj_server::boot_phase("start_dev begin");
 
+    // Before boot: the long start boot is where supervisor signals land, and
+    // plugin children (workerd) spawn well before the server listens.
+    let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());
+    tokio::spawn(oj_server::close_plugins_on_shutdown(host_slot.clone()));
     let built_task = tokio::spawn(
         oj_server::DevServer {
             root: root.clone(),
@@ -431,9 +435,9 @@ pub async fn start_dev(
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
     oj_server::boot_phase("listening");
-    tokio::spawn(oj_server::close_plugins_on_shutdown(
-        built.plugin_host.clone(),
-    ));
+    if let Some(host) = built.plugin_host.clone() {
+        let _ = host_slot.set(host);
+    }
     println!("  {} dev (tanstack start)", oj_server::oj_brand());
     let url = format!("http://localhost:{}/", port);
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
