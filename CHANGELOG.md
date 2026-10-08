@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A plugin `resolveId` pointing at a file reached through a symlink (a linked workspace package; on macOS any `/var` tmpdir path) was a 403. The serving gate checks the request's canonical path, but the allow-list entry made from the resolved path was stored raw only; those inserts now store the raw and canonical forms like every other allow-root, so the gate's ancestor check matches.
+
 ## [0.2.17] - 2026-10-08
 
 ### Fixed
