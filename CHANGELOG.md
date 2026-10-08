@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Editing a file that a plugin's `resolveId` answers for (a framework's generated file, an alias target) now hot-updates. Such files were compiled by the plugin route itself, never watched and absent from the module graph, so saving them changed nothing until a manual reload; a resolved id naming a plain app file now goes through the normal module pipeline, which still asks the plugin's `load` before reading the disk and runs the transform hooks, as Vite does for every real file. Module-graph nodes in the plugin host also carry the module's served URL (root-relative, or `/@fs` outside the root) instead of its filesystem path, so HMR updates built from them name URLs the browser actually imported, and `urlToModuleMap`/`getModuleByUrl` answer by that URL as in Vite.
+
 ## [0.2.17] - 2026-10-08
 
 ### Fixed

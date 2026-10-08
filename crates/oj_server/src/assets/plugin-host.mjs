@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat as fsStat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -1711,8 +1711,28 @@ function knownModuleId(id) {
     return false;
   }
 }
+// Vite graph nodes carry the module's served URL beside its resolved id: HMR
+// update frames are built from `node.url`, and the client matches them against
+// the URLs it imported. A resolved id that names a plain app file maps to the
+// URL oj serves it at (root-relative, or /@fs for an outside-root file);
+// everything else (virtuals, queries, dependencies) keeps the id, as before.
+function applicationModuleUrl(id) {
+  const file = String(id);
+  if (!isAbsolute(file) || file.includes("?") || file.split(/[\\/]/).includes("node_modules")) return id;
+  try {
+    if (!statSync(file).isFile()) return id;
+  } catch {
+    return id;
+  }
+  const root = resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
+  const rel = relative(root, file);
+  return rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)
+    ? `/@fs${file.replaceAll("\\", "/")}`
+    : `/${rel.replaceAll("\\", "/")}`;
+}
 function createModuleGraph() {
   const graphNodes = new Map();
+  const urlNodes = new Map();
   const fileToModulesMap = new Map();
   function moduleNode(id) {
     let n = graphNodes.get(id);
@@ -1720,7 +1740,7 @@ function createModuleGraph() {
       const file = String(id).split("?", 1)[0];
       n = {
         id,
-        url: id,
+        url: applicationModuleUrl(id),
         file,
         type: "js",
         info: null,
@@ -1737,6 +1757,7 @@ function createModuleGraph() {
         ssrError: null,
       };
       graphNodes.set(id, n);
+      urlNodes.set(n.url, n);
       let byFile = fileToModulesMap.get(file);
       if (!byFile) fileToModulesMap.set(file, (byFile = new Set()));
       byFile.add(n);
@@ -1745,7 +1766,12 @@ function createModuleGraph() {
   }
   return {
     getModuleById: (id) => (id == null || !knownModuleId(String(id)) ? undefined : moduleNode(String(id))),
-    getModuleByUrl: async (url) => (url == null || !knownModuleId(String(url)) ? undefined : moduleNode(String(url))),
+    // By the served URL first (a node's own `url` round-trips, as in Vite),
+    // falling back to the id-shaped lookup plugins used before.
+    getModuleByUrl: async (url) =>
+      url == null
+        ? undefined
+        : (urlNodes.get(String(url)) ?? (knownModuleId(String(url)) ? moduleNode(String(url)) : undefined)),
     getModulesByFile: (file) =>
       fileToModulesMap.get(String(file)) ??
       (knownModuleId(String(file)) ? new Set([moduleNode(String(file))]) : undefined),
@@ -1765,7 +1791,7 @@ function createModuleGraph() {
     onFileChange(file) {
       ojServerEvent("invalidate", { id: String(file) });
     },
-    urlToModuleMap: graphNodes,
+    urlToModuleMap: urlNodes,
     idToModuleMap: graphNodes,
     fileToModulesMap,
   };

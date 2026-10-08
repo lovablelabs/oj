@@ -134,6 +134,8 @@ jobs:
         run: node e2e/awkward-paths.mjs
       - name: plugin resolveId without a load hook serves from disk
         run: node e2e/plugin-resolve-no-load.mjs
+      - name: a plugin-resolved app file is watched and hot-updates
+        run: node e2e/plugin-file-hmr.mjs
       - name: client env define (dotenv + process env + plugin config mutations)
         run: node e2e/env-define.mjs
       - name: a vite.config that fails to load is an error, not an empty config
