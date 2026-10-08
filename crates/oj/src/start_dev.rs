@@ -431,34 +431,14 @@ pub async fn start_dev(
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
     oj_server::boot_phase("listening");
-    tokio::spawn(async move {
-        std::process::exit(shutdown_signal().await);
-    });
+    tokio::spawn(oj_server::close_plugins_on_shutdown(
+        built.plugin_host.clone(),
+    ));
     println!("  {} dev (tanstack start)", oj_server::oj_brand());
     let url = format!("http://localhost:{}/", port);
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-async fn shutdown_signal() -> i32 {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut term = match signal(SignalKind::terminate()) {
-            Ok(s) => s,
-            Err(_) => return tokio::signal::ctrl_c().await.map(|_| 130).unwrap_or(130),
-        };
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => 130,
-            _ = term.recv() => 143,
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        130
-    }
 }
 
 /// On the Cloudflare path the runner is only a fallback: edits mark it dirty

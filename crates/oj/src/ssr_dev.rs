@@ -86,6 +86,9 @@ pub async fn ssr_dev(
 
     let (listener, port) =
         oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
+    tokio::spawn(oj_server::close_plugins_on_shutdown(
+        built.plugin_host.clone(),
+    ));
     println!("  {} dev (ssr + module runner)", oj_server::oj_brand());
     println!("  entry:  {entry}");
     match &client_url {

@@ -1318,6 +1318,12 @@ impl DevServer {
         // BEFORE any engine boots: plugin-hook children register here (own process
         // group each) so restarts and shutdown can kill whole plugin-spawned trees.
         deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
+        // The engine's own signal path (deno_signals) exits the process itself on an
+        // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
+        // too or a supervisor restart strands every plugin child (workerd) on pid 1.
+        deno_process::oj_hook::set_shutdown_sweep(|| {
+            child_groups::kill_all();
+        });
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
@@ -1674,7 +1680,9 @@ pub fn warmup_paths(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
 
 /// Vite parity: close runs `buildEnd` then `closeBundle`. oj has no graceful drain, so
 /// the hooks run on the signal (bounded) and the process exits with the shell's code.
-async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
+/// Every serving path needs this handler: exiting on a bare signal instead strands
+/// plugin children (miniflare's workerd) as pid-1 orphans on supervisor restarts.
+pub async fn close_plugins_on_shutdown(host: Option<Arc<PluginHost>>) {
     #[cfg(unix)]
     let code = {
         use tokio::signal::unix::{signal, SignalKind};

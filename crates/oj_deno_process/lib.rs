@@ -2645,6 +2645,15 @@ pub mod oj_hook {
     let _ = EXIT.set(exited);
   }
 
+  /// Runs `sweep` on the engine's own exit paths: `deno_signals` terminates
+  /// the process itself (run_exit + default-handler emulation) when a
+  /// SIGHUP/SIGTERM/SIGINT finds no JS listener, winning the race against any
+  /// tokio signal task the embedder parked — without this, plugin children
+  /// (miniflare's workerd) outlive the server as pid-1 orphans.
+  pub fn set_shutdown_sweep(sweep: fn()) {
+    deno_signals::before_exit(sweep);
+  }
+
   pub(crate) fn enabled() -> bool {
     HOOK.get().is_some()
   }
