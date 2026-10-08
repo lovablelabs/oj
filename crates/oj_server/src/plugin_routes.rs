@@ -153,6 +153,22 @@ pub(crate) async fn serve_plugin_id(
         Ok(None) => return serve_unclaimed_id(state, spec, importer),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
+    // An id that names a plain app file goes through the normal module
+    // pipeline, as any Vite url naming a real file does: that path still asks
+    // plugin `load` before the fs read and runs the transform hooks, and it
+    // registers the file with the watcher and the module graph, which this
+    // route does neither of (an edit to the file never produced an HMR
+    // update). Queries keep their plugin-pipeline intent handling, and
+    // dependencies keep the per-dep load gating of the normal path untouched.
+    if !id.contains('?')
+        && !Path::new(&id)
+            .components()
+            .any(|c| c.as_os_str() == "node_modules")
+    {
+        if let Some(response) = serve_resolved_from_disk(state, &id) {
+            return response;
+        }
+    }
     let source = match load_plugin_id(state, &id).await {
         Ok(src) => src,
         Err(response) => return response,
