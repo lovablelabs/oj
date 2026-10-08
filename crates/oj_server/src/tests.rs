@@ -1883,8 +1883,14 @@ fn child_registry_lifecycle_persists_and_drains() {
         "kill_all must kill the sleeper"
     );
     assert!(
-        no_entry(read()),
-        "kill_all must persist the drained registry"
+        !own_file.exists(),
+        "a drained kill_all must remove our registry file"
     );
+    child_groups::register(std::process::id(), false);
+    assert!(
+        own_file.exists(),
+        "a register after kill_all must recreate the file"
+    );
+    child_groups::unregister(std::process::id());
     drop(sleeper.try_wait());
 }

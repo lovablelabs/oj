@@ -323,7 +323,18 @@ pub(crate) mod child_groups {
                 }
             }
         }
-        persist(&CHILDREN.lock().unwrap());
+        // Every kill_all caller is terminal (shutdown, the engine's exit path,
+        // the restart exec): a drained registry drops its file instead of
+        // leaving an empty husk for the next boot to unlink. A straggler
+        // registered mid-sweep keeps the file so the next boot can reap it.
+        let children = CHILDREN.lock().unwrap();
+        if children.is_empty() {
+            if let Some(file) = REGISTRY.get() {
+                let _ = std::fs::remove_file(file);
+            }
+        } else {
+            persist(&children);
+        }
         killed
     }
 }
