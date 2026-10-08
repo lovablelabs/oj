@@ -428,11 +428,12 @@ impl OptimizedDeps {
                         let _ = rerun.tx.send(Some(Arc::new(map)));
                     }
                 }
-                // Vite's debouncedProcessing: collect registrations for a
-                // beat, then one sequential rerun per batch.
+                // Vite's debouncedProcessing: every registration slides the
+                // window, the batch runs after a full quiet one, and a wake
+                // landing during a rerun queues the next (one rerun in
+                // flight ever, Vite's enqueuedRerun).
                 while wake_rx.recv().await.is_some() {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    while wake_rx.try_recv().is_ok() {}
+                    debounce_wakes(&mut wake_rx, DEBOUNCE).await;
                     rerun_once(&rerun, &root, &dir, &hash, &input, host.as_deref()).await;
                 }
             });
@@ -442,6 +443,29 @@ impl OptimizedDeps {
             dir,
             version: short,
             rerun: Some(rerun),
+        }
+    }
+}
+
+/// Vite's debounceMs.
+const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Vite's sliding debounce (debouncedProcessing clears and re-arms its timer
+/// on every registration): returns once a full `window` passes with no wake,
+/// having consumed every wake that arrived meanwhile, so a burst of
+/// discoveries settles into one rerun.
+async fn debounce_wakes(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    window: std::time::Duration,
+) {
+    loop {
+        match tokio::time::timeout(window, rx.recv()).await {
+            // A wake inside the window slides it.
+            Ok(Some(())) => continue,
+            // Channel closed (the OptimizedDeps dropped): nothing to wait for.
+            Ok(None) => return,
+            // A quiet window: the batch is settled.
+            Err(_) => return,
         }
     }
 }
@@ -1438,6 +1462,34 @@ mod tests {
         assert_eq!(live.url, meta.url);
         let again = deps.register_missing("@scope/pkg", true).unwrap();
         assert_eq!(again.url, meta.url, "re-registration is idempotent");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn debounce_slides_per_wake_and_drains_the_burst() {
+        let window = std::time::Duration::from_millis(100);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(()).unwrap();
+        rx.recv().await; // the loop's outer recv consumed the first wake
+        let start = tokio::time::Instant::now();
+        let waiter = tokio::spawn(async move {
+            debounce_wakes(&mut rx, window).await;
+            (start.elapsed(), rx)
+        });
+        // Two registrations inside successive windows: each slides it.
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        tx.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        tx.send(()).unwrap();
+        let (elapsed, mut rx) = waiter.await.unwrap();
+        assert_eq!(
+            elapsed,
+            std::time::Duration::from_millis(220),
+            "60 + 60, then one full quiet window"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "every wake of the burst joined the one batch"
+        );
     }
 
     #[test]
