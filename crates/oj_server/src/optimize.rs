@@ -548,24 +548,12 @@ async fn rerun_once(
         }
     }
     let final_map: DepMap = if needs_reload {
-        // Every URL moves to the batch version (parse stamped it already),
-        // EXCEPT this batch's own deps: their provisional URLs never served
-        // other bytes, and the first page load is holding exactly those, so
-        // an Outdated 504 there would kill its dynamic imports mid-boot for
-        // nothing (Vite 504s them and leans on the full reload; oj's initial
-        // commit predates serving, so first-load discoveries land mid-crawl
-        // and must survive it). The reload still retires every older URL.
+        // Every URL moves to the batch version, this batch's own deps
+        // included (parse stamped it already): exactly Vite's commitProcessing
+        // on needsReload, where each entry carries the new browserHash, an
+        // in-flight request still holding a provisional version is an
+        // outdated 504, and the full reload retires every older URL.
         new_map
-            .into_iter()
-            .map(|(dep, mut meta)| {
-                if pending.contains(&dep) {
-                    if let Some(p) = provisional.get(&dep) {
-                        meta.url = dep_url(&meta.file, url_version(&p.url));
-                    }
-                }
-                (dep, meta)
-            })
-            .collect()
     } else {
         // Served URLs stay valid: committed deps keep the version they were
         // served under, pending ones their provisional registration version.

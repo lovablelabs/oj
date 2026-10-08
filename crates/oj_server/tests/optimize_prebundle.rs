@@ -164,6 +164,65 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
         "discovered deps persist in the manifest"
     );
     assert_eq!(after.browser_version(), v2, "persisted browser version");
+
+    // A reload commit moves this batch's own URLs to the batch version too,
+    // exactly Vite's commitProcessing on needsReload: a request still holding
+    // the provisional version is an outdated 504, and the full reload is what
+    // retires it. latedep4's wrong interop guess (true for a pure-ESM dep) is
+    // Vite's needsInteropMismatch, forcing the reload path; latedep3
+    // registered first, so its provisional version differs from the batch's.
+    let reloaded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let reloaded = std::sync::Arc::clone(&reloaded);
+        deps.set_on_commit(Box::new(move |_| {
+            reloaded.store(true, std::sync::atomic::Ordering::Release);
+        }));
+    }
+    write_dep("latedep3", "export const t = 3;\n", true);
+    write_dep("latedep4", "export const f = 4;\n", true);
+    let p3 = deps
+        .register_missing("latedep3", false)
+        .expect("third registration");
+    deps.register_missing("latedep4", true)
+        .expect("fourth registration, interop guess wrong on purpose");
+    let p3_version = p3
+        .url
+        .split("?v=")
+        .nth(1)
+        .expect("versioned URL")
+        .to_string();
+    let map = wait_for(Box::new(|m| {
+        m.get("latedep4").is_some_and(|l| !l.file_hash.is_empty())
+    }))
+    .await;
+    let batch = deps.browser_version();
+    assert_ne!(
+        batch, p3_version,
+        "the batch version is not the provisional"
+    );
+    assert_eq!(
+        map["latedep3"].url,
+        format!("/@oj-deps/latedep3.mjs?v={batch}"),
+        "a reload commit moves the discovered dep's URL to the batch version"
+    );
+    assert!(
+        reloaded.load(std::sync::atomic::Ordering::Acquire),
+        "the interop mismatch took the reload path"
+    );
+    assert!(
+        matches!(
+            deps.await_dep("latedep3.mjs", Some(&p3_version)).await,
+            oj_server::optimize::DepServe::Outdated
+        ),
+        "the in-flight provisional request is Vite's outdated 504"
+    );
+    assert!(
+        matches!(
+            deps.await_dep("latedep3.mjs", Some(&batch)).await,
+            oj_server::optimize::DepServe::Ready
+        ),
+        "the reloaded page's batch-version request serves"
+    );
 }
 
 // An app with no rolldown anywhere (no vite 8, nothing vendored in this test
