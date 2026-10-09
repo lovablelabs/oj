@@ -1030,6 +1030,9 @@ fn merge_server_flags(
             fs.strict = Some(strict);
         }
     }
+    if sc.forward_console.is_none() {
+        sc.forward_console = sf.get("forwardConsole").cloned();
+    }
     if sf.get("skipWebSocketTokenCheck").and_then(|b| b.as_bool()) == Some(true) {
         let legacy = config.legacy.get_or_insert_with(Default::default);
         if legacy.skip_web_socket_token_check.is_none() {

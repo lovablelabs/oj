@@ -6338,6 +6338,7 @@ dependencies = [
  "oj_graph",
  "oj_js",
  "oj_resolver",
+ "oxc_sourcemap",
  "regex",
  "reqwest",
  "rolldown",

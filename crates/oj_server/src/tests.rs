@@ -1156,9 +1156,10 @@ fn html_fallback_rewrites_like_vite() {
 #[test]
 fn client_js_is_rendered_from_server_hmr_options() {
     let tpl = "a=__HMR_PROTOCOL__;b=__HMR_HOSTNAME__;c=__HMR_PORT__;d=__HMR_PATH__;e=__HMR_ENABLE_OVERLAY__;f=__WS_TOKEN__;";
+    let fc_off = resolve_forward_console(None, &oj_env::Knobs::default());
     assert_eq!(hmr_socket_path(None), "/__ws");
     assert_eq!(
-        render_client_js(tpl, None, "/__ws", "tok"),
+        render_client_js(tpl, None, "/__ws", "tok", &fc_off),
         r#"a=null;b=null;c=null;d="/__ws";e=true;f="tok";"#
     );
     let opts = oj_config::HmrOptions {
@@ -1173,14 +1174,55 @@ fn client_js_is_rendered_from_server_hmr_options() {
     let path = hmr_socket_path(Some(&opts));
     assert_eq!(path, "/hmr", "a relative hmr.path is made absolute");
     assert_eq!(
-        render_client_js(tpl, Some(&opts), &path, "tok"),
+        render_client_js(tpl, Some(&opts), &path, "tok", &fc_off),
         r#"a="wss";b="app.test";c=443;d="/hmr";e=false;f="tok";"#,
         "clientPort, not port, is what the browser dials"
     );
-    let real = render_client_js(CLIENT_JS, None, "/__ws", "tok");
+    let real = render_client_js(CLIENT_JS, None, "/__ws", "tok", &fc_off);
     assert!(
-        !real.contains("__HMR_") && !real.contains("__WS_TOKEN__"),
+        !real.contains("__HMR_")
+            && !real.contains("__WS_TOKEN__")
+            && !real.contains("__FORWARD_CONSOLE__"),
         "no placeholder left"
+    );
+}
+
+#[test]
+fn forward_console_resolves_like_vite() {
+    // Unset, no agent environment: off.
+    let plain = oj_env::Knobs::default();
+    let off = resolve_forward_console(None, &plain);
+    assert_eq!(off["enabled"], false);
+    // An agent environment or the editor gate turns the default on.
+    let mut agent = oj_env::Knobs {
+        agent_env: true,
+        ..Default::default()
+    };
+    let on = resolve_forward_console(None, &agent);
+    assert_eq!(on["enabled"], true);
+    assert_eq!(on["unhandledErrors"], true);
+    assert_eq!(on["logLevels"], serde_json::json!(["error", "warn"]));
+    let gated = oj_env::Knobs {
+        hmr_gate: true,
+        ..Default::default()
+    };
+    assert_eq!(resolve_forward_console(None, &gated)["enabled"], true);
+    // The env override beats detection; the config beats the env override.
+    agent.forward_console = Some(false);
+    assert_eq!(resolve_forward_console(None, &agent)["enabled"], false);
+    let cfg = serde_json::json!(true);
+    assert_eq!(resolve_forward_console(Some(&cfg), &agent)["enabled"], true);
+    // The object form: unhandledErrors defaults true; empty levels alone
+    // still enable via unhandledErrors, and levels alone enable too.
+    let obj = serde_json::json!({ "logLevels": ["warn"] });
+    let r = resolve_forward_console(Some(&obj), &plain);
+    assert_eq!(r["enabled"], true);
+    assert_eq!(r["unhandledErrors"], true);
+    assert_eq!(r["logLevels"], serde_json::json!(["warn"]));
+    let neither = serde_json::json!({ "unhandledErrors": false });
+    assert_eq!(
+        resolve_forward_console(Some(&neither), &plain)["enabled"],
+        false
     );
 }
 

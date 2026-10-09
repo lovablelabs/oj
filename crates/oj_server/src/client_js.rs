@@ -66,6 +66,7 @@ pub(crate) fn render_client_js(
     hmr: Option<&oj_config::HmrOptions>,
     ws_path: &str,
     token: &str,
+    forward_console: &serde_json::Value,
 ) -> String {
     let lit = |v: serde_json::Value| v.to_string();
     let protocol = hmr.and_then(|h| h.protocol.clone());
@@ -81,6 +82,46 @@ pub(crate) fn render_client_js(
         .replace("__HMR_PATH__", &lit(ws_path.into()))
         .replace("__HMR_ENABLE_OVERLAY__", &lit(overlay.into()))
         .replace("__WS_TOKEN__", &lit(token.into()))
+        .replace("__FORWARD_CONSOLE__", &forward_console.to_string())
+}
+
+/// Vite 8's `server.forwardConsole` resolution (resolveForwardConsoleOptions):
+/// the config value wins, then the OJ_FORWARD_CONSOLE env override, and unset
+/// it defaults on only under an AI-agent environment (Vite's determineAgent;
+/// oj also counts its editor-driven gate, OJ_HMR_GATE / LOVABLE_DEV_SERVER).
+pub(crate) fn resolve_forward_console(
+    config: Option<&serde_json::Value>,
+    knobs: &oj_env::Knobs,
+) -> serde_json::Value {
+    let setting = config
+        .cloned()
+        .or(knobs.forward_console.map(serde_json::Value::Bool))
+        .unwrap_or(serde_json::Value::Bool(knobs.agent_env || knobs.hmr_gate));
+    match setting {
+        serde_json::Value::Bool(true) => serde_json::json!({
+            "enabled": true, "unhandledErrors": true, "logLevels": ["error", "warn"],
+        }),
+        v if v.is_object() => {
+            let unhandled = v
+                .get("unhandledErrors")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(true);
+            let levels = v
+                .get("logLevels")
+                .filter(|l| l.is_array())
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let named = levels.as_array().map(Vec::len).unwrap_or(0);
+            serde_json::json!({
+                "enabled": unhandled || named > 0,
+                "unhandledErrors": unhandled,
+                "logLevels": levels,
+            })
+        }
+        _ => serde_json::json!({
+            "enabled": false, "unhandledErrors": false, "logLevels": [],
+        }),
+    }
 }
 
 /// A fresh random token for this process (Vite: `crypto.randomBytes(9)` base64url).

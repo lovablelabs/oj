@@ -239,6 +239,14 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
             }
         };
         let _ = state.reload_tx.send(reply);
+    } else if msg["type"] == "custom" && msg["event"] == "vite:forward-console" {
+        // One page's console, not app state: handled server-side (logged and
+        // recorded) and offered to plugins, never re-broadcast to other clients.
+        ingest_forward_console(state, &msg["data"]);
+        forward_custom_to_host(state, &msg);
+    } else if msg["type"] == "custom" && msg["event"] == "oj:hmr-result" {
+        ingest_hmr_result(&msg["data"]);
+        forward_custom_to_host(state, &msg);
     } else if msg["type"] == "custom" && msg["event"].is_string() {
         let _ = state.reload_tx.send(
             serde_json::json!({
@@ -248,13 +256,18 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
             })
             .to_string(),
         );
-        if let Some(host) = state.plugins.clone() {
-            let event = msg["event"].as_str().unwrap_or_default().to_string();
-            let data = msg["data"].to_string();
-            tokio::spawn(async move {
-                let _ = host.ws_message(&event, &data).await;
-            });
-        }
+        forward_custom_to_host(state, &msg);
+    }
+}
+
+/// Hand a client custom event to the plugin host's `server.ws` listeners.
+fn forward_custom_to_host(state: &Arc<ServerState>, msg: &serde_json::Value) {
+    if let Some(host) = state.plugins.clone() {
+        let event = msg["event"].as_str().unwrap_or_default().to_string();
+        let data = msg["data"].to_string();
+        tokio::spawn(async move {
+            let _ = host.ws_message(&event, &data).await;
+        });
     }
 }
 

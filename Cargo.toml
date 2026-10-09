@@ -61,6 +61,7 @@ oxc_ecmascript = "0.146.0"
 oxc_syntax = "0.146.0"
 oxc_codegen = "0.146.0"
 oxc_diagnostics = "0.146.0"
+oxc_sourcemap = "8.1.2"
 oxc_resolver = "11.24.2"
 base64 = "0.22"
 

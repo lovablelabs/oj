@@ -107,6 +107,10 @@ jobs:
         run: node e2e/debug-gc.mjs
       - name: diagnostics ring + NDJSON stderr (/@oj/diagnostics)
         run: node e2e/diagnostics.mjs
+      - name: forwardConsole server half over a raw vite-hmr socket
+        run: node e2e/forward-console.mjs
+      - name: forwardConsole through a real browser (stack remap)
+        run: node e2e/forward-console-browser.mjs
       - name: ssr streaming prod build + hydration
         run: node e2e/ssr-prod.mjs
       - name: native addon re-registration across one-shot engines (rolldown 1.1.0)

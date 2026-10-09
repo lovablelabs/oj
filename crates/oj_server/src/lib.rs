@@ -996,7 +996,15 @@ fn hmr_setup(
             .as_ref()
             .and_then(|l| l.skip_web_socket_token_check)
             != Some(true);
-    let client_js = render_client_js(CLIENT_JS, options.as_ref(), &ws_path, &ws_token);
+    let forward_console =
+        resolve_forward_console(server_cfg.forward_console.as_ref(), &oj_env::get().knobs);
+    let client_js = render_client_js(
+        CLIENT_JS,
+        options.as_ref(),
+        &ws_path,
+        &ws_token,
+        &forward_console,
+    );
     HmrSetup {
         enabled,
         ws_path,

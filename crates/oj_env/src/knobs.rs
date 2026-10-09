@@ -46,6 +46,12 @@ pub struct Knobs {
     pub code_cache_max_bytes: Option<u64>,
     /// `OJ_LOG_JSON` truthy: diagnostics print as NDJSON lines on stderr.
     pub log_json: bool,
+    /// `OJ_FORWARD_CONSOLE` as an override for `server.forwardConsole`:
+    /// `1`/`true` on, `0`/`false` off, anything else unset.
+    pub forward_console: Option<bool>,
+    /// An AI-agent environment, per the env variables Vite's `determineAgent`
+    /// checks (`server.forwardConsole` defaults on under one).
+    pub agent_env: bool,
     /// `OJ_DEBUG_MEM` truthy.
     pub debug_mem: bool,
     /// `OJ_DEBUG_HOOK_GATE` is exactly `1`.
@@ -101,6 +107,32 @@ impl Knobs {
             code_cache_max_bytes: var("OJ_CODE_CACHE_MAX_BYTES")
                 .and_then(|v| v.trim().parse().ok()),
             log_json: truthy("OJ_LOG_JSON"),
+            forward_console: match var("OJ_FORWARD_CONSOLE").as_deref() {
+                Some("1") | Some("true") => Some(true),
+                Some("0") | Some("false") => Some(false),
+                _ => None,
+            },
+            agent_env: [
+                "AI_AGENT",
+                "CURSOR_TRACE_ID",
+                "CURSOR_AGENT",
+                "GEMINI_CLI",
+                "CODEX_SANDBOX",
+                "CODEX_CI",
+                "CODEX_THREAD_ID",
+                "ANTIGRAVITY_AGENT",
+                "AUGMENT_AGENT",
+                "OPENCODE_CLIENT",
+                "CLAUDECODE",
+                "CLAUDE_CODE",
+                "REPL_ID",
+                "COPILOT_MODEL",
+                "COPILOT_ALLOW_ALL",
+                "COPILOT_GITHUB_TOKEN",
+            ]
+            .iter()
+            .any(|key| var(key).is_some_and(|v| !v.trim().is_empty()))
+                || var("CURSOR_EXTENSION_HOST_ROLE").as_deref() == Some("agent-exec"),
             debug_mem: truthy("OJ_DEBUG_MEM"),
             debug_hook_gate: var("OJ_DEBUG_HOOK_GATE").as_deref() == Some("1"),
             no_deps_preseed: truthy("OJ_NO_DEPS_PRESEED"),
@@ -140,6 +172,26 @@ mod tests {
         assert!(knobs(&[("OJ_LOG_JSON", "1")]).log_json);
         assert!(!knobs(&[("OJ_LOG_JSON", "0")]).log_json);
         assert!(!knobs(&[]).log_json);
+        assert_eq!(knobs(&[]).forward_console, None);
+        assert_eq!(
+            knobs(&[("OJ_FORWARD_CONSOLE", "true")]).forward_console,
+            Some(true)
+        );
+        assert_eq!(
+            knobs(&[("OJ_FORWARD_CONSOLE", "0")]).forward_console,
+            Some(false)
+        );
+        assert_eq!(
+            knobs(&[("OJ_FORWARD_CONSOLE", "yes")]).forward_console,
+            None
+        );
+        // Vite's determineAgent env list; an empty value does not count.
+        assert!(!knobs(&[]).agent_env);
+        assert!(knobs(&[("AI_AGENT", "lovable")]).agent_env);
+        assert!(knobs(&[("CLAUDECODE", "1")]).agent_env);
+        assert!(!knobs(&[("AI_AGENT", " ")]).agent_env);
+        assert!(knobs(&[("CURSOR_EXTENSION_HOST_ROLE", "agent-exec")]).agent_env);
+        assert!(!knobs(&[("CURSOR_EXTENSION_HOST_ROLE", "ui")]).agent_env);
         // Presence: any value, even empty.
         assert!(knobs(&[("NO_COLOR", "")]).no_color);
         assert!(knobs(&[("OJ_BOOT_PHASES", "")]).boot_phases);
