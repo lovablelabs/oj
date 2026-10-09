@@ -414,26 +414,46 @@ pub(crate) enum WatchMsg {
 pub struct WatchFeed(pub(crate) Arc<Mutex<Vec<std::sync::mpsc::Sender<notify::Event>>>>);
 
 impl WatchFeed {
-    /// Every event from now on, minus `server.watch.ignored` paths; dropping
-    /// the receiver unsubscribes.
+    /// Every event from now on, minus excluded paths (`server.watch.ignored`
+    /// and the cache dir); dropping the receiver unsubscribes.
     pub fn subscribe(&self) -> std::sync::mpsc::Receiver<notify::Event> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.0.lock().unwrap().push(tx);
         rx
     }
 
-    pub(crate) fn publish(&self, ev: &notify::Event, ignored: &[glob::Pattern], root: &Path) {
+    pub(crate) fn publish(
+        &self,
+        ev: &notify::Event,
+        ignored: &[glob::Pattern],
+        root: &Path,
+        cache_base: &Path,
+    ) {
         let mut subscribers = self.0.lock().unwrap();
         if subscribers.is_empty() {
             return;
         }
         let mut ev = ev.clone();
-        ev.paths.retain(|p| !is_watch_ignored(ignored, root, p));
+        ev.paths
+            .retain(|p| !watch_excluded(ignored, root, cache_base, p));
         if ev.paths.is_empty() {
             return;
         }
         subscribers.retain(|tx| tx.send(ev.clone()).is_ok());
     }
+}
+
+/// What every consumer of watcher events skips: `server.watch.ignored` plus
+/// the resolved cache dir, which Vite puts in chokidar's `ignored` -- the
+/// name-based skip in `is_unwatched_dir` misses an `OJ_CACHE_DIR` inside the
+/// root, whose writes would echo every compile back into the watcher.
+pub(crate) fn watch_excluded(
+    ignored: &[glob::Pattern],
+    root: &Path,
+    cache_base: &Path,
+    path: &Path,
+) -> bool {
+    path.starts_with(cache_base) || is_watch_ignored(ignored, root, path)
 }
 
 /// Vite's ensureWatchedFile: a served file OUTSIDE the root is not covered by
@@ -471,21 +491,36 @@ fn is_unwatched_dir(name: &std::ffi::OsStr) -> bool {
     )
 }
 
-/// Watch each top-level root entry except the unwatched dirs; fall back to a
-/// recursive root watch only if nothing else could be watched.
-fn watch_root(watcher: &mut notify::RecommendedWatcher, root: &Path) -> notify::Result<()> {
+/// Watch each top-level root entry except the unwatched dirs, plus the root
+/// itself non-recursively: new top-level entries are born under it, and the
+/// per-entry watches only cover what existed at boot (chokidar watches the
+/// root, so Vite sees new children). Falls back to a recursive root watch
+/// only if nothing else could be watched.
+fn watch_root(
+    watcher: &mut notify::RecommendedWatcher,
+    root: &Path,
+    cache_base: &Path,
+) -> notify::Result<()> {
     use notify::{RecursiveMode, Watcher};
-    let mut watched_any = false;
+    let root_watched = watcher.watch(root, RecursiveMode::NonRecursive).is_ok();
+    let mut watched_any = root_watched;
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
-            if is_unwatched_dir(&entry.file_name()) {
+            if is_unwatched_dir(&entry.file_name()) || entry.path() == cache_base {
                 continue;
             }
             let path = entry.path();
             let mode = if path.is_dir() {
                 RecursiveMode::Recursive
-            } else {
+            } else if !root_watched || entry.file_type().is_ok_and(|t| t.is_symlink()) {
+                // A plain top-level file is already covered by the root watch;
+                // a second watch would deliver each edit twice (ContentChanges
+                // only drops metadata noise). A symlinked entry still needs its
+                // own watch: it follows to the target inode, whose edits never
+                // touch the root directory entry.
                 RecursiveMode::NonRecursive
+            } else {
+                continue;
             };
             if watcher.watch(&path, mode).is_ok() {
                 watched_any = true;
@@ -496,6 +531,53 @@ fn watch_root(watcher: &mut notify::RecommendedWatcher, root: &Path) -> notify::
         Ok(())
     } else {
         watcher.watch(root, RecursiveMode::Recursive)
+    }
+}
+
+/// A directory created at the top level after boot, caught by the root's
+/// non-recursive watch: watch it recursively and report the files it already
+/// holds as creates (chokidar emits `add` per existing file when a new dir
+/// appears), since writes landing between the mkdir and this watch were
+/// never seen. Returns those files.
+fn adopt_created_root_dirs(
+    watcher: &mut notify::RecommendedWatcher,
+    root: &Path,
+    cache_base: &Path,
+    ev: &notify::Event,
+) -> Vec<PathBuf> {
+    use notify::{RecursiveMode, Watcher};
+    if !matches!(ev.kind, notify::EventKind::Create(_)) {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for path in &ev.paths {
+        if path.parent() != Some(root)
+            || path == cache_base
+            || path.file_name().is_none_or(is_unwatched_dir)
+            || !path.is_dir()
+        {
+            continue;
+        }
+        if watcher.watch(path, RecursiveMode::Recursive).is_ok() {
+            scan_files(path, &mut found);
+        }
+    }
+    found
+}
+
+fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if !is_unwatched_dir(&entry.file_name()) {
+                scan_files(&path, out);
+            }
+        } else {
+            out.push(path);
+        }
     }
 }
 
@@ -567,11 +649,21 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
 
         let tx = state.watch_tx.clone();
         let feed = state.watch_feed.clone();
-        let (ignored, root) = (state.watch_ignored.clone(), state.root.clone());
+        // Canonicalized so a relative or symlinked `OJ_CACHE_DIR` still
+        // matches the absolute paths the watcher reports.
+        let cache_base = {
+            let base = oj_cache::cache_base(&state.root);
+            std::fs::canonicalize(&base).unwrap_or(base)
+        };
+        let (ignored, root, cache) = (
+            state.watch_ignored.clone(),
+            state.root.clone(),
+            cache_base.clone(),
+        );
         let mut watcher =
             match notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
                 if let Ok(ev) = &ev {
-                    feed.publish(ev, &ignored, &root);
+                    feed.publish(ev, &ignored, &root, &cache);
                 }
                 let _ = tx.send(WatchMsg::Fs(ev));
             }) {
@@ -582,7 +674,7 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
                 }
             };
         let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
-        if let Err(err) = watch_root(&mut watcher, &state.root) {
+        if let Err(err) = watch_root(&mut watcher, &state.root, &cache_base) {
             eprintln!("oj: cannot watch {}: {err}", state.root.display());
             return;
         }
@@ -603,13 +695,27 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
                 Err(_) => break,
             };
             let mut batch = Batch::default();
-            batch.add(&mut changes, &first);
+            ingest_event(
+                &state,
+                &mut watcher,
+                &cache_base,
+                &mut changes,
+                &mut batch,
+                &first,
+            );
             if batch.paths.is_empty() {
                 continue;
             }
             loop {
                 match rx.recv_timeout(Duration::from_millis(debounce_ms)) {
-                    Ok(WatchMsg::Fs(Ok(ev))) => batch.add(&mut changes, &ev),
+                    Ok(WatchMsg::Fs(Ok(ev))) => ingest_event(
+                        &state,
+                        &mut watcher,
+                        &cache_base,
+                        &mut changes,
+                        &mut batch,
+                        &ev,
+                    ),
                     Ok(WatchMsg::Fs(Err(_))) => {}
                     Ok(WatchMsg::Dir(dir)) => watch_served_dir(&mut watcher, &mut served_dirs, dir),
                     Err(RecvTimeoutError::Timeout) => break,
@@ -619,7 +725,7 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
             let Batch { paths, mut created } = batch;
             let paths: Vec<PathBuf> = paths
                 .into_iter()
-                .filter(|p| !is_watch_ignored(&state.watch_ignored, &state.root, p))
+                .filter(|p| !watch_excluded(&state.watch_ignored, &state.root, &cache_base, p))
                 .collect();
             if paths.is_empty() {
                 continue;
@@ -629,4 +735,28 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
             handle_batch(&state, &paths, &created);
         }
     });
+}
+
+/// One raw watcher event into the current batch: a created top-level dir is
+/// adopted first, and its existing files enter this same batch (and the feed,
+/// which only hears the notify callback) as a synthesized create.
+fn ingest_event(
+    state: &ServerState,
+    watcher: &mut notify::RecommendedWatcher,
+    cache_base: &Path,
+    changes: &mut ContentChanges,
+    batch: &mut Batch,
+    ev: &notify::Event,
+) {
+    let adopted = adopt_created_root_dirs(watcher, &state.root, cache_base, ev);
+    if !adopted.is_empty() {
+        let mut synth =
+            notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Any));
+        synth.paths = adopted;
+        state
+            .watch_feed
+            .publish(&synth, &state.watch_ignored, &state.root, cache_base);
+        batch.add(changes, &synth);
+    }
+    batch.add(changes, ev);
 }

@@ -160,8 +160,8 @@ pub async fn start_dev(
     // plugin children (workerd) spawn well before the server listens.
     let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());
     tokio::spawn(oj_server::close_plugins_on_shutdown(host_slot.clone()));
-    let built_task = tokio::spawn(
-        oj_server::DevServer {
+    let built_task = tokio::spawn({
+        let dev_server = oj_server::DevServer {
             root: root.clone(),
             port,
             host,
@@ -170,9 +170,16 @@ pub async fn start_dev(
             no_cache: false,
             lazy: false,
             mode: Some(mode.clone()),
+        };
+        async move {
+            let built = dev_server.build_app().await?;
+            // Subscribed the moment the server (and its watcher) exists, not
+            // after the client bundle joins: an edit landing during the rest
+            // of boot queues for the Start watcher instead of being lost.
+            let watch_rx = built.watch_feed.subscribe();
+            anyhow::Ok((built, watch_rx))
         }
-        .build_app(),
-    );
+    });
 
     // The two codegen steps run SERIALIZED on purpose, not as a lost
     // concurrency opportunity: the route-tree generator writes
@@ -209,10 +216,7 @@ pub async fn start_dev(
     let (reload_tx, _) = broadcast::channel::<()>(16);
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
     let pinned = bundle_res??;
-    let built = built_res??;
-    // Subscribed before the rest of boot, so an edit landing while the engine
-    // comes up queues for the watcher thread instead of being lost.
-    let watch_rx = built.watch_feed.subscribe();
+    let (built, watch_rx) = built_res??;
     oj_server::boot_phase("bundle+build joined");
     // The in-process Start runner: an embedded engine whose module host runs
     // the dev server's SSR pipeline (StartHost); it needs the built app's
