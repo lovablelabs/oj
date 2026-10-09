@@ -2146,6 +2146,20 @@ function graphKnowsFile(environments, file) {
   }
   return false;
 }
+// Vite keys a module's `file` by its canonical path (its resolver realpaths
+// every file it resolves unless `resolve.preserveSymlinks` is set), while a
+// watcher reports the spelling it watched: a file reached through a symlink
+// (a linked workspace package, a symlinked app dir) diverges, matches no
+// module, and the runner keeps serving the old copy. The real path is the
+// second spelling every lookup tries.
+function realSpelling(file) {
+  try {
+    const real = realpathSync(file).replace(/\\/g, "/");
+    return real === file ? null : real;
+  } catch {
+    return null;
+  }
+}
 let invalidateQueue = Promise.resolve();
 // Whether a resync is already enqueued (and not yet run): duplicates coalesce
 // into it — see the /__oj_invalidate resync branch.
@@ -2175,9 +2189,11 @@ async function invalidateEnvironments(environments, watcher, changes) {
     .map(({ path: file, type }) => {
       let t = type || "update";
       file = String(file).replace(/\\/g, "/");
+      const real = realSpelling(file);
       if (t === "delete" && existsSync(file)) t = "update";
-      if (t === "create" && graphKnowsFile(environments, file)) t = "update";
-      return { file, type: t };
+      if (t === "create" && (graphKnowsFile(environments, file) || (real && graphKnowsFile(environments, real))))
+        t = "update";
+      return { file, real, type: t };
     })
     .filter(freshChange);
   for (const { file, type } of normalized) {
@@ -2192,9 +2208,11 @@ async function invalidateEnvironments(environments, watcher, changes) {
     // oj's own HMR already covers the stub environments; only runner-backed
     // (real Vite) environments need their graph invalidated and updates sent.
     if (!env || env.__ojStub) continue;
-    for (const { file, type } of normalized) {
+    for (const { file, real, type } of normalized) {
       try {
-        if (await hotUpdateEnvironment(env, file, timestamp, type)) matched.add(file);
+        let hit = await hotUpdateEnvironment(env, file, timestamp, type);
+        if (!hit && real) hit = await hotUpdateEnvironment(env, real, timestamp, type);
+        if (hit) matched.add(file);
       } catch (e) {
         process.stderr.write(`${OJ} plugin host: hot update failed (${env.name}): ${(e && e.stack) || e}\n`);
         hotSend(env, { type: "error", err: prepareErrorPayload(e) });
@@ -2203,8 +2221,9 @@ async function invalidateEnvironments(environments, watcher, changes) {
   }
   // A changed file no runner-backed graph knows is Vite's "no modules matched"
   // (nothing is sent), but here it can also mean the watcher path spells the
-  // file differently than the graph keys (a symlink, casing) — make the
-  // staleness visible once per file instead of silently serving old modules.
+  // file differently than the graph keys (casing; the symlink case is retried
+  // through its real path above) — make the staleness visible once per file
+  // instead of silently serving old modules.
   for (const { file, type } of normalized) {
     if (type === "delete" || matched.has(file) || unmatchedChangeLogged.has(file)) continue;
     unmatchedChangeLogged.add(file);
