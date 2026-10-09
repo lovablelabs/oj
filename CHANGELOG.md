@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - An editor's HMR-gate flush that lands while a TanStack Start rebuild is still running no longer strands the page on the previous bundle. The gate now holds at the watcher event instead of at rebuild end, a flush covers every write made before it (a later-delivered watcher event for a pre-flush write is already released, whichever watcher delivers it), and the rebuild reloads on completion when its hold was consumed mid-flight; before, that reload waited out the 4-minute hold cap for a flush that had already happened.
+- Editing a file reached through a symlink (a linked workspace package, a symlinked app directory) now invalidates the runner-backed environments (a Cloudflare worker, an SSR runner) instead of leaving them serving the old module until a restart. Vite keys a module's `file` by its canonical path (its resolver realpaths every file unless `resolve.preserveSymlinks` is set) while the watcher reports the spelling it watched; the invalidation now retries the real path when the watched spelling matches no module.
 
 ## [0.2.20] - 2026-10-09
 
