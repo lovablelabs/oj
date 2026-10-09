@@ -187,7 +187,11 @@ pub fn dep_url(file: &str, version: &str) -> String {
 /// (its metadata.chunks carry a browserHash), but a hashed chunk name only
 /// ever has one URL form, so there is no second instance to prevent and the
 /// hash already busts caches.
-fn linked_entry_imports(map: &DepMap, name: &str, code: &[u8]) -> Option<String> {
+fn linked_entry_edits(
+    map: &DepMap,
+    name: &str,
+    code: &[u8],
+) -> Option<oj_compiler::SpecifierEdits> {
     let text = std::str::from_utf8(code).ok()?;
     let entries: HashMap<&str, &str> = map
         .values()
@@ -197,11 +201,18 @@ fn linked_entry_imports(map: &DepMap, name: &str, code: &[u8]) -> Option<String>
     if !mentions_entry(text, &entries) {
         return None;
     }
-    oj_compiler::rewrite_specifiers(text, Path::new(name), |spec| {
+    oj_compiler::specifier_edits(text, Path::new(name), |spec| {
         entries
             .get(spec.strip_prefix("./")?)
             .map(|url| format!("./{url}"))
     })
+}
+
+/// [`linked_entry_edits`] applied: the unmemoized one-shot form (tests).
+#[cfg(test)]
+fn linked_entry_imports(map: &DepMap, name: &str, code: &[u8]) -> Option<String> {
+    let edits = linked_entry_edits(map, name, code)?;
+    Some(edits.apply(std::str::from_utf8(code).ok()?))
 }
 
 /// The parse-free gate before linking: whether a quoted `./<entry>` appears
@@ -219,15 +230,18 @@ fn mentions_entry(text: &str, entries: &HashMap<&str, &str>) -> bool {
     })
 }
 
-/// Memoized [`linked_entry_imports`]: the OXC parse and splice run once per
-/// commit instead of per request. The generation is a digest of the map's
-/// (file, url) pairs — an Arc address is not an identity (a freed map's
-/// address can be reused) and a stale hit would poison an immutable-cached
-/// URL. A new generation drops the previous one's entries whole, so old
-/// chunks' rewritten bytes are never retained across commits, and the source
-/// hash keeps a hit sound across the window where a rerun has written new
-/// bytes but not yet committed its map (the reload bounds that window; Vite
-/// shares the exposure).
+/// Memoized entry linking: the OXC parse runs once per commit instead of per
+/// request. What is retained is the parse's OUTPUT — the specifier edit list,
+/// ~a hundred bytes per file — never the rewritten bytes, so the memo's
+/// resident size is negligible however many dep files a generation serves; a
+/// hit re-splices the edits onto the freshly read bytes, a linear copy the
+/// request already pays for the read. The generation is a digest of the
+/// map's (file, url) pairs — an Arc address is not an identity (a freed
+/// map's address can be reused) and a stale hit would poison an
+/// immutable-cached URL. A new generation drops the previous one's entries
+/// whole, and the source hash keeps a hit's spans sound across the window
+/// where a rerun has written new bytes but not yet committed its map (the
+/// reload bounds that window; Vite shares the exposure).
 #[derive(Default)]
 struct LinkMemo(Mutex<LinkMemoState>);
 
@@ -240,7 +254,7 @@ struct LinkMemoState {
 struct LinkedFile {
     src_hash: blake3::Hash,
     /// `None`: the file links no entry and serves raw.
-    linked: Option<Arc<Vec<u8>>>,
+    edits: Option<Arc<oj_compiler::SpecifierEdits>>,
 }
 
 impl LinkMemo {
@@ -254,8 +268,10 @@ impl LinkMemo {
                 state.files.clear();
             } else if let Some(file) = state.files.get(name) {
                 if file.src_hash == src_hash {
-                    return match &file.linked {
-                        Some(bytes) => bytes.as_ref().clone(),
+                    return match &file.edits {
+                        // The hash gate makes the spans valid: these are the
+                        // bytes the memoized parse saw.
+                        Some(edits) => splice(edits, code),
                         None => code,
                     };
                 }
@@ -263,18 +279,26 @@ impl LinkMemo {
         }
         // Parsed outside the lock: two racing first requests do the work
         // twice, every later one hits.
-        let linked = linked_entry_imports(map, name, &code).map(|s| Arc::new(s.into_bytes()));
-        let out = match &linked {
-            Some(bytes) => bytes.as_ref().clone(),
+        let edits = linked_entry_edits(map, name, &code).map(Arc::new);
+        let out = match &edits {
+            Some(edits) => splice(edits, code),
             None => code,
         };
         let mut state = self.0.lock().unwrap();
         if state.generation == Some(generation) {
             state
                 .files
-                .insert(name.to_string(), LinkedFile { src_hash, linked });
+                .insert(name.to_string(), LinkedFile { src_hash, edits });
         }
         out
+    }
+}
+
+/// `edits.apply` over bytes already known to be the parse's exact utf8 input.
+fn splice(edits: &oj_compiler::SpecifierEdits, code: Vec<u8>) -> Vec<u8> {
+    match std::str::from_utf8(&code) {
+        Ok(text) => edits.apply(text).into_bytes(),
+        Err(_) => code,
     }
 }
 
@@ -417,7 +441,7 @@ impl OptimizedDeps {
     }
 
     /// A served pre-bundle file, its relative imports of entries pointed at
-    /// the entries' current URLs ([`linked_entry_imports`], via [`LinkMemo`]).
+    /// the entries' current URLs ([`linked_entry_edits`], via [`LinkMemo`]).
     pub fn link_entries(&self, name: &str, code: Vec<u8>) -> Vec<u8> {
         match self.rx.borrow().clone() {
             Some(map) => self.link_memo.link(&map, name, code),
@@ -1827,40 +1851,39 @@ mod tests {
         let first = memo.link(&map, "dist-C0ffee00.mjs", chunk.clone());
         assert!(std::str::from_utf8(&first).unwrap().contains("?v=aaaa1111"));
 
-        // A hit returns the MEMOIZED bytes: seed a sentinel under the same
-        // (generation, name, source hash) and the next call must serve it,
-        // proving no re-parse happens on the hot path.
+        // A hit applies the MEMOIZED edits: seed sentinel edits under the
+        // same (generation, name, source hash) and the next call must splice
+        // them, proving no re-parse happens on the hot path.
+        let sentinel_edits = oj_compiler::specifier_edits(
+            std::str::from_utf8(&chunk).unwrap(),
+            Path::new("dist-C0ffee00.mjs"),
+            |_| Some("./SENTINEL".to_string()),
+        )
+        .unwrap();
         memo.0.lock().unwrap().files.insert(
             "dist-C0ffee00.mjs".into(),
             LinkedFile {
                 src_hash: blake3::hash(&chunk),
-                linked: Some(Arc::new(b"SENTINEL".to_vec())),
+                edits: Some(Arc::new(sentinel_edits)),
             },
         );
-        assert_eq!(
-            memo.link(&map, "dist-C0ffee00.mjs", chunk.clone()),
-            b"SENTINEL"
+        let hit = memo.link(&map, "dist-C0ffee00.mjs", chunk.clone());
+        assert!(
+            std::str::from_utf8(&hit).unwrap().contains("./SENTINEL"),
+            "a hit must splice the memoized edits, not re-derive them"
         );
 
-        // Changed source bytes under the same map: the sentinel must NOT
-        // answer; the rewrite recomputes (the pre-commit write window).
+        // Changed source bytes under the same map: the sentinel edits must
+        // NOT answer (their spans belong to other bytes); the rewrite
+        // recomputes (the pre-commit write window).
         let edited =
             b"import { c } from \"./cursor.mjs\";\nexport const x = 1;\nexport { c };\n".to_vec();
         let recomputed = memo.link(&map, "dist-C0ffee00.mjs", edited);
-        assert!(std::str::from_utf8(&recomputed)
-            .unwrap()
-            .contains("?v=aaaa1111"));
+        let recomputed = std::str::from_utf8(&recomputed).unwrap();
+        assert!(recomputed.contains("?v=aaaa1111") && !recomputed.contains("SENTINEL"));
 
-        // A commit (same entry, moved version) is a new generation: the
-        // stale sentinel seeded again must not survive it, and the old
+        // A commit (same entry, moved version) is a new generation: the old
         // generation's names are dropped whole, not retained.
-        memo.0.lock().unwrap().files.insert(
-            "dist-C0ffee00.mjs".into(),
-            LinkedFile {
-                src_hash: blake3::hash(&chunk),
-                linked: Some(Arc::new(b"SENTINEL".to_vec())),
-            },
-        );
         let moved = memo.link(&map_with("bbbb2222"), "other-chunk.mjs", chunk.clone());
         assert!(std::str::from_utf8(&moved).unwrap().contains("?v=bbbb2222"));
         let state = memo.0.lock().unwrap();
@@ -1879,7 +1902,7 @@ mod tests {
         );
         assert!(
             memo.0.lock().unwrap().files["dist-B4TcxAGx.mjs"]
-                .linked
+                .edits
                 .is_none(),
             "a no-rewrite file is memoized, not re-scanned per request"
         );
