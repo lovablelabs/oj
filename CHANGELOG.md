@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stopping the dev server now closes it the way Vite does before sweeping plugin children: the shutdown handler first runs the plugin host's `closeDevServer`, awaiting the `server.close()` that plugins wrap to dispose runtimes they started (`@cloudflare/vite-plugin`'s workerd), then `buildEnd` and `closeBundle`, all inside the existing 5 s bound, which now logs when it runs out. The handler listens on held `deno_signals` streams, so the embedded engine's default signal action can no longer kill the process mid-close (signal-exit, bundled by rolldown's watch module, re-raises SIGTERM on its own pid after the first signal); plugins' own signal listeners still receive the first signal, and the child sweep stays the last word either way.
+
 - The persistent V8 code cache no longer grows without bound. Loading a TS config imports its bundle under a fresh one-shot name every boot (Vite's `.timestamp-<ms>-<hash>.mjs`, oj's fallback `oj-vite-config-<pid>-<rand>.tmp.mjs`), and each name keyed a new, permanently unreachable entry; both shapes now share one stable key, so an unchanged config hits across boots and an edited one overwrites in place. Boot hygiene also prunes the oldest entries once the directory passes a budget (`OJ_CODE_CACHE_MAX_BYTES`, 128 MiB default, `0` disables) and removes dead generation directories left behind by V8 upgrades, whose bytecode can never load again.
 
 ## [0.2.19] - 2026-10-08
