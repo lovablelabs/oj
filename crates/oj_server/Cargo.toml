@@ -12,6 +12,7 @@ oj_graph.workspace = true
 oj_resolver.workspace = true
 oj_cache.workspace = true
 oj_css.workspace = true
+oj_diag.workspace = true
 oj_env.workspace = true
 oj_config.workspace = true
 oj_js.workspace = true

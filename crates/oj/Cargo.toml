@@ -15,6 +15,7 @@ base64.workspace = true
 libc = "0.2"
 oj_cache.workspace = true
 oj_compiler.workspace = true
+oj_diag.workspace = true
 oj_env.workspace = true
 oj_config.workspace = true
 oj_resolver.workspace = true

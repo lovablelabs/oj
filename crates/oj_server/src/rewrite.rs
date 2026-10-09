@@ -136,6 +136,13 @@ pub(crate) fn rewrite_specifier(
                 || is_node_builtin(spec))
             {
                 eprintln!("oj: cannot resolve '{spec}': {err}");
+                oj_diag::emit(
+                    oj_diag::Event::new(
+                        oj_diag::Kind::ResolveError,
+                        format!("cannot resolve '{spec}': {err}"),
+                    )
+                    .warn(),
+                );
             }
             None
         }

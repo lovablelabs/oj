@@ -4,6 +4,7 @@ members = [
     "crates/oj_compiler",
     "crates/oj_deno_process",
     "crates/oj_css",
+    "crates/oj_diag",
     "crates/oj_env",
     "crates/oj_config",
     "crates/oj_resolver",
@@ -30,6 +31,7 @@ oj_resolver = { version = "0.2.22", path = "crates/oj_resolver" }
 oj_graph = { version = "0.2.22", path = "crates/oj_graph" }
 oj_cache = { version = "0.2.22", path = "crates/oj_cache" }
 oj_css = { version = "0.2.22", path = "crates/oj_css" }
+oj_diag = { version = "0.2.22", path = "crates/oj_diag" }
 oj_env = { version = "0.2.22", path = "crates/oj_env" }
 oj_config = { version = "0.2.22", path = "crates/oj_config" }
 oj_server = { version = "0.2.22", path = "crates/oj_server" }
@@ -98,6 +100,7 @@ oj_resolver = { opt-level = 3 }
 oj_graph = { opt-level = 3 }
 oj_server = { opt-level = 3 }
 oj_cache = { opt-level = 3 }
+oj_diag = { opt-level = 3 }
 oj_env = { opt-level = 3 }
 oj_config = { opt-level = 3 }
 oj_js = { opt-level = 3 }

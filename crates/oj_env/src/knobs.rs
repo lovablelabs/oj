@@ -44,6 +44,8 @@ pub struct Knobs {
     /// `OJ_CODE_CACHE_MAX_BYTES` as an integer (`0` = unbounded; unset = the
     /// consumer's default budget).
     pub code_cache_max_bytes: Option<u64>,
+    /// `OJ_LOG_JSON` truthy: diagnostics print as NDJSON lines on stderr.
+    pub log_json: bool,
     /// `OJ_DEBUG_MEM` truthy.
     pub debug_mem: bool,
     /// `OJ_DEBUG_HOOK_GATE` is exactly `1`.
@@ -98,6 +100,7 @@ impl Knobs {
             memory_cache_mb: var("OJ_MEMORY_CACHE_MB").and_then(|v| v.trim().parse().ok()),
             code_cache_max_bytes: var("OJ_CODE_CACHE_MAX_BYTES")
                 .and_then(|v| v.trim().parse().ok()),
+            log_json: truthy("OJ_LOG_JSON"),
             debug_mem: truthy("OJ_DEBUG_MEM"),
             debug_hook_gate: var("OJ_DEBUG_HOOK_GATE").as_deref() == Some("1"),
             no_deps_preseed: truthy("OJ_NO_DEPS_PRESEED"),
@@ -134,6 +137,9 @@ mod tests {
         assert!(knobs(&[("OJ_ENABLE_CACHE", "yes")]).enable_cache);
         assert!(!knobs(&[("OJ_ENABLE_CACHE", "0")]).enable_cache);
         assert!(!knobs(&[("OJ_ENABLE_CACHE", "")]).enable_cache);
+        assert!(knobs(&[("OJ_LOG_JSON", "1")]).log_json);
+        assert!(!knobs(&[("OJ_LOG_JSON", "0")]).log_json);
+        assert!(!knobs(&[]).log_json);
         // Presence: any value, even empty.
         assert!(knobs(&[("NO_COLOR", "")]).no_color);
         assert!(knobs(&[("OJ_BOOT_PHASES", "")]).boot_phases);

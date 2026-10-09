@@ -143,7 +143,7 @@ pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &se
     match ev.get("action").and_then(|a| a.as_str()) {
         Some("restart") => {
             println!("oj: plugin requested server.restart()");
-            restart_process();
+            restart_process("plugin requested server.restart()");
         }
         Some("invalidateAll") => {
             state.mtime_keys.lock().unwrap().clear();
@@ -364,17 +364,29 @@ pub(crate) fn send_or_buffer(state: &ServerState, frame: String) {
 }
 
 /// A Vite `ErrorPayload` frame for every connected client, or the next one.
+/// Also the diagnostics record for every served compile/transform failure:
+/// the browser overlay was the only witness before.
 pub(crate) fn send_error(state: &ServerState, message: &str) {
+    oj_diag::emit(
+        oj_diag::Event::new(oj_diag::Kind::CompileError, message)
+            .module(loc_captures(message).map(|c| c[1].to_string())),
+    );
     send_or_buffer(state, error_frame(message));
 }
 
-pub(crate) fn error_frame(message: &str) -> String {
-    let mut err = serde_json::json!({ "message": message, "stack": "", "plugin": "oj" });
+/// The `file.ext:line[:col]` capture an error message carries, shared by the
+/// overlay frame and the diagnostics record.
+fn loc_captures(message: &str) -> Option<regex::Captures<'_>> {
     static LOC: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = LOC.get_or_init(|| {
         regex::Regex::new(r"([^\s():]+\.[A-Za-z0-9]+):(\d+)(?::(\d+))?").expect("loc regex")
     });
-    if let Some(c) = re.captures(message) {
+    re.captures(message)
+}
+
+pub(crate) fn error_frame(message: &str) -> String {
+    let mut err = serde_json::json!({ "message": message, "stack": "", "plugin": "oj" });
+    if let Some(c) = loc_captures(message) {
         err["id"] = serde_json::Value::String(c[1].to_string());
         let line = c[2].parse::<u64>().unwrap_or(0);
         let column = c
@@ -977,10 +989,12 @@ async fn run_plugin_hooks(
     if state.plugins_watch_change {
         if let Err(e) = host.watch_change(&file, change_type).await {
             eprintln!("oj: watchChange failed for {file}: {e}");
+            emit_hook_failure("watchChange", &file, &e);
         }
         if let Some(ssr) = &ssr_host {
             if let Err(e) = ssr.watch_change(&file, change_type).await {
                 eprintln!("oj: watchChange (ssr) failed for {file}: {e}");
+                emit_hook_failure("watchChange (ssr)", &file, &e);
             }
         }
     }
@@ -997,6 +1011,7 @@ async fn run_plugin_hooks(
             .await
         {
             eprintln!("oj: hotUpdate (ssr) failed for {file}: {e}");
+            emit_hook_failure("hotUpdate (ssr)", &file, &e);
         }
     }
     match host
@@ -1007,6 +1022,7 @@ async fn run_plugin_hooks(
         // error payload, and no update is dispatched for that file.
         Err(e) => {
             eprintln!("oj: hotUpdate failed for {file}: {e}");
+            emit_hook_failure("hotUpdate", &file, &e);
             messages.push(error_frame(&e));
             Flow::Done
         }
@@ -1024,6 +1040,15 @@ async fn run_plugin_hooks(
         },
         Ok(None) => Flow::Next,
     }
+}
+
+/// A throwing watcher-driven plugin hook, as a diagnostics record.
+fn emit_hook_failure(hook: &str, file: &str, error: &str) {
+    oj_diag::emit(
+        oj_diag::Event::new(oj_diag::Kind::PluginHook, format!("{hook} failed: {error}"))
+            .source(oj_diag::Source::Plugin)
+            .module(file.to_string()),
+    );
 }
 
 /// A `hotUpdate` that returned a module subset: propagate from those seeds.

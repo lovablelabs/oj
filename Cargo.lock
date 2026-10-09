@@ -6019,6 +6019,7 @@ dependencies = [
  "oj_config",
  "oj_css",
  "oj_deno_napi",
+ "oj_diag",
  "oj_env",
  "oj_js",
  "oj_resolver",
@@ -6260,6 +6261,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oj_diag"
+version = "0.2.22"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oj_env"
 version = "0.2.22"
 dependencies = [
@@ -6324,6 +6333,7 @@ dependencies = [
  "oj_config",
  "oj_css",
  "oj_deno_process",
+ "oj_diag",
  "oj_env",
  "oj_graph",
  "oj_js",
