@@ -5,6 +5,15 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.23] - 2026-10-09
+
+### Added
+
+- Structured diagnostics (`oj_diag`): compile errors, resolve misses, plugin-hook throws, plugin-host lifecycle, optimizer failures, restarts and panics are recorded in a bounded in-memory ring with per-kind counters, served at `GET /@oj/diagnostics` (with plugin-host health and an `?after=` cursor). `OJ_LOG_JSON=1` additionally prints each fresh event as one NDJSON stderr line marked `"oj":"diag"` for supervisors that ingest logs; human terminal output is unchanged.
+- Browser console forwarding, matching Vite 8's `server.forwardConsole`: the HMR client forwards unhandled errors, unhandled rejections and the configured console levels to the dev server over the existing socket, where stack frames are remapped through the served modules' source maps and printed. Resolution follows Vite (config value, then the `OJ_FORWARD_CONSOLE` env override, then on-by-default under an AI-agent environment). Client-sourced text is length-capped and scrubbed of control characters before it reaches stderr.
+- `oj:hmr-result`: the client reports an HMR update that failed to apply (a signal Vite does not have), recorded as an `hmr_apply_failed` diagnostic.
+- The restart log line now names what asked for the restart (a config/env change vs a plugin's `server.restart()`).
+
 ## [0.2.22] - 2026-10-09
 
 ### Fixed
