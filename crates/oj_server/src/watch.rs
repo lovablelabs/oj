@@ -504,7 +504,7 @@ fn handle_batch(
         return;
     }
     if let Some(gate) = &state.hmr_gate {
-        if gate.hold(state, paths) {
+        if gate.hold(state, paths, false) {
             return;
         }
     }

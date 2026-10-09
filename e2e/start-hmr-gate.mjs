@@ -166,4 +166,36 @@ await run("plain", false, async (listener, _log, touch) => {
   console.log("plain: rebuild reloads immediately");
 });
 
+// 3. The editor's flush racing the rebuild: the editor flushes right after its
+//    writes, usually while the rebuild still runs. The gate holds at the
+//    watcher event, so that flush consumes the hold and the rebuild reloads
+//    when it finishes. A hold taken only at rebuild end missed the flush and
+//    served the previous bundle until the cap (minutes).
+await run("flush-during-rebuild", true, async (listener, log) => {
+  // The event-time hold appears within the watcher's settle (ms); the rebuild
+  // behind it takes seconds, so the flush below lands mid-rebuild.
+  const until = Date.now() + 30000;
+  for (;;) {
+    const status = await (await fetch(`http://localhost:${PORT}/__hmr_gate`)).json();
+    if (status.count >= 1 || status.heldReload === true) break;
+    must(Date.now() < until, "race: the gate never recorded the change at the watcher event");
+    await sleep(50);
+  }
+  must(
+    !log().includes("oj start: rebuilt"),
+    "race: the rebuild finished before the flush could land mid-rebuild; timing assumption broken",
+  );
+  const flushed = await (await fetch(`http://localhost:${PORT}/__hmr_flush`, { method: "POST" })).json();
+  must(flushed.reload === true, `race: the mid-rebuild flush must consume the hold, got ${JSON.stringify(flushed)}`);
+  await settles(() => log().includes("oj start: rebuilt"), { timeoutMs: 60000 });
+  must(
+    log().includes("oj start: rebuilt, reloading"),
+    `race: the rebuild after a consumed flush must reload, not hold:\n${log().slice(-1200)}`,
+  );
+  const reloadBy = Date.now() + 10000;
+  while (Date.now() < reloadBy && listener.reloads.length === 0) await sleep(100);
+  must(listener.reloads.length >= 1, "race: no reload reached the page after the flushed rebuild");
+  console.log("flush-during-rebuild: mid-rebuild flush consumed the hold, rebuild reloaded");
+});
+
 console.log("START HMR GATE E2E PASSED");
