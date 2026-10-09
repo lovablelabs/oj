@@ -470,7 +470,11 @@ pub(crate) struct HmrGate {
 #[derive(Default)]
 pub(crate) struct GateInner {
     pending: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
-    generation: u64,
+    /// When the last flush ran. A flush covers every write made before it, so
+    /// a hold arriving later for one of those writes is already released; the
+    /// cap timer compares against the same instant to know whether its hold
+    /// set was ever flushed.
+    last_flush: Option<std::time::SystemTime>,
 }
 
 pub(crate) fn gate_relevant(path: &Path) -> bool {
@@ -482,11 +486,29 @@ pub(crate) fn gate_relevant(path: &Path) -> bool {
 
 impl HmrGate {
     pub(crate) fn hold(&self, state: &Arc<ServerState>, paths: &[PathBuf]) -> bool {
-        let relevant: Vec<&PathBuf> = paths.iter().filter(|p| gate_relevant(p)).collect();
+        let mut relevant: Vec<&PathBuf> = paths.iter().filter(|p| gate_relevant(p)).collect();
         if relevant.is_empty() {
             return false;
         }
         let mut inner = self.inner.lock().unwrap();
+        // The editor writes, then flushes: that flush covers every write made
+        // before it, however late the write's watcher event is delivered (the
+        // dev server and the Start rebundler watch independently, and a Start
+        // rebuild holds only once it finishes). Holding a pre-flush write again
+        // would wait out the cap for a flush that already happened, serving
+        // the previous content for minutes. A file whose mtime is unreadable
+        // (deleted) stays held, the conservative side.
+        if let Some(flushed_at) = inner.last_flush {
+            relevant.retain(|p| {
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .is_none_or(|mtime| mtime > flushed_at)
+            });
+            if relevant.is_empty() {
+                return false;
+            }
+        }
         let was_empty = inner.pending.is_empty();
         for p in relevant {
             inner
@@ -496,8 +518,10 @@ impl HmrGate {
                 .insert("change".to_string());
         }
         if was_empty {
-            inner.generation += 1;
-            let generation = inner.generation;
+            // The cap timer for this hold set: it fires only if nothing
+            // flushed after it was armed, the same instant the write-coverage
+            // check above compares against.
+            let armed = std::time::SystemTime::now();
             let state = Arc::clone(state);
             let max_hold = self.max_hold;
             let rt = state.rt.clone();
@@ -506,7 +530,7 @@ impl HmrGate {
                 if let Some(gate) = &state.hmr_gate {
                     let expired = {
                         let g = gate.inner.lock().unwrap();
-                        g.generation == generation && !g.pending.is_empty()
+                        !g.pending.is_empty() && g.last_flush.is_none_or(|f| f < armed)
                     };
                     if expired {
                         gate.flush(&state).await;
@@ -520,7 +544,7 @@ impl HmrGate {
     async fn flush(&self, state: &Arc<ServerState>) -> (Vec<String>, usize) {
         let entries: Vec<(PathBuf, std::collections::BTreeSet<String>)> = {
             let mut inner = self.inner.lock().unwrap();
-            inner.generation += 1;
+            inner.last_flush = Some(std::time::SystemTime::now());
             std::mem::take(&mut inner.pending).into_iter().collect()
         };
         let files: Vec<String> = entries
@@ -600,6 +624,17 @@ impl HmrGateHandle {
         gate.held_reload
             .store(true, std::sync::atomic::Ordering::SeqCst);
         true
+    }
+
+    /// Whether the gate still holds anything: changes awaiting a flush, or an
+    /// armed page reload. The Start rebuild reads this when it finishes — the
+    /// hold itself was taken at the watcher event, so an editor flush that
+    /// landed mid-rebuild has already consumed it and the answer is false.
+    pub fn reload_is_held(&self) -> bool {
+        self.state.hmr_gate.as_ref().is_some_and(|gate| {
+            gate.held_reload.load(std::sync::atomic::Ordering::SeqCst)
+                || !gate.inner.lock().unwrap().pending.is_empty()
+        })
     }
 
     /// Fires once per flush that released something.

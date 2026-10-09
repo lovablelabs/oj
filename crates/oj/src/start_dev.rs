@@ -605,8 +605,8 @@ const RELOAD_CLIENT: &str = "<script type=\"module\" src=\"/@oj-start/live-reloa
 /// the single pending run (paths union), so at most one run ever queues.
 #[derive(Default)]
 struct PendingRebundle {
-    /// Every changed path of the merged batches (relevant and not): the HMR
-    /// gate records the full set, exactly as the inline loop did.
+    /// Every changed path of the merged batches (relevant and not), for the
+    /// regen decisions; the HMR gate recorded them at the watcher event.
     paths: std::collections::HashSet<PathBuf>,
     /// The settled worker-invalidate sends already in flight for the merged
     /// batches: this run's browser reload waits for them, so a reload never
@@ -793,6 +793,15 @@ fn spawn_start_watcher(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
             if !relevant {
                 continue;
             }
+            // The gate holds at the watcher event, as plain dev does
+            // (watch.rs): the editor flushes right after its writes, usually
+            // while the rebuild below still runs, and a hold taken only at
+            // rebuild end would wait out the cap for a flush that already
+            // happened, serving the previous bundle for minutes.
+            if let Some(gate) = &state.gate {
+                let batch_paths: Vec<PathBuf> = paths.iter().cloned().collect();
+                gate.hold_reload(&batch_paths);
+            }
             // Narrate the compile batch to the editor: "Applying changes…" while
             // it rebuilds; the rebundle worker sends the done-frame so the pill
             // clears.
@@ -939,7 +948,10 @@ async fn rebundle_worker(
         if !state.lazy_runner() {
             state.engine.reload().await;
         }
-        let held = state.gate.as_ref().is_some_and(|g| g.hold_reload(&paths));
+        // The hold was taken at the watcher event; by now the editor's flush
+        // may have consumed it, in which case this run's reload goes out with
+        // the fresh bundle instead of waiting for a flush that already came.
+        let held = state.gate.as_ref().is_some_and(|g| g.reload_is_held());
         if !held {
             let _ = state.reload_tx.send(());
         }

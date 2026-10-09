@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- An editor's HMR-gate flush that lands while a TanStack Start rebuild is still running no longer strands the page on the previous bundle. The gate now holds at the watcher event instead of at rebuild end, a flush covers every write made before it (a later-delivered watcher event for a pre-flush write is already released, whichever watcher delivers it), and the rebuild reloads on completion when its hold was consumed mid-flight; before, that reload waited out the 4-minute hold cap for a flush that had already happened.
+
 ## [0.2.20] - 2026-10-09
 
 ### Fixed
