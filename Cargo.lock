@@ -6001,7 +6001,7 @@ dependencies = [
 
 [[package]]
 name = "oj"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "arcstr",
@@ -6060,7 +6060,7 @@ dependencies = [
 
 [[package]]
 name = "oj_cache"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "blake3",
  "oj_env",
@@ -6072,7 +6072,7 @@ dependencies = [
 
 [[package]]
 name = "oj_compiler"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "base64 0.22.1",
  "glob",
@@ -6100,7 +6100,7 @@ dependencies = [
 
 [[package]]
 name = "oj_config"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "oj_env",
  "oxc_allocator",
@@ -6120,7 +6120,7 @@ dependencies = [
 
 [[package]]
 name = "oj_css"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "base64 0.22.1",
  "grass",
@@ -6134,7 +6134,7 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_napi"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -6153,7 +6153,7 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_process"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -6180,7 +6180,7 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_runtime"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6255,14 +6255,14 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_snapshots"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "deno_runtime",
 ]
 
 [[package]]
 name = "oj_diag"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "serde",
  "serde_json",
@@ -6270,7 +6270,7 @@ dependencies = [
 
 [[package]]
 name = "oj_env"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "proptest",
  "serde_json",
@@ -6279,14 +6279,14 @@ dependencies = [
 
 [[package]]
 name = "oj_graph"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "oj_js"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "deno_config",
  "deno_core",
@@ -6307,7 +6307,7 @@ dependencies = [
 
 [[package]]
 name = "oj_resolver"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "oxc_resolver",
  "serde_json",
@@ -6317,7 +6317,7 @@ dependencies = [
 
 [[package]]
 name = "oj_server"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "anyhow",
  "axum",
@@ -6355,7 +6355,7 @@ dependencies = [
 
 [[package]]
 name = "oj_wasm"
-version = "0.2.22"
+version = "0.2.23"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
