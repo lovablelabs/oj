@@ -403,6 +403,39 @@ pub(crate) enum WatchMsg {
     Dir(PathBuf),
 }
 
+/// The dev watcher's raw events, for servers layered on oj_server (the Start
+/// server's worker invalidation and rebundle). One watcher feeds both, as
+/// Vite's single chokidar instance feeds every environment: a second, narrower
+/// watcher once left edits outside `src/` reaching the browser but never the
+/// worker. Published from the notify callback, ahead of the debounce and of
+/// the watcher thread's plugin-hook RPCs, which block while a plugin host
+/// initializes.
+#[derive(Clone, Default)]
+pub struct WatchFeed(pub(crate) Arc<Mutex<Vec<std::sync::mpsc::Sender<notify::Event>>>>);
+
+impl WatchFeed {
+    /// Every event from now on, minus `server.watch.ignored` paths; dropping
+    /// the receiver unsubscribes.
+    pub fn subscribe(&self) -> std::sync::mpsc::Receiver<notify::Event> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.0.lock().unwrap().push(tx);
+        rx
+    }
+
+    pub(crate) fn publish(&self, ev: &notify::Event, ignored: &[glob::Pattern], root: &Path) {
+        let mut subscribers = self.0.lock().unwrap();
+        if subscribers.is_empty() {
+            return;
+        }
+        let mut ev = ev.clone();
+        ev.paths.retain(|p| !is_watch_ignored(ignored, root, p));
+        if ev.paths.is_empty() {
+            return;
+        }
+        subscribers.retain(|tx| tx.send(ev.clone()).is_ok());
+    }
+}
+
 /// Vite's ensureWatchedFile: a served file OUTSIDE the root is not covered by
 /// the root watch, so its directory goes to the watcher thread (the directory,
 /// not the file: editors save by rename-replace, which strands an inode watch).
@@ -533,15 +566,21 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
         use std::sync::mpsc::RecvTimeoutError;
 
         let tx = state.watch_tx.clone();
-        let mut watcher = match notify::recommended_watcher(move |ev| {
-            let _ = tx.send(WatchMsg::Fs(ev));
-        }) {
-            Ok(w) => w,
-            Err(err) => {
-                eprintln!("oj: file watcher failed to start: {err}");
-                return;
-            }
-        };
+        let feed = state.watch_feed.clone();
+        let (ignored, root) = (state.watch_ignored.clone(), state.root.clone());
+        let mut watcher =
+            match notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
+                if let Ok(ev) = &ev {
+                    feed.publish(ev, &ignored, &root);
+                }
+                let _ = tx.send(WatchMsg::Fs(ev));
+            }) {
+                Ok(w) => w,
+                Err(err) => {
+                    eprintln!("oj: file watcher failed to start: {err}");
+                    return;
+                }
+            };
         let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
         if let Err(err) = watch_root(&mut watcher, &state.root) {
             eprintln!("oj: cannot watch {}: {err}", state.root.display());

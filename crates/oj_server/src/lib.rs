@@ -348,6 +348,7 @@ struct ServerState {
     /// Into the watcher thread's inbox (`WatchMsg`): directories of files
     /// served from outside the root (`ensure_watched_file`).
     watch_tx: std::sync::mpsc::Sender<WatchMsg>,
+    watch_feed: WatchFeed,
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
@@ -632,6 +633,7 @@ pub struct BuiltApp {
     pub hmr_gate: Option<HmrGateHandle>,
     /// The SSR resolve/load pipeline, for the in-process SSR module runner.
     pub ssr: SsrBridge,
+    pub watch_feed: WatchFeed,
 }
 
 pub async fn bind_dev_listener(
@@ -1574,6 +1576,7 @@ impl DevServer {
             ssr_plugin_config: payloads.ssr,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
             watch_tx,
+            watch_feed: WatchFeed::default(),
             plugins_use_module_parsed: caps.use_module_parsed,
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,
@@ -1656,6 +1659,7 @@ impl DevServer {
         let ssr = SsrBridge {
             state: Arc::clone(&state),
         };
+        let watch_feed = state.watch_feed.clone();
         let router = build_router(state, &server_cfg, &hmr.ws_path);
 
         Ok(BuiltApp {
@@ -1672,6 +1676,7 @@ impl DevServer {
             open,
             hmr_gate,
             ssr,
+            watch_feed,
         })
     }
 }

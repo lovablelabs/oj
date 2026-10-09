@@ -79,12 +79,23 @@ impl StartState {
 }
 
 // What the watcher forwards and rebuilds on: not the generated route tree (its
-// writes would loop the generator) and not bare directory events (Linux inotify
-// emits a parent-dir event alongside the file write; Vite never hands
-// directories to hotUpdate hooks either).
+// writes would loop the generator) nor the generator's temp files under
+// .tanstack/ (renamed into the tree), not declaration files (never runtime
+// modules; generated message catalogs write them by the thousand), and not
+// bare directory events (Linux inotify emits a parent-dir event alongside the
+// file write; Vite never hands directories to hotUpdate hooks either).
 fn watch_relevant(p: &Path) -> bool {
     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    !name.contains("routeTree.gen") && !p.is_dir()
+    !name.contains("routeTree.gen")
+        && !is_declaration_file(name)
+        && !p.components().any(|c| c.as_os_str() == ".tanstack")
+        && !p.is_dir()
+}
+
+fn is_declaration_file(name: &str) -> bool {
+    [".d.ts", ".d.mts", ".d.cts"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
 }
 
 // Vite's watcher distinguishes add/change/unlink; notify's batched events are
@@ -199,6 +210,9 @@ pub async fn start_dev(
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
     let pinned = bundle_res??;
     let built = built_res??;
+    // Subscribed before the rest of boot, so an edit landing while the engine
+    // comes up queues for the watcher thread instead of being lost.
+    let watch_rx = built.watch_feed.subscribe();
     oj_server::boot_phase("bundle+build joined");
     // The in-process Start runner: an embedded engine whose module host runs
     // the dev server's SSR pipeline (StartHost); it needs the built app's
@@ -417,7 +431,7 @@ pub async fn start_dev(
             }
         });
     }
-    spawn_start_watcher(root.clone(), cache.clone(), Arc::clone(&state));
+    spawn_start_watcher(root.clone(), cache.clone(), Arc::clone(&state), watch_rx);
     {
         let (root, mode) = (root.clone(), mode.clone());
         tokio::task::spawn_blocking(move || {
@@ -695,22 +709,27 @@ fn changed_regen_outputs(
         .collect()
 }
 
-fn spawn_start_watcher(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
+fn spawn_start_watcher(
+    root: PathBuf,
+    cache: PathBuf,
+    state: Arc<StartState>,
+    rx: std::sync::mpsc::Receiver<notify::Event>,
+) {
     let rt = tokio::runtime::Handle::current();
     let pending: Arc<std::sync::Mutex<Option<PendingRebundle>>> =
         Arc::new(std::sync::Mutex::new(None));
     let wake = Arc::new(tokio::sync::Notify::new());
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     rt.spawn(rebundle_worker(
-        root.clone(),
-        cache.clone(),
+        root,
+        cache,
         Arc::clone(&state),
         Arc::clone(&pending),
         Arc::clone(&wake),
         Arc::clone(&shutdown),
     ));
-    // Ends the rebundle worker on every watcher-thread exit path (watch error,
-    // channel disconnect), so it does not idle forever holding the state.
+    // Ends the rebundle worker when the watcher thread exits (the feed
+    // disconnected), so it does not idle forever holding the state.
     struct StopWorker(Arc<std::sync::atomic::AtomicBool>, Arc<tokio::sync::Notify>);
     impl Drop for StopWorker {
         fn drop(&mut self) {
@@ -725,23 +744,9 @@ fn spawn_start_watcher(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
     // edit's rebundle is in flight is invalidated promptly instead of queueing
     // behind the bundler.
     std::thread::spawn(move || {
-        use notify::{RecursiveMode, Watcher};
         use std::sync::mpsc::RecvTimeoutError;
 
         let _stop_worker = stop_worker;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(tx) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("oj start: file watcher failed: {e}");
-                return;
-            }
-        };
-        let src = root.join("src");
-        if let Err(e) = watcher.watch(&src, RecursiveMode::Recursive) {
-            eprintln!("oj start: cannot watch {}: {e}", src.display());
-            return;
-        }
         let mut batch = 0u64;
         // Attribute-only events (the atime update a read causes on Linux) are
         // not changes: the client rebundle reads every source file, which
@@ -750,13 +755,12 @@ fn spawn_start_watcher(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         loop {
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
             let mut paths: std::collections::HashSet<PathBuf> = match rx.recv() {
-                Ok(Ok(ev)) => {
+                Ok(ev) => {
                     if matches!(ev.kind, notify::EventKind::Create(_)) {
                         created.extend(ev.paths.iter().cloned());
                     }
                     changes.changed_paths(&ev).into_iter().collect()
                 }
-                Ok(Err(_)) => continue,
                 Err(_) => break,
             };
             // A request can arrive milliseconds after a save: invalidate the
@@ -770,13 +774,12 @@ fn spawn_start_watcher(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
             let _ = spawn_mw_invalidate(&rt, &state, &paths, &created);
             loop {
                 match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(Ok(ev)) => {
+                    Ok(ev) => {
                         if matches!(ev.kind, notify::EventKind::Create(_)) {
                             created.extend(ev.paths.iter().cloned());
                         }
                         paths.extend(changes.changed_paths(&ev));
                     }
-                    Ok(Err(_)) => {}
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
                 }

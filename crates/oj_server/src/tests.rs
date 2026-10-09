@@ -1118,6 +1118,40 @@ fn watch_ignored_globs_match_relative_and_absolute_paths() {
 }
 
 #[test]
+fn watch_feed_drops_ignored_paths_and_dropped_subscribers() {
+    let root = Path::new("/app");
+    let ignored = watch_ignored_patterns(root, &["**/generated/**".to_string()]);
+    let feed = WatchFeed::default();
+    let ev = |paths: &[&str]| {
+        let mut ev = notify::Event::new(notify::EventKind::Any);
+        ev.paths = paths.iter().map(PathBuf::from).collect();
+        ev
+    };
+    let kept = feed.subscribe();
+    let dropped = feed.subscribe();
+    drop(dropped);
+
+    feed.publish(
+        &ev(&["/app/shared/a.ts", "/app/src/generated/b.ts"]),
+        &ignored,
+        root,
+    );
+    feed.publish(&ev(&["/app/src/generated/c.ts"]), &ignored, root);
+
+    let got = kept.try_recv().expect("the unignored path is delivered");
+    assert_eq!(got.paths, vec![PathBuf::from("/app/shared/a.ts")]);
+    assert!(
+        kept.try_recv().is_err(),
+        "an all-ignored event is not delivered"
+    );
+    assert_eq!(
+        feed.0.lock().unwrap().len(),
+        1,
+        "the dropped receiver is pruned"
+    );
+}
+
+#[test]
 fn html_fallback_rewrites_like_vite() {
     assert_eq!(
         html_fallback_candidate("nested/").as_deref(),

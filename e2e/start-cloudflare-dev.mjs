@@ -162,6 +162,22 @@ function makeApp() {
       "",
     ].join("\n"),
   );
+  // A module in the app root but outside src/, the layout of apps that keep
+  // shared code beside src (a monorepo app's shared/ tree): its edits must
+  // reach the worker as src/ edits do.
+  fs.mkdirSync(path.join(app, "shared"));
+  fs.writeFileSync(path.join(app, "shared", "label.ts"), 'export const label = "shared-label-marker";\n');
+  const about = path.join(app, "src", "routes", "about.tsx");
+  const aboutSrc = fs.readFileSync(about, "utf8");
+  const withLabel = aboutSrc
+    .replace(
+      'import { rootRoute } from "./__root";',
+      'import { rootRoute } from "./__root";\nimport { label } from "../../shared/label";',
+    )
+    .replace("</h1>", "</h1>\n      <p>{label}</p>");
+  if (!withLabel.includes("shared/label") || !withLabel.includes("{label}"))
+    throw new Error("fixture about.tsx changed shape; update this script");
+  fs.writeFileSync(about, withLabel);
 }
 
 const get = async (route) => {
@@ -239,7 +255,11 @@ async function runDev() {
     }
 
     const about = await get("/about");
-    if (about.status !== 200 || !about.body.includes("about-page-marker")) {
+    if (
+      about.status !== 200 ||
+      !about.body.includes("about-page-marker") ||
+      !about.body.includes("shared-label-marker")
+    ) {
       throw new Error(`/about did not render (${about.status})`);
     }
 
@@ -378,8 +398,29 @@ async function runDev() {
       throw new Error(`/ broken after the new-route regen (${after.status}); log tail:\n${log.slice(-4000)}`);
     }
 
+    // An edit outside src/: the worker held the old module until a restart
+    // while the browser got the HMR update, so every fresh load was stale.
+    const shared = path.join(app, "shared", "label.ts");
+    fs.writeFileSync(
+      shared,
+      fs.readFileSync(shared, "utf8").replace("shared-label-marker", "shared-label-edited-marker"),
+    );
+    const t2 = Date.now();
+    let outside = null;
+    await settles(
+      async () => {
+        const res = await get("/about");
+        if (res.status === 200 && res.body.includes("shared-label-edited-marker")) outside = Date.now() - t2;
+        return outside != null;
+      },
+      { timeoutMs: 20000 },
+    );
+    if (outside == null) {
+      throw new Error(`/about still stale 20s after an edit outside src/; log tail:\n${log.slice(-4000)}`);
+    }
+
     console.log(
-      `start-cloudflare-dev: worker render + live-reload client + fresh document ${fresh}ms after the edit, ${rapid}ms after a rapid second edit, post-regen routeTree invalidate observed`,
+      `start-cloudflare-dev: worker render + live-reload client + fresh document ${fresh}ms after the edit, ${rapid}ms after a rapid second edit, ${outside}ms after an edit outside src/, post-regen routeTree invalidate observed`,
     );
   } finally {
     stop();
