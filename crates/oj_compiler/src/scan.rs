@@ -1,9 +1,10 @@
 use crate::bundle;
 use memchr::memmem::Finder;
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Program, Statement};
+use oxc_ast::ast::{Expression, ImportExpression, Program, Statement, StringLiteral};
+use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
-use oxc_span::SourceType;
+use oxc_span::{SourceType, Span};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -95,6 +96,70 @@ pub fn imports(source_text: &str, path: &Path) -> Vec<String> {
     })
 }
 
+/// Rewrites static import/export-from sources and string-literal dynamic
+/// `import()` specifiers by splicing `rewrite`'s answers over the literals,
+/// every other byte kept: a pre-bundled dep is too large to reprint per
+/// request. `None` when nothing was rewritten or the source does not parse.
+pub fn rewrite_specifiers(
+    source_text: &str,
+    path: &Path,
+    mut rewrite: impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    let mut edits = with_program(source_text, path, |program| {
+        let mut found = SpecifierEdits {
+            rewrite: &mut rewrite,
+            edits: Vec::new(),
+        };
+        for stmt in &program.body {
+            match stmt {
+                Statement::ImportDeclaration(decl) => found.literal(&decl.source),
+                Statement::ExportFromDeclaration(decl) => found.literal(&decl.source),
+                Statement::ExportAllDeclaration(decl) => found.literal(&decl.source),
+                _ => {}
+            }
+        }
+        if scan(&F_IMPORT_PAREN, source_text) {
+            found.visit_program(program);
+        }
+        found.edits
+    });
+    if edits.is_empty() {
+        return None;
+    }
+    edits.sort_unstable_by_key(|(span, _)| span.start);
+    let mut out = String::with_capacity(source_text.len() + edits.len() * 16);
+    let mut last = 0;
+    for (span, spec) in edits {
+        out.push_str(&source_text[last..span.start as usize]);
+        out.push_str(&serde_json::Value::String(spec).to_string());
+        last = span.end as usize;
+    }
+    out.push_str(&source_text[last..]);
+    Some(out)
+}
+
+struct SpecifierEdits<'r> {
+    rewrite: &'r mut dyn FnMut(&str) -> Option<String>,
+    edits: Vec<(Span, String)>,
+}
+
+impl SpecifierEdits<'_> {
+    fn literal(&mut self, lit: &StringLiteral) {
+        if let Some(spec) = (self.rewrite)(lit.value.as_str()) {
+            self.edits.push((lit.span, spec));
+        }
+    }
+}
+
+impl<'a> Visit<'a> for SpecifierEdits<'_> {
+    fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+        if let Expression::StringLiteral(lit) = &it.source {
+            self.literal(lit);
+        }
+        walk::walk_import_expression(self, it);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +234,37 @@ export * as z from "./b";"#,
         );
         mixed.sort();
         assert_eq!(mixed, ["default", "x", "z"]);
+    }
+
+    #[test]
+    fn rewrite_specifiers_splices_import_sources_and_nothing_else() {
+        let src = concat!(
+            "import { a } from \"./a.mjs\";\n",
+            "export { b } from './a.mjs';\n",
+            "export * from \"./a.mjs\";\n",
+            "import \"./side.mjs\";\n",
+            "const s = \"./a.mjs\"; // import \"./a.mjs\"\n",
+            "const d = () => import(\"./a.mjs\");\n",
+            "const e = (x) => import(x);\n",
+        );
+        let out = rewrite_specifiers(src, Path::new("chunk.mjs"), |spec| {
+            (spec == "./a.mjs").then(|| "./a.mjs?v=1".to_string())
+        });
+        assert_eq!(
+            out.as_deref(),
+            Some(concat!(
+                "import { a } from \"./a.mjs?v=1\";\n",
+                "export { b } from \"./a.mjs?v=1\";\n",
+                "export * from \"./a.mjs?v=1\";\n",
+                "import \"./side.mjs\";\n",
+                "const s = \"./a.mjs\"; // import \"./a.mjs\"\n",
+                "const d = () => import(\"./a.mjs?v=1\");\n",
+                "const e = (x) => import(x);\n",
+            ))
+        );
+        assert!(
+            rewrite_specifiers(src, Path::new("chunk.mjs"), |_| None).is_none(),
+            "no edit, no copy"
+        );
     }
 }
