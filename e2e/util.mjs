@@ -3,7 +3,16 @@
 //
 // Shared e2e wait helpers: deadline-based, never index-counted.
 
+import fs from "node:fs";
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Teardown rm for app dirs a killed server's cache writes can still land in
+// for a beat. The async rm, not rmSync: on ENOTEMPTY, sync rimraf clears the
+// children once and then only retries the bare rmdir, so a single straggler
+// file defeats every retry; the async retry re-runs the whole traversal per
+// attempt, removing stragglers as it goes.
+export const rmrf = (dir) => fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
 // Poll `cond` (sync or async) until truthy, against a wall-clock deadline.
 // `touch` re-fires a probe write on the way: oj answers HTTP before its
