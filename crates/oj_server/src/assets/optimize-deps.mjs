@@ -603,35 +603,36 @@ async function rolldownScan(rd, discover, host) {
   const includeImporter = path.join(root, "__oj_include__.js");
   const gate = makeScanGate();
   const seen = new Map();
-  const resolve = async (ctx, id, importer) => {
+  const resolve = (ctx, id, importer) => {
     const from = importer === SCAN_INCLUDE_ID ? includeImporter : importer;
     // Keyed on the importer file, not its directory: a plugin may resolve the
     // same id differently per importer.
     const key = `${id}\0${from ?? ""}`;
     if (seen.has(key)) return seen.get(key);
-    let out = null;
-    // The app's plugins first, as Vite's scan resolves through its plugin
-    // container; a plugin's virtual or external answer is not crawled. The
-    // chain is the scan's dominant JS cost, so it runs as one fair-queue unit
-    // (see makeScanGate); ctx.resolve stays outside the queue — it is native
-    // work, and a unit awaiting rolldown while holding the queue could
-    // deadlock against a callback that needs its own turn.
-    if (host) {
+    // The PENDING resolution is cached, not just its settled value: the fair
+    // queue widens the in-flight window, and a duplicate key arriving then
+    // must share the first key's plugin-chain unit, not enqueue its own.
+    const pending = (async () => {
+      // The app's plugins first, as Vite's scan resolves through its plugin
+      // container; a plugin's virtual or external answer is not crawled. The
+      // chain is the scan's dominant JS cost, so it runs as one fair-queue
+      // unit (see makeScanGate); ctx.resolve stays outside the queue — it is
+      // native work, and a unit awaiting rolldown while holding the queue
+      // could deadlock against a callback that needs its own turn.
+      if (host) {
+        try {
+          const r = await gate(() => host.resolveId(id, from));
+          if (r) return !r.external && path.isAbsolute(cleanUrl(r.id)) ? r.id : null;
+        } catch {}
+      }
       try {
-        const r = await gate(() => host.resolveId(id, from));
-        if (r) {
-          out = !r.external && path.isAbsolute(cleanUrl(r.id)) ? r.id : null;
-          seen.set(key, out);
-          return out;
-        }
+        const r = await ctx.resolve(aliasResolve(id) ?? id, from, { skipSelf: true });
+        if (r && !r.external) return r.id;
       } catch {}
-    }
-    try {
-      const r = await ctx.resolve(aliasResolve(id) ?? id, from, { skipSelf: true });
-      if (r && !r.external) out = r.id;
-    } catch {}
-    seen.set(key, out);
-    return out;
+      return null;
+    })();
+    seen.set(key, pending);
+    return pending;
   };
   const externalize = (id) => ({ id, external: true });
   // Vite's htmlTypeOnLoadCallback: each `<script type="module">` in an html
