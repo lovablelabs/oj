@@ -87,6 +87,13 @@ try {
   });
   assert.equal(origin.status, 403, "Origin-bearing requests are refused");
 
+  // A request through a preview proxy carries x-forwarded-host: refused, so
+  // the event text (paths, code frames) never leaks through a public URL.
+  const proxied = await fetch(`http://localhost:${port}/@oj/diagnostics`, {
+    headers: { "x-forwarded-host": "preview.example" },
+  });
+  assert.equal(proxied.status, 403, "proxied requests are refused");
+
   // The same failure reached stderr as one NDJSON line.
   const ok = await settles(() =>
     stderr.split("\n").some((line) => {

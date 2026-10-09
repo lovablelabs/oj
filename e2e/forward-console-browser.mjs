@@ -19,7 +19,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
-const port = 5397;
+const port = 5393;
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
@@ -36,6 +36,10 @@ fs.writeFileSync(
   `type Tag = string;
 const tag: Tag = "boom from the page";
 console.error("console says %s", tag);
+// A hostile-for-formatting argument: a Symbol under %d. The wrapped console
+// must not throw where the native one does not (\`__ready\` below is only
+// reached if it didn't) and the Symbol formats as NaN, like Vite.
+console.error("fmt %d %i %f ok", Symbol("s"), 42, 2.5);
 setTimeout(() => {
   throw new Error(tag);
 }, 0);
@@ -81,8 +85,15 @@ try {
     runtime.module && runtime.module.endsWith("main.ts"),
     `the stack remapped to the source file, got module=${runtime.module} detail=${runtime.detail}`,
   );
-  const consoleErr = d.events.find((e) => e.kind === "console_error");
-  assert.match(consoleErr.message, /console says boom from the page/, "%s formatting applied");
+  const consoleErrs = d.events.filter((e) => e.kind === "console_error");
+  assert.ok(
+    consoleErrs.some((e) => /console says boom from the page/.test(e.message)),
+    "%s formatting applied",
+  );
+  assert.ok(
+    consoleErrs.some((e) => /fmt NaN 42 2\.5 ok/.test(e.message)),
+    `a Symbol under %d formats as NaN, floats keep their fraction; got ${JSON.stringify(consoleErrs.map((e) => e.message))}`,
+  );
 
   console.log("PASS forward-console-browser");
 } catch (e) {

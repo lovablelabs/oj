@@ -414,10 +414,13 @@ function formatConsoleArgs(args) {
       case "%s":
         return typeof arg === "object" && arg != null ? stringifyConsoleArg(arg) : String(arg);
       case "%d":
+        if (typeof arg === "bigint") return arg + "n";
+        if (typeof arg === "symbol") return "NaN";
+        return Number(arg).toString();
       case "%i":
-        return typeof arg === "bigint" ? arg + "n" : String(parseInt(arg, 10));
+        return typeof arg === "bigint" ? arg + "n" : String(parseInt(String(arg), 10));
       case "%f":
-        return String(parseFloat(arg));
+        return String(parseFloat(String(arg)));
       case "%j":
       case "%o":
       case "%O":
@@ -437,15 +440,24 @@ if (forwardConsole && forwardConsole.enabled) {
     if (typeof original !== "function") continue;
     console[level] = (...args) => {
       original.apply(console, args);
-      forwardSend({ type: "log", data: { level, message: formatConsoleArgs(args).slice(0, 4096) } });
+      // Formatting touches arbitrary app values (a Symbol under %i, a
+      // throwing toString): a wrapped console must never throw where the
+      // stock one did not (Vite contains the same throws in sendLog's try).
+      try {
+        forwardSend({ type: "log", data: { level, message: formatConsoleArgs(args).slice(0, 4096) } });
+      } catch {}
     };
   }
   if (forwardConsole.unhandledErrors && typeof window !== "undefined") {
     window.addEventListener("error", (event) => {
-      forwardError("error", event.error ?? (event.message ? new Error(event.message) : event));
+      try {
+        forwardError("error", event.error ?? (event.message ? new Error(event.message) : event));
+      } catch {}
     });
     window.addEventListener("unhandledrejection", (event) => {
-      forwardError("unhandled-rejection", event.reason);
+      try {
+        forwardError("unhandled-rejection", event.reason);
+      } catch {}
     });
   }
 }

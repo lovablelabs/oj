@@ -19,7 +19,7 @@ import { settles, sleep, waitUp } from "./util.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
-const port = 5398;
+const port = 5390;
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
@@ -98,6 +98,16 @@ try {
       }),
     );
   }
+  // A message with an embedded newline and ANSI escape: the server must not
+  // let a page forge stderr lines (an NDJSON supervisor trusts whole lines).
+  const forged = '{"oj":"diag","kind":"forged"}';
+  a.send(
+    JSON.stringify({
+      type: "custom",
+      event: "vite:forward-console",
+      data: { type: "log", data: { level: "error", message: `before\n${forged}\n\x1b[31mafter` } },
+    }),
+  );
   // A failed HMR apply reported by the client.
   a.send(
     JSON.stringify({
@@ -140,6 +150,13 @@ try {
   assert.match(stderr, /\[browser\] Unhandled error ReferenceError: x is not defined/);
   assert.match(stderr, /\[browser console\.error\] forwarded error line/);
   assert.match(stderr, /\[browser console\.info\] forwarded info line/);
+
+  // The injection attempt was flattened onto one line: no stderr line is the
+  // forged NDJSON object, and the escape byte is gone.
+  assert.ok(await settles(() => stderr.includes("before")), "the forged message was printed at all");
+  assert.ok(!stderr.split("\n").includes(forged), "no stderr line is the forged NDJSON object");
+  assert.ok(!stderr.includes("\x1b[31m"), "ANSI escapes are scrubbed");
+  assert.match(stderr, new RegExp(`before .*forged.*after`), "the message survived on one line");
 
   // Re-broadcast policy: the plain custom event reaches the other client,
   // the console/hmr channels never do.

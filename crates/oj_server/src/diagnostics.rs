@@ -2,16 +2,18 @@ use super::*;
 
 /// `GET /@oj/diagnostics`: the ring of recent diagnostic events (see
 /// `oj_diag`) plus plugin-host health, for supervisors, agents and tests.
-/// Always on, but refused for anything carrying an `Origin` header, like the
-/// debug routes: the consumers are local tools (which send none), and the
-/// event text names project file paths a hostile page must not read.
+/// Always on, but refused for anything carrying an `Origin` header (a hostile
+/// page's cross-origin fetch always does) or arriving through a proxy
+/// (`x-forwarded-host`): the consumers are local tools hitting localhost
+/// directly, and the event text names project paths and code frames that must
+/// not be readable through a public preview URL.
 /// `?after=<epoch_ms>` keeps only newer events (a poller's cursor).
 pub(crate) async fn serve_diagnostics(
     headers: HeaderMap,
     uri: Uri,
     State(state): State<Arc<ServerState>>,
 ) -> Response {
-    if headers.contains_key(header::ORIGIN) {
+    if headers.contains_key(header::ORIGIN) || headers.contains_key("x-forwarded-host") {
         return (StatusCode::FORBIDDEN, "").into_response();
     }
     let after = uri
@@ -46,6 +48,21 @@ fn truncated(s: &str, cap: usize) -> String {
     s[..end].to_string()
 }
 
+/// Control characters in client-sourced text become spaces: an embedded
+/// newline would let a page forge whole stderr lines (in NDJSON mode a forged
+/// `"oj":"diag"` line would be trusted by a supervisor), and ANSI escapes
+/// would reach the terminal.
+fn scrubbed(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// A client string, bounded and printable on one stderr line.
+fn client_text(s: &str, cap: usize) -> String {
+    scrubbed(&truncated(s, cap))
+}
+
 /// A `vite:forward-console` payload from the HMR client (Vite 8's
 /// forwardConsole channel): browser unhandled errors and forwarded console
 /// lines. Printed to stderr like Vite's server does, with stack frames
@@ -55,8 +72,8 @@ pub(crate) fn ingest_forward_console(state: &Arc<ServerState>, data: &serde_json
     match data["type"].as_str() {
         Some(kind @ ("error" | "unhandled-rejection")) => {
             let err = &data["data"];
-            let name = err["name"].as_str().unwrap_or("Error");
-            let message = truncated(
+            let name = client_text(err["name"].as_str().unwrap_or("Error"), 128);
+            let message = client_text(
                 err["message"].as_str().unwrap_or_default(),
                 CLIENT_FIELD_CAP,
             );
@@ -77,6 +94,9 @@ pub(crate) fn ingest_forward_console(state: &Arc<ServerState>, data: &serde_json
                     .peek(url)
                     .and_then(|m| m.map_json.clone())
             });
+            // Scrubbed per line: the stack keeps its newlines (every line
+            // below gets the indent), but nothing else control-shaped.
+            let stack = stack.lines().map(scrubbed).collect::<Vec<_>>().join("\n");
             let indented: String = stack
                 .lines()
                 .map(|l| format!("\n    {}", l.trim()))
@@ -93,8 +113,8 @@ pub(crate) fn ingest_forward_console(state: &Arc<ServerState>, data: &serde_json
             );
         }
         Some("log") => {
-            let level = data["data"]["level"].as_str().unwrap_or("log");
-            let message = truncated(
+            let level = client_text(data["data"]["level"].as_str().unwrap_or("log"), 32);
+            let message = client_text(
                 data["data"]["message"].as_str().unwrap_or_default(),
                 CLIENT_FIELD_CAP,
             );
@@ -121,8 +141,8 @@ pub(crate) fn ingest_hmr_result(data: &serde_json::Value) {
     if data["ok"].as_bool() != Some(false) {
         return;
     }
-    let path = data["path"].as_str().unwrap_or("?");
-    let error = truncated(data["error"].as_str().unwrap_or_default(), CLIENT_FIELD_CAP);
+    let path = client_text(data["path"].as_str().unwrap_or("?"), 1024);
+    let error = client_text(data["error"].as_str().unwrap_or_default(), CLIENT_FIELD_CAP);
     eprintln!("oj: hmr update failed to apply in the browser for {path}: {error}");
     oj_diag::emit(
         oj_diag::Event::new(
@@ -130,7 +150,7 @@ pub(crate) fn ingest_hmr_result(data: &serde_json::Value) {
             format!("update failed to apply: {error}"),
         )
         .source(oj_diag::Source::Client)
-        .module(path.to_string()),
+        .module(path),
     );
 }
 
@@ -193,7 +213,7 @@ fn remap_stack(stack: &str, map_for: impl Fn(&str) -> Option<String>) -> (String
 
 #[cfg(test)]
 mod tests {
-    use super::{remap_stack, truncated};
+    use super::{client_text, remap_stack, truncated};
 
     /// A compile of a known source yields a map whose tokens remap a stack
     /// frame in the served output back to the original file and position.
@@ -245,5 +265,16 @@ mod tests {
     fn truncation_respects_char_boundaries() {
         assert_eq!(truncated("héllo", 2), "h");
         assert_eq!(truncated("hi", 10), "hi");
+    }
+
+    /// A page's newline or ANSI escape must not forge stderr lines (an NDJSON
+    /// supervisor trusts whole lines) or color the terminal.
+    #[test]
+    fn client_text_neutralizes_control_characters() {
+        assert_eq!(
+            client_text("a\n{\"oj\":\"diag\"}\r\x1b[31mred", 4096),
+            "a {\"oj\":\"diag\"}  [31mred"
+        );
+        assert_eq!(client_text("plain", 4096), "plain");
     }
 }
