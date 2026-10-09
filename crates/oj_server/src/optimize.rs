@@ -171,6 +171,48 @@ pub fn dep_url(file: &str, version: &str) -> String {
     }
 }
 
+/// Rolldown links a chunk to an entry chunk as `./<entry>.mjs`, which the
+/// browser resolves without the `?v=` the app's imports of that entry carry:
+/// two URLs, so the entry evaluates twice. Each such import moves to the
+/// entry's own URL, as Vite's resolve plugin gives a relative import of an
+/// optimized file that file's browserHash. `None` when nothing links.
+///
+/// The answer stays valid under a `?v=` URL's immutable caching: a file can
+/// only name entries of its own bundle (`[name].mjs`; chunks carry a hash),
+/// a no-reload commit keeps every committed entry's version and bytes, and a
+/// reload commit moves every URL, the referencing file's included.
+fn linked_entry_imports(map: &DepMap, name: &str, code: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(code).ok()?;
+    let entries: HashMap<&str, &str> = map
+        .values()
+        .filter(|meta| !url_version(&meta.url).is_empty())
+        .filter_map(|meta| Some((meta.file.as_str(), meta.url.strip_prefix("/@oj-deps/")?)))
+        .collect();
+    if !mentions_entry(text, &entries) {
+        return None;
+    }
+    oj_compiler::rewrite_specifiers(text, Path::new(name), |spec| {
+        entries
+            .get(spec.strip_prefix("./")?)
+            .map(|url| format!("./{url}"))
+    })
+}
+
+/// The parse-free gate before linking: whether a quoted `./<entry>` appears
+/// at all, which most pre-bundle files never do.
+fn mentions_entry(text: &str, entries: &HashMap<&str, &str>) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices("./").any(|(at, _)| {
+        let Some(&quote @ (b'"' | b'\'')) = at.checked_sub(1).and_then(|q| bytes.get(q)) else {
+            return false;
+        };
+        text[at + 2..]
+            .split(quote as char)
+            .next()
+            .is_some_and(|file| entries.contains_key(file))
+    })
+}
+
 impl OptimizedDeps {
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -288,6 +330,15 @@ impl OptimizedDeps {
         });
         let _ = r.wake.send(());
         Some(meta)
+    }
+
+    /// A served pre-bundle file, its relative imports of entries pointed at
+    /// the entries' current URLs ([`linked_entry_imports`]).
+    pub fn link_entries(&self, name: &str, code: Vec<u8>) -> Vec<u8> {
+        let map = self.rx.borrow().clone();
+        map.and_then(|map| linked_entry_imports(&map, name, &code))
+            .map(String::into_bytes)
+            .unwrap_or(code)
     }
 
     /// Route gate for `/@oj-deps/<file>`: a pending dep's request waits for
@@ -1614,6 +1665,58 @@ mod tests {
         // A different prebundle hash is a different URL.
         let other = parse_metadata(&v, "fedcba9876543210").unwrap();
         assert_ne!(other["react"].url, map["react"].url);
+    }
+
+    #[test]
+    fn chunk_imports_of_an_entry_carry_that_entrys_own_url() {
+        let meta = |file: &str, version: &str| DepMeta {
+            file: file.into(),
+            needs_interop: false,
+            url: dep_url(file, version),
+            file_hash: String::new(),
+        };
+        let map: DepMap = [
+            (
+                "@tiptap/pm/gapcursor",
+                meta("tiptap_pm_gapcursor.mjs", "aaaa1111"),
+            ),
+            ("late", meta("late.mjs", "bbbb2222")),
+            ("react", meta("react__oj_named.mjs", "aaaa1111")),
+        ]
+        .into_iter()
+        .map(|(dep, meta)| (dep.to_string(), meta))
+        .collect();
+        let chunk = concat!(
+            "import { a } from \"./dist-B4TcxAGx.mjs\";\n",
+            "import { gapCursor } from \"./tiptap_pm_gapcursor.mjs\";\n",
+            "const late = () => import(\"./late.mjs\");\n",
+            "export { a, gapCursor, late };\n",
+        );
+        assert_eq!(
+            linked_entry_imports(&map, "dist-C0ffee00.mjs", chunk.as_bytes()).as_deref(),
+            Some(concat!(
+                "import { a } from \"./dist-B4TcxAGx.mjs\";\n",
+                "import { gapCursor } from \"./tiptap_pm_gapcursor.mjs?v=aaaa1111\";\n",
+                "const late = () => import(\"./late.mjs?v=bbbb2222\");\n",
+                "export { a, gapCursor, late };\n",
+            )),
+            "each entry gets its own version; chunks stay unversioned"
+        );
+        let facade = "import __m from \"./react.mjs\";\nexport default __m;\n";
+        assert!(
+            linked_entry_imports(&map, "react__oj_named.mjs", facade.as_bytes()).is_none(),
+            "the bundle behind a named-export facade is not an entry"
+        );
+        let unversioned: DepMap = [(
+            "@tiptap/pm/gapcursor".to_string(),
+            meta("tiptap_pm_gapcursor.mjs", ""),
+        )]
+        .into_iter()
+        .collect();
+        assert!(
+            linked_entry_imports(&unversioned, "dist-C0ffee00.mjs", chunk.as_bytes()).is_none(),
+            "an unversioned entry URL is the relative one already"
+        );
     }
 
     #[test]

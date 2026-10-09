@@ -8,7 +8,9 @@
 
 use std::path::Path;
 
-use oj_compiler::{compile, compile_module, exports, json, CompileOptions};
+use oj_compiler::{
+    compile, compile_module, exports, imports, json, rewrite_specifiers, CompileOptions,
+};
 use proptest::prelude::*;
 
 /// Fragments that combine into plausible-but-strange module source. Each is
@@ -77,6 +79,7 @@ proptest! {
         let _ = compile(Path::new(&path), &source, &CompileOptions::dev());
         let _ = compile(Path::new(&path), &source, &CompileOptions::prod());
         let _ = exports(&source, Path::new(&path));
+        let _ = rewrite_specifiers(&source, Path::new(&path), |spec| Some(format!("{spec}?v=1")));
     }
 
     /// Same for `.json`.
@@ -183,6 +186,25 @@ proptest! {
         .unwrap();
         prop_assert!(output_parses(&out.code), "{}", out.code);
         prop_assert_eq!(out.imports, vec![replacement]);
+    }
+
+    /// The splice is escaped the same way: any answer lands as the specifier.
+    #[test]
+    fn spliced_specifiers_are_escaped_not_interpolated(replacement in ".{0,20}") {
+        let source = "import a from \"./a\";\nexport const b = () => import(\"./a\");\nexport { a };";
+        let out = rewrite_specifiers(source, Path::new("/src/chunk.mjs"), |_| Some(replacement.clone()))
+            .expect("both specifiers rewritten");
+        prop_assert!(output_parses(&out), "{out}");
+        prop_assert_eq!(imports(&out, Path::new("/src/chunk.mjs")), vec![replacement]);
+    }
+
+    /// Splicing touches the specifiers only: answering every one with itself
+    /// leaves a double-quoted source byte for byte.
+    #[test]
+    fn splicing_specifiers_onto_themselves_is_the_identity(source in module_source(), ext in extension()) {
+        let path = format!("/src/App.{ext}");
+        let out = rewrite_specifiers(&source, Path::new(&path), |spec| Some(spec.to_string()));
+        prop_assert!(out.is_none() || out.as_deref() == Some(source.as_str()), "{source}\n->\n{out:?}");
     }
 
     /// `exports` reports names, never syntax: whatever it returns is usable as
