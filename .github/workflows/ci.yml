@@ -171,6 +171,8 @@ jobs:
         run: node e2e/start-ssr-external.mjs
       - name: start dev SIGTERM sweeps plugin children; detached child outlives
         run: node e2e/start-shutdown-children.mjs
+      - name: start dev stop runs wrapped server.close, buildEnd, closeBundle before sweep
+        run: node e2e/start-graceful-close.mjs
       - name: tanstack start ssr worker queries + post plugins see JS
         run: node e2e/start-ssr-worker-url.mjs
       - name: ssr runner module cache + selective invalidation (hmr-ssr core)

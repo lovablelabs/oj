@@ -3932,6 +3932,11 @@ async function run(hook, args) {
     return JSON.stringify(emitted.map(({ fileName, source }) => ({ fileName, source })));
   }
   if (hook === "getPluginCss") return JSON.stringify(ojPluginCss);
+  // Plugins wrap server.close() to dispose runtimes they started (@cloudflare/vite-plugin's workerd).
+  if (hook === "closeDevServer") {
+    await devServer?.close?.();
+    return null;
+  }
   if (hook === "warmEnvironments") {
     // Vite's warmup shape (server/warmup.ts): fire-and-forget. Nobody awaits
     // warmupFiles' promises there; transformRequest dedups concurrent

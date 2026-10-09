@@ -1300,6 +1300,11 @@ impl PluginHost {
         self.call_unit("closeBundle", &[]).await
     }
 
+    /// The dev server's `close()`, which plugins wrap to dispose what `configureServer` started.
+    pub async fn close_dev_server(&self) -> Result<(), String> {
+        self.call_unit("closeDevServer", &[]).await
+    }
+
     #[inline]
     pub async fn watch_files(&self) -> Result<Vec<String>, String> {
         let Some(json) = self.call("getWatchFiles", &[]).await? else {

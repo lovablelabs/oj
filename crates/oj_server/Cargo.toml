@@ -44,5 +44,7 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Same version the embedded Deno runtime registers its signal handlers with.
+deno_signals = "0.50.0"
 # Fork of deno_process (see crates/oj_deno_process): spawn hook + own groups.
 deno_process = { package = "oj_deno_process", version = "0.2.20", path = "../oj_deno_process" }
