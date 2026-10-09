@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The persistent V8 code cache no longer grows without bound. Loading a TS config imports its bundle under a fresh one-shot name every boot (Vite's `.timestamp-<ms>-<hash>.mjs`, oj's fallback `oj-vite-config-<pid>-<rand>.tmp.mjs`), and each name keyed a new, permanently unreachable entry; both shapes now share one stable key, so an unchanged config hits across boots and an edited one overwrites in place. Boot hygiene also prunes the oldest entries once the directory passes a budget (`OJ_CODE_CACHE_MAX_BYTES`, 128 MiB default, `0` disables) and removes dead generation directories left behind by V8 upgrades, whose bytecode can never load again.
+
 ## [0.2.19] - 2026-10-08
 
 ### Fixed

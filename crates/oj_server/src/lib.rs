@@ -190,11 +190,21 @@ pub fn prepare_cache_root(root: &Path) {
     oj_cache::heal_legacy_layout(root);
     let _ = std::fs::create_dir_all(oj_cache::cache_root(root));
     // Vite-style boot hygiene (cleanupDepsCacheStaleDirs), off the boot
-    // path: sweep torn-write tmp leftovers past the 24h age threshold.
+    // path: drop dead V8 generations, sweep torn-write tmp leftovers past
+    // the 24h age threshold, and keep the entries under the size budget.
     let current = engine_code_cache_dir(root);
+    let budget = match oj_env::get().knobs.code_cache_max_bytes {
+        Some(0) => None,
+        Some(bytes) => Some(bytes),
+        None => Some(oj_js::code_cache::DEFAULT_MAX_BYTES),
+    };
     std::thread::spawn(move || {
-        oj_js::code_cache::FsCodeCache::new(current)
-            .sweep_stale_tmp(oj_js::code_cache::STALE_TMP_MAX_AGE);
+        let cache = oj_js::code_cache::FsCodeCache::new(current);
+        cache.sweep_stale_generations();
+        cache.sweep_stale_tmp(oj_js::code_cache::STALE_TMP_MAX_AGE);
+        if let Some(bytes) = budget {
+            cache.prune_entries(bytes);
+        }
     });
 }
 

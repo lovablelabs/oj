@@ -62,7 +62,7 @@ impl FsCodeCache {
     /// differ.
     fn entry_key(specifier: &Url) -> u64 {
         if specifier.query().is_none() && specifier.fragment().is_none() {
-            return hash64(specifier.as_str().as_bytes());
+            return hash64(stable_specifier(specifier.as_str()).as_bytes());
         }
         let kept: Vec<&str> = specifier
             .query()
@@ -80,7 +80,7 @@ impl FsCodeCache {
         } else {
             base.set_query(Some(&kept.join("&")));
         }
-        hash64(base.as_str().as_bytes())
+        hash64(stable_specifier(base.as_str()).as_bytes())
     }
 
     fn entry_path(&self, specifier: &Url, suffix: &str) -> PathBuf {
@@ -156,10 +156,107 @@ impl FsCodeCache {
             }
         }
     }
+
+    /// Trims entries to three quarters of `max_bytes`, oldest write first,
+    /// once the directory exceeds `max_bytes` (the slack keeps one boot from
+    /// deleting a trickle). Nothing else ever evicts an entry, and one-shot
+    /// modules (configs, renamed files) orphan theirs, so without a bound the
+    /// directory only grows. Reads do not bump mtime: this evicts by write
+    /// age, which is enough for a best-effort cache.
+    pub fn prune_entries(&self, max_bytes: u64) {
+        let Ok(read) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut entries: Vec<(std::time::SystemTime, u64, PathBuf)> = read
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".bin"))
+            .filter_map(|e| {
+                let meta = e.metadata().ok()?;
+                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                meta.is_file().then(|| (modified, meta.len(), e.path()))
+            })
+            .collect();
+        let mut total: u64 = entries.iter().map(|(_, len, _)| len).sum();
+        if total <= max_bytes {
+            return;
+        }
+        entries.sort();
+        for (_, len, path) in entries {
+            if total <= max_bytes / 4 * 3 {
+                break;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                total -= len;
+            }
+        }
+    }
+
+    /// Removes sibling generation directories (other V8 versions next to this
+    /// cache's dir): their bytecode can never load again, so a V8 bump
+    /// otherwise leaves the whole previous generation as dead weight.
+    pub fn sweep_stale_generations(&self) {
+        let (Some(parent), Some(current)) = (self.dir.parent(), self.dir.file_name()) else {
+            return;
+        };
+        let Ok(read) = std::fs::read_dir(parent) else {
+            return;
+        };
+        for e in read.flatten() {
+            if e.file_name() != current && e.path().is_dir() {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
+/// One-shot bundle names collapse to a stable key. Vite's loadConfigFromFile
+/// writes `<config>.timestamp-<ms>-<hash>.mjs` and oj's fallback config
+/// loader `oj-vite-config-<pid>-<rand>.tmp.mjs`, a fresh name per load:
+/// keyed by raw URL, every dev-server boot wrote one permanently unreachable
+/// entry. With the volatile segment dropped, the next boot overwrites in
+/// place and an unchanged config hits (the embedded source hash guards
+/// staleness, so a collision is only ever a miss).
+fn stable_specifier(specifier: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(at) = specifier.rfind(".timestamp-") {
+        let rest = &specifier[at + ".timestamp-".len()..];
+        if let Some((stamp, tail)) = rest.split_once('.') {
+            if let Some((ms, hash)) = stamp.split_once('-') {
+                let digits = !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit());
+                let hex = !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit());
+                if digits && hex {
+                    return std::borrow::Cow::Owned(format!(
+                        "{}.timestamp.{tail}",
+                        &specifier[..at]
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(at) = specifier.rfind("oj-vite-config-") {
+        let rest = &specifier[at + "oj-vite-config-".len()..];
+        if let Some(stamp) = rest.strip_suffix(".tmp.mjs") {
+            if let Some((pid, rand)) = stamp.split_once('-') {
+                let digits = !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit());
+                let alnum = !rand.is_empty() && rand.bytes().all(|b| b.is_ascii_alphanumeric());
+                if digits && alnum {
+                    return std::borrow::Cow::Owned(format!(
+                        "{}oj-vite-config.tmp.mjs",
+                        &specifier[..at]
+                    ));
+                }
+            }
+        }
+    }
+    std::borrow::Cow::Borrowed(specifier)
 }
 
 /// Vite's MAX_TEMP_DIR_AGE_MS for its deps-cache temp dirs: 24 hours.
 pub const STALE_TMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// The entry budget `prune_entries` trims to when `OJ_CODE_CACHE_MAX_BYTES`
+/// is unset: 128 MiB, several times the largest working set observed while
+/// staying negligible next to an app checkout.
+pub const DEFAULT_MAX_BYTES: u64 = 128 << 20;
 
 impl CodeCache for FsCodeCache {
     fn get_sync(
@@ -388,6 +485,122 @@ mod hygiene_tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
             .count();
         assert_eq!(leftovers, 0, "no stranded tmp files");
+    }
+
+    // Vite's loadConfigFromFile imports the bundled config under a fresh
+    // `.timestamp-<ms>-<hash>.mjs` name on every load, and oj's fallback
+    // loader under `oj-vite-config-<pid>-<rand>.tmp.mjs`: raw-URL keying
+    // wrote one permanently unreachable entry per dev-server boot (observed
+    // growing a cache by tens of GB). Each shape must collapse to one entry
+    // that an unchanged config hits across boots.
+    #[test]
+    fn one_shot_config_bundles_share_one_entry_across_boots() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        for boot in 0..4u64 {
+            let spec = url(&format!(
+                "file:///app/vite.config.ts.timestamp-17345{boot}-ab{boot}f.mjs"
+            ));
+            cache.put(&spec, CodeCacheType::EsModule, 42, b"config-bytecode");
+        }
+        for boot in 0..4u64 {
+            let spec = url(&format!(
+                "file:///app/.oj-cache/v1/oj-vite-config-91{boot}-k{boot}z.tmp.mjs"
+            ));
+            cache.put(&spec, CodeCacheType::EsModule, 42, b"config-bytecode");
+        }
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "four boots per loader shape must reuse one entry each"
+        );
+        // The next boot's fresh name hits the unchanged config.
+        let next = url("file:///app/vite.config.ts.timestamp-99999-ffff.mjs");
+        assert_eq!(
+            cache.get(&next, CodeCacheType::EsModule, 42).as_deref(),
+            Some(b"config-bytecode".as_ref())
+        );
+        // An edited config (new source hash) misses, never serves stale.
+        assert_eq!(cache.get(&next, CodeCacheType::EsModule, 43), None);
+    }
+
+    // Only the volatile loader shapes collapse: a module that merely contains
+    // the words keeps its own entry.
+    #[test]
+    fn lookalike_module_names_keep_their_own_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        let lookalikes = [
+            "file:///a/report.timestamp-draft.mjs", // no <ms>-<hash> stamp
+            "file:///a/x.timestamp-12z4-abcd.mjs",  // ms not digits
+            "file:///a/x.timestamp-1234-xyz.mjs",   // hash not hex
+            "file:///a/oj-vite-config-notes.tmp.mjs", // no <pid>-<rand> stamp
+            "file:///a/oj-vite-config-12-a_b.tmp.mjs", // rand not alphanumeric
+            "file:///a/oj-vite-config-9-k.tmp.mjs.map", // wrong suffix
+        ];
+        for (i, s) in lookalikes.iter().enumerate() {
+            cache.put(&url(s), CodeCacheType::EsModule, i as u64, b"x");
+        }
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            lookalikes.len(),
+            "lookalikes must not collide"
+        );
+    }
+
+    // Nothing else evicts entries, so the boot prune must bound the
+    // directory: oldest writes go first, down to three quarters of the
+    // budget, and an under-budget directory is untouched.
+    #[test]
+    fn prune_trims_oldest_entries_to_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        let payload = vec![0u8; 92]; // 100-byte entries with the hash head
+        for i in 0..10u64 {
+            let spec = url(&format!("file:///m{i}.js"));
+            cache.put(&spec, CodeCacheType::EsModule, i, &payload);
+            let age = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * (10 - i));
+            std::fs::File::options()
+                .append(true)
+                .open(cache.entry_path(&spec, "esm"))
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(age))
+                .unwrap();
+        }
+        cache.prune_entries(10_000);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            10,
+            "an under-budget directory stays whole"
+        );
+        cache.prune_entries(500);
+        // 1000 bytes total, budget 500: trim to 375 = the 3 newest entries.
+        for i in 0..10u64 {
+            let spec = url(&format!("file:///m{i}.js"));
+            let hit = cache.get(&spec, CodeCacheType::EsModule, i).is_some();
+            assert_eq!(hit, i >= 7, "entry {i}: oldest writes must go first");
+        }
+    }
+
+    // A V8 bump moves the cache to a new generation directory; the old one
+    // can never load again and must not stay behind as dead weight.
+    #[test]
+    fn stale_generation_dirs_next_to_the_cache_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("v8-14.2.1");
+        let old = dir.path().join("v8-13.9.8");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("deadbeef-esm.bin"), b"old bytecode").unwrap();
+        let cache = FsCodeCache::new(current.clone());
+        cache.put(&url("file:///m.js"), CodeCacheType::EsModule, 1, b"new");
+        cache.sweep_stale_generations();
+        assert!(!old.exists(), "the dead generation is removed");
+        assert!(
+            cache
+                .get(&url("file:///m.js"), CodeCacheType::EsModule, 1)
+                .is_some(),
+            "the current generation stays"
+        );
     }
 
     // Boot hygiene mirrors Vite's deps-cache cleanup: only torn-write tmp
