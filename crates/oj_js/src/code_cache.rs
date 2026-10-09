@@ -254,8 +254,9 @@ fn stable_specifier(specifier: &str) -> std::borrow::Cow<'_, str> {
 pub const STALE_TMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// The entry budget `prune_entries` trims to when `OJ_CODE_CACHE_MAX_BYTES`
-/// is unset: 1 GiB.
-pub const DEFAULT_MAX_BYTES: u64 = 1 << 30;
+/// is unset: 128 MiB, several times the largest working set observed while
+/// staying negligible next to an app checkout.
+pub const DEFAULT_MAX_BYTES: u64 = 128 << 20;
 
 impl CodeCache for FsCodeCache {
     fn get_sync(
