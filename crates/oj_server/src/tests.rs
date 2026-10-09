@@ -1150,11 +1150,18 @@ fn watch_feed_drops_excluded_paths_and_dropped_subscribers() {
         cache,
     );
 
+    feed.publish(
+        &ev(&["/app/vite.config.ts.timestamp-1791586920568-4c4081376eef.mjs"]),
+        &ignored,
+        root,
+        cache,
+    );
+
     let got = kept.try_recv().expect("the unexcluded path is delivered");
     assert_eq!(got.paths, vec![PathBuf::from("/app/shared/a.ts")]);
     assert!(
         kept.try_recv().is_err(),
-        "all-ignored and cache-dir events are not delivered"
+        "all-ignored, cache-dir and config-temp events are not delivered"
     );
     assert_eq!(
         feed.0.lock().unwrap().len(),

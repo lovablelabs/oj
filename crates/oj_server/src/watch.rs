@@ -446,14 +446,34 @@ impl WatchFeed {
 /// What every consumer of watcher events skips: `server.watch.ignored` plus
 /// the resolved cache dir, which Vite puts in chokidar's `ignored` -- the
 /// name-based skip in `is_unwatched_dir` misses an `OJ_CACHE_DIR` inside the
-/// root, whose writes would echo every compile back into the watcher.
+/// root, whose writes would echo every compile back into the watcher -- plus
+/// Vite's own config-loader temp.
 pub(crate) fn watch_excluded(
     ignored: &[glob::Pattern],
     root: &Path,
     cache_base: &Path,
     path: &Path,
 ) -> bool {
-    path.starts_with(cache_base) || is_watch_ignored(ignored, root, path)
+    path.starts_with(cache_base)
+        || path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_config_timestamp_temp)
+        || is_watch_ignored(ignored, root, path)
+}
+
+/// Vite's `loadConfigFromBundledFile` temp (`<config>.timestamp-<ms>-<hash>.mjs`).
+/// Vite prefers `node_modules/.vite-temp/` for it, but skips that dir under
+/// Deno -- oj's runtime -- and writes beside the config instead, so every
+/// config load drops a short-lived file at the root the watch would see;
+/// under Start, whose rebundle loads the config, that was a rebuild loop.
+fn is_config_timestamp_temp(name: &str) -> bool {
+    name.ends_with(".mjs")
+        && name.find(".timestamp-").is_some_and(|i| {
+            name.as_bytes()
+                .get(i + ".timestamp-".len())
+                .is_some_and(u8::is_ascii_digit)
+        })
 }
 
 /// Vite's ensureWatchedFile: a served file OUTSIDE the root is not covered by
