@@ -485,7 +485,11 @@ pub(crate) fn gate_relevant(path: &Path) -> bool {
 }
 
 impl HmrGate {
-    pub(crate) fn hold(&self, state: &Arc<ServerState>, paths: &[PathBuf]) -> bool {
+    /// `reload` arms the held page reload with the paths, inside the same
+    /// lock: armed after `hold` returns, a flush racing the two steps would
+    /// drain the paths yet leave the reload held, with nothing pending to make
+    /// the cap timer fire and release it.
+    pub(crate) fn hold(&self, state: &Arc<ServerState>, paths: &[PathBuf], reload: bool) -> bool {
         let mut relevant: Vec<&PathBuf> = paths.iter().filter(|p| gate_relevant(p)).collect();
         if relevant.is_empty() {
             return false;
@@ -517,6 +521,10 @@ impl HmrGate {
                 .or_default()
                 .insert("change".to_string());
         }
+        if reload {
+            self.held_reload
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if was_empty {
             // The cap timer for this hold set: it fires only if nothing
             // flushed after it was armed, the same instant the write-coverage
@@ -542,19 +550,23 @@ impl HmrGate {
     }
 
     async fn flush(&self, state: &Arc<ServerState>) -> (Vec<String>, usize) {
-        let entries: Vec<(PathBuf, std::collections::BTreeSet<String>)> = {
+        // The reload bit drops inside the same lock that drains the paths, so
+        // a concurrent hold either lands entirely before this flush (drained
+        // and released here) or entirely after it (held for the next one).
+        let (entries, held_reload): (Vec<(PathBuf, std::collections::BTreeSet<String>)>, bool) = {
             let mut inner = self.inner.lock().unwrap();
             inner.last_flush = Some(std::time::SystemTime::now());
-            std::mem::take(&mut inner.pending).into_iter().collect()
+            (
+                std::mem::take(&mut inner.pending).into_iter().collect(),
+                self.held_reload
+                    .swap(false, std::sync::atomic::Ordering::SeqCst),
+            )
         };
         let files: Vec<String> = entries
             .iter()
             .map(|(p, _)| p.display().to_string())
             .collect();
         let count = entries.len();
-        let held_reload = self
-            .held_reload
-            .swap(false, std::sync::atomic::Ordering::SeqCst);
         if held_reload || !entries.is_empty() {
             let _ = state.gate_flush_tx.send(());
         }
@@ -618,12 +630,7 @@ impl HmrGateHandle {
         let Some(gate) = &self.state.hmr_gate else {
             return false;
         };
-        if !gate.hold(&self.state, paths) {
-            return false;
-        }
-        gate.held_reload
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        true
+        gate.hold(&self.state, paths, true)
     }
 
     /// Whether the gate still holds anything: changes awaiting a flush, or an
