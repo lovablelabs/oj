@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.22] - 2026-10-09
+
+### Fixed
+
+- An optimized dep that another optimized dep also imports now evaluates once. Rolldown links a pre-bundled chunk to an entry as `./<entry>.mjs`, which the browser resolved without the `?v=` the app's own import of that entry carries, so the entry ran twice under two URLs; ProseMirror editors (Tiptap) died on `Duplicate use of selection JSON ID gapcursor`. The `/@oj-deps/` route now points each static and dynamic import of an entry at that entry's own versioned URL, as Vite's resolver does, splicing only the specifiers and leaving every other byte as Rolldown wrote it.
+
 ## [0.2.21] - 2026-10-09
 
 ### Fixed

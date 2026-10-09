@@ -60,7 +60,11 @@ async fn serve_internal_route(
         }
         return Some(
             match tokio::fs::read(state.optimized.dir().join(name)).await {
-                Ok(bytes) => dep_response(headers, has_version_query(uri.query()), bytes),
+                Ok(bytes) => dep_response(
+                    headers,
+                    has_version_query(uri.query()),
+                    state.optimized.link_entries(name, bytes),
+                ),
                 Err(_) => (
                     StatusCode::NOT_FOUND,
                     format!("oj: no optimized dep {name}"),
