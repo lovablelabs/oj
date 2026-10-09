@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
@@ -96,6 +96,7 @@ pub struct OptimizedDeps {
     /// stale immutable entries never share a URL. Empty when disabled.
     version: String,
     rerun: Option<Arc<RerunState>>,
+    link_memo: LinkMemo,
 }
 
 /// Commit callback: the newly optimized deps, empty when a batch failed.
@@ -181,6 +182,11 @@ pub fn dep_url(file: &str, version: &str) -> String {
 /// only name entries of its own bundle (`[name].mjs`; chunks carry a hash),
 /// a no-reload commit keeps every committed entry's version and bytes, and a
 /// reload commit moves every URL, the referencing file's included.
+///
+/// Chunk imports stay bare, a deliberate divergence: Vite versions those too
+/// (its metadata.chunks carry a browserHash), but a hashed chunk name only
+/// ever has one URL form, so there is no second instance to prevent and the
+/// hash already busts caches.
 fn linked_entry_imports(map: &DepMap, name: &str, code: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(code).ok()?;
     let entries: HashMap<&str, &str> = map
@@ -213,6 +219,83 @@ fn mentions_entry(text: &str, entries: &HashMap<&str, &str>) -> bool {
     })
 }
 
+/// Memoized [`linked_entry_imports`]: the OXC parse and splice run once per
+/// commit instead of per request. The generation is a digest of the map's
+/// (file, url) pairs — an Arc address is not an identity (a freed map's
+/// address can be reused) and a stale hit would poison an immutable-cached
+/// URL. A new generation drops the previous one's entries whole, so old
+/// chunks' rewritten bytes are never retained across commits, and the source
+/// hash keeps a hit sound across the window where a rerun has written new
+/// bytes but not yet committed its map (the reload bounds that window; Vite
+/// shares the exposure).
+#[derive(Default)]
+struct LinkMemo(Mutex<LinkMemoState>);
+
+#[derive(Default)]
+struct LinkMemoState {
+    generation: Option<blake3::Hash>,
+    files: HashMap<String, LinkedFile>,
+}
+
+struct LinkedFile {
+    src_hash: blake3::Hash,
+    /// `None`: the file links no entry and serves raw.
+    linked: Option<Arc<Vec<u8>>>,
+}
+
+impl LinkMemo {
+    fn link(&self, map: &DepMap, name: &str, code: Vec<u8>) -> Vec<u8> {
+        let generation = entries_digest(map);
+        let src_hash = blake3::hash(&code);
+        {
+            let mut state = self.0.lock().unwrap();
+            if state.generation != Some(generation) {
+                state.generation = Some(generation);
+                state.files.clear();
+            } else if let Some(file) = state.files.get(name) {
+                if file.src_hash == src_hash {
+                    return match &file.linked {
+                        Some(bytes) => bytes.as_ref().clone(),
+                        None => code,
+                    };
+                }
+            }
+        }
+        // Parsed outside the lock: two racing first requests do the work
+        // twice, every later one hits.
+        let linked = linked_entry_imports(map, name, &code).map(|s| Arc::new(s.into_bytes()));
+        let out = match &linked {
+            Some(bytes) => bytes.as_ref().clone(),
+            None => code,
+        };
+        let mut state = self.0.lock().unwrap();
+        if state.generation == Some(generation) {
+            state
+                .files
+                .insert(name.to_string(), LinkedFile { src_hash, linked });
+        }
+        out
+    }
+}
+
+/// The memo's commit identity: (file, url) pairs, sorted (DepMap iteration
+/// order is unstable), so any commit that moves a URL changes it.
+fn entries_digest(map: &DepMap) -> blake3::Hash {
+    let mut pairs: Vec<(&str, &str)> = map
+        .values()
+        .map(|meta| (meta.file.as_str(), meta.url.as_str()))
+        .collect();
+    pairs.sort_unstable();
+    let mut hasher = blake3::Hasher::new();
+    for (file, url) in pairs {
+        hasher.update(file.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(url.as_bytes());
+        hasher.update(&[0]);
+    }
+    hasher.finalize()
+}
+
 impl OptimizedDeps {
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -241,6 +324,7 @@ impl OptimizedDeps {
             dir: PathBuf::new(),
             version: String::new(),
             rerun: None,
+            link_memo: LinkMemo::default(),
         }
     }
 
@@ -333,12 +417,12 @@ impl OptimizedDeps {
     }
 
     /// A served pre-bundle file, its relative imports of entries pointed at
-    /// the entries' current URLs ([`linked_entry_imports`]).
+    /// the entries' current URLs ([`linked_entry_imports`], via [`LinkMemo`]).
     pub fn link_entries(&self, name: &str, code: Vec<u8>) -> Vec<u8> {
-        let map = self.rx.borrow().clone();
-        map.and_then(|map| linked_entry_imports(&map, name, &code))
-            .map(String::into_bytes)
-            .unwrap_or(code)
+        match self.rx.borrow().clone() {
+            Some(map) => self.link_memo.link(&map, name, code),
+            None => code,
+        }
     }
 
     /// Route gate for `/@oj-deps/<file>`: a pending dep's request waits for
@@ -494,6 +578,7 @@ impl OptimizedDeps {
             dir,
             version: short,
             rerun: Some(rerun),
+            link_memo: LinkMemo::default(),
         }
     }
 }
@@ -1477,6 +1562,7 @@ mod tests {
             dir: PathBuf::new(),
             version: "00000000".into(),
             rerun: Some(rerun),
+            link_memo: LinkMemo::default(),
         }
     }
 
@@ -1716,6 +1802,86 @@ mod tests {
         assert!(
             linked_entry_imports(&unversioned, "dist-C0ffee00.mjs", chunk.as_bytes()).is_none(),
             "an unversioned entry URL is the relative one already"
+        );
+    }
+
+    #[test]
+    fn link_memo_serves_hits_and_invalidates_on_map_or_source_change() {
+        let map_with = |version: &str| -> DepMap {
+            [(
+                "cursor".to_string(),
+                DepMeta {
+                    file: "cursor.mjs".into(),
+                    needs_interop: false,
+                    url: dep_url("cursor.mjs", version),
+                    file_hash: String::new(),
+                },
+            )]
+            .into_iter()
+            .collect()
+        };
+        let map = map_with("aaaa1111");
+        let chunk = b"import { c } from \"./cursor.mjs\";\nexport { c };\n".to_vec();
+        let memo = LinkMemo::default();
+
+        let first = memo.link(&map, "dist-C0ffee00.mjs", chunk.clone());
+        assert!(std::str::from_utf8(&first).unwrap().contains("?v=aaaa1111"));
+
+        // A hit returns the MEMOIZED bytes: seed a sentinel under the same
+        // (generation, name, source hash) and the next call must serve it,
+        // proving no re-parse happens on the hot path.
+        memo.0.lock().unwrap().files.insert(
+            "dist-C0ffee00.mjs".into(),
+            LinkedFile {
+                src_hash: blake3::hash(&chunk),
+                linked: Some(Arc::new(b"SENTINEL".to_vec())),
+            },
+        );
+        assert_eq!(
+            memo.link(&map, "dist-C0ffee00.mjs", chunk.clone()),
+            b"SENTINEL"
+        );
+
+        // Changed source bytes under the same map: the sentinel must NOT
+        // answer; the rewrite recomputes (the pre-commit write window).
+        let edited =
+            b"import { c } from \"./cursor.mjs\";\nexport const x = 1;\nexport { c };\n".to_vec();
+        let recomputed = memo.link(&map, "dist-C0ffee00.mjs", edited);
+        assert!(std::str::from_utf8(&recomputed)
+            .unwrap()
+            .contains("?v=aaaa1111"));
+
+        // A commit (same entry, moved version) is a new generation: the
+        // stale sentinel seeded again must not survive it, and the old
+        // generation's names are dropped whole, not retained.
+        memo.0.lock().unwrap().files.insert(
+            "dist-C0ffee00.mjs".into(),
+            LinkedFile {
+                src_hash: blake3::hash(&chunk),
+                linked: Some(Arc::new(b"SENTINEL".to_vec())),
+            },
+        );
+        let moved = memo.link(&map_with("bbbb2222"), "other-chunk.mjs", chunk.clone());
+        assert!(std::str::from_utf8(&moved).unwrap().contains("?v=bbbb2222"));
+        let state = memo.0.lock().unwrap();
+        assert!(
+            !state.files.contains_key("dist-C0ffee00.mjs"),
+            "a new generation drops the previous generation's entries"
+        );
+        drop(state);
+
+        // A file linking no entry is memoized as a negative: served back
+        // unchanged, remembered as None.
+        let plain = b"export const n = 1;\n".to_vec();
+        assert_eq!(
+            memo.link(&map_with("bbbb2222"), "dist-B4TcxAGx.mjs", plain.clone()),
+            plain
+        );
+        assert!(
+            memo.0.lock().unwrap().files["dist-B4TcxAGx.mjs"]
+                .linked
+                .is_none(),
+            "a no-rewrite file is memoized, not re-scanned per request"
         );
     }
 

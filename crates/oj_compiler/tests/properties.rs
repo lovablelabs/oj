@@ -199,7 +199,10 @@ proptest! {
     }
 
     /// Splicing touches the specifiers only: answering every one with itself
-    /// leaves a double-quoted source byte for byte.
+    /// leaves a double-quoted source byte for byte. This holds because the
+    /// generator emits only double-quoted, escape-free specifiers — the
+    /// splice re-quotes with JSON double quotes, so a single-quoted or
+    /// escaped fragment added to `module_source` would rightly break it.
     #[test]
     fn splicing_specifiers_onto_themselves_is_the_identity(source in module_source(), ext in extension()) {
         let path = format!("/src/App.{ext}");
