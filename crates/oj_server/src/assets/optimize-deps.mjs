@@ -555,21 +555,29 @@ function globImportTargets(code, importer) {
 /// starve until the host watchdog declares the engine gone. Vite's scan gets
 /// per-iteration fairness from Node's event loop for free; this is that
 /// contract made explicit as a fair work queue: units run one at a time in
-/// arrival order (they share one isolate thread anyway), and once a slice of
-/// `budgetMs` is spent the next unit first parks on a timer, which lets the
-/// engine schedule queued hooks before the scan continues. A mere entry check
-/// cannot do this: a flood of callers all pass the check before any of their
-/// work runs (microtask FIFO), so the budget must wrap the work itself.
+/// arrival order (they share one isolate thread anyway), and once units have
+/// spent `budgetMs` of run time the next unit first parks on a timer, which
+/// lets the engine schedule queued hooks before the scan continues. Only unit
+/// run time spends the slice: a gap while the crawl sits in native code left
+/// the isolate idle, so parking after one would yield for nothing. A mere
+/// entry check cannot do this: a flood of callers all pass the check before
+/// any of their work runs (microtask FIFO), so the budget must wrap the work
+/// itself.
 export function makeScanGate(budgetMs = 8, now = Date.now) {
-  let sliceStart = now();
+  let spent = 0;
   let tail = Promise.resolve();
   return (work) => {
     const turn = tail.then(async () => {
-      if (now() - sliceStart >= budgetMs) {
+      if (spent >= budgetMs) {
         await new Promise((resume) => setTimeout(resume, 1));
-        sliceStart = now();
+        spent = 0;
       }
-      return work();
+      const started = now();
+      try {
+        return await work();
+      } finally {
+        spent += now() - started;
+      }
     });
     // The queue survives a rejected unit; the caller still sees its rejection.
     tail = turn.then(

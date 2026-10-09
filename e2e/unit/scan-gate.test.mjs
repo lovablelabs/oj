@@ -57,6 +57,19 @@ test("the park renews the slice", async () => {
   assert.equal(macrotaskRan, false, "the renewed slice must admit the next unit without parking");
 });
 
+test("idle time between units does not spend the slice", async () => {
+  let t = 0;
+  const gate = makeScanGate(8, () => t);
+  await gate(() => {
+    t += 7;
+  });
+  t += 10000; // the crawl sat in native code; the isolate was idle
+  let macrotaskRan = false;
+  setTimeout(() => (macrotaskRan = true), 0);
+  await gate(() => {});
+  assert.equal(macrotaskRan, false, "an idle gap must not force a park");
+});
+
 test("units run one at a time, in arrival order", async () => {
   const gate = makeScanGate(1000);
   let running = 0;
