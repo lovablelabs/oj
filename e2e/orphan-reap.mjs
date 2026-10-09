@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { settles, waitUp } from "./util.mjs";
+import { rmrf, settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -80,7 +80,7 @@ try {
   await exited(srvA);
   if (!(await settles(() => !alive(pidA), { timeoutMs: 10000 })))
     throw new Error(`mid-boot SIGTERM left the plugin child ${pidA} running:\n${srvA.log}`);
-  fs.rmSync(appA, { recursive: true, force: true });
+  await rmrf(appA);
   console.log("mid-boot SIGTERM kills plugin children");
 
   // --- 2: SIGKILL orphans the child; the next boot reaps it ---
@@ -109,7 +109,7 @@ try {
       } catch {}
     }
   }
-  fs.rmSync(appB, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await rmrf(appB);
   console.log("next boot reaps the SIGKILL orphan");
   console.log("ORPHAN-REAP E2E PASSED");
 } catch (err) {

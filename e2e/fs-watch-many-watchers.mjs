@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitUp } from "./util.mjs";
+import { rmrf, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -106,11 +106,6 @@ try {
   writer.kill("SIGKILL");
   srv.kill("SIGKILL");
   await Promise.all([exited(writer), exited(srv)]);
-  // The async rm, not rmSync: on ENOTEMPTY, sync rimraf clears children once
-  // and then only retries the bare rmdir, so one straggler write (a code-cache
-  // file landing after the clear) defeats every retry — that exact shape
-  // failed CI on .oj-cache/v1/code-cache. The async retry re-runs the whole
-  // traversal per attempt, removing stragglers as it goes.
-  await fs.promises.rm(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await rmrf(app);
 }
 process.exit(failed ? 1 : 0);
