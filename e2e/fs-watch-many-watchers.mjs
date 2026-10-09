@@ -106,6 +106,11 @@ try {
   writer.kill("SIGKILL");
   srv.kill("SIGKILL");
   await Promise.all([exited(writer), exited(srv)]);
-  fs.rmSync(app, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  // The async rm, not rmSync: on ENOTEMPTY, sync rimraf clears children once
+  // and then only retries the bare rmdir, so one straggler write (a code-cache
+  // file landing after the clear) defeats every retry — that exact shape
+  // failed CI on .oj-cache/v1/code-cache. The async retry re-runs the whole
+  // traversal per attempt, removing stragglers as it goes.
+  await fs.promises.rm(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 process.exit(failed ? 1 : 0);
