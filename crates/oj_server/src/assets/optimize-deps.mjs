@@ -548,6 +548,38 @@ function globImportTargets(code, importer) {
   return [...files].filter((f) => f !== self && !negative.some((n) => matchesGlob(f, n))).sort();
 }
 
+/// The in-host scan shares the plugin host's isolate with every other hook,
+/// and rolldown's native crawl floods its resolve callbacks all at once: run
+/// freely, their plugin chains form one unbroken run of JS that holds the
+/// event loop for the whole crawl, so queued hooks and their deadline replies
+/// starve until the host watchdog declares the engine gone. Vite's scan gets
+/// per-iteration fairness from Node's event loop for free; this is that
+/// contract made explicit as a fair work queue: units run one at a time in
+/// arrival order (they share one isolate thread anyway), and once a slice of
+/// `budgetMs` is spent the next unit first parks on a timer, which lets the
+/// engine schedule queued hooks before the scan continues. A mere entry check
+/// cannot do this: a flood of callers all pass the check before any of their
+/// work runs (microtask FIFO), so the budget must wrap the work itself.
+export function makeScanGate(budgetMs = 8, now = Date.now) {
+  let sliceStart = now();
+  let tail = Promise.resolve();
+  return (work) => {
+    const turn = tail.then(async () => {
+      if (now() - sliceStart >= budgetMs) {
+        await new Promise((resume) => setTimeout(resume, 1));
+        sliceStart = now();
+      }
+      return work();
+    });
+    // The queue survives a rejected unit; the caller still sees its rejection.
+    tail = turn.then(
+      () => {},
+      () => {},
+    );
+    return turn;
+  };
+}
+
 /// Vite 8's scanImports (optimizer/scan.ts) on rolldown's `scan`: crawl the
 /// app from its entries, record every bare import that resolves into
 /// node_modules (or is listed in `include`) and stop there, keep crawling into
@@ -561,6 +593,7 @@ async function rolldownScan(rd, discover, host) {
   if (plainIncludes.length) input.push(SCAN_INCLUDE_ID);
   if (!input.length) return found;
   const includeImporter = path.join(root, "__oj_include__.js");
+  const gate = makeScanGate();
   const seen = new Map();
   const resolve = async (ctx, id, importer) => {
     const from = importer === SCAN_INCLUDE_ID ? includeImporter : importer;
@@ -570,10 +603,14 @@ async function rolldownScan(rd, discover, host) {
     if (seen.has(key)) return seen.get(key);
     let out = null;
     // The app's plugins first, as Vite's scan resolves through its plugin
-    // container; a plugin's virtual or external answer is not crawled.
+    // container; a plugin's virtual or external answer is not crawled. The
+    // chain is the scan's dominant JS cost, so it runs as one fair-queue unit
+    // (see makeScanGate); ctx.resolve stays outside the queue — it is native
+    // work, and a unit awaiting rolldown while holding the queue could
+    // deadlock against a callback that needs its own turn.
     if (host) {
       try {
-        const r = await host.resolveId(id, from);
+        const r = await gate(() => host.resolveId(id, from));
         if (r) {
           out = !r.external && path.isAbsolute(cleanUrl(r.id)) ? r.id : null;
           seen.set(key, out);
@@ -675,10 +712,12 @@ async function rolldownScan(rd, discover, host) {
     // stays in place; the scan never executes the code.
     transform: {
       filter: { code: /import\.meta\.glob/ },
-      handler(code, id) {
+      async handler(code, id) {
         const file = id.startsWith(HTML_SCRIPT_ID) ? cleanUrl(id.slice(HTML_SCRIPT_ID.length)) : cleanUrl(id);
         if (!JS_TYPES_RE.test(file) && !id.startsWith(HTML_SCRIPT_ID)) return null;
-        const targets = globImportTargets(code, file);
+        // Glob expansion walks directories synchronously; run it as a
+        // fair-queue unit like the resolve chain.
+        const targets = await gate(() => globImportTargets(code, file));
         if (!targets.length) return null;
         return { code: `${code}\n${targets.map((f) => `import ${JSON.stringify(f)};`).join("\n")}` };
       },

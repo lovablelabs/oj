@@ -215,6 +215,8 @@ jobs:
         run: node e2e/dep-optimize-rolldown.mjs
       - name: a dep the scan missed is discovered at serve time and re-optimized
         run: node e2e/dep-optimize-discover.mjs
+      - name: the in-host scan keeps answering plugin hooks (no watchdog starvation)
+        run: node e2e/scan-starvation.mjs
       - name: thousands of plugin fs.watch handles register and deliver under a write storm
         run: node e2e/fs-watch-many-watchers.mjs
       - name: mid-boot SIGTERM kills plugin children; next boot reaps a SIGKILLed server's orphans
