@@ -177,6 +177,10 @@ pub struct ServerConfig {
     pub fs: Option<FsConfig>,
     pub warmup: Option<WarmupConfig>,
     pub watch: Option<WatchConfig>,
+    /// Vite's `server.forwardConsole`: `bool`, or `{unhandledErrors?, logLevels?}`.
+    /// Unset falls back to the OJ_FORWARD_CONSOLE env override, then to
+    /// on-under-an-AI-agent-environment, as Vite resolves it.
+    pub forward_console: Option<serde_json::Value>,
 }
 
 /// Vite's `server.watch`: `ignored` globs (strings; RegExp and function forms

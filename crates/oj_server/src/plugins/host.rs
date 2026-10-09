@@ -836,6 +836,16 @@ impl PluginHost {
                 "oj: not respawning the plugin host: native addon {} was torn down with it and re-registering can crash (napi-rs before 3.10); restart the dev server to recover",
                 addon.display()
             );
+            oj_diag::emit(
+                oj_diag::Event::new(
+                    oj_diag::Kind::HostExhausted,
+                    format!(
+                        "not respawning the plugin host: native addon {} was torn down with it",
+                        addon.display()
+                    ),
+                )
+                .source(oj_diag::Source::Host),
+            );
             return false;
         }
         revive.attempts += 1;
@@ -845,6 +855,17 @@ impl PluginHost {
         eprintln!(
             "oj: respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
             revive.attempts
+        );
+        oj_diag::emit(
+            oj_diag::Event::new(
+                oj_diag::Kind::HostRespawn,
+                format!(
+                    "respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
+                    revive.attempts
+                ),
+            )
+            .source(oj_diag::Source::Host)
+            .warn(),
         );
         self.reset_generation_state();
         let generation = revive.generation;
@@ -861,6 +882,13 @@ impl PluginHost {
             }
             Err(e) => {
                 eprintln!("oj: plugin host respawn failed: {e}");
+                oj_diag::emit(
+                    oj_diag::Event::new(
+                        oj_diag::Kind::HostRespawn,
+                        format!("plugin host respawn failed: {e}"),
+                    )
+                    .source(oj_diag::Source::Host),
+                );
                 false
             }
         }
@@ -1092,6 +1120,13 @@ impl PluginHost {
             .map(|m| format!(" (process rss {m}MB)"))
             .unwrap_or_default();
         eprintln!("oj: {why}; treating the plugin host as gone{rss}");
+        oj_diag::emit(
+            oj_diag::Event::new(
+                oj_diag::Kind::HostGone,
+                format!("{why}; treating the plugin host as gone{rss}"),
+            )
+            .source(oj_diag::Source::Host),
+        );
         if let Some(engine) = self.engine.lock().unwrap().take() {
             self.retire_engine(engine, &mut revive);
         }

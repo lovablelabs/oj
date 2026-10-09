@@ -39,6 +39,13 @@ impl MemoryCache {
         Some(Arc::clone(&entry.module))
     }
 
+    /// The cached module whatever its validator, without an LRU bump: the
+    /// diagnostics stack remap tolerates a slightly stale map better than
+    /// none, and must never evict for a read.
+    pub(crate) fn peek(&self, url: &str) -> Option<Arc<CachedModule>> {
+        self.map.get(url).map(|e| Arc::clone(&e.module))
+    }
+
     pub(crate) fn remove(&mut self, url: &str) {
         if let Some(old) = self.map.remove(url) {
             self.total -= old.bytes;

@@ -50,6 +50,8 @@ mod crawl;
 use crawl::*;
 mod debug;
 use debug::*;
+mod diagnostics;
+use diagnostics::*;
 mod css_serve;
 pub use css_serve::*;
 mod plugin_mw;
@@ -525,11 +527,16 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
             // A death ends the task only when no revive is left. This task's own Arc keeps
             // the sender alive, so `updates.changed()` alone can never observe the death.
             if *gone.borrow_and_update() && !host.can_revive() {
-                if applied.is_none() {
-                    eprintln!("oj: warning: the plugin host exited before initializing; plugin-served routes will not activate");
+                let why = if applied.is_none() {
+                    "the plugin host exited before initializing; plugin-served routes will not activate"
                 } else {
-                    eprintln!("oj: warning: the plugin host exited with no respawns left; plugin-served routes are down until the dev server restarts");
-                }
+                    "the plugin host exited with no respawns left; plugin-served routes are down until the dev server restarts"
+                };
+                eprintln!("oj: warning: {why}");
+                oj_diag::emit(
+                    oj_diag::Event::new(oj_diag::Kind::HostExhausted, why)
+                        .source(oj_diag::Source::Host),
+                );
                 return;
             }
             let await_init = !warned && applied.is_none();
@@ -989,7 +996,15 @@ fn hmr_setup(
             .as_ref()
             .and_then(|l| l.skip_web_socket_token_check)
             != Some(true);
-    let client_js = render_client_js(CLIENT_JS, options.as_ref(), &ws_path, &ws_token);
+    let forward_console =
+        resolve_forward_console(server_cfg.forward_console.as_ref(), &oj_env::get().knobs);
+    let client_js = render_client_js(
+        CLIENT_JS,
+        options.as_ref(),
+        &ws_path,
+        &ws_token,
+        &forward_console,
+    );
     HmrSetup {
         enabled,
         ws_path,
@@ -1177,6 +1192,7 @@ fn build_router(
         // probes measure retained heap (issue #202). 404 unless enabled.
         .route("/@oj/debug/gc", get(debug_gc))
         .route("/@oj/debug/mem", get(debug_mem_stats))
+        .route("/@oj/diagnostics", get(serve_diagnostics))
         .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
         .route(
             "/@oj/lingui-macro-shim.js",

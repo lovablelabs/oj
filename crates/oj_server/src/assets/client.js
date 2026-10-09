@@ -11,6 +11,8 @@ const hmrPort = __HMR_PORT__;
 const hmrPath = __HMR_PATH__;
 const enableOverlay = __HMR_ENABLE_OVERLAY__;
 const wsToken = __WS_TOKEN__;
+// Vite 8's resolved `server.forwardConsole`: {enabled, unhandledErrors, logLevels}.
+const forwardConsole = __FORWARD_CONSOLE__;
 
 const customListeners = new Map();
 function emit(event, data) {
@@ -190,6 +192,7 @@ async function applyUpdate(update) {
     // error frame (with the file and code frame); replacing that overlay with
     // "failed to fetch" would hide the real cause.
     emit("vite:error", { err: { message: String(err) } });
+    reportHmrFailure(update.path, err);
     if (!(err instanceof Error) || !err.message.includes("fetch")) console.error(err);
     console.error(
       `[oj] Failed to reload ${update.path}. This could be due to syntax errors or importing non-existent modules. (see errors above)`,
@@ -341,6 +344,7 @@ function swapCss(update) {
       .then(() => console.log(`[oj] css updated ${update.path}`))
       .catch((err) => {
         console.log(`[oj] css re-import failed for ${update.path}, reloading`, err);
+        reportHmrFailure(update.path, err);
         location.reload();
       });
     return;
@@ -351,6 +355,128 @@ function swapCss(update) {
 
 let socket = null;
 let hadConnection = false;
+
+// Vite 8's forwardConsole channel (src/shared/forwardConsole.ts): unhandled
+// errors and the configured console levels travel to the dev server as the
+// custom event `vite:forward-console`, so the server (and whatever supervises
+// it) sees what only the browser console knew. Sends queue until the socket
+// opens — a page-boot error predates it — and are budgeted so a render loop
+// cannot flood the socket.
+const forwardQueue = [];
+let forwardSpent = 0;
+let forwardWindow = Date.now();
+function forwardSend(data) {
+  const now = Date.now();
+  if (now - forwardWindow >= 60000) {
+    forwardSpent = 0;
+    forwardWindow = now;
+  }
+  if (forwardSpent >= 100) return;
+  forwardSpent++;
+  const frame = JSON.stringify({ type: "custom", event: "vite:forward-console", data });
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(frame);
+  else if (forwardQueue.length < 50) forwardQueue.push(frame);
+}
+
+function forwardError(type, error) {
+  forwardSend({
+    type,
+    data: {
+      name: (error && error.name) || "Unknown Error",
+      message: (error && error.message) || String(error),
+      stack: error && error.stack,
+    },
+  });
+}
+
+function stringifyConsoleArg(arg) {
+  if (typeof arg === "string") return arg;
+  if (typeof arg === "bigint") return arg + "n";
+  if (arg instanceof Error) return arg.stack || String(arg);
+  try {
+    return JSON.stringify(arg) ?? String(arg);
+  } catch {
+    return String(arg);
+  }
+}
+
+// A compact take on Vite's formatConsoleArgs: the leading format string's
+// %-specifiers consume arguments, the rest are appended stringified.
+function formatConsoleArgs(args) {
+  if (args.length === 0) return "";
+  if (typeof args[0] !== "string") return args.map(stringifyConsoleArg).join(" ");
+  let i = 1;
+  const message = args[0].replace(/%[sdjifoOc%]/g, (spec) => {
+    if (spec === "%%") return "%";
+    if (i >= args.length) return spec;
+    const arg = args[i++];
+    switch (spec) {
+      case "%s":
+        return typeof arg === "object" && arg != null ? stringifyConsoleArg(arg) : String(arg);
+      case "%d":
+        if (typeof arg === "bigint") return arg + "n";
+        if (typeof arg === "symbol") return "NaN";
+        return Number(arg).toString();
+      case "%i":
+        return typeof arg === "bigint" ? arg + "n" : String(parseInt(String(arg), 10));
+      case "%f":
+        return String(parseFloat(String(arg)));
+      case "%j":
+      case "%o":
+      case "%O":
+        return stringifyConsoleArg(arg);
+      case "%c":
+        return "";
+      default:
+        return spec;
+    }
+  });
+  return [message, ...args.slice(i).map(stringifyConsoleArg)].join(" ");
+}
+
+if (forwardConsole && forwardConsole.enabled) {
+  for (const level of forwardConsole.logLevels || []) {
+    const original = console[level];
+    if (typeof original !== "function") continue;
+    console[level] = (...args) => {
+      original.apply(console, args);
+      // Formatting touches arbitrary app values (a Symbol under %i, a
+      // throwing toString): a wrapped console must never throw where the
+      // stock one did not (Vite contains the same throws in sendLog's try).
+      try {
+        forwardSend({ type: "log", data: { level, message: formatConsoleArgs(args).slice(0, 4096) } });
+      } catch {}
+    };
+  }
+  if (forwardConsole.unhandledErrors && typeof window !== "undefined") {
+    window.addEventListener("error", (event) => {
+      try {
+        forwardError("error", event.error ?? (event.message ? new Error(event.message) : event));
+      } catch {}
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      try {
+        forwardError("unhandled-rejection", event.reason);
+      } catch {}
+    });
+  }
+}
+
+// Tell the server an HMR update failed to apply in this page (Vite has no
+// equivalent signal): the server records it as an hmr_apply_failed diagnostic
+// instead of the failure living and dying in this console.
+function reportHmrFailure(path, error) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(
+      JSON.stringify({
+        type: "custom",
+        event: "oj:hmr-result",
+        data: { ok: false, path, error: String(error).slice(0, 4096) },
+      }),
+    );
+  }
+}
+
 // The dev `base` this client is served under (Vite's __BASE__).
 const base = new URL(import.meta.url).pathname.replace(/@oj\/client\.js$/, "");
 
@@ -421,6 +547,7 @@ function socketUrl() {
   ws.addEventListener("open", () => {
     hadConnection = true;
     emit("vite:ws:connect", { webSocket: ws });
+    for (const frame of forwardQueue.splice(0)) ws.send(frame);
     console.log("[oj] dev server connected");
   });
   ws.addEventListener("close", async () => {

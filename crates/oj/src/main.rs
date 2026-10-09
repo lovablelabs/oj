@@ -469,6 +469,8 @@ fn main() -> anyhow::Result<()> {
     // The startup writes above are oj's only direct process-env access. Snapshot
     // the env now, still single-threaded: everything after reads `oj_env::get()`.
     oj_env::init();
+    oj_diag::set_json_output(oj_env::get().knobs.log_json);
+    oj_diag::install_panic_hook();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)

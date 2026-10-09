@@ -656,6 +656,13 @@ async fn rerun_once(
         // path) instead of Vite's reset-and-retry, which can reload-loop a
         // persistently failing dep.
         eprintln!("oj: re-optimizing newly discovered dependencies failed; serving them per-file");
+        oj_diag::emit(oj_diag::Event::new(
+            oj_diag::Kind::OptimizeError,
+            format!(
+                "re-optimizing newly discovered dependencies failed; serving per-file: {}",
+                pending.join(", ")
+            ),
+        ));
         fail_pending(rerun, &pending);
         return;
     };
@@ -1219,10 +1226,21 @@ async fn run_optimizer(
                 "oj: the dep pre-bundle did not finish within {}s and was stopped (raise OJ_OPTIMIZE_TIMEOUT for slower machines); deps are served unbundled",
                 timeout.as_secs()
             );
+            oj_diag::emit(oj_diag::Event::new(
+                oj_diag::Kind::OptimizeError,
+                format!(
+                    "dep pre-bundle stopped after {}s; deps are served unbundled",
+                    timeout.as_secs()
+                ),
+            ));
             return None;
         }
         Err(e) => {
             eprintln!("oj: optimizer failed: {e}");
+            oj_diag::emit(oj_diag::Event::new(
+                oj_diag::Kind::OptimizeError,
+                format!("optimizer failed: {e}"),
+            ));
             return None;
         }
     };
@@ -1242,6 +1260,13 @@ async fn scan_through_plugins(
         Ok(None) => serde_json::Value::Null,
         Err(e) => {
             eprintln!("oj: dependency scan through plugins failed ({e}); scanning without them");
+            oj_diag::emit(
+                oj_diag::Event::new(
+                    oj_diag::Kind::OptimizeError,
+                    format!("dependency scan through plugins failed: {e}"),
+                )
+                .warn(),
+            );
             serde_json::Value::Null
         }
     }

@@ -1278,6 +1278,15 @@ function extractServerFlags(s, legacy, appType) {
       if (typeof s.fs.strict === "boolean") out.fsStrict = s.fs.strict;
       if (Array.isArray(s.fs.deny)) out.fsDeny = s.fs.deny.filter((x) => typeof x === "string");
     }
+    // server.forwardConsole: boolean, or {unhandledErrors?, logLevels?} (Vite 8).
+    if (typeof s.forwardConsole === "boolean") out.forwardConsole = s.forwardConsole;
+    else if (s.forwardConsole && typeof s.forwardConsole === "object") {
+      const fc = {};
+      if (typeof s.forwardConsole.unhandledErrors === "boolean") fc.unhandledErrors = s.forwardConsole.unhandledErrors;
+      if (Array.isArray(s.forwardConsole.logLevels))
+        fc.logLevels = s.forwardConsole.logLevels.filter((x) => typeof x === "string");
+      out.forwardConsole = fc;
+    }
     if (s.warmup && typeof s.warmup === "object") {
       const warmup = {};
       for (const key of ["clientFiles", "ssrFiles"]) {
