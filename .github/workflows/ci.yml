@@ -227,6 +227,8 @@ jobs:
         run: node e2e/scan-starvation.mjs
       - name: thousands of plugin fs.watch handles register and deliver under a write storm
         run: node e2e/fs-watch-many-watchers.mjs
+      - name: top-level files and dirs created after boot are watched (new shared/ tree shape)
+        run: node e2e/watch-new-root-dir.mjs
       - name: mid-boot SIGTERM kills plugin children; next boot reaps a SIGKILLed server's orphans
         run: node e2e/orphan-reap.mjs
       - name: worker build forms (?worker, inline, url, new URL) and worker-only chunks skip document helpers
@@ -256,6 +258,8 @@ jobs:
         run: node e2e/ssr-concurrent.mjs
       - name: start dev holds the page reload behind the editor HMR gate until the flush
         run: node e2e/start-hmr-gate.mjs
+      - name: start dev skips rebundle and reload for changes outside every served graph
+        run: node e2e/start-rebundle-gate.mjs
 
   # i need to fix this or automate
   build:

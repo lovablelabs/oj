@@ -49,20 +49,34 @@ pub(crate) fn stream_reqwest_response(resp: reqwest::Response) -> Response {
 }
 
 // Tell the plugin middleware server that files changed so it can invalidate
-// module graphs and send HMR; type is "update" | "create" | "delete". Fire-and-forget.
-pub async fn notify_plugin_mw_invalidate(port: u16, changes: &[(String, &'static str)]) {
+// module graphs and send HMR; type is "update" | "create" | "delete".
+// Returns whether a runner-backed graph matched one of the changes; a host
+// that cannot tell (an error reply, an unreachable host, a null count) reads
+// as true, so the caller's reload decision only ever errs toward reloading.
+pub async fn notify_plugin_mw_invalidate(port: u16, changes: &[(String, &'static str)]) -> bool {
     let client = plugin_mw_client();
     let changes: Vec<serde_json::Value> = changes
         .iter()
         .map(|(path, kind)| serde_json::json!({ "path": path, "type": kind }))
         .collect();
     let body = serde_json::json!({ "changes": changes }).to_string();
-    let _ = client
+    let resp = client
         .post(format!("http://127.0.0.1:{port}/__oj_invalidate"))
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
         .await;
+    let Ok(resp) = resp else { return true };
+    let Ok(body) = resp.bytes().await else {
+        return true;
+    };
+    let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return true;
+    };
+    match parsed.get("matched") {
+        Some(serde_json::Value::Number(n)) => n.as_u64().map(|n| n > 0).unwrap_or(true),
+        _ => true,
+    }
 }
 
 pub(crate) fn plugin_mw_client() -> &'static reqwest::Client {
