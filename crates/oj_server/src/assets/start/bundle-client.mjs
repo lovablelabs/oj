@@ -117,6 +117,15 @@ async function main() {
       visitedIds.add(id);
       return null;
     },
+    // The complete input set, from the bundler itself: getModuleIds() covers
+    // every module the build touched, including the kinds the transform hook
+    // and the output walk miss (css imports among them). closure.json must
+    // not under-report: the dev server skips rebundles for paths outside it.
+    buildEnd() {
+      try {
+        for (const id of this.getModuleIds()) visitedIds.add(id);
+      } catch {}
+    },
   };
 
   const serverFnClient = {
@@ -210,7 +219,15 @@ async function main() {
     for (const id of Object.keys(o.modules ?? {})) closure.add(id);
   }
   const closureFiles = [...closure]
-    .map((id) => String(id).split("?")[0])
+    // An asset module's id is virtual (\0oj-css:/abs/x.css and friends), but
+    // its FILE is an input: raw/inline embed its bytes, css lands in
+    // css-urls.json. The closure must carry the file, or an edit to it never
+    // rebundles.
+    .map((id) => {
+      const s = String(id);
+      return s.startsWith("\0oj-") ? s.slice(s.indexOf(":") + 1) : s;
+    })
+    .map((id) => id.split("?")[0])
     .filter((p) => !p.startsWith("\0"))
     .map((p) => (isAbsolute(p) ? p : resolve(APP, p)))
     .filter((p) => !p.startsWith(HERE) && !/(^|\/)routeTree\.gen\.[jt]sx?$/.test(p))
