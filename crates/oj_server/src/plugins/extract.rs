@@ -10,6 +10,12 @@ pub struct ViteValues {
     pub hmr_disabled: bool,
     pub fs_allow: Option<Vec<String>>,
     pub fs_strict: Option<bool>,
+    /// `server.watch.ignored` string globs from the RESOLVED config: plugin
+    /// `config` hooks add their own (vite-plugin-cloudflare ignores
+    /// `**/.wrangler/**`, whose miniflare state writes would otherwise feed
+    /// every request back into the watcher), and only the resolved list
+    /// carries them.
+    pub watch_ignored: Option<Vec<String>>,
     pub define: Option<serde_json::Map<String, serde_json::Value>>,
     pub alias: Option<serde_json::Map<String, serde_json::Value>>,
     pub headers: Option<serde_json::Map<String, serde_json::Value>>,
@@ -552,6 +558,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         hmr_disabled: json.get("hmr").and_then(|v| v.as_bool()) == Some(false),
         fs_allow: json.get("fsAllow").and_then(string_list),
         fs_strict: json.get("fsStrict").and_then(|v| v.as_bool()),
+        watch_ignored: json.get("watchIgnored").and_then(string_list),
         define: json.get("define").and_then(|v| v.as_object()).cloned(),
         alias: json.get("alias").and_then(|v| v.as_object()).cloned(),
         headers: json.get("headers").and_then(|v| v.as_object()).cloned(),
@@ -660,6 +667,21 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
             fs_strict: v.fs_strict,
         },
     );
+    // Unioned rather than filled-if-unset: Vite's mergeConfig concatenates
+    // `server.watch.ignored` arrays, and a user list in oj's own config must
+    // not displace the plugin-added ignores (`**/.wrangler/**` et al).
+    if let Some(vignored) = v.watch_ignored {
+        if !vignored.is_empty() {
+            let sc = config.server.get_or_insert_with(Default::default);
+            let watch = sc.watch.get_or_insert_with(Default::default);
+            let list = watch.ignored.get_or_insert_with(Default::default);
+            for glob in vignored {
+                if !list.contains(&glob) {
+                    list.push(glob);
+                }
+            }
+        }
+    }
     if let Some(valias) = v.alias {
         if !valias.is_empty() {
             let rc = config.resolve.get_or_insert_with(Default::default);

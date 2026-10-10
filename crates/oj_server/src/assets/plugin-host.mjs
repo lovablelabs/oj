@@ -2229,6 +2229,7 @@ async function invalidateEnvironments(environments, watcher, changes) {
     unmatchedChangeLogged.add(file);
     process.stderr.write(`${OJ} plugin host: change to ${file} matched no module in any runner environment\n`);
   }
+  return matched.size;
 }
 
 // Vite's prepareError: the payload hot.send({type:"error"}) carries.
@@ -3219,13 +3220,18 @@ async function ensureConfigureServerMiddleware() {
         // Answer only once the invalidation is done, so the Rust side's POST
         // completing means a next request cannot be served from stale modules.
         // Serialized: the early (pre-settle) and settled sends for one edit
-        // batch must not interleave their module-graph walks.
-        invalidateQueue = invalidateQueue
+        // batch must not interleave their module-graph walks. The reply says
+        // how many changes matched a runner-backed graph (null: the walk
+        // threw, the caller must assume a hit): the Rust side reloads the
+        // browser only when something actually served changed.
+        const run = invalidateQueue
           .then(() => invalidateEnvironments(server.environments, fileWatcher, changes))
-          .catch(() => {});
-        await invalidateQueue;
-        res.statusCode = 204;
-        res.end();
+          .catch(() => null);
+        invalidateQueue = run;
+        const matchedCount = await run;
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ matched: matchedCount === null ? null : matchedCount || 0 }));
       });
       return;
     }

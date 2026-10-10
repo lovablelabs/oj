@@ -1258,6 +1258,13 @@ function extractResolve(r) {
   if (typeof r.preserveSymlinks === "boolean") out.preserveSymlinks = r.preserveSymlinks;
   return Object.keys(out).length ? out : null;
 }
+// `server.watch.ignored` is anymatch-shaped: a string, RegExp, function, or an
+// array mixing them. Keep the string globs, in an array.
+function extractWatchIgnored(ignored) {
+  const list = Array.isArray(ignored) ? ignored : ignored != null ? [ignored] : [];
+  const globs = list.filter((x) => typeof x === "string");
+  return globs.length ? globs : null;
+}
 function extractServerFlags(s, legacy, appType) {
   const out = {};
   if (appType === "spa" || appType === "mpa" || appType === "custom") out.appType = appType;
@@ -1533,6 +1540,11 @@ export async function extract(input) {
       hmr: c.server?.hmr === false ? false : null,
       fsAllow: Array.isArray(c.server?.fs?.allow) ? c.server.fs.allow.filter((x) => typeof x === "string") : null,
       fsStrict: typeof c.server?.fs?.strict === "boolean" ? c.server.fs.strict : null,
+      // The RESOLVED `server.watch.ignored`: plugin config hooks add entries
+      // (vite-plugin-cloudflare ignores `**/.wrangler/**`) that exist nowhere
+      // in the user's own config. String globs only; RegExp and function
+      // matchers cannot cross the bridge (same rule as oj's WatchConfig).
+      watchIgnored: extractWatchIgnored(c.server?.watch?.ignored),
       define: c.define && typeof c.define === "object" ? c.define : null,
       alias: extractAlias(c.resolve?.alias),
       headers: stringMap(c.server?.headers),

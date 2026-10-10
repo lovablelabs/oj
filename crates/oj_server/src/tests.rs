@@ -1118,6 +1118,59 @@ fn watch_ignored_globs_match_relative_and_absolute_paths() {
 }
 
 #[test]
+fn watch_feed_drops_excluded_paths_and_dropped_subscribers() {
+    let root = Path::new("/app");
+    let cache = Path::new("/app/relocated-cache");
+    let ignored = watch_ignored_patterns(root, &["**/generated/**".to_string()]);
+    let feed = WatchFeed::default();
+    let ev = |paths: &[&str]| {
+        let mut ev = notify::Event::new(notify::EventKind::Any);
+        ev.paths = paths.iter().map(PathBuf::from).collect();
+        ev
+    };
+    let kept = feed.subscribe();
+    let dropped = feed.subscribe();
+    drop(dropped);
+
+    feed.publish(
+        &ev(&[
+            "/app/shared/a.ts",
+            "/app/src/generated/b.ts",
+            "/app/relocated-cache/v1/start/chunk.js",
+        ]),
+        &ignored,
+        root,
+        cache,
+    );
+    feed.publish(&ev(&["/app/src/generated/c.ts"]), &ignored, root, cache);
+    feed.publish(
+        &ev(&["/app/relocated-cache/v1/mod.json"]),
+        &ignored,
+        root,
+        cache,
+    );
+
+    feed.publish(
+        &ev(&["/app/vite.config.ts.timestamp-1791586920568-4c4081376eef.mjs"]),
+        &ignored,
+        root,
+        cache,
+    );
+
+    let got = kept.try_recv().expect("the unexcluded path is delivered");
+    assert_eq!(got.paths, vec![PathBuf::from("/app/shared/a.ts")]);
+    assert!(
+        kept.try_recv().is_err(),
+        "all-ignored, cache-dir and config-temp events are not delivered"
+    );
+    assert_eq!(
+        feed.0.lock().unwrap().len(),
+        1,
+        "the dropped receiver is pruned"
+    );
+}
+
+#[test]
 fn html_fallback_rewrites_like_vite() {
     assert_eq!(
         html_fallback_candidate("nested/").as_deref(),
