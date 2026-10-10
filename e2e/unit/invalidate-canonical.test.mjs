@@ -116,7 +116,11 @@ test("a change spelled through a symlink invalidates the canonically keyed modul
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ paths: [watched] }),
     });
-    assert.equal(res.status, 204);
+    // A change invalidation answers 200 with how many changes matched a
+    // runner-backed graph; the symlink spelling resolves to the one
+    // canonically keyed module.
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { matched: 1 });
 
     const seen = await (await fetch(`http://127.0.0.1:${port}/__probe`)).json();
     assert.ok(
