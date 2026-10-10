@@ -1179,6 +1179,7 @@ fn merge_adopts_only_unset_fields() {
         hmr_disabled: false,
         fs_allow: None,
         fs_strict: None,
+        watch_ignored: None,
         define: None,
         alias: None,
         headers: None,
@@ -1225,6 +1226,7 @@ fn merge_never_overrides_config() {
         hmr_disabled: false,
         fs_allow: None,
         fs_strict: None,
+        watch_ignored: None,
         define: None,
         alias: None,
         headers: None,
@@ -1631,4 +1633,54 @@ fn extraction_stderr_lines_print_once_per_process() {
         "only lines not printed before in this process come back"
     );
     assert_eq!(unseen_extraction_lines(""), "");
+}
+
+#[test]
+fn parse_reads_watch_ignored() {
+    let v =
+        parse_vite_values(&serde_json::json!({ "watchIgnored": ["**/.wrangler/**", ".dev.vars"] }));
+    assert_eq!(
+        v.watch_ignored,
+        Some(vec!["**/.wrangler/**".to_string(), ".dev.vars".to_string()])
+    );
+    let none = parse_vite_values(&serde_json::json!({ "watchIgnored": null }));
+    assert!(none.watch_ignored.is_none());
+}
+
+#[test]
+fn merge_unions_watch_ignored() {
+    // Unlike the fill-if-unset fields, ignores union (Vite's mergeConfig
+    // concatenates them): a user list must not displace the plugin-added
+    // `**/.wrangler/**`, whose loss feeds miniflare state writes back into
+    // the watcher.
+    let mut config = oj_config::OjConfig::default();
+    let sc = config.server.get_or_insert_with(Default::default);
+    sc.watch = Some(oj_config::WatchConfig {
+        ignored: Some(vec!["**/generated/**".to_string(), ".dev.vars".to_string()]),
+    });
+    let v = ViteValues {
+        watch_ignored: Some(vec!["**/.wrangler/**".to_string(), ".dev.vars".to_string()]),
+        ..Default::default()
+    };
+    merge_vite_values(&mut config, v);
+    assert_eq!(
+        config.server.unwrap().watch.unwrap().ignored,
+        Some(vec![
+            "**/generated/**".to_string(),
+            ".dev.vars".to_string(),
+            "**/.wrangler/**".to_string(),
+        ]),
+        "vite entries append without duplicating"
+    );
+
+    let mut unset = oj_config::OjConfig::default();
+    let v = ViteValues {
+        watch_ignored: Some(vec!["**/.wrangler/**".to_string()]),
+        ..Default::default()
+    };
+    merge_vite_values(&mut unset, v);
+    assert_eq!(
+        unset.server.unwrap().watch.unwrap().ignored,
+        Some(vec!["**/.wrangler/**".to_string()])
+    );
 }

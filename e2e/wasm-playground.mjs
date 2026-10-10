@@ -95,9 +95,13 @@ if (!up) {
 
 const bad = [];
 const browser = await chromium.launch();
+const t0 = Date.now();
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.on("pageerror", (e) => console.log("  page error:", e.message));
+  // A navigation after the initial goto is a browser reload: the one event
+  // that resets the editor to the sample and explains a reverted assertion.
+  page.on("load", () => console.log(`  page load at +${Date.now() - t0}ms`));
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "domcontentloaded" });
 
   // The front pane changes identity on every double-buffer swap; frameLocator
@@ -233,6 +237,10 @@ try {
 
 if (bad.length) {
   console.log("FAIL wasm-playground\n" + bad.map((b) => "  - " + b).join("\n"));
+  // An assertion failure on a loaded runner is as server-shaped as a startup
+  // failure: a mid-test rebuild or reload explains a reverted editor better
+  // than any front-end state could, so the log travels with the verdict.
+  console.log("server log tail:\n" + serverLog.split("\n").slice(-80).join("\n"));
   process.exit(1);
 }
 console.log(
