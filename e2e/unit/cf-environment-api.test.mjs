@@ -232,7 +232,10 @@ test("a source edit sends a targeted update to the accept boundary; dead ends st
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ paths: [path.join(fx.root, rel)] }),
       });
-      assert.equal(res.status, 204);
+      // Change invalidations answer 200 with a matched count (resyncs keep 204).
+      assert.equal(res.status, 200);
+      const { matched } = await res.json();
+      assert.ok(matched === null || typeof matched === "number", `matched count in the reply, got ${matched}`);
     };
     const probe = async () => (await fetch(`http://127.0.0.1:${port}/__probe`)).json();
 
@@ -495,7 +498,10 @@ test("create retries failed resolutions, delete prunes, legacy hooks and hook er
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ changes: [{ path: path.join(fx.root, rel), type }] }),
       });
-      assert.equal(res.status, 204);
+      // Change invalidations answer 200 with a matched count (resyncs keep 204).
+      assert.equal(res.status, 200);
+      const { matched } = await res.json();
+      assert.ok(matched === null || typeof matched === "number", `matched count in the reply, got ${matched}`);
     };
     const probe = async () => (await fetch(`http://127.0.0.1:${port}/__probe`)).json();
 
@@ -633,7 +639,11 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ changes: [{ path: p, type }] }),
       });
-      assert.equal(res.status, 204);
+      // Change invalidations answer 200 with a matched count (resyncs keep
+      // 204); a deduped repeat send may legitimately report 0.
+      assert.equal(res.status, 200);
+      const { matched } = await res.json();
+      assert.ok(matched === null || typeof matched === "number", `matched count in the reply, got ${matched}`);
     };
     const probe = async () => (await fetch(`http://127.0.0.1:${port}/__probe`)).json();
 
@@ -962,7 +972,7 @@ test("resync acks on enqueue and duplicates coalesce behind a slow invalidate qu
     assert.equal(r2.status, 204);
     assert.ok(Date.now() - t0 < 500, `resync ACKs on enqueue, took ${Date.now() - t0}ms behind a 700ms queue`);
 
-    assert.equal((await slow).status, 204, "the change invalidation still answers on completion");
+    assert.equal((await slow).status, 200, "the change invalidation still answers on completion");
     await new Promise((r) => setTimeout(r, 300));
     const seen = await (await fetch(`http://127.0.0.1:${port}/__probe`)).json();
     const reloads = seen.workerSends.filter((p) => p.type === "full-reload");

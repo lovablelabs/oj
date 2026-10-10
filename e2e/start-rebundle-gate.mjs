@@ -68,7 +68,9 @@ try {
   await sleep(1500);
   const bundledAfter = log.split("client bundled").length;
   if (bundledAfter !== bundledBefore) {
-    throw new Error(`README edit rebundled the client (${bundledAfter - bundledBefore} run(s)); log tail:\n${log.slice(-3000)}`);
+    throw new Error(
+      `README edit rebundled the client (${bundledAfter - bundledBefore} run(s)); log tail:\n${log.slice(-3000)}`,
+    );
   }
   console.log("gate: README edit skipped the rebundle and the reload");
 
