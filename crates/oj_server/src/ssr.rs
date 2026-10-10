@@ -40,6 +40,14 @@ impl SsrBridge {
         self.state.engine_registry.clone()
     }
 
+    /// Whether the generic pipeline ever served this file as a module (its
+    /// module graph; a Start worker script fetched by URL lands here while
+    /// staying outside both the client bundle and the Start engine's graph).
+    pub fn graph_knows_file(&self, file: &Path) -> bool {
+        let url = crate::rewrite::url_of(&self.state.root, file);
+        self.state.graph.lock().unwrap().contains(Path::new(&url))
+    }
+
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
         ssr_resolve_inner(&self.state, importer, spec).await
     }

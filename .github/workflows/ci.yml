@@ -258,6 +258,8 @@ jobs:
         run: node e2e/ssr-concurrent.mjs
       - name: start dev holds the page reload behind the editor HMR gate until the flush
         run: node e2e/start-hmr-gate.mjs
+      - name: start dev skips rebundle and reload for changes outside every served graph
+        run: node e2e/start-rebundle-gate.mjs
 
   # i need to fix this or automate
   build:
