@@ -71,6 +71,23 @@ try {
   await page.waitForFunction(() => document.title === "B2-L2", { timeout: 10000 });
   console.log("new top-level dir: edit after mkdir reloads");
 
+  // A staged tree RENAMED into the root (same filesystem, so a true rename):
+  // notify reports it as Modify(Name), not Create, and it must be adopted the
+  // same way.
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), "oj-watch-stage-"));
+  fs.mkdirSync(path.join(staging, "pkg"));
+  fs.writeFileSync(path.join(staging, "pkg", "mod.js"), `export const tag = "P1";\n`);
+  fs.renameSync(path.join(staging, "pkg"), path.join(app, "pkg"));
+  fs.writeFileSync(
+    path.join(app, "src", "main.js"),
+    `import { banner } from "../banner.js";\nimport { label } from "../lib/dep.js";\nimport { tag } from "../pkg/mod.js";\ndocument.title = banner + "-" + label + "-" + tag; window.__READY = true;\n`,
+  );
+  await page.waitForFunction(() => document.title === "B2-L2-P1", { timeout: 10000 });
+  fs.writeFileSync(path.join(app, "pkg", "mod.js"), `export const tag = "P2";\n`);
+  await page.waitForFunction(() => document.title === "B2-L2-P2", { timeout: 10000 });
+  fs.rmSync(staging, { recursive: true, force: true });
+  console.log("renamed-in top-level dir: edit after rename reloads");
+
   assert.equal(errors.length, 0, `page errors: ${errors.join("|")}`);
   console.log("WATCH-NEW-ROOT-DIR E2E PASSED");
 } catch (err) {

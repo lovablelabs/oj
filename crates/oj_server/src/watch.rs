@@ -558,7 +558,11 @@ fn watch_root(
 /// non-recursive watch: watch it recursively and report the files it already
 /// holds as creates (chokidar emits `add` per existing file when a new dir
 /// appears), since writes landing between the mkdir and this watch were
-/// never seen. Returns those files.
+/// never seen. Returns those files. A dir RENAMED into the root (a staged
+/// tree moved into place) arrives as `Modify(Name)`, not `Create` -- chokidar
+/// raises `addDir` for both -- so renames are adopted too; rename-From paths
+/// and plain file renames fall through the `is_dir` check, and re-watching an
+/// already-watched dir is idempotent (notify keys watches by path).
 fn adopt_created_root_dirs(
     watcher: &mut notify::RecommendedWatcher,
     root: &Path,
@@ -566,7 +570,11 @@ fn adopt_created_root_dirs(
     ev: &notify::Event,
 ) -> Vec<PathBuf> {
     use notify::{RecursiveMode, Watcher};
-    if !matches!(ev.kind, notify::EventKind::Create(_)) {
+    if !matches!(
+        ev.kind,
+        notify::EventKind::Create(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) {
         return Vec::new();
     }
     let mut found = Vec::new();
