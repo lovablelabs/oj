@@ -796,6 +796,29 @@ fn spawn_start_watcher(
             if !relevant {
                 continue;
             }
+            // Name what tripped the rebuild: a feedback loop (a build output
+            // or runtime state file echoing into the watcher) is invisible
+            // without the paths, and only the first few are needed to see it.
+            {
+                let mut named: Vec<&std::path::Path> = paths
+                    .iter()
+                    .filter(|p| watch_relevant(p))
+                    .map(|p| p.as_path())
+                    .collect();
+                named.sort();
+                let shown = named
+                    .iter()
+                    .take(3)
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = named.len().saturating_sub(3);
+                if more > 0 {
+                    println!("  oj start: rebuilding for {shown} (+{more} more)");
+                } else {
+                    println!("  oj start: rebuilding for {shown}");
+                }
+            }
             // The gate holds at the watcher event, as plain dev does
             // (watch.rs): the editor flushes right after its writes, usually
             // while the rebuild below still runs, and a hold taken only at
