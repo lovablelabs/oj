@@ -13,9 +13,10 @@
 // file (not live metadata) is what keeps the two sides identical: Vite's
 // configHash covers `include` sorted and deduped (optimizer/index.ts
 // getConfigHash), and the child rewrites metadata between the two reads.
-// A stale entry (dep since removed) costs only Vite's "present in
-// optimizeDeps.include" warning, and ages out at the next metadata-bearing
-// boot. Expected shape: the boot after a discovery session re-optimizes ONCE
+// A stale entry for a removed package costs only Vite's "present in
+// optimizeDeps.include" warning and ages out at the next metadata-bearing
+// boot; one whose package no longer exports it fails the optimize outright,
+// so the preseed child retries without the carried ids and clears them. Expected shape: the boot after a discovery session re-optimizes ONCE
 // (in the child — the grown include changes configHash), then the set reaches
 // its fixed point and every later boot validates.
 
@@ -53,7 +54,7 @@ export function priorDepIds(rc) {
 // NO metadata keeps its previous snapshot entry — otherwise a `.vite` wipe
 // with a surviving `.oj-cache` (a node_modules reinstall) would clobber the
 // accumulated set with nothing and bring back the discovery-restart double
-// boot for exactly the case this exists for.
+// boot for exactly the case this exists for. Returns whether the file was written.
 export function writeIncludeSnapshot(snapshotPath, byEnv) {
   try {
     let previous = {};
@@ -65,23 +66,36 @@ export function writeIncludeSnapshot(snapshotPath, byEnv) {
     const tmp = `${snapshotPath}.tmp-${process.pid}`;
     writeFileSync(tmp, JSON.stringify(merged, null, 2));
     renameSync(tmp, snapshotPath);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
+// Returns the ids the snapshot added per environment (those not already in
+// its include), for the preseed child's retry without them.
 export function foldIncludeSnapshot(rc, snapshotPath) {
-  if (!snapshotPath || !existsSync(snapshotPath)) return;
+  const added = {};
+  if (!snapshotPath || !existsSync(snapshotPath)) return added;
   let byEnv;
   try {
     byEnv = JSON.parse(readFileSync(snapshotPath, "utf8"));
   } catch {
-    return;
+    return added;
   }
   for (const [name, ids] of Object.entries(byEnv ?? {})) {
     const env = rc.environments?.[name];
     if (!env || !Array.isArray(ids) || ids.length === 0) continue;
     const optimizeDeps = (env.optimizeDeps ??= {});
     const merged = new Set(optimizeDeps.include ?? []);
-    for (const id of ids) if (typeof id === "string") merged.add(id);
+    const fresh = [];
+    for (const id of ids) {
+      if (typeof id !== "string" || merged.has(id)) continue;
+      merged.add(id);
+      fresh.push(id);
+    }
     optimizeDeps.include = [...merged];
+    if (fresh.length) added[name] = fresh;
   }
+  return added;
 }

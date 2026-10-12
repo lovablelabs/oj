@@ -21,6 +21,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..", "..");
 const fixture = path.join(repo, "e2e", "fixtures", "start-app");
 const script = path.join(repo, "crates", "oj_server", "src", "assets", "optimize-env.mjs");
+const { foldIncludeSnapshot } = await import(
+  pathToFileURL(path.join(repo, "crates", "oj_server", "src", "assets", "discovered-deps.mjs")).href
+);
 
 const viteDist = path.join(fixture, "node_modules", "vite", "package.json");
 const installed = fs.existsSync(viteDist) && fs.existsSync(path.join(fixture, "node_modules", "react"));
@@ -51,7 +54,7 @@ function makeApp() {
   return { tmp, app };
 }
 
-function runSeed(app) {
+function runSeed(app, env = {}) {
   execFileSync(process.execPath, [script], {
     cwd: app,
     stdio: ["ignore", "inherit", "inherit"],
@@ -61,6 +64,7 @@ function runSeed(app) {
       OJ_ENV_MODE: "dev",
       OJ_PRESEED_REPORT: path.join(app, "optimize-env-report.json"),
       NO_COLOR: "1",
+      ...env,
     },
   });
 }
@@ -140,6 +144,121 @@ test(
       const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
       assert.equal(report.failed, false);
       assert.deepEqual(report.seeded, []);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+// Two ways a stale id survives from one boot to the next: Vite's last commit
+// still names it, or (after a failed host pass wiped the deps cache) only the
+// snapshot does, kept by writeIncludeSnapshot's metadata-less merge rule.
+const STALE_ORIGINS = [
+  {
+    origin: "Vite's last commit",
+    plant(app) {
+      const depsDir = path.join(app, ".vite-cache", "deps_ssr");
+      fs.mkdirSync(depsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(depsDir, "_metadata.json"),
+        JSON.stringify({
+          hash: "stale",
+          configHash: "stale",
+          lockfileHash: "stale",
+          optimized: { react: {}, "react/presets": {} },
+        }),
+      );
+    },
+  },
+  {
+    origin: "the snapshot alone",
+    plant(app, snapshot) {
+      fs.writeFileSync(snapshot, JSON.stringify({ ssr: ["react", "react/presets"] }));
+    },
+  },
+];
+
+for (const { origin, plant } of STALE_ORIGINS) {
+  test(
+    `a carried-over dep its package no longer exports is dropped instead of failing every boot (stale in ${origin})`,
+    { skip: !installed && "fixture deps not installed" },
+    async () => {
+      const { tmp, app } = makeApp();
+      try {
+        // A prior session committed a subpath the package exported then; an
+        // upgrade removed it from its exports map (sugar-high/presets in the
+        // Lovable monorepo). Vite throws on such an include instead of warning.
+        const snapshot = path.join(app, "preseed-include.json");
+        plant(app, snapshot);
+        runSeed(app, { OJ_PRESEED_INCLUDE: snapshot });
+
+        const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+        assert.equal(report.failed, false);
+        assert.deepEqual(
+          report.seeded.map((s) => s.name),
+          ["ssr"],
+        );
+        const metaPath = path.join(app, ".vite-cache", "deps_ssr", "_metadata.json");
+        const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+        assert.ok(meta.optimized.react, "the app's own include was pre-bundled");
+        assert.equal(meta.optimized["react/presets"], undefined, "the stale id is gone from the committed metadata");
+        assert.deepEqual(
+          JSON.parse(fs.readFileSync(snapshot, "utf8")).ssr,
+          [],
+          "the snapshot holds what the child optimized, so the host folds the same include",
+        );
+
+        // The host folds the repaired snapshot and must load the seeded cache.
+        const before = fs.statSync(metaPath).mtimeMs;
+        const vite = await import(
+          pathToFileURL(path.join(fixture, "node_modules", "vite", "dist", "node", "index.js")).href
+        );
+        const rc = await vite.resolveConfig(
+          { root: app, configFile: undefined, mode: "dev" },
+          "serve",
+          "development",
+          "development",
+        );
+        foldIncludeSnapshot(rc, snapshot);
+        const de = new vite.DevEnvironment("ssr", rc, { hot: false });
+        await de.init();
+        await de.depsOptimizer.init();
+        assert.equal(fs.statSync(metaPath).mtimeMs, before, "the in-host optimizer loaded the seeded cache");
+        await de.close();
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  );
+}
+
+test(
+  "a dep the app's own include cannot resolve still fails the seed and keeps the snapshot",
+  { skip: !installed && "fixture deps not installed" },
+  () => {
+    const { tmp, app } = makeApp();
+    try {
+      fs.writeFileSync(
+        path.join(app, "vite.config.mjs"),
+        [
+          "export default {",
+          `  cacheDir: ${JSON.stringify(path.join(app, ".vite-cache"))},`,
+          '  environments: { ssr: { optimizeDeps: { include: ["react", "react/presets"] } } },',
+          "};",
+          "",
+        ].join("\n"),
+      );
+      // Carried ids exist, so the retry runs; it fails on the app's own id.
+      const snapshot = path.join(app, "preseed-include.json");
+      fs.writeFileSync(snapshot, JSON.stringify({ ssr: ["react-dom"] }));
+      assert.throws(() => runSeed(app, { OJ_PRESEED_INCLUDE: snapshot }));
+      const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+      assert.equal(report.failed, true);
+      assert.deepEqual(
+        JSON.parse(fs.readFileSync(snapshot, "utf8")).ssr,
+        ["react-dom"],
+        "a retry that also fails clears nothing",
+      );
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

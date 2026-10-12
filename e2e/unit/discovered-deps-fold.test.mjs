@@ -53,7 +53,11 @@ test("prior metadata dep ids round-trip through the snapshot into include", () =
 
   const snapshot = path.join(dir, "preseed-include.json");
   writeIncludeSnapshot(snapshot, byEnv);
-  foldIncludeSnapshot(rc, snapshot);
+  assert.deepEqual(
+    foldIncludeSnapshot(rc, snapshot),
+    { ssr: ["@cloudflare/unenv-preset/node/console", "unenv/node/process"] },
+    "only ids the include lacked count as carried",
+  );
   assert.deepEqual(
     [...rc.environments.ssr.optimizeDeps.include].sort(),
     ["@cloudflare/unenv-preset/node/console", "existing", "react-dom/client", "unenv/node/process"],

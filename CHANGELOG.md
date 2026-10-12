@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A dependency subpath carried over from an earlier session no longer fails the deps pre-optimization on every boot once its package stops exporting it. The preseed folds the dep ids of Vite's last committed optimize into `optimizeDeps.include`; Vite throws on an include its package's exports map no longer has (an upgrade that drops `sugar-high/presets`) instead of warning, the failed pass never rewrote the metadata the id came from, and the plugin host folded the same id into its own environments, so TanStack Start dev answered `plugin host still initializing` and 500 until the cache was deleted by hand. The preseed child now retries an environment without its carried ids when the first pass fails, and on success clears them from the snapshot so the host folds exactly what was optimized. An unresolvable id in the app's own `include` still fails the pass, as in Vite.
+
 ## [0.2.24] - 2026-10-12
 
 ### Fixed

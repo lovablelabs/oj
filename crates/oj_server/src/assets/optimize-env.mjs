@@ -72,7 +72,7 @@ async function main() {
   // own optimize rewrites the metadata the snapshot was derived from.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
   if (snapshotPath) writeIncludeSnapshot(snapshotPath, priorDepIds(rc));
-  foldIncludeSnapshot(rc, snapshotPath);
+  const carried = foldIncludeSnapshot(rc, snapshotPath);
 
   const seeded = [];
   let failed = false;
@@ -82,58 +82,84 @@ async function main() {
     // consumers can run an in-host pass.
     const consumer = envOpts?.consumer ?? (name === "client" ? "client" : "server");
     if (consumer === "client") continue;
-    let de;
-    try {
-      // The base DevEnvironment, never the env's dev.createEnvironment factory
-      // (that boots the plugin's runtime, e.g. workerd). The optimizer and its
-      // hash inputs read only `name` and the resolved config, which the
-      // subclass passes through to this same constructor unchanged.
-      de = new vite.DevEnvironment(name, rc, { hot: false });
-    } catch (e) {
-      warn(`deps pre-optimization (${name}): ${e?.message ?? e}`);
-      failed = true;
-      continue;
-    }
-    // No depsOptimizer means Vite considers optimization disabled for this
-    // environment (the default for server consumers without an include list):
-    // the host will not run a pass either, nothing to seed.
-    if (!de.depsOptimizer) continue;
-    const metadataPath = join(de.config.cacheDir, name === "client" ? "deps" : `deps_${name}`, "_metadata.json");
-    try {
-      await de.init();
-      // Explicit optimizers (noDiscovery, the server default) run and COMMIT
-      // inside init(); a discovery optimizer commits at crawl end, which with
-      // no requests fires ~50ms after idle — wait for the metadata to land.
-      await de.depsOptimizer.init();
-      if (!de.depsOptimizer.options?.noDiscovery) {
-        await de.waitForRequestsIdle();
-        const deadline = Date.now() + timeoutMs;
-        while (!existsSync(metadataPath) && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 100));
-        }
+    let outcome = await optimizeEnv(vite, rc, name, timeoutMs);
+    // Carried ids are a hint the app never wrote. One its package no longer
+    // exports makes Vite throw instead of warn, and the failed pass never
+    // commits the metadata that would drop it, so every boot would repeat it.
+    if (outcome.error && carried[name]) {
+      warn(
+        `deps pre-optimization (${name}): ${outcome.error}; retrying without the ${carried[name].length} dep(s) carried over from earlier sessions`,
+      );
+      const drop = new Set(carried[name]);
+      envOpts.optimizeDeps.include = envOpts.optimizeDeps.include.filter((id) => !drop.has(id));
+      outcome = await optimizeEnv(vite, rc, name, timeoutMs);
+      // The host folds this file once this child exits, so it must say exactly
+      // what was optimized here; cleared now, before a later environment can
+      // run into the parent's timeout and kill the child.
+      if (!outcome.error && !writeIncludeSnapshot(snapshotPath, { [name]: [] })) {
+        outcome = { error: "could not clear the carried-over deps from the include snapshot" };
       }
-      if (existsSync(metadataPath)) {
-        seeded.push({ name, metadataPath });
-      } else {
-        warn(`deps pre-optimization (${name}): the optimizer produced no metadata`);
-        failed = true;
-      }
-    } catch (e) {
-      warn(`deps pre-optimization (${name}): ${e?.message ?? e}`);
-      failed = true;
     }
-    // Only after the commit: depsOptimizer.close() CANCELS an in-flight
-    // optimization. Under node this also releases the handles a natural exit
-    // waits on; the engine child exits regardless.
-    try {
-      await de.close();
-    } catch {}
+    if (outcome.error) {
+      warn(`deps pre-optimization (${name}): ${outcome.error}`);
+      failed = true;
+    } else if (outcome.metadataPath) {
+      seeded.push({ name, metadataPath: outcome.metadataPath });
+    }
   }
   if (seeded.length) {
     warn(`deps pre-optimized for environment(s): ${seeded.map((s) => s.name).join(", ")}`);
   }
   report(seeded, failed);
   if (failed) throw new Error("deps pre-optimization incomplete");
+}
+
+// Never empty: an empty error would read as success (`throw ""`, `new Error("")`).
+const errorText = (e) => e?.message || String(e) || "unknown error";
+
+// One optimizer pass for `name`: { metadataPath } once Vite committed, { error }
+// when it did not, {} when Vite runs no optimizer for the environment.
+async function optimizeEnv(vite, rc, name, timeoutMs) {
+  let de;
+  try {
+    // The base DevEnvironment, never the env's dev.createEnvironment factory
+    // (that boots the plugin's runtime, e.g. workerd). The optimizer and its
+    // hash inputs read only `name` and the resolved config, which the
+    // subclass passes through to this same constructor unchanged.
+    de = new vite.DevEnvironment(name, rc, { hot: false });
+  } catch (e) {
+    return { error: errorText(e) };
+  }
+  // No depsOptimizer means Vite considers optimization disabled for this
+  // environment (the default for server consumers without an include list):
+  // the host will not run a pass either, nothing to seed.
+  if (!de.depsOptimizer) return {};
+  const metadataPath = join(de.config.cacheDir, name === "client" ? "deps" : `deps_${name}`, "_metadata.json");
+  let outcome;
+  try {
+    await de.init();
+    // Explicit optimizers (noDiscovery, the server default) run and COMMIT
+    // inside init(); a discovery optimizer commits at crawl end, which with
+    // no requests fires ~50ms after idle — wait for the metadata to land.
+    await de.depsOptimizer.init();
+    if (!de.depsOptimizer.options?.noDiscovery) {
+      await de.waitForRequestsIdle();
+      const deadline = Date.now() + timeoutMs;
+      while (!existsSync(metadataPath) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    outcome = existsSync(metadataPath) ? { metadataPath } : { error: "the optimizer produced no metadata" };
+  } catch (e) {
+    outcome = { error: errorText(e) };
+  }
+  // Only after the commit: depsOptimizer.close() CANCELS an in-flight
+  // optimization. Under node this also releases the handles a natural exit
+  // waits on; the engine child exits regardless.
+  try {
+    await de.close();
+  } catch {}
+  return outcome;
 }
 
 // What was seeded, for the parent's warm/cold stamp — at the path the parent
