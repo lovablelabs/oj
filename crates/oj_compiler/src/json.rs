@@ -17,11 +17,114 @@ fn is_safe_export_name(name: &str) -> bool {
     if name == "__proto__" {
         return false;
     }
+    // @rollup/pluginutils' `forbiddenIdentifiers` verbatim: Vite's JSON plugin
+    // filters named exports through `makeLegalIdentifier`, so a key in this set
+    // (a reserved word, `arguments`/`eval`, a global constructor) gets no named
+    // export. `export const arguments` is a strict-mode syntax error.
     const RESERVED: &[&str] = &[
-        "default", "class", "const", "let", "var", "function", "return", "import", "export", "new",
-        "delete", "void", "typeof", "in", "of", "do", "if", "else", "switch", "case", "for",
-        "while", "break", "continue", "this", "super", "null", "true", "false", "enum", "await",
+        "break",
+        "case",
+        "class",
+        "catch",
+        "const",
+        "continue",
+        "debugger",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "export",
+        "extends",
+        "finally",
+        "for",
+        "function",
+        "if",
+        "import",
+        "in",
+        "instanceof",
+        "let",
+        "new",
+        "return",
+        "super",
+        "switch",
+        "this",
+        "throw",
+        "try",
+        "typeof",
+        "var",
+        "void",
+        "while",
+        "with",
         "yield",
+        "enum",
+        "await",
+        "implements",
+        "package",
+        "protected",
+        "static",
+        "interface",
+        "private",
+        "public",
+        "arguments",
+        "Infinity",
+        "NaN",
+        "undefined",
+        "null",
+        "true",
+        "false",
+        "eval",
+        "uneval",
+        "isFinite",
+        "isNaN",
+        "parseFloat",
+        "parseInt",
+        "decodeURI",
+        "decodeURIComponent",
+        "encodeURI",
+        "encodeURIComponent",
+        "escape",
+        "unescape",
+        "Object",
+        "Function",
+        "Boolean",
+        "Symbol",
+        "Error",
+        "EvalError",
+        "InternalError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "TypeError",
+        "URIError",
+        "Number",
+        "Math",
+        "Date",
+        "String",
+        "RegExp",
+        "Array",
+        "Int8Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "Float32Array",
+        "Float64Array",
+        "Map",
+        "Set",
+        "WeakMap",
+        "WeakSet",
+        "SIMD",
+        "ArrayBuffer",
+        "DataView",
+        "JSON",
+        "Promise",
+        "Generator",
+        "GeneratorFunction",
+        "Reflect",
+        "Proxy",
+        "Intl",
     ];
     if RESERVED.contains(&name) {
         return false;
@@ -122,6 +225,22 @@ mod tests {
                 "{ok} should export: {out}"
             );
         }
+        // The full pluginutils blacklist: `arguments` binds nothing in strict
+        // mode (the fuzz_json_module crash input), and dataToEsm also skips
+        // `eval`, strict-reserved words and global names.
+        let out = to_esm(
+            r#"{"arguments":{},"eval":1,"static":2,"Object":3,"NaN":4,"kept":5}"#,
+            "/r.json",
+        )
+        .unwrap();
+        assert!(!out.contains("export const arguments"), "{out}");
+        for skipped in ["eval", "static", "Object", "NaN"] {
+            assert!(
+                !out.contains(&format!("export const {skipped} ")),
+                "{skipped} must not export: {out}"
+            );
+        }
+        assert!(out.contains("export const kept ="), "{out}");
     }
 
     #[test]
