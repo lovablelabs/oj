@@ -29,13 +29,34 @@ fn bracket_depth(data: &[u8]) -> usize {
     max
 }
 
+/// Unclosed `<` depth, same skip-only role as [`bracket_depth`]: oxc resolves
+/// each TSX `<` ambiguously (type arguments vs JSX vs less-than) by trying,
+/// and adversarial runs of unclosed `<` backtrack exponentially -- about 20 of
+/// them allocated 3.5GB in CI. Real code closes its angles (JSX tags, generic
+/// argument lists), so a path this deep is soup, not coverage.
+fn angle_depth(data: &[u8]) -> usize {
+    let mut depth = 0usize;
+    let mut max = 0usize;
+    for byte in data {
+        match byte {
+            b'<' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            b'>' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max
+}
+
 const EXTENSIONS: [&str; 6] = ["ts", "tsx", "js", "jsx", "mjs", "cjs"];
 
 fuzz_target!(|data: &[u8]| {
     let Ok(source) = std::str::from_utf8(data) else {
         return;
     };
-    if bracket_depth(data) > 200 {
+    if bracket_depth(data) > 200 || angle_depth(data) > 12 {
         return;
     }
     // The first byte picks the extension, so one corpus entry can explore every
