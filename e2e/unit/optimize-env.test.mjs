@@ -11,7 +11,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -51,19 +51,33 @@ function makeApp() {
   return { tmp, app };
 }
 
-function runSeed(app) {
+function seedEnv(app, extraEnv = {}) {
+  return {
+    ...process.env,
+    OJ_APP_ROOT: app,
+    OJ_ENV_MODE: "dev",
+    OJ_PRESEED_REPORT: path.join(app, "optimize-env-report.json"),
+    OJ_PRESEED_INCLUDE: path.join(app, "preseed-include.json"),
+    NO_COLOR: "1",
+    ...extraEnv,
+  };
+}
+
+function runSeed(app, extraEnv = {}) {
   execFileSync(process.execPath, [script], {
     cwd: app,
     stdio: ["ignore", "inherit", "inherit"],
-    env: {
-      ...process.env,
-      OJ_APP_ROOT: app,
-      OJ_ENV_MODE: "dev",
-      OJ_PRESEED_REPORT: path.join(app, "optimize-env-report.json"),
-      OJ_PRESEED_INCLUDE: path.join(app, "preseed-include.json"),
-      NO_COLOR: "1",
-    },
+    env: seedEnv(app, extraEnv),
   });
+}
+
+// The failure-tolerant runner, for seeds that must exit nonzero.
+function runSeedStatus(app, extraEnv = {}) {
+  return spawnSync(process.execPath, [script], {
+    cwd: app,
+    stdio: ["ignore", "inherit", "inherit"],
+    env: seedEnv(app, extraEnv),
+  }).status;
 }
 
 const { viteLockfileHash } = await import(
@@ -205,6 +219,61 @@ test(
       const snapshot = JSON.parse(fs.readFileSync(path.join(app, "preseed-include.json"), "utf8"));
       assert.ok(!JSON.stringify(snapshot).includes("react/presets"), "the snapshot is healed, not just skipped");
     } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+// The poison in the SNAPSHOT ALONE (a wiped .vite with a surviving
+// .oj-cache: no metadata backs the replayed set), the incident's other
+// shape on the affected worktrees. Same heal: drop, retry, snapshot repaired.
+test(
+  "a toxic id surviving only in the snapshot heals the same way",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp();
+    try {
+      fs.writeFileSync(
+        path.join(app, "preseed-include.json"),
+        JSON.stringify({ lockfile: viteLockfileHash(app), environments: { ssr: ["react", "react/presets"] } }),
+      );
+      runSeed(app);
+      const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+      assert.equal(report.failed, false, "the retry without replayed ids succeeds");
+      const snapshot = JSON.parse(fs.readFileSync(path.join(app, "preseed-include.json"), "utf8"));
+      assert.ok(!JSON.stringify(snapshot).includes("react/presets"), "the snapshot is healed");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+// The guard on the heal itself: when the snapshot cannot be REWRITTEN, the
+// seed must fail rather than retry to success — the host folds the same
+// file, so a warm stamp over a snapshot that still replays the toxic set
+// would skip the child (and the heal) on every later boot.
+test(
+  "a heal that cannot rewrite the snapshot fails the seed",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp();
+    const snapdir = path.join(app, "snap");
+    fs.mkdirSync(snapdir);
+    const snapshot = path.join(snapdir, "preseed-include.json");
+    fs.writeFileSync(
+      snapshot,
+      JSON.stringify({ lockfile: viteLockfileHash(app), environments: { ssr: ["react", "react/presets"] } }),
+    );
+    fs.chmodSync(snapdir, 0o555);
+    try {
+      const status = runSeedStatus(app, { OJ_PRESEED_INCLUDE: snapshot });
+      assert.notEqual(status, 0, "an unhealable snapshot fails the seed, so no warm stamp covers it");
+      assert.ok(
+        JSON.parse(fs.readFileSync(snapshot, "utf8")).environments.ssr.includes("react/presets"),
+        "the file still replays, and nothing pretended otherwise",
+      );
+    } finally {
+      fs.chmodSync(snapdir, 0o755);
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   },
