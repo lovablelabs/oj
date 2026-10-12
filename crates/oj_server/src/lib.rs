@@ -1031,10 +1031,11 @@ fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     )
 }
 
-/// Feeds the unbundled Node SSR path. Conditions never cross runtimes: a
-/// runner-backed ssr environment's list describes workerd, so this Node
-/// consumer takes Vite's Node server defaults instead.
-fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+/// Feeds the unbundled Node SSR path, and the SSR build's externalization
+/// probe (Vite resolves a dependency before externalizing it). Conditions
+/// never cross runtimes: a runner-backed ssr environment's list describes
+/// workerd, so this Node consumer takes Vite's Node server defaults instead.
+pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {

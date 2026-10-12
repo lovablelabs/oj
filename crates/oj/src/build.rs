@@ -3885,22 +3885,32 @@ pub(crate) async fn build_ssr(
 
     // Vite's SSR externalization: dependencies stay external unless
     // `ssr.noExternal` (or a webworker target) bundles them; `ssr.external` wins.
+    // Like Vite, a dependency is only external if its resolved file can be
+    // handed to Node (isExternalizable resolves, then canExternalizeFile): a
+    // raw TypeScript/JSX source bundles no matter the config, since plain Node
+    // refuses to type-strip under node_modules.
     let externals = Arc::new(oj_config::ssr_externals(config));
+    let dep_resolver = Arc::new(oj_server::ssr_resolver(root, config));
     let external = IsExternal::Fn(Some(Arc::new({
         let externals = Arc::clone(&externals);
+        let dep_resolver = Arc::clone(&dep_resolver);
+        let resolve_root = root.to_path_buf();
         let node_modules = root.join("node_modules");
         move |spec: &str, _importer, is_resolved: bool| {
             let ext = if is_resolved {
                 // Fallback for dependencies reached some other way (a plugin
                 // resolution, a nested node_modules); kept as their resolved path.
                 spec.contains("node_modules")
+                    && !crate::start_host::ts_source_ext(spec)
                     && oj_config::SsrExternals::package_of_path(spec)
                         .is_none_or(|pkg| externals.is_external_pkg(pkg))
             } else {
                 // Externalize a dependency by its bare specifier, as Vite does, so the
                 // server bundle imports `react`, not an absolute path. Only a name that
                 // is an installed package qualifies; an alias or a plugin virtual that
-                // merely looks bare resolves and bundles as usual.
+                // merely looks bare resolves and bundles as usual. Vite resolves from
+                // root in builds (no importer); a specifier oj's resolver cannot place
+                // keeps today's by-name externalization rather than failing the build.
                 let bare = !spec.starts_with('.')
                     && !spec.starts_with('/')
                     && !spec.starts_with('\0')
@@ -3909,6 +3919,10 @@ pub(crate) async fn build_ssr(
                     let pkg = oj_config::SsrExternals::package_of(spec);
                     externals.is_external_pkg(pkg)
                         && node_modules.join(pkg).join("package.json").is_file()
+                        && dep_resolver
+                            .resolve(&resolve_root, spec)
+                            .map(|p| !crate::start_host::ts_source_ext(&p.to_string_lossy()))
+                            .unwrap_or(true)
                 }
             };
             Box::pin(async move { Ok(ext) })
@@ -4078,9 +4092,22 @@ async fn build_server_fns(
     fs::write(&entry_path, OJ_SERVER_FNS_JS)?;
     let collected: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let ext_rule = Arc::new(oj_config::ssr_externals(config));
+    let dep_resolver = Arc::new(oj_server::ssr_resolver(root, config));
+    let resolve_root = root.to_path_buf();
     let external = IsExternal::Fn(Some(Arc::new(move |spec: &str, _i, resolved: bool| {
         let in_node_modules = resolved && spec.contains("node_modules");
-        let ext = ext_rule.is_external(spec, in_node_modules).unwrap_or(false);
+        // As in build_ssr: a dependency whose resolved file is raw
+        // TypeScript/JSX bundles even when configured external (Vite's
+        // canExternalizeFile), since plain Node cannot load it.
+        let ext = ext_rule.is_external(spec, in_node_modules).unwrap_or(false)
+            && if resolved {
+                !crate::start_host::ts_source_ext(spec)
+            } else {
+                dep_resolver
+                    .resolve(&resolve_root, spec)
+                    .map(|p| !crate::start_host::ts_source_ext(&p.to_string_lossy()))
+                    .unwrap_or(true)
+            };
         Box::pin(async move { Ok(ext) })
     })));
     let result = async {

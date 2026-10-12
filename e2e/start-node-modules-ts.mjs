@@ -98,6 +98,48 @@ try {
     !log.includes("TYPE_STRIPPING") && !log.includes("ERR_MODULE_NOT_FOUND"),
     `server log shows a native dependency load failure:\n${log.slice(-1500)}`,
   );
+  console.log("start dev: raw-TS dependency rendered through the pipeline");
+  srv.kill("SIGKILL");
+
+  // Production build: Vite resolves before externalizing (canExternalizeFile),
+  // so the raw-TS dependency must be bundled into the server bundle, never a
+  // bare import plain Node would have to type-strip.
+  const dist = path.join(app, "dist");
+  rm(dist);
+  rm(path.join(app, ".oj-cache"));
+  execSync(`${oj} build ${app}`, { cwd: repo, stdio: ["ignore", "ignore", "inherit"] });
+  const bundle = fs.readFileSync(path.join(dist, "server-bundle.mjs"), "utf8");
+  must(
+    !/from\s*["']ts-source-dep(?:\/[^"']*)?["']/.test(bundle),
+    "built server bundle still imports the raw-TS dependency bare",
+  );
+  const built = spawn("node", [path.join(dist, "server.mjs")], {
+    cwd: app,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PORT: String(PORT) },
+  });
+  let builtLog = "";
+  built.stdout.on("data", (d) => (builtLog += d));
+  built.stderr.on("data", (d) => (builtLog += d));
+  try {
+    await waitUp(`http://localhost:${PORT}/about`);
+    const res = await fetch(`http://localhost:${PORT}/about`);
+    const html = await res.text();
+    must(
+      res.status === 200,
+      `built /about returned ${res.status}:\n${html.slice(0, 800)}\n---\n${builtLog.slice(-1200)}`,
+    );
+    for (const marker of ["badge-outline:bold:e2e", "tone:neutral", "ts-dep-icon:star"]) {
+      must(html.includes(marker), `built SSR html missing "${marker}":\n${html.slice(0, 800)}`);
+    }
+    must(
+      !builtLog.includes("TYPE_STRIPPING") && !builtLog.includes("ERR_MODULE_NOT_FOUND"),
+      `built server log shows a native dependency load failure:\n${builtLog.slice(-1500)}`,
+    );
+  } finally {
+    built.kill("SIGKILL");
+    rm(dist);
+  }
   console.log("\nSTART NODE_MODULES TS PASSED");
 } catch (e) {
   console.error("\nSTART NODE_MODULES TS FAILED:", e.message);

@@ -10,7 +10,7 @@
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { writeTsSourceDep } from "./lib/ts-source-dep.mjs";
 import { settles } from "./util.mjs";
 
@@ -74,6 +74,31 @@ try {
     !log.includes("TYPE_STRIPPING") && !log.includes("ERR_MODULE_NOT_FOUND"),
     `server log shows a native dependency load failure:\n${log.slice(-1500)}`,
   );
+  console.log("ssr dev: raw-TS dependency rendered through the pipeline");
+  srv.kill("SIGKILL");
+
+  // Production build: dependencies stay external by default here, but Vite
+  // resolves a specifier before externalizing it (canExternalizeFile), so a
+  // raw-TS dependency bundles into the server bundle instead of surviving as
+  // a bare import plain Node would have to type-strip.
+  const out = path.join(playground, "dist-ssr-ts-dep");
+  fs.rmSync(out, { recursive: true, force: true });
+  execSync(`${oj} build playground --ssr src/entry-server.tsx --out dist-ssr-ts-dep`, {
+    cwd: repo,
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  try {
+    const bundle = fs.readFileSync(path.join(out, "entry-server.mjs"), "utf8");
+    must(
+      !/from\s*["']ts-source-dep(?:\/[^"']*)?["']/.test(bundle),
+      "built server bundle still imports the raw-TS dependency bare",
+    );
+    const mod = await import(pathToFileURL(path.join(out, "entry-server.mjs")).href);
+    const html = String(await mod.render());
+    must(html.includes("badge-outline:bold:"), `built render() missing "badge-outline:bold:":\n${html.slice(0, 800)}`);
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+  }
   console.log("\nSSR NODE_MODULES TS PASSED");
 } catch (e) {
   console.error("\nSSR NODE_MODULES TS FAILED:", e.message);
