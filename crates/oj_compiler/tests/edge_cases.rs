@@ -134,7 +134,7 @@ declare const ambient: number;
 export abstract class A<T extends object = {}> implements I {
   a!: string;
   private readonly p?: number;
-  constructor(public q: number) { super(); }
+  constructor(public q: number) {}
   abstract m(): void;
   n<U>(x: U): U { return x as U; }
 }
@@ -194,9 +194,12 @@ fn each_extension_gets_the_right_module_or_script_treatment() {
     assert!(dev("/src/a.cts", "const a: number = 1;").is_ok());
     // TypeScript syntax in a plain `.js` file is not.
     assert!(dev("/src/a.js", "const a: number = 1;").is_err());
-    // Strict-mode-only errors such as `with` are not reported by the parser;
-    // they are the browser's to report, like the other early errors above.
-    assert!(dev("/src/a.mjs", "with (x) {}").is_ok());
+    // Strict-mode-only errors such as `with` are early errors in a module
+    // (esbuild rejects them; V8 refuses the emitted file), and the syntax
+    // check reports them at compile. A `.cjs` script is sloppy mode, where
+    // `with` is legal.
+    assert!(dev("/src/a.mjs", "with (x) {}").is_err());
+    assert!(dev("/src/a.cjs", "with (x) {}").is_ok());
 }
 
 #[test]

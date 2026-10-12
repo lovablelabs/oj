@@ -66,10 +66,10 @@ fn lone_surrogate_escapes_round_trip_unchanged() {
 
 #[test]
 fn errors_that_are_semantic_rather_than_syntactic_pass_through() {
-    // oj does not run oxc's semantic checker on every file in dev: these are
-    // early errors per the spec, and the browser reports them. Pinned here so
-    // the boundary is a decision rather than a surprise -- what matters is that
-    // the emitted code is exactly as wrong as the input, not silently repaired.
+    // Early errors the grammar alone does not catch are reported by the syntax
+    // check at compile (esbuild rejects them too); whatever is not checked
+    // passes through un-repaired, exactly as wrong as the input. Either way
+    // the error kind stays Parse/Transform so the overlay paths handle it.
     for source in [
         "let a = 1; let a = 2;",
         "const a = 1; a = 2;",
@@ -82,6 +82,17 @@ fn errors_that_are_semantic_rather_than_syntactic_pass_through() {
             Err(other) => panic!("{source}: unexpected error kind: {other}"),
         }
     }
+}
+
+#[test]
+fn checked_early_errors_do_not_reach_codegen() {
+    // The fuzz_compile crash input: `.ts` parses `00.#y` (the grammar leaves
+    // private-name placement to the checker), and the emitted `0.#y;` is code
+    // no JavaScript parser accepts. The syntax check rejects it instead.
+    assert!(dev("/src/a.ts", "00.#y").is_err());
+    // In a class body the same access is legal and must keep compiling.
+    let ok = dev("/src/a.ts", "class C { #y = 1; m() { return this.#y; } }").unwrap();
+    assert!(parses(&ok.code), "{}", ok.code);
 }
 
 #[test]

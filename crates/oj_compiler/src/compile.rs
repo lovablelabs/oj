@@ -257,13 +257,22 @@ fn transform<'a>(
     opts: &CompileOptions,
     program: &mut Program<'a>,
 ) -> Result<(), CompileError> {
-    // oxc's TS enum transform panics without enum evaluation.
-    let scoping = SemanticBuilder::new()
+    // oxc's TS enum transform panics without enum evaluation. Syntax checking
+    // catches the early errors the grammar alone does not (a private field
+    // outside a class, a duplicate binding): esbuild rejects these, and
+    // emitting them produces output the browser's parser then refuses.
+    let semantic = SemanticBuilder::new()
         .with_excess_capacity(2.0)
         .with_enum_eval(true)
-        .build(program)
-        .semantic
-        .into_scoping();
+        .with_check_syntax_error(true)
+        .build(program);
+    if !semantic.diagnostics.is_empty() {
+        return Err(CompileError::Parse {
+            path: path.to_path_buf(),
+            message: diagnostics_message!(semantic.diagnostics, source_text),
+        });
+    }
+    let scoping = semantic.semantic.into_scoping();
     let transform_ret = Transformer::new(allocator, path, &transform_options(path, opts))
         .build_with_scoping(scoping, program);
     if !transform_ret.diagnostics.is_empty() {
