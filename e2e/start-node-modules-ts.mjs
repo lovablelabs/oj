@@ -20,7 +20,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
 const app = path.join(repo, "e2e", "fixtures", "start-app");
 const oj = path.join(repo, "target", "debug", "oj");
-const PORT = Number(process.env.OJ_E2E_PORT || 5394);
+const PORT = Number(process.env.OJ_E2E_PORT || 5396);
 
 const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
@@ -72,26 +72,34 @@ function About() {
 }
 `;
 
-const dep = writeTsSourceDep(path.join(app, "node_modules"));
-fs.writeFileSync(aboutFile, patchedAbout);
-rm(path.join(app, ".oj-cache"));
-
-const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+// The fixture mutations live inside the try so an early throw still restores
+// them: the finally below is safe to run against any partial state.
+const dep = path.join(app, "node_modules", "ts-source-dep");
+let srv;
 let log = "";
-srv.stdout.on("data", (d) => (log += d));
-srv.stderr.on("data", (d) => (log += d));
-
 try {
+  writeTsSourceDep(path.join(app, "node_modules"));
+  fs.writeFileSync(aboutFile, patchedAbout);
+  rm(path.join(app, ".oj-cache"));
+
+  srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+  srv.stdout.on("data", (d) => (log += d));
+  srv.stderr.on("data", (d) => (log += d));
+
   await waitUp(`http://localhost:${PORT}/`);
   // The SSR render settles once the dep's transformed modules are all loaded.
   let about = { status: 0, body: "" };
   await settles(async () => {
-    const res = await fetch(`http://localhost:${PORT}/about`);
-    about = { status: res.status, body: await res.text() };
-    return about.status === 200 && about.body.includes("badge-outline");
+    try {
+      const res = await fetch(`http://localhost:${PORT}/about`);
+      about = { status: res.status, body: await res.text() };
+      return about.status === 200 && about.body.includes("badge-outline");
+    } catch {
+      return false;
+    }
   });
   must(about.status === 200, `/about returned ${about.status}:\n${about.body.slice(0, 800)}\n---\n${log.slice(-1200)}`);
-  for (const marker of ["badge-outline:bold:e2e", "tone:neutral", "ts-dep-icon:star"]) {
+  for (const marker of ["badge-outline:bold:nodenext:e2e", "tone:neutral", "ts-dep-icon:star"]) {
     must(about.body.includes(marker), `SSR html missing "${marker}":\n${about.body.slice(0, 800)}`);
   }
   must(
@@ -129,7 +137,7 @@ try {
       res.status === 200,
       `built /about returned ${res.status}:\n${html.slice(0, 800)}\n---\n${builtLog.slice(-1200)}`,
     );
-    for (const marker of ["badge-outline:bold:e2e", "tone:neutral", "ts-dep-icon:star"]) {
+    for (const marker of ["badge-outline:bold:nodenext:e2e", "tone:neutral", "ts-dep-icon:star"]) {
       must(html.includes(marker), `built SSR html missing "${marker}":\n${html.slice(0, 800)}`);
     }
     must(
@@ -147,5 +155,5 @@ try {
 } finally {
   fs.writeFileSync(aboutFile, originalAbout);
   rm(dep);
-  srv.kill("SIGKILL");
+  srv?.kill("SIGKILL");
 }

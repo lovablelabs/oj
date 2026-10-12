@@ -30,32 +30,37 @@ const must = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };
 
-const dep = writeTsSourceDep(path.join(playground, "node_modules"));
+// The fixture mutations live inside the try so an early throw still restores
+// them: the finally below is safe to run against any partial state.
+const dep = path.join(playground, "node_modules", "ts-source-dep");
+const out = path.join(playground, "dist-ssr-ts-dep");
 const counterFile = path.join(playground, "src", "Counter.tsx");
 const originalCounter = fs.readFileSync(counterFile, "utf8");
-fs.writeFileSync(
-  counterFile,
-  originalCounter
-    .replace(
-      'import { useState } from "react";',
-      'import { useState } from "react";\nimport { describeBadge } from "ts-source-dep/badge";',
-    )
-    .replace("{label}: {count}", '{`${describeBadge({ label, variant: "outline" })}:${count}`}'),
-);
-must(
-  fs.readFileSync(counterFile, "utf8").includes("describeBadge"),
-  "Counter.tsx patch did not apply (fixture drifted)",
-);
-fs.rmSync(path.join(playground, ".oj-cache", "v1", "ssr"), { recursive: true, force: true });
-
-const srv = spawn(oj, ["dev", playground, "--ssr", "src/entry-server.tsx", "--port", String(PORT)], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
+let srv;
 let log = "";
-srv.stdout.on("data", (d) => (log += d));
-srv.stderr.on("data", (d) => (log += d));
-
 try {
+  writeTsSourceDep(path.join(playground, "node_modules"));
+  fs.writeFileSync(
+    counterFile,
+    originalCounter
+      .replace(
+        'import { useState } from "react";',
+        'import { useState } from "react";\nimport { describeBadge } from "ts-source-dep/badge";',
+      )
+      .replace("{label}: {count}", '{`${describeBadge({ label, variant: "outline" })}:${count}`}'),
+  );
+  must(
+    fs.readFileSync(counterFile, "utf8").includes("describeBadge"),
+    "Counter.tsx patch did not apply (fixture drifted)",
+  );
+  fs.rmSync(path.join(playground, ".oj-cache", "v1", "ssr"), { recursive: true, force: true });
+
+  srv = spawn(oj, ["dev", playground, "--ssr", "src/entry-server.tsx", "--port", String(PORT)], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  srv.stdout.on("data", (d) => (log += d));
+  srv.stderr.on("data", (d) => (log += d));
+
   let body = "";
   const ok = await settles(
     async () => {
@@ -69,7 +74,10 @@ try {
     { timeoutMs: 30000, pollMs: 500 },
   );
   must(ok, `SSR never rendered the dependency marker:\n${body.slice(0, 800)}\n---\n${log.slice(-1500)}`);
-  must(body.includes("badge-outline:bold:"), `SSR html missing "badge-outline:bold:":\n${body.slice(0, 800)}`);
+  must(
+    body.includes("badge-outline:bold:nodenext:"),
+    `SSR html missing "badge-outline:bold:nodenext:":\n${body.slice(0, 800)}`,
+  );
   must(
     !log.includes("TYPE_STRIPPING") && !log.includes("ERR_MODULE_NOT_FOUND"),
     `server log shows a native dependency load failure:\n${log.slice(-1500)}`,
@@ -81,24 +89,22 @@ try {
   // resolves a specifier before externalizing it (canExternalizeFile), so a
   // raw-TS dependency bundles into the server bundle instead of surviving as
   // a bare import plain Node would have to type-strip.
-  const out = path.join(playground, "dist-ssr-ts-dep");
   fs.rmSync(out, { recursive: true, force: true });
   execSync(`${oj} build playground --ssr src/entry-server.tsx --out dist-ssr-ts-dep`, {
     cwd: repo,
     stdio: ["ignore", "ignore", "inherit"],
   });
-  try {
-    const bundle = fs.readFileSync(path.join(out, "entry-server.mjs"), "utf8");
-    must(
-      !/from\s*["']ts-source-dep(?:\/[^"']*)?["']/.test(bundle),
-      "built server bundle still imports the raw-TS dependency bare",
-    );
-    const mod = await import(pathToFileURL(path.join(out, "entry-server.mjs")).href);
-    const html = String(await mod.render());
-    must(html.includes("badge-outline:bold:"), `built render() missing "badge-outline:bold:":\n${html.slice(0, 800)}`);
-  } finally {
-    fs.rmSync(out, { recursive: true, force: true });
-  }
+  const bundle = fs.readFileSync(path.join(out, "entry-server.mjs"), "utf8");
+  must(
+    !/from\s*["']ts-source-dep(?:\/[^"']*)?["']/.test(bundle),
+    "built server bundle still imports the raw-TS dependency bare",
+  );
+  const mod = await import(pathToFileURL(path.join(out, "entry-server.mjs")).href);
+  const html = String(await mod.render());
+  must(
+    html.includes("badge-outline:bold:nodenext:"),
+    `built render() missing "badge-outline:bold:nodenext:":\n${html.slice(0, 800)}`,
+  );
   console.log("\nSSR NODE_MODULES TS PASSED");
 } catch (e) {
   console.error("\nSSR NODE_MODULES TS FAILED:", e.message);
@@ -106,6 +112,7 @@ try {
 } finally {
   fs.writeFileSync(counterFile, originalCounter);
   fs.rmSync(dep, { recursive: true, force: true });
-  srv.kill("SIGKILL");
+  fs.rmSync(out, { recursive: true, force: true });
+  srv?.kill("SIGKILL");
   fs.rmSync(path.join(playground, ".oj-cache", "v1", "ssr"), { recursive: true, force: true });
 }

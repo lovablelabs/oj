@@ -5,7 +5,8 @@
 // node_modules (a registry install, not a symlinked file: package, which the
 // resolver follows out of node_modules): an exports map pointing straight at a
 // .ts file, an enum (needs a real transform, not just type stripping), a
-// type-only import, an extensionless relative .ts import, and a .tsx sibling.
+// type-only import, an extensionless relative .ts import, a NodeNext-style
+// `./tone.js` import whose file on disk is tone.ts, and a .tsx sibling.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -27,6 +28,7 @@ export function writeTsSourceDep(nodeModulesDir) {
   fs.writeFileSync(
     path.join(badge, "index.ts"),
     `import { badgeClass, type Variant } from "./variants";
+import { toneLabel } from "./tone.js";
 export { BadgeIcon } from "./icon";
 export enum Tone {
   Neutral = "neutral",
@@ -37,8 +39,13 @@ export interface BadgeProps {
   variant?: Variant;
 }
 export function describeBadge(p: BadgeProps): string {
-  return \`\${badgeClass(p.variant ?? "default")}:\${Tone.Bold}:\${p.label}\`;
+  return \`\${badgeClass(p.variant ?? "default")}:\${Tone.Bold}:\${toneLabel}:\${p.label}\`;
 }
+`,
+  );
+  fs.writeFileSync(
+    path.join(badge, "tone.ts"),
+    `export const toneLabel: string = "nodenext";
 `,
   );
   fs.writeFileSync(
