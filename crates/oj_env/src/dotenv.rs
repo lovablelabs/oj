@@ -1,4 +1,6 @@
-//! `.env` files, read the way Vite's loadEnv does (dotenv + dotenv-expand).
+//! `.env` files, read the way Vite's loadEnv does. Vite 8 parses with
+//! `node:util`'s parseEnv (not the dotenv package) and expands with
+//! dotenv-expand.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,13 +20,10 @@ pub fn parse(contents: &str, base: &BTreeMap<String, String>) -> Vec<(String, St
             continue;
         };
         let key = key.trim();
-        // dotenv's LINE regex only admits `[\w.-]+` keys (ASCII \w); a line
-        // whose key holds anything else never matches and is skipped whole.
-        if key.is_empty()
-            || !key
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-        {
+        // Any non-empty key loads: Vite 8 reads .env through node:util's
+        // parseEnv, which accepts `*`, spaces and non-ASCII in keys (the
+        // dotenv package's `[\w.-]+` charset is the Vite 7 era).
+        if key.is_empty() {
             continue;
         }
         let value = parse_value(rest.trim(), &acc);
