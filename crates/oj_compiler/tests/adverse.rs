@@ -90,6 +90,12 @@ fn checked_early_errors_do_not_reach_codegen() {
     // private-name placement to the checker), and the emitted `0.#y;` is code
     // no JavaScript parser accepts. The syntax check rejects it instead.
     assert!(dev("/src/a.ts", "00.#y").is_err());
+    // Early errors oxc's checker leaves to tsc are caught by the emitted-code
+    // validation instead (fuzz_compile round 3 and 4): `eval` as an increment
+    // target in a module, and `import` as a JSX member-expression tag object,
+    // which lowers to the invalid expression `import.met`.
+    assert!(dev("/src/a.tsx", "++eval").is_err());
+    assert!(dev("/src/a.tsx", "+MC/<import.met.url/>").is_err());
     // In a class body the same access is legal and must keep compiling.
     let ok = dev("/src/a.ts", "class C { #y = 1; m() { return this.#y; } }").unwrap();
     assert!(parses(&ok.code), "{}", ok.code);

@@ -211,6 +211,7 @@ pub fn compile_module_with_maps(
     let is_refresh_boundary = opts.refresh && detect_refresh_registrations(&program);
 
     let (code, map_json) = codegen(&program, path, opts, synthesized, input_maps);
+    validate_emitted(path, &code, source_type)?;
     Ok(CompileOutput {
         code,
         map_json,
@@ -247,6 +248,54 @@ fn parse<'a>(
         });
     }
     Ok(parsed.program)
+}
+
+/// The emitted code parses as the JavaScript it will be consumed as: a module
+/// (everything oj serves is `type="module"`), or a sloppy script for `.cjs`/
+/// `.cts` sources, whose wrapper runs outside module grammar. esbuild gives
+/// Vite this by rejecting the input; oxc's TS grammar leaves some early errors
+/// to tsc (`++eval` in a module, `import` as a JSX tag object), and lowering
+/// those produces output no JavaScript parser accepts. Serving it would trade
+/// a compile error with a span for a bare browser SyntaxError, so the error
+/// happens here, like under Vite.
+fn validate_emitted(path: &Path, code: &str, source_type: SourceType) -> Result<(), CompileError> {
+    // A plain JavaScript input was already parsed and checked under the same
+    // grammar the output runs as; only the TypeScript/JSX lowering crosses
+    // grammars, so only it can turn an accepted input into invalid output.
+    if !source_type.is_typescript() && !source_type.is_jsx() {
+        return Ok(());
+    }
+    // Everything oj serves runs as `type="module"`, so the bar is module
+    // grammar (an unambiguous input with no imports would otherwise validate
+    // as sloppy script and let `++eval` through). CommonJS sources are the one
+    // script-world path and keep sloppy grammar.
+    let grammar = if source_type.is_commonjs() {
+        SourceType::cjs()
+    } else {
+        SourceType::mjs()
+    };
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, grammar).parse();
+    // Strict-mode early errors (`++eval` in a module) live in the checker,
+    // not the grammar, so the parse alone is not the browser's bar.
+    let checked = if parsed.panicked || !parsed.diagnostics.is_empty() {
+        parsed.diagnostics
+    } else {
+        SemanticBuilder::new()
+            .with_check_syntax_error(true)
+            .build(&parsed.program)
+            .diagnostics
+    };
+    if !checked.is_empty() {
+        return Err(CompileError::Parse {
+            path: path.to_path_buf(),
+            message: format!(
+                "the compiled output is not valid JavaScript (the source uses a construct TypeScript would reject):\n{}",
+                diagnostics_message!(checked, code)
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// TypeScript strip, JSX and (dev) React Refresh instrumentation.
