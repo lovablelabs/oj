@@ -18,7 +18,13 @@ pub fn parse(contents: &str, base: &BTreeMap<String, String>) -> Vec<(String, St
             continue;
         };
         let key = key.trim();
-        if key.is_empty() {
+        // dotenv's LINE regex only admits `[\w.-]+` keys (ASCII \w); a line
+        // whose key holds anything else never matches and is skipped whole.
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+        {
             continue;
         }
         let value = parse_value(rest.trim(), &acc);

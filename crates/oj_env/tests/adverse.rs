@@ -39,6 +39,15 @@ KEEP=kept
 }
 
 #[test]
+fn keys_outside_the_dotenv_charset_are_skipped() {
+    // dotenv's LINE regex admits only `[\w.-]+` keys (ASCII \w); a line whose
+    // key holds anything else never matches and loads nothing. The fuzz_dotenv
+    // crash input was `*=c`.
+    let out = parse("*=c\nK Y=v\nclé=v\n%X%=v\nA-b.9_=ok\n", &base());
+    assert_eq!(out, vec![("A-b.9_".to_string(), "ok".to_string())]);
+}
+
+#[test]
 fn self_and_mutual_references_terminate_and_do_not_recurse() {
     // Expansion only sees variables defined *before* the current line, so a
     // self-reference resolves to empty rather than looping.
@@ -93,12 +102,12 @@ fn non_ascii_values_survive_byte_for_byte() {
 }
 
 #[test]
-fn non_ascii_keys_and_multibyte_boundaries_are_intact() {
-    let m = map("TÍTULO=hola\nX=${TÍTULO}\n");
-    assert_eq!(m["TÍTULO"], "hola");
-    // `$` name scanning is ASCII-only, so a multibyte name is not a reference;
-    // whatever it does, it must not split a UTF-8 character.
-    assert!(m["X"].is_char_boundary(m["X"].len()));
+fn non_ascii_keys_are_skipped_like_dotenv() {
+    // dotenv's `[\w.-]+` is ASCII, so `TÍTULO` never matches its LINE regex:
+    // the line loads nothing, and a `${TÍTULO}` reference resolves to empty.
+    let m = map("TÍTULO=hola\nX=${TÍTULO}y\n");
+    assert!(!m.contains_key("TÍTULO"), "{m:?}");
+    assert_eq!(m["X"], "y");
 }
 
 #[test]
@@ -212,10 +221,24 @@ fn html_percent_soup_is_left_alone() {
     }
     assert_eq!(replace_html_env("%T%%T%", &env), "TitleTitle");
     assert_eq!(replace_html_env("100%% of %T%", &env), "100%% of Title");
-    // Documented divergence from Vite's `/%(\S+?)%/g`: that regex consumes
-    // `%%T%` as an unknown key and leaves `%%T%%` untouched, while oj rescans
-    // from the inner `%` and substitutes. Only adjacent percents differ.
-    assert_eq!(replace_html_env("%%T%%", &env), "%Title%");
+    // Vite's `/%(\S+?)%/g` consumes a matched placeholder whether or not the
+    // key is known: `%%T%` matches with key `%T` (the `%` after the opener is
+    // key content, `\S+?` must consume something), is not in the map, and is
+    // left whole -- its closing `%` never opens the next match.
+    assert_eq!(replace_html_env("%%T%%", &env), "%%T%%");
+    // Same consumption rule with a plain unknown key: the regex eats
+    // `%UNKNOWN%` whole, so `KNOWN%` is left without an opener. The old
+    // rescan-from-inside substituted here; Vite does not.
+    env.insert("KNOWN".to_string(), "value".to_string());
+    assert_eq!(
+        replace_html_env("%UNKNOWN%KNOWN%", &env),
+        "%UNKNOWN%KNOWN%",
+        "an unknown placeholder's closing % must not open the next match"
+    );
+    // Overlapping placeholders: the left-to-right scan takes %T% first, and
+    // the shared % is gone before %KNOWN...% could match (the fuzz_html_env
+    // crash input, found as %KNOWN%RECURSIVE%T).
+    assert_eq!(replace_html_env("%T%KNOWN%X", &env), "TitleKNOWN%X");
 }
 
 #[test]
