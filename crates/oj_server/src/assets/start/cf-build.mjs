@@ -19,9 +19,13 @@ const WORKER_ENTRY = "virtual:cloudflare/worker-entry";
 const USER_ENTRY = "virtual:cloudflare/user-entry";
 const NODE_BUILTIN = new RegExp(`^(?:node:.+|${builtinModules.filter((m) => !m.startsWith("_")).join("|")})$`);
 const NODE_POLYFILL = /^(?:unenv\/|@cloudflare\/unenv-preset\/)/;
-// TanStack Start's default Worker entry (`main: "@tanstack/react-start/server-entry"`),
+// TanStack Start's default Worker entry (`main: "<start-pkg>/server-entry"`),
 // which oj replaces with its own server entry the way it does for the Node build.
-const START_DEFAULT_ENTRY = /[\\/]@tanstack[\\/]react-start[\\/]dist[\\/]default-entry[\\/]/;
+// (Built lazily: the flavor comes from OJ_START_PKG, applied after import.)
+function startDefaultEntry() {
+  const pkg = (process.env.OJ_START_PKG || "@tanstack/react-start").replaceAll("/", "[\\\\/]");
+  return new RegExp(`[\\\\/]${pkg}[\\\\/]dist[\\\\/]default-entry[\\\\/]`);
+}
 
 // The Worker environment the Cloudflare plugin declared in `config.environments`,
 // or null when the plugin is not part of this config. With several Workers the
@@ -94,7 +98,7 @@ export function cloudflareWorkerPlugin({ container, env, serverEntry }) {
           // The plugin resolves the wrangler `main`; Start's default entry becomes oj's.
           const main = await container.resolveId(source, importer);
           if (!main) throw new Error("could not resolve the Worker's main entry (wrangler config `main`)");
-          return START_DEFAULT_ENTRY.test(main) ? serverEntry : main;
+          return startDefaultEntry().test(main) ? serverEntry : main;
         }
         if (source.startsWith("cloudflare:")) return { id: source, external: true };
         const r = await container.resolveIdResult(source, importer);

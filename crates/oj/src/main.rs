@@ -507,8 +507,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             });
             if let Some(entry) = ssr {
                 ssr_dev::ssr_dev(root, entry, port, host).await
-            } else if oj_server::is_tanstack_start_app(&root) {
-                start_dev::start_dev(root, port, host, config, mode).await
+            } else if let Some(framework) = oj_server::start_framework(&root) {
+                start_dev::start_dev_with_framework(root, port, host, config, mode, framework).await
             } else {
                 oj_server::DevServer {
                     root,
@@ -615,9 +615,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             });
             let config = resolve_config_arg(&root, config);
-            if oj_server::is_tanstack_start_app(&root) {
+            if let Some(framework) = oj_server::start_framework(&root) {
                 let mode = mode.unwrap_or_else(|| "production".to_string());
-                start_dev::start_build(root, config, &mode, out).await
+                start_dev::start_build_with_framework(root, config, &mode, out, framework).await
             } else {
                 build::build(
                     root,

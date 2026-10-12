@@ -37,6 +37,11 @@ jobs:
       # it so they run instead of skipping.
       - name: install start-app fixture (bundlers for optimizer + config tests)
         run: npm ci --prefix e2e/fixtures/start-app
+      # The start-client-real-deps unit test runs the real Solid Start
+      # fixture; install it so it runs instead of skipping (bun.lock only,
+      # so npm install, matching the e2e job convention).
+      - name: install solid-start-app fixture (solid client unit test)
+        run: npm install --prefix e2e/fixtures/solid-start-app
       - name: js unit tests (adapter helpers)
         run: node --test e2e/unit/*.test.mjs
       - name: fuzz targets still build
@@ -67,6 +72,12 @@ jobs:
       # start-build-options) skip themselves when the fixture is not installed.
       - name: install start-app fixture
         run: npm ci --prefix e2e/fixtures/start-app
+      # The solid-start-app fixture tracks bun.lock only (no package-lock.json),
+      # so npm ci cannot be used here; npm install reuses the existing node/npm
+      # toolchain (no bun setup on these runners) and keeps the solid-start.mjs
+      # skip gate from silently skipping.
+      - name: install solid-start-app fixture
+        run: npm install --prefix e2e/fixtures/solid-start-app
       - run: npx --prefix e2e playwright install --with-deps chromium
       - name: install wasm-pack + www deps (wasm playground e2e)
         # A version-pinned release tarball, not `curl | sh` of whatever the
@@ -175,6 +186,11 @@ jobs:
         run: node e2e/start-client-transfer.mjs
       - name: start prod build honors ssr.external (bare imports, server still renders)
         run: node e2e/start-ssr-external.mjs
+      # run.mjs only discovers *.test.js, so this .mjs regression needs its own
+      # step. Fixture deps are installed above; e2e deps + playwright chromium
+      # are already installed, so the browser hydration pass truly executes.
+      - name: solid start dev + prod SSR, hydration, routing, edit/rebuild
+        run: node e2e/solid-start.mjs
       - name: start dev SIGTERM sweeps plugin children; detached child outlives
         run: node e2e/start-shutdown-children.mjs
       - name: start dev stop runs wrapped server.close, buildEnd, closeBundle before sweep

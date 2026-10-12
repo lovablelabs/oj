@@ -2576,7 +2576,16 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         if rel.ends_with(".html") {
             let content = match fs::read_to_string(&abs) {
                 Ok(c) => c,
-                Err(_) if ro_input.is_none() => bail!("no index.html in {}", root.display()),
+                Err(_) if ro_input.is_none() => {
+                    if oj_server::is_tanstack_solid_start_app(&root) {
+                        bail!(
+                            "no index.html in {} (tanstack solid-start app: \
+                             the Start SSR build is not yet supported, see SOLID.md)",
+                            root.display()
+                        )
+                    }
+                    bail!("no index.html in {}", root.display())
+                }
                 Err(e) => {
                     return Err(anyhow::Error::from(e))
                         .with_context(|| format!("build input HTML not found: {}", abs.display()));

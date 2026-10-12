@@ -20,6 +20,8 @@ import {
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob } from "./glob-transform.mjs";
+import { solidBundlePlugin, solidJsxOption, solidConditions, solidServerConditions } from "./solid-transform.mjs";
+import { startPkg, serverEntryFile, clientEntryFile } from "./start-pkg.mjs";
 import { cloudflareEnvironment, cloudflareWorkerPlugin, workerOutDir, CLOUDFLARE_WORKER_ENTRY } from "./cf-build.mjs";
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
@@ -59,7 +61,11 @@ async function main() {
     } catch {}
     return ["browser", "module", "import", NODE_ENV === "production" ? "production" : "development"];
   })();
-  const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
+  const { build } = await importOjRolldown(APP, ["vite", startPkg()]);
+  // Solid apps: babel-preset-solid owns JSX (dom for client/worker bundles,
+  // ssr for the server bundle); rolldown keeps its hands off. Null for React.
+  const solidDom = await solidBundlePlugin(APP, "dom");
+  const solidSsr = await solidBundlePlugin(APP, "ssr");
   const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
   const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
 
@@ -194,7 +200,7 @@ async function main() {
       for (const f of fns.reverse()) {
         out = out.slice(0, f.open) + `createClientRpc(${JSON.stringify(sfid(rel, f.name))})` + out.slice(f.close);
       }
-      return `import { createClientRpc } from "@tanstack/react-start/client-rpc";\n${out}`;
+      return `import { createClientRpc } from "${startPkg()}/client-rpc";\n${out}`;
     },
   };
 
@@ -214,7 +220,7 @@ async function main() {
         return `${pre}${indent}export const ${name}_createServerFn_handler = createServerRpc(${meta}, (opts) => ${name}.__executeServer(opts));\n${indent}${decl}${name}_createServerFn_handler, `;
       });
       if (!changed) return glob === code ? null : glob;
-      return `import { createServerRpc } from "@tanstack/react-start/server-rpc";\n${out}`;
+      return `import { createServerRpc } from "${startPkg()}/server-rpc";\n${out}`;
     },
   };
 
@@ -275,18 +281,19 @@ async function main() {
     const out = await build({
       input: file,
       platform: "browser",
-      transform: { jsx: jsxTransformOptions(NODE_ENV !== "production"), define: clientDefine },
-      resolve: { conditionNames: CLIENT_CONDITIONS, alias: clientAlias },
+      transform: { jsx: solidJsxOption(APP, jsxTransformOptions(NODE_ENV !== "production")), define: clientDefine },
+      resolve: { conditionNames: solidConditions(CLIENT_CONDITIONS, APP), alias: clientAlias },
       // Vite's bundleWorkerEntry runs the worker plugin pipeline, so imports
       // inside a worker entry resolve exactly as in its importer: the app's
       // plugins (a Cloudflare-shaped `#subpath` rule, `virtual:` modules) and
       // the Start aliases included. Module workers are always ES here, as in
       // oj's dev serving; a `worker.format: "iife"` config has no oj analog.
       plugins: [
+        solidDom,
         makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit, lifecycle: false }),
         assetsPlugin({ mode: "prod", server: false, emit }),
         nodeBuiltinShims({ production: true }),
-      ],
+      ].filter(Boolean),
       output: { format: "esm", minify: MINIFY, codeSplitting: false },
       write: false,
     });
@@ -294,14 +301,15 @@ async function main() {
   });
 
   const client = await build({
-    input: { client: join(HERE, "client-entry.tsx") },
+    input: { client: join(HERE, clientEntryFile()) },
     platform: "browser",
     transform: {
-      jsx: jsxTransformOptions(NODE_ENV !== "production"),
+      jsx: solidJsxOption(APP, jsxTransformOptions(NODE_ENV !== "production")),
       define: clientDefine,
     },
-    resolve: { conditionNames: CLIENT_CONDITIONS, alias: clientAlias },
+    resolve: { conditionNames: solidConditions(CLIENT_CONDITIONS, APP), alias: clientAlias },
     plugins: [
+      solidDom,
       makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit }),
       {
         name: "oj-client-render-chunk",
@@ -310,7 +318,7 @@ async function main() {
       clientFnPlugin,
       assetsPlugin({ mode: "prod", server: false, emit }),
       nodeBuiltinShims({ production: true }),
-    ],
+    ].filter(Boolean),
     output: {
       dir: CLIENT,
       format: "esm",
@@ -367,12 +375,12 @@ async function main() {
   // `virtual:tanstack-start-server-entry` alias and exported by oj as
   // OJ_START_SERVER_ENTRY), else oj's; either way `@tanstack/react-start/server-entry`
   // inside it is oj's handler, so a wrapping entry composes as it does under Vite.
-  const OJ_SERVER_ENTRY = join(HERE, "server-entry.tsx");
+  const OJ_SERVER_ENTRY = join(HERE, serverEntryFile());
   const SERVER_ENTRY = process.env.OJ_START_SERVER_ENTRY || OJ_SERVER_ENTRY;
   const serverAlias = {
     ...clientAlias,
     "#tanstack-start-server-fn-resolver": join(HERE, "server-fn-resolver.mjs"),
-    "@tanstack/react-start/server-entry": OJ_SERVER_ENTRY,
+    [`${startPkg()}/server-entry`]: OJ_SERVER_ENTRY,
   };
   const serverPlugins = () => [
     makeVitePlugins({ container: serverContainer, fallback: clientContainer, appRoot: APP, mode: "prod", emit }),
@@ -397,7 +405,7 @@ async function main() {
       input: { index: CLOUDFLARE_WORKER_ENTRY },
       platform: "neutral",
       transform: {
-        jsx: jsxTransformOptions(NODE_ENV !== "production"),
+        jsx: solidJsxOption(APP, jsxTransformOptions(NODE_ENV !== "production")),
         ...(cfEnv.target ? { target: cfEnv.target } : {}),
         define: {
           ...serverDefine,
@@ -407,17 +415,18 @@ async function main() {
         },
       },
       resolve: {
-        conditionNames: [...cfEnv.conditions, "import", NODE_ENV === "production" ? "production" : "development"],
+        conditionNames: solidConditions([...cfEnv.conditions, "import", NODE_ENV === "production" ? "production" : "development"], APP),
         alias: {
           ...serverAlias,
           "@cloudflare/vite-plugin/server": join(HERE, "cf-server-worker.mjs"),
         },
       },
       plugins: [
+        solidSsr,
         cloudflareWorkerPlugin({ container: serverContainer, env: cfEnv, serverEntry }),
         ...serverPlugins(),
         ...cfEnv.rolldownPlugins,
-      ],
+      ].filter(Boolean),
       output: {
         dir: workerDir,
         format: "esm",
@@ -449,7 +458,7 @@ async function main() {
       // Vite's `ssr.external`: those dependencies stay bare imports of the bundle.
       external: ssrExternalRule(APP),
       transform: {
-        jsx: jsxTransformOptions(NODE_ENV !== "production"),
+        jsx: solidJsxOption(APP, jsxTransformOptions(NODE_ENV !== "production")),
         define: serverDefine,
       },
       resolve: {
@@ -457,8 +466,9 @@ async function main() {
           ...serverAlias,
           "@cloudflare/vite-plugin/server": join(HERE, "cf-server.mjs"),
         },
+        ...solidServerConditions(APP, NODE_ENV),
       },
-      plugins: serverPlugins(),
+      plugins: [solidSsr, ...serverPlugins()].filter(Boolean),
       output: {
         dir: DIST,
         format: "esm",

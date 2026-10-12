@@ -267,6 +267,56 @@ mod tests {
     }
 
     #[test]
+    fn solid_condition_selects_transformable_source_over_compiled_import() {
+        // vite-plugin-solid puts `solid` first in resolve.conditions (pinned
+        // at the config-vector level by merge_keeps_solid_first_resolve_conditions
+        // in oj_server): a dep with `solid` -> transformable source and
+        // `import` -> precompiled output must resolve to the source under the
+        // observed solid-first list, and to the compiled output under generic
+        // import conditions. The resolved files — not vector order — are the
+        // claim (Node matches exports-map keys in map source order against
+        // the condition set, so the fixture lists `solid` first like real
+        // Solid packages do).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/solid-conditions");
+        let solid = OjResolver::with_conditions(
+            &dir,
+            &[
+                "solid",
+                "development",
+                "module",
+                "browser",
+                "import",
+                "default",
+            ]
+            .map(String::from),
+        );
+        let hit = solid.resolve(&dir, "solid-pkg").unwrap();
+        assert!(
+            hit.ends_with("source.jsx"),
+            "solid conditions must pick the transformable source, got {hit:?}"
+        );
+        // A queried Solid import keeps its plugin identity on the Solid file.
+        let queried = solid
+            .resolve(&dir, "solid-pkg?tsr-split=component")
+            .unwrap();
+        let queried = queried.to_string_lossy();
+        assert!(
+            queried.contains("source.jsx") && queried.contains("?tsr-split=component"),
+            "queried solid import must keep source + query, got {queried:?}"
+        );
+        // Generic client conditions (no `solid`) take the precompiled output.
+        let generic = OjResolver::with_conditions(
+            &dir,
+            &["browser", "import", "module", "development", "default"].map(String::from),
+        );
+        let hit = generic.resolve(&dir, "solid-pkg").unwrap();
+        assert!(
+            hit.ends_with("compiled.js"),
+            "generic import conditions must pick the compiled output, got {hit:?}"
+        );
+    }
+
+    #[test]
     fn require_variant_swaps_the_import_condition_for_require() {
         // Vite getConditions: a require() resolves with `require`, not `import`,
         // so a dual package's exports map picks its CJS build for a requirer.

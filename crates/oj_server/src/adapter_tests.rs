@@ -52,6 +52,31 @@ fn is_tanstack_start_app_requires_routes_and_dep() {
 }
 
 #[test]
+fn is_tanstack_solid_start_app_detects_the_solid_flavor_only() {
+    let base = tmp("tss");
+    let app = base.join("app");
+    std::fs::create_dir_all(app.join("src").join("routes")).unwrap();
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"solid-js":"1","@tanstack/solid-start":"1"}}"#,
+    )
+    .unwrap();
+    assert!(is_tanstack_solid_start_app(&app));
+    // The React Start pipeline must not claim it.
+    assert!(!is_tanstack_start_app(&app));
+    let react = base.join("react");
+    std::fs::create_dir_all(react.join("src").join("routes")).unwrap();
+    std::fs::write(
+        react.join("package.json"),
+        r#"{"dependencies":{"@tanstack/react-start":"1"}}"#,
+    )
+    .unwrap();
+    assert!(!is_tanstack_solid_start_app(&react));
+    assert!(is_tanstack_start_app(&react));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
 fn the_ssr_module_endpoint_only_reads_the_project_and_its_dependencies() {
     let base = tmp("ssr-allow");
     let root = base.join("app");

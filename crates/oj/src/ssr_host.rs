@@ -48,6 +48,8 @@ const STALE_MODULE_RESPAWN_THRESHOLD: usize = 500;
 /// importers, dirty records dropped so the next request rebuilds them.
 #[derive(Default)]
 struct Graph {
+    /// Start dispatchers retain their isolate's generation across async work.
+    generation: u64,
     versions: HashMap<String, u64>,
     recs: HashMap<String, Rec>,
     /// Instances orphaned in the isolate since the last respawn.
@@ -78,6 +80,37 @@ pub(crate) struct VersionGraph {
 }
 
 impl VersionGraph {
+    pub(crate) fn generation(&self) -> u64 {
+        self.graph.lock().unwrap().generation
+    }
+
+    /// Check and write under the reset lock: a retired Start worker must not
+    /// repopulate the fresh isolate's records, including importer edges.
+    pub(crate) fn edge_specifier_in_generation(
+        &self,
+        id: &str,
+        importer: String,
+        generation: u64,
+    ) -> String {
+        let mut graph = self.graph.lock().unwrap();
+        if graph.generation == generation {
+            graph
+                .recs
+                .entry(id.to_string())
+                .or_default()
+                .importers
+                .insert(importer);
+        }
+        specifier(id, graph.versions.get(id).copied().unwrap_or(0))
+    }
+
+    pub(crate) fn record_loaded_in_generation(&self, id: &str, generation: u64) {
+        let mut graph = self.graph.lock().unwrap();
+        if graph.generation == generation {
+            graph.recs.entry(id.to_string()).or_default().mtime = mtime_of(id);
+        }
+    }
+
     /// The version-stamped specifier the engine imports a module id under.
     pub(crate) fn specifier_for(&self, id: &str) -> String {
         specifier(id, self.version_of(id))
@@ -171,6 +204,7 @@ impl VersionGraph {
     /// forward).
     pub(crate) fn reset_after_respawn(&self) {
         let mut graph = self.graph.lock().unwrap();
+        graph.generation += 1;
         graph.recs.clear();
         graph.stale = 0;
     }

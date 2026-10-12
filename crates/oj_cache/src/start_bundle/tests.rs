@@ -308,6 +308,87 @@ fn vendored_rolldown_identity_is_an_epoch_input() {
 }
 
 #[test]
+fn embedded_build_scripts_restore_only_with_the_same_fingerprint() {
+    let fx = Fixture::new("build-scripts");
+    let scripts = [("bundle-client.mjs", "export const build = 1;")];
+    let store = || fx.store().with_build_scripts(&scripts);
+    let (key, _) = store().persist(&fx.start).unwrap();
+    fx.clear_start_dir();
+    let (stats, pinned) = store().restore(&fx.start).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(fx.entry_bytes(&pinned), "bundle-v1");
+    let changed = fx
+        .store()
+        .with_build_scripts(&[("bundle-client.mjs", "export const build = 2;")]);
+    match changed.restore(&fx.start) {
+        Err(Miss::NoEntryForKey(k)) => assert_ne!(k, key),
+        other => panic!("expected embedded-script key miss, got {other:?}"),
+    }
+    assert!(
+        fx.entry_dir(&key).is_dir(),
+        "a miss preserves the old generation"
+    );
+    assert_eq!(store().restore(&fx.start).unwrap().0.key, key);
+}
+
+#[test]
+fn embedded_build_scripts_actual_source_bytes_change_the_fingerprint() {
+    let fx = Fixture::new("build-script-bytes");
+    let scripts = [
+        (
+            "bundle-client.mjs",
+            include_str!("../../../oj_server/src/assets/start/bundle-client.mjs"),
+        ),
+        (
+            "resolve-pkg.mjs",
+            include_str!("../../../oj_server/src/assets/start/resolve-pkg.mjs"),
+        ),
+        (
+            "rolldown-assets.mjs",
+            include_str!("../../../oj_server/src/assets/start/rolldown-assets.mjs"),
+        ),
+        (
+            "vite-plugin-bridge.mjs",
+            include_str!("../../../oj_server/src/assets/start/vite-plugin-bridge.mjs"),
+        ),
+        (
+            "glob-transform.mjs",
+            include_str!("../../../oj_server/src/assets/start/glob-transform.mjs"),
+        ),
+        (
+            "solid-transform.mjs",
+            include_str!("../../../oj_server/src/assets/start/solid-transform.mjs"),
+        ),
+        (
+            "start-pkg.mjs",
+            include_str!("../../../oj_server/src/assets/start/start-pkg.mjs"),
+        ),
+        (
+            "client-entry.tsx",
+            include_str!("../../../oj_server/src/assets/start/client-entry.tsx"),
+        ),
+        (
+            "client-entry-solid.tsx",
+            include_str!("../../../oj_server/src/assets/start/client-entry-solid.tsx"),
+        ),
+    ];
+    let original = fx.store().with_build_scripts(&scripts).salt;
+    assert_eq!(original, fx.store().with_build_scripts(&scripts).salt);
+    for (i, (name, source)) in scripts.iter().enumerate() {
+        let mut bytes = source.as_bytes().to_vec();
+        bytes[0] ^= 1;
+        let edited = String::from_utf8(bytes).unwrap();
+        let mut changed = scripts;
+        changed[i] = (name, &edited);
+        assert_ne!(
+            original,
+            fx.store().with_build_scripts(&changed).salt,
+            "editing {name} must invalidate the embedded builder fingerprint"
+        );
+    }
+}
+
+#[test]
 fn dev_mode_and_its_env_file_change_the_key() {
     let fx = Fixture::new("mode");
     let staging = |root: &Path| {

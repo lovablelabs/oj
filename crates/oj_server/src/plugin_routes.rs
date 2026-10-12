@@ -94,14 +94,17 @@ fn compiled_response(compiled: Result<String, String>) -> Response {
     }
 }
 
-pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
-    let source = match load_plugin_id(state, id).await {
-        Ok(src) => src,
-        Err(response) => return response,
-    };
+/// Bare imports in plugin-loaded source must resolve to the same optimized
+/// dep URLs as app modules (Vite rewrites them alike): otherwise a plugin
+/// runtime (e.g. vite-plugin-solid's `solid-refresh`, importing `solid-js`)
+/// loads a second copy of a dependency the app prebundled, forking its module
+/// state — Solid's "multiple instances" warning with silently dead HMR.
+async fn dep_pre_resolver(
+    state: &Arc<ServerState>,
+) -> impl Fn(&str) -> Option<String> + Send + 'static {
     let dep_map = state.optimized.ready().await;
     let virtual_ids = Arc::clone(&state.virtual_ids);
-    let pre = move |spec: &str| {
+    move |spec: &str| {
         if virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
         }
@@ -109,7 +112,15 @@ pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> 
             .get(spec)
             .filter(|meta| !meta.needs_interop)
             .map(|meta| meta.url.clone())
+    }
+}
+
+pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> Response {
+    let source = match load_plugin_id(state, id).await {
+        Ok(src) => src,
+        Err(response) => return response,
     };
+    let pre = dep_pre_resolver(state).await;
     compiled_response(compile_plugin_source(state, source, format!("\0{id}"), pre).await)
 }
 
@@ -173,7 +184,8 @@ pub(crate) async fn serve_plugin_id(
         Ok(src) => src,
         Err(response) => return response,
     };
-    compiled_response(compile_plugin_source(state, source, id, |_| None).await)
+    let pre = dep_pre_resolver(state).await;
+    compiled_response(compile_plugin_source(state, source, id, pre).await)
 }
 
 /// No plugin's resolveId claimed `spec`.
@@ -248,7 +260,7 @@ pub(crate) async fn serve_plugin_load_fallback(
         );
         return Some(js_response(body));
     }
-    compile_plugin_source(state, source, id, |_| None)
+    compile_plugin_source(state, source, id, dep_pre_resolver(state).await)
         .await
         .ok()
         .map(js_response)

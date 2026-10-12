@@ -23,9 +23,8 @@ const CONFIG_FILES = [
 const hookHandler = (h) => (typeof h === "function" ? h : typeof h?.handler === "function" ? h.handler : null);
 // Vite fails a module whose plugin hook throws, naming the plugin; the loader
 // surfaces this as the request's error instead of silently skipping the plugin.
-// Framework plugins oj reimplements (vite:*, tanstack*) run here without the
-// lifecycle oj replaced (their generators are never initialized), so their
-// failures stay skipped as before; only user plugins fail the module.
+// Framework plugins oj reimplements normally lack their lifecycle, so their
+// failures stay skipped. Explicitly enabled router hooks fail like user hooks.
 function pluginError(e, plugin, id) {
   const err = e instanceof Error ? e : new Error((e && e.message) || String(e));
   if (err.ojDecorated) return err;
@@ -43,6 +42,16 @@ const hookFilter = (h) => (typeof h === "object" && h ? h.filter : undefined);
 
 const ojReimplemented = (name = "") =>
   name.startsWith("vite:") || /^tanstack[-:]/.test(name) || name.startsWith("@tanstack/");
+
+// Solid's dev client must keep the router's lazy component render level in
+// sync with SSR. Opt in only to the router generator, client tree and splitters,
+// never the Start compiler: oj still rewrites server functions itself.
+const routerPlugin = (name) =>
+  name === "tanstack:router-generator" ||
+  // Its load handler relies on the ID filter populated by its config hook.
+  name === "tanstack-start:route-tree-client-plugin" ||
+  /^tanstack-router:code-splitter:compile-(reference|virtual|shared)-file$/.test(name);
+const reimplemented = (name, routerTransforms) => ojReimplemented(name) && !(routerTransforms && routerPlugin(name));
 
 // Vite's Environment passed to applyToEnvironment carries `config.consumer`
 // ("client"/"server"); @vitejs/plugin-react reads it directly, so the bare
@@ -501,8 +510,11 @@ export function createPluginContainer(
     mode = command === "build" ? "production" : "development",
     environment = "client",
     config = {},
+    routerTransforms = false,
   } = {},
 ) {
+  routerTransforms = routerTransforms && command === "serve" && environment === "client";
+  const skipPlugin = (name) => reimplemented(name, routerTransforms);
   const plugins = ordered(
     allPlugins.filter(
       (p) =>
@@ -697,12 +709,13 @@ export function createPluginContainer(
   function initializePlugins() {
     initialization ??= (async () => {
       for (const plugin of byHook(plugins, "configResolved")) {
-        if (ojReimplemented(plugin.name)) continue;
+        if (skipPlugin(plugin.name)) continue;
         const hook = hookHandler(plugin.configResolved);
         if (!hook) continue;
         try {
           await hook.call(ctx, resolvedConfig);
         } catch (error) {
+          if (routerTransforms && routerPlugin(plugin.name)) throw pluginError(error, plugin);
           process.stderr.write(
             `oj: plugin "${plugin.name || "?"}" configResolved failed (skipped): ${error?.message ?? error}\n`,
           );
@@ -772,7 +785,7 @@ export function createPluginContainer(
   function resolveIdPlan() {
     const plan = { pre: { all: false, filters: [] }, post: { all: false, filters: [] } };
     for (const p of plugins) {
-      if (!hookHandler(p.resolveId) || !envAllows(p, environment, false) || ojReimplemented(p.name)) continue;
+      if (!hookHandler(p.resolveId) || !envAllows(p, environment, false) || skipPlugin(p.name)) continue;
       const phase = plan[inResolvePhase(p, "pre") ? "pre" : "post"];
       const f = hookFilter(p.resolveId);
       const ids = f && (f.id ?? f);
@@ -806,7 +819,7 @@ export function createPluginContainer(
         // a plugin oj reimplements natively stays out, as resolveIdPlan leaves
         // it out: oj's own pass already covers it (e.g. import-protection), and
         // its resolveId re-resolving every import would duplicate the core resolver.
-        if (bundlerDriven && ojReimplemented(p.name)) continue;
+        if (bundlerDriven && skipPlugin(p.name)) continue;
         if (!envAllows(p, environment)) continue;
         const h = hookHandler(p.resolveId);
         if (h) list.push({ p, h, filter: hookFilter(p.resolveId) });
@@ -831,7 +844,7 @@ export function createPluginContainer(
           ssr: environment === "ssr",
         });
       } catch (e) {
-        if (ojReimplemented(p.name)) continue;
+        if (skipPlugin(p.name)) continue;
         throw pluginError(e, p, importer || id);
       }
       if (r != null) return typeof r === "string" ? { id: r } : { id: r.id, external: r.external };
@@ -854,7 +867,7 @@ export function createPluginContainer(
       try {
         r = await h.call(pluginContext(p), id, { ssr: environment === "ssr" });
       } catch (e) {
-        if (ojReimplemented(p.name)) continue;
+        if (skipPlugin(p.name)) continue;
         throw pluginError(e, p, id);
       }
       if (r != null) {
@@ -891,7 +904,7 @@ export function createPluginContainer(
       try {
         r = await h.call(pluginContext(p), current, id, { ssr: environment === "ssr" });
       } catch (e) {
-        if (ojReimplemented(p.name)) continue;
+        if (skipPlugin(p.name)) continue;
         throw pluginError(e, p, id);
       }
       const next = r == null ? null : typeof r === "string" ? r : r.code;
@@ -913,7 +926,8 @@ export function createPluginContainer(
     let current = code,
       changed = false;
     for (const p of byHook(plugins, "transform")) {
-      if (ojReimplemented(p.name) || !envAllows(p, environment)) continue;
+      // oj-solid-transform owns Babel JSX compilation, after route splitting.
+      if (skipPlugin(p.name) || (routerTransforms && p.name === "solid") || !envAllows(p, environment)) continue;
       const h = hookHandler(p.transform);
       const filter = hookFilter(p.transform);
       if (!h || !idAllowed(filter, id) || !codeAllowed(filter, current)) continue;
@@ -1015,9 +1029,8 @@ export function createPluginContainer(
   // Vite runs buildStart once before any module loads; plugins that compile
   // sources (e.g. i18n message compilers) populate their state here and serve
   // it from load(). oj's SSR loader is a separate process with its own plugin
-  // instances, so it must run buildStart itself. Scoped to non-reimplemented
-  // (user) plugins, like transformUserCode, so framework plugins oj already
-  // handles don't newly execute a hook they never ran under oj before.
+  // instances, so it must run buildStart itself. Scoped to user plugins and
+  // explicitly enabled routers, never the Start compiler oj already handles.
   let buildStarted = false;
   async function buildStart() {
     if (buildStarted) return;
@@ -1026,7 +1039,7 @@ export function createPluginContainer(
     buildStarted = true;
     await withBuildStartLock(async () => {
       for (const p of byHook(plugins, "buildStart")) {
-        if (ojReimplemented(p.name) || !envAllows(p, environment)) continue;
+        if (skipPlugin(p.name) || !envAllows(p, environment)) continue;
         const h = hookHandler(p.buildStart);
         if (!h) continue;
         // Degrade gracefully: oj's plugin context is minimal (e.g. a stubbed
@@ -1038,6 +1051,7 @@ export function createPluginContainer(
         try {
           await h.call(pluginContext(p), {});
         } catch (e) {
+          if (routerTransforms && routerPlugin(p.name)) throw pluginError(e, p);
           process.stderr.write(`oj: plugin "${p.name || "?"}" buildStart failed (skipped): ${(e && e.message) || e}\n`);
         }
       }
@@ -1078,11 +1092,12 @@ function mergeConfigValues(current, update) {
 export async function loadPluginContainer(app, opts = {}) {
   // Vite's default mode follows the command (config hooks see it as env.mode).
   const { command = "serve", mode = command === "build" ? "production" : "development" } = opts;
+  const routerTransforms = opts.routerTransforms && command === "serve" && (opts.environment ?? "client") === "client";
   const configFile = findConfig(app);
   if (!configFile) return null;
   let vite;
   try {
-    vite = await importPkg(app, "vite", ["@tanstack/react-start"]);
+    vite = await importPkg(app, "vite", ["@tanstack/react-start", "@tanstack/solid-start"]);
   } catch {
     return null;
   }
@@ -1097,12 +1112,13 @@ export async function loadPluginContainer(app, opts = {}) {
   // and merges the returned partials before resolving; the Start loader has its
   // own plugin instances, so it must do the same for them.
   let config = loaded?.config ?? {};
+  if (routerTransforms) config = { root: app, mode, ...config };
   const all = (config.plugins ?? []).flat(Infinity).filter(Boolean);
-  // Only user plugins: the framework plugins oj reimplements (TanStack, Vite's
-  // own, React) never ran hooks under oj, and their config hooks have side
-  // effects (the router plugin starts its generator) that fight oj's own.
+  // Router option callbacks need Start's config closure initialized first.
+  // Allow that config hook only, not Start's compiler/lifecycle/transforms.
   for (const plugin of all) {
-    if (ojReimplemented(plugin.name)) continue;
+    const startConfig = routerTransforms && plugin.name === "tanstack-start-core:config";
+    if (reimplemented(plugin.name, routerTransforms) && !startConfig) continue;
     const handler = hookHandler(plugin.config);
     if (!handler || !applyMatches(plugin, command, mode)) continue;
     try {
@@ -1113,6 +1129,7 @@ export async function loadPluginContainer(app, opts = {}) {
             ? vite.mergeConfig(config, partial)
             : mergeConfigValues(config, partial);
     } catch (e) {
+      if (startConfig || (routerTransforms && routerPlugin(plugin.name))) throw pluginError(e, plugin);
       process.stderr.write(`oj: plugin "${plugin.name || "?"}" config hook failed (skipped): ${e?.message ?? e}\n`);
     }
   }
@@ -1124,7 +1141,7 @@ export async function loadPluginContainer(app, opts = {}) {
     let environmentOptions = config.environments?.[name] ?? {};
     let changed = false;
     for (const plugin of all) {
-      if (ojReimplemented(plugin.name)) continue;
+      if (reimplemented(plugin.name, routerTransforms)) continue;
       const handler = hookHandler(plugin.configEnvironment);
       if (!handler || !applyMatches(plugin, command, mode)) continue;
       try {
@@ -1139,6 +1156,7 @@ export async function loadPluginContainer(app, opts = {}) {
           changed = true;
         }
       } catch (e) {
+        if (routerTransforms && routerPlugin(plugin.name)) throw pluginError(e, plugin);
         process.stderr.write(
           `oj: plugin "${plugin.name || "?"}" configEnvironment failed (skipped): ${e?.message ?? e}\n`,
         );

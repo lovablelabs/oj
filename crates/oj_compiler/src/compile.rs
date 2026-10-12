@@ -560,6 +560,28 @@ import React from "react";
     }
 
     #[test]
+    fn solid_plugin_output_never_gains_react_refresh() {
+        // vite-plugin-solid (babel-preset-solid + solid-refresh) runs in oj's
+        // plugin host *before* oxc, so by compile time the JSX is gone and the
+        // components are `_$$component(REGISTRY, ...)` calls. Oxc's React
+        // Refresh must not claim them: no `$RefreshReg$`, no jsx-runtime
+        // import, and the module must not read as a refresh boundary.
+        let src = r#"import { template as _$template } from "solid-js/web";
+import { $$registry as _$$registry, $$component as _$$component } from "solid-refresh";
+const _REGISTRY = _$$registry();
+var _tmpl$ = _$template(`<main><!$><!/></main>`);
+export const HomePage = _$$component(_REGISTRY, "HomePage", function HomePage(props) {
+  return _tmpl$.cloneNode(true);
+});
+"#;
+        let out =
+            compile_module(Path::new("HomePage.tsx"), src, &CompileOptions::dev(), None).unwrap();
+        assert!(!out.has_refresh_registrations(), "{}", out.code);
+        assert!(!out.code.contains("$RefreshReg$"), "{}", out.code);
+        assert!(!out.code.contains("jsx-dev-runtime"), "{}", out.code);
+    }
+
+    #[test]
     fn rejects_unsupported_file_types() {
         let err = compile(Path::new("styles.css"), "body{}", &CompileOptions::prod()).unwrap_err();
         assert!(

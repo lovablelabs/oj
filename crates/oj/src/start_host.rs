@@ -32,6 +32,7 @@ use oj_js::HostResolved;
 use oj_js::JsEngine;
 use oj_js::ModuleHost;
 use oj_server::SsrBridge;
+use oj_server::StartFramework;
 use oj_server::StartResolution;
 
 use crate::ssr_dev::normalize_path;
@@ -169,7 +170,7 @@ fn base64url(bytes: &[u8]) -> String {
 /// const doIt = factory.handler(...)`) to the WRONG variable. That split
 /// shape is left untouched: TanStack's own compiler resolves it by following
 /// variable bindings in the AST, which a textual rewrite cannot do safely.
-pub(crate) fn rewrite_server_fns(code: &str, rel: &str) -> String {
+pub(crate) fn rewrite_server_fns(code: &str, rel: &str, framework: StartFramework) -> String {
     if !code.contains("createServerFn") {
         return code.to_string();
     }
@@ -202,8 +203,10 @@ pub(crate) fn rewrite_server_fns(code: &str, rel: &str) -> String {
         return code.to_string();
     }
     edits.sort_by_key(|(at, _)| *at);
-    let mut out =
-        String::from("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; ");
+    let mut out = String::from(format!(
+        "import {{ createServerRpc }} from \"{}/server-rpc\"; ",
+        framework.start_package()
+    ));
     let mut last = 0;
     for (at, text) in edits {
         out.push_str(&code[last..at]);
@@ -449,6 +452,7 @@ fn skip_regex_literal(bytes: &[u8], start: usize) -> Option<usize> {
 }
 
 fn ext_of(path: &str) -> &str {
+    let path = path.split_once('?').map_or(path, |(clean, _)| clean);
     let name = path.rsplit('/').next().unwrap_or(path);
     match name.rfind('.') {
         Some(i) if i > 0 => &name[i + 1..],
@@ -606,19 +610,20 @@ fn json_str(s: &str) -> String {
 /// `?react` tag for asset intents, styles and importable assets (resolve
 /// first, classify second — Vite's ordering).
 fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> String {
+    let clean = abs.split_once('?').map_or(abs, |(clean, _)| clean);
     if svg_react {
-        return format!("{abs}?react");
+        return format!("{clean}?react");
     }
     if let Some(kind) = intent {
-        return format!("{abs}?ojasset={kind}");
+        return format!("{clean}?ojasset={kind}");
     }
     let ext = ext_of(abs).to_ascii_lowercase();
     if oj_server::is_style_ext(&ext) {
-        return format!("{abs}?ojasset=css");
+        return format!("{clean}?ojasset=css");
     }
     // wasm is asset-classified like the loader (URL export only).
     if oj_server::is_importable_asset_ext(&ext) || ext == "wasm" {
-        return format!("{abs}?ojasset=url");
+        return format!("{clean}?ojasset=url");
     }
     abs.to_string()
 }
@@ -650,7 +655,11 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
 /// resolved targets under the app or the start cache dir. start-server-core
 /// imports these by bare specifier and expects the bundler to answer; one the
 /// host does not map fails every document request.
-fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
+fn framework_aliases(
+    root: &Path,
+    cache: &Path,
+    framework: StartFramework,
+) -> Vec<(String, PathBuf)> {
     vec![
         ("#tanstack-router-entry".into(), root.join("src/router")),
         ("#tanstack-start-entry".into(), cache.join("start-entry.ts")),
@@ -682,8 +691,8 @@ fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
         // Start's default server entry is oj's runner entry: an app
         // `server.entry` that wraps it composes the same way as in Vite.
         (
-            "@tanstack/react-start/server-entry".into(),
-            cache.join("server-entry.tsx"),
+            format!("{}/server-entry", framework.start_package()),
+            cache.join(framework.server_entry_file()),
         ),
     ]
 }
@@ -696,6 +705,7 @@ pub struct StartHost {
     /// The Start framework-seam aliases (the loader's ALIASES map): resolved
     /// targets under the app or the start cache dir.
     aliases: Vec<(String, PathBuf)>,
+    framework: StartFramework,
     no_external: NoExternal,
     graph: VersionGraph,
     /// buildStart for the ssr plugin container ran (once per session), so
@@ -713,13 +723,15 @@ impl StartHost {
         bridge: SsrBridge,
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
+        framework: StartFramework,
     ) -> Arc<StartHost> {
-        let aliases = framework_aliases(&root, cache);
+        let aliases = framework_aliases(&root, cache, framework);
         Arc::new(StartHost {
             bridge,
             root,
             public_dir,
             aliases,
+            framework,
             no_external: NoExternal::new(no_external),
             graph: VersionGraph::default(),
             plugins_started: tokio::sync::OnceCell::new(),
@@ -772,14 +784,18 @@ impl StartHost {
         self.graph.specifier_for(&format!("{STUB_PREFIX}{spec}"))
     }
 
-    fn module_url(&self, id: &str, importer: String) -> HostResolved {
-        HostResolved::Url(self.graph.edge_specifier(id, importer))
+    fn module_url(&self, id: &str, importer: String, generation: u64) -> HostResolved {
+        HostResolved::Url(
+            self.graph
+                .edge_specifier_in_generation(id, importer, generation),
+        )
     }
 
     async fn resolve_inner(
         &self,
         importer: &str,
         spec: &str,
+        generation: u64,
     ) -> Result<Option<HostResolved>, String> {
         let importer_id = importer_id(importer);
 
@@ -791,16 +807,24 @@ impl StartHost {
             let bridge_first = spec.starts_with('#');
             if !bridge_first {
                 if let Some(hit) = probe(target) {
-                    return Ok(Some(self.module_url(&hit.to_string_lossy(), importer_id)));
+                    return Ok(Some(self.module_url(
+                        &hit.to_string_lossy(),
+                        importer_id,
+                        generation,
+                    )));
                 }
             } else {
                 if let Ok(StartResolution::Module(id)) =
                     self.bridge.resolve_start(&importer_id, spec).await
                 {
-                    return Ok(Some(self.module_url(&id, importer_id)));
+                    return Ok(Some(self.module_url(&id, importer_id, generation)));
                 }
                 if let Some(hit) = probe(target) {
-                    return Ok(Some(self.module_url(&hit.to_string_lossy(), importer_id)));
+                    return Ok(Some(self.module_url(
+                        &hit.to_string_lossy(),
+                        importer_id,
+                        generation,
+                    )));
                 }
             }
         }
@@ -870,7 +894,7 @@ impl StartHost {
             };
             if let Some(hit) = probe(&self.root.join(rel)).or_else(public_hit) {
                 let id = classify_id(&hit.to_string_lossy(), intent, svg_react);
-                return Ok(Some(self.module_url(&id, importer_id)));
+                return Ok(Some(self.module_url(&id, importer_id, generation)));
             }
         }
 
@@ -887,20 +911,21 @@ impl StartHost {
                             return Ok(Some(HostResolved::External(u.to_string())));
                         }
                     }
-                    return Ok(Some(self.module_url(&tagged, importer_id)));
+                    return Ok(Some(self.module_url(&tagged, importer_id, generation)));
                 }
-                Ok(Some(self.module_url(&id, importer_id)))
+                Ok(Some(self.module_url(&id, importer_id, generation)))
             }
             Ok(StartResolution::Dependency(p)) => {
                 let abs = p.to_string_lossy().into_owned();
                 let ext = ext_of(&abs).to_ascii_lowercase();
                 if svg_react
                     || intent.is_some()
+                    || abs.contains('?')
                     || oj_server::is_style_ext(&ext)
                     || oj_server::is_importable_asset_ext(&ext)
                 {
                     let id = classify_id(&abs, intent, svg_react);
-                    return Ok(Some(self.module_url(&id, importer_id)));
+                    return Ok(Some(self.module_url(&id, importer_id, generation)));
                 }
                 // Hand the engine the exact file the Vite-style resolver
                 // picked (mainFields, extension probing, exports conditions,
@@ -926,7 +951,11 @@ impl StartHost {
         }
     }
 
-    async fn load_inner(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+    async fn load_inner(
+        &self,
+        specifier: &str,
+        generation: u64,
+    ) -> Result<Option<HostModule>, String> {
         // Plain file loads (byonm-resolved) the host still claims: json as
         // ESM with named exports, and noExternal dependencies through the
         // transform pipeline (define/env/glob, plugin transforms).
@@ -936,7 +965,7 @@ impl StartHost {
         self.ensure_plugins_started().await;
 
         let module = self.load_id(&id).await?;
-        self.graph.record_loaded(&id);
+        self.graph.record_loaded_in_generation(&id, generation);
         Ok(Some(module))
     }
 
@@ -1006,14 +1035,8 @@ impl StartHost {
         // svgr: the plugin owns .svg modules (bare and ?react); without a
         // claiming plugin the module is its served URL.
         if is_path && clean.ends_with(".svg") {
-            let plugin_id = match &query {
-                Some(q) => format!("{clean}?{q}"),
-                None => clean.clone(),
-            };
             let loaded = match self.bridge.plugin_host().await {
-                Some(host) if host.hook_wants_load(&plugin_id) => {
-                    host.load(&plugin_id).await.ok().flatten()
-                }
+                Some(host) if host.hook_wants_load(id) => host.load(id).await.ok().flatten(),
                 _ => None,
             };
             let code = loaded.unwrap_or_else(|| {
@@ -1043,7 +1066,7 @@ impl StartHost {
         if clean.ends_with(".json") {
             return self
                 .bridge
-                .load_module(&clean)
+                .load_module(id)
                 .await
                 .map(js)
                 .map_err(|e| e.to_string());
@@ -1053,7 +1076,7 @@ impl StartHost {
             let raw = std::fs::read_to_string(&clean).map_err(|e| format!("read {clean}: {e}"))?;
             let compiled = match self.bridge.plugin_host().await {
                 Some(host) => host
-                    .transform(&raw, &clean, "{}")
+                    .transform(&raw, id, "{}")
                     .await
                     .map(|(code, _, _, _)| code)
                     .map_err(|e| e.to_string())?,
@@ -1063,7 +1086,7 @@ impl StartHost {
             // options; `from_plugin` keeps the compile off the .mdx path.
             let code = self
                 .bridge
-                .transform_module(&clean, compiled, true, false)
+                .transform_module(id, compiled, true, false)
                 .await
                 .map_err(|e| e.to_string())?;
             return Ok(js(code));
@@ -1077,10 +1100,10 @@ impl StartHost {
         // claim the id are consulted; the gate skips the per-module isolate RPC
         // for everything else (the whole server graph on the first render).
         let plugin_loaded = match self.bridge.plugin_host().await {
-            Some(host) if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
+            Some(host) if host.hook_wants_load(id) => host.load(id).await.ok().flatten(),
             Some(_) => {
                 if oj_server::plugins::hook_gate_debug() {
-                    eprintln!("oj: hook gate skipped start load for {clean}");
+                    eprintln!("oj: hook gate skipped start load for {id}");
                 }
                 None
             }
@@ -1096,7 +1119,7 @@ impl StartHost {
                     // fallback (virtual content, precise errors).
                     return self
                         .bridge
-                        .load_module(&clean)
+                        .load_module(id)
                         .await
                         .map(js)
                         .map_err(|e| e.to_string());
@@ -1108,13 +1131,13 @@ impl StartHost {
                 .strip_prefix(&format!("{}/", self.root.to_string_lossy()))
                 .unwrap_or(&clean)
                 .to_string();
-            rewrite_server_fns(&raw, &rel)
+            rewrite_server_fns(&raw, &rel, self.framework)
         } else {
             raw
         };
         let code = self
             .bridge
-            .transform_module(&clean, raw, from_plugin, true)
+            .transform_module(id, raw, from_plugin, true)
             .await
             .map_err(|e| e.to_string())?;
         Ok(js(code))
@@ -1194,7 +1217,7 @@ impl StartHost {
 /// polls module loads CONCURRENTLY while it builds a graph — handling them
 /// inline would serialize every fetch behind the slowest transform. The loop
 /// ends when the engine (the sender) is gone.
-fn serve_module_host(host: Arc<StartHost>, mut requests: oj_js::HostRequests) {
+fn serve_module_host(host: Arc<StartHost>, mut requests: oj_js::HostRequests, generation: u64) {
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
             let host = Arc::clone(&host);
@@ -1205,10 +1228,11 @@ fn serve_module_host(host: Arc<StartHost>, mut requests: oj_js::HostRequests) {
                         specifier,
                         reply,
                     } => {
-                        let _ = reply.send(host.resolve_inner(&importer, &specifier).await);
+                        let _ =
+                            reply.send(host.resolve_inner(&importer, &specifier, generation).await);
                     }
                     oj_js::HostRequest::Load { specifier, reply } => {
-                        let _ = reply.send(host.load_inner(&specifier).await);
+                        let _ = reply.send(host.load_inner(&specifier, generation).await);
                     }
                 }
             });
@@ -1238,7 +1262,7 @@ pub struct StartResponse {
 }
 
 /// The Start runner handle `start_dev` calls per request. Wraps the engine so
-/// a respawn (stale-instance reclaim after many reloads) is transparent:
+/// a respawn (fresh framework caches after a reload) is transparent:
 /// requests share it behind a read lock, the respawn takes the write lock.
 pub struct StartEngine {
     host: Arc<StartHost>,
@@ -1254,6 +1278,46 @@ pub struct StartEngine {
 struct EngineSlot {
     engine: JsEngine,
     inited: tokio::sync::OnceCell<()>,
+    reset: EngineReset,
+}
+
+/// Invalidation removes records even if spawning fails. Keep reset intent and
+/// its error with the slot until a replacement actually succeeds.
+#[derive(Default)]
+struct EngineReset {
+    pending: bool,
+    error: Option<String>,
+}
+
+impl EngineReset {
+    fn require(&mut self) {
+        self.pending = true;
+    }
+
+    fn check_ready(&self) -> Result<(), String> {
+        if self.pending {
+            return Err(self
+                .error
+                .clone()
+                .unwrap_or_else(|| "oj start: engine replacement pending".into()));
+        }
+        Ok(())
+    }
+
+    fn attempt<T>(&mut self, spawn: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        match spawn() {
+            Ok(fresh) => {
+                *self = Self::default();
+                Ok(fresh)
+            }
+            Err(error) => {
+                self.pending = true;
+                let error = format!("oj start: engine respawn failed: {error}");
+                self.error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
 }
 
 impl EngineSlot {
@@ -1261,6 +1325,7 @@ impl EngineSlot {
         EngineSlot {
             engine,
             inited: tokio::sync::OnceCell::new(),
+            reset: EngineReset::default(),
         }
     }
 }
@@ -1274,11 +1339,19 @@ impl StartEngine {
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
         init_env: Vec<(String, String)>,
+        framework: StartFramework,
     ) -> anyhow::Result<StartEngine> {
         let bootstrap = cache.join("start-bootstrap.mjs");
         std::fs::write(&bootstrap, START_BOOTSTRAP_JS)?;
-        let host = StartHost::new(root.clone(), cache, bridge, no_external, public_dir);
-        let engine = spawn_engine(&root, &host)?;
+        let host = StartHost::new(
+            root.clone(),
+            cache,
+            bridge,
+            no_external,
+            public_dir,
+            framework,
+        );
+        let engine = spawn_engine(&root, &host, host.graph().generation())?;
         Ok(StartEngine {
             host,
             root,
@@ -1311,6 +1384,7 @@ impl StartEngine {
     /// isolate (the engine's call scheduler).
     pub async fn handle(&self, req: StartRequest) -> Result<StartResponse, String> {
         let slot = self.engine.read().await;
+        slot.reset.check_ready()?;
         slot.inited
             .get_or_try_init(|| self.init(&slot.engine))
             .await?;
@@ -1370,40 +1444,47 @@ impl StartEngine {
         })
     }
 
-    /// The watcher's reload: drop changed modules (and their importers) and
-    /// force the entry fresh, so the next request re-imports the new graph.
+    /// The watcher's reload: force a fresh entry AND isolate. Start's external
+    /// runtime caches its router entries promise, so versioning only the app
+    /// modules cannot make it load a new router graph.
     pub async fn reload(&self) {
+        let mut engine = self.engine.write().await;
         self.host.graph().invalidate();
         self.host.graph().bump(&self.entry_id);
-        self.maybe_respawn().await;
+        engine.reset.require();
+        self.respawn(&mut engine);
     }
 
     /// The boot revalidation: re-check the world; reports whether anything
     /// changed (the caller reloads the browser then).
     pub async fn revalidate(&self) -> bool {
+        let mut engine = self.engine.write().await;
         let dropped = self.host.graph().invalidate();
         if dropped > 0 {
             self.host.graph().bump(&self.entry_id);
+            engine.reset.require();
         }
-        self.maybe_respawn().await;
-        dropped > 0
+        let pending = engine.reset.pending;
+        if pending {
+            self.respawn(&mut engine);
+        }
+        dropped > 0 || pending
     }
 
-    async fn maybe_respawn(&self) {
-        if !self.host.graph().should_respawn() {
-            return;
-        }
-        let mut engine = self.engine.write().await;
-        if !self.host.graph().should_respawn() {
-            return; // another reload already respawned
-        }
-        match spawn_engine(&self.root, &self.host) {
+    /// The write lock excludes handle calls. The graph's generation gate also
+    /// excludes detached workers of the retired isolate after the reset.
+    fn respawn(&self, engine: &mut EngineSlot) {
+        let generation = self.host.graph().generation() + 1;
+        match engine
+            .reset
+            .attempt(|| spawn_engine(&self.root, &self.host, generation).map_err(|e| e.to_string()))
+        {
             Ok(fresh) => {
                 *engine = EngineSlot::new(fresh);
                 self.host.graph().reset_after_respawn();
-                eprintln!("oj start: engine respawned to reclaim stale module instances");
+                eprintln!("oj start: engine respawned for fresh server modules");
             }
-            Err(e) => eprintln!("oj start: engine respawn failed: {e}"),
+            Err(e) => eprintln!("{e}"),
         }
     }
 }
@@ -1496,12 +1577,16 @@ impl ScriptEngine {
     }
 }
 
-fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::EngineError> {
+fn spawn_engine(
+    root: &Path,
+    host: &Arc<StartHost>,
+    generation: u64,
+) -> Result<JsEngine, oj_js::EngineError> {
     let mut config = EngineConfig::new(root);
     config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
     config.registry = Some(host.bridge.engine_registry());
     let (link, requests) = ModuleHost::channel();
-    serve_module_host(Arc::clone(host), requests);
+    serve_module_host(Arc::clone(host), requests, generation);
     JsEngine::spawn(config, Some(link), None)
 }
 
@@ -1510,9 +1595,274 @@ mod tests {
     use super::*;
 
     #[test]
+    fn start_reset_failure_stays_pending_and_retries_without_new_invalidation() {
+        let graph = VersionGraph::default();
+        graph.record_loaded("virtual:entry");
+        graph.bump("virtual:entry");
+        let mut reset = EngineReset::default();
+        reset.require();
+        let failed = reset.attempt::<()>(|| Err("injected spawn failure".into()));
+        assert!(failed.unwrap_err().contains("injected spawn failure"));
+        assert!(reset.pending);
+        assert!(reset
+            .check_ready()
+            .unwrap_err()
+            .contains("injected spawn failure"));
+        assert_eq!(graph.invalidate(), 0, "changed records are already gone");
+
+        // Revalidation retries because intent survives, not because invalidate
+        // found another change. No old-isolate successful response is allowed.
+        if reset.pending {
+            assert_eq!(
+                reset.attempt(|| Ok("fresh isolate")).unwrap(),
+                "fresh isolate"
+            );
+        }
+        assert!(!reset.pending);
+        assert!(reset.check_ready().is_ok());
+    }
+
+    #[test]
+    fn start_retired_generation_cannot_record_importer_edges() {
+        let graph = VersionGraph::default();
+        let file =
+            std::env::temp_dir().join(format!("oj-start-generation-{}.ts", std::process::id()));
+        std::fs::write(&file, "export {};").unwrap();
+        let id = file.to_string_lossy();
+        let old = graph.generation();
+        graph.reset_after_respawn();
+        graph.record_loaded("virtual:old-importer");
+        graph.record_loaded("virtual:new-importer");
+        graph.edge_specifier_in_generation(&id, "virtual:old-importer".into(), old);
+        graph.edge_specifier_in_generation(&id, "virtual:new-importer".into(), graph.generation());
+        graph.record_loaded_in_generation(&id, graph.generation());
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(graph.invalidate(), 2);
+        assert_eq!(graph.version_of("virtual:old-importer"), 0);
+        assert_eq!(graph.version_of("virtual:new-importer"), 1);
+    }
+
+    // Reproduce the external Start runtime's module-scope entriesPromise:
+    // bumping the custom server entry alone must not leave its router cached.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_engine_refreshes_cached_external_router_on_reload_and_revalidate() {
+        let root = std::env::temp_dir().join(format!("oj-start-freshness-{}", std::process::id()));
+        let cache = root.join("start-cache");
+        let package = root.join("node_modules/@tanstack/start-server-core");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@tanstack/start-server-core","type":"module","exports":{"./createStartHandler":"./handler.mjs"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("handler.mjs"),
+            r#"let entriesPromise;
+let requests = 0;
+export function createStartHandler() {
+  return async () => {
+    const entries = await (entriesPromise ||= import('#tanstack-router-entry'));
+    return new Response(entries.render(), { headers: { 'x-requests': String(++requests) } });
+  };
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/router.ts"),
+            "export { render } from './component.ts';",
+        )
+        .unwrap();
+        let component = root.join("src/component.ts");
+        let edit = |marker: &str, seconds: u64| {
+            std::fs::write(
+                &component,
+                format!("export function render() {{ return '<p>{marker}</p>'; }}"),
+            )
+            .unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&component)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() + std::time::Duration::from_secs(seconds),
+                )
+                .unwrap();
+        };
+        edit("initial-marker", 0);
+        let entry = root.join("src/server.ts");
+        std::fs::write(
+            &entry,
+            r#"import { createStartHandler } from '@tanstack/start-server-core/createStartHandler';
+const handler = createStartHandler();
+export default { async fetch(req) {
+  if (new URL(req.url).pathname === '/throw') throw new Error('uncaught-handler-marker');
+  const response = await handler(req);
+  return new Response('<main data-wrapper="custom">' + await response.text() + '</main>', {
+    status: 201, headers: response.headers,
+  });
+} };
+"#,
+        )
+        .unwrap();
+        let built = oj_server::DevServer {
+            root: root.clone(),
+            port: None,
+            host: None,
+            config: None,
+            enable_cache: false,
+            no_cache: true,
+            lazy: true,
+            mode: None,
+        }
+        .build_app()
+        .await
+        .unwrap();
+        let engine = StartEngine::new(
+            root.clone(),
+            &cache,
+            built.ssr.clone(),
+            entry,
+            Default::default(),
+            None,
+            Vec::new(),
+            StartFramework::Solid,
+        )
+        .unwrap();
+        // Hold startup so an actual old-isolate module load is in flight when
+        // reload drops that engine. It must finish without restoring a record.
+        let background = root.join("background.ts");
+        std::fs::write(&background, "export const value = 1;").unwrap();
+        let generation = engine.host.graph().generation();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let startup_host = Arc::clone(&engine.host);
+        let startup = tokio::spawn(async move {
+            startup_host
+                .plugins_started
+                .get_or_init(|| async {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                })
+                .await;
+        });
+        started_rx.await.unwrap();
+        let load_host = Arc::clone(&engine.host);
+        let background_specifier = engine
+            .host
+            .graph()
+            .specifier_for(&background.to_string_lossy());
+        let (loading_tx, loading_rx) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            let load = load_host.load_inner(&background_specifier, generation);
+            tokio::pin!(load);
+            assert!(futures_util::poll!(&mut load).is_pending());
+            loading_tx.send(()).unwrap();
+            load.await.unwrap().unwrap()
+        });
+        loading_rx.await.unwrap();
+        engine.reload().await;
+        release_tx.send(()).unwrap();
+        startup.await.unwrap();
+        worker.await.unwrap();
+        std::fs::remove_file(&background).unwrap();
+        assert_eq!(
+            engine.host.graph().invalidate(),
+            0,
+            "retired background load repopulated graph"
+        );
+        let request = |url: &str| StartRequest {
+            method: "GET".into(),
+            url: url.into(),
+            host: "localhost".into(),
+            headers: Vec::new(),
+            body: None,
+        };
+        let assert_response = |response: StartResponse, marker: &str, count: &str| {
+            assert_eq!(response.status, 201);
+            assert_eq!(
+                String::from_utf8(response.body).unwrap(),
+                format!("<main data-wrapper=\"custom\"><p>{marker}</p></main>")
+            );
+            assert!(response
+                .headers
+                .contains(&("x-requests".into(), count.into())));
+        };
+        assert_response(
+            engine.handle(request("/")).await.unwrap(),
+            "initial-marker",
+            "1",
+        );
+        assert!(!engine.revalidate().await);
+        assert_response(
+            engine.handle(request("/")).await.unwrap(),
+            "initial-marker",
+            "2",
+        );
+
+        // Extra unchanged records must also be cleared when the isolate dies.
+        let orphan = root.join("orphan.ts");
+        std::fs::write(&orphan, "export {};").unwrap();
+        engine.host.graph().record_loaded(&orphan.to_string_lossy());
+        edit("reload-marker", 5);
+        engine.reload().await;
+        assert_response(
+            engine.handle(request("/")).await.unwrap(),
+            "reload-marker",
+            "1",
+        );
+        assert!(engine.host.graph().version_of(&component.to_string_lossy()) > 0);
+        std::fs::remove_file(&orphan).unwrap();
+        assert_eq!(
+            engine.host.graph().invalidate(),
+            0,
+            "old graph records survived"
+        );
+        assert!(!engine.revalidate().await);
+        assert_response(
+            engine.handle(request("/")).await.unwrap(),
+            "reload-marker",
+            "2",
+        );
+
+        edit("revalidated-marker", 10);
+        assert!(engine.revalidate().await);
+        assert_response(
+            engine.handle(request("/")).await.unwrap(),
+            "revalidated-marker",
+            "1",
+        );
+        assert!(!engine.revalidate().await);
+        assert_response(
+            engine.handle(request("/")).await.unwrap(),
+            "revalidated-marker",
+            "2",
+        );
+
+        // Explicit reload also refreshes virtual/generated entries whose files
+        // need not have changed; unchanged boot revalidation above does not.
+        engine.reload().await;
+        assert_response(
+            engine.handle(request("/")).await.unwrap(),
+            "revalidated-marker",
+            "1",
+        );
+        assert!(engine
+            .handle(request("/throw"))
+            .await
+            .unwrap_err()
+            .contains("uncaught-handler-marker"));
+        drop(engine);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn server_fn_rewrite_matches_the_node_loader() {
         let code = "import { createServerFn } from \"@tanstack/react-start\";\nexport const getGreeting = createServerFn({ method: \"GET\" }).handler(async () => \"hi\");\n";
-        let out = rewrite_server_fns(code, "src/server/data.ts");
+        let out = rewrite_server_fns(code, "src/server/data.ts", StartFramework::React);
         assert!(out
             .starts_with("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; "));
         let id = base64url(b"src/server/data.ts#getGreeting");
@@ -1528,7 +1878,24 @@ mod tests {
 
         // Untouched code passes through byte-identical.
         let plain = "export const x = 1;\n";
-        assert_eq!(rewrite_server_fns(plain, "src/x.ts"), plain);
+        assert_eq!(
+            rewrite_server_fns(plain, "src/x.ts", StartFramework::React),
+            plain
+        );
+    }
+
+    #[test]
+    fn server_fn_rewrite_uses_the_solid_start_package_for_solid() {
+        let code = "import { createServerFn } from \"@tanstack/solid-start\";\nexport const getGreeting = createServerFn({ method: \"GET\" }).handler(async () => \"hi\");\n";
+        let out = rewrite_server_fns(code, "src/server/data.ts", StartFramework::Solid);
+        assert!(
+            out.starts_with(
+                "import { createServerRpc } from \"@tanstack/solid-start/server-rpc\"; "
+            ),
+            "{out}"
+        );
+        assert!(out.contains("getGreeting_createServerFn_handler"), "{out}");
+        assert_eq!(code.lines().count(), out.lines().count());
     }
 
     // The mis-rewrite the lazy regex allowed: a factory assigned in one
@@ -1539,16 +1906,22 @@ mod tests {
     #[test]
     fn split_statement_factories_are_left_untouched() {
         let split = "import { createServerFn } from \"@tanstack/react-start\";\nconst factory = createServerFn({ method: \"POST\" });\nexport const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_server_fns(split, "src/split.ts"), split);
+        assert_eq!(
+            rewrite_server_fns(split, "src/split.ts", StartFramework::React),
+            split
+        );
 
         // Same, single line with a `;` between the statements.
         let inline = "const factory = createServerFn({ method: \"POST\" }); export const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_server_fns(inline, "src/split.ts"), inline);
+        assert_eq!(
+            rewrite_server_fns(inline, "src/split.ts", StartFramework::React),
+            inline
+        );
 
         // A factory NEXT TO a chained server fn: the factory stays untouched,
         // the chained one still rewrites under its own name.
         let mixed = "const factory = createServerFn({ method: \"POST\" });\nexport const real = createServerFn({ method: \"GET\" }).handler(async () => 2);\nexport const viaFactory = factory.handler(async () => 3);\n";
-        let out = rewrite_server_fns(mixed, "src/mixed.ts");
+        let out = rewrite_server_fns(mixed, "src/mixed.ts", StartFramework::React);
         assert!(out.contains("export const real_createServerFn_handler = createServerRpc("));
         assert!(out.contains(".handler(real_createServerFn_handler, async () => 2)"));
         assert!(!out.contains("factory_createServerFn_handler"), "{out}");
@@ -1562,7 +1935,7 @@ mod tests {
     #[test]
     fn adjacent_server_fns_rewrite_independently() {
         let code = "export const a = createServerFn({ method: \"GET\" }).handler(async () => 1);\nexport const b = createServerFn({ method: \"POST\" }).handler(async () => 2);\n";
-        let out = rewrite_server_fns(code, "src/two.ts");
+        let out = rewrite_server_fns(code, "src/two.ts", StartFramework::React);
         for name in ["a", "b"] {
             let id = base64url(format!("src/two.ts#{name}").as_bytes());
             assert!(
@@ -1592,7 +1965,7 @@ mod tests {
   })
   .handler(async ({ data }) => data);
 "#;
-        let out = rewrite_server_fns(code, "src/user.ts");
+        let out = rewrite_server_fns(code, "src/user.ts", StartFramework::React);
         assert!(
             out.contains("export const getUser_createServerFn_handler = createServerRpc("),
             "{out}"
@@ -1609,7 +1982,10 @@ mod tests {
     #[test]
     fn asi_split_factories_are_left_untouched() {
         let code = "const factory = createServerFn({ method: \"POST\" })\nexport const doIt = factory.handler(async () => 1)\n";
-        assert_eq!(rewrite_server_fns(code, "src/asi.ts"), code);
+        assert_eq!(
+            rewrite_server_fns(code, "src/asi.ts", StartFramework::React),
+            code
+        );
     }
 
     #[test]
@@ -1714,9 +2090,130 @@ mod tests {
         assert_eq!(classify_id("/a/l.svg", None, false), "/a/l.svg");
         assert_eq!(classify_id("/a/x.tsx", None, false), "/a/x.tsx");
         assert_eq!(
+            classify_id("/a/x.tsx?tsr-split=component", None, false),
+            "/a/x.tsx?tsr-split=component"
+        );
+        assert_eq!(src_lang("/a/x.tsx?tsr-split=component"), Some("tsx"));
+        assert_eq!(
+            classify_id("/a/x.css?plugin-query", None, false),
+            "/a/x.css?ojasset=css"
+        );
+        assert_eq!(
             classify_id("/a/m.wasm", None, false),
             "/a/m.wasm?ojasset=url"
         );
+    }
+
+    // A split route is a distinct plugin module, not the reference file on
+    // disk. Both hook filters and handlers must see the entire queried id.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queried_sources_keep_plugin_identity_and_clean_compile_paths() {
+        let root = std::env::temp_dir().join(format!("oj-start-query-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("oj.plugins.mjs"),
+            r#"export default [{
+  name: "queried-source",
+  load: {
+    filter: { id: /\.tsx\?tsr-split=component&opaque=%2F$/ },
+    handler(id) {
+      return 'export const component: string = "split-component"; export const loadedId = ' + JSON.stringify(id) + ';';
+    },
+  },
+  transform: {
+    filter: { id: /\.(tsx|ts)\?tsr-split=component&opaque=%2F$/ },
+    handler(code, id) {
+      return code + '\nexport const transformedId: string = ' + JSON.stringify(id) + ';';
+    },
+  },
+}];
+"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("route.tsx"), "export const Route = 'reference';").unwrap();
+        std::fs::write(
+            root.join("ordinary.ts"),
+            "export const ordinary: number = 42;",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("node_modules/query-source")).unwrap();
+        std::fs::write(
+            root.join("node_modules/query-source/index.ts"),
+            "export const dependency: number = 43;",
+        )
+        .unwrap();
+        let built = oj_server::DevServer {
+            root: root.clone(),
+            port: None,
+            host: None,
+            config: None,
+            enable_cache: false,
+            no_cache: true,
+            lazy: true,
+            mode: None,
+        }
+        .build_app()
+        .await
+        .unwrap();
+        let host = StartHost::new(
+            root.clone(),
+            &root.join("start-cache"),
+            built.ssr.clone(),
+            Default::default(),
+            None,
+            StartFramework::Solid,
+        );
+        for (name, marker) in [
+            ("route.tsx", "split-component"),
+            ("ordinary.ts", "ordinary"),
+            ("node_modules/query-source/index.ts", "dependency"),
+        ] {
+            let id = format!("{}/{name}?tsr-split=component&opaque=%2F", root.display());
+            let spec = format!("./{name}?tsr-split=component&opaque=%2F");
+            let Some(HostResolved::Url(specifier)) = host
+                .resolve_inner(
+                    &root.join("entry.ts").to_string_lossy(),
+                    &spec,
+                    host.graph().generation(),
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("queried source must stay in the plugin module graph");
+            };
+            assert_eq!(versioned_id(&specifier).as_deref(), Some(id.as_str()));
+            let module = host
+                .load_inner(&specifier, host.graph().generation())
+                .await
+                .unwrap()
+                .unwrap();
+            let code = module.code.split("//# sourceMappingURL=").next().unwrap();
+            assert!(code.contains(marker), "{code}");
+            assert!(code.contains("transformedId"), "{code}");
+            assert!(code.contains(&id), "opaque query changed: {code}");
+            assert!(
+                !code.contains(": string") && !code.contains(": number"),
+                "{code}"
+            );
+            if name == "route.tsx" {
+                assert!(code.contains("loadedId"), "{code}");
+                assert!(
+                    !code.contains("reference") && !code.contains("Route"),
+                    "{code}"
+                );
+            }
+        }
+        let reference = host
+            .load_id(&root.join("route.tsx").to_string_lossy())
+            .await
+            .unwrap();
+        assert!(reference.code.contains("Route") && reference.code.contains("reference"));
+        assert!(!reference.code.contains("loadedId") && !reference.code.contains("transformedId"));
+        host.bridge.plugin_host().await.unwrap().shutdown();
+        if let Some(client) = built.plugin_host {
+            client.shutdown();
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1799,7 +2296,7 @@ mod tests {
     fn the_start_host_maps_every_framework_virtual_module() {
         let root = Path::new("/app");
         let cache = Path::new("/app/.oj-cache/v1/start");
-        let aliases = framework_aliases(root, cache);
+        let aliases = framework_aliases(root, cache, StartFramework::React);
         for spec in [
             "tanstack-start-manifest:v",
             "tanstack-start-injected-head-scripts:v",
@@ -1816,6 +2313,32 @@ mod tests {
                 "the start host has no alias for {spec}"
             );
         }
+    }
+
+    #[test]
+    fn the_start_host_aliases_the_solid_server_entry_for_solid() {
+        let root = Path::new("/app");
+        let cache = Path::new("/app/.oj-cache/v1/start");
+        let aliases = framework_aliases(root, cache, StartFramework::Solid);
+        assert!(
+            aliases
+                .iter()
+                .any(|(find, _)| find == "@tanstack/solid-start/server-entry"),
+            "no solid server-entry alias"
+        );
+        assert!(
+            !aliases
+                .iter()
+                .any(|(find, _)| find == "@tanstack/react-start/server-entry"),
+            "the react entry must not leak into solid apps"
+        );
+        assert_eq!(
+            aliases
+                .iter()
+                .find(|(find, _)| find == "@tanstack/solid-start/server-entry")
+                .map(|(_, target)| target.as_path()),
+            Some(cache.join("server-entry-solid.tsx").as_path())
+        );
     }
 
     // The ScriptEngine's process.env shadow: a script's env writes — the

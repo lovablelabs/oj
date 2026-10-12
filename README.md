@@ -35,6 +35,8 @@ oj build web                                     # production build
 
 Dev serves file-based routes with streaming SSR and client hydration, keeps Fast Refresh working, runs server functions in the module runner, and applies the app's `vite.config` plugins (React and the app's own). `oj build` emits a Node `server.mjs`, a Cloudflare `worker.mjs` (`nodejs_compat`), content-hashed client assets, and prerendered routes. oj's own docs site (`www/`) is a TanStack Start app built by oj and served from a Cloudflare Worker.
 
+Solid Start apps use the same interface (`oj dev web`, `oj build web`); see `SOLID.md` for ongoing fork notes.
+
 ## Quickstart
 
 Install the CLI from crates.io, then run `oj` in any app:

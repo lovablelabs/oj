@@ -7,7 +7,39 @@ import { importPkg, importOjRolldown, viteEnvDefine, environmentDefines, jsxTran
 import { assetsPlugin, makeVitePlugins, nodeBuiltinShims, workspaceRoot } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob } from "./glob-transform.mjs";
+import { solidBundlePlugin, solidJsxOption, solidConditions } from "./solid-transform.mjs";
+import { startPkg, clientEntryFile } from "./start-pkg.mjs";
 import { pathToFileURL } from "node:url";
+
+function clientTransformPlugin(container, rewriteServerFns) {
+  return {
+    name: "server-fn-client",
+    transform: {
+      filter: {
+        id: {
+          include: /\.(tsx?|jsx?|mjs)(\?|$)/,
+          exclude: [/\/node_modules\//, /^\0/],
+        },
+      },
+      async handler(code, id) {
+        if (id.includes("/node_modules/") || id.startsWith("\0") || !/\.(tsx?|jsx?|mjs)(\?|$)/.test(id)) return null;
+        let out = code;
+        if (container) {
+          const t = await container.transformUserCode(out, id);
+          if (t != null) out = t;
+        }
+        // Plugin identity retains the query; filesystem and RPC identity do not.
+        const cleanId = id.split("?")[0];
+        out = transformGlob(out, cleanId);
+        const rpc = rewriteServerFns(out, cleanId);
+        if (rpc != null) return rpc;
+        return out === code ? null : out;
+      },
+    },
+  };
+}
+
+export const __test = { clientTransformPlugin };
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
 // spawn env arrive as `env`; `node <script>` still works for tests.
@@ -26,7 +58,9 @@ export async function run(env = null) {
 async function main() {
   const HERE = dirname(fileURLToPath(import.meta.url));
   const APP = process.env.OJ_APP_ROOT ?? process.cwd();
-  const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
+  const { build } = await importOjRolldown(APP, ["vite", startPkg()]);
+  // Solid apps: babel-preset-solid owns JSX (dom + hydratable), rolldown keeps its hands off.
+  const solidPlugin = await solidBundlePlugin(APP, "dom");
   const WORKSPACE = workspaceRoot(APP);
   const SERVER_FN_BASE = process.env.TSS_SERVER_FN_BASE ?? "/_serverFn/";
   // Vite's `--mode` (OJ_MODE from oj; `development` for `oj dev` without one).
@@ -79,7 +113,7 @@ async function main() {
       out = out.slice(0, e.open) + `createClientRpc(${JSON.stringify(id2)})` + out.slice(e.close);
     }
     // On the first line, not above it: the rewrite must not shift source lines.
-    return `import { createClientRpc } from "@tanstack/react-start/client-rpc"; ${out}`;
+    return `import { createClientRpc } from "${startPkg()}/client-rpc"; ${out}`;
   }
 
   // The app's package.json "imports" wins over the src/router convention, the
@@ -106,7 +140,12 @@ async function main() {
     return resolve(APP, "src/router.tsx");
   }
 
-  const container = await loadPluginContainer(APP, { command: "serve", mode: MODE, environment: "client" });
+  const container = await loadPluginContainer(APP, {
+    command: "serve",
+    mode: MODE,
+    environment: "client",
+    routerTransforms: Boolean(solidPlugin),
+  });
 
   const cssUrls = [];
 
@@ -128,30 +167,13 @@ async function main() {
     },
   };
 
-  const serverFnClient = {
-    name: "server-fn-client",
-    transform: {
-      filter: { id: { include: /\.(tsx?|jsx?|mjs)$/, exclude: [/\/node_modules\//, /^\0/] } },
-      async handler(code, id) {
-        if (id.includes("/node_modules/") || id.startsWith("\0") || !/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
-        let out = code;
-        if (container) {
-          const t = await container.transformUserCode(out, id);
-          if (t != null) out = t;
-        }
-        out = transformGlob(out, id);
-        const rpc = rewriteServerFns(out, id);
-        if (rpc != null) return rpc;
-        return out === code ? null : out;
-      },
-    },
-  };
+  const serverFnClient = clientTransformPlugin(container, rewriteServerFns);
 
   const result = await build({
-    input: join(HERE, "client-entry.tsx"),
+    input: join(HERE, clientEntryFile()),
     platform: "browser",
     transform: {
-      jsx: jsxTransformOptions(NODE_ENV !== "production"),
+      jsx: solidJsxOption(APP, jsxTransformOptions(NODE_ENV !== "production")),
       define: {
         "process.env": JSON.stringify({ NODE_ENV, TSS_SERVER_FN_BASE: SERVER_FN_BASE }),
         // Explicit, like Vite's define plugin. It also guards a regression if
@@ -166,7 +188,7 @@ async function main() {
       },
     },
     resolve: {
-      conditionNames: CLIENT_CONDITIONS,
+      conditionNames: solidConditions(CLIENT_CONDITIONS, APP),
       alias: {
         "#tanstack-router-entry": routerEntry(),
         "#tanstack-start-entry": join(HERE, "start-entry.ts"),
@@ -180,10 +202,16 @@ async function main() {
       makeVitePlugins({ container, appRoot: APP, mode: "dev" }),
       assetsPlugin({ mode: "dev", cssUrls, root: APP }),
       serverFnClient,
+      // Router reference/split/shared transforms must see JSX, before Babel;
+      // their lazy component wrapper also determines Solid hydration levels.
+      solidPlugin,
       nodeBuiltinShims({ production: false }),
-    ],
+    ].filter(Boolean),
     output: {
       format: "esm",
+      // HTML serves this entry at this exact URL. Split chunks can import
+      // shared runtime exports from it; a second filename executes it twice.
+      entryFileNames: "client-entry.js",
       banner:
         `globalThis.process=globalThis.process||{env:{NODE_ENV:${JSON.stringify(NODE_ENV)},TSS_SERVER_FN_BASE:${JSON.stringify(SERVER_FN_BASE)}}};` +
         "globalThis.global=globalThis.global||globalThis;",

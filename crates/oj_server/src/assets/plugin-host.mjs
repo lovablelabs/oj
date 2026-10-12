@@ -3620,6 +3620,15 @@ async function resolveIdFull(source, importer, opts) {
     }
     return out;
   }
+  // Vite's `vite:alias` step: when no resolveId hook claims the id, the
+  // merged config's `resolve.alias` (string finds and RegExps, including
+  // entries contributed by plugin `config` hooks — e.g. vite-plugin-solid
+  // mapping /^solid-refresh$/ to its /@solid-refresh HMR runtime) rewrites
+  // it. Plugin claims win over aliases, as in Vite; an alias hit returns
+  // the rewritten id for the normal `load` path, without re-entering the
+  // chain (Vite stops at the alias hit too).
+  const aliased = applyAlias(source, aliasEntries(resolvedConfig?.resolve?.alias));
+  if (aliased !== source) return { id: aliased };
   return null;
 }
 async function resolveId(source, importer, opts) {
