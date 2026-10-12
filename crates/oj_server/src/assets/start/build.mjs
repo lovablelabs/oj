@@ -365,14 +365,21 @@ async function main() {
     await clientContainer.writeBundle(bundle);
   }
 
+  // The SERVER bundle bakes this rewrite in (serverAlias maps the manifest
+  // virtual to the same file, and the server build runs after this write), so
+  // it must serve the same shape union as the static shims: 1.168+ reads
+  // per-route `scripts`/`css`, 1.167 and earlier read the top-level
+  // `clientEntry` (`import(undefined)` without it) and css from per-route
+  // `assets`. Each version copies only the fields it knows.
   const rootManifest = {
     preloads: [clientUrl],
     css: emit.cssUrls(),
     scripts: [{ attrs: { type: "module", async: true, src: clientUrl } }],
+    assets: emit.cssUrls().map((href) => ({ tag: "link", attrs: { rel: "stylesheet", href } })),
   };
   writeFileSync(
     join(HERE, "manifest.ts"),
-    `export const tsrStartManifest = () => (${JSON.stringify({ routes: { __root__: rootManifest } })});\n`,
+    `export const tsrStartManifest = () => (${JSON.stringify({ routes: { __root__: rootManifest }, clientEntry: clientUrl })});\n`,
   );
 
   const serverDefine = {

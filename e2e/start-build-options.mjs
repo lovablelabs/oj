@@ -74,6 +74,25 @@ try {
     throw new Error("server.mjs does not know the base");
   }
 
+  // The baked manifest must carry the shape UNION across start-server-core
+  // versions: 1.167 and earlier build the client entry script tag from the
+  // top-level `clientEntry` (a missing field renders `import(undefined)` and a
+  // page that never hydrates) and read css from per-route `assets`; 1.168+
+  // read per-route `scripts`/`css`. The server build bakes the manifest in, so
+  // scan every emitted server chunk, not one file by name.
+  const serverChunks = fs
+    .readdirSync(out, { recursive: true })
+    .filter((f) => String(f).endsWith(".mjs"))
+    .map((f) => fs.readFileSync(path.join(out, String(f)), "utf8"));
+  for (const [key, field] of [
+    ["clientEntry", new RegExp(`"clientEntry"\\s*:\\s*"/app/assets/${clientJs.replace(/[.$]/g, "\\$&")}"`)],
+    ["assets", /"assets"\s*:/],
+  ]) {
+    if (!serverChunks.some((code) => field.test(code))) {
+      throw new Error(`the baked server manifest lost the pre-1.168 ${key} field`);
+    }
+  }
+
   const port = 6510;
   const srv = spawn("node", [path.join(out, "server.mjs")], {
     cwd: out,
