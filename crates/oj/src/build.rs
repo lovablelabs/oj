@@ -3915,7 +3915,9 @@ pub(crate) async fn build_ssr(
                     && !spec.starts_with('/')
                     && !spec.starts_with('\0')
                     && !spec.contains(':');
-                bare && {
+                // An id listed VERBATIM in `ssr.external` is forced external, as
+                // in Vite; package-name entries and the default still resolve.
+                bare && (externals.external.iter().any(|e| e == spec) || {
                     let pkg = oj_config::SsrExternals::package_of(spec);
                     externals.is_external_pkg(pkg)
                         && node_modules.join(pkg).join("package.json").is_file()
@@ -3923,7 +3925,7 @@ pub(crate) async fn build_ssr(
                             .resolve(&resolve_root, spec)
                             .map(|p| !crate::start_host::ts_source_ext(&p.to_string_lossy()))
                             .unwrap_or(true)
-                }
+                })
             };
             Box::pin(async move { Ok(ext) })
         }
@@ -4097,16 +4099,18 @@ async fn build_server_fns(
     let external = IsExternal::Fn(Some(Arc::new(move |spec: &str, _i, resolved: bool| {
         let in_node_modules = resolved && spec.contains("node_modules");
         // As in build_ssr: a dependency whose resolved file is raw
-        // TypeScript/JSX bundles even when configured external (Vite's
-        // canExternalizeFile), since plain Node cannot load it.
+        // TypeScript/JSX bundles even when its package is configured external
+        // (Vite's canExternalizeFile), since plain Node cannot load it — but
+        // an id listed VERBATIM in `ssr.external` is forced external, as in Vite.
         let ext = ext_rule.is_external(spec, in_node_modules).unwrap_or(false)
             && if resolved {
                 !crate::start_host::ts_source_ext(spec)
             } else {
-                dep_resolver
-                    .resolve(&resolve_root, spec)
-                    .map(|p| !crate::start_host::ts_source_ext(&p.to_string_lossy()))
-                    .unwrap_or(true)
+                ext_rule.external.iter().any(|e| e == spec)
+                    || dep_resolver
+                        .resolve(&resolve_root, spec)
+                        .map(|p| !crate::start_host::ts_source_ext(&p.to_string_lossy()))
+                        .unwrap_or(true)
             };
         Box::pin(async move { Ok(ext) })
     })));

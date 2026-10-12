@@ -36,6 +36,8 @@ const dep = path.join(playground, "node_modules", "ts-source-dep");
 const out = path.join(playground, "dist-ssr-ts-dep");
 const counterFile = path.join(playground, "src", "Counter.tsx");
 const originalCounter = fs.readFileSync(counterFile, "utf8");
+const configFile = path.join(playground, "oj.config.ts");
+const originalConfig = fs.readFileSync(configFile, "utf8");
 let srv;
 let log = "";
 try {
@@ -94,16 +96,46 @@ try {
     cwd: repo,
     stdio: ["ignore", "ignore", "inherit"],
   });
-  const bundle = fs.readFileSync(path.join(out, "entry-server.mjs"), "utf8");
-  must(
-    !/from\s*["']ts-source-dep(?:\/[^"']*)?["']/.test(bundle),
-    "built server bundle still imports the raw-TS dependency bare",
-  );
+  // The SSR build code-splits routes, so the dep can land in a hashed sibling
+  // chunk: every emitted js file counts, not just entry-server.mjs.
+  const builtJs = (dir) =>
+    fs
+      .readdirSync(dir, { recursive: true })
+      .filter((f) => /\.(mjs|js)$/.test(f))
+      .map((f) => fs.readFileSync(path.join(dir, f), "utf8"))
+      .join("\n");
+  const bareDepImport = /from\s*["']ts-source-dep(?:\/[^"']*)?["']/;
+  must(!bareDepImport.test(builtJs(out)), "built server bundle still imports the raw-TS dependency bare");
   const mod = await import(pathToFileURL(path.join(out, "entry-server.mjs")).href);
   const html = String(await mod.render());
   must(
     html.includes("badge-outline:bold:nodenext:"),
     `built render() missing "badge-outline:bold:nodenext:":\n${html.slice(0, 800)}`,
+  );
+  console.log("ssr build: raw-TS dependency bundled into the server bundle");
+
+  // An id listed VERBATIM in `ssr.external` is forced external without the
+  // resolve check, as in Vite (a package-name entry still goes through it).
+  // The bundle then cannot execute — Vite's documented sharp edge — so
+  // prerender is off for this build and only the decision is asserted.
+  fs.writeFileSync(
+    configFile,
+    originalConfig
+      .replace("  build: {", '  ssr: { external: ["ts-source-dep/badge"] },\n  build: {')
+      .replace('prerender: ["/", "/about"],', "prerender: [],"),
+  );
+  must(
+    fs.readFileSync(configFile, "utf8").includes("ts-source-dep/badge"),
+    "oj.config.ts patch did not apply (fixture drifted)",
+  );
+  fs.rmSync(out, { recursive: true, force: true });
+  execSync(`${oj} build playground --ssr src/entry-server.tsx --out dist-ssr-ts-dep`, {
+    cwd: repo,
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  must(
+    /from\s*["']ts-source-dep\/badge["']/.test(builtJs(out)),
+    "a verbatim ssr.external id should stay a bare import of the server bundle",
   );
   console.log("\nSSR NODE_MODULES TS PASSED");
 } catch (e) {
@@ -111,6 +143,7 @@ try {
   process.exitCode = 1;
 } finally {
   fs.writeFileSync(counterFile, originalCounter);
+  fs.writeFileSync(configFile, originalConfig);
   fs.rmSync(dep, { recursive: true, force: true });
   fs.rmSync(out, { recursive: true, force: true });
   srv?.kill("SIGKILL");

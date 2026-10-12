@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A dependency that ships raw TypeScript (an exports map pointing straight at `.ts`/`.tsx` sources) now renders under dev SSR and TanStack Start dev instead of 500ing with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`. The runtime refuses to strip types under `node_modules`, and Vite never externalizes a resolved file it cannot hand to Node (`canExternalizeFile` allows only `js`/`mjs`/`cjs`), so the Start and SSR module hosts now route TypeScript/JSX dependency files through the transform pipeline, the way `ssr.noExternal` dependencies already go.
-- SSR builds apply the same rule: externalization now resolves a dependency first (Vite's `isExternalizable`), so one whose resolved file is raw TypeScript/JSX bundles into the server bundle — even when `ssr.external` names it — instead of surviving as a bare import that fails the prerender or the built server with the same error.
+- SSR builds apply the same rule: externalization now resolves a dependency first (Vite's `isExternalizable`), so one whose resolved file is raw TypeScript/JSX bundles into the server bundle — even when `ssr.external` names its package — instead of surviving as a bare import that fails the prerender or the built server with the same error. An id listed verbatim in `ssr.external` is still forced external without the check, exactly as in Vite.
 
 ## [0.2.23] - 2026-10-09
 

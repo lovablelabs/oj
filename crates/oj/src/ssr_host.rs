@@ -309,7 +309,8 @@ impl SsrHost {
     /// sources still go through the transform pipeline — the runtime refuses
     /// to type-strip under node_modules, and Vite never externalizes a
     /// resolved file it cannot hand to Node (canExternalizeFile allows only
-    /// js/mjs/cjs).
+    /// js/mjs/cjs). Deliberately not recorded in the version graph: edits to
+    /// dependencies don't invalidate, as Vite doesn't watch node_modules.
     async fn load_dependency_ts(&self, specifier: &str) -> Result<Option<HostModule>, String> {
         let Some(path) = url::Url::parse(specifier)
             .ok()

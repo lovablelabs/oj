@@ -466,7 +466,9 @@ pub(crate) fn ts_source_ext(path: &str) -> bool {
 }
 
 fn src_lang(path: &str) -> Option<&'static str> {
-    match ext_of(path) {
+    // Case-insensitive, like `ts_source_ext`: a claimed `Badge.TSX` must also
+    // compile, not fall back to the runtime it was claimed away from.
+    match ext_of(path).to_ascii_lowercase().as_str() {
         "ts" | "mts" | "cts" => Some("ts"),
         "tsx" => Some("tsx"),
         "jsx" => Some("jsx"),
@@ -980,7 +982,8 @@ impl StartHost {
         // except TypeScript/JSX sources, which the runtime refuses to
         // type-strip under node_modules. Vite never externalizes those either
         // (canExternalizeFile allows only js/mjs/cjs), so they take the
-        // pipeline unconditionally.
+        // pipeline unconditionally. Claimed dependency modules stay out of
+        // the graph: edits don't invalidate, as Vite doesn't watch node_modules.
         if !ts_source_ext(&path_str) && !self.no_external.matches_path(&path_str) {
             return Ok(None);
         }
