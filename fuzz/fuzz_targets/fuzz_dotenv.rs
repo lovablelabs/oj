@@ -55,6 +55,17 @@ fuzz_target!(|data: &[u8]| {
     }
     // A variable in the file but not in the defines must not appear by value
     // either, unless some prefixed variable legitimately holds the same text.
+    // Builtin values are constants that cannot carry a leak, and a short value
+    // collides with their text ("c" is inside "production") or with a key's
+    // own spelling, so the check runs over the loaded entries' values only.
+    let exposed: Vec<String> = object
+        .iter()
+        .filter(|(k, _)| !BUILTINS.contains(&k.as_str()))
+        .map(|(_, v)| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .collect();
     let public: Vec<&String> = loaded
         .iter()
         .filter(|(k, _)| k.starts_with(prefix))
@@ -64,20 +75,28 @@ fuzz_target!(|data: &[u8]| {
         if key.starts_with(prefix) || value.is_empty() {
             continue;
         }
-        if public.iter().any(|v| *v == value) {
+        // Containment, not equality: `VITE_X=${SECRET}suffix` legitimately
+        // embeds the value (dotenv-expand semantics, Vite ships the same).
+        if public.iter().any(|v| v.contains(value.as_str())) {
             continue;
         }
         assert!(
-            !aggregate.contains(value.as_str()),
+            !exposed.iter().any(|s| s.contains(value.as_str())),
             "value of {key:?} leaked into the defines"
         );
     }
 
-    // The html substitution map round trips the string values.
+    // The html substitution map round trips the string values. A duplicate key
+    // loads twice and the defines keep the last occurrence, so compare that.
     let env = html_env_map(&defines);
-    for (key, value) in &loaded {
+    let last: BTreeMap<&str, &String> = loaded.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    for (key, _) in &loaded {
         if key.starts_with(prefix) {
-            assert_eq!(env.get(key.as_str()), Some(value), "{key:?} not recoverable");
+            assert_eq!(
+                env.get(key.as_str()),
+                last.get(key.as_str()).copied(),
+                "{key:?} not recoverable"
+            );
         }
     }
 });

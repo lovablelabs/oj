@@ -53,7 +53,11 @@ fuzz_target!(|data: &[u8]| {
             continue;
         };
         // Whatever was emitted is valid JavaScript.
-        let reparsed = compile(Path::new("/src/verify.mjs"), &out.code, &CompileOptions::prod());
+        let reparsed = compile(
+            Path::new("/src/verify.mjs"),
+            &out.code,
+            &CompileOptions::prod(),
+        );
         assert!(
             reparsed.is_ok(),
             "emitted invalid code for {extension}: {:?}\n---\n{}",
@@ -63,7 +67,10 @@ fuzz_target!(|data: &[u8]| {
         // Every import reported is a real specifier, and the map, if any, is a
         // data URL.
         for import in out.imports.iter().chain(out.dynamic_imports.iter()) {
-            assert!(!import.contains('\n'), "specifier with a newline: {import:?}");
+            assert!(
+                !import.contains('\n'),
+                "specifier with a newline: {import:?}"
+            );
         }
         if let Some(url) = &out.map_data_url() {
             assert!(url.starts_with("data:application/json;"), "{url}");

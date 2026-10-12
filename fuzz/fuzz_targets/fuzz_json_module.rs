@@ -28,8 +28,13 @@ fuzz_target!(|data: &[u8]| {
 
     let esm = json::to_esm(source, "/data.json").expect("valid JSON converts");
     assert!(parses_as_js(&esm), "invalid module for {source:?}:\n{esm}");
+    // Counted per line, not as a substring: a JSON string value can contain
+    // the text "export default" inside the emitted literal (the crash input),
+    // while the real statement always starts its own line.
     assert_eq!(
-        esm.matches("export default").count(),
+        esm.lines()
+            .filter(|l| l.trim_start().starts_with("export default"))
+            .count(),
         1,
         "exactly one default export:\n{esm}"
     );
