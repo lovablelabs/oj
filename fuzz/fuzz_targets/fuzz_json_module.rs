@@ -48,7 +48,9 @@ fuzz_target!(|data: &[u8]| {
             "a bare __proto__ key reached an object literal:\n{esm}"
         );
     }
-    assert!(!esm.contains("export const __proto__"), "{esm}");
+    // Exact binding only: a key that merely starts with __proto__ is a legal
+    // identifier and may export (the round-4 crash input).
+    assert!(!esm.contains("export const __proto__ "), "{esm}");
 });
 
 fn json_has_proto(value: &serde_json::Value) -> bool {

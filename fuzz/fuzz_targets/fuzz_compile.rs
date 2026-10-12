@@ -52,13 +52,12 @@ fuzz_target!(|data: &[u8]| {
         let Ok(out) = compile(&path, source, &options) else {
             continue;
         };
-        // Whatever was emitted parses back under the input's own grammar: this
-        // catches emitted garbage without asserting checks oxc does not run on
-        // TypeScript sources. Its checker leaves some strict-mode early errors
-        // to tsc (`++eval` in a module passed as .tsx and failed as .mjs), so
-        // a reparse as .mjs holds the strip pipeline to a bar its parser only
-        // enforces for JavaScript inputs.
-        let verify = std::path::PathBuf::from(format!("/src/verify.{extension}"));
+        // Whatever was emitted parses as what the browser will consume: a
+        // module, or a sloppy script for `.cjs`/`.cts` sources. `compile`
+        // guarantees this itself (`validate_emitted`); this reparse is the
+        // belt that keeps the guarantee honest.
+        let verify_ext = if extension == "cjs" { "cjs" } else { "mjs" };
+        let verify = std::path::PathBuf::from(format!("/src/verify.{verify_ext}"));
         let reparsed = compile(&verify, &out.code, &CompileOptions::prod());
         assert!(
             reparsed.is_ok(),
