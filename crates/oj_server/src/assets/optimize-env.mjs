@@ -24,7 +24,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { foldIncludeSnapshot, priorDepIds, writeIncludeSnapshot } from "./discovered-deps.mjs";
+import {
+  dropSnapshotEnvironments,
+  foldIncludeSnapshot,
+  priorDepIds,
+  writeIncludeSnapshot,
+} from "./discovered-deps.mjs";
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj:";
@@ -71,17 +76,13 @@ async function main() {
   // Snapshot BEFORE folding: the host folds the same file, and this child's
   // own optimize rewrites the metadata the snapshot was derived from.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
-  if (snapshotPath) writeIncludeSnapshot(snapshotPath, priorDepIds(rc));
-  foldIncludeSnapshot(rc, snapshotPath);
+  if (snapshotPath) writeIncludeSnapshot(snapshotPath, priorDepIds(rc), rc.root);
+  const folded = foldIncludeSnapshot(rc, snapshotPath);
 
-  const seeded = [];
-  let failed = false;
-  for (const [name, envOpts] of Object.entries(rc.environments ?? {})) {
-    // The client is served by oj itself; the in-host client environment never
-    // transforms requests, so its optimizer never fires there. Only server
-    // consumers can run an in-host pass.
-    const consumer = envOpts?.consumer ?? (name === "client" ? "client" : "server");
-    if (consumer === "client") continue;
+  // One environment's pass: construct, init, wait for the committed metadata.
+  // Returns the seeded entry, null for an environment with no optimizer to
+  // satisfy, and throws what Vite threw.
+  async function seedEnvironment(name) {
     let de;
     try {
       // The base DevEnvironment, never the env's dev.createEnvironment factory
@@ -89,17 +90,11 @@ async function main() {
       // hash inputs read only `name` and the resolved config, which the
       // subclass passes through to this same constructor unchanged.
       de = new vite.DevEnvironment(name, rc, { hot: false });
-    } catch (e) {
-      warn(`deps pre-optimization (${name}): ${e?.message ?? e}`);
-      failed = true;
-      continue;
-    }
-    // No depsOptimizer means Vite considers optimization disabled for this
-    // environment (the default for server consumers without an include list):
-    // the host will not run a pass either, nothing to seed.
-    if (!de.depsOptimizer) continue;
-    const metadataPath = join(de.config.cacheDir, name === "client" ? "deps" : `deps_${name}`, "_metadata.json");
-    try {
+      // No depsOptimizer means Vite considers optimization disabled for this
+      // environment (the default for server consumers without an include list):
+      // the host will not run a pass either, nothing to seed.
+      if (!de.depsOptimizer) return null;
+      const metadataPath = join(de.config.cacheDir, name === "client" ? "deps" : `deps_${name}`, "_metadata.json");
       await de.init();
       // Explicit optimizers (noDiscovery, the server default) run and COMMIT
       // inside init(); a discovery optimizer commits at crawl end, which with
@@ -112,22 +107,61 @@ async function main() {
           await new Promise((r) => setTimeout(r, 100));
         }
       }
-      if (existsSync(metadataPath)) {
-        seeded.push({ name, metadataPath });
-      } else {
-        warn(`deps pre-optimization (${name}): the optimizer produced no metadata`);
-        failed = true;
-      }
+      if (!existsSync(metadataPath)) throw new Error("the optimizer produced no metadata");
+      return { name, metadataPath };
+    } finally {
+      // Only after the commit: depsOptimizer.close() CANCELS an in-flight
+      // optimization. Under node this also releases the handles a natural exit
+      // waits on; the engine child exits regardless.
+      try {
+        await de?.close();
+      } catch {}
+    }
+  }
+
+  const seeded = [];
+  let failed = false;
+  for (const [name, envOpts] of Object.entries(rc.environments ?? {})) {
+    // The client is served by oj itself; the in-host client environment never
+    // transforms requests, so its optimizer never fires there. Only server
+    // consumers can run an in-host pass.
+    const consumer = envOpts?.consumer ?? (name === "client" ? "client" : "server");
+    if (consumer === "client") continue;
+    let entry;
+    try {
+      entry = await seedEnvironment(name);
     } catch (e) {
       warn(`deps pre-optimization (${name}): ${e?.message ?? e}`);
-      failed = true;
+      // Self-heal: Vite only ever optimizes ids its session discovered, so a
+      // failing optimize with REPLAYED ids folded in blames them first — a dep
+      // bump can leave a snapshot id the package's exports map now refuses,
+      // which throws (an unresolvable id only warns) and would otherwise fail
+      // every boot: the id ages out only through the very commit it prevents.
+      // Drop the environment's replayed set from the include and the snapshot
+      // (the host folds that same file strictly after this child exits) and
+      // retry once as a discovery session, Vite's own cost for a dep change.
+      const replayed = snapshotPath ? folded[name] : undefined;
+      if (!replayed?.length) {
+        failed = true;
+        continue;
+      }
+      warn(
+        `deps pre-optimization (${name}): dropping ${replayed.length} dep id(s) replayed from the last session and retrying without them`,
+      );
+      dropSnapshotEnvironments(snapshotPath, [name]);
+      const optimizeDeps = rc.environments[name]?.optimizeDeps;
+      if (optimizeDeps?.include) {
+        optimizeDeps.include = optimizeDeps.include.filter((id) => !replayed.includes(id));
+      }
+      try {
+        entry = await seedEnvironment(name);
+      } catch (e2) {
+        warn(`deps pre-optimization (${name}): ${e2?.message ?? e2}`);
+        failed = true;
+        continue;
+      }
     }
-    // Only after the commit: depsOptimizer.close() CANCELS an in-flight
-    // optimization. Under node this also releases the handles a natural exit
-    // waits on; the engine child exits regardless.
-    try {
-      await de.close();
-    } catch {}
+    if (entry) seeded.push(entry);
   }
   if (seeded.length) {
     warn(`deps pre-optimized for environment(s): ${seeded.map((s) => s.name).join(", ")}`);
