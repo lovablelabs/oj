@@ -57,20 +57,6 @@ pub struct ViteValues {
     pub html: Option<serde_json::Value>,
 }
 
-/// Bound on config extraction (default 60s, `OJ_EXTRACT_TIMEOUT` raises it):
-/// a config hook that opens a socket or timer must not wedge boot forever.
-pub(crate) fn extraction_timeout() -> std::time::Duration {
-    extraction_timeout_from(oj_env::get().knobs.extract_timeout.as_deref())
-}
-
-pub(crate) fn extraction_timeout_from(raw: Option<&str>) -> std::time::Duration {
-    let secs = raw
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(60);
-    std::time::Duration::from_secs(secs)
-}
-
 /// The oj executable one-shot engine jobs run in, set once by the binary's main.
 /// A child per job isolates native addons that crash on re-init (napi-rs before 3.10).
 pub(crate) static ENGINE_JOB_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -85,16 +71,19 @@ pub const PARENT_PID_ENV: &str = "OJ_PARENT_PID";
 
 /// Runs one export of an oj-owned module on a short-lived JS engine: in a child
 /// `oj engine-job` process when [`engine_jobs_via_subprocess`] ran, in-process otherwise.
+/// `deadline: None` runs the job unbounded, the Vite shape for config loading
+/// and the dep pre-bundle (neither has a timeout there): the wait just logs
+/// progress, and only child death fails it. Tests pass a bound.
 pub(crate) fn run_engine_job(
     root: &Path,
     module: &Path,
     export: &str,
     payload: serde_json::Value,
-    timeout: std::time::Duration,
+    deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
     match ENGINE_JOB_EXE.get() {
-        Some(exe) => run_engine_job_subprocess(exe, root, module, export, &payload, timeout),
-        None => run_engine_job_in_process(root, module, export, payload, timeout),
+        Some(exe) => run_engine_job_subprocess(exe, root, module, export, &payload, deadline),
+        None => run_engine_job_in_process(root, module, export, payload, deadline),
     }
 }
 
@@ -105,11 +94,11 @@ pub fn run_engine_job_in_process(
     module: &Path,
     export: &str,
     payload: serde_json::Value,
-    timeout: std::time::Duration,
+    deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
     let run = move || {
         let mut config = oj_js::EngineConfig::new(root);
-        config.default_deadline = Some(timeout);
+        config.default_deadline = deadline;
         config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
         let engine = oj_js::JsEngine::spawn(config, None, None)?;
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -184,7 +173,7 @@ pub(crate) fn run_engine_job_subprocess(
     module: &Path,
     export: &str,
     payload: &serde_json::Value,
-    timeout: std::time::Duration,
+    deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
     static JOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = JOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -207,7 +196,8 @@ pub(crate) fn run_engine_job_subprocess(
         .arg("--export")
         .arg(export)
         .arg("--timeout-secs")
-        .arg(timeout.as_secs().max(1).to_string())
+        // 0 = unbounded; a bounded job's child enforces the deadline itself.
+        .arg(deadline.map_or(0, |t| t.as_secs().max(1)).to_string())
         .arg("--result")
         .arg(&result_file)
         .env(PARENT_PID_ENV, std::process::id().to_string())
@@ -236,19 +226,32 @@ pub(crate) fn run_engine_job_subprocess(
         }
         // Dropping closes the pipe; the child's read_to_string completes.
     }
-    // The child enforces `timeout` itself; the grace covers spawn and result
-    // writing, then a wedged child is killed.
-    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(15);
+    // A bounded job's child enforces the deadline itself; the grace covers
+    // spawn and result writing, then a wedged child is killed. An unbounded
+    // job waits however long the work takes (Vite's shape for config loading
+    // and the pre-bundle) and logs progress so a hang is visible.
+    let started = std::time::Instant::now();
+    let kill_at = deadline.map(|t| started + t + std::time::Duration::from_secs(15));
+    let mut next_log = started + std::time::Duration::from_secs(30);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if std::time::Instant::now() >= deadline => {
+            Ok(None) if kill_at.is_some_and(|at| std::time::Instant::now() >= at) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = std::fs::remove_file(&result_file);
                 return Err(oj_js::EngineError::Deadline);
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Ok(None) => {
+                if kill_at.is_none() && std::time::Instant::now() >= next_log {
+                    eprintln!(
+                        "oj: the {export} engine job is still running ({}s)…",
+                        started.elapsed().as_secs()
+                    );
+                    next_log += std::time::Duration::from_secs(30);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
             Err(e) => {
                 let _ = std::fs::remove_file(&result_file);
                 return Err(boot(format!(
@@ -289,24 +292,19 @@ pub(crate) fn extract_vite_values_with(
     mode: &str,
     mode_explicit: bool,
 ) -> Option<ViteValues> {
-    extract_vite_values_timed(
-        root,
-        config,
-        command,
-        mode,
-        mode_explicit,
-        extraction_timeout(),
-    )
+    // Unbounded, as Vite's own config load is: a slow config evaluation
+    // delays boot (with progress logged) instead of losing its values.
+    extract_vite_values_timed(root, config, command, mode, mode_explicit, None)
 }
 
-/// [`extract_vite_values_with`] bounded by `timeout` instead of `OJ_EXTRACT_TIMEOUT`.
+/// [`extract_vite_values_with`] with the evaluation bound explicit (tests).
 pub(crate) fn extract_vite_values_timed(
     root: &Path,
     config: Option<&Path>,
     command: &str,
     mode: &str,
     mode_explicit: bool,
-    timeout: std::time::Duration,
+    timeout: Option<std::time::Duration>,
 ) -> Option<ViteValues> {
     if plugins_file(root).is_some() {
         return None;
@@ -344,9 +342,8 @@ pub(crate) fn extract_vite_values_timed(
         Ok(json) => json,
         Err(oj_js::EngineError::Deadline) => {
             eprintln!(
-                "oj: extracting {}: the config evaluation did not finish within {}s and was killed (raise OJ_EXTRACT_TIMEOUT for slower configs)",
+                "oj: extracting {}: the config evaluation hit its bound and was killed",
                 vite.display(),
-                timeout.as_secs()
             );
             return None;
         }

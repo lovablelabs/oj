@@ -15,70 +15,6 @@ fn finds_commonjs_vite_config_formats() {
     }
 }
 
-#[test]
-fn plugin_rpc_timeout_defaults_and_reads_env_seconds() {
-    assert_eq!(plugin_rpc_timeout_from(None).as_secs(), 20);
-    assert_eq!(plugin_rpc_timeout_from(Some("90")).as_secs(), 90);
-    assert_eq!(plugin_rpc_timeout_from(Some(" 5 ")).as_secs(), 5);
-    // Garbage and zero fall back to the default rather than disabling the guard.
-    assert_eq!(plugin_rpc_timeout_from(Some("soon")).as_secs(), 20);
-    assert_eq!(plugin_rpc_timeout_from(Some("0")).as_secs(), 20);
-}
-
-#[test]
-fn plugin_init_timeout_defaults_and_reads_env_seconds() {
-    assert_eq!(plugin_init_timeout_from(None).as_secs(), 300);
-    assert_eq!(plugin_init_timeout_from(Some("2")).as_secs(), 2);
-    assert_eq!(plugin_init_timeout_from(Some("soon")).as_secs(), 300);
-    assert_eq!(plugin_init_timeout_from(Some("0")).as_secs(), 300);
-}
-
-#[test]
-fn extraction_timeout_defaults_and_reads_env_seconds() {
-    assert_eq!(extraction_timeout_from(None).as_secs(), 60);
-    assert_eq!(extraction_timeout_from(Some("120")).as_secs(), 120);
-    assert_eq!(extraction_timeout_from(Some("junk")).as_secs(), 60);
-    assert_eq!(extraction_timeout_from(Some("0")).as_secs(), 60);
-}
-
-// Init-wait policy: EVERY spawn kind waits out the full init budget, never
-// one hook window. Under Vite a request cannot precede plugin init (the
-// socket opens after initServer), and a production-scale config boots slower
-// than a hook window: the first SSR transform must wait for it, not 500.
-#[test]
-fn init_wait_is_the_full_init_budget_for_every_spawn_kind() {
-    let (wait, knob) = init_wait_policy();
-    assert_eq!(wait, plugin_init_timeout());
-    assert_eq!(knob, "OJ_PLUGIN_INIT_TIMEOUT");
-    assert!(wait > plugin_rpc_timeout());
-}
-
-// A lazy host's init gate is per-call: a call past spawn + init_wait gets its
-// own full window; a boot host keeps the shared spawn-anchored deadline.
-#[test]
-fn lazy_call_past_the_spawn_deadline_gets_its_own_init_window() {
-    let wait = std::time::Duration::from_secs(20);
-    let spawned = tokio::time::Instant::now();
-    // A call 40 s after spawn, with the 20 s window long since elapsed.
-    let now = spawned + std::time::Duration::from_secs(40);
-    let lazy = call_init_deadline(true, spawned, wait, now);
-    assert_eq!(
-        lazy,
-        now + wait,
-        "the lazy window anchors to the call's own start"
-    );
-    let boot = call_init_deadline(false, spawned, wait, now);
-    assert_eq!(
-        boot,
-        spawned + wait,
-        "the boot deadline stays shared and spawn-anchored"
-    );
-    assert!(
-        boot <= now,
-        "sanity: the boot deadline has elapsed for this call"
-    );
-}
-
 // Only the FIRST report per generation declares the host gone; duplicates and
 // stale generations are dropped, a revived generation reports fresh.
 #[test]
@@ -242,14 +178,9 @@ async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    .expect("the embedded engine spawns");
+    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+        .await
+        .expect("the embedded engine spawns");
     host.resolve_id("x", "").await.expect("a live host serves");
     (root, host)
 }
@@ -388,10 +319,7 @@ return null;
         &root,
         &plugins,
         &config,
-        true,
         SpawnTimeouts {
-            init_wait: Some(std::time::Duration::from_secs(30)),
-            rpc: Some(std::time::Duration::from_secs(20)),
             memory: Some(128 * 1024 * 1024),
             ..Default::default()
         },
@@ -453,20 +381,17 @@ async fn the_respawn_budget_is_finite_and_spaced() {
     assert!(!host.can_revive(), "no revive left for waiters to hold on");
 }
 
-// The server-entry incident's shape: a lazy host whose init outlasts the
-// per-hook RPC window still serves the first transform-path call. Vite never
-// fails a request on a slow plugin boot (requests only exist after init), so
-// the call waits init out under the init budget; the RPC window governs the
-// hook run alone. The old policy's default lazy window (20s) also outlasts
-// this init, so the POLICY pin lives in the knob assertions of
-// init_wait_is_the_full_init_budget_for_every_spawn_kind and the expired-
-// window error below; this one guards the served path end to end.
+// The server-entry incident's shape: a lazy host whose init outlasts every
+// probe window still serves the first transform-path call. Vite never fails
+// a request on a slow plugin boot (requests only exist after init), and
+// elapsed time alone fails nothing here either: the probes just tick while
+// the call waits init out.
 #[tokio::test]
-async fn lazy_call_during_an_init_slower_than_the_rpc_window_is_served() {
+async fn lazy_call_during_an_init_slower_than_the_probe_window_is_served() {
     let root = std::env::temp_dir().join(format!("oj-lazy-slow-init-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    // Init outlasts the 1s RPC window below, then completes.
+    // Init outlasts several 500ms probe windows, then completes.
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
         &plugins,
@@ -482,9 +407,8 @@ async fn lazy_call_during_an_init_slower_than_the_rpc_window_is_served() {
         &root,
         &plugins,
         &config,
-        true,
         SpawnTimeouts {
-            rpc: Some(std::time::Duration::from_secs(1)),
+            probe: Some(std::time::Duration::from_millis(500)),
             ..Default::default()
         },
     )
@@ -501,98 +425,16 @@ async fn lazy_call_during_an_init_slower_than_the_rpc_window_is_served() {
     );
 }
 
+// The init wait is UNBOUNDED: elapsed time never fails a pre-init call (the
+// Vite shape — a request only exists after initServer resolved). The stall
+// monitor still flips wedge EVIDENCE for health waiters, and host death is
+// what releases a waiting call.
 #[tokio::test]
-async fn pre_init_calls_keep_their_own_window_after_an_earlier_one_expired() {
+async fn pre_init_calls_never_fail_on_elapsed_time_only_on_host_death() {
     let root = std::env::temp_dir().join(format!("oj-lazy-window-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    // A plugins file whose top-level init is slow but healthy.
-    let plugins = root.join("oj.plugins.mjs");
-    std::fs::write(
-        &plugins,
-        "await new Promise((r) => setTimeout(r, 2500));\nexport default [];\n",
-    )
-    .unwrap();
-    let config = serde_json::json!({
-        "config": { "root": root.display().to_string() },
-        "env": { "command": "serve", "mode": "development" },
-    })
-    .to_string();
-    let host = match PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(1),
-    )
-    .await
-    {
-        Ok(h) => h,
-        Err(e) => panic!("the embedded engine spawns: {e}"),
-    };
-    let mut evidence = host.init_failure_updates();
-    assert!(
-        !*evidence.borrow_and_update(),
-        "no evidence before a window expires"
-    );
-
-    // First call waits its full per-call window, then fails on the window,
-    // flipping the evidence watch.
-    let t0 = std::time::Instant::now();
-    let first = host.resolve_id("x", "").await;
-    let first_err = first.expect_err("init outlives the first call's window");
-    assert!(first_err.contains("still initializing"), "{first_err}");
-    // The expired window names the init budget's knob: a lazy host waits out
-    // OJ_PLUGIN_INIT_TIMEOUT like a boot host, never the per-hook window.
-    assert!(first_err.contains("OJ_PLUGIN_INIT_TIMEOUT"), "{first_err}");
-    assert!(
-        t0.elapsed() >= std::time::Duration::from_millis(900),
-        "the first call waits its full window, got {:?}",
-        t0.elapsed()
-    );
-    assert!(
-        *evidence.borrow_and_update(),
-        "the expired window is wedge evidence"
-    );
-
-    // Later calls each keep their OWN full window (never the removed
-    // fail-fast latch), so one is served the moment init lands.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        let t = std::time::Instant::now();
-        match host.resolve_id("x", "").await {
-            Ok(_) => break,
-            Err(e) => {
-                assert!(
-                    e.contains("still initializing"),
-                    "never a latched fail-fast: {e}"
-                );
-                assert!(
-                    t.elapsed() >= std::time::Duration::from_millis(900),
-                    "a pre-init call after an expired window still gets its own window, got {:?}",
-                    t.elapsed()
-                );
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "a late init never served a waiting call: {e}"
-                );
-            }
-        }
-    }
-    assert!(
-        !*evidence.borrow_and_update(),
-        "init progressing clears the wedge evidence"
-    );
-}
-
-// Submit-before-gate hazard, pinned: pre-init calls must submit NOTHING;
-// concurrent calls each fail at their own window, proving none queued on the wedged engine.
-#[tokio::test]
-async fn wedged_host_pre_init_calls_fail_at_their_window_without_submitting_jobs() {
-    let root = std::env::temp_dir().join(format!("oj-wedged-stdin-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    // Init never completes; the interval keeps the event loop alive (the
-    // shape that wedged the old node child).
+    // Init never completes; the interval keeps the event loop alive.
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
         &plugins,
@@ -604,34 +446,61 @@ async fn wedged_host_pre_init_calls_fail_at_their_window_without_submitting_jobs
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = match PluginHost::spawn_lazy_with_wait(
+    let host = match PluginHost::spawn_with_timeouts(
         &root,
         &plugins,
         &config,
-        std::time::Duration::from_secs(1),
+        SpawnTimeouts {
+            stall: Some(std::time::Duration::from_millis(300)),
+            probe: Some(std::time::Duration::from_millis(300)),
+            ..Default::default()
+        },
     )
     .await
     {
         Ok(h) => h,
         Err(e) => panic!("the embedded engine spawns: {e}"),
     };
-    // Far past any OS pipe buffer, the old transport's wedge trigger: the
-    // write-first path would have blocked here instead of gating on init.
+    let mut evidence = host.init_failure_updates();
+
+    // Far past any OS pipe buffer (the old transport's wedge trigger), and
+    // two concurrent calls: pre-init calls must submit NOTHING and simply
+    // wait, not serialize behind — or block on — the wedged engine.
     let big = "x".repeat(2 * 1024 * 1024);
-    let t0 = std::time::Instant::now();
-    let (a, b) = tokio::join!(host.resolve_id(&big, ""), host.resolve_id(&big, ""));
-    for res in [a, b] {
-        let err = res.expect_err("a wedged host fails pre-init calls at their window");
-        assert!(err.contains("still initializing"), "{err}");
-    }
-    let elapsed = t0.elapsed();
+    let waiting = {
+        let host = std::sync::Arc::clone(&host);
+        let big = big.clone();
+        tokio::spawn(
+            async move { tokio::join!(host.resolve_id(&big, ""), host.resolve_id(&big, "")) },
+        )
+    };
+    // Many former windows later the calls are still waiting…
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     assert!(
-        elapsed >= std::time::Duration::from_millis(900),
-        "each call waits its window, got {elapsed:?}"
+        !waiting.is_finished(),
+        "elapsed time alone never fails a pre-init call"
     );
+    // …while the stall monitor flipped the evidence with no call's help.
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "concurrent windows, not calls serialized behind a wedged engine: {elapsed:?}"
+        *evidence.borrow_and_update(),
+        "the stall monitor owns wedge evidence"
+    );
+
+    // Host death is what fails the waiters, and promptly.
+    host.shutdown();
+    let t0 = std::time::Instant::now();
+    let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("death releases the waiters")
+        .unwrap();
+    for res in [a, b] {
+        let err = res.expect_err("a dead host fails its waiting calls");
+        assert!(err.contains("plugin host exited"), "{err}");
+    }
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(2),
+        "waiters release on the death flip (engine teardown latency), not a timer: {:?}",
+        t0.elapsed()
     );
 }
 
@@ -660,9 +529,7 @@ async fn boot_host_stall_monitor_flips_evidence_without_a_call_and_init_clears_i
         &root,
         &plugins,
         &config,
-        false,
         SpawnTimeouts {
-            init_wait: Some(std::time::Duration::from_secs(120)),
             stall: Some(std::time::Duration::from_secs(1)),
             ..Default::default()
         },
@@ -696,9 +563,7 @@ async fn boot_host_stall_monitor_flips_evidence_without_a_call_and_init_clears_i
         &root,
         &plugins,
         &config,
-        false,
         SpawnTimeouts {
-            init_wait: Some(std::time::Duration::from_secs(120)),
             stall: Some(std::time::Duration::from_millis(500)),
             ..Default::default()
         },
@@ -734,10 +599,12 @@ async fn boot_host_stall_monitor_flips_evidence_without_a_call_and_init_clears_i
     host.shutdown();
 }
 
-// A hook wedging the isolate in SYNCHRONOUS JS is interrupted by the per-call
-// watchdog at the deadline: ONE call fails, the host survives.
+// A hook wedging the isolate in SYNCHRONOUS JS silences the liveness probes
+// (the event loop cannot answer the ping): the host is declared gone and the
+// next call revives it. Vite would hang forever on the same plugin; oj pays
+// one respawn instead, and no timer ever kills healthy work to get there.
 #[tokio::test]
-async fn synchronously_wedged_hook_is_terminated_at_its_deadline_and_the_host_survives() {
+async fn synchronously_wedged_hook_silences_the_probes_and_the_host_is_revived() {
     let root = std::env::temp_dir().join(format!("oj-wedged-sync-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -765,10 +632,8 @@ return null;
         &root,
         &plugins,
         &config,
-        true,
         SpawnTimeouts {
-            init_wait: Some(std::time::Duration::from_secs(30)),
-            rpc: Some(std::time::Duration::from_secs(1)),
+            probe: Some(std::time::Duration::from_millis(500)),
             ..Default::default()
         },
     )
@@ -781,25 +646,27 @@ return null;
     let err = host
         .load("__block__")
         .await
-        .expect_err("a synchronous wedge fails at its own deadline");
+        .expect_err("a synchronous wedge silences the probes");
     assert!(
-        err.contains("timed out") && err.contains("OJ_PLUGIN_TIMEOUT"),
-        "one call fails on its timeout, the host is kept: {err}"
+        err.contains("unresponsive") || err.contains("exited"),
+        "the probe names the wedge: {err}"
     );
     assert!(
         t0.elapsed() < std::time::Duration::from_secs(10),
-        "bounded: {:?}",
+        "bounded by the probe, not a hook budget: {:?}",
         t0.elapsed()
     );
-    // The wedge was terminated, not the host: later calls succeed.
+    // Gone but not terminally: the next call revives on a fresh generation.
+    clear_respawn_spacing(&host);
     host.load("after")
         .await
-        .expect("the host survives a terminated synchronous wedge");
+        .expect("the next call revives the host and serves");
     host.shutdown();
 }
 
-// Transport belt: a hook blocked in NATIVE code stops the scheduler entirely,
-// so the belt declares the host GONE and the next call revives it; the blocked thread leaks until the block ends.
+// A hook blocked in NATIVE code stops the scheduler entirely, so the probe
+// goes unanswered and declares the host GONE; the next call revives it (the
+// blocked thread leaks until the block ends).
 #[tokio::test]
 async fn natively_blocked_hook_declares_the_host_gone_and_the_next_call_revives_it() {
     let root = std::env::temp_dir().join(format!("oj-wedged-native-{}", std::process::id()));
@@ -830,10 +697,8 @@ return null;
         &root,
         &plugins,
         &config,
-        true,
         SpawnTimeouts {
-            init_wait: Some(std::time::Duration::from_secs(30)),
-            rpc: Some(std::time::Duration::from_secs(1)),
+            probe: Some(std::time::Duration::from_millis(500)),
             ..Default::default()
         },
     )
@@ -845,10 +710,10 @@ return null;
     let err = host
         .load("__block__")
         .await
-        .expect_err("a native block must fail at the belt");
+        .expect_err("a native block must fail at the probe");
     assert!(
         err.contains("unresponsive") || err.contains("exited"),
-        "the belt names the wedge: {err}"
+        "the probe names the wedge: {err}"
     );
     assert!(
         t0.elapsed() < std::time::Duration::from_secs(10),
@@ -881,10 +746,12 @@ return null;
     );
 }
 
-// A hook that merely never SETTLES fails only that call at the per-call
-// deadline; only total scheduler silence declares the host gone.
+// A hook that merely never SETTLES leaves its event loop parked, so the
+// probes keep answering and the call just WAITS — Vite's exact behavior for
+// a never-resolving plugin hook. Nobody else is affected, no timer fires,
+// and host death is what would release the waiter.
 #[tokio::test]
-async fn hung_hook_promise_fails_only_that_call() {
+async fn hung_hook_promise_waits_and_the_host_keeps_serving() {
     let root = std::env::temp_dir().join(format!("oj-hung-hook-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -910,10 +777,8 @@ return null;
         &root,
         &plugins,
         &config,
-        true,
         SpawnTimeouts {
-            init_wait: Some(std::time::Duration::from_secs(30)),
-            rpc: Some(std::time::Duration::from_secs(1)),
+            probe: Some(std::time::Duration::from_millis(300)),
             ..Default::default()
         },
     )
@@ -921,35 +786,34 @@ return null;
     .expect("the embedded engine spawns");
     host.load("warmup").await.expect("healthy host answers");
 
-    // A concurrent healthy call proves the hang costs nobody else their
-    // window while the hung one waits out its own deadline.
-    let racer = std::sync::Arc::clone(&host);
-    let healthy = tokio::spawn(async move { racer.load("alongside").await });
-    let t0 = std::time::Instant::now();
-    let err = host
-        .load("__hang__")
-        .await
-        .expect_err("a never-settling hook fails at its own deadline");
+    // The hung call outlives MANY probe windows without failing: the parked
+    // loop answers every ping, so no timer and no wedge verdict fires.
+    let hung = {
+        let host = std::sync::Arc::clone(&host);
+        tokio::spawn(async move { host.load("__hang__").await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     assert!(
-        err.contains("timed out") && err.contains("OJ_PLUGIN_TIMEOUT"),
-        "names the per-call timeout, not a wedge: {err}"
+        !hung.is_finished(),
+        "a never-settling hook is waited on, never timed out"
     );
-    assert!(
-        t0.elapsed() >= std::time::Duration::from_millis(900)
-            && t0.elapsed() < std::time::Duration::from_secs(2),
-        "fails at the deadline, before the belt: {:?}",
-        t0.elapsed()
-    );
-    healthy
+    // The host keeps serving everyone else while the hang waits.
+    host.load("alongside")
         .await
-        .unwrap()
         .expect("a concurrent call is untouched by the hang");
+    assert!(
+        !*host.host_gone.borrow(),
+        "no wedge verdict for a parked loop"
+    );
 
-    // The host was NOT declared gone: later calls succeed.
-    host.load("after")
-        .await
-        .expect("the host survives an abandoned hook promise");
+    // Host death releases the waiter promptly.
     host.shutdown();
+    let released = tokio::time::timeout(std::time::Duration::from_secs(5), hung)
+        .await
+        .expect("death releases the hung waiter")
+        .unwrap();
+    let err = released.expect_err("a dead host fails its waiting call");
+    assert!(err.contains("exited"), "{err}");
 }
 
 // Plugin env writes land in a private shadow, NEVER in oj's real environment;

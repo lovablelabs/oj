@@ -564,12 +564,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 serde_json::from_str(&buf).context("engine-job payload json")?;
             // A job failure travels inside the envelope; a nonzero exit is
             // reserved for the harness itself (or a native addon crash).
+            // 0 = unbounded (the spawner's wait owns patience and logging).
             let outcome = oj_server::plugins::run_engine_job_in_process(
                 &root,
                 &module,
                 &export,
                 payload,
-                std::time::Duration::from_secs(timeout_secs),
+                (timeout_secs > 0).then(|| std::time::Duration::from_secs(timeout_secs)),
             );
             let envelope = oj_server::plugins::engine_job_envelope(&outcome);
             std::fs::write(&result, serde_json::to_string(&envelope)?)

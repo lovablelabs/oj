@@ -119,8 +119,10 @@ export default { base: a.base + b.base };"#);
     );
 }
 
+// Production extraction is UNBOUNDED (Vite loads configs with no timeout);
+// the explicit bound stays available and still terminates a wedged job.
 #[test]
-fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
+fn a_config_that_never_finishes_is_terminated_at_an_explicit_bound() {
     let _g = lock();
     let dir = app("await new Promise(() => {});\nexport default {};");
     let root = dir.path();
@@ -131,12 +133,12 @@ fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
         "serve",
         "development",
         true,
-        extraction_timeout_from(Some("2")),
+        Some(std::time::Duration::from_secs(2)),
     );
     assert!(result.is_none(), "a wedged config evaluation is a failure");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(30),
-        "the deadline must end the wait, not the config's leisure"
+        "the explicit bound must end the wait, not the config's leisure"
     );
 }
 
@@ -276,7 +278,7 @@ export async function run() {
         &dir.path().join("spawn-job.mjs"),
         "run",
         serde_json::json!({}),
-        std::time::Duration::from_secs(30),
+        Some(std::time::Duration::from_secs(30)),
     )
     .expect("child_process must work under the embedded engine");
     assert_eq!(out["sync"], "sync-child");

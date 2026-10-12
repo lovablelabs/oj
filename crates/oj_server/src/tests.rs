@@ -58,14 +58,7 @@ async fn ssr_watch_skip_is_instant_and_replays_at_the_hosts_init() {
         "setInterval(() => {}, 1000);\nawait new Promise(() => {});\nexport default [];\n",
     )
     .unwrap();
-    let wedged = match plugins::PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    {
+    let wedged = match plugins::PluginHost::spawn_lazy(&root, &plugins, &config, None).await {
         Ok(h) => h,
         Err(_) => return, // no node on this machine
     };
@@ -97,14 +90,7 @@ async fn ssr_watch_skip_is_instant_and_replays_at_the_hosts_init() {
         "await new Promise((r) => setTimeout(r, 1000));\nexport default [];\n",
     )
     .unwrap();
-    let host = match plugins::PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    {
+    let host = match plugins::PluginHost::spawn_lazy(&root, &plugins, &config, None).await {
         Ok(h) => h,
         Err(_) => return,
     };
@@ -159,14 +145,7 @@ appendFileSync({log:?}, id + "|" + ((change && change.event) || "?") + "\n");
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = match plugins::PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    {
+    let host = match plugins::PluginHost::spawn_lazy(&root, &plugins, &config, None).await {
         Ok(h) => h,
         Err(_) => return, // no node on this machine
     };

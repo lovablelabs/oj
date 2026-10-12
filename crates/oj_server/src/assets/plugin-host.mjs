@@ -4232,6 +4232,12 @@ export async function ojRun(hook, args) {
 export function ojHostReady() {
   return true;
 }
+// Liveness probe for calls waiting out a long hook: a parked event loop
+// answers instantly, so no answer means the isolate is wedged in synchronous
+// JS or native code (the Rust side then declares the host gone).
+export function ojPing() {
+  return true;
+}
 
 // Under plain `node` (the direct-drive unit tests) the stdio protocol stays:
 // newline JSON over stdin, replies and control pushes on stdout.

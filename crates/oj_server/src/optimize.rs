@@ -454,7 +454,6 @@ impl OptimizedDeps {
     /// `?v=` the committed entry no longer carries is Vite's outdated-request
     /// 504, which a page mid-reload may still send.
     pub async fn await_dep(&self, file: &str, req_version: Option<&str>) -> DepServe {
-        let deadline = tokio::time::Instant::now() + optimizer_timeout();
         let mut rx = self.rx.clone();
         loop {
             enum St {
@@ -489,13 +488,11 @@ impl OptimizedDeps {
                 St::Ready => return DepServe::Ready,
                 St::Outdated => return DepServe::Outdated,
                 St::Wait => {
-                    tokio::select! {
-                        changed = rx.changed() => {
-                            if changed.is_err() {
-                                return DepServe::Ready;
-                            }
-                        }
-                        _ = tokio::time::sleep_until(deadline) => return DepServe::Ready,
+                    // Unbounded, as Vite's await of the dep's processing
+                    // promise is: the rerun completing (or failing — both
+                    // commit a map) flips the watch.
+                    if rx.changed().await.is_err() {
+                        return DepServe::Ready;
                     }
                 }
             }
@@ -1130,20 +1127,6 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<Manifest> {
     })
 }
 
-/// Deadline for the dep pre-bundle (a wedged bundler must not stall it
-/// forever): 120 s default, raised via `OJ_OPTIMIZE_TIMEOUT=<seconds>`.
-pub(crate) fn optimizer_timeout() -> std::time::Duration {
-    optimizer_timeout_from(oj_env::get().knobs.optimize_timeout.as_deref())
-}
-
-fn optimizer_timeout_from(raw: Option<&str>) -> std::time::Duration {
-    let secs = raw
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(120);
-    std::time::Duration::from_secs(secs)
-}
-
 /// `discovered`: serve-time-found deps bundled alongside the configured set
 /// (as implicit includes, which never warn). `browser_version` is the `?v=`
 /// the emitted URLs carry, and `keep_existing` leaves the previous bundle's
@@ -1209,32 +1192,19 @@ async fn run_optimizer(
     if let Some(host) = host {
         cfg["scanned"] = scan_through_plugins(host, &cfg).await;
     }
-    let timeout = optimizer_timeout();
     let job_root = root.to_path_buf();
     let job_script = script.clone();
     // spawn_blocking: the engine job blocks its thread for the whole
     // pre-bundle (see run_engine_job), which must not park a runtime worker.
+    // Unbounded, as Vite's optimizer run is: a large dep set bundles as long
+    // as it needs (the job wait logs progress); only job death fails it.
     let result = tokio::task::spawn_blocking(move || {
-        crate::plugins::run_engine_job(&job_root, &job_script, "optimize", cfg, timeout)
+        crate::plugins::run_engine_job(&job_root, &job_script, "optimize", cfg, None)
     })
     .await
     .ok()?;
     let v = match result {
         Ok(v) => v,
-        Err(oj_js::EngineError::Deadline) => {
-            eprintln!(
-                "oj: the dep pre-bundle did not finish within {}s and was stopped (raise OJ_OPTIMIZE_TIMEOUT for slower machines); deps are served unbundled",
-                timeout.as_secs()
-            );
-            oj_diag::emit(oj_diag::Event::new(
-                oj_diag::Kind::OptimizeError,
-                format!(
-                    "dep pre-bundle stopped after {}s; deps are served unbundled",
-                    timeout.as_secs()
-                ),
-            ));
-            return None;
-        }
         Err(e) => {
             eprintln!("oj: optimizer failed: {e}");
             oj_diag::emit(oj_diag::Event::new(
@@ -1931,16 +1901,6 @@ mod tests {
                 .is_none(),
             "a no-rewrite file is memoized, not re-scanned per request"
         );
-    }
-
-    #[test]
-    fn optimizer_timeout_defaults_and_reads_env_seconds() {
-        assert_eq!(optimizer_timeout_from(None).as_secs(), 120);
-        assert_eq!(optimizer_timeout_from(Some("300")).as_secs(), 300);
-        assert_eq!(optimizer_timeout_from(Some(" 30 ")).as_secs(), 30);
-        // Garbage and zero fall back to the default rather than disabling the bound.
-        assert_eq!(optimizer_timeout_from(Some("junk")).as_secs(), 120);
-        assert_eq!(optimizer_timeout_from(Some("0")).as_secs(), 120);
     }
 
     #[tokio::test]

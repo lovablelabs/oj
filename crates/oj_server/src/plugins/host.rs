@@ -26,29 +26,22 @@ pub struct PluginHost {
     /// Host is gone (engine thread exited, init failed, or declared wedged): fail
     /// calls fast. A watch so waiters select on the death instead of polling.
     pub(crate) host_gone: tokio::sync::watch::Sender<bool>,
-    /// When the CURRENT generation spawned (reset by a revive); the init deadline
-    /// is measured from here so boot RPCs share one deadline.
+    /// When the CURRENT generation spawned (reset by a revive); the init warn
+    /// bound reporting tools consult is measured from here.
     spawned: Mutex<tokio::time::Instant>,
-    /// How long a call may wait for top-level init: the boot host takes the long
-    /// deadline measured from spawn, a lazy host the per-call bound from each call's start.
-    pub(crate) init_wait: std::time::Duration,
-    /// Lazily spawned: init wait anchors to each call's own start, so every
-    /// pre-init call gets a full window and an expired one never fails a later call (see `call`).
-    lazy: bool,
-    /// Wedge EVIDENCE, not a call gate: true when a full init window or stall
-    /// window passed with no milestone, false again on progress. Calls never consult it; waiters do.
+    /// Wedge EVIDENCE, not a call gate: true when a full stall window passed
+    /// with no milestone, false again on progress. Calls never consult it; waiters do.
     init_failed: tokio::sync::watch::Sender<bool>,
-    /// The env knob named when the init wait elapses (matches `init_wait`).
-    init_knob: &'static str,
     /// Count of `{ ojResyncDone }` pushes (a resync EXECUTED; the ack only means
     /// enqueued). A counter so a completion landing before the wait starts is never missed.
     resync_done: tokio::sync::watch::Sender<u64>,
     /// Count of `{ ojInitProgress }` pushes (init milestones). The stall monitor
     /// measures its wedge window from the LAST milestone, so a slow but progressing boot is never wedged.
     init_progress_seen: tokio::sync::watch::Sender<u64>,
-    /// Per-call RPC timeout, snapshotted at spawn; tests override it to avoid
-    /// racing the env knob other tests read.
-    rpc_wait: std::time::Duration,
+    /// How often a call waiting on a running hook probes the engine for
+    /// liveness (and logs progress); never a budget the hook must finish
+    /// within. Tests compress it.
+    probe_wait: std::time::Duration,
     /// Last "still initializing" progress line, so concurrent init-gated calls
     /// print one line per interval, not one each.
     init_progress: Mutex<std::time::Instant>,
@@ -311,33 +304,17 @@ pub(crate) fn ctx_rpc(
     }
 }
 
-/// How long one plugin hook may run (default 20s, `OJ_PLUGIN_TIMEOUT` raises it);
-/// Vite has no hook timeout at all.
-pub fn plugin_rpc_timeout() -> std::time::Duration {
-    plugin_rpc_timeout_from(oj_env::get().knobs.plugin_timeout.as_deref())
-}
+/// How often a waiting call probes a running hook for engine liveness, and
+/// the stall monitor's default no-milestone window. Vite runs plugin work
+/// unbounded, so elapsed time alone never fails anything here: only process
+/// death, or a probe met with total engine silence, does.
+pub const PROBE_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
 
-pub(crate) fn plugin_rpc_timeout_from(raw: Option<&str>) -> std::time::Duration {
-    let secs = raw
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(20);
-    std::time::Duration::from_secs(secs)
-}
-
-/// How long the host may take to finish top-level init before a waiting RPC
-/// gives up (`OJ_PLUGIN_INIT_TIMEOUT`); gates `call` instead of racing the per-call timeout.
-pub fn plugin_init_timeout() -> std::time::Duration {
-    plugin_init_timeout_from(oj_env::get().knobs.plugin_init_timeout.as_deref())
-}
-
-pub(crate) fn plugin_init_timeout_from(raw: Option<&str>) -> std::time::Duration {
-    let secs = raw
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(300);
-    std::time::Duration::from_secs(secs)
-}
+/// When reporting tools start calling an uninitialized boot loud (the boot
+/// warning, the Start prewarm hold's outer bound). Never a call gate: calls
+/// wait init out however long it takes, exactly as a Vite request can only
+/// exist after `initServer` resolved.
+pub(crate) const INIT_WARN: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// A `{ ojWs }` push as the HMR payload to broadcast: a custom event when it
 /// names one, else the raw object. Empty means nothing to send.
@@ -390,48 +367,20 @@ impl Drop for PluginHost {
     }
 }
 
-/// Init deadline a pre-init `call` waits out: boot hosts share `spawned +
-/// init_wait`, lazy hosts anchor to the CALL's own start (init landing releases early).
-pub(crate) fn call_init_deadline(
-    lazy: bool,
-    spawned: tokio::time::Instant,
-    init_wait: std::time::Duration,
-    now: tokio::time::Instant,
-) -> tokio::time::Instant {
-    if lazy {
-        now + init_wait
-    } else {
-        spawned + init_wait
-    }
-}
-
-/// Init wait for EVERY spawn kind: the full init budget. Under Vite a request
-/// cannot precede plugin init (httpServer.listen is overridden to await
-/// initServer first), so a slow plugin boot delays requests and never fails
-/// them; a lazy host's first transform gets the same patience here instead of
-/// one hook window (a production-scale config boots slower than that). Only
-/// the deadline's anchor differs per kind (see [`call_init_deadline`]), and
-/// the per-hook `OJ_PLUGIN_TIMEOUT` starts once init has answered.
-pub(crate) fn init_wait_policy() -> (std::time::Duration, &'static str) {
-    (plugin_init_timeout(), "OJ_PLUGIN_INIT_TIMEOUT")
-}
-
-/// Per-spawn timeout overrides for tests, avoiding races on the env-var knobs
-/// other tests read. Production spawns pass the default (env-derived).
+/// Per-spawn window overrides for tests, compressing the probe and stall
+/// windows without racing env state. Production spawns pass the default.
 #[derive(Default)]
 pub(crate) struct SpawnTimeouts {
-    pub(crate) init_wait: Option<std::time::Duration>,
-    /// The stall monitor's no-progress window (defaults to the RPC timeout).
+    /// The stall monitor's no-progress window (defaults to the probe window).
     pub(crate) stall: Option<std::time::Duration>,
-    /// The per-call RPC timeout (`PluginHost::rpc_wait`).
-    pub(crate) rpc: Option<std::time::Duration>,
+    /// The liveness probe interval (`PluginHost::probe_wait`).
+    pub(crate) probe: Option<std::time::Duration>,
     /// The engine heap cap (defaults to `plugin_host_memory_mb`).
     pub(crate) memory: Option<usize>,
 }
 
 impl PluginHost {
-    /// Spawn a boot-time host: calls wait out the full init deadline, because
-    /// boot correctness depends on its snapshot RPCs.
+    /// Spawn a boot-time host.
     pub async fn spawn(
         root: &Path,
         plugins_file: &Path,
@@ -442,7 +391,6 @@ impl PluginHost {
             root,
             plugins_file,
             config_json,
-            false,
             SpawnTimeouts::default(),
             registry,
         )
@@ -450,9 +398,9 @@ impl PluginHost {
     }
 
     /// Spawn a lazily created host (e.g. the SSR environment host), booted on
-    /// first demand. Its calls wait out the same init budget a boot host gets,
-    /// anchored at each call's own start; the watcher never waits here at all
-    /// (pre-init events fast-skip into `SsrWatchQueue` for a catch-up replay).
+    /// first demand. Its calls wait init out like a boot host's; the watcher
+    /// never waits here at all (pre-init events fast-skip into
+    /// `SsrWatchQueue` for a catch-up replay).
     pub async fn spawn_lazy(
         root: &Path,
         plugins_file: &Path,
@@ -463,63 +411,34 @@ impl PluginHost {
             root,
             plugins_file,
             config_json,
-            true,
             SpawnTimeouts::default(),
             registry,
         )
         .await
     }
 
-    /// Test-only lazy spawn with an explicit init wait.
-    #[cfg(test)]
-    pub(crate) async fn spawn_lazy_with_wait(
-        root: &Path,
-        plugins_file: &Path,
-        config_json: &str,
-        init_wait: std::time::Duration,
-    ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_with_policy(
-            root,
-            plugins_file,
-            config_json,
-            true,
-            SpawnTimeouts {
-                init_wait: Some(init_wait),
-                ..Default::default()
-            },
-            None,
-        )
-        .await
-    }
-
-    /// Test-only spawn with every timeout explicit (see `SpawnTimeouts`).
+    /// Test-only spawn with the probe and stall windows explicit (see `SpawnTimeouts`).
     #[cfg(test)]
     pub(crate) async fn spawn_with_timeouts(
         root: &Path,
         plugins_file: &Path,
         config_json: &str,
-        lazy: bool,
         timeouts: SpawnTimeouts,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_with_policy(root, plugins_file, config_json, lazy, timeouts, None).await
+        Self::spawn_with_policy(root, plugins_file, config_json, timeouts, None).await
     }
 
     async fn spawn_with_policy(
         root: &Path,
         plugins_file: &Path,
         config_json: &str,
-        lazy: bool,
         timeouts: SpawnTimeouts,
         registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
 
-        let (mut init_wait, init_knob) = init_wait_policy();
-        if let Some(w) = timeouts.init_wait {
-            init_wait = w;
-        }
-        let rpc_wait = timeouts.rpc.unwrap_or_else(plugin_rpc_timeout);
-        let stall_wait = timeouts.stall.unwrap_or(rpc_wait);
+        let probe_wait = timeouts.probe.unwrap_or(PROBE_WINDOW);
+        let stall_wait = timeouts.stall.unwrap_or(probe_wait);
         let boot_seed = serde_json::json!({
             "pluginsPath": plugins_file,
             "initialJson": config_json,
@@ -537,13 +456,10 @@ impl PluginHost {
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
             spawned: Mutex::new(tokio::time::Instant::now()),
-            init_wait,
-            lazy,
             init_failed: tokio::sync::watch::channel(false).0,
-            init_knob,
             resync_done: tokio::sync::watch::channel(0).0,
             init_progress_seen: tokio::sync::watch::channel(0).0,
-            rpc_wait,
+            probe_wait,
             init_progress: Mutex::new(std::time::Instant::now()),
             boot: BootContext {
                 boot_seed: boot_seed.to_string(),
@@ -924,41 +840,25 @@ impl PluginHost {
     }
 
     async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
-        self.call_with_wait(hook, args, self.rpc_wait).await
-    }
-
-    /// `call` under a caller-chosen RPC window, for a hook whose budget is not
-    /// the per-plugin-hook one (the dep scan runs under the optimizer's).
-    async fn call_with_wait(
-        &self,
-        hook: &str,
-        args: &[&str],
-        wait: std::time::Duration,
-    ) -> Result<Option<String>, String> {
         if *self.host_gone.borrow() && !self.try_revive() {
             return Err("plugin host exited".into());
         }
-        self.wait_for_init(hook).await?;
-        self.run_hook(hook, args, wait).await
+        self.wait_for_init().await?;
+        self.run_hook(hook, args).await
     }
 
     /// Init gate, BEFORE anything reaches the engine: the host answers hooks
     /// only after top-level init, and a job submitted to a wedged mid-init
     /// isolate would queue behind the wedge and be blamed on the hook.
-    /// Deliberately NO time-based fail-fast latch: an expired window is
-    /// evidence of a slow boot, not a wedge, so every call gets its own full
-    /// window; only host death (host_gone) fails fast.
-    async fn wait_for_init(&self, hook: &str) -> Result<(), String> {
+    /// Deliberately UNBOUNDED, like a Vite request (which can only exist
+    /// after `initServer` resolved): elapsed time is a slow boot, not a
+    /// wedge, so it only logs; the stall monitor owns wedge evidence, and
+    /// only host death (host_gone) fails the wait.
+    async fn wait_for_init(&self) -> Result<(), String> {
         let mut init_rx = self.initialized.subscribe();
         if *init_rx.borrow_and_update() {
             return Ok(());
         }
-        let deadline = call_init_deadline(
-            self.lazy,
-            *self.spawned.lock().unwrap(),
-            self.init_wait,
-            tokio::time::Instant::now(),
-        );
         let mut host_gone_rx = self.host_gone.subscribe();
         // A death flipped before this subscribe is already "seen" (changed()
         // never fires for it): consult the value once after subscribing.
@@ -971,8 +871,6 @@ impl PluginHost {
         );
         loop {
             tokio::select! {
-                // Deterministic when arms are simultaneously ready: an
-                // init flip racing an elapsed deadline must win.
                 biased;
                 changed = init_rx.changed() => {
                     if changed.is_err() || *init_rx.borrow() {
@@ -983,16 +881,6 @@ impl PluginHost {
                     if changed.is_err() || *host_gone_rx.borrow() {
                         return Err("plugin host exited".into());
                     }
-                }
-                _ = tokio::time::sleep_until(deadline) => {
-                    // Full window elapsed with init pending: wedge EVIDENCE,
-                    // never a gate for later calls.
-                    let _ = self.init_failed.send_replace(true);
-                    return Err(format!(
-                        "plugin host still initializing after {}s running {hook} (raise {} for slower boots)",
-                        self.init_wait.as_secs(),
-                        self.init_knob,
-                    ));
                 }
                 _ = progress.tick() => self.log_init_progress(),
             }
@@ -1012,20 +900,17 @@ impl PluginHost {
         }
     }
 
-    /// The engine call carries the per-call deadline itself, and a deadline
-    /// failure costs ONE call with the host answering everyone else. The BELT
-    /// past it is a second full window with NO reply of any kind: the scheduler
-    /// answers at the deadline while alive, so total silence means the isolate
-    /// thread is blocked in NATIVE code; declare the host gone.
-    async fn run_hook(
-        &self,
-        hook: &str,
-        args: &[&str],
-        wait: std::time::Duration,
-    ) -> Result<Option<String>, String> {
-        let deadline = tokio::time::Instant::now() + wait;
+    /// Runs one hook with NO deadline of its own: Vite runs plugin work
+    /// unbounded, so elapsed time alone never fails a call. Liveness is
+    /// PROBED instead: each probe window a no-op export is called, and a
+    /// parked event loop answers it instantly however long the hook has been
+    /// awaiting (that just logs progress). A probe met with total silence
+    /// for two windows means the isolate thread is wedged — blocked in
+    /// native code, or spinning in synchronous JS — so declare the host
+    /// gone; the next call revives a fresh one.
+    async fn run_hook(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
         // Generation read before the engine: a racing revive makes the pair stale
-        // (belt ignored), never a stale generation blaming a fresh engine.
+        // (probe verdict ignored), never a stale generation blaming a fresh engine.
         let generation = self.revive.lock().unwrap().generation;
         let engine = self
             .engine
@@ -1044,23 +929,44 @@ impl PluginHost {
                         .collect(),
                 ),
             ],
-            Some(wait),
+            None,
         );
         tokio::pin!(call);
-        let result = tokio::select! {
-            biased;
-            r = &mut call => r,
-            _ = self.host_gone_wait() => return Err("plugin host exited".into()),
-            _ = tokio::time::sleep_until(deadline + wait) => {
-                let msg = format!(
-                    "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
-                    2 * wait.as_secs()
-                );
-                self.declare_gone(&msg, generation);
-                return Err(msg);
+        let started = tokio::time::Instant::now();
+        let mut probe = tokio::time::interval_at(started + self.probe_wait, self.probe_wait);
+        probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                r = &mut call => return self.finish_call(hook, generation, r),
+                _ = self.host_gone_wait() => return Err("plugin host exited".into()),
+                _ = probe.tick() => {
+                    // The probe is deliberately UNGUARDED (no engine deadline):
+                    // an armed watchdog terminates whatever executes on the
+                    // isolate, which could be someone else's healthy work.
+                    let ping = engine.call(self.host_module.clone(), "ojPing", Vec::new(), None);
+                    match tokio::time::timeout(2 * self.probe_wait, ping).await {
+                        Ok(Err(oj_js::EngineError::Closed)) => {
+                            return Err("plugin host exited".into());
+                        }
+                        Ok(_) => {
+                            eprintln!(
+                                "oj: {hook} has been running for {}s (the plugin host is responsive)…",
+                                started.elapsed().as_secs()
+                            );
+                        }
+                        Err(_) => {
+                            let msg = format!(
+                                "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
+                                (2 * self.probe_wait).as_secs()
+                            );
+                            self.declare_gone(&msg, generation);
+                            return Err(msg);
+                        }
+                    }
+                }
             }
-        };
-        self.finish_call(hook, generation, result)
+        }
     }
 
     /// Maps one engine reply to the hook result, latching init or death as it proves.
@@ -1083,9 +989,10 @@ impl PluginHost {
                     other => Some(other.to_string()),
                 })
             }
+            // Defensive: hook calls carry no deadline, so this arm is only
+            // reachable through an engine-internal termination.
             Err(oj_js::EngineError::Deadline) => Err(format!(
-                "plugin host timed out after {}s running {hook} (raise OJ_PLUGIN_TIMEOUT for slow plugins)",
-                self.rpc_wait.as_secs()
+                "plugin host abandoned {hook} (execution terminated)"
             )),
             Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
             Err(oj_js::EngineError::MemoryLimit) => {
@@ -1171,10 +1078,11 @@ impl PluginHost {
         self.initialized.subscribe()
     }
 
-    /// Shared init deadline measured from spawn: callers gating separate work
-    /// anchor to THIS deadline instead of starting a fresh full period.
-    pub fn init_deadline_at(&self) -> tokio::time::Instant {
-        *self.spawned.lock().unwrap() + self.init_wait
+    /// When an uninitialized boot turns loud, measured from spawn: the boot
+    /// warning and the Start prewarm hold anchor to THIS instant instead of
+    /// starting fresh periods. Reporting only — calls never gate on it.
+    pub fn init_warn_at(&self) -> tokio::time::Instant {
+        *self.spawned.lock().unwrap() + INIT_WARN
     }
 
     /// Live updates of the host-gone flag, for waiters selecting on wedge
@@ -1261,16 +1169,10 @@ impl PluginHost {
     }
 
     /// The dep optimizer's scan, resolved through the plugins (optimize-deps.mjs
-    /// `scan`): JSON `{ dep: file }`. Optimizer work gets the optimizer's
-    /// budget: a cold scan of a large app outlives the per-hook window a stuck
-    /// plugin gets.
+    /// `scan`): JSON `{ dep: file }`. Unbounded like every call: a cold scan
+    /// of a large app runs as long as it needs, probed for liveness.
     pub async fn optimize_scan(&self, input: &str) -> Result<Option<String>, String> {
-        self.call_with_wait(
-            "optimizeScan",
-            &[input],
-            crate::optimize::optimizer_timeout(),
-        )
-        .await
+        self.call("optimizeScan", &[input]).await
     }
 
     #[inline]

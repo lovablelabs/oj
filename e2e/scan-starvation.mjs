@@ -8,8 +8,7 @@
 // gone (SSR answered 500 until restart). With the fairness gate the host
 // keeps answering hooks mid-scan. The plugin spins only for `options.scan`
 // calls, so request-path resolution stays cheap and any probe slowness is
-// starvation, not the fixture's own cost. OJ_PLUGIN_TIMEOUT=2 shrinks the
-// watchdog window to 4s so the red case fires fast.
+// starvation, not the fixture's own cost.
 
 import { spawn } from "node:child_process";
 import { execSync } from "node:child_process";
@@ -79,7 +78,7 @@ let failed = false;
 let stderr = "";
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
   stdio: ["ignore", "ignore", "pipe"],
-  env: { ...process.env, OJ_PLUGIN_TIMEOUT: "2" },
+  env: { ...process.env },
 });
 srv.stderr.on("data", (d) => (stderr += d));
 try {

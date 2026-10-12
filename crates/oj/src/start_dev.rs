@@ -277,8 +277,8 @@ pub async fn start_dev(
         updates: h.serve_info_updates(),
         host_gone: h.host_gone_updates(),
         init_failed: h.init_failure_updates(),
-        init_deadline: h.init_deadline_at(),
-        confirm: oj_server::plugins::plugin_rpc_timeout(),
+        init_deadline: h.init_warn_at(),
+        confirm: oj_server::plugins::PROBE_WINDOW,
     });
     // Filled once the router exists (BEFORE the listener binds): the
     // runner-environment warm below drives one render by calling the service
@@ -2400,11 +2400,11 @@ struct PrewarmHold {
     init_failed: tokio::sync::watch::Receiver<bool>,
     init_deadline: tokio::time::Instant,
     /// How long an evidence release stays PENDING before the prewarm commits
-    /// (the RPC-timeout scale, matching the stall monitor's window): the
+    /// (the probe-window scale, matching the stall monitor's window): the
     /// stall monitor's evidence is clearable — one silent >window step of a
     /// healthy boot flips it and the next milestone clears it — so a clear
     /// landing within this window re-arms the hold instead of the release
-    /// being one-shot. Host death and the init deadline still release
+    /// being one-shot. Host death and the init warn bound still release
     /// immediately.
     confirm: std::time::Duration,
 }
@@ -2413,19 +2413,18 @@ struct PrewarmHold {
 /// releasing early only on wedge EVIDENCE: (a) the info arriving decides
 /// (worker environments render → skip the prewarm; none → prewarm), (b) the
 /// host dying (`host_gone`) releases immediately, while the init-failure
-/// evidence watch — the host's stall monitor flipping it when a full
-/// RPC-scale window passed with no init milestone, or a pre-init RPC having
-/// burned its full init window — makes the release PENDING for one more
-/// RPC-scale window (`PrewarmHold::confirm`): the evidence is clearable, so a
-/// milestone landing within that window re-arms the hold instead of a single
-/// silent step of a healthy boot one-shot-releasing a wasted prewarm, and
-/// (c) the
-/// host's OWN init deadline (spawn + `OJ_PLUGIN_INIT_TIMEOUT` — never a fresh
-/// full period measured from here) is the outer bound. A merely slow, healthy
-/// boot — elapsed time short of that deadline, with no evidence — keeps
-/// holding: the earlier flat RPC-scale timer prewarmed (wasted CPU, competing
-/// with the boot) on every healthy boot slower than one RPC window. `None`
-/// means "not known: prewarm"; a LATE serve-info activation still supersedes.
+/// evidence watch — the host's stall monitor flipping it when a full probe
+/// window passed with no init milestone — makes the release PENDING for one
+/// more probe window (`PrewarmHold::confirm`): the evidence is clearable, so
+/// a milestone landing within that window re-arms the hold instead of a
+/// single silent step of a healthy boot one-shot-releasing a wasted prewarm,
+/// and (c) the host's OWN init warn bound (spawn-anchored — never a fresh
+/// full period measured from here) is the outer bound, so a boot slower than
+/// anyone reasonably waits does not hold the warm engine hostage. A merely
+/// slow, healthy boot — elapsed time short of that bound, with no evidence —
+/// keeps holding: the earlier flat probe-scale timer prewarmed (wasted CPU,
+/// competing with the boot) on every healthy boot slower than one window.
+/// `None` means "not known: prewarm"; a LATE serve-info activation still supersedes.
 async fn hold_prewarm_for_serve_info(
     hold: &mut PrewarmHold,
 ) -> Option<oj_server::plugins::ServeInfo> {

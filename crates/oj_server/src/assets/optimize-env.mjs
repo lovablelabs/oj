@@ -54,10 +54,9 @@ async function main() {
   // config feeds Vite's configHash, so any divergence seeds a cache the
   // in-host optimizer would reject as stale.
   const mode = process.env.OJ_ENV_MODE || "dev";
-  const timeoutMs =
-    (Number.parseInt(process.env.OJ_PRESEED_TIMEOUT ?? "", 10) > 0
-      ? Number.parseInt(process.env.OJ_PRESEED_TIMEOUT, 10)
-      : 300) * 1000;
+  // Matches the spawner's kill bound (preseed.rs PRESEED_KILL): give up on a
+  // metadata file that never lands before the parent reclaims this child.
+  const timeoutMs = 300 * 1000;
 
   let vite;
   try {

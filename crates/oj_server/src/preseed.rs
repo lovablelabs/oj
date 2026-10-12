@@ -170,10 +170,11 @@ fn parse_report(raw: &str) -> Option<Vec<SeededEnv>> {
     Some(out)
 }
 
-fn preseed_timeout() -> std::time::Duration {
-    let secs = oj_env::get().knobs.preseed_timeout_secs.unwrap_or(300);
-    std::time::Duration::from_secs(secs)
-}
+/// Kill bound on the preseed child: NOT a work deadline but orphan hygiene
+/// for a background optimization — preseed failure is never fatal (the
+/// host's own optimizer is the fallback), so a runaway child is reclaimed
+/// rather than left holding rolldown's native retention.
+const PRESEED_KILL: std::time::Duration = std::time::Duration::from_secs(300);
 
 async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>> {
     let cache = oj_cache::cache_root(root);
@@ -230,13 +231,13 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
             .await?;
         // Dropping closes the pipe; the child's read_to_string completes.
     }
-    let status = match tokio::time::timeout(preseed_timeout(), child.wait()).await {
+    let status = match tokio::time::timeout(PRESEED_KILL, child.wait()).await {
         Ok(status) => status?,
         Err(_) => {
             let _ = child.kill().await;
             anyhow::bail!(
-                "did not finish within {}s (raise OJ_PRESEED_TIMEOUT for slower machines)",
-                preseed_timeout().as_secs()
+                "did not finish within {}s; the session discovers deps normally",
+                PRESEED_KILL.as_secs()
             );
         }
     };

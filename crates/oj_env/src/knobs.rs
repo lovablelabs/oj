@@ -59,13 +59,6 @@ pub struct Knobs {
 
     /// `OJ_NO_DEPS_PRESEED` truthy.
     pub no_deps_preseed: bool,
-    /// `OJ_PRESEED_TIMEOUT` seconds, when positive.
-    pub preseed_timeout_secs: Option<u64>,
-    /// Raw timeouts, parsed by the consumers' `*_from` helpers.
-    pub optimize_timeout: Option<String>,
-    pub plugin_timeout: Option<String>,
-    pub plugin_init_timeout: Option<String>,
-    pub extract_timeout: Option<String>,
     /// `OJ_PLUGIN_MEMORY_MB`, when positive.
     pub plugin_memory_mb: Option<usize>,
 
@@ -136,11 +129,6 @@ impl Knobs {
             debug_mem: truthy("OJ_DEBUG_MEM"),
             debug_hook_gate: var("OJ_DEBUG_HOOK_GATE").as_deref() == Some("1"),
             no_deps_preseed: truthy("OJ_NO_DEPS_PRESEED"),
-            preseed_timeout_secs: trimmed("OJ_PRESEED_TIMEOUT").filter(|s| *s > 0),
-            optimize_timeout: var("OJ_OPTIMIZE_TIMEOUT"),
-            plugin_timeout: var("OJ_PLUGIN_TIMEOUT"),
-            plugin_init_timeout: var("OJ_PLUGIN_INIT_TIMEOUT"),
-            extract_timeout: var("OJ_EXTRACT_TIMEOUT"),
             plugin_memory_mb: trimmed("OJ_PLUGIN_MEMORY_MB")
                 .map(|v| v as usize)
                 .filter(|v| *v > 0),
@@ -223,14 +211,6 @@ mod tests {
         assert_eq!(knobs(&[("BROWSER", "  ")]).browser, None);
         assert_eq!(knobs(&[("OJ_CACHE_DIR", "")]).cache_dir, None);
         assert_eq!(
-            knobs(&[("OJ_PRESEED_TIMEOUT", " 9 ")]).preseed_timeout_secs,
-            Some(9)
-        );
-        assert_eq!(
-            knobs(&[("OJ_PRESEED_TIMEOUT", "0")]).preseed_timeout_secs,
-            None
-        );
-        assert_eq!(
             knobs(&[("OJ_PLUGIN_MEMORY_MB", "0")]).plugin_memory_mb,
             None
         );
@@ -252,12 +232,6 @@ mod tests {
         assert_eq!(
             knobs(&[("OJ_HMR_DEBOUNCE_MS", "0")]).hmr_debounce_ms,
             Some(0)
-        );
-        assert_eq!(
-            knobs(&[("OJ_PLUGIN_TIMEOUT", " 7 ")])
-                .plugin_timeout
-                .as_deref(),
-            Some(" 7 ")
         );
     }
 }

@@ -553,11 +553,11 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                     }
                 }
                 _ = recheck.tick() => {}
-                _ = tokio::time::sleep_until(host.init_deadline_at()), if await_init => {
+                _ = tokio::time::sleep_until(host.init_warn_at()), if await_init => {
                     if !host.is_initialized() {
                         eprintln!(
-                            "oj: warning: the plugin host did not finish initializing within {}s; plugin-served routes are inactive until it does",
-                            plugins::plugin_init_timeout().as_secs()
+                            "oj: warning: the plugin host has not finished initializing after {}s; plugin-served routes are inactive until it does",
+                            plugins::INIT_WARN.as_secs()
                         );
                     }
                     warned = true;
@@ -580,7 +580,7 @@ async fn catch_up_resync(host: &Arc<PluginHost>, p: u16) {
         return;
     }
     println!("  plugin middleware: worker environment resync enqueued");
-    let bound = plugins::plugin_rpc_timeout();
+    let bound = plugins::PROBE_WINDOW;
     let enqueued_at = std::time::Instant::now();
     if await_resync_completion(&mut done, baseline, bound).await {
         println!("  plugin middleware: worker environments resynced (full reload)");
