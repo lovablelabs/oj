@@ -102,6 +102,23 @@ fn checked_early_errors_do_not_reach_codegen() {
 }
 
 #[test]
+fn escaped_control_characters_in_a_specifier_collect_cooked_and_emit_escaped() {
+    // `import "a\nb"` is legal JavaScript: the reported specifier is the
+    // COOKED value (a real newline), the same thing es-module-lexer's `n`
+    // hands Vite, while the emitted literal keeps its escapes. Found by
+    // fuzz_compile (crash-5305f3ca): the old harness treated any newline in a
+    // specifier as a mis-slice.
+    let out = dev("/src/a.jsx", "import'a\\nb\\\\c\\0d'").unwrap();
+    assert_eq!(out.imports, vec!["a\nb\\c\0d".to_string()]);
+    assert!(parses(&out.code), "{}", out.code);
+    assert!(
+        out.code.contains(r"a\nb\\c\0d"),
+        "the emitted literal must keep its escapes: {}",
+        out.code
+    );
+}
+
+#[test]
 fn an_unsupported_extension_is_refused_by_name() {
     let err = dev("/src/styles.css", "body { color: red }").unwrap_err();
     assert!(

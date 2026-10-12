@@ -3,8 +3,6 @@
 //! JavaScript with a module graph that matches what it emitted.
 #![no_main]
 
-use std::path::Path;
-
 use libfuzzer_sys::fuzz_target;
 use oj_compiler::{compile, exports, CompileOptions};
 
@@ -92,14 +90,11 @@ fuzz_target!(|data: &[u8]| {
             source,
             out.code
         );
-        // Every import reported is a real specifier, and the map, if any, is a
-        // data URL.
-        for import in out.imports.iter().chain(out.dynamic_imports.iter()) {
-            assert!(
-                !import.contains('\n'),
-                "specifier with a newline: {import:?}"
-            );
-        }
+        // Imports are COOKED string values, like es-module-lexer's `n` that
+        // Vite reads: `import "a\nb"` legally yields a specifier holding a
+        // real newline (the crash-5305f3ca find), so control characters are
+        // data here, not mis-slices -- a mis-slice surfaces as unparseable
+        // output above. The map, if any, is a data URL.
         if let Some(url) = &out.map_data_url() {
             assert!(url.starts_with("data:application/json;"), "{url}");
         }
