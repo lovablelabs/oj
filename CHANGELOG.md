@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The preseed self-heal fails the seed when it cannot rewrite the include snapshot, instead of retrying to success over a file that still replays the toxic dep ids: a warm stamp over an unhealed snapshot would skip the child (and the heal) on later boots while the plugin host keeps folding the poison.
+
 ## [0.2.25] - 2026-10-12
 
 ### Fixed

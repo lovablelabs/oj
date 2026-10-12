@@ -199,11 +199,21 @@ export function foldIncludeSnapshot(rc, snapshotPath) {
 // host (which folds the same file, strictly after the child exits) replays
 // the set that just proved toxic. The entry is rebuilt from scratch at the
 // next committed optimize's metadata.
+//
+// Returns whether the file no longer replays those environments: true when
+// the write landed, or when there was nothing readable to drop (the host
+// cannot fold an unreadable file either); false when a write was needed and
+// FAILED. The caller must then fail the seed: reporting a healed seed over a
+// file that still replays the toxic set would stamp the boot warm and skip
+// the child — and this heal — on later boots.
 export function dropSnapshotEnvironments(snapshotPath, names) {
+  const snapshot = readSnapshot(snapshotPath);
+  if (!snapshot || names.every((name) => !(name in snapshot.environments))) return true;
   try {
-    const snapshot = readSnapshot(snapshotPath);
-    if (!snapshot) return;
     for (const name of names) delete snapshot.environments[name];
     writeSnapshot(snapshotPath, snapshot);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }

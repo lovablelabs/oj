@@ -147,7 +147,15 @@ async function main() {
       warn(
         `deps pre-optimization (${name}): dropping ${replayed.length} dep id(s) replayed from the last session and retrying without them`,
       );
-      dropSnapshotEnvironments(snapshotPath, [name]);
+      // A drop that cannot be WRITTEN fails the seed instead of retrying: the
+      // host folds this same file, and a successful retry would stamp the
+      // boot warm over a snapshot that still replays the toxic set — the
+      // child (and this heal) would then be skipped on every later boot.
+      if (!dropSnapshotEnvironments(snapshotPath, [name])) {
+        warn(`deps pre-optimization (${name}): could not clear the replayed dep id(s) from the include snapshot`);
+        failed = true;
+        continue;
+      }
       const optimizeDeps = rc.environments[name]?.optimizeDeps;
       if (optimizeDeps?.include) {
         optimizeDeps.include = optimizeDeps.include.filter((id) => !replayed.includes(id));

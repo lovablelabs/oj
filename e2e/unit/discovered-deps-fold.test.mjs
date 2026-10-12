@@ -163,15 +163,40 @@ test("dropSnapshotEnvironments removes only the named environments", () => {
   const dir = makeRoot();
   const snapshot = path.join(dir, "preseed-include.json");
   writeIncludeSnapshot(snapshot, { ssr: ["toxic/id"], worker: ["fine"] }, dir);
-  dropSnapshotEnvironments(snapshot, ["ssr"]);
+  assert.equal(dropSnapshotEnvironments(snapshot, ["ssr"]), true, "a landed drop reports success");
   const healed = JSON.parse(fs.readFileSync(snapshot, "utf8"));
   assert.deepEqual(healed.environments, { worker: ["fine"] });
   const rc = { root: dir, cacheDir: dir, environments: { ssr: {}, worker: {} } };
   const added = foldIncludeSnapshot(rc, snapshot);
   assert.deepEqual(added, { worker: ["fine"] }, "the healed env replays nothing, the healthy one still does");
-  // Dropping on a missing or legacy file is a silent no-op.
-  dropSnapshotEnvironments(path.join(dir, "absent.json"), ["ssr"]);
+  // Dropping on a missing or legacy file is a no-op that still reports
+  // success: there is nothing there the host could fold either.
+  assert.equal(dropSnapshotEnvironments(path.join(dir, "absent.json"), ["ssr"]), true);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a drop whose write fails reports failure and leaves the file intact", () => {
+  const dir = makeRoot();
+  const snapdir = path.join(dir, "snap");
+  fs.mkdirSync(snapdir);
+  const snapshot = path.join(snapdir, "preseed-include.json");
+  writeIncludeSnapshot(snapshot, { ssr: ["toxic/id"] }, dir);
+  fs.chmodSync(snapdir, 0o555);
+  try {
+    assert.equal(
+      dropSnapshotEnvironments(snapshot, ["ssr"]),
+      false,
+      "an unwritable snapshot still replays the toxic set: the caller must fail the seed",
+    );
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(snapshot, "utf8")).environments,
+      { ssr: ["toxic/id"] },
+      "the file is untouched",
+    );
+  } finally {
+    fs.chmodSync(snapdir, 0o755);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("missing snapshot, empty path, and unknown envs are silent no-ops", () => {
