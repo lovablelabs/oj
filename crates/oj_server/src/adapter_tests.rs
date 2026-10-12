@@ -23,6 +23,33 @@ fn write_start_assets_writes_every_module_the_start_host_aliases() {
     }
 }
 
+// The manifest virtual serves every start-server-core shape at once: 1.168+
+// emits the client entry script tag from `routes.*.scripts`, while 1.167 and
+// earlier emit `import(<clientEntry>)` from the top-level field (a missing one
+// ships `import(undefined)` and a page that never hydrates) and read css from
+// per-route `assets`. Each version copies only the fields it knows.
+#[test]
+fn start_manifest_shims_serve_old_and_new_start_server_core_shapes() {
+    let dir = tmp("manifest-shapes");
+    write_start_assets(&dir).unwrap();
+    for name in ["manifest.ts", "manifest-dev.ts"] {
+        let src = std::fs::read_to_string(dir.join(name)).unwrap();
+        assert!(
+            src.contains("clientEntry:"),
+            "{name} lost the pre-1.168 clientEntry field"
+        );
+        assert!(
+            src.contains("scripts:"),
+            "{name} lost the 1.168+ scripts field"
+        );
+    }
+    let dev = std::fs::read_to_string(dir.join("manifest-dev.ts")).unwrap();
+    assert!(
+        dev.contains("assets:"),
+        "manifest-dev.ts lost the pre-1.168 per-route assets (css under old start-server-core)"
+    );
+}
+
 #[test]
 fn is_tanstack_start_app_requires_routes_and_dep() {
     let base = tmp("ts");

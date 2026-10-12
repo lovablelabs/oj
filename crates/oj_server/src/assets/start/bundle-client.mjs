@@ -111,6 +111,26 @@ async function main() {
     return resolve(APP, "src/router.tsx");
   }
 
+  // `#tanstack-start-entry` resolves to the app's `src/start.*` exactly as
+  // upstream's resolveEntry does (`startFilePath ?? defaultEntryPaths.start`),
+  // falling back to the stub that mirrors the framework's default entry
+  // (`export const startInstance = undefined`). The client needs the real file
+  // too: `functionMiddleware` wraps server-fn calls in the browser.
+  function startEntry() {
+    try {
+      const target = JSON.parse(readFileSync(resolve(APP, "package.json"), "utf8")).imports?.["#tanstack-start-entry"];
+      if (typeof target === "string") {
+        const p = resolve(APP, target);
+        if (existsSync(p)) return p;
+      }
+    } catch {}
+    for (const ext of [".ts", ".js", ".mts", ".mjs", ".tsx", ".jsx"]) {
+      const p = resolve(APP, "src/start" + ext);
+      if (existsSync(p)) return p;
+    }
+    return join(HERE, "start-entry.ts");
+  }
+
   const container = await loadPluginContainer(APP, { command: "serve", mode: MODE, environment: "client" });
 
   const cssUrls = [];
@@ -174,9 +194,10 @@ async function main() {
       conditionNames: CLIENT_CONDITIONS,
       alias: {
         "#tanstack-router-entry": routerEntry(),
-        "#tanstack-start-entry": join(HERE, "start-entry.ts"),
+        "#tanstack-start-entry": startEntry(),
         "#tanstack-start-plugin-adapters": join(HERE, "plugin-adapters.ts"),
         "tanstack-start-manifest:v": join(HERE, "manifest.ts"),
+        "tanstack-start-injected-head-scripts:v": join(HERE, "injected-head-scripts.ts"),
         "@tanstack/start-fn-stubs": join(HERE, "fn-stubs.mjs"),
       },
     },

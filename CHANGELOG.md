@@ -5,6 +5,14 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- TanStack Start apps on `@tanstack/react-start` 1.167 and earlier render and hydrate again. The shape of the `tanstack-start-manifest:v` virtual changed across start-server-core versions (under Vite the plugin generates it, so it always matches): 1.167 reads a top-level `clientEntry` and per-route `assets`, and oj's shim provided neither, so the served HTML carried `<script type="module">import(undefined)</script>` and the page never left the SSR placeholder. The shim now serves the union of both shapes; each version copies only the fields it knows.
+- `src/start.ts` is honored: `#tanstack-start-entry` now resolves to the app's `src/start.*` when one exists (after the app's package.json `imports`, before the bundled default), matching upstream's entry resolution, in the dev server, the dev client bundle and builds. oj's stub previously always answered, silently dropping the app's `createStart` options: request middleware never ran server-side and function middleware never wrapped server-fn calls, so an app attaching auth that way got Unauthorized from every authed server fn. The stub still stands in when the app has no start entry, exactly like upstream's default (`export const startInstance = undefined`).
+- The client and build bundlers resolve `tanstack-start-injected-head-scripts:v` (start-server-core imports it dynamically in dev), fixing `[UNRESOLVED_IMPORT]` warnings.
+
 ## [0.2.25] - 2026-10-12
 
 ### Fixed

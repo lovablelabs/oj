@@ -661,10 +661,31 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
 /// resolved targets under the app or the start cache dir. start-server-core
 /// imports these by bare specifier and expects the bundler to answer; one the
 /// host does not map fails every document request.
+/// The `#tanstack-start-entry` target: the app's `src/start.*` when one
+/// exists, else the bundled stub. Upstream resolves this entry the same way
+/// (`startFilePath ?? defaultEntryPaths.start` in start-plugin-core's
+/// planning.ts), and its default entry is exactly the stub's content
+/// (`export const startInstance = undefined`). Resolving to the stub while a
+/// real `src/start.ts` exists silently drops the app's `createStart` options:
+/// request middleware server-side and function middleware on every server-fn
+/// call. The app's package.json `imports` still wins over both in
+/// `resolve_inner`.
+fn start_entry_target(root: &Path, cache: &Path) -> PathBuf {
+    let base = root.join("src/start");
+    if probe(&base).is_some() {
+        base
+    } else {
+        cache.join("start-entry.ts")
+    }
+}
+
 fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
     vec![
         ("#tanstack-router-entry".into(), root.join("src/router")),
-        ("#tanstack-start-entry".into(), cache.join("start-entry.ts")),
+        (
+            "#tanstack-start-entry".into(),
+            start_entry_target(root, cache),
+        ),
         (
             "#tanstack-start-plugin-adapters".into(),
             cache.join("plugin-adapters.ts"),
@@ -1832,6 +1853,41 @@ mod tests {
                 "the start host has no alias for {spec}"
             );
         }
+    }
+
+    // Upstream resolves `#tanstack-start-entry` to the app's `src/start.*`
+    // before its bundled default (planning.ts: `startFilePath ??
+    // defaultEntryPaths.start`); the stub stands in only for the default.
+    // Falling to the stub while a real src/start.ts exists silently drops the
+    // app's createStart middleware: request middleware server-side, and
+    // function middleware on every server-fn call (an app attaching auth
+    // there gets Unauthorized from every authed server fn).
+    #[test]
+    fn the_start_entry_alias_prefers_the_apps_src_start() {
+        let root = std::env::temp_dir().join(format!("oj-startentry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let cache = root.join(".oj-cache/v1/start");
+
+        let stub = start_entry_target(&root, &cache);
+        assert_eq!(
+            stub,
+            cache.join("start-entry.ts"),
+            "no src/start.* means the framework-default stub"
+        );
+
+        std::fs::write(
+            root.join("src/start.ts"),
+            "export const startInstance = 1;\n",
+        )
+        .unwrap();
+        let app = start_entry_target(&root, &cache);
+        assert_eq!(
+            app,
+            root.join("src/start"),
+            "an existing src/start.* wins, extension resolved by probe()"
+        );
+        assert_eq!(probe(&app).unwrap(), root.join("src/start.ts"));
     }
 
     // The ScriptEngine's process.env shadow: a script's env writes — the
