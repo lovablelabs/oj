@@ -14,7 +14,10 @@ fn named_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 fn is_safe_export_name(name: &str) -> bool {
-    if name == "__proto__" {
+    // `__oj_json` is the module's own binding: a key with that exact name
+    // would redeclare it. Reachable through the default export, like every
+    // other skipped key.
+    if name == "__proto__" || name == "__oj_json" {
         return false;
     }
     // @rollup/pluginutils' `forbiddenIdentifiers` verbatim: Vite's JSON plugin
@@ -241,6 +244,11 @@ mod tests {
             );
         }
         assert!(out.contains("export const kept ="), "{out}");
+        // A key named like the module's own binding must not redeclare it
+        // (the round-7 fuzz crash input).
+        let out = to_esm(r#"{"__oj_json":{},"fine":1}"#, "/o.json").unwrap();
+        assert!(!out.contains("export const __oj_json"), "{out}");
+        assert!(out.contains("export const fine ="), "{out}");
     }
 
     #[test]
