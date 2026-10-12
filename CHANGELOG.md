@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A dependency that ships raw TypeScript (an exports map pointing straight at `.ts`/`.tsx` sources) now renders under dev SSR and TanStack Start dev instead of 500ing with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`. The runtime refuses to strip types under `node_modules`, and Vite never externalizes a resolved file it cannot hand to Node (`canExternalizeFile` allows only `js`/`mjs`/`cjs`), so the Start and SSR module hosts now route TypeScript/JSX dependency files through the transform pipeline, the way `ssr.noExternal` dependencies already go.
+
 ## [0.2.23] - 2026-10-09
 
 ### Added

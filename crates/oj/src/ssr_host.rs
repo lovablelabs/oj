@@ -259,8 +259,25 @@ impl SsrHost {
     ) -> Result<Option<HostResolved>, String> {
         let importer_id = importer_id(importer);
         // node_modules internals resolve with plain Node semantics, as
-        // they did when the runner imported externals natively.
+        // they did when the runner imported externals natively — except a
+        // relative specifier with no exact file on disk (an extensionless
+        // import inside a dependency shipping raw TypeScript, which only the
+        // pipeline can serve): the Vite-style resolver finishes that edge
+        // with its extension inference, as the Start host does.
         if importer_id.contains("/node_modules/") {
+            if specifier.starts_with("./") || specifier.starts_with("../") {
+                if let Some(dir) = Path::new(&importer_id).parent() {
+                    if !crate::ssr_dev::normalize_path(&dir.join(specifier)).is_file() {
+                        if let Ok(oj_server::StartResolution::Dependency(p)) =
+                            self.bridge.resolve_start(&importer_id, specifier).await
+                        {
+                            if let Ok(u) = url::Url::from_file_path(&p) {
+                                return Ok(Some(HostResolved::External(u.to_string())));
+                            }
+                        }
+                    }
+                }
+            }
             return Ok(Some(HostResolved::External(specifier.to_string())));
         }
         match self.bridge.resolve(&importer_id, specifier).await? {
@@ -274,7 +291,7 @@ impl SsrHost {
 
     async fn load_import(&self, specifier: &str) -> Result<Option<HostModule>, String> {
         let Some(id) = versioned_id(specifier) else {
-            return Ok(None);
+            return self.load_dependency_ts(specifier).await;
         };
         let code = self
             .bridge
@@ -282,6 +299,34 @@ impl SsrHost {
             .await
             .map_err(|e| e.to_string())?;
         self.graph.record_loaded(&id);
+        Ok(Some(HostModule {
+            code,
+            module_type: HostModuleType::JavaScript,
+        }))
+    }
+
+    /// A dependency file the runtime resolved itself (byonm): TypeScript/JSX
+    /// sources still go through the transform pipeline — the runtime refuses
+    /// to type-strip under node_modules, and Vite never externalizes a
+    /// resolved file it cannot hand to Node (canExternalizeFile allows only
+    /// js/mjs/cjs).
+    async fn load_dependency_ts(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+        let Some(path) = url::Url::parse(specifier)
+            .ok()
+            .filter(|u| u.scheme() == "file")
+            .and_then(|u| u.to_file_path().ok())
+        else {
+            return Ok(None);
+        };
+        let id = path.to_string_lossy().into_owned();
+        if !id.contains("/node_modules/") || !crate::start_host::ts_source_ext(&id) {
+            return Ok(None);
+        }
+        let code = self
+            .bridge
+            .load_module(&id)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(Some(HostModule {
             code,
             module_type: HostModuleType::JavaScript,
