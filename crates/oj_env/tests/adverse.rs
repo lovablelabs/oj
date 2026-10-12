@@ -71,6 +71,25 @@ fn expansion_is_one_pass_not_recursive() {
 }
 
 #[test]
+fn a_doubling_expansion_chain_is_capped_not_fatal() {
+    // Billion-laughs shape (the fuzz_dotenv OOM input): each line doubles the
+    // previous one, demanding gigabytes within 30 lines. Every expanded value
+    // is hard-capped, which also bounds every later line it feeds.
+    let mut src = format!("A={}\n", "x".repeat(2048));
+    let mut prev = 'A';
+    for c in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'] {
+        src.push_str(&format!("{c}=${prev}${prev}\n"));
+        prev = c;
+    }
+    let m = map(&src);
+    assert!(
+        m["M"].len() <= 2 * 128 * 1024,
+        "capped, not exponential: {} bytes",
+        m["M"].len()
+    );
+}
+
+#[test]
 fn unterminated_quotes_and_braces_do_not_panic() {
     let m = map("A=\"unterminated\nB='also unterminated\nC=${UNCLOSED\nD=$\nE=${}\nF=ok\n");
     assert_eq!(m["A"], "unterminated");

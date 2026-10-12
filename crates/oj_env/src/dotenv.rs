@@ -57,8 +57,17 @@ fn parse_value(raw: &str, vars: &BTreeMap<String, String>) -> String {
     expand(raw[..end].trim(), vars)
 }
 
+/// Hard bound on the bytes a value gains through `$` references. A literal
+/// value is linear in the file, but expansion sees every previous line, so a
+/// doubling chain (`B=$A$A`, `C=$B$B`, ...) grows exponentially and a 1KB file
+/// can demand gigabytes; dotenv-expand has the same hole and takes the node
+/// process down with it. Real referenced values sit far below an OS
+/// environment string (~128KB), so the cap only ever cuts a bomb.
+const EXPANSION_CAP: usize = 128 * 1024;
+
 fn expand(input: &str, vars: &BTreeMap<String, String>) -> String {
     let mut out = String::with_capacity(input.len());
+    let mut ref_budget = EXPANSION_CAP;
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -85,7 +94,16 @@ fn expand(input: &str, vars: &BTreeMap<String, String>) -> String {
                 (end > start).then(|| (&input[start..end], end))
             };
             if let Some((name, next)) = reference {
-                out.push_str(vars.get(name).map(String::as_str).unwrap_or(""));
+                let val = vars.get(name).map(String::as_str).unwrap_or("");
+                if val.len() > ref_budget {
+                    eprintln!(
+                        "oj: warning: a .env value grew past {}KB through $ references and was truncated",
+                        EXPANSION_CAP / 1024
+                    );
+                    break;
+                }
+                ref_budget -= val.len();
+                out.push_str(val);
                 i = next;
                 continue;
             }
