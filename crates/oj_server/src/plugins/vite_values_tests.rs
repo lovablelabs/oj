@@ -453,11 +453,14 @@ async fn the_respawn_budget_is_finite_and_spaced() {
     assert!(!host.can_revive(), "no revive left for waiters to hold on");
 }
 
-// The server-entry incident, pinned: a lazy host whose init outlasts the
+// The server-entry incident's shape: a lazy host whose init outlasts the
 // per-hook RPC window still serves the first transform-path call. Vite never
 // fails a request on a slow plugin boot (requests only exist after init), so
 // the call waits init out under the init budget; the RPC window governs the
-// hook run alone.
+// hook run alone. The old policy's default lazy window (20s) also outlasts
+// this init, so the POLICY pin lives in the knob assertions of
+// init_wait_is_the_full_init_budget_for_every_spawn_kind and the expired-
+// window error below; this one guards the served path end to end.
 #[tokio::test]
 async fn lazy_call_during_an_init_slower_than_the_rpc_window_is_served() {
     let root = std::env::temp_dir().join(format!("oj-lazy-slow-init-{}", std::process::id()));
@@ -538,6 +541,9 @@ async fn pre_init_calls_keep_their_own_window_after_an_earlier_one_expired() {
     let first = host.resolve_id("x", "").await;
     let first_err = first.expect_err("init outlives the first call's window");
     assert!(first_err.contains("still initializing"), "{first_err}");
+    // The expired window names the init budget's knob: a lazy host waits out
+    // OJ_PLUGIN_INIT_TIMEOUT like a boot host, never the per-hook window.
+    assert!(first_err.contains("OJ_PLUGIN_INIT_TIMEOUT"), "{first_err}");
     assert!(
         t0.elapsed() >= std::time::Duration::from_millis(900),
         "the first call waits its full window, got {:?}",
