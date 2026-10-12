@@ -31,7 +31,10 @@ jobs:
           workspaces: fuzz
       - run: cargo install cargo-fuzz --locked
       - name: fuzz for 10 minutes
-        run: cargo fuzz run ${{ matrix.target }} --sanitizer none -- -max_total_time=600
+        # rss_limit above libFuzzer's 2048 default: a single pathological TSX
+        # unit legitimately spends ~900MB inside oxc's parser on top of the
+        # fuzzer's own baseline; 4096 still catches a runaway.
+        run: cargo fuzz run ${{ matrix.target }} --sanitizer none -- -max_total_time=600 -rss_limit_mb=4096
       - name: upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
