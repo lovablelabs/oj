@@ -26,6 +26,11 @@ export async function run(env = null) {
 async function main() {
   const HERE = dirname(fileURLToPath(import.meta.url));
   const APP = process.env.OJ_APP_ROOT ?? process.cwd();
+  const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
+  const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
+  // Before the rolldown import and the build: a bundle that hangs with no
+  // output is indistinguishable from one that never started.
+  process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundling\n`);
   const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
   const WORKSPACE = workspaceRoot(APP);
   const SERVER_FN_BASE = process.env.TSS_SERVER_FN_BASE ?? "/_serverFn/";
@@ -253,8 +258,6 @@ async function main() {
   writeFileSync(join(HERE, "manifest.ts"), `export const tsrStartManifest = () => (${JSON.stringify(devManifest)});\n`);
   writeFileSync(join(HERE, "css-urls.json.tmp"), JSON.stringify(cssUrls));
   renameSync(join(HERE, "css-urls.json.tmp"), join(HERE, "css-urls.json"));
-  const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
-  const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundled (${result.output.length} files)\n`);
 }
 
