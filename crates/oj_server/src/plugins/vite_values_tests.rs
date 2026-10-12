@@ -41,16 +41,16 @@ fn extraction_timeout_defaults_and_reads_env_seconds() {
     assert_eq!(extraction_timeout_from(Some("0")).as_secs(), 60);
 }
 
-// Init-wait policy: a boot host waits out the long init deadline, a lazy one
-// only the short per-call bound.
+// Init-wait policy: EVERY spawn kind waits out the full init budget, never
+// one hook window. Under Vite a request cannot precede plugin init (the
+// socket opens after initServer), and a production-scale config boots slower
+// than a hook window: the first SSR transform must wait for it, not 500.
 #[test]
-fn init_wait_policy_is_long_for_boot_hosts_and_short_for_lazy_ones() {
-    let (boot_wait, boot_knob) = init_wait_policy(false);
-    assert_eq!(boot_wait, plugin_init_timeout());
-    assert_eq!(boot_knob, "OJ_PLUGIN_INIT_TIMEOUT");
-    let (lazy_wait, lazy_knob) = init_wait_policy(true);
-    assert_eq!(lazy_wait, plugin_rpc_timeout());
-    assert_eq!(lazy_knob, "OJ_PLUGIN_TIMEOUT");
+fn init_wait_is_the_full_init_budget_for_every_spawn_kind() {
+    let (wait, knob) = init_wait_policy();
+    assert_eq!(wait, plugin_init_timeout());
+    assert_eq!(knob, "OJ_PLUGIN_INIT_TIMEOUT");
+    assert!(wait > plugin_rpc_timeout());
 }
 
 // A lazy host's init gate is per-call: a call past spawn + init_wait gets its
@@ -451,6 +451,51 @@ async fn the_respawn_budget_is_finite_and_spaced() {
     let err = host.resolve_id("x", "").await.expect_err("budget spent");
     assert!(err.contains("plugin host exited"), "{err}");
     assert!(!host.can_revive(), "no revive left for waiters to hold on");
+}
+
+// The server-entry incident, pinned: a lazy host whose init outlasts the
+// per-hook RPC window still serves the first transform-path call. Vite never
+// fails a request on a slow plugin boot (requests only exist after init), so
+// the call waits init out under the init budget; the RPC window governs the
+// hook run alone.
+#[tokio::test]
+async fn lazy_call_during_an_init_slower_than_the_rpc_window_is_served() {
+    let root = std::env::temp_dir().join(format!("oj-lazy-slow-init-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    // Init outlasts the 1s RPC window below, then completes.
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        "await new Promise((r) => setTimeout(r, 2500));\nexport default [];\n",
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &plugins,
+        &config,
+        true,
+        SpawnTimeouts {
+            rpc: Some(std::time::Duration::from_secs(1)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    let t0 = std::time::Instant::now();
+    host.resolve_id("x", "")
+        .await
+        .expect("a call during a slow init waits it out and is served");
+    assert!(
+        t0.elapsed() >= std::time::Duration::from_millis(2300),
+        "the call waited for init rather than being answered early: {:?}",
+        t0.elapsed()
+    );
 }
 
 #[tokio::test]

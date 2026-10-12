@@ -405,14 +405,15 @@ pub(crate) fn call_init_deadline(
     }
 }
 
-/// Init-wait policy per spawn kind: boot host long deadline, lazy host short
-/// per-call bound, each named after its env knob.
-pub(crate) fn init_wait_policy(lazy: bool) -> (std::time::Duration, &'static str) {
-    if lazy {
-        (plugin_rpc_timeout(), "OJ_PLUGIN_TIMEOUT")
-    } else {
-        (plugin_init_timeout(), "OJ_PLUGIN_INIT_TIMEOUT")
-    }
+/// Init wait for EVERY spawn kind: the full init budget. Under Vite a request
+/// cannot precede plugin init (httpServer.listen is overridden to await
+/// initServer first), so a slow plugin boot delays requests and never fails
+/// them; a lazy host's first transform gets the same patience here instead of
+/// one hook window (a production-scale config boots slower than that). Only
+/// the deadline's anchor differs per kind (see [`call_init_deadline`]), and
+/// the per-hook `OJ_PLUGIN_TIMEOUT` starts once init has answered.
+pub(crate) fn init_wait_policy() -> (std::time::Duration, &'static str) {
+    (plugin_init_timeout(), "OJ_PLUGIN_INIT_TIMEOUT")
 }
 
 /// Per-spawn timeout overrides for tests, avoiding races on the env-var knobs
@@ -448,8 +449,10 @@ impl PluginHost {
         .await
     }
 
-    /// Spawn a lazily created host (e.g. the SSR environment host): calls bound
-    /// their init wait by the per-call timeout, so a wedged init cannot freeze the watcher thread.
+    /// Spawn a lazily created host (e.g. the SSR environment host), booted on
+    /// first demand. Its calls wait out the same init budget a boot host gets,
+    /// anchored at each call's own start; the watcher never waits here at all
+    /// (pre-init events fast-skip into `SsrWatchQueue` for a catch-up replay).
     pub async fn spawn_lazy(
         root: &Path,
         plugins_file: &Path,
@@ -511,7 +514,7 @@ impl PluginHost {
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
 
-        let (mut init_wait, init_knob) = init_wait_policy(lazy);
+        let (mut init_wait, init_knob) = init_wait_policy();
         if let Some(w) = timeouts.init_wait {
             init_wait = w;
         }

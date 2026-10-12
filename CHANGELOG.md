@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- An SSR or TanStack Start request arriving while the SSR plugin host is still initializing now waits the init out instead of failing after one hook window (20s) with `plugin host still initializing after 20s running transform`. A large vite config can take longer than that to boot, and under Vite a request can never fail this way: the server socket only opens after plugin init completes. The init gate now uses the init budget (`OJ_PLUGIN_INIT_TIMEOUT`, 300s) for every host; the per-hook `OJ_PLUGIN_TIMEOUT` applies once initialized. Watcher events still skip a pre-init host and replay at its init.
+
 ## [0.2.24] - 2026-10-12
 
 ### Fixed

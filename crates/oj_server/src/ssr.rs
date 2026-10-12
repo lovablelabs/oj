@@ -341,8 +341,10 @@ pub(crate) async fn ssr_plugin_host(
             let file = match plugins::plugin_source(&state.root, state.config_file.as_deref())? {
                 plugins::PluginSource::OjPlugins(p) | plugins::PluginSource::ViteConfig(p) => p,
             };
-            // Lazy spawn with the short init-wait policy: a wedged init must
-            // not block watcher dispatch or SSR transforms.
+            // Lazy spawn: the host boots on first SSR demand. Watcher events
+            // never wait on its init (they fast-skip into SsrWatchQueue), and
+            // transforms wait it out like a Vite request, which can only ever
+            // arrive after plugin init since the socket opens after initServer.
             match PluginHost::spawn_lazy(
                 &state.root,
                 &file,
