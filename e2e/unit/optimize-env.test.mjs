@@ -60,9 +60,30 @@ function runSeed(app) {
       OJ_APP_ROOT: app,
       OJ_ENV_MODE: "dev",
       OJ_PRESEED_REPORT: path.join(app, "optimize-env-report.json"),
+      OJ_PRESEED_INCLUDE: path.join(app, "preseed-include.json"),
       NO_COLOR: "1",
     },
   });
+}
+
+const { viteLockfileHash } = await import(
+  pathToFileURL(path.join(repo, "crates", "oj_server", "src", "assets", "discovered-deps.mjs")).href
+);
+
+// Prior-session metadata the way Vite leaves it on disk: a committed dep set
+// under `optimized`, keyed by a lockfileHash. The ids and hash are the test's.
+function plantSsrMetadata(app, ids, lockfileHash) {
+  const dir = path.join(app, ".vite-cache", "deps_ssr");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "_metadata.json"),
+    JSON.stringify({
+      lockfileHash,
+      configHash: "deadbeef",
+      optimized: Object.fromEntries(ids.map((id) => [id, {}])),
+      chunks: {},
+    }),
+  );
 }
 
 test(
@@ -117,6 +138,14 @@ test(
       // Second seed run against the warm cache: also a load, never a rebuild.
       runSeed(app);
       assert.equal(fs.statSync(metaPath).mtimeMs, before, "a warm re-seed is a no-op");
+
+      // The replay gate matches Vite's lockfile hash in VALUE: this snapshot
+      // entry only exists because the mirrored hash equaled the one the app's
+      // real Vite wrote into the metadata — a drifted mirror would leave the
+      // environments empty (and silently disable the replay).
+      assert.equal(viteLockfileHash(app), meta.lockfileHash, "hash mirror tracks Vite's getLockfileHash");
+      const snapshot = JSON.parse(fs.readFileSync(path.join(app, "preseed-include.json"), "utf8"));
+      assert.deepEqual(snapshot.environments.ssr, ["react"], "the committed dep set replays next session");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -140,6 +169,67 @@ test(
       const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
       assert.equal(report.failed, false);
       assert.deepEqual(report.seeded, []);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+// The wedge, pinned: a prior session's committed metadata names a dep id
+// whose package still resolves but whose exports map no longer answers the
+// subpath. Replayed into optimizeDeps.include, it makes Vite's optimizer
+// THROW (only unresolvable ids warn), and since the thrown optimize is the
+// one thing that could age the id out, every boot fails the same way. The
+// child must drop the replayed set, retry as a discovery session, and heal
+// the snapshot so the host (which folds the same file after the child exits)
+// never replays it either.
+test(
+  "a replayed dep id the exports map now refuses heals instead of wedging",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp();
+    try {
+      // Same install state (current hash): the lockfile gate must NOT eat
+      // this — it is the self-heal's case.
+      plantSsrMetadata(app, ["react", "react/presets"], viteLockfileHash(app));
+      runSeed(app);
+      const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+      assert.equal(report.failed, false, "the retry without replayed ids succeeds");
+      assert.deepEqual(
+        report.seeded.map((s) => s.name),
+        ["ssr"],
+      );
+      const meta = JSON.parse(fs.readFileSync(path.join(app, ".vite-cache", "deps_ssr", "_metadata.json"), "utf8"));
+      assert.ok(meta.optimized.react, "the user's own include still seeds");
+      assert.ok(!meta.optimized["react/presets"], "the toxic id is gone from the committed set");
+      const snapshot = JSON.parse(fs.readFileSync(path.join(app, "preseed-include.json"), "utf8"));
+      assert.ok(!JSON.stringify(snapshot).includes("react/presets"), "the snapshot is healed, not just skipped");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+// The other half of the same incident: metadata left over from ANOTHER
+// install state (Vite itself would discard it by lockfileHash) is not a
+// source of replayable ids at all — the seed never even attempts the toxic
+// id, so no failed first pass is paid.
+test(
+  "metadata from a previous install state is not replayed",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp();
+    try {
+      plantSsrMetadata(app, ["react", "react/presets"], "00000000");
+      runSeed(app);
+      const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+      assert.equal(report.failed, false);
+      assert.deepEqual(
+        report.seeded.map((s) => s.name),
+        ["ssr"],
+      );
+      const snapshot = JSON.parse(fs.readFileSync(path.join(app, "preseed-include.json"), "utf8"));
+      assert.ok(!JSON.stringify(snapshot).includes("react/presets"), "stale ids never enter the snapshot");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

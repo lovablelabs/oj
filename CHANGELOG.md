@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A dependency bump can no longer wedge the dev server through the deps preseed. oj replays each environment's previously optimized dep ids into `optimizeDeps.include` (so plugin-injected deps don't force a mid-session re-optimize and restart), but an id whose package still exists while its exports map no longer answers that subpath makes Vite's optimizer throw — unresolvable ids only warn — and the failing optimize is the very step that would have aged the id out, so every later boot failed the same way (the preseed child exited, and in-host the custom dev environment's `configureServer` could hang plugin host init indefinitely). The replayed set is now bounded by install state the way Vite bounds its own metadata: the snapshot records the same lockfile hash Vite keys `_metadata.json` by, and ids from another install state are dropped at every door (reading prior metadata, merging, folding), costing the one discovery session Vite itself pays after a dependency change. If an optimize still fails with replayed ids folded in under the same install state, the child now drops that environment's replayed set, heals the snapshot (the plugin host folds the same file), and retries once as a discovery session. Snapshots from before this change carry no recorded install state and are discarded once.
+
 ## [0.2.24] - 2026-10-12
 
 ### Fixed
