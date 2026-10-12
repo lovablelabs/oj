@@ -52,11 +52,17 @@ fuzz_target!(|data: &[u8]| {
         let Ok(out) = compile(&path, source, &options) else {
             continue;
         };
-        // Whatever was emitted parses as what the browser will consume: a
-        // module, or a sloppy script for `.cjs`/`.cts` sources. `compile`
-        // guarantees this itself (`validate_emitted`); this reparse is the
-        // belt that keeps the guarantee honest.
-        let verify_ext = if extension == "cjs" { "cjs" } else { "mjs" };
+        // TypeScript/JSX output parses as what the browser will consume
+        // (`validate_emitted` guarantees it; this reparse is the belt). Plain
+        // JavaScript round-trips under its own leniency instead: an importless
+        // `.js` file resolves to sloppy script, and sloppy-only code in it
+        // (`--eval`) passes through byte-identical, exactly as under Vite,
+        // whose esbuild transform does not strict-check plain js either -- the
+        // browser reports it.
+        let verify_ext = match extension {
+            "js" | "cjs" => extension,
+            _ => "mjs",
+        };
         let verify = std::path::PathBuf::from(format!("/src/verify.{verify_ext}"));
         let reparsed = compile(&verify, &out.code, &CompileOptions::prod());
         assert!(
