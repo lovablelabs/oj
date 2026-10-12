@@ -52,12 +52,14 @@ fuzz_target!(|data: &[u8]| {
         let Ok(out) = compile(&path, source, &options) else {
             continue;
         };
-        // Whatever was emitted is valid JavaScript.
-        let reparsed = compile(
-            Path::new("/src/verify.mjs"),
-            &out.code,
-            &CompileOptions::prod(),
-        );
+        // Whatever was emitted parses back under the input's own grammar: this
+        // catches emitted garbage without asserting checks oxc does not run on
+        // TypeScript sources. Its checker leaves some strict-mode early errors
+        // to tsc (`++eval` in a module passed as .tsx and failed as .mjs), so
+        // a reparse as .mjs holds the strip pipeline to a bar its parser only
+        // enforces for JavaScript inputs.
+        let verify = std::path::PathBuf::from(format!("/src/verify.{extension}"));
+        let reparsed = compile(&verify, &out.code, &CompileOptions::prod());
         assert!(
             reparsed.is_ok(),
             "emitted invalid code for {extension}: {:?}\n---\n{}",
