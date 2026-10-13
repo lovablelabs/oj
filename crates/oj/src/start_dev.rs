@@ -1299,6 +1299,13 @@ fn start_script_vars(
             vars.push((var.into(), serde_json::Value::Object(defines).to_string()));
         }
     }
+    let css_modules = oj_server::css_modules_options(config);
+    if css_modules != oj_css::CssModulesOptions::default() {
+        vars.push((
+            "OJ_START_CSS_MODULES".into(),
+            oj_server::css_modules_to_json(&css_modules),
+        ));
+    }
     let jsx = oj_config::jsx_settings(config);
     if jsx != oj_config::JsxSettings::default() {
         vars.push((
@@ -2252,6 +2259,29 @@ async fn serve_js(path: &Path, what: &str) -> Response {
     }
 }
 
+/// A stylesheet the dev client loads, when it is not served as written: a
+/// CSS module's sheet is the scoped one, under the names SSR renders and the
+/// bundle's class map carries, and a Tailwind sheet is compiled. Scoping runs
+/// before the app's postcss plugins, as postcss-modules does in Vite.
+async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, String>> {
+    let src = tokio::fs::read_to_string(file).await.ok()?;
+    let module = oj_css::is_css_module(&file.to_string_lossy());
+    let src = if module {
+        match state.ssr.style_module(file, &src) {
+            Ok(m) => m.css,
+            Err(e) => return Some(Err(e)),
+        }
+    } else {
+        src
+    };
+    if let Some(host) = state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
+        if let Some(css) = compile_css(host, &src, file).await {
+            return Some(Ok(css));
+        }
+    }
+    module.then_some(Ok(src))
+}
+
 async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
     let decoded = percent_decode(abs);
     let path = PathBuf::from(&decoded);
@@ -2263,21 +2293,22 @@ async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
         return (StatusCode::FORBIDDEN, "oj start: asset outside workspace").into_response();
     }
     if canon.extension().and_then(|e| e.to_str()) == Some("css") {
-        if let Some(host) = &state.css_host {
-            if let Ok(src) = tokio::fs::read_to_string(&canon).await {
-                if needs_css_compile(&src) {
-                    if let Some(css) = compile_css(host, &src, &canon).await {
-                        return (
-                            [
-                                (header::CONTENT_TYPE, "text/css; charset=utf-8"),
-                                (header::CACHE_CONTROL, "no-cache"),
-                            ],
-                            css,
-                        )
-                            .into_response();
-                    }
-                }
-            }
+        if let Some(body) = css_body(state, &canon).await {
+            return match body {
+                Ok(css) => (
+                    [
+                        (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    css,
+                )
+                    .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("oj start: css: {e}"),
+                )
+                    .into_response(),
+            };
         }
     }
     match tokio::fs::read(&canon).await {

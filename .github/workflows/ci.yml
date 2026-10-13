@@ -270,6 +270,8 @@ jobs:
         run: node e2e/start-chunk-policy.mjs
       - name: start dev serves a raw-TypeScript dependency through the pipeline
         run: node e2e/start-node-modules-ts.mjs
+      - name: start css modules scope the same class on server, client and stylesheet
+        run: node e2e/start-css-modules.mjs
 
   # i need to fix this or automate
   build:

@@ -147,9 +147,7 @@ try {
       res.status === 200,
       `built /about returned ${res.status}:\n${html.slice(0, 800)}\n---\n${builtLog.slice(-1200)}`,
     );
-    // Start production builds emit no CSS-module class names yet (app or
-    // dependency), so the built leg asserts everything else.
-    for (const marker of MARKERS.filter((m) => m !== "ts-dep-css-module")) {
+    for (const marker of MARKERS) {
       must(html.includes(marker), `built SSR html missing "${marker}":\n${html.slice(0, 800)}`);
     }
     must(

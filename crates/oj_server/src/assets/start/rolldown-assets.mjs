@@ -15,6 +15,9 @@ const INLINE_RE = /[?&]inline\b/;
 const NO_INLINE_RE = /(\?|&)no-inline(?:&|$)/;
 const WORKER_RE = /(?:\?|&)(worker|sharedworker)(?:&|$)/;
 const ASSET_EXT = /\.(png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|mp4|webm|wasm)(\?|$)/;
+// Vite's cssModuleRE, for the stylesheets the asset module handles.
+const CSS_MODULE_RE = /\.module\.css$/;
+const CSS_MODULE_SCHEME = "oj-css-module:";
 
 // esbuild "namespaces" become \0-prefixed virtual ids; the tag routes load().
 const V = (tag, path) => `\0oj-${tag}:${path}`;
@@ -189,11 +192,16 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
           );
         }
         if (v.tag === "css") {
+          // A CSS module compiles on oj's CSS pipeline (the module host's
+          // CSS_MODULE_SCHEME), the one the dev server's SSR renders from, so
+          // class names agree across SSR, the client and the build. Its scoped
+          // sheet is what the build emits; dev serves the same one by url.
+          const module = CSS_MODULE_RE.test(v.path) ? await import(CSS_MODULE_SCHEME + v.path) : null;
           if (!server) {
-            const href = await urlFor(v.path);
+            const href = module && mode !== "dev" ? await emit.css(v.path, module.css) : await urlFor(v.path);
             if (cssUrls && !cssUrls.includes(href)) cssUrls.push(href);
           }
-          return js("export default {};");
+          return js(module ? module.code : "export default {};");
         }
         return null;
       },
@@ -559,19 +567,25 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
 
   async function emit(absPath) {
     if (extname(absPath).toLowerCase() === ".css" && !emitting.has(absPath)) {
-      emitting.add(absPath);
-      try {
-        let css = readFileSync(absPath, "utf8");
-        if (compileCss && needsCssCompile(css)) css = await compileCss(absPath, css);
-        const url = write(absPath, Buffer.from(await rewriteCss(css, dirname(absPath)), "utf8"));
-        if (!cssUrls.includes(url)) cssUrls.push(url);
-        return url;
-      } finally {
-        emitting.delete(absPath);
-      }
+      return emitCss(absPath, readFileSync(absPath, "utf8"));
     }
     return write(absPath, readFileSync(absPath));
   }
+
+  // A stylesheet's text as the file at absPath (a CSS module's scoped sheet
+  // is not the file's bytes): compiled, its urls emitted, then hashed.
+  async function emitCss(absPath, css) {
+    emitting.add(absPath);
+    try {
+      if (compileCss && needsCssCompile(css)) css = await compileCss(absPath, css);
+      const url = write(absPath, Buffer.from(await rewriteCss(css, dirname(absPath)), "utf8"));
+      if (!cssUrls.includes(url)) cssUrls.push(url);
+      return url;
+    } finally {
+      emitting.delete(absPath);
+    }
+  }
+  emit.css = emitCss;
 
   async function rewriteCss(css, dir) {
     const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;

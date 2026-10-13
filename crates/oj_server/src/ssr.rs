@@ -48,6 +48,17 @@ impl SsrBridge {
         self.state.graph.lock().unwrap().contains(Path::new(&url))
     }
 
+    /// A stylesheet as a module, compiled with the inputs SSR renders it
+    /// from (see [`compile_style_module`]).
+    pub fn style_module(&self, path: &Path, source: &str) -> Result<StyleModule, String> {
+        compile_style_module(
+            &self.state.root,
+            path,
+            source,
+            &self.state.css_resolve.as_ref(),
+        )
+    }
+
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
         ssr_resolve_inner(&self.state, importer, spec).await
     }
@@ -244,7 +255,7 @@ pub(crate) async fn ssr_module_inner(
         } else {
             source
         };
-        return ssr_css_module(&state.root, &path, &source).map_err(SsrModuleError::Failed);
+        return ssr_css_module(state, &path, &source).map_err(SsrModuleError::Failed);
     }
     if !from_plugin && ext == Some("json") {
         return oj_compiler::json::to_esm(&source, id)
@@ -512,21 +523,82 @@ pub(crate) fn sass_load_paths_for(state: &ServerState, url: &str) -> Vec<PathBuf
         .collect()
 }
 
-pub(crate) fn ssr_css_module(root: &Path, path: &Path, source: &str) -> Result<String, String> {
+pub(crate) fn ssr_css_module(
+    state: &ServerState,
+    path: &Path,
+    source: &str,
+) -> Result<String, String> {
     let css_src = if oj_css::is_sass(&path.to_string_lossy()) {
         oj_css::compile_sass(source, path.parent())?
     } else {
         source.to_string()
     };
-    let css_id = match path.strip_prefix(root) {
-        Ok(rel) => format!("/{}", rel.display()),
-        Err(_) => path.to_string_lossy().to_string(),
+    Ok(compile_style_module(&state.root, path, &css_src, &state.css_resolve.as_ref())?.code)
+}
+
+/// A stylesheet compiled as a module: its JS (a CSS module's class map, else
+/// an empty module) and the stylesheet. Scoped names hash the file's served
+/// url under the app's `css.modules` options, the same inputs the client
+/// pipeline uses, so every consumer of one file (SSR, the dev client, the
+/// Start bundles) renders the same class names. Urls are left as written.
+pub struct StyleModule {
+    pub code: String,
+    pub css: String,
+}
+
+pub fn compile_style_module(
+    root: &Path,
+    path: &Path,
+    source: &str,
+    resolve: &oj_css::CssResolve<'_>,
+) -> Result<StyleModule, String> {
+    let url = crate::rewrite::url_of(root, path);
+    let resolve = oj_css::CssResolve {
+        minify: false,
+        ..*resolve
     };
-    let output = oj_css::compile_css(&css_id, &css_src, true)?;
-    Ok(match output.exports {
+    let output = oj_css::compile_css_with(&url, source, &resolve)?;
+    let code = match output.exports {
         Some(exports) => oj_css::css_modules_esm(&exports),
         None => "export default {};".to_string(),
+    };
+    Ok(StyleModule {
+        code,
+        css: output.css,
     })
+}
+
+/// `css.modules` as the Start scripts receive it (`OJ_START_CSS_MODULES`).
+pub fn css_modules_to_json(m: &oj_css::CssModulesOptions) -> String {
+    serde_json::json!({
+        "localsConvention": m.locals_convention,
+        "generateScopedName": m.generate_scoped_name,
+        "globalScope": m.global_scope,
+        "globalModulePaths": m.global_module_paths,
+    })
+    .to_string()
+}
+
+pub fn css_modules_from_json(raw: &str) -> oj_css::CssModulesOptions {
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap_or_default();
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    oj_css::CssModulesOptions {
+        locals_convention: s("localsConvention"),
+        generate_scoped_name: s("generateScopedName"),
+        global_scope: v
+            .get("globalScope")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        global_module_paths: v
+            .get("globalModulePaths")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
 }
 
 /// Vite's `css.modules` options as the CSS compiler applies them (dev and build).

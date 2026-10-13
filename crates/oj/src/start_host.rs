@@ -1495,11 +1495,11 @@ impl StartEngine {
 }
 
 /// The engine the Start one-shot scripts (route-tree generation, the
-/// server-fn resolver, the client bundle, the production build) run on. No
-/// module host: the scripts import rolldown's napi binding and the app's
-/// plugins with plain byonm semantics, exactly as they did under node. Each
-/// script exports `run(env)`; the env values that used to be spawn env travel
-/// as the argument.
+/// server-fn resolver, the client bundle, the production build) run on. The
+/// scripts import rolldown's napi binding and the app's plugins with plain
+/// byonm semantics, exactly as they did under node; the module host answers
+/// only [`CSS_MODULE_SCHEME`] ids. Each script exports `run(env)`; the env
+/// values that used to be spawn env travel as the argument.
 ///
 /// Hosted only in processes that EXIT after their scripts (`oj build`, the
 /// `oj start-script` child the dev server spawns per rebundle): rolldown's
@@ -1511,6 +1511,64 @@ pub struct ScriptEngine {
     engine: JsEngine,
     /// The env shadow ran on the isolate (once, before the first script).
     env_shadowed: tokio::sync::OnceCell<()>,
+    /// `css.modules` from the running script's env (`OJ_START_CSS_MODULES`).
+    css_modules: Arc<Mutex<oj_css::CssModulesOptions>>,
+}
+
+/// `import("oj-css-module:/abs/x.module.css")` from a Start script: the
+/// stylesheet compiled by oj's CSS pipeline, as `{ code, css }` (the module's
+/// JS and its scoped stylesheet). The bundles take CSS-module class names from
+/// here so they match what the dev server's SSR renders.
+pub const CSS_MODULE_SCHEME: &str = "oj-css-module:";
+const CSS_MODULES_ENV: &str = "OJ_START_CSS_MODULES";
+
+fn serve_script_host(
+    root: PathBuf,
+    css_modules: Arc<Mutex<oj_css::CssModulesOptions>>,
+    mut requests: oj_js::HostRequests,
+) {
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            match request {
+                // Everything else keeps byonm resolution; a CSS_MODULE_SCHEME
+                // id is an absolute URL the loader passes to load as is.
+                oj_js::HostRequest::Resolve { reply, .. } => {
+                    let _ = reply.send(Ok(None));
+                }
+                oj_js::HostRequest::Load { specifier, reply } => {
+                    let Some(path) = specifier.strip_prefix(CSS_MODULE_SCHEME) else {
+                        let _ = reply.send(Ok(None));
+                        continue;
+                    };
+                    let modules = css_modules.lock().unwrap().clone();
+                    let _ = reply.send(script_css_module(&root, path, &modules).map(Some));
+                }
+            }
+        }
+    });
+}
+
+fn script_css_module(
+    root: &Path,
+    path: &str,
+    modules: &oj_css::CssModulesOptions,
+) -> Result<HostModule, String> {
+    let path = Path::new(path);
+    let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let resolve = oj_css::CssResolve {
+        root: Some(root),
+        modules,
+        ..oj_css::CssResolve::default()
+    };
+    let module = oj_server::compile_style_module(root, path, &source, &resolve)?;
+    Ok(HostModule {
+        code: format!(
+            "export const code = {};\nexport const css = {};\n",
+            json_str(&module.code),
+            json_str(&module.css)
+        ),
+        module_type: HostModuleType::JavaScript,
+    })
 }
 
 /// Shadows `process.env` with a private copy on the script isolate before any
@@ -1532,9 +1590,14 @@ impl ScriptEngine {
     pub fn new(root: &Path) -> anyhow::Result<ScriptEngine> {
         let mut config = EngineConfig::new(root);
         config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
+        let css_modules = Arc::new(Mutex::new(oj_css::CssModulesOptions::default()));
+        let (link, requests) = ModuleHost::channel();
+        serve_script_host(root.to_path_buf(), Arc::clone(&css_modules), requests);
         Ok(ScriptEngine {
-            engine: JsEngine::spawn(config, None, None).map_err(|e| anyhow::anyhow!("{e}"))?,
+            engine: JsEngine::spawn(config, Some(link), None)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
+            css_modules,
         })
     }
 
@@ -1567,6 +1630,9 @@ impl ScriptEngine {
                     .map(|_| ())
             })
             .await?;
+        if let Some((_, raw)) = env.iter().find(|(k, _)| k == CSS_MODULES_ENV) {
+            *self.css_modules.lock().unwrap() = oj_server::css_modules_from_json(raw);
+        }
         let env_obj: serde_json::Map<String, serde_json::Value> = env
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
@@ -2062,6 +2128,71 @@ mod tests {
             node_env_before,
             "the script's NODE_ENV write must not alter oj's real env"
         );
+    }
+
+    /// The Start bundles' CSS modules come from oj's CSS pipeline: the same
+    /// scoped names SSR renders, under the app's `css.modules` options.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn script_engine_serves_css_modules_from_the_css_pipeline() {
+        let dir = std::env::temp_dir().join(format!("oj-scriptcss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let sheet = dir.join("src/card.module.css");
+        std::fs::write(&sheet, ".card { color: red; }\n").unwrap();
+        let script = dir.join("probe.mjs");
+        std::fs::write(
+            &script,
+            r#"export async function run(env) {
+  const m = await import("oj-css-module:" + env.SHEET);
+  if (!m.code.includes(JSON.stringify(env.WANT))) throw new Error("class map: " + m.code);
+  if (!m.css.includes("." + env.WANT)) throw new Error("sheet: " + m.css);
+  return null;
+}
+"#,
+        )
+        .unwrap();
+        let ssr_name = {
+            let resolve = oj_css::CssResolve {
+                root: Some(&dir),
+                ..oj_css::CssResolve::default()
+            };
+            let module =
+                oj_server::compile_style_module(&dir, &sheet, ".card { color: red; }\n", &resolve)
+                    .unwrap();
+            let start = module.code.find("export const card = \"").unwrap() + 21;
+            module.code[start..].split('"').next().unwrap().to_string()
+        };
+        let sheet_var = ("SHEET".to_string(), sheet.to_string_lossy().into_owned());
+        ScriptEngine::new(&dir)
+            .unwrap()
+            .run_async(
+                &script,
+                &[sheet_var.clone(), ("WANT".to_string(), ssr_name)],
+                "default css modules",
+            )
+            .await
+            .expect("default options name the class as SSR does");
+        let configured = oj_css::CssModulesOptions {
+            generate_scoped_name: Some("[local]-scoped".into()),
+            ..Default::default()
+        };
+        ScriptEngine::new(&dir)
+            .unwrap()
+            .run_async(
+                &script,
+                &[
+                    sheet_var,
+                    ("WANT".to_string(), "card-scoped".to_string()),
+                    (
+                        CSS_MODULES_ENV.to_string(),
+                        oj_server::css_modules_to_json(&configured),
+                    ),
+                ],
+                "configured css modules",
+            )
+            .await
+            .expect("css.modules from the script env applies");
     }
 
     #[test]
