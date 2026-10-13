@@ -50,6 +50,10 @@ fs.writeFileSync(
     `const groups: any[] = [
   { name: "vendor-react", test: /node_modules[\\\\/](?:react|react-dom|scheduler)[\\\\/]/, priority: 10 },
   { name: (id: string) => (id.includes("/@tanstack/") ? "vendor-tanstack" : undefined), priority: 5 },
+  // Sweep off: rolldown requires preserveEntrySignatures false or
+  // allow-extension for it and warns INVALID_OPTION when the option is unset;
+  // Vite's client build sets false.
+  { name: "vendor-scheduler", test: /node_modules[\\\\/]scheduler[\\\\/]/, includeDependenciesRecursively: false, priority: 20 },
 ];
 // The route-shared shape: a group computed by an apply-build plugin, whose
 // guard throws when that plugin did not run. Dev must step around it;
@@ -74,6 +78,7 @@ const vendorChunks = () => {
   return {
     react: idx.files.find((f) => /^vendor-react-.*\.js$/.test(f.name)),
     tanstack: idx.files.find((f) => /^vendor-tanstack-.*\.js$/.test(f.name)),
+    scheduler: idx.files.find((f) => /^vendor-scheduler-.*\.js$/.test(f.name)),
   };
 };
 
@@ -97,6 +102,10 @@ try {
   const chunks = vendorChunks();
   if (!chunks.react) throw new Error("dev bundle has no vendor-react chunk (codeSplitting not honored)");
   if (!chunks.tanstack) throw new Error("dev bundle has no vendor-tanstack chunk (function-named group lost)");
+  if (!chunks.scheduler) throw new Error("dev bundle has no vendor-scheduler chunk (non-recursive group lost)");
+  if (log.includes("INVALID_OPTION")) {
+    throw new Error("dev bundle warned INVALID_OPTION (preserveEntrySignatures left unset, Vite sets false)");
+  }
   const served = await fetch(`http://localhost:${PORT}/@oj-start/${chunks.react.name}`);
   if (served.status !== 200) throw new Error(`vendor-react chunk not served: ${served.status}`);
   if (!(await served.text()).includes("react")) throw new Error("vendor-react chunk carries no react");
@@ -130,8 +139,14 @@ try {
   console.log("chunk-policy: prod build still fails loudly on a throwing group");
 
   const out = path.join(tmp, "out");
-  execSync(`${oj} build ${app} --out ${out}`, { cwd: repo, stdio: ["ignore", "ignore", "inherit"] });
+  const buildLog = execSync(`${oj} build ${app} --out ${out} 2>&1`, { cwd: repo, encoding: "utf8" });
+  if (buildLog.includes("INVALID_OPTION")) {
+    throw new Error(`prod client build warned INVALID_OPTION:\n${buildLog.slice(-800)}`);
+  }
   const assets = fs.readdirSync(path.join(out, "client", "assets"));
+  if (!assets.some((f) => /^vendor-scheduler-.*\.js$/.test(f))) {
+    throw new Error("prod client build has no vendor-scheduler chunk (non-recursive group lost)");
+  }
   if (!assets.some((f) => /^vendor-react-.*\.js$/.test(f))) {
     throw new Error("prod client build has no vendor-react chunk (codeSplitting not honored)");
   }

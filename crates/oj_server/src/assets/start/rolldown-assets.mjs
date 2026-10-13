@@ -650,15 +650,24 @@ export function needsCssCompile(src) {
 // `experimental.chunkOptimization`. The client environment's options win
 // over the top-level ones, Vite's environment resolution. The config is
 // live in this process, so function-valued group names work as under Vite.
+// `preserveEntrySignatures` defaults to false as Vite's client app build
+// sets it (resolveRolldownOptions, before the user's options spread over
+// it); left unset, rolldown warns INVALID_OPTION for any group with
+// `includeDependenciesRecursively: false`. oj's client entry exports
+// nothing, so false drops nothing.
 export function clientChunkPolicy(config) {
   const top = config?.build?.rolldownOptions ?? {};
   const env = config?.environments?.client?.build?.rolldownOptions ?? {};
   const out = { ...top.output, ...env.output };
   const codeSplitting = out.codeSplitting ?? out.advancedChunks;
   const chunkOptimization = { ...top.experimental, ...env.experimental }.chunkOptimization;
+  const preserveEntrySignatures = env.preserveEntrySignatures ?? top.preserveEntrySignatures ?? false;
   return {
     output: codeSplitting === undefined ? {} : { codeSplitting },
-    input: chunkOptimization === undefined ? {} : { experimental: { chunkOptimization } },
+    input: {
+      preserveEntrySignatures,
+      ...(chunkOptimization === undefined ? {} : { experimental: { chunkOptimization } }),
+    },
   };
 }
 
