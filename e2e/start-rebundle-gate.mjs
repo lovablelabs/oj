@@ -39,8 +39,9 @@ for (const f of ["src", "public", "styles", "packages", "tsconfig.json", "packag
   fs.cpSync(path.join(fixture, f), path.join(app, f), { recursive: true });
 }
 fs.symlinkSync(path.join(fixture, "node_modules"), path.join(app, "node_modules"), "dir");
-// Present before boot, so its edit below is an update of a known file, not a
-// create (creates rebundle by design: resolution can shift onto new files).
+// Present before boot, so its edit below is an update of a known file: the
+// scenario pins the update path of the gate (the create path has its own
+// scenarios below).
 fs.writeFileSync(path.join(app, "README.md"), "# fixture\n");
 
 let log = "";
@@ -74,17 +75,75 @@ try {
   }
   console.log("gate: README edit skipped the rebundle and the reload");
 
+  // Files CREATED outside every graph and glob scope: miniflare persists
+  // under `.wrangler` (trace-store sqlite with workers observability on,
+  // D1/KV state, tmp bundles), creating journal files as it goes. When any
+  // create forced a rebundle, each journal create ran a full rebundle whose
+  // workerd restart wrote the store again -- a self-sustaining loop pumping
+  // gigabytes. Vite ignores adds its module graphs and glob importers never
+  // reach, and so must the gate. The dir is born after boot, as miniflare
+  // creates it, covering the new-top-level-entry adoption path too.
+  const wranglerBefore = log.split("client bundled").length;
+  const traceDir = path.join(app, ".wrangler", "state", "v3", "observability", "trace-store");
+  fs.mkdirSync(traceDir, { recursive: true });
+  for (let i = 0; i < 3; i++) {
+    fs.writeFileSync(path.join(traceDir, `store.sqlite-${i}-wal`), `wal ${i}\n`);
+    fs.appendFileSync(path.join(traceDir, "store.sqlite"), `trace ${i}\n`);
+    await sleep(200);
+  }
+  await sleep(1800);
+  if (log.split("client bundled").length !== wranglerBefore) {
+    throw new Error(`.wrangler state writes rebundled the client; log tail:\n${log.slice(-3000)}`);
+  }
+  if (/rebuilding for .*\.wrangler/.test(log)) {
+    throw new Error(`.wrangler writes reached the rebuild pipeline; log tail:\n${log.slice(-3000)}`);
+  }
+  console.log("gate: .wrangler state writes never reached the watcher");
+
+  // A file created under a bundled import.meta.glob scan base still
+  // rebundles: the glob's expansion grows, as when Vite re-expands glob
+  // importers on add. The index route renders jsglob:<titles> from
+  // src/content/*.json (glob-plain.js), so the new title must be served.
+  const globBefore = log.split("client bundled").length;
+  fs.writeFileSync(path.join(app, "src", "content", "gate-extra.json"), JSON.stringify({ title: "gate-extra-title" }));
+  await settles(async () => log.split("client bundled").length > globBefore, { timeoutMs: 20000 });
+  if (log.split("client bundled").length === globBefore) {
+    throw new Error(`a create under a glob scope did not rebundle; log tail:\n${log.slice(-3000)}`);
+  }
+  // The fresh bundle carries the new entry (the eager glob inlines the json).
+  // The SSR document's freshness is the engine's own path, as above.
+  const chunksHold = (needle) => {
+    const dir = path.join(app, ".oj-cache");
+    return fs
+      .readdirSync(dir, { recursive: true })
+      .filter((f) => String(f).endsWith(".js"))
+      .some((f) => {
+        try {
+          return fs.readFileSync(path.join(dir, String(f)), "utf8").includes(needle);
+        } catch {
+          return false;
+        }
+      });
+  };
+  await settles(async () => chunksHold("gate-extra-title"), { timeoutMs: 15000 });
+  if (!chunksHold("gate-extra-title")) {
+    throw new Error("the rebundled client does not carry the new glob entry");
+  }
+  console.log("gate: create under a glob scope rebundled with the new entry");
+
   // A bundled module still rebundles and reloads. (The served document's
   // freshness is the engine's own path and not asserted here: the base
   // behavior predates the gate and is unchanged by it.)
   const aboutFile = path.join(app, "src", "routes", "about.tsx");
+  const editBefore = log.split("client bundled").length;
+  const reloadBefore = log.split("rebuilt, reloading").length;
   fs.writeFileSync(aboutFile, fs.readFileSync(aboutFile, "utf8").replace("about-page-marker", "about-page-edited"));
-  await settles(async () => log.split("client bundled").length > bundledAfter, { timeoutMs: 20000 });
-  if (log.split("client bundled").length === bundledAfter) {
+  await settles(async () => log.split("client bundled").length > editBefore, { timeoutMs: 20000 });
+  if (log.split("client bundled").length === editBefore) {
     throw new Error(`route edit did not rebundle; log tail:\n${log.slice(-3000)}`);
   }
-  await settles(async () => log.includes("rebuilt, reloading"), { timeoutMs: 10000 });
-  if (!log.includes("rebuilt, reloading")) {
+  await settles(async () => log.split("rebuilt, reloading").length > reloadBefore, { timeoutMs: 10000 });
+  if (log.split("rebuilt, reloading").length === reloadBefore) {
     throw new Error(`route edit did not reload; log tail:\n${log.slice(-3000)}`);
   }
   console.log("gate: bundled-module edit rebundled and reloaded");
