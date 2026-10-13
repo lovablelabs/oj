@@ -118,6 +118,30 @@ fn is_declaration_file(name: &str) -> bool {
         .any(|ext| name.ends_with(ext))
 }
 
+/// Paths whose change can flip which file `app_start_entry` resolves to: the
+/// `src/start.*` ladder (file, extensionless file or directory index) and any
+/// `package.json`, whose `imports` may map the entry. Name-shaped matching
+/// over-approximates (a nested src dir, a dependency's package.json); the
+/// re-probe a hit triggers is a handful of stats, and the server restarts
+/// only when the resolved entry actually changed.
+fn start_entry_candidate(p: &Path) -> bool {
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name == "package.json" {
+        return true;
+    }
+    let under = |p: &Path, dir: &str| {
+        p.parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|n| n == dir)
+    };
+    (under(p, "src") && (name == "start" || name.starts_with("start.")))
+        || (under(p, "start")
+            && name.starts_with("index.")
+            && p.parent().is_some_and(|d| under(d, "src")))
+}
+
 // Vite's watcher distinguishes add/change/unlink; notify's batched events are
 // classified at send time: gone from disk is a delete, seen as a Create in this
 // batch is a create, anything else an update.
@@ -825,6 +849,16 @@ fn spawn_start_watcher(
         Arc::new(std::sync::Mutex::new(None));
     let wake = Arc::new(tokio::sync::Notify::new());
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The start entry's presence is a config-time input: upstream resolves
+    // `#tanstack-start-entry` once in its plugin's `config` hook, and oj
+    // probes it once per StartHost and per bundle run. A `src/start.*` that
+    // appears or disappears mid-session would otherwise half-apply (the next
+    // unrelated rebundle re-probes for the client while the SSR alias stays
+    // fixed until restart), so a flip of the probed answer restarts the dev
+    // server, as a config edit does. Edits to an existing entry are ordinary
+    // module changes and never flip this.
+    let watch_root = root.clone();
+    let boot_entry = crate::start_host::app_start_entry(&watch_root);
     rt.spawn(rebundle_worker(
         root,
         cache,
@@ -894,6 +928,11 @@ fn spawn_start_watcher(
             }
             if paths.is_empty() {
                 continue;
+            }
+            if paths.iter().any(|p| start_entry_candidate(p))
+                && crate::start_host::app_start_entry(&watch_root) != boot_entry
+            {
+                oj_server::restart_process("the start entry changed");
             }
             // Rebuild only on a real source-file change. Ignore the generated
             // route tree and its atomic-write temp siblings, plus bare directory
@@ -2573,6 +2612,30 @@ mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::{connect_async, tungstenite::Message as ClientMessage};
+
+    // The watcher re-probes the start entry only for paths that can flip it:
+    // the src/start ladder (file, extensionless, directory index) and any
+    // package.json (its `imports` may map the entry). Ordinary sources never
+    // trigger the probe, so an edit to an existing src/start.ts stays an
+    // ordinary rebundle (the probe's answer is unchanged either way).
+    #[test]
+    fn start_entry_candidates_are_the_probe_shapes() {
+        let hit = |p: &str| start_entry_candidate(&PathBuf::from(p));
+        assert!(hit("/app/src/start.ts"));
+        assert!(hit("/app/src/start.jsx"));
+        assert!(hit("/app/src/start"));
+        assert!(hit("/app/src/start/index.ts"));
+        assert!(hit("/app/package.json"));
+        assert!(hit("/app/packages/dep/package.json"));
+        assert!(!hit("/app/src/starter.ts"));
+        assert!(!hit("/app/src/start-page.tsx"));
+        assert!(
+            !hit("/app/src/routes/start.ts"),
+            "only directly under a src dir"
+        );
+        assert!(!hit("/app/src/main.tsx"));
+        assert!(!hit("/app/other/start.ts"));
+    }
 
     struct HmrTestServer {
         url: String,

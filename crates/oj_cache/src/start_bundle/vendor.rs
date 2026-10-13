@@ -157,6 +157,20 @@ pub(super) fn epoch_in(
         hasher.update(&[0]);
         hasher.update(v.as_bytes());
     }
+    // Which `src/start.*` the `#tanstack-start-entry` alias probes to (the
+    // client bundle's ladder; a package.json `imports` target rides the
+    // package.json hash above). The chosen file's CONTENT is a closure input
+    // once bundled, but its presence and identity are not: a `src/start.ts`
+    // created after a stub bundle was cached leaves every old closure file
+    // unchanged, and the stale stub bundle would restore on the next boot.
+    hasher.update(b"\0start-entry\0");
+    for ext in [".ts", ".js", ".mts", ".mjs", ".tsx", ".jsx"] {
+        let name = format!("src/start{ext}");
+        if root.join(&name).is_file() {
+            hasher.update(name.as_bytes());
+            break;
+        }
+    }
     // A vendor change, including an in-place upgrade at the same path, must
     // not restore a bundle another rolldown produced.
     if let Some(identity) = vendored_rolldown_identity {
@@ -203,5 +217,41 @@ mod tests {
         assert_ne!(base, of(&[("NODE_ENV", "production")]));
         assert_ne!(base, of(&[("TSS_SERVER_FN_BASE", "/fn")]));
         assert_eq!(base, of(&[("TSS_OTHER", "1")]));
+    }
+
+    // The probed start entry is a bundle input outside the closure: a
+    // src/start.ts created after a stub bundle was cached must re-key, or the
+    // stale stub restores on the next boot and the app's createStart options
+    // silently stay dropped client-side.
+    #[test]
+    fn epoch_keys_on_the_probed_start_entry() {
+        let root = std::env::temp_dir().join(format!("oj-start-epoch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let env = Env::from_vars(std::iter::empty::<(&str, &str)>());
+        let of = || epoch_in(&env, &root, "development", None);
+
+        let without = of();
+        std::fs::write(
+            root.join("src/start.ts"),
+            "export const startInstance = 1;\n",
+        )
+        .unwrap();
+        let with_ts = of();
+        assert_ne!(
+            without, with_ts,
+            "a created src/start.ts re-keys the bundle"
+        );
+
+        // Same presence, same choice: content changes are the closure's job.
+        std::fs::write(
+            root.join("src/start.ts"),
+            "export const startInstance = 2;\n",
+        )
+        .unwrap();
+        assert_eq!(with_ts, of());
+
+        std::fs::remove_file(root.join("src/start.ts")).unwrap();
+        assert_eq!(without, of(), "a delete re-keys back to the stub bundle");
     }
 }

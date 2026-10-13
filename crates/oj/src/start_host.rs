@@ -679,6 +679,31 @@ fn start_entry_target(root: &Path, cache: &Path) -> PathBuf {
     }
 }
 
+/// The app's own start entry when one exists: the `package.json`
+/// `imports["#tanstack-start-entry"]` target first (it wins over the
+/// convention in `resolve_inner` and in the client bundle's probe), then the
+/// `src/start.*` ladder. `None` means the framework-default stub serves.
+/// Presence is a config-time input (upstream resolves it once in its plugin's
+/// `config` hook), so the dev watcher restarts on a flip of this answer.
+pub(crate) fn app_start_entry(root: &Path) -> Option<PathBuf> {
+    let declared = std::fs::read_to_string(root.join("package.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("imports")?
+                .get("#tanstack-start-entry")?
+                .as_str()
+                .map(String::from)
+        });
+    if let Some(target) = declared {
+        let p = root.join(target);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    probe(&root.join("src/start"))
+}
+
 fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
     vec![
         ("#tanstack-router-entry".into(), root.join("src/router")),
@@ -1888,6 +1913,55 @@ mod tests {
             "an existing src/start.* wins, extension resolved by probe()"
         );
         assert_eq!(probe(&app).unwrap(), root.join("src/start.ts"));
+    }
+
+    // app_start_entry is the presence probe the dev watcher restarts on: it
+    // answers which file the start entry resolves to right now, `None` for
+    // the stub. A package.json `imports` target outranks the src/start
+    // convention, matching resolve_inner and the client bundle's probe.
+    #[test]
+    fn app_start_entry_tracks_presence_and_imports() {
+        let root = std::env::temp_dir().join(format!("oj-startpresence-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        assert_eq!(app_start_entry(&root), None, "no entry means the stub");
+
+        std::fs::write(
+            root.join("src/start.ts"),
+            "export const startInstance = 1;\n",
+        )
+        .unwrap();
+        assert_eq!(
+            app_start_entry(&root),
+            Some(root.join("src/start.ts")),
+            "a created src/start.ts flips the answer"
+        );
+
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(
+            root.join("app/entry.ts"),
+            "export const startInstance = 2;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r##"{ "imports": { "#tanstack-start-entry": "./app/entry.ts" } }"##,
+        )
+        .unwrap();
+        assert_eq!(
+            app_start_entry(&root),
+            Some(root.join("./app/entry.ts")),
+            "a declared imports target outranks the convention"
+        );
+
+        std::fs::remove_file(root.join("package.json")).unwrap();
+        std::fs::remove_file(root.join("src/start.ts")).unwrap();
+        assert_eq!(
+            app_start_entry(&root),
+            None,
+            "a delete flips back to the stub"
+        );
     }
 
     // The ScriptEngine's process.env shadow: a script's env writes — the
