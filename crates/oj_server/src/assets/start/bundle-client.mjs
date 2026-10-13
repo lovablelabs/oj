@@ -7,6 +7,7 @@ import { importPkg, importOjRolldown, viteEnvDefine, environmentDefines, jsxTran
 import {
   assetsPlugin,
   clientChunkPolicy,
+  devSafeChunkPolicy,
   makeVitePlugins,
   nodeBuiltinShims,
   workspaceRoot,
@@ -182,7 +183,7 @@ async function main() {
     },
   };
 
-  const chunkPolicy = clientChunkPolicy(container?.config);
+  const chunkPolicy = devSafeChunkPolicy(clientChunkPolicy(container?.config));
   const result = await build({
     input: join(HERE, "client-entry.tsx"),
     platform: "browser",

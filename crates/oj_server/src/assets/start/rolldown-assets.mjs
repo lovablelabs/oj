@@ -661,3 +661,43 @@ export function clientChunkPolicy(config) {
     input: chunkOptimization === undefined ? {} : { experimental: { chunkOptimization } },
   };
 }
+
+// The dev bundle evaluates chunk-policy functions in a mode they were not
+// necessarily written for: `apply: "build"` plugins never ran under serve,
+// and a group computed from their output throws when that data is missing
+// (a route-shared group populated by a build-only plugin is the shape).
+// Vite's dev server never evaluates these functions at all, so a throwing
+// group must not take the dev server down: it steps aside with one warning
+// and the other groups still apply. The production build stays loud, as
+// `vite build` is.
+export function devSafeChunkPolicy(policy) {
+  const cs = policy.output.codeSplitting;
+  if (!cs || !Array.isArray(cs.groups)) return policy;
+  const warned = new Set();
+  const guard = (group, index, field, miss) => {
+    const fn = group[field];
+    return (...args) => {
+      try {
+        return fn(...args);
+      } catch (e) {
+        const name = typeof group.name === "string" ? group.name : `#${index}`;
+        if (!warned.has(name)) {
+          warned.add(name);
+          process.stderr.write(
+            `oj: codeSplitting group ${name} threw under dev and steps aside ` +
+              `(a build-only plugin it expects did not run): ${e?.message ?? e}\n`,
+          );
+        }
+        return miss;
+      }
+    };
+  };
+  const groups = cs.groups.map((g, i) => {
+    if (!g || typeof g !== "object") return g;
+    const safe = { ...g };
+    if (typeof g.name === "function") safe.name = guard(g, i, "name", undefined);
+    if (typeof g.test === "function") safe.test = guard(g, i, "test", false);
+    return safe;
+  });
+  return { ...policy, output: { ...policy.output, codeSplitting: { ...cs, groups } } };
+}

@@ -47,14 +47,24 @@ fs.writeFileSync(
   path.join(app, "vite.config.ts"),
   fs.readFileSync(path.join(fixture, "vite.config.ts"), "utf8").replace(
     "export default defineConfig({",
-    `const CHUNK_POLICY = {
-  groups: [
-    { name: "vendor-react", test: /node_modules[\\\\/](?:react|react-dom|scheduler)[\\\\/]/, priority: 10 },
-    { name: (id: string) => (id.includes("/@tanstack/") ? "vendor-tanstack" : undefined), priority: 5 },
-  ],
-};
+    `const groups: any[] = [
+  { name: "vendor-react", test: /node_modules[\\\\/](?:react|react-dom|scheduler)[\\\\/]/, priority: 10 },
+  { name: (id: string) => (id.includes("/@tanstack/") ? "vendor-tanstack" : undefined), priority: 5 },
+];
+// The route-shared shape: a group computed by an apply-build plugin, whose
+// guard throws when that plugin did not run. Dev must step around it;
+// a production build must fail on it (CHUNK_POLICY_THROW gates it in so the
+// passing prod leg can drop it).
+if (process.env.CHUNK_POLICY_THROW) {
+  groups.push({
+    name: () => {
+      throw new Error("group route-shared: its plugin did not run before chunking");
+    },
+    priority: 100,
+  });
+}
 export default defineConfig({
-  build: { rolldownOptions: { output: { codeSplitting: CHUNK_POLICY } } },`,
+  build: { rolldownOptions: { output: { codeSplitting: { groups } } } },`,
   ),
 );
 
@@ -69,7 +79,15 @@ const vendorChunks = () => {
 
 let failed = false;
 let log = "";
-const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+// Dev runs WITH the throwing group: a group whose guard assumes an
+// apply-build plugin must step aside under dev (one warning), never crash
+// the server, and the other groups still apply. Vite's own bundled dev
+// passes user output straight through and would crash here; oj's dev
+// bundle is the production path, so it degrades instead.
+const srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
+  stdio: ["ignore", "pipe", "pipe"],
+  env: { ...process.env, CHUNK_POLICY_THROW: "1" },
+});
 srv.stdout.on("data", (c) => (log += c));
 srv.stderr.on("data", (c) => (log += c));
 try {
@@ -82,10 +100,34 @@ try {
   const served = await fetch(`http://localhost:${PORT}/@oj-start/${chunks.react.name}`);
   if (served.status !== 200) throw new Error(`vendor-react chunk not served: ${served.status}`);
   if (!(await served.text()).includes("react")) throw new Error("vendor-react chunk carries no react");
+  if (!/codeSplitting group .* threw under dev and steps aside/.test(log)) {
+    throw new Error("the throwing group was not named in the dev log");
+  }
   console.log("chunk-policy: dev bundle grouped and served the app's vendor chunks");
+  console.log("chunk-policy: a group whose build-only plugin never ran stepped aside in dev");
 
   srv.kill("SIGKILL");
   await sleep(300);
+
+  // A production build with the throwing group fails loudly, as vite build
+  // does: dev tolerance must never leak into the build.
+  const outThrow = path.join(tmp, "out-throw");
+  let prodFailed = false;
+  try {
+    execSync(`${oj} build ${app} --out ${outThrow}`, {
+      cwd: repo,
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, CHUNK_POLICY_THROW: "1" },
+    });
+  } catch (e) {
+    prodFailed = true;
+    const err = String(e?.stderr ?? "");
+    if (!err.includes("its plugin did not run before chunking")) {
+      throw new Error(`prod build failed without naming the group's error:\n${err.slice(-800)}`);
+    }
+  }
+  if (!prodFailed) throw new Error("prod build swallowed the throwing group (dev tolerance leaked into build)");
+  console.log("chunk-policy: prod build still fails loudly on a throwing group");
 
   const out = path.join(tmp, "out");
   execSync(`${oj} build ${app} --out ${out}`, { cwd: repo, stdio: ["ignore", "ignore", "inherit"] });
