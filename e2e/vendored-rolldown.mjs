@@ -66,9 +66,13 @@ function run() {
   });
   const pkgPath = path.join(app, "package.json");
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-  // A vite that predates rolldown, with the plugin generation that matches it.
+  // A vite that predates rolldown, with the plugin generations that match it.
+  // react-start floats on the fixture's caret range, and 1.169.0 moved to a
+  // start-plugin-core whose vite peer is >=8: the last vite-7 generation is
+  // the 1.168 line, so pin it or npm ERESOLVEs the day upstream publishes.
   pkg.devDependencies.vite = "~7.3.0";
   pkg.devDependencies["@vitejs/plugin-react"] = "^5";
+  pkg.dependencies["@tanstack/react-start"] = "~1.168.0";
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
   if (!npmInstall(app)) return false;
 
