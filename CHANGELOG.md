@@ -5,6 +5,17 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.27] - 2026-10-13
+
+### Added
+
+- Dev servers honor `server.https`, serving rustls with ALPN-negotiated HTTP/2 plus an http/1.1 fallback, mirroring Vite's `node:http2.createSecureServer` with `allowHTTP1`. Key and cert cross the config bridge as PEM strings, Buffers or arrays (so both `readFileSync` configs and certificate-injecting plugins like `@vitejs/plugin-basic-ssl` turn TLS on); `pfx` and bare `true` carry no usable PEM and warn. Dev, Start dev, SSR dev and preview all share the path, with preview resolving `preview.https ?? server.https`. WebSockets ride http/1.1 by design (the h2 SETTINGS never advertise extended CONNECT, like node's http2 server under Vite), so the `wss` HMR connection takes the ordinary Upgrade path. Remote dev pays one round trip per request over at most six HTTP/1.1 connections, so a many-chunk page over real latency gets order-of-magnitude faster with h2. Unlike Vite, h2 stays on when `server.proxy` is set (Vite's downgrade is a node proxy-library limitation the axum proxy does not share).
+- Start client bundles honor the app's chunk policy from `build.rolldownOptions`: `output.codeSplitting` (also accepted under its earlier `advancedChunks` spelling) and `experimental.chunkOptimization`, with the client environment's options winning over top-level, in the dev client bundle and the prod client build. Vite passes the app's rolldown options through in build and bundled dev alike, so chunk grouping is the app's to declare; oj ignored it and a large app with many dynamic imports exploded into thousands of micro-chunks. The config is live in-process, so function-valued group names work as under Vite. The dev bundle cache re-keys on a chunk-policy edit for free (the key digests the closure, which includes the config file).
+
+### Fixed
+
+- Start dev no longer rebundles for every created file. A create triggers a client rebundle only under a recorded `import.meta.glob` scan base (the bundler now writes the scan bases beside the closure), matching what a create can actually change under Vite, where an added file only re-expands matching glob importers and heals modules whose imports previously failed to resolve (oj's equivalent: a failed bundle rebundles on every batch). The old any-create escape hatch let continuously written state (a local store's sqlite journal files under the project root) drive a rebundle-restart loop with multi-gigabyte memory spikes on large apps. The "rebuilding for" log now prints only when a rebundle actually runs.
+
 ## [0.2.26] - 2026-10-12
 
 ### Fixed
