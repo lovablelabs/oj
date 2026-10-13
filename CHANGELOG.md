@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.29] - 2026-10-13
+
+### Fixed
+
+- Start client bundles (dev and the prod client build) set `preserveEntrySignatures: false` by default, as Vite's client app build does before the app's own `rolldownOptions` spread over it; an app's own value (client environment over top-level) still wins. Left unset, rolldown warned `INVALID_OPTION` for every `codeSplitting` group with `includeDependenciesRecursively: false` and fell back to `'allow-extension'` itself, so chunking was already correct; the warning is gone. oj's client entry exports nothing, so the default drops nothing.
+
 ## [0.2.28] - 2026-10-13
 
 ### Fixed
