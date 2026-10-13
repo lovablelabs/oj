@@ -13,6 +13,7 @@ import {
 } from "./resolve-pkg.mjs";
 import {
   assetsPlugin,
+  clientChunkPolicy,
   makeVitePlugins,
   nodeBuiltinShims,
   workspaceRoot,
@@ -314,9 +315,11 @@ async function main() {
     return out.output.find((o) => o.type === "chunk" && o.isEntry).code;
   });
 
+  const clientPolicy = clientChunkPolicy(clientContainer?.config);
   const client = await build({
     input: { client: join(HERE, "client-entry.tsx") },
     platform: "browser",
+    ...clientPolicy.input,
     transform: {
       jsx: jsxTransformOptions(NODE_ENV !== "production"),
       define: clientDefine,
@@ -341,6 +344,7 @@ async function main() {
       chunkFileNames: "assets/[name]-[hash].js",
       assetFileNames: "assets/[name]-[hash][extname]",
       banner: `globalThis.process=globalThis.process||{env:${PROCESS_ENV_JSON}};globalThis.global=globalThis.global||globalThis;`,
+      ...clientPolicy.output,
     },
   });
   const entryChunk = client.output.find((o) => o.type === "chunk" && o.isEntry);

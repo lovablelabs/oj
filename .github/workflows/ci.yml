@@ -262,6 +262,8 @@ jobs:
         run: node e2e/start-hmr-gate.mjs
       - name: start dev skips rebundle and reload for changes outside every served graph
         run: node e2e/start-rebundle-gate.mjs
+      - name: the app's output.codeSplitting groups shape the start dev bundle and prod client build
+        run: node e2e/start-chunk-policy.mjs
       - name: start dev serves a raw-TypeScript dependency through the pipeline
         run: node e2e/start-node-modules-ts.mjs
 

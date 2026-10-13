@@ -640,3 +640,24 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
 export function needsCssCompile(src) {
   return src.includes("tailwindcss") || src.includes("@tailwind") || src.includes("@plugin") || src.includes("@apply");
 }
+
+// The app's chunk policy for the client bundle. Vite applies no chunk
+// grouping of its own: `build.rolldownOptions` passes through to rolldown in
+// build and bundled dev alike (resolveRolldownOptions), so the grouping an
+// app configures (vendor chunks, i18n buckets) is the app's to make and
+// oj's to honor. Carried: `output.codeSplitting` (rolldown's current name;
+// `advancedChunks` was its earlier spelling) and
+// `experimental.chunkOptimization`. The client environment's options win
+// over the top-level ones, Vite's environment resolution. The config is
+// live in this process, so function-valued group names work as under Vite.
+export function clientChunkPolicy(config) {
+  const top = config?.build?.rolldownOptions ?? {};
+  const env = config?.environments?.client?.build?.rolldownOptions ?? {};
+  const out = { ...top.output, ...env.output };
+  const codeSplitting = out.codeSplitting ?? out.advancedChunks;
+  const chunkOptimization = { ...top.experimental, ...env.experimental }.chunkOptimization;
+  return {
+    output: codeSplitting === undefined ? {} : { codeSplitting },
+    input: chunkOptimization === undefined ? {} : { experimental: { chunkOptimization } },
+  };
+}

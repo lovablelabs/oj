@@ -4,7 +4,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writ
 import { dirname, isAbsolute, join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { importPkg, importOjRolldown, viteEnvDefine, environmentDefines, jsxTransformOptions } from "./resolve-pkg.mjs";
-import { assetsPlugin, makeVitePlugins, nodeBuiltinShims, workspaceRoot } from "./rolldown-assets.mjs";
+import {
+  assetsPlugin,
+  clientChunkPolicy,
+  makeVitePlugins,
+  nodeBuiltinShims,
+  workspaceRoot,
+} from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob } from "./glob-transform.mjs";
 import { pathToFileURL } from "node:url";
@@ -172,9 +178,11 @@ async function main() {
     },
   };
 
+  const chunkPolicy = clientChunkPolicy(container?.config);
   const result = await build({
     input: join(HERE, "client-entry.tsx"),
     platform: "browser",
+    ...chunkPolicy.input,
     transform: {
       jsx: jsxTransformOptions(NODE_ENV !== "production"),
       define: {
@@ -213,6 +221,7 @@ async function main() {
       banner:
         `globalThis.process=globalThis.process||{env:{NODE_ENV:${JSON.stringify(NODE_ENV)},TSS_SERVER_FN_BASE:${JSON.stringify(SERVER_FN_BASE)}}};` +
         "globalThis.global=globalThis.global||globalThis;",
+      ...chunkPolicy.output,
     },
     write: false,
   });
