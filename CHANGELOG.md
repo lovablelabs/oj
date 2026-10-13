@@ -5,10 +5,11 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.30] - 2026-10-14
 
 ### Fixed
 
+- Start dev picks up a `src/start.ts` created or deleted while the server runs. The start entry is resolved once, in the framework plugin's `config` hook upstream and at boot in oj, so a presence flip now restarts the dev server the way Vite restarts for its config-shaped inputs (config file, config dependencies, env files; Vite's restart branch runs for create and delete too). Previously the create matched no served graph and nothing rebundled, so global `createStart` middleware silently never ran, and the next unrelated rebundle half-applied it: the client bundle adopted the entry while SSR kept the stub until restart. Edits to an existing `src/start.ts` stay ordinary rebundles. The client bundle cache also keys on which `src/start.*` exists, so a boot after the flip bundles the real entry instead of restoring the stale stub bundle (this also fixes adding the entry between runs).
 - A dependency that ships raw TypeScript and imports its own stylesheets (`import "./select.css"`, a CSS module, a JSON file) renders under dev SSR and TanStack Start dev instead of 500ing every route with `SyntaxError` at the stylesheet's first line. oj transforms such dependency files through the pipeline, but their imports still took the native runtime's Node path, which parsed CSS as JavaScript (and ignored `ssr.noExternal` and plugins). Vite never externalizes a relative or absolute specifier, so a module it transformed has every import resolved through the plugins; oj now does the same for the dependency modules it claims, while node builtins still short-circuit first.
 - SSR externalization follows Vite's `canExternalizeFile`: only a dependency file with no extension or `.js`/`.mjs`/`.cjs` may stay external. A bare `import "pkg/styles.css"` (or a dependency JSON file) under dev SSR is served by the pipeline instead of the runtime, and an SSR production build bundles it instead of leaving an import Node cannot load.
 
