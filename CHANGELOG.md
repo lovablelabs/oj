@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.28] - 2026-10-13
+
+### Fixed
+
+- A `codeSplitting` group whose function (`name` or `test`) throws during the dev client bundle no longer takes the dev server down at boot: the group steps aside with one warning naming it, every other group still applies, and the production build stays loud. Groups computed by `apply: "build"` plugins guard on data those plugins produce, and under dev (serve-mode plugin resolution, as in Vite) those plugins never ran; Vite's own bundled dev passes the user's output options through the same `resolveRolldownOptions` path and crashes identically, so the dev-side tolerance is deliberate where the build-side error is real.
+
 ## [0.2.27] - 2026-10-13
 
 ### Added
