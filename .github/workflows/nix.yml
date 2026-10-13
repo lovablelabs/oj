@@ -49,18 +49,18 @@ jobs:
         run: ./result/bin/oj --version
       # The vendored rolldown must ride the binary's runtime closure (the
       # embedded OJ_VENDORED_ROLLDOWN store path), or installed oj builds
-      # would fail vite-7 Start apps that a `nix build` checkout serves.
+      # could not serve Start builds from oj's own pinned copy.
       - name: vendored rolldown is a runtime dependency
         run: nix-store --query --requisites ./result | grep -q oj-rolldown-vendor
-      # And the hand-curated vendor layout must actually build a vite-7 Start
-      # app: the flake's parts list is maintained by hand, so a missing
+      # And the hand-curated vendor layout must actually build the Start
+      # fixture: the flake's parts list is maintained by hand, so a missing
       # runtime dependency or a broken tar layout has to fail here, not on
       # every nix-installed oj.
       # OJ_TEST_EMBEDDED additionally builds with no env var at all, so the
       # binary's compile-time embedded default (the production nix-install
       # path) is what serves — plain env inheritance would keep the Rust
       # plumbing untested otherwise.
-      - name: vendored rolldown builds a vite-7 Start app
+      - name: vendored rolldown builds the Start fixture
         run: |
           nix build .#rolldown-vendor -o result-vendor
           OJ_BIN=./result/bin/oj OJ_TEST_VENDORED_ROLLDOWN="$(readlink -f result-vendor)" \

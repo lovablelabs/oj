@@ -100,10 +100,17 @@ function absGlobOf(pattern, fileDir, root, base) {
   return resolve(fileDir, pattern);
 }
 
-function matchPattern(absGlob, exhaustive = false, caseSensitive = true) {
+// The directory a glob's scan walks: up to the last separator before the
+// first wildcard, or the pattern's own directory when it has none.
+export function globBase(absGlob) {
   absGlob = absGlob.split(sep).join("/");
   const starIdx = absGlob.search(/[*?{]/);
-  const base = starIdx === -1 ? dirname(absGlob) : absGlob.slice(0, absGlob.lastIndexOf("/", starIdx));
+  return starIdx === -1 ? dirname(absGlob) : absGlob.slice(0, absGlob.lastIndexOf("/", starIdx));
+}
+
+function matchPattern(absGlob, exhaustive = false, caseSensitive = true) {
+  absGlob = absGlob.split(sep).join("/");
+  const base = globBase(absGlob);
   // Vite: `caseSensitive: false` matches with nocase (an `Icon.svg` pattern
   // finds `icon.svg`).
   const re = globToRegExp(absGlob, caseSensitive ? "" : "i");
@@ -172,7 +179,12 @@ function normalizeOptions(opts) {
   return out;
 }
 
-export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? process.cwd()) {
+// `scopes` (a Set, optional): collects every include pattern's scan base, the
+// directories where a CREATED file can change a glob's expansion. The dev
+// rebundle gate consumes them: Vite re-expands glob importers when a file is
+// added under a globbed scope, and nothing else about a new file changes a
+// bundle whose inputs all resolved.
+export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? process.cwd(), scopes = null) {
   if (!code.includes("import.meta.glob")) return code;
   const fileDir = dirname(filePath);
   const prelude = [];
@@ -219,6 +231,7 @@ export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? 
     const caseSensitive = opts.caseSensitive !== false;
     const base = typeof opts.base === "string" ? opts.base : null;
     const isRelative = patterns.every((p) => ".!".includes(p[0]));
+    if (scopes) for (const p of includes) scopes.add(globBase(absGlobOf(p, fileDir, root, base)));
     const match = (p) => matchPattern(absGlobOf(p, fileDir, root, base), exhaustive, caseSensitive);
     const exclude = new Set(excludes.flatMap(match));
     const files = [...new Set(includes.flatMap(match))].filter((f) => !exclude.has(f) && f !== filePath).sort();

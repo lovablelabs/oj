@@ -134,6 +134,10 @@ async function main() {
   const container = await loadPluginContainer(APP, { command: "serve", mode: MODE, environment: "client" });
 
   const cssUrls = [];
+  // Every import.meta.glob scan base this bundle expanded; the dev rebundle
+  // gate rebundles for a file CREATED under one (the glob's expansion grows),
+  // and for no other create, mirroring Vite's add handling.
+  const globScopes = new Set();
 
   const visitedIds = new Set();
   const closureRecorder = {
@@ -164,7 +168,7 @@ async function main() {
           const t = await container.transformUserCode(out, id);
           if (t != null) out = t;
         }
-        out = transformGlob(out, id);
+        out = transformGlob(out, id, undefined, globScopes);
         const rpc = rewriteServerFns(out, id);
         if (rpc != null) return rpc;
         return out === code ? null : out;
@@ -266,6 +270,7 @@ async function main() {
     })
     .sort();
   writeFileSync(join(HERE, "closure.json"), JSON.stringify(closureFiles));
+  writeFileSync(join(HERE, "glob-scopes.json"), JSON.stringify([...globScopes].sort()));
 
   const devManifest = {
     routes: {
