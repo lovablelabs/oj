@@ -73,6 +73,13 @@ struct StartState {
     /// (rollup watch semantics; Vite's module graph plays this role). Empty
     /// means unknown, which always rebundles.
     client_closure: std::sync::RwLock<std::collections::HashSet<PathBuf>>,
+    /// The scan base of every `import.meta.glob` the bundle expanded
+    /// (glob-scopes.json). A file CREATED under one grows a glob's expansion,
+    /// so it rebundles; a create anywhere else cannot change a bundle whose
+    /// inputs all resolved, and is ignored -- Vite's add handling, which only
+    /// re-expands glob importers (resolution shifts land when an importer
+    /// changes or the bundle failed, there as here).
+    client_glob_scopes: std::sync::RwLock<Vec<PathBuf>>,
     /// False after a failed rebundle: the closure may be a torso (the build
     /// stopped early), so every next batch rebundles until one succeeds.
     bundle_ok: std::sync::atomic::AtomicBool,
@@ -409,6 +416,7 @@ pub async fn start_dev(
                 .collect(),
         ),
         client_closure: std::sync::RwLock::new(load_client_closure(&cache)),
+        client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
         // The boot bundle succeeded (start_dev aborts otherwise).
         bundle_ok: std::sync::atomic::AtomicBool::new(true),
         ssr: built.ssr.clone(),
@@ -649,9 +657,10 @@ struct PendingRebundle {
     /// and their replies say whether any worker graph actually served a
     /// changed module.
     invalidates: Vec<tokio::task::JoinHandle<bool>>,
-    /// A relevant file was created: resolution can shift onto a new file even
-    /// when no bundled input changed, so creates always rebundle.
-    any_created: bool,
+    /// The relevant files the merged batches saw come into existence: a create
+    /// under a bundled glob's scan base re-expands that glob, so it rebundles;
+    /// the gate ignores every other create, as Vite's add handling does.
+    created: std::collections::HashSet<PathBuf>,
     /// The newest merged batch number: its done-frame clears the editor pill.
     batch: u64,
 }
@@ -689,12 +698,43 @@ fn load_client_closure(cache: &Path) -> std::collections::HashSet<PathBuf> {
         .unwrap_or_default()
 }
 
+/// The scan base of every glob the last bundle expanded, written by
+/// bundle-client.mjs beside the closure. Missing or unreadable is an empty
+/// list: the closure check still rebundles for every known input, and the
+/// bundle-ok flag for every failed one.
+fn load_client_glob_scopes(cache: &Path) -> Vec<PathBuf> {
+    std::fs::read_to_string(cache.join("glob-scopes.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
+        .unwrap_or_default()
+}
+
+/// A created file under a bundled glob's scan base grows that glob's
+/// expansion (the one way a NEW file changes a bundle whose inputs all
+/// resolved). The watcher spelling or its real path, like the closure check.
+fn created_in_glob_scope(scopes: &[PathBuf], created: &std::collections::HashSet<PathBuf>) -> bool {
+    if scopes.is_empty() || created.is_empty() {
+        return false;
+    }
+    created.iter().any(|p| {
+        scopes.iter().any(|d| p.starts_with(d))
+            || std::fs::canonicalize(p).is_ok_and(|real| scopes.iter().any(|d| real.starts_with(d)))
+    })
+}
+
 /// Whether a batch can change the client bundle: a path in the closure (the
 /// watcher spelling, or its real path, since the bundler records resolved
-/// paths), a create (resolution can shift onto a new file), a failed previous
-/// bundle, or no closure to consult.
-fn client_bundle_affected(state: &StartState, paths: &[PathBuf], any_created: bool) -> bool {
-    if any_created || !state.bundle_ok.load(std::sync::atomic::Ordering::SeqCst) {
+/// paths), a create under a bundled glob's scan base, a failed previous
+/// bundle, or no closure to consult. A create anywhere else is ignored, as
+/// Vite ignores adds its module graphs and glob importers never reach: a
+/// new file that would shadow an existing import's resolution lands when
+/// that importer changes or a bundle fails, there as here.
+fn client_bundle_affected(
+    state: &StartState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) -> bool {
+    if !state.bundle_ok.load(std::sync::atomic::Ordering::SeqCst) {
         return true;
     }
     let closure = state
@@ -704,9 +744,16 @@ fn client_bundle_affected(state: &StartState, paths: &[PathBuf], any_created: bo
     if closure.is_empty() {
         return true;
     }
-    paths.iter().any(|p| {
+    if paths.iter().any(|p| {
         closure.contains(p) || std::fs::canonicalize(p).is_ok_and(|real| closure.contains(&real))
-    })
+    }) {
+        return true;
+    }
+    let scopes = state
+        .client_glob_scopes
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    created_in_glob_scope(&scopes, created)
 }
 
 /// The files the regen steps write, which the watcher deliberately never
@@ -853,29 +900,6 @@ fn spawn_start_watcher(
             if !relevant {
                 continue;
             }
-            // Name what tripped the rebuild: a feedback loop (a build output
-            // or runtime state file echoing into the watcher) is invisible
-            // without the paths, and only the first few are needed to see it.
-            {
-                let mut named: Vec<&std::path::Path> = paths
-                    .iter()
-                    .filter(|p| watch_relevant(p))
-                    .map(|p| p.as_path())
-                    .collect();
-                named.sort();
-                let shown = named
-                    .iter()
-                    .take(3)
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let more = named.len().saturating_sub(3);
-                if more > 0 {
-                    println!("  oj start: rebuilding for {shown} (+{more} more)");
-                } else {
-                    println!("  oj start: rebuilding for {shown}");
-                }
-            }
             // The gate holds at the watcher event, as plain dev does
             // (watch.rs): the editor flushes right after its writes, usually
             // while the rebuild below still runs, and a hold taken only at
@@ -910,7 +934,8 @@ fn spawn_start_watcher(
                 run.paths.extend(paths.iter().cloned());
                 run.invalidates.extend(early_invalidate);
                 run.invalidates.extend(invalidate);
-                run.any_created |= created.iter().any(|p| watch_relevant(p));
+                run.created
+                    .extend(created.iter().filter(|p| watch_relevant(p)).cloned());
                 run.batch = batch;
             }
             wake.notify_one();
@@ -953,7 +978,7 @@ async fn rebundle_worker(
         // acts on files its module graphs know). Regen checks still run below
         // either way: a server fn can live in a file the client never
         // imports, since gen-resolver scans all of src.
-        let needs_bundle = client_bundle_affected(&state, &paths, run.any_created);
+        let needs_bundle = client_bundle_affected(&state, &paths, &run.created);
         let no_invalidates_sent = run.invalidates.is_empty();
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
@@ -979,6 +1004,31 @@ async fn rebundle_worker(
                 // A route-set change rewrites the generated tree, a bundled
                 // input, even when the triggering paths missed the closure.
                 let bundling = needs_bundle || routes_changed;
+                // Name what trips an actual rebundle: a feedback loop (a build
+                // output echoing into the watcher) is invisible without the
+                // paths, and only the first few are needed to see it. A batch
+                // the gate passes over stays silent, as Vite stays silent for
+                // events its graphs never reach.
+                if bundling {
+                    let mut named: Vec<&std::path::Path> = changed
+                        .iter()
+                        .filter(|p| watch_relevant(p))
+                        .map(|p| p.as_path())
+                        .collect();
+                    named.sort();
+                    let shown = named
+                        .iter()
+                        .take(3)
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let more = named.len().saturating_sub(3);
+                    if more > 0 {
+                        println!("  oj start: rebuilding for {shown} (+{more} more)");
+                    } else {
+                        println!("  oj start: rebuilding for {shown}");
+                    }
+                }
                 let pinned = if !bundling || bundle_client_entry(&r, &c, &env).is_err() {
                     None
                 } else {
@@ -1020,6 +1070,11 @@ async fn rebundle_worker(
                         .write()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) =
                         load_client_closure(&cache);
+                    *state
+                        .client_glob_scopes
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        load_client_glob_scopes(&cache);
                 }
             }
         }
@@ -2871,6 +2926,55 @@ mod tests {
         assert!(set.contains(Path::new("/app/src/a.tsx")));
         assert!(set.contains(Path::new("/app/styles/app.css")));
         assert_eq!(set.len(), 2);
+    }
+
+    // A created file rebundles only under a bundled glob's scan base: that is
+    // the one way a NEW file changes a bundle whose inputs all resolved (Vite
+    // re-expands glob importers on add and otherwise ignores new files). The
+    // miniflare trace-store journals that fed a rebundle-restart-rebundle loop
+    // are exactly the creates this must ignore.
+    #[test]
+    fn created_files_rebundle_only_inside_glob_scopes() {
+        let dir = tmp("glob-scopes-load");
+        assert!(
+            load_client_glob_scopes(&dir).is_empty(),
+            "missing file is empty"
+        );
+        std::fs::write(dir.join("glob-scopes.json"), "{ not json").unwrap();
+        assert!(
+            load_client_glob_scopes(&dir).is_empty(),
+            "torn file is empty"
+        );
+        std::fs::write(
+            dir.join("glob-scopes.json"),
+            r#"["/app/src/content","/app/src/icons"]"#,
+        )
+        .unwrap();
+        let scopes = load_client_glob_scopes(&dir);
+        assert_eq!(scopes.len(), 2);
+
+        let created = |p: &str| std::collections::HashSet::from([PathBuf::from(p)]);
+        assert!(created_in_glob_scope(
+            &scopes,
+            &created("/app/src/content/new.json")
+        ));
+        assert!(created_in_glob_scope(
+            &scopes,
+            &created("/app/src/icons/deep/new.svg")
+        ));
+        assert!(!created_in_glob_scope(
+            &scopes,
+            &created("/app/.wrangler/state/v3/trace-store/a.sqlite-wal")
+        ));
+        assert!(!created_in_glob_scope(
+            &scopes,
+            &created("/app/src/components/New.tsx")
+        ));
+        assert!(!created_in_glob_scope(
+            &[],
+            &created("/app/src/content/x.json")
+        ));
+        assert!(!created_in_glob_scope(&scopes, &Default::default()));
     }
 
     // The rebundle worker tracks the regen outputs' content against what the
