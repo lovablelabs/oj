@@ -1052,6 +1052,14 @@ fn merge_server_flags(
     if sc.forward_console.is_none() {
         sc.forward_console = sf.get("forwardConsole").cloned();
     }
+    // server.https from the RESOLVED config, so a plugin that injects a
+    // certificate in its config hook (basic-ssl) turns TLS on, as under Vite.
+    if sc.https.is_none() {
+        sc.https = sf
+            .get("https")
+            .and_then(|h| serde_json::from_value::<oj_config::HttpsConfig>(h.clone()).ok())
+            .filter(|h| !h.key.is_empty() && !h.cert.is_empty());
+    }
     if sf.get("skipWebSocketTokenCheck").and_then(|b| b.as_bool()) == Some(true) {
         let legacy = config.legacy.get_or_insert_with(Default::default);
         if legacy.skip_web_socket_token_check.is_none() {

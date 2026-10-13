@@ -61,6 +61,7 @@ pub use hmr::*;
 mod watch;
 pub use watch::*;
 mod html;
+pub mod tls;
 pub use html::*;
 mod ssr;
 pub use ssr::*;
@@ -628,6 +629,9 @@ pub struct BuiltApp {
     pub plugin_host: Option<Arc<PluginHost>>,
     /// `server.open`: launch the browser once bound.
     pub open: bool,
+    /// `server.https`: serve TLS with ALPN h2 + http/1.1 (Vite's secure dev
+    /// server shape) instead of plain http.
+    pub https: Option<oj_config::HttpsConfig>,
     /// The HMR gate (the editor-driven hold), when enabled: the Start
     /// server holds its page reload behind it like the plain path holds updates.
     pub hmr_gate: Option<HmrGateHandle>,
@@ -1279,7 +1283,11 @@ impl DevServer {
         let (listener, port) = bind_dev_listener(built.host, built.port, built.strict_port).await?;
         println!("  {} dev server", oj_brand());
         println!("  root: {}", built.root.display());
-        let url = format!("http://localhost:{}/", port);
+        let url = format!(
+            "{}://localhost:{}/",
+            tls::url_scheme(built.https.as_ref()),
+            port
+        );
         println!("  {}", link(&url, &cell(&url)));
         if !built.proxy_prefixes.is_empty() {
             println!("  proxy: {}", built.proxy_prefixes.join(", "));
@@ -1291,7 +1299,7 @@ impl DevServer {
         if built.open {
             open_browser(&url);
         }
-        axum::serve(listener, built.router).await?;
+        tls::serve_router(listener, built.router, built.https.as_ref()).await?;
         Ok(())
     }
 
@@ -1675,6 +1683,7 @@ impl DevServer {
             reload_tx,
             plugin_host,
             open,
+            https: server_cfg.https.clone(),
             hmr_gate,
             ssr,
             watch_feed,

@@ -159,6 +159,8 @@ pub struct PreviewConfig {
     pub allowed_hosts: Option<AllowedHosts>,
     /// Accepted for compatibility; the preview server does not proxy yet (warned about).
     pub proxy: Option<serde_json::Value>,
+    /// `preview.https`, falling back to `server.https` like every other field.
+    pub https: Option<HttpsConfig>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -181,6 +183,22 @@ pub struct ServerConfig {
     /// Unset falls back to the OJ_FORWARD_CONSOLE env override, then to
     /// on-under-an-AI-agent-environment, as Vite resolves it.
     pub forward_console: Option<serde_json::Value>,
+    /// Vite's `server.https`: node TLS options. Set, the dev server speaks
+    /// TLS with ALPN h2 + http/1.1, as Vite serves `http2.createSecureServer`
+    /// with `allowHTTP1` whenever https is configured. The extractor
+    /// normalizes Buffers and arrays from the resolved config (a plugin like
+    /// basic-ssl sets Buffers) into PEM strings; `pfx` and bare `true` carry
+    /// no usable certificate and are warned about there.
+    pub https: Option<HttpsConfig>,
+}
+
+/// A PEM private key and certificate chain (`cert` may hold several
+/// concatenated certificates, node's chain form).
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HttpsConfig {
+    pub key: String,
+    pub cert: String,
 }
 
 /// Vite's `server.watch`: `ignored` globs (strings; RegExp and function forms

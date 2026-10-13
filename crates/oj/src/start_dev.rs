@@ -474,9 +474,13 @@ pub async fn start_dev(
         let _ = host_slot.set(host);
     }
     println!("  {} dev (tanstack start)", oj_server::oj_brand());
-    let url = format!("http://localhost:{}/", port);
+    let url = format!(
+        "{}://localhost:{}/",
+        oj_server::tls::url_scheme(built.https.as_ref()),
+        port
+    );
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
-    axum::serve(listener, app).await?;
+    oj_server::tls::serve_router(listener, app, built.https.as_ref()).await?;
     Ok(())
 }
 

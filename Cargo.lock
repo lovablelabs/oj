@@ -6325,6 +6325,8 @@ dependencies = [
  "deno_signals",
  "futures-util",
  "glob",
+ "hyper",
+ "hyper-util",
  "json-strip-comments",
  "libc",
  "notify",
@@ -6345,11 +6347,13 @@ dependencies = [
  "rolldown_common",
  "rolldown_plugin",
  "rustls",
+ "rustls-pemfile",
  "rustls-platform-verifier",
  "serde_json",
  "simdutf8",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
 ]
 

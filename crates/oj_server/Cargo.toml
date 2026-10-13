@@ -34,6 +34,13 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "s
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 rustls-platform-verifier = "0.7"
+# `server.https` (dev TLS with ALPN h2+http/1.1): the acceptor and the PEM
+# reader for the Vite-shaped secure dev server; hyper-util drives axum's
+# router per connection where axum::serve would pin HTTP/1.1.
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
+rustls-pemfile = "2.2"
+hyper = "1.11"
+hyper-util = { version = "0.1.20", features = ["server", "server-auto", "http1", "http2", "service", "tokio"] }
 futures-util = "0.3"
 rolldown = "=1.2.5"
 rolldown_common = "=1.2.5"

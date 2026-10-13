@@ -98,9 +98,13 @@ pub async fn ssr_dev(
         Some(u) => println!("  client: {u} (hydration + hmr on)"),
         None => println!("  client: none (SSR only; add a *-client entry to hydrate)"),
     }
-    let url = format!("http://localhost:{}/", port);
+    let url = format!(
+        "{}://localhost:{}/",
+        oj_server::tls::url_scheme(built.https.as_ref()),
+        port
+    );
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
-    axum::serve(listener, app).await?;
+    oj_server::tls::serve_router(listener, app, built.https.as_ref()).await?;
     Ok(())
 }
 

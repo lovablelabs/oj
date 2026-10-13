@@ -737,6 +737,7 @@ fn preview_options(config: &oj_config::OjConfig, out_dir: PathBuf) -> oj_server:
         allowed_hosts: preview.allowed_hosts.or(server.allowed_hosts),
         spa_fallback: config.app_type.as_deref().unwrap_or("spa") == "spa",
         assets_dir: oj_config::build_assets_dir(config),
+        https: preview.https.or(server.https),
     }
 }
 

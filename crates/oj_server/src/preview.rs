@@ -18,6 +18,8 @@ pub struct PreviewOptions {
     pub spa_fallback: bool,
     /// `build.assetsDir`: hashed files under it are immutable.
     pub assets_dir: String,
+    /// `preview.https ?? server.https`: TLS with ALPN h2 + http/1.1.
+    pub https: Option<oj_config::HttpsConfig>,
 }
 
 /// The static preview server's per-request state.
@@ -95,7 +97,11 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
     .await?;
     println!("  {} preview", oj_brand());
     println!("  serving: {}", dir.display());
-    let url = format!("http://localhost:{port}{}", opts.base);
+    let url = format!(
+        "{}://localhost:{port}{}",
+        tls::url_scheme(opts.https.as_ref()),
+        opts.base
+    );
     println!("  {}", link(&url, &cell(&url)));
     if let Some(path) = &opts.open {
         let target = if path.starts_with("http://") || path.starts_with("https://") {
@@ -113,7 +119,7 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
         };
         open_browser(&target);
     }
-    axum::serve(listener, app).await?;
+    tls::serve_router(listener, app, opts.https.as_ref()).await?;
     Ok(())
 }
 

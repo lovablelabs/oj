@@ -1313,6 +1313,26 @@ function extractServerFlags(s, legacy, appType) {
         warn("server.watch.ignored RegExp or function entries are not applied (string globs are)");
       }
     }
+    // server.https: node tls options. PEM strings and Buffers cross the
+    // bridge (an array joins into node's chain form, which is concatenated
+    // PEM); a plugin-set Buffer (basic-ssl) decodes as utf8. `pfx` is a
+    // binary container rustls does not read, and `true` carries no
+    // certificate, so both only warn.
+    if (s.https && typeof s.https === "object") {
+      const pem = (v) => {
+        const parts = (Array.isArray(v) ? v : [v])
+          .map((x) => (typeof x === "string" ? x : x instanceof Uint8Array ? Buffer.from(x).toString("utf8") : ""))
+          .filter((x) => x.includes("-----BEGIN"));
+        return parts.length ? parts.join("\n") : undefined;
+      };
+      const key = pem(s.https.key);
+      const cert = pem(s.https.cert);
+      if (key && cert) out.https = { key, cert };
+      else if (s.https.pfx != null) warn("server.https.pfx is not supported; use PEM key and cert");
+      else warn("server.https needs PEM key and cert; serving plain http");
+    } else if (s.https === true) {
+      warn("server.https: true carries no certificate; serving plain http (set key and cert)");
+    }
   }
   if (legacy?.skipWebSocketTokenCheck === true) out.skipWebSocketTokenCheck = true;
   return Object.keys(out).length ? out : null;
