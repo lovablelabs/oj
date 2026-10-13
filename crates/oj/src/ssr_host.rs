@@ -234,6 +234,12 @@ pub(crate) fn versioned_id(specifier: &str) -> Option<String> {
     }
 }
 
+/// A node_modules file the SSR host loads through the transform pipeline
+/// instead of leaving it to the runtime.
+fn claims_dependency(id: &str) -> bool {
+    id.contains("/node_modules/") && crate::start_host::ts_source_ext(id)
+}
+
 /// The module id an importer specifier stands for (version stripped), for
 /// resolver context and importer-graph edges.
 pub(crate) fn importer_id(specifier: &str) -> String {
@@ -263,8 +269,20 @@ impl SsrHost {
         // relative specifier with no exact file on disk (an extensionless
         // import inside a dependency shipping raw TypeScript, which only the
         // pipeline can serve): the Vite-style resolver finishes that edge
-        // with its extension inference, as the Start host does.
+        // with its extension inference, as the Start host does. A dependency
+        // module the pipeline transformed (a raw-TS source) asks the pipeline
+        // first: Vite never externalizes a relative or absolute specifier
+        // (createIsExternal), so its `import "./select.css"` reaches the css
+        // pipeline instead of the runtime loading the stylesheet as JS.
         if importer_id.contains("/node_modules/") {
+            if claims_dependency(&importer_id) {
+                if let Ok(SsrResolution::Module(id)) =
+                    self.bridge.resolve(&importer_id, specifier).await
+                {
+                    let spec = self.graph.edge_specifier(&id, importer_id);
+                    return Ok(Some(HostResolved::Url(spec)));
+                }
+            }
             if specifier.starts_with("./") || specifier.starts_with("../") {
                 if let Some(dir) = Path::new(&importer_id).parent() {
                     if !crate::ssr_dev::normalize_path(&dir.join(specifier)).is_file() {
@@ -320,7 +338,7 @@ impl SsrHost {
             return Ok(None);
         };
         let id = path.to_string_lossy().into_owned();
-        if !id.contains("/node_modules/") || !crate::start_host::ts_source_ext(&id) {
+        if !claims_dependency(&id) {
             return Ok(None);
         }
         let code = self

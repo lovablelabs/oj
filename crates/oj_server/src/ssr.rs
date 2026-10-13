@@ -151,7 +151,11 @@ pub(crate) async fn ssr_resolve_inner(
     Ok(match ssr_resolve_raw(state, importer, spec).await? {
         RawResolution::Path(p) => {
             let s = p.to_string_lossy();
-            if s.contains("/node_modules/") {
+            // A dependency stylesheet or JSON file is served like the app's
+            // own: Vite only externalizes JavaScript (canExternalizeFile), and
+            // the runtime would parse a stylesheet as a module.
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if s.contains("/node_modules/") && !is_style_ext(ext) && ext != "json" {
                 SsrResolution::External(spec.to_string())
             } else {
                 SsrResolution::Module(s.into_owned())

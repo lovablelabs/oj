@@ -456,6 +456,13 @@ fn ext_of(path: &str) -> &str {
     }
 }
 
+/// Whether a resolved dependency file may stay external to an SSR bundle:
+/// Vite's canExternalizeFile, which hands Node only JavaScript (a stylesheet,
+/// JSON or raw TypeScript bundles through the plugins instead).
+pub(crate) fn can_externalize_file(path: &str) -> bool {
+    matches!(ext_of(path), "" | "js" | "mjs" | "cjs")
+}
+
 /// A source file the runtime cannot load natively from node_modules: Node and
 /// byonm refuse to strip types there, and nothing executes raw JSX.
 pub(crate) fn ts_source_ext(path: &str) -> bool {
@@ -859,7 +866,18 @@ impl StartHost {
         // extension inference, and a directory's package.json entry under
         // the server mainFields — where plain Node 500s with
         // ERR_MODULE_NOT_FOUND on every request before first render.
-        if importer_id.contains("/node_modules/") && !is_plugin_shaped {
+        // A dependency module the host claimed for the pipeline is past this:
+        // Vite never externalizes a relative or absolute specifier
+        // (createIsExternal), so the imports of a module it transformed go
+        // through the plugins too, and a component library's
+        // `import "./select.css"` reaches the css pipeline instead of the
+        // runtime loading the stylesheet as JavaScript. A builtin still
+        // short-circuits first, as in Vite, so an installed polyfill package
+        // of the same name never shadows it.
+        if importer_id.contains("/node_modules/")
+            && !is_plugin_shaped
+            && (!self.claims_dependency(&importer_id) || oj_server::is_node_builtin(spec))
+        {
             let bare = !spec.starts_with('.')
                 && !spec.starts_with('/')
                 && !spec.starts_with('#')
@@ -972,6 +990,15 @@ impl StartHost {
         Ok(Some(module))
     }
 
+    /// A node_modules file the host loads through the transform pipeline
+    /// instead of leaving it to the runtime.
+    fn claims_dependency(&self, path: &str) -> bool {
+        path.contains("/node_modules/")
+            && (ts_source_ext(path) || self.no_external.matches_path(path))
+            && src_lang(path).is_some()
+            && !self.cjs.is_cjs_file(path)
+    }
+
     async fn load_unversioned(&self, specifier: &str) -> Result<Option<HostModule>, String> {
         let Ok(u) = url::Url::parse(specifier) else {
             return Ok(None);
@@ -1005,10 +1032,7 @@ impl StartHost {
         // (canExternalizeFile allows only js/mjs/cjs), so they take the
         // pipeline unconditionally. Claimed dependency modules stay out of
         // the graph: edits don't invalidate, as Vite doesn't watch node_modules.
-        if !ts_source_ext(&path_str) && !self.no_external.matches_path(&path_str) {
-            return Ok(None);
-        }
-        if src_lang(&path_str).is_none() || self.cjs.is_cjs_file(&path_str) {
+        if !self.claims_dependency(&path_str) {
             return Ok(None);
         }
         self.ensure_plugins_started().await;
@@ -1730,6 +1754,28 @@ mod tests {
             split_intent("./r.tsx?tsr-split=component"),
             ("./r.tsx?tsr-split=component".into(), None, false)
         );
+    }
+
+    #[test]
+    fn only_javascript_dependency_files_stay_external() {
+        for js in [
+            "/n/node_modules/p/i.js",
+            "/n/node_modules/p/i.mjs",
+            "/n/node_modules/p/i.cjs",
+            "/n/node_modules/p/bin",
+        ] {
+            assert!(can_externalize_file(js), "{js}");
+        }
+        for other in [
+            "/n/node_modules/p/select.css",
+            "/n/node_modules/p/x.module.scss",
+            "/n/node_modules/p/data.json",
+            "/n/node_modules/p/index.ts",
+            "/n/node_modules/p/icon.tsx",
+            "/n/node_modules/p/x.css?inline",
+        ] {
+            assert!(!can_externalize_file(other), "{other}");
+        }
     }
 
     #[test]

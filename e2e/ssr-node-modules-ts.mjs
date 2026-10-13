@@ -33,6 +33,11 @@ const must = (cond, msg) => {
 // The fixture mutations live inside the try so an early throw still restores
 // them: the finally below is safe to run against any partial state.
 const dep = path.join(playground, "node_modules", "ts-source-dep");
+// The dependency's own stylesheet, CSS module and JSON imports must reach
+// the pipeline (Vite never externalizes a relative specifier), and so must
+// the app's bare import of the package's exported stylesheet (Vite's
+// canExternalizeFile hands Node only JavaScript), in dev and in the build.
+const MARKERS = ["badge-outline:bold:nodenext:", "ts-dep-icon:star:ts-dep-json:glyph", "ts-dep-css-module"];
 const out = path.join(playground, "dist-ssr-ts-dep");
 const counterFile = path.join(playground, "src", "Counter.tsx");
 const originalCounter = fs.readFileSync(counterFile, "utf8");
@@ -47,9 +52,12 @@ try {
     originalCounter
       .replace(
         'import { useState } from "react";',
-        'import { useState } from "react";\nimport { describeBadge } from "ts-source-dep/badge";',
+        'import { useState } from "react";\nimport { BadgeIcon, describeBadge } from "ts-source-dep/badge";\nimport "ts-source-dep/styles.css";',
       )
-      .replace("{label}: {count}", '{`${describeBadge({ label, variant: "outline" })}:${count}`}'),
+      .replace(
+        "{label}: {count}",
+        '{`${describeBadge({ label, variant: "outline" })}:${count}`}<BadgeIcon name="star" />',
+      ),
   );
   must(
     fs.readFileSync(counterFile, "utf8").includes("describeBadge"),
@@ -76,10 +84,9 @@ try {
     { timeoutMs: 30000, pollMs: 500 },
   );
   must(ok, `SSR never rendered the dependency marker:\n${body.slice(0, 800)}\n---\n${log.slice(-1500)}`);
-  must(
-    body.includes("badge-outline:bold:nodenext:"),
-    `SSR html missing "badge-outline:bold:nodenext:":\n${body.slice(0, 800)}`,
-  );
+  for (const marker of MARKERS) {
+    must(body.includes(marker), `SSR html missing "${marker}":\n${body.slice(0, 800)}`);
+  }
   must(
     !log.includes("TYPE_STRIPPING") && !log.includes("ERR_MODULE_NOT_FOUND"),
     `server log shows a native dependency load failure:\n${log.slice(-1500)}`,
@@ -108,10 +115,9 @@ try {
   must(!bareDepImport.test(builtJs(out)), "built server bundle still imports the raw-TS dependency bare");
   const mod = await import(pathToFileURL(path.join(out, "entry-server.mjs")).href);
   const html = String(await mod.render());
-  must(
-    html.includes("badge-outline:bold:nodenext:"),
-    `built render() missing "badge-outline:bold:nodenext:":\n${html.slice(0, 800)}`,
-  );
+  for (const marker of MARKERS) {
+    must(html.includes(marker), `built render() missing "${marker}":\n${html.slice(0, 800)}`);
+  }
   console.log("ssr build: raw-TS dependency bundled into the server bundle");
 
   // An id listed VERBATIM in `ssr.external` is forced external without the

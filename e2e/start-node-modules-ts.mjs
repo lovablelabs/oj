@@ -29,6 +29,15 @@ if (!installed) {
 }
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
+// The dependency's own stylesheet, CSS module and JSON imports must reach
+// the pipeline (Vite never externalizes a relative specifier), as must the
+// app's bare import of the package's exported stylesheet.
+const MARKERS = [
+  "badge-outline:bold:nodenext:e2e",
+  "tone:neutral",
+  "ts-dep-icon:star:ts-dep-json:glyph",
+  "ts-dep-css-module",
+];
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };
@@ -51,6 +60,7 @@ const originalAbout = fs.readFileSync(aboutFile, "utf8");
 const patchedAbout = `import { createRoute } from "@tanstack/react-router";
 
 import { BadgeIcon, Tone, describeBadge } from "ts-source-dep/badge";
+import "ts-source-dep/styles.css";
 
 import { rootRoute } from "./__root";
 
@@ -99,7 +109,7 @@ try {
     }
   });
   must(about.status === 200, `/about returned ${about.status}:\n${about.body.slice(0, 800)}\n---\n${log.slice(-1200)}`);
-  for (const marker of ["badge-outline:bold:nodenext:e2e", "tone:neutral", "ts-dep-icon:star"]) {
+  for (const marker of MARKERS) {
     must(about.body.includes(marker), `SSR html missing "${marker}":\n${about.body.slice(0, 800)}`);
   }
   must(
@@ -137,7 +147,9 @@ try {
       res.status === 200,
       `built /about returned ${res.status}:\n${html.slice(0, 800)}\n---\n${builtLog.slice(-1200)}`,
     );
-    for (const marker of ["badge-outline:bold:nodenext:e2e", "tone:neutral", "ts-dep-icon:star"]) {
+    // Start production builds emit no CSS-module class names yet (app or
+    // dependency), so the built leg asserts everything else.
+    for (const marker of MARKERS.filter((m) => m !== "ts-dep-css-module")) {
       must(html.includes(marker), `built SSR html missing "${marker}":\n${html.slice(0, 800)}`);
     }
     must(

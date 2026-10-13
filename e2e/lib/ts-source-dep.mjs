@@ -6,7 +6,9 @@
 // resolver follows out of node_modules): an exports map pointing straight at a
 // .ts file, an enum (needs a real transform, not just type stripping), a
 // type-only import, an extensionless relative .ts import, a NodeNext-style
-// `./tone.js` import whose file on disk is tone.ts, and a .tsx sibling.
+// `./tone.js` import whose file on disk is tone.ts, a .tsx sibling that
+// imports a plain .css, a CSS module and JSON (a component library's shape),
+// and an exported stylesheet apps import bare (`ts-source-dep/styles.css`).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -22,7 +24,7 @@ export function writeTsSourceDep(nodeModulesDir) {
       name: "ts-source-dep",
       version: "1.0.0",
       type: "module",
-      exports: { "./badge": "./components/data-display/badge/index.ts" },
+      exports: { "./badge": "./components/data-display/badge/index.ts", "./styles.css": "./styles.css" },
     }),
   );
   fs.writeFileSync(
@@ -56,10 +58,21 @@ export const badgeClass = (v: Variant): string => \`badge-\${v}\`;
   );
   fs.writeFileSync(
     path.join(badge, "icon.tsx"),
-    `export function BadgeIcon({ name }: { name: string }) {
-  return <span className="badge-icon">{\`ts-dep-icon:\${name}\`}</span>;
+    `import "./icon.css";
+import styles from "./icon.module.css";
+import meta from "./icon.json";
+export function BadgeIcon({ name }: { name: string }) {
+  return (
+    <span className={\`badge-icon \${styles.glyph ? "ts-dep-css-module" : ""}\`}>
+      {\`ts-dep-icon:\${name}:ts-dep-json:\${meta.tag}\`}
+    </span>
+  );
 }
 `,
   );
+  fs.writeFileSync(path.join(badge, "icon.css"), `.badge-icon { display: inline-flex; }\n`);
+  fs.writeFileSync(path.join(badge, "icon.module.css"), `.glyph { color: red; }\n`);
+  fs.writeFileSync(path.join(badge, "icon.json"), `{ "tag": "glyph" }\n`);
+  fs.writeFileSync(path.join(dep, "styles.css"), `:root { --ts-dep: 1; }\n`);
   return dep;
 }

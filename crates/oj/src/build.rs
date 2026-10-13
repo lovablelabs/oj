@@ -3886,9 +3886,10 @@ pub(crate) async fn build_ssr(
     // Vite's SSR externalization: dependencies stay external unless
     // `ssr.noExternal` (or a webworker target) bundles them; `ssr.external` wins.
     // Like Vite, a dependency is only external if its resolved file can be
-    // handed to Node (isExternalizable resolves, then canExternalizeFile): a
-    // raw TypeScript/JSX source bundles no matter the config, since plain Node
-    // refuses to type-strip under node_modules.
+    // handed to Node (isExternalizable resolves, then canExternalizeFile, which
+    // allows only JavaScript): a stylesheet, JSON or raw TypeScript/JSX
+    // dependency file bundles no matter the config, since plain Node cannot
+    // load it.
     let externals = Arc::new(oj_config::ssr_externals(config));
     let dep_resolver = Arc::new(oj_server::ssr_resolver(root, config));
     let external = IsExternal::Fn(Some(Arc::new({
@@ -3901,7 +3902,7 @@ pub(crate) async fn build_ssr(
                 // Fallback for dependencies reached some other way (a plugin
                 // resolution, a nested node_modules); kept as their resolved path.
                 spec.contains("node_modules")
-                    && !crate::start_host::ts_source_ext(spec)
+                    && crate::start_host::can_externalize_file(spec)
                     && oj_config::SsrExternals::package_of_path(spec)
                         .is_none_or(|pkg| externals.is_external_pkg(pkg))
             } else {
@@ -3923,7 +3924,7 @@ pub(crate) async fn build_ssr(
                         && node_modules.join(pkg).join("package.json").is_file()
                         && dep_resolver
                             .resolve(&resolve_root, spec)
-                            .map(|p| !crate::start_host::ts_source_ext(&p.to_string_lossy()))
+                            .map(|p| crate::start_host::can_externalize_file(&p.to_string_lossy()))
                             .unwrap_or(true)
                 })
             };
@@ -4098,18 +4099,19 @@ async fn build_server_fns(
     let resolve_root = root.to_path_buf();
     let external = IsExternal::Fn(Some(Arc::new(move |spec: &str, _i, resolved: bool| {
         let in_node_modules = resolved && spec.contains("node_modules");
-        // As in build_ssr: a dependency whose resolved file is raw
-        // TypeScript/JSX bundles even when its package is configured external
-        // (Vite's canExternalizeFile), since plain Node cannot load it — but
+        // As in build_ssr: a dependency whose resolved file is not JavaScript
+        // (a stylesheet, raw TypeScript/JSX) bundles even when its package is
+        // configured external (Vite's canExternalizeFile), since plain Node
+        // cannot load it — but
         // an id listed VERBATIM in `ssr.external` is forced external, as in Vite.
         let ext = ext_rule.is_external(spec, in_node_modules).unwrap_or(false)
             && if resolved {
-                !crate::start_host::ts_source_ext(spec)
+                crate::start_host::can_externalize_file(spec)
             } else {
                 ext_rule.external.iter().any(|e| e == spec)
                     || dep_resolver
                         .resolve(&resolve_root, spec)
-                        .map(|p| !crate::start_host::ts_source_ext(&p.to_string_lossy()))
+                        .map(|p| crate::start_host::can_externalize_file(&p.to_string_lossy()))
                         .unwrap_or(true)
             };
         Box::pin(async move { Ok(ext) })
