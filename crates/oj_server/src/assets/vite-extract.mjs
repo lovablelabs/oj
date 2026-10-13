@@ -1315,13 +1315,23 @@ function extractServerFlags(s, legacy, appType) {
     }
     // server.https: node tls options. PEM strings and Buffers cross the
     // bridge (an array joins into node's chain form, which is concatenated
-    // PEM); a plugin-set Buffer (basic-ssl) decodes as utf8. `pfx` is a
-    // binary container rustls does not read, and `true` carries no
-    // certificate, so both only warn.
+    // PEM); a plugin-set Buffer (basic-ssl) decodes as utf8; a string
+    // without PEM armor is a file path, read like Vite's readFileIfExists
+    // (cwd-relative — the extract job runs at the app root — falling back
+    // to the raw value). `pfx` is a binary container rustls does not read,
+    // and `true` carries no certificate, so both only warn.
     if (s.https && typeof s.https === "object") {
       const pem = (v) => {
         const parts = (Array.isArray(v) ? v : [v])
           .map((x) => (typeof x === "string" ? x : x instanceof Uint8Array ? Buffer.from(x).toString("utf8") : ""))
+          .map((x) => {
+            if (!x || x.includes("-----BEGIN")) return x;
+            try {
+              return readFileSync(resolve(x), "utf8");
+            } catch {
+              return x;
+            }
+          })
           .filter((x) => x.includes("-----BEGIN"));
         return parts.length ? parts.join("\n") : undefined;
       };

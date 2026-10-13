@@ -32,7 +32,26 @@ pub async fn serve_router(
     };
     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config(https)?);
     loop {
-        let (tcp, _remote) = listener.accept().await?;
+        // axum::serve's accept handling: a peer gone between SYN and accept
+        // ends nothing but its own connection, and anything else (EMFILE
+        // under fd pressure) logs and backs off — a failed accept never
+        // exits the dev server, exactly as on the plain-http path.
+        let (tcp, _remote) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                use std::io::ErrorKind;
+                if !matches!(
+                    e.kind(),
+                    ErrorKind::ConnectionRefused
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::ConnectionReset
+                ) {
+                    eprintln!("accept error: {e}");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                continue;
+            }
+        };
         let acceptor = acceptor.clone();
         let router = router.clone();
         tokio::spawn(async move {

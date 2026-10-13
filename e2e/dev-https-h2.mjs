@@ -3,10 +3,11 @@
 
 // `server.https` serves TLS with ALPN h2 + http/1.1, as Vite's
 // resolveHttpServer uses node's http2.createSecureServer (allowHTTP1) when
-// https is configured. The config reads key/cert with readFileSync, so the
-// values cross the plugin-host bridge as Buffers, the way user configs and
-// basic-ssl set them. A browser drives an edit-reload roundtrip on top, so
-// the HMR WebSocket path over TLS is covered too.
+// https is configured. The config reads the key with readFileSync (a Buffer
+// across the plugin-host bridge, the way user configs and basic-ssl set it)
+// and names the cert by path (Vite's readFileIfExists string shape). A
+// browser drives an edit-reload roundtrip on top, so the HMR WebSocket path
+// over TLS is covered too.
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import http2 from "node:http2";
@@ -61,7 +62,9 @@ export default defineConfig({
   server: {
     https: {
       key: readFileSync(new URL("./key.pem", import.meta.url)),
-      cert: readFileSync(new URL("./cert.pem", import.meta.url)),
+      // A path string: Vite's readFileIfExists shape (resolved against the
+      // app root), covered next to the Buffer shape above.
+      cert: "./cert.pem",
     },
   },
 });
