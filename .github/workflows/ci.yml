@@ -83,23 +83,13 @@ jobs:
         env:
           OJ_BOOT_PHASES: "1"
           OJ_E2E_GRACE_MS: "180000"
+          OJ_E2E_DUMP: "1"
         run: |
           mkdir -p diag
-          for i in 1 2 3 4 5 6; do
+          for i in 1 2 3 4 5 6 7 8 9 10; do
             for t in start-rebundle-gate start-ssr-hmr; do
               s=$(date +%s); node e2e/$t.mjs > diag/$t-iso-$i.log 2>&1; c=$?; echo "$t iso#$i exit $c ($(( $(date +%s) - s ))s)"
             done
-          done
-      - name: "diag: same suites after the Start suites CI runs before them"
-        env:
-          OJ_BOOT_PHASES: "1"
-          OJ_E2E_GRACE_MS: "180000"
-        run: |
-          for i in 1 2 3; do
-            for t in start-build-options start-define-mode start-client-transfer start-ssr-external start-shutdown-children start-graceful-close start-ssr-worker-url start-server-routes start-hmr-gate start-rebundle-gate start-entry-restart start-chunk-policy start-node-modules-ts start-ssr-hmr; do
-              s=$(date +%s); node e2e/$t.mjs > diag/$t-seq-$i.log 2>&1; c=$?; echo "$t seq#$i exit $c ($(( $(date +%s) - s ))s)"
-            done
-            ps -eo pid,ppid,etime,pcpu,rss,args | grep -E "oj|node|workerd" | grep -v grep | head -40
           done
       - name: "diag: phases and failure tails"
         if: always()

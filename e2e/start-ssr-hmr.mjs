@@ -174,3 +174,4 @@ try {
   fs.writeFileSync(aboutFile, originalAbout);
   srv?.kill("SIGKILL");
 }
+if (process.env.OJ_E2E_DUMP) console.log("=== server log\n" + log);

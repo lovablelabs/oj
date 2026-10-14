@@ -168,3 +168,4 @@ try {
   }
 }
 process.exit(failed ? 1 : 0);
+if (process.env.OJ_E2E_DUMP) console.log("=== server log\n" + log);
