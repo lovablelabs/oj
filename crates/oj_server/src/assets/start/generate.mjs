@@ -79,7 +79,8 @@ async function main() {
   const GENERATED_ROUTE_TREE = configured.generatedRouteTree ?? OJ_DEFAULTS.generatedRouteTree;
 
   // The framework's own Vite plugin appends a `declare module` block naming the
-  // router entry; the app's Register interface, and so every typed route, is
+  // router entry and, when there is one, the start entry (start-plugin-core's
+  // route-tree-footer); the app's Register interface, and so every typed route, is
   // keyed off it. Without the same block the tree written here is a different
   // file from the one the framework's tooling produces.
   function routerEntry() {
@@ -99,17 +100,41 @@ async function main() {
     return pathResolve(root, "src/router.tsx");
   }
 
+  // The client bundle's `#tanstack-start-entry` probe; null = the framework's default entry.
+  function startEntry() {
+    try {
+      const declared = JSON.parse(readFileSync(pathJoin(root, "package.json"), "utf8")).imports?.[
+        "#tanstack-start-entry"
+      ];
+      if (typeof declared === "string") {
+        const p = pathResolve(root, declared);
+        if (existsSync(p)) return p;
+      }
+    } catch {}
+    for (const ext of [".ts", ".js", ".mts", ".mjs", ".tsx", ".jsx"]) {
+      const p = pathResolve(root, "src/start" + ext);
+      if (existsSync(p)) return p;
+    }
+    return null;
+  }
+
+  function importPath(abs) {
+    const rel = pathRelative(dirname(pathResolve(root, GENERATED_ROUTE_TREE)), abs).split(sep).join("/");
+    return rel.startsWith(".") ? rel : "./" + rel;
+  }
+
   function moduleDeclaration() {
-    let rel = pathRelative(dirname(pathResolve(root, GENERATED_ROUTE_TREE)), routerEntry());
-    if (!rel.startsWith(".")) rel = "./" + rel;
-    rel = rel.split(sep).join("/");
+    const start = startEntry();
     return [
-      `import type { getRouter } from '${rel}'`,
-      "import type { createStart } from '@tanstack/react-start'",
+      `import type { getRouter } from '${importPath(routerEntry())}'`,
+      start
+        ? `import type { startInstance } from '${importPath(start)}'`
+        : "import type { createStart } from '@tanstack/react-start'",
       "declare module '@tanstack/react-start' {",
       "  interface Register {",
       "    ssr: true",
       "    router: Awaited<ReturnType<typeof getRouter>>",
+      ...(start ? ["    config: Awaited<ReturnType<typeof startInstance.getOptions>>"] : []),
       "  }",
       "}",
     ].join("\n");
