@@ -2,17 +2,19 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! The engine thread: call jobs run concurrently on the one isolate. A call
-//! is set up exclusively (module load + evaluate + invoke), then parked as a
-//! pending promise; the loop interleaves accepting new jobs, polling every
+//! is set up (module load + evaluate + invoke) before the next job is
+//! accepted, then parked as a pending promise; the loop interleaves accepting new jobs, polling every
 //! parked call, and driving the event loop, so a call that awaits a fetch
 //! back into the caller (an SSR loader hitting its own dev server) never
 //! deadlocks behind itself.
 //!
 //! A parked call's deadline is part of its future (`tokio::time::timeout_at`),
 //! so expiry arrives through the same settlement path as success — there is
-//! no separate timer bookkeeping to keep in sync. The watchdog covers only
-//! the setup phase: its `terminate_execution` is isolate-wide, and once a
-//! call is parked the JS on the stack may belong to any other call.
+//! no separate timer bookkeeping to keep in sync. The watchdog's
+//! `terminate_execution` is isolate-wide, so it is armed only while no call
+//! is parked: setup is not exclusive (evaluating a module drives the event
+//! loop, which runs parked calls' continuations), and a termination there
+//! would kill another call's JS and strand its promise forever.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -224,10 +226,21 @@ impl Scheduler {
         self.isolate.cancel_termination();
     }
 
+    /// Arms the watchdog only when no call is parked, so the JS it may
+    /// terminate can only be this job's own. With calls parked, a deadline
+    /// is enforced by the parked call's own timer alone (Node parity: an
+    /// elapsed clock never stops running JS).
+    fn arm_alone(&self, deadline: Option<Duration>) -> Option<DeadlineGuard> {
+        self.calls
+            .is_empty()
+            .then(|| self.isolate.arm(deadline))
+            .flatten()
+    }
+
     async fn eval_job(&mut self, input: EvalInput, deadline: Option<Duration>, reply: Reply) {
         self.eval_counter += 1;
         let counter = self.eval_counter;
-        let guard = self.isolate.arm(deadline);
+        let guard = self.arm_alone(deadline);
         let result = self.run_eval(counter, input).await;
         let verdict = self.settle(guard);
         let _ = reply.send(verdict.apply(result));
@@ -241,14 +254,20 @@ impl Scheduler {
         deadline: Option<Duration>,
         reply: Reply,
     ) {
-        // The watchdog guards setup only. Once parked, the deadline lives on
-        // the call's own future: the watchdog's termination is isolate-wide,
-        // and a parked call expiring while another call runs synchronous JS
-        // would terminate that innocent call and break every parked one.
+        // The watchdog guards setup only, and only with nothing parked. Once
+        // parked, the deadline lives on the call's own future, measured from
+        // submit: a setup that outlived it under other calls expires on the
+        // first poll.
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
-        let guard = self.isolate.arm(deadline);
+        let guard = self.arm_alone(deadline);
         match self.setup_call(&module, &export, args).await {
             Ok(fut) => match self.settle(guard) {
+                // Setup ran past the deadline under parked calls, unwatched.
+                Verdict::Clean
+                    if deadline_at.is_some_and(|at| tokio::time::Instant::now() >= at) =>
+                {
+                    let _ = reply.send(Err(EngineError::Deadline));
+                }
                 Verdict::Clean => {
                     let fut: Pin<Box<dyn Future<Output = ParkedOutcome>>> = match deadline_at {
                         Some(at) => Box::pin(tokio::time::timeout_at(at, fut)),

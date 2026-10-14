@@ -429,6 +429,41 @@ async fn a_parked_deadline_never_terminates_another_calls_js() {
 }
 
 #[tokio::test]
+async fn a_setup_deadline_never_terminates_a_parked_calls_continuation() {
+    // Evaluating a module with top-level await drives the event loop, so a
+    // parked call's continuation runs inside another call's setup. The
+    // setup's deadline must not kill it: a killed continuation never
+    // settles, and its call would hang forever.
+    let root = app_root();
+    std::fs::write(
+        root.path().join("parked.mjs"),
+        "export async function slow() { await new Promise((r) => setTimeout(r, 100)); \
+         const end = Date.now() + 800; while (Date.now() < end) {} return 'done'; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("tla.mjs"),
+        "await new Promise((r) => setTimeout(r, 1500));\nexport function a() { return 'a'; }\n",
+    )
+    .unwrap();
+    let engine = engine(root.path());
+    let (parked, late) = within(async {
+        tokio::join!(engine.call("parked.mjs", "slow", vec![], None), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            engine
+                .call("tla.mjs", "a", vec![], Some(Duration::from_millis(200)))
+                .await
+        })
+    })
+    .await;
+    assert_eq!(parked.unwrap(), serde_json::json!("done"));
+    assert!(
+        matches!(late, Err(EngineError::Deadline)),
+        "expected Deadline, got {late:?}"
+    );
+}
+
+#[tokio::test]
 async fn no_deadline_call_parks_indefinitely_without_timing_out() {
     // SSR semantics: without a deadline a pending call parks for as long as
     // it takes, and the parked scheduler still serves other calls.

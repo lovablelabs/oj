@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A call whose deadline passed while it waited on the engine no longer terminates an unrelated call. The watchdog's termination is isolate-wide, so when the deadline fired while another call ran synchronous JS, that innocent call died with "execution terminated" and every other pending call failed with it. The watchdog now covers only a call's setup; a waiting call's deadline settles on its own timer.
+- A call whose deadline passed while it waited on the engine no longer terminates an unrelated call. The watchdog's termination is isolate-wide, so when the deadline fired while another call ran synchronous JS, that innocent call died with "execution terminated" and every other pending call failed with it. The same happened when a call's deadline passed during its module's top-level await, and the killed call then hung forever. The watchdog now runs only while no other call is waiting; a waiting call's deadline settles on its own timer.
 
 ### Changed
 
