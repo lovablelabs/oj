@@ -977,6 +977,18 @@ impl StartHost {
                     let id = classify_id(&abs, intent, svg_react);
                     return Ok(Some(self.module_url(&id, importer_id)));
                 }
+                // A dependency the pipeline claims (`ssr.noExternal`, raw TS)
+                // is a module of the graph like an app module: Vite's module
+                // runner evaluates noExternal dependencies itself and clears
+                // them with the app on every SSR reload (hmrHandler
+                // full-reload: evaluatedModules.clear()). Versioned, with its
+                // importer edges, an app edit re-evaluates the dependency
+                // modules above it; TanStack's start-server-core caches the
+                // app's router entry in module state (`entriesPromise`) and
+                // would otherwise keep serving the first one.
+                if self.claims_dependency(&abs) {
+                    return Ok(Some(self.module_url(&abs, importer_id)));
+                }
                 // Hand the engine the exact file the Vite-style resolver
                 // picked (mainFields, extension probing, exports conditions,
                 // legacy directory entries); byonm loads it with Node
@@ -1055,8 +1067,10 @@ impl StartHost {
         // except TypeScript/JSX sources, which the runtime refuses to
         // type-strip under node_modules. Vite never externalizes those either
         // (canExternalizeFile allows only js/mjs/cjs), so they take the
-        // pipeline unconditionally. Claimed dependency modules stay out of
-        // the graph: edits don't invalidate, as Vite doesn't watch node_modules.
+        // pipeline unconditionally. A claimed file reached here was imported
+        // natively by an unclaimed dependency (resolve_inner versions every
+        // other claimed import), so it shares that importer's lifetime, as a
+        // native import of a noExternal package does under Vite.
         if !self.claims_dependency(&path_str) {
             return Ok(None);
         }
