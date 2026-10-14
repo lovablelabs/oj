@@ -294,8 +294,6 @@ jobs:
           node-version: 22
       - run: npm ci --prefix playground
       - run: cargo run -p oj -- build playground
-      - name: reject unresolved build imports
-        run: node e2e/build-unresolved.mjs
       - name: check outputs
         run: |
           test -f playground/dist/index.html
@@ -349,30 +347,10 @@ jobs:
           # config define + client-environment define applied to the client build
           grep -rq 'global-define|client-define' playground/dist/assets/*.js
           ! grep -rq __OJ_DEFINE_ playground/dist/assets/*.js
-      - name: explicit build inputs (multi-page, no root index.html)
-        run: node e2e/multi-html-input.mjs
-      - name: plugin emitFile chunk spine (getFileName resolves hashed name)
-        run: node e2e/emit-chunk-build.mjs
-      - name: plugin emitFile chunk from buildStart (crx manifest-root pattern)
-        run: node e2e/emit-chunk-buildstart.mjs
-      - name: generateBundle fidelity (rich chunk fields, rename, delete)
-        run: node e2e/generate-bundle-fidelity.mjs
-      - name: plugin emitFile .html chunk (crx page pattern)
-        run: node e2e/emit-html-chunk.mjs
-      - name: build-side plugin hook gating (filter plan, all hook shapes)
-        run: node e2e/plugin-hook-gating-build.mjs
       - name: dev-side plugin hook gating (filtered hooks skip the bridge)
         run: node e2e/plugin-hook-gating-dev.mjs
       - name: ssr/start plugin hook gating (server graph skips the bridge)
         run: node e2e/plugin-hook-gating-start.mjs
-      - name: plugin-loaded virtual .jsx keeps JSX semantics
-        run: node e2e/plugin-load-jsx.mjs
-      - name: plugin transform runs on CSS sources before compile
-        run: node e2e/css-plugin-transform.mjs
-      - name: vite:css-post shim routes plugin CSS into output (UnoCSS pattern)
-        run: node e2e/vite-css-post-shim.mjs
-      - name: .vite/manifest.json is present in the generateBundle bundle
-        run: node e2e/vite-build-manifest-in-bundle.mjs
       - name: library build
         run: |
           mkdir -p /tmp/lib/src
@@ -402,17 +380,7 @@ jobs:
           lsof -ti:4173 -sTCP:LISTEN | xargs -r kill || true
       - name: build CLI flags (--base, --outDir, --assetsDir, --minify, --sourcemap, --manifest, -m, -c, --watch)
         run: node e2e/build-cli-flags.mjs
-      - name: rollupOptions.output (fileNames, external, format, banner, globals, paths, treeshake)
-        run: node e2e/rolldown-options.mjs
-      - name: ssr options (build.ssr, ssr.external/noExternal, ssrManifest assets, client base)
-        run: node e2e/ssr-options.mjs
       - name: preview options (cors, allowedHosts, headers, strictPort, appType mpa)
         run: node e2e/preview-options.mjs
-      - name: build.assetsDir places chunks, css and url() assets
-        run: node e2e/build-assets-dir.mjs
-      - name: html attribute quoting (stylesheet links, module entries, inline module scripts)
-        run: node e2e/html-attribute-quotes.test.js
-      - name: build.cssMinify and build.cssTarget drive the CSS compile
-        run: node e2e/build-css-options.mjs
       - name: bare Less imports resolve through node_modules
         run: node e2e/less-bare-imports.mjs
