@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A dev-server restart (a plugin's `server.restart()`, a config or `.env` edit) boots like a fresh launch again. The Start SSR runner primed `process.env` (`NODE_ENV`, the `.env` values, the `TSS_*` defaults, oj's script settings) on the real process environment, and the restart's exec carried all of it into the next boot. There the leaked `NODE_ENV`/`VITE_*`/`TSS_SERVER_FN_BASE` re-keyed the Start client bundle cache, so every restart rebuilt the client bundle from scratch (minutes on a large app), and a leaked `.env` value posed as shell env, so an edited `.env` value lost to the old one. The runner now keeps a private `process.env` copy like the plugin host and the Start scripts, and a restart execs with the environment oj was launched with.
+
 ## [0.2.32] - 2026-10-14
 
 ### Fixed

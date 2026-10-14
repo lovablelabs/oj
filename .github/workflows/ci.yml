@@ -266,6 +266,8 @@ jobs:
         run: node e2e/start-rebundle-gate.mjs
       - name: a src/start.ts created or deleted mid-session restarts start dev
         run: node e2e/start-entry-restart.mjs
+      - name: a plugin's server.restart() reboots like a fresh launch (bundle cache hit, edited .env wins)
+        run: node e2e/start-plugin-restart.mjs
       - name: the app's output.codeSplitting groups shape the start dev bundle and prod client build
         run: node e2e/start-chunk-policy.mjs
       - name: start dev serves a raw-TypeScript dependency through the pipeline
