@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- TanStack Start dev SSR renders edits on the next request. After any edit (a route, a module it imports, a CSS module) the server kept rendering the first version of the app until the engine happened to respawn, so the browser reloaded into the new client bundle and hydrated against stale HTML. TanStack's request handler caches the app's router entry in module state (start-server-core `entriesPromise`), and oj loaded the framework's `ssr.noExternal` packages (`@tanstack/start**`, `@tanstack/react-start**`) once, outside the module graph. Vite's module runner evaluates noExternal dependencies itself and clears them with the app on every SSR reload; oj now gives them versioned module ids with importer edges, so an edit re-evaluates the dependency modules that depend on it.
+
 ## [0.2.30] - 2026-10-14
 
 ### Fixed
