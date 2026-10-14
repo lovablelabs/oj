@@ -48,15 +48,32 @@ impl SsrBridge {
         self.state.graph.lock().unwrap().contains(Path::new(&url))
     }
 
-    /// A stylesheet as a module, compiled with the inputs SSR renders it
-    /// from (see [`compile_style_module`]).
-    pub fn style_module(&self, path: &Path, source: &str) -> Result<StyleModule, String> {
-        compile_style_module(
-            &self.state.root,
-            path,
-            source,
-            &self.state.css_resolve.as_ref(),
-        )
+    /// A style file as SSR compiles it (see [`compile_style_file`]): the
+    /// sheet the Start dev server serves for it.
+    pub async fn style_sheet(&self, path: &Path) -> Result<StyleModule, String> {
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        style_file(&self.state, path, source).await
+    }
+
+    /// A stylesheet's `?inline` module under Start dev (see
+    /// [`start_dev_inline_style`]), on the server's engines.
+    pub async fn start_dev_inline_style(&self, path: &Path) -> Result<String, String> {
+        let state = &self.state;
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let engine = if needs_preprocess_engine(path) {
+            Some(lazy_engine(state, EngineKind::Preprocess).await?.as_ref())
+        } else {
+            None
+        };
+        let inputs = StyleInputs {
+            root: &state.root,
+            css: state.css_config.as_ref(),
+            resolve: state.css_resolve.as_ref(),
+        };
+        let tailwind = async || lazy_engine(state, EngineKind::Tailwind).await.cloned();
+        start_dev_inline_style(&inputs, path, source, engine, tailwind).await
     }
 
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
@@ -248,14 +265,10 @@ pub(crate) async fn ssr_module_inner(
     };
     let ext = path.extension().and_then(|e| e.to_str());
     if !from_plugin && ext.is_some_and(is_style_ext) {
-        let source = if is_preprocessor(id) {
-            run_preprocess_engine(state, id, &source, serde_json::Value::Null)
-                .await
-                .map_err(SsrModuleError::Failed)?
-        } else {
-            source
-        };
-        return ssr_css_module(state, &path, &source).map_err(SsrModuleError::Failed);
+        return style_file(state, &path, source)
+            .await
+            .map(|m| m.code)
+            .map_err(SsrModuleError::Failed);
     }
     if !from_plugin && ext == Some("json") {
         return oj_compiler::json::to_esm(&source, id)
@@ -523,82 +536,24 @@ pub(crate) fn sass_load_paths_for(state: &ServerState, url: &str) -> Vec<PathBuf
         .collect()
 }
 
-pub(crate) fn ssr_css_module(
+/// A style file compiled with the server's config (see [`compile_style_file`]),
+/// booting the preprocess engine when the file needs it.
+pub(crate) async fn style_file(
     state: &ServerState,
     path: &Path,
-    source: &str,
-) -> Result<String, String> {
-    let css_src = if oj_css::is_sass(&path.to_string_lossy()) {
-        oj_css::compile_sass(source, path.parent())?
-    } else {
-        source.to_string()
-    };
-    Ok(compile_style_module(&state.root, path, &css_src, &state.css_resolve.as_ref())?.code)
-}
-
-/// A stylesheet compiled as a module: its JS (a CSS module's class map, else
-/// an empty module) and the stylesheet. Scoped names hash the file's served
-/// url under the app's `css.modules` options, the same inputs the client
-/// pipeline uses, so every consumer of one file (SSR, the dev client, the
-/// Start bundles) renders the same class names. Urls are left as written.
-pub struct StyleModule {
-    pub code: String,
-    pub css: String,
-}
-
-pub fn compile_style_module(
-    root: &Path,
-    path: &Path,
-    source: &str,
-    resolve: &oj_css::CssResolve<'_>,
+    source: String,
 ) -> Result<StyleModule, String> {
-    let url = crate::rewrite::url_of(root, path);
-    let resolve = oj_css::CssResolve {
-        minify: false,
-        ..*resolve
+    let engine = if needs_preprocess_engine(path) {
+        Some(lazy_engine(state, EngineKind::Preprocess).await?.as_ref())
+    } else {
+        None
     };
-    let output = oj_css::compile_css_with(&url, source, &resolve)?;
-    let code = match output.exports {
-        Some(exports) => oj_css::css_modules_esm(&exports),
-        None => "export default {};".to_string(),
+    let inputs = StyleInputs {
+        root: &state.root,
+        css: state.css_config.as_ref(),
+        resolve: state.css_resolve.as_ref(),
     };
-    Ok(StyleModule {
-        code,
-        css: output.css,
-    })
-}
-
-/// `css.modules` as the Start scripts receive it (`OJ_START_CSS_MODULES`).
-pub fn css_modules_to_json(m: &oj_css::CssModulesOptions) -> String {
-    serde_json::json!({
-        "localsConvention": m.locals_convention,
-        "generateScopedName": m.generate_scoped_name,
-        "globalScope": m.global_scope,
-        "globalModulePaths": m.global_module_paths,
-    })
-    .to_string()
-}
-
-pub fn css_modules_from_json(raw: &str) -> oj_css::CssModulesOptions {
-    let v: serde_json::Value = serde_json::from_str(raw).unwrap_or_default();
-    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
-    oj_css::CssModulesOptions {
-        locals_convention: s("localsConvention"),
-        generate_scoped_name: s("generateScopedName"),
-        global_scope: v
-            .get("globalScope")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false),
-        global_module_paths: v
-            .get("globalModulePaths")
-            .and_then(|x| x.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|p| p.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    }
+    compile_style_file(&inputs, path, source, engine).await
 }
 
 /// Vite's `css.modules` options as the CSS compiler applies them (dev and build).

@@ -93,7 +93,7 @@ impl StringOrList {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct CssConfig {
     pub preprocessor_options: Option<BTreeMap<String, PreprocessorEntry>>,
@@ -105,7 +105,7 @@ pub struct CssConfig {
 
 /// Vite's `css.modules` as it crosses the config boundary: functions arrive
 /// as the `"__oj_fn__"` marker, RegExps as `{ "__oj_regex__": source }`.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct CssModulesConfig {
     pub locals_convention: Option<serde_json::Value>,
@@ -116,7 +116,7 @@ pub struct CssModulesConfig {
     pub hash_prefix: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PreprocessorEntry {
     pub additional_data: Option<String>,

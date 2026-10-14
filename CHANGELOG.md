@@ -5,6 +5,13 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- TanStack Start compiles Sass, Less and Stylus stylesheets, and their CSS modules, in dev and production builds. Any `.scss`/`.less`/`.styl` import failed the client bundle with a parse error (Start dev never booted) because the bundles only handled `.css`. Every stylesheet language now runs Vite's compileCSS order on oj's CSS pipeline: the preprocessor under `css.preprocessorOptions` (`additionalData`, `loadPaths`, Less/Stylus options), then CSS-module scoping for a `.module.<lang>` file, then Tailwind. SSR, the client's class map and the linked (dev) or emitted (build, as `.css`) stylesheet agree on every class. Dev SSR also applies `preprocessorOptions` to Sass and Less now, matching the client pipeline.
+- A stylesheet imported with `?inline` under Start is the compiled sheet as a string, as in Vite, instead of a data URL of the raw file (client) or the raw text (SSR). Relative `url()`s point at the served files in dev and at the emitted assets in a build, and SSR and the client bundle carry the same text, so a rendered `<style>` hydrates. A build inlines a CSS module's class map, as Vite's does.
+
 ## [0.2.30] - 2026-10-14
 
 ### Fixed

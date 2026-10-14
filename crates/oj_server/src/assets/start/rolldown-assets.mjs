@@ -15,9 +15,10 @@ const INLINE_RE = /[?&]inline\b/;
 const NO_INLINE_RE = /(\?|&)no-inline(?:&|$)/;
 const WORKER_RE = /(?:\?|&)(worker|sharedworker)(?:&|$)/;
 const ASSET_EXT = /\.(png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|mp4|webm|wasm)(\?|$)/;
-// Vite's cssModuleRE, for the stylesheets the asset module handles.
-const CSS_MODULE_RE = /\.module\.css$/;
-const CSS_MODULE_SCHEME = "oj-css-module:";
+// Vite's CSS_LANGS_RE and cssModuleRE over the languages oj compiles.
+const STYLE_RE = /\.(css|less|sass|scss|styl|stylus)(\?|$)/;
+const CSS_MODULE_RE = /\.module\.(css|less|sass|scss|styl|stylus)$/;
+const STYLE_SCHEME = "oj-style:";
 
 // esbuild "namespaces" become \0-prefixed virtual ids; the tag routes load().
 const V = (tag, path) => `\0oj-${tag}:${path}`;
@@ -126,7 +127,7 @@ function assetTagFor(source, mode) {
   if (INLINE_RE.test(source)) return "inline";
   if (URL_RE.test(source)) return "url";
   if (ASSET_EXT.test(source)) return "url";
-  if (/\.css(\?|$)/.test(source)) return "css";
+  if (STYLE_RE.test(source)) return "css";
   return null;
 }
 
@@ -136,7 +137,7 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
   return {
     name: "oj-assets",
     resolveId: {
-      filter: { id: { include: [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, /\.css(\?|$)/] } },
+      filter: { id: { include: [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, STYLE_RE] } },
       async handler(source, importer, options) {
         if (options?.custom?.ojAsset) return null;
         const tag = assetTagFor(source, mode);
@@ -172,6 +173,19 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
         const js = (code) => ({ code, moduleType: "js" });
         if (v.tag === "raw") return js(`export default ${JSON.stringify(readFileSync(v.path, "utf8"))};`);
         if (v.tag === "url") return js(`export default ${JSON.stringify(await urlFor(v.path))};`);
+        if (v.tag === "inline" && STYLE_RE.test(v.path)) {
+          // Vite's `?inline` sheet: the compiled stylesheet as a string
+          // (css.ts), never linked. Dev takes the module oj's dev server
+          // renders for SSR; the build compiles it as it emits sheets.
+          const style = (extra) => import(STYLE_SCHEME + "///?" + new URLSearchParams({ file: v.path, ...extra }));
+          if (mode === "dev") return js((await style({ inline: "dev" })).code);
+          const compiled = await style({});
+          // A build gives a CSS module's class map even inlined (css.ts:
+          // modulesCode wins over `inlined` there, not in dev).
+          if (CSS_MODULE_RE.test(v.path)) return js(compiled.code);
+          const css = await emit.inlineCss(v.path, compiled.css);
+          return js(`export default ${JSON.stringify(css)};`);
+        }
         if (v.tag === "inline") return js(`export default ${JSON.stringify(dataUri(v.path))};`);
         if (v.tag === "worker-url" || v.tag === "sharedworker-url") {
           return js(`export default ${JSON.stringify(await workerUrlFor(v.path))};`);
@@ -192,16 +206,21 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
           );
         }
         if (v.tag === "css") {
-          // A CSS module compiles on oj's CSS pipeline (the module host's
-          // CSS_MODULE_SCHEME), the one the dev server's SSR renders from, so
-          // class names agree across SSR, the client and the build. Its scoped
-          // sheet is what the build emits; dev serves the same one by url.
-          const module = CSS_MODULE_RE.test(v.path) ? await import(CSS_MODULE_SCHEME + v.path) : null;
+          // A CSS module or a preprocessor file compiles on oj's CSS pipeline
+          // (the module host's STYLE_SCHEME), the compile the dev server's SSR
+          // renders from: preprocessor first, then CSS-module scoping, as in
+          // Vite's compileCSS. So class names agree across SSR, the client
+          // and the build. The build emits that sheet; dev serves the same one
+          // by url. A plain .css file is linked as written.
+          const compiled =
+            CSS_MODULE_RE.test(v.path) || !v.path.endsWith(".css")
+              ? await import(STYLE_SCHEME + "///?" + new URLSearchParams({ file: v.path }))
+              : null;
           if (!server) {
-            const href = module && mode !== "dev" ? await emit.css(v.path, module.css) : await urlFor(v.path);
+            const href = compiled && mode !== "dev" ? await emit.css(v.path, compiled.css) : await urlFor(v.path);
             if (cssUrls && !cssUrls.includes(href)) cssUrls.push(href);
           }
-          return js(module ? module.code : "export default {};");
+          return js(compiled ? compiled.code : "export default {};");
         }
         return null;
       },
@@ -239,7 +258,7 @@ function bundlerIdFor(r, mode) {
 // file exists), so a normal plugin's resolveId never sees them; the post
 // phase leaves them to the asset plugin, which also keeps its own nested
 // this.resolve out of the core-resolve round trip below.
-const ASSET_OWNED = [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, /\.css(\?|$)/];
+const ASSET_OWNED = [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, STYLE_RE];
 // A bare specifier: not relative, absolute, a \0 id or a `scheme:` URL.
 const BARE_RE = /^(?![./\\\0]|[a-zA-Z]:[\\/]|[a-zA-Z][\w+.-]*:)/;
 const matchesAny = (res, id) =>
@@ -578,7 +597,9 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
     emitting.add(absPath);
     try {
       if (compileCss && needsCssCompile(css)) css = await compileCss(absPath, css);
-      const url = write(absPath, Buffer.from(await rewriteCss(css, dirname(absPath)), "utf8"));
+      // A compiled .scss/.less sheet ships as .css.
+      const sheet = absPath.replace(/\.[^./\\]+$/, ".css");
+      const url = write(sheet, Buffer.from(await rewriteCss(css, dirname(absPath)), "utf8"));
       if (!cssUrls.includes(url)) cssUrls.push(url);
       return url;
     } finally {
@@ -586,6 +607,12 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
     }
   }
   emit.css = emitCss;
+  // A `?inline` sheet's text: compiled and its urls emitted, as emitCss does,
+  // but returned instead of written.
+  emit.inlineCss = async (absPath, css) => {
+    if (compileCss && needsCssCompile(css)) css = await compileCss(absPath, css);
+    return rewriteCss(css, dirname(absPath));
+  };
 
   async function rewriteCss(css, dir) {
     const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;

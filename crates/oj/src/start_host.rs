@@ -1227,9 +1227,9 @@ impl StartHost {
             "inline" => {
                 let ext = ext_of(path).to_ascii_lowercase();
                 if oj_server::is_style_ext(&ext) {
-                    let text =
-                        std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
-                    Ok(format!("export default {};", json_str(&text)))
+                    // Vite's `?inline` sheet: compiled, as the client bundle
+                    // inlines it.
+                    self.bridge.start_dev_inline_style(Path::new(path)).await
                 } else {
                     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
                     let url = format!(
@@ -1498,7 +1498,7 @@ impl StartEngine {
 /// server-fn resolver, the client bundle, the production build) run on. The
 /// scripts import rolldown's napi binding and the app's plugins with plain
 /// byonm semantics, exactly as they did under node; the module host answers
-/// only [`CSS_MODULE_SCHEME`] ids. Each script exports `run(env)`; the env
+/// only [`STYLE_SCHEME`] ids. Each script exports `run(env)`; the env
 /// values that used to be spawn env travel as the argument.
 ///
 /// Hosted only in processes that EXIT after their scripts (`oj build`, the
@@ -1511,56 +1511,122 @@ pub struct ScriptEngine {
     engine: JsEngine,
     /// The env shadow ran on the isolate (once, before the first script).
     env_shadowed: tokio::sync::OnceCell<()>,
-    /// `css.modules` from the running script's env (`OJ_START_CSS_MODULES`).
-    css_modules: Arc<Mutex<oj_css::CssModulesOptions>>,
+    /// The app's `css` config from the running script's env (`OJ_START_CSS`).
+    css: Arc<Mutex<Option<oj_config::CssConfig>>>,
 }
 
-/// `import("oj-css-module:/abs/x.module.css")` from a Start script: the
-/// stylesheet compiled by oj's CSS pipeline, as `{ code, css }` (the module's
-/// JS and its scoped stylesheet). The bundles take CSS-module class names from
-/// here so they match what the dev server's SSR renders.
-pub const CSS_MODULE_SCHEME: &str = "oj-css-module:";
-const CSS_MODULES_ENV: &str = "OJ_START_CSS_MODULES";
+/// `import("oj-style:///?file=/abs/x.module.scss")` from a Start script: the
+/// style file compiled by oj's CSS pipeline (preprocessor, then CSS-module
+/// scoping), as `{ code, css }`, the module's JS and its sheet. The bundles
+/// take stylesheets and class names from here so they match what the dev
+/// server's SSR renders and serves.
+pub const STYLE_SCHEME: &str = "oj-style:";
+const CSS_ENV: &str = "OJ_START_CSS";
 
 fn serve_script_host(
     root: PathBuf,
-    css_modules: Arc<Mutex<oj_css::CssModulesOptions>>,
+    css: Arc<Mutex<Option<oj_config::CssConfig>>>,
     mut requests: oj_js::HostRequests,
 ) {
+    let engines = Arc::new(ScriptEngines::default());
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
             match request {
-                // Everything else keeps byonm resolution; a CSS_MODULE_SCHEME
-                // id is an absolute URL the loader passes to load as is.
+                // Everything else keeps byonm resolution; a STYLE_SCHEME id is
+                // an absolute URL the loader passes to load as is.
                 oj_js::HostRequest::Resolve { reply, .. } => {
                     let _ = reply.send(Ok(None));
                 }
                 oj_js::HostRequest::Load { specifier, reply } => {
-                    let Some(path) = specifier.strip_prefix(CSS_MODULE_SCHEME) else {
+                    if !specifier.starts_with(STYLE_SCHEME) {
                         let _ = reply.send(Ok(None));
                         continue;
-                    };
-                    let modules = css_modules.lock().unwrap().clone();
-                    let _ = reply.send(script_css_module(&root, path, &modules).map(Some));
+                    }
+                    let (root, engines) = (root.clone(), Arc::clone(&engines));
+                    let css = css.lock().unwrap().clone();
+                    tokio::spawn(async move {
+                        let module = script_style_module(&root, &specifier, css, &engines).await;
+                        let _ = reply.send(module.map(Some));
+                    });
                 }
             }
         }
     });
 }
 
-fn script_css_module(
+/// The CSS engines a script's style files need, booted on first use.
+#[derive(Default)]
+struct ScriptEngines {
+    preprocess: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>>,
+    tailwind: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>>,
+}
+
+async fn script_style_module(
     root: &Path,
-    path: &str,
-    modules: &oj_css::CssModulesOptions,
+    specifier: &str,
+    css: Option<oj_config::CssConfig>,
+    engines: &ScriptEngines,
 ) -> Result<HostModule, String> {
-    let path = Path::new(path);
-    let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let resolve = oj_css::CssResolve {
-        root: Some(root),
-        modules,
-        ..oj_css::CssResolve::default()
+    let (preprocess, tailwind) = (&engines.preprocess, &engines.tailwind);
+    let url = url::Url::parse(specifier).map_err(|e| format!("{specifier}: {e}"))?;
+    let file = url
+        .query_pairs()
+        .find(|(k, _)| k == "file")
+        .map(|(_, v)| PathBuf::from(v.as_ref()))
+        .ok_or_else(|| format!("{specifier}: no file"))?;
+    let dev_inline = url.query_pairs().any(|(k, v)| k == "inline" && v == "dev");
+    let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let engine = if oj_server::needs_preprocess_engine(&file) {
+        let engine = preprocess
+            .get_or_try_init(|| {
+                oj_server::css_engine::CssEngine::preprocess(
+                    root,
+                    oj_server::css_engine::BUILD_DEADLINE,
+                    None,
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        Some(Arc::clone(engine))
+    } else {
+        None
     };
-    let module = oj_server::compile_style_module(root, path, &source, &resolve)?;
+    let modules = oj_server::css_modules_options(&oj_config::OjConfig {
+        css: css.clone(),
+        ..Default::default()
+    });
+    let inputs = oj_server::StyleInputs {
+        root,
+        css: css.as_ref(),
+        resolve: oj_css::CssResolve {
+            root: Some(root),
+            modules: &modules,
+            ..oj_css::CssResolve::default()
+        },
+    };
+    if dev_inline {
+        let tailwind = async || {
+            tailwind
+                .get_or_try_init(|| {
+                    oj_server::css_engine::CssEngine::tailwind(
+                        root,
+                        oj_server::css_engine::BUILD_DEADLINE,
+                        None,
+                    )
+                })
+                .await
+                .cloned()
+                .map_err(|e| e.to_string())
+        };
+        let code =
+            oj_server::start_dev_inline_style(&inputs, &file, source, engine.as_deref(), tailwind)
+                .await?;
+        return Ok(HostModule {
+            code: format!("export const code = {};\n", json_str(&code)),
+            module_type: HostModuleType::JavaScript,
+        });
+    }
+    let module = oj_server::compile_style_file(&inputs, &file, source, engine.as_deref()).await?;
     Ok(HostModule {
         code: format!(
             "export const code = {};\nexport const css = {};\n",
@@ -1590,14 +1656,14 @@ impl ScriptEngine {
     pub fn new(root: &Path) -> anyhow::Result<ScriptEngine> {
         let mut config = EngineConfig::new(root);
         config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-        let css_modules = Arc::new(Mutex::new(oj_css::CssModulesOptions::default()));
+        let css = Arc::new(Mutex::new(None));
         let (link, requests) = ModuleHost::channel();
-        serve_script_host(root.to_path_buf(), Arc::clone(&css_modules), requests);
+        serve_script_host(root.to_path_buf(), Arc::clone(&css), requests);
         Ok(ScriptEngine {
             engine: JsEngine::spawn(config, Some(link), None)
                 .map_err(|e| anyhow::anyhow!("{e}"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
-            css_modules,
+            css,
         })
     }
 
@@ -1630,8 +1696,8 @@ impl ScriptEngine {
                     .map(|_| ())
             })
             .await?;
-        if let Some((_, raw)) = env.iter().find(|(k, _)| k == CSS_MODULES_ENV) {
-            *self.css_modules.lock().unwrap() = oj_server::css_modules_from_json(raw);
+        if let Some((_, raw)) = env.iter().find(|(k, _)| k == CSS_ENV) {
+            *self.css.lock().unwrap() = serde_json::from_str(raw).ok();
         }
         let env_obj: serde_json::Map<String, serde_json::Value> = env
             .iter()
@@ -2130,69 +2196,90 @@ mod tests {
         );
     }
 
-    /// The Start bundles' CSS modules come from oj's CSS pipeline: the same
-    /// scoped names SSR renders, under the app's `css.modules` options.
+    /// The Start bundles' style files come from oj's CSS pipeline: the
+    /// preprocessor, then the scoped names SSR renders, under the app's
+    /// `css` config from the script env.
     #[tokio::test(flavor = "multi_thread")]
-    async fn script_engine_serves_css_modules_from_the_css_pipeline() {
+    async fn script_engine_serves_style_files_from_the_css_pipeline() {
         let dir = std::env::temp_dir().join(format!("oj-scriptcss-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let dir = dir.canonicalize().unwrap();
-        let sheet = dir.join("src/card.module.css");
-        std::fs::write(&sheet, ".card { color: red; }\n").unwrap();
+        let card = dir.join("src/card.module.css");
+        std::fs::write(&card, ".card { color: red; }\n").unwrap();
+        let panel = dir.join("src/panel.module.scss");
+        std::fs::write(&panel, "$c: red;\n.panel { &-title { color: $c; } }\n").unwrap();
         let script = dir.join("probe.mjs");
         std::fs::write(
             &script,
             r#"export async function run(env) {
-  const m = await import("oj-css-module:" + env.SHEET);
-  if (!m.code.includes(JSON.stringify(env.WANT))) throw new Error("class map: " + m.code);
-  if (!m.css.includes("." + env.WANT)) throw new Error("sheet: " + m.css);
+  const load = (file) => import("oj-style:///?" + new URLSearchParams({ file }));
+  const card = await load(env.CARD);
+  if (card.code !== env.CARD_CODE) throw new Error("class map: " + card.code);
+  if (!card.css.includes("." + env.CARD_CLASS)) throw new Error("sheet: " + card.css);
+  const panel = await load(env.PANEL);
+  if (!panel.code.includes('"panel-title"')) throw new Error("scss class map: " + panel.code);
+  if (panel.css.includes("$c") || panel.css.includes("&")) throw new Error("scss sheet: " + panel.css);
   return null;
 }
 "#,
         )
         .unwrap();
-        let ssr_name = {
-            let resolve = oj_css::CssResolve {
+        // What SSR renders for the card under the default config.
+        let modules = oj_css::CssModulesOptions::default();
+        let inputs = oj_server::StyleInputs {
+            root: &dir,
+            css: None,
+            resolve: oj_css::CssResolve {
                 root: Some(&dir),
+                modules: &modules,
                 ..oj_css::CssResolve::default()
-            };
-            let module =
-                oj_server::compile_style_module(&dir, &sheet, ".card { color: red; }\n", &resolve)
-                    .unwrap();
-            let start = module.code.find("export const card = \"").unwrap() + 21;
-            module.code[start..].split('"').next().unwrap().to_string()
+            },
         };
-        let sheet_var = ("SHEET".to_string(), sheet.to_string_lossy().into_owned());
-        ScriptEngine::new(&dir)
-            .unwrap()
-            .run_async(
-                &script,
-                &[sheet_var.clone(), ("WANT".to_string(), ssr_name)],
-                "default css modules",
-            )
-            .await
-            .expect("default options name the class as SSR does");
-        let configured = oj_css::CssModulesOptions {
-            generate_scoped_name: Some("[local]-scoped".into()),
-            ..Default::default()
-        };
+        let ssr =
+            oj_server::compile_style_file(&inputs, &card, ".card { color: red; }\n".into(), None)
+                .await
+                .unwrap();
+        let start = ssr.code.find("export const card = \"").unwrap() + 21;
+        let ssr_class = ssr.code[start..].split('"').next().unwrap().to_string();
+        let var = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let files = [
+            var("CARD", &card.to_string_lossy()),
+            var("PANEL", &panel.to_string_lossy()),
+        ];
         ScriptEngine::new(&dir)
             .unwrap()
             .run_async(
                 &script,
                 &[
-                    sheet_var,
-                    ("WANT".to_string(), "card-scoped".to_string()),
-                    (
-                        CSS_MODULES_ENV.to_string(),
-                        oj_server::css_modules_to_json(&configured),
-                    ),
-                ],
-                "configured css modules",
+                    files.to_vec(),
+                    vec![var("CARD_CODE", &ssr.code), var("CARD_CLASS", &ssr_class)],
+                ]
+                .concat(),
+                "default css",
             )
             .await
-            .expect("css.modules from the script env applies");
+            .expect("default options compile as SSR does");
+        let configured = r#"{"modules":{"generateScopedName":"[local]-scoped"}}"#;
+        let code =
+            "export const card = \"card-scoped\";\nexport default {\"card\":\"card-scoped\"};\n";
+        ScriptEngine::new(&dir)
+            .unwrap()
+            .run_async(
+                &script,
+                &[
+                    files.to_vec(),
+                    vec![
+                        var("CARD_CODE", code),
+                        var("CARD_CLASS", "card-scoped"),
+                        var(CSS_ENV, configured),
+                    ],
+                ]
+                .concat(),
+                "configured css",
+            )
+            .await
+            .expect("css config from the script env applies");
     }
 
     #[test]

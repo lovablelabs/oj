@@ -21,7 +21,7 @@ pub(crate) fn split_query(url: &str) -> (&str, &str) {
 }
 
 /// Lexical normalization: `.` dropped, `..` pops. No filesystem access.
-pub(crate) fn normalize(p: &Path) -> PathBuf {
+pub fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {

@@ -183,14 +183,17 @@ pub(crate) async fn compile_tailwind(
     Ok(css)
 }
 
-enum EngineKind {
+pub(crate) enum EngineKind {
     Tailwind,
     Preprocess,
     Svelte,
 }
 
 /// The dev engine of `kind`, booted on first use.
-async fn lazy_engine(state: &ServerState, kind: EngineKind) -> Result<&Arc<CssEngine>, String> {
+pub(crate) async fn lazy_engine(
+    state: &ServerState,
+    kind: EngineKind,
+) -> Result<&Arc<CssEngine>, String> {
     let cell = match kind {
         EngineKind::Tailwind => &state.tailwind,
         EngineKind::Preprocess => &state.preprocess,

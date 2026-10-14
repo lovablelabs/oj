@@ -14,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::SinkExt;
+use oj_server::needs_css_compile;
 use tokio::sync::broadcast;
 
 use crate::start_chunks::{respond, Chunk};
@@ -1299,12 +1300,8 @@ fn start_script_vars(
             vars.push((var.into(), serde_json::Value::Object(defines).to_string()));
         }
     }
-    let css_modules = oj_server::css_modules_options(config);
-    if css_modules != oj_css::CssModulesOptions::default() {
-        vars.push((
-            "OJ_START_CSS_MODULES".into(),
-            oj_server::css_modules_to_json(&css_modules),
-        ));
+    if let Some(css) = &config.css {
+        vars.push(("OJ_START_CSS".into(), serde_json::to_string(css)?));
     }
     let jsx = oj_config::jsx_settings(config);
     if jsx != oj_config::JsxSettings::default() {
@@ -1877,13 +1874,6 @@ fn app_uses_tailwind(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn needs_css_compile(src: &str) -> bool {
-    src.contains("tailwindcss")
-        || src.contains("@tailwind")
-        || src.contains("@plugin")
-        || src.contains("@apply")
-}
-
 async fn compile_css(
     host: &Arc<oj_server::css_engine::CssEngine>,
     source: &str,
@@ -2260,26 +2250,27 @@ async fn serve_js(path: &Path, what: &str) -> Response {
 }
 
 /// A stylesheet the dev client loads, when it is not served as written: a
-/// CSS module's sheet is the scoped one, under the names SSR renders and the
-/// bundle's class map carries, and a Tailwind sheet is compiled. Scoping runs
-/// before the app's postcss plugins, as postcss-modules does in Vite.
+/// CSS module or a preprocessor file is the sheet SSR compiles (preprocessed,
+/// scoped under the names SSR renders and the bundle's class map carries),
+/// and a Tailwind sheet is compiled after that, as the app's postcss plugins
+/// run after Vite's preprocessors and postcss-modules.
 async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, String>> {
-    let src = tokio::fs::read_to_string(file).await.ok()?;
-    let module = oj_css::is_css_module(&file.to_string_lossy());
-    let src = if module {
-        match state.ssr.style_module(file, &src) {
+    let pipeline = oj_css::is_css_module(&file.to_string_lossy())
+        || file.extension().and_then(|e| e.to_str()) != Some("css");
+    let src = if pipeline {
+        match state.ssr.style_sheet(file).await {
             Ok(m) => m.css,
             Err(e) => return Some(Err(e)),
         }
     } else {
-        src
+        tokio::fs::read_to_string(file).await.ok()?
     };
     if let Some(host) = state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
         if let Some(css) = compile_css(host, &src, file).await {
             return Some(Ok(css));
         }
     }
-    module.then_some(Ok(src))
+    pipeline.then_some(Ok(src))
 }
 
 async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
@@ -2292,7 +2283,11 @@ async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
     if !canon.starts_with(&state.workspace_root) {
         return (StatusCode::FORBIDDEN, "oj start: asset outside workspace").into_response();
     }
-    if canon.extension().and_then(|e| e.to_str()) == Some("css") {
+    if canon
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(oj_server::is_style_ext)
+    {
         if let Some(body) = css_body(state, &canon).await {
             return match body {
                 Ok(css) => (
@@ -3505,16 +3500,6 @@ mod tests {
         assert_eq!(asset_mime("woff2"), "font/woff2");
         assert_eq!(asset_mime("json"), "application/json");
         assert_eq!(asset_mime("weirdext"), "application/octet-stream");
-    }
-
-    #[test]
-    fn needs_css_compile_detects_tailwind_markers() {
-        assert!(needs_css_compile("@import \"tailwindcss\";"));
-        assert!(needs_css_compile("@tailwind base;"));
-        assert!(needs_css_compile("@plugin \"@tailwindcss/typography\";"));
-        assert!(needs_css_compile(".btn { @apply px-2; }"));
-        assert!(!needs_css_compile(".a { color: red }"));
-        assert!(!needs_css_compile("@font-face { src: url(x.woff2) }"));
     }
 
     #[test]

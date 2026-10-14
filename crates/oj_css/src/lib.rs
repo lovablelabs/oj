@@ -23,7 +23,7 @@ pub use imports::{
     resolve_css_import_with,
 };
 pub use modules::{css_modules_esm, is_css_module};
-pub use path::node_modules_load_paths;
+pub use path::{node_modules_load_paths, normalize};
 pub use resolve::{CssModulesOptions, CssResolve, CssResolveConfig};
 pub use sass::{
     compile_sass, compile_sass_collecting, compile_sass_opts, compile_sass_with, is_sass,
