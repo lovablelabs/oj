@@ -1056,7 +1056,10 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             alias: oj_config::resolve_alias(config, "ssr"),
             dedupe: oj_config::resolve_dedupe(config),
             extensions: oj_config::resolve_extensions(config),
-            main_fields: oj_config::resolve_main_fields(config),
+            // The ssr environment's own list only: environments never inherit
+            // the top-level mainFields in Vite, and a resolved config carries
+            // the CLIENT defaults there (`browser` first).
+            main_fields: oj_config::ssr_resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             // Vite's server environment: no `browser` main field or remap.
             server: true,
