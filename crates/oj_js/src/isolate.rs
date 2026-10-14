@@ -179,7 +179,25 @@ impl Isolate {
             .low_memory_notification();
     }
 
+    /// deno_core's task spawner checks its queue BEFORE registering the waker
+    /// (`V8TaskSpawnerFactory::poll_inner`, the same upstream), so a task a
+    /// native thread spawns between the two (a napi threadsafe call, the way
+    /// rolldown's workers call JS plugins) wakes nothing and waits for an
+    /// unrelated wake: a Start rebundle stalled ~30s inside Vite's config
+    /// bundle. A Pending poll leaves the waker registered, so a second poll
+    /// closes the window: a spawn before its queue check is taken there, one
+    /// after it finds the waker in place.
     pub(crate) fn poll_events(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), deno_core::error::CoreError>> {
+        match self.poll_event_loop_once(cx) {
+            Poll::Pending => self.poll_event_loop_once(cx),
+            ready => ready,
+        }
+    }
+
+    fn poll_event_loop_once(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), deno_core::error::CoreError>> {
