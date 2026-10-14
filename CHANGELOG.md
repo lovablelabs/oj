@@ -5,6 +5,16 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A native addon's call into JS (a napi threadsafe function, the way rolldown's worker threads run JS plugins) no longer waits for an unrelated wake of oj's engine. deno_core's cross-thread task queue checks for work before registering its waker, so a task queued in between woke nothing. On CI that stalled about one Start dev rebundle in eight by ~30s inside Vite's config bundling, so an edit took half a minute to reach the browser. oj's engine now polls its event loop again whenever a poll comes back pending, which closes the window for every engine (the dev server's, the plugin host's, the Start scripts').
+
+### Added
+
+- `OJ_BOOT_PHASES` also traces the Start scripts: the client bundle child's rolldown import, plugin config load, build and output writes, and the child's spawn and exit, as `[oj-phase]` lines alongside the dev server's.
+
 ## [0.2.31] - 2026-10-14
 
 ### Fixed
