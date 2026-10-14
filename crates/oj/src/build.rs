@@ -1475,13 +1475,7 @@ static BUILD_SVELTE: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>
 /// re-read from disk).
 async fn expand_css_via_engine(root: &Path, css_file: &Path, css: &str) -> anyhow::Result<String> {
     let engine = BUILD_TAILWIND
-        .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::tailwind(
-                root,
-                oj_server::css_engine::BUILD_DEADLINE,
-                None,
-            )
-        })
+        .get_or_try_init(|| oj_server::css_engine::CssEngine::tailwind(root, None))
         .await?;
     engine
         .compile_path(css, css_file, serde_json::Value::Null, false)
@@ -1491,13 +1485,7 @@ async fn expand_css_via_engine(root: &Path, css_file: &Path, css: &str) -> anyho
 
 async fn svelte_via_engine(root: &Path, file: &Path) -> anyhow::Result<String> {
     let engine = BUILD_SVELTE
-        .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::svelte(
-                root,
-                oj_server::css_engine::BUILD_DEADLINE,
-                None,
-            )
-        })
+        .get_or_try_init(|| oj_server::css_engine::CssEngine::svelte(root, None))
         .await?;
     let source = fs::read_to_string(file)?;
     engine
@@ -1513,13 +1501,7 @@ async fn preprocess_via_engine(
     options: serde_json::Value,
 ) -> anyhow::Result<String> {
     let engine = BUILD_PREPROCESS
-        .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::preprocess(
-                root,
-                oj_server::css_engine::BUILD_DEADLINE,
-                None,
-            )
-        })
+        .get_or_try_init(|| oj_server::css_engine::CssEngine::preprocess(root, None))
         .await?;
     engine
         .compile_path(css, css_file, options, false)

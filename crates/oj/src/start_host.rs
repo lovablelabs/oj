@@ -1620,13 +1620,7 @@ async fn script_style_module(
     let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let engine = if oj_server::needs_preprocess_engine(&file) {
         let engine = preprocess
-            .get_or_try_init(|| {
-                oj_server::css_engine::CssEngine::preprocess(
-                    root,
-                    oj_server::css_engine::BUILD_DEADLINE,
-                    None,
-                )
-            })
+            .get_or_try_init(|| oj_server::css_engine::CssEngine::preprocess(root, None))
             .await
             .map_err(|e| e.to_string())?;
         Some(Arc::clone(engine))
@@ -1649,13 +1643,7 @@ async fn script_style_module(
     if dev_inline {
         let tailwind = async || {
             tailwind
-                .get_or_try_init(|| {
-                    oj_server::css_engine::CssEngine::tailwind(
-                        root,
-                        oj_server::css_engine::BUILD_DEADLINE,
-                        None,
-                    )
-                })
+                .get_or_try_init(|| oj_server::css_engine::CssEngine::tailwind(root, None))
                 .await
                 .cloned()
                 .map_err(|e| e.to_string())

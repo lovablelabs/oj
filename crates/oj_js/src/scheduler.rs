@@ -10,9 +10,9 @@
 //!
 //! A parked call's deadline is part of its future (`tokio::time::timeout_at`),
 //! so expiry arrives through the same settlement path as success — there is
-//! no separate timer bookkeeping to keep in sync. The watchdog guard stays
-//! armed underneath for the one case the timer cannot reach: a continuation
-//! wedging the event loop in a busy loop.
+//! no separate timer bookkeeping to keep in sync. The watchdog covers only
+//! the setup phase: its `terminate_execution` is isolate-wide, and once a
+//! call is parked the JS on the stack may belong to any other call.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -101,10 +101,8 @@ enum Tick {
 
 /// A call whose module ran and whose function was invoked, waiting for the
 /// returned promise to settle while the scheduler drives the event loop.
-/// `guard` is the same deadline on the watchdog, for a wedged event loop.
 struct ParkedCall {
     fut: Pin<Box<dyn Future<Output = ParkedOutcome>>>,
-    guard: Option<DeadlineGuard>,
     reply: Reply,
 }
 
@@ -218,13 +216,9 @@ impl Scheduler {
     }
 
     /// Fails every parked call as MemoryLimit and cancels the heap-limit
-    /// callback's termination — AFTER all guards are disarmed, so a watchdog
-    /// firing mid-sweep cannot leave a termination pending for the next job.
+    /// callback's termination.
     fn fail_all_parked(&mut self) {
         for call in std::mem::take(&mut self.calls) {
-            if let Some(guard) = call.guard {
-                let _ = guard.disarm();
-            }
             let _ = call.reply.send(Err(EngineError::MemoryLimit));
         }
         self.isolate.cancel_termination();
@@ -247,27 +241,27 @@ impl Scheduler {
         deadline: Option<Duration>,
         reply: Reply,
     ) {
-        // The watchdog stays armed for the call's whole life. In the
-        // EXCLUSIVE setup phase no other JS can be on the stack, so a
-        // termination can never hit an innocent job; while the call is
-        // parked, its future's own timeout normally settles the deadline and
-        // the watchdog only matters for a wedged event loop.
+        // The watchdog guards setup only. Once parked, the deadline lives on
+        // the call's own future: the watchdog's termination is isolate-wide,
+        // and a parked call expiring while another call runs synchronous JS
+        // would terminate that innocent call and break every parked one.
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
         let guard = self.isolate.arm(deadline);
         match self.setup_call(&module, &export, args).await {
-            Ok(_) if guard.as_ref().is_some_and(DeadlineGuard::fired) => {
+            Ok(fut) => match self.settle(guard) {
+                Verdict::Clean => {
+                    let fut: Pin<Box<dyn Future<Output = ParkedOutcome>>> = match deadline_at {
+                        Some(at) => Box::pin(tokio::time::timeout_at(at, fut)),
+                        None => Box::pin(async move { Ok(fut.await) }),
+                    };
+                    self.calls.push(ParkedCall { fut, reply });
+                }
                 // Setup outlived the deadline but completed anyway (the
                 // termination raced completion): expired, not broken.
-                let verdict = self.settle(guard);
-                let _ = reply.send(Err(verdict.cutoff()));
-            }
-            Ok(fut) => {
-                let fut: Pin<Box<dyn Future<Output = ParkedOutcome>>> = match deadline_at {
-                    Some(at) => Box::pin(tokio::time::timeout_at(at, fut)),
-                    None => Box::pin(async move { Ok(fut.await) }),
-                };
-                self.calls.push(ParkedCall { fut, guard, reply });
-            }
+                verdict => {
+                    let _ = reply.send(Err(verdict.cutoff()));
+                }
+            },
             Err(e) => {
                 let verdict = self.settle(guard);
                 let _ = reply.send(verdict.apply(Err(e)));
@@ -283,7 +277,7 @@ impl Scheduler {
             // promise; the isolate and the other calls carry on.
             Err(_elapsed) => None,
         };
-        let verdict = self.settle(call.guard);
+        let verdict = self.settle(None);
         let _ = call.reply.send(match result {
             Some(result) => verdict.apply(result),
             None => Err(verdict.cutoff()),
@@ -315,17 +309,11 @@ impl Scheduler {
         let oom_fired = self.isolate.take_oom();
         let mut cx = Context::from_waker(Waker::noop());
         for mut call in std::mem::take(&mut self.calls) {
-            // A call whose watchdog terminated the wedged loop is the one
-            // that expired. All guards are disarmed BEFORE the one cancel
-            // below, so a watchdog firing mid-drain cannot leave a
-            // termination pending for the next job.
-            let deadline_fired = call.guard.map(DeadlineGuard::disarm).unwrap_or(false);
             let result = match call.fut.as_mut().poll(&mut cx) {
                 Poll::Ready(Ok(settled)) => settled_to_json(&mut self.isolate.worker, settled),
                 Poll::Ready(Err(_)) if oom_fired => Err(EngineError::MemoryLimit),
                 Poll::Ready(Err(_)) => Err(EngineError::Deadline),
                 Poll::Pending if oom_fired => Err(EngineError::MemoryLimit),
-                Poll::Pending if deadline_fired => Err(EngineError::Deadline),
                 Poll::Pending => Err(EngineError::Js(error.clone())),
             };
             let _ = call.reply.send(result);

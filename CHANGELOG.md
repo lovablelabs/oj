@@ -5,6 +5,16 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A call whose deadline passed while it waited on the engine no longer terminates an unrelated call. The watchdog's termination is isolate-wide, so when the deadline fired while another call ran synchronous JS, that innocent call died with "execution terminated" and every other pending call failed with it. The watchdog now covers only a call's setup; a waiting call's deadline settles on its own timer.
+
+### Changed
+
+- Tailwind/PostCSS, Less/Stylus and Svelte compiles no longer fail on elapsed time (the 20s dev, 30s Start and 60s build budgets are gone), matching Vite's CSS pipeline, which runs with no timeout. Compiles share one engine, and a slow one under CPU contention used to fail as "compile timed out".
+
 ## [0.2.32] - 2026-10-14
 
 ### Fixed
