@@ -138,7 +138,10 @@ try {
   const editBefore = log.split("client bundled").length;
   const reloadBefore = log.split("rebuilt, reloading").length;
   fs.writeFileSync(aboutFile, fs.readFileSync(aboutFile, "utf8").replace("about-page-marker", "about-page-edited"));
-  await settles(async () => log.split("client bundled").length > editBefore, { timeoutMs: 20000 });
+  const grace = Number(process.env.OJ_E2E_GRACE_MS || 20000);
+  const editAt = Date.now();
+  await settles(async () => log.split("client bundled").length > editBefore, { timeoutMs: grace });
+  console.log(`diag: route edit rebundled in ${Date.now() - editAt}ms`);
   if (log.split("client bundled").length === editBefore) {
     throw new Error(`route edit did not rebundle; log tail:\n${log.slice(-3000)}`);
   }

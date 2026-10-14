@@ -99,7 +99,9 @@ const page = async () => (await fetch(`http://localhost:${PORT}/about`)).text();
 async function edit(file, source, what, rendered) {
   const before = reloads();
   fs.writeFileSync(file, source);
-  await settles(async () => reloads() > before, { timeoutMs: 30000 });
+  const editAt = Date.now();
+  await settles(async () => reloads() > before, { timeoutMs: Number(process.env.OJ_E2E_GRACE_MS || 30000) });
+  console.log(`diag: ${what} reloaded in ${Date.now() - editAt}ms`);
   must(reloads() > before, `${what} did not reload the page; log tail:\n${log.slice(-2500)}`);
   let html = "";
   await settles(

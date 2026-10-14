@@ -77,207 +77,42 @@ jobs:
             | tar xz --strip-components=1 -C "$HOME/.cargo/bin" --wildcards '*/wasm-pack'
           wasm-pack --version
           npm ci --prefix www
-      - name: run e2e suite
-        run: node e2e/run.mjs
-      - name: wasm playground (editor, preview, error strip)
-        run: node e2e/wasm-playground.mjs
-      - name: warm-cache plugin side effects
-        run: node e2e/warm-cache.mjs
-      - name: ssr dev + hydration
-        run: node e2e/ssr-dev.mjs
-      - name: ssr dev serves a raw-TypeScript dependency through the pipeline
-        run: node e2e/ssr-node-modules-ts.mjs
-      - name: no-cache flag e2e
-        run: node e2e/no-cache.mjs
-      - name: ESM dependency's bare import of a UMD-main sibling (detect-gpu shape)
-        run: node e2e/dep-esm-bare-import.mjs
-      - name: ESM dependency's named import of an unbundled UMD sibling (proj4 shape)
-        run: node e2e/dep-esm-umd-interop.mjs
-      - name: ESM dependency's extensionless relative imports (functions-js shape)
-        run: node e2e/dep-esm-relative-import.mjs
-      - name: dependency's browser field remaps its own relative imports (axios shape)
-        run: node e2e/dep-browser-field-relative.mjs
-      - name: edits to linked workspace packages trigger HMR (monorepo shape)
-        run: node e2e/hmr-linked-workspace-package.mjs
-      - name: client graph names node builtin exports (crypto HMAC shape)
-        run: node e2e/client-node-shim.mjs
-      - name: build plugin spawns node:worker_threads (vite-plugin-pwa shape)
-        run: node e2e/plugin-worker-threads.mjs
-      - name: runner environments prewarm unprompted (transform + render warm)
-        run: node e2e/runner-env-prewarm.mjs
-      - name: OJ_DEBUG_MEM gc endpoint (issue 202 memory probing)
-        run: node e2e/debug-gc.mjs
-      - name: diagnostics ring + NDJSON stderr (/@oj/diagnostics)
-        run: node e2e/diagnostics.mjs
-      - name: forwardConsole server half over a raw vite-hmr socket
-        run: node e2e/forward-console.mjs
-      - name: forwardConsole through a real browser (stack remap)
-        run: node e2e/forward-console-browser.mjs
-      - name: ssr streaming prod build + hydration
-        run: node e2e/ssr-prod.mjs
-      - name: native addon re-registration across one-shot engines (rolldown 1.1.0)
-        run: node e2e/native-addon-reregister.mjs
-      - name: vendored rolldown is authoritative for Start builds
-        run: node e2e/vendored-rolldown.mjs
-      - name: server fast-paths (cache bound, mtime, hmr gating)
+      - name: build oj
+        run: cargo build -p oj
+      - name: "diag: flaky suites in isolation, traced, 3-minute grace"
+        env:
+          OJ_BOOT_PHASES: "1"
+          OJ_E2E_GRACE_MS: "180000"
         run: |
-          node e2e/memory-cache.mjs
-          node e2e/mtime-fastpath.mjs
-          node e2e/hmr-hook-skip.mjs
-      - name: startup compile error overlay + recovery by reload
-        run: node e2e/hmr-overlay-recovery.mjs
-      - name: plugin-owned websocket upgrades (tunnel plugins)
-        run: node e2e/plugin-ws-upgrade.mjs
-      - name: plugin process contract (listening emit at bind, process.exit)
-        run: node e2e/plugin-server-process.mjs
-      - name: json import edit reaches the boundary (stamped import)
-        run: node e2e/hmr-json-update.mjs
-      - name: unresolved relative import errors, creating the file recovers
-        run: node e2e/hmr-unresolved-import.mjs
-      - name: server.proxy regex (^) contexts match path plus query
-        run: node e2e/proxy-regex-context.mjs
-      - name: server.proxy URL/object targets and a bypass string served locally
-        run: node e2e/proxy-target-forms.mjs
-      - name: request paths (encoded filenames, traversal containment)
-        run: node e2e/awkward-paths.mjs
-      - name: plugin resolveId without a load hook serves from disk
-        run: node e2e/plugin-resolve-no-load.mjs
-      - name: a plugin-resolved app file is watched and hot-updates
-        run: node e2e/plugin-file-hmr.mjs
-      - name: client env define (dotenv + process env + plugin config mutations)
-        run: node e2e/env-define.mjs
-      - name: a vite.config that fails to load is an error, not an empty config
-        run: node e2e/config-load-failure.mjs
-      # These drive a dev server (and svgr-plugin also a browser via playwright),
-      # so they belong here where e2e deps + chromium are installed, not in the
-      # prod build smoke job, which has neither.
-      - name: plugin load runs before the disk read (load-first)
-        run: node e2e/plugin-load-first.mjs
-      - name: plain .svg import goes through the svgr plugin transform
-        run: node e2e/svgr-plugin.mjs
-      - name: .js-suffixed aliased and tsconfig-paths imports remap to .ts (dev + build)
-        run: node e2e/ts-output-remap.mjs
-      - name: require() in a served CJS dep resolves with the require condition
-        run: node e2e/cjs-require-condition.mjs
-      - name: optimizeDeps.exclude'd packages run through every plugin load/transform
-        run: node e2e/plugin-excluded-dep.mjs
-      - name: start prod build honors outDir, base, sourcemap, minify
-        run: node e2e/start-build-options.mjs
-      - name: throwing lifecycle hooks fail the build and dev startup
-        run: node e2e/plugin-lifecycle-errors.mjs
-      - name: this.resolve / this.load consult sibling plugins first
-        run: node e2e/plugin-ctx-chain.mjs
-      - name: plugin config() define reaches dev and build compiles
-        run: node e2e/plugin-config-define.mjs
-      - name: removed files reach hotUpdate / watchChange as delete
-        run: node e2e/plugin-hot-update-delete.mjs
-      - name: start dev applies config define to the client bundle; --mode selects .env.<mode>
-        run: node e2e/start-define-mode.mjs
-      - name: start dev client chunks revalidate by ETag and gzip
-        run: node e2e/start-client-transfer.mjs
-      - name: start prod build honors ssr.external (bare imports, server still renders)
-        run: node e2e/start-ssr-external.mjs
-      - name: start dev SIGTERM sweeps plugin children; detached child outlives
-        run: node e2e/start-shutdown-children.mjs
-      - name: start dev stop runs wrapped server.close, buildEnd, closeBundle before sweep
-        run: node e2e/start-graceful-close.mjs
-      - name: tanstack start ssr worker queries + post plugins see JS
-        run: node e2e/start-ssr-worker-url.mjs
-      - name: ssr runner module cache + selective invalidation (hmr-ssr core)
-        run: node e2e/ssr-hmr.mjs
-      - name: ssr externalized-dep export-shape interop (Vite ssr-deps matrix)
-        run: node e2e/ssr-external-interop.mjs
-      - name: dep sourcemap path traversal must not leak file contents
-        run: node e2e/sourcemap-source-leak.mjs
-      - name: css dependency edits hot-swap the importing stylesheet
-        run: node e2e/css-dep-hmr.mjs
-      - name: import.meta.hot.data persists across swaps
-        run: node e2e/hmr-hot-data.mjs
-      - name: acceptExports partial boundary (accept + propagate past)
-        run: node e2e/hmr-accept-exports.mjs
-      - name: ssr dev stack frames map back to the original .ts lines
-        run: node e2e/ssr-stacktrace.mjs
-      - name: stylesheet Vite parity (alias, root-absolute, hacks, css modules, ?inline, postcss order)
-        run: node e2e/css-vite-parity.mjs
-      - name: start prod build for @cloudflare/vite-plugin is a Worker bundle that renders in workerd
-        run: node e2e/start-cloudflare.mjs
-      - name: start dev for @cloudflare/vite-plugin serves from the worker; an edit yields a fresh document
-        run: node e2e/start-cloudflare-dev.mjs
-      - name: experimental.bundledDev is coerced off; the standard dev client entry serves and the page hydrates
-        run: node e2e/bundleddev-coerce.mjs
-      - name: server.proxy covers the worker's outbound fetch (one proxy in the middleware stack), function rewrite applied
-        run: node e2e/proxy-worker-fetch.mjs
-      - name: transformIndexHtml ctx (path, filename, server, bundle, chunk) and hook errors fail
-        run: node e2e/plugin-html-ctx.mjs
-      - name: buildEnd(error) and closeBundle on failed builds and dev close
-        run: node e2e/plugin-close-hooks.mjs
-      - name: relative imports claimed by a resolveId filter go to the plugins first
-        run: node e2e/plugin-resolve-relative.mjs
-      - name: Vite config adoption and lazy warmup
-        run: node e2e/vite-config-adoption.mjs
-      - name: server.fs allow list, strict:false, workspace-root default
-        run: node e2e/server-fs-allow.mjs
-      - name: optimized deps are versioned and served immutable with an ETag
-        run: node e2e/dep-optimize.mjs
-      - name: a Vite 8 app without esbuild discovers and pre-bundles its deps with rolldown
-        run: node e2e/dep-optimize-rolldown.mjs
-      - name: a dep the scan missed is discovered at serve time and re-optimized
-        run: node e2e/dep-optimize-discover.mjs
-      - name: an optimized dep imported by another optimized dep evaluates once
-        run: node e2e/dep-optimize-entry-instance.mjs
-      - name: the in-host scan keeps answering plugin hooks (no watchdog starvation)
-        run: node e2e/scan-starvation.mjs
-      - name: thousands of plugin fs.watch handles register and deliver under a write storm
-        run: node e2e/fs-watch-many-watchers.mjs
-      - name: top-level files and dirs created after boot are watched (new shared/ tree shape)
-        run: node e2e/watch-new-root-dir.mjs
-      - name: server.https serves ALPN h2 + http/1.1 with the HMR socket over TLS
-        run: node e2e/dev-https-h2.mjs
-      - name: mid-boot SIGTERM kills plugin children; next boot reaps a SIGKILLed server's orphans
-        run: node e2e/orphan-reap.mjs
-      - name: worker build forms (?worker, inline, url, new URL) and worker-only chunks skip document helpers
-        run: node e2e/worker-build.mjs
-      - name: publicDir files served verbatim; publicDir path and false honored
-        run: node e2e/public-dir.mjs
-      - name: css.modules options (localsConvention, generateScopedName, globalModulePaths, composes from)
-        run: node e2e/css-modules-options.mjs
-      - name: ?no-inline asset query (dev url module, build never inlines)
-        run: node e2e/assets-no-inline.mjs
-      - name: html.cspNonce stamps scripts, styles and preload links (dev + build)
-        run: node e2e/html-csp-nonce.mjs
-      - name: hmr protocol parity round 2 (css module exports, prune, html reload scope)
+          mkdir -p diag
+          for i in 1 2 3 4 5 6; do
+            for t in start-rebundle-gate start-ssr-hmr; do
+              s=$(date +%s); node e2e/$t.mjs > diag/$t-iso-$i.log 2>&1; c=$?; echo "$t iso#$i exit $c ($(( $(date +%s) - s ))s)"
+            done
+          done
+      - name: "diag: same suites after the Start suites CI runs before them"
+        env:
+          OJ_BOOT_PHASES: "1"
+          OJ_E2E_GRACE_MS: "180000"
         run: |
-          node e2e/hmr-css-module-exports.mjs
-          node e2e/hmr-prune-html-scope.mjs
-          node e2e/hmr-invalidate-protocol.mjs
-          node e2e/hmr-client-options.mjs
-          node e2e/html-fallback-dev.mjs
-          node e2e/hmr-glob-add-delete.mjs
-          node e2e/watch-config-deps-ignored.mjs
-      - name: transformIndexHtml per-page ctx (dev + build) via the css fixture
-        run: node e2e/html-transform-ctx.mjs
-      - name: start dotted non-GET server routes, streamed bodies, set-cookie (dev + prod server)
-        run: node e2e/start-server-routes.mjs
-      - name: generic ssr dev runs requests concurrently, action bodies stay bytes
-        run: node e2e/ssr-concurrent.mjs
-      - name: start dev holds the page reload behind the editor HMR gate until the flush
-        run: node e2e/start-hmr-gate.mjs
-      - name: start dev skips rebundle and reload for changes outside every served graph
-        run: node e2e/start-rebundle-gate.mjs
-      - name: a src/start.ts created or deleted mid-session restarts start dev
-        run: node e2e/start-entry-restart.mjs
-      - name: the app's output.codeSplitting groups shape the start dev bundle and prod client build
-        run: node e2e/start-chunk-policy.mjs
-      - name: start dev serves a raw-TypeScript dependency through the pipeline
-        run: node e2e/start-node-modules-ts.mjs
-      - name: start dev ssr renders route, module and css module edits
-        run: node e2e/start-ssr-hmr.mjs
-      - name: start css modules scope the same class on server, client and stylesheet
-        run: node e2e/start-css-modules.mjs
-      - name: start css options (preprocessorOptions, cssMinify, css.lightningcss) reach dev and build
-        run: node e2e/start-css-options.mjs
-      - name: dev ssr compiles sass with css.preprocessorOptions like the client
-        run: node e2e/ssr-css-preprocessor-options.mjs
+          for i in 1 2 3; do
+            for t in start-build-options start-define-mode start-client-transfer start-ssr-external start-shutdown-children start-graceful-close start-ssr-worker-url start-server-routes start-hmr-gate start-rebundle-gate start-entry-restart start-chunk-policy start-node-modules-ts start-ssr-hmr; do
+              s=$(date +%s); node e2e/$t.mjs > diag/$t-seq-$i.log 2>&1; c=$?; echo "$t seq#$i exit $c ($(( $(date +%s) - s ))s)"
+            done
+            ps -eo pid,ppid,etime,pcpu,rss,args | grep -E "oj|node|workerd" | grep -v grep | head -40
+          done
+      - name: "diag: phases and failure tails"
+        if: always()
+        run: |
+          for f in diag/*.log; do
+            if grep -q "FAILED" "$f"; then echo "=== $f"; grep -aE "oj-phase|FAILED|rebuilding|bundl|reloading" "$f" | tail -60; fi
+          done
+          grep -ah "oj-phase.*client bundle: build done\|oj-phase.*config file loaded\|oj-phase.*child.*spawned\|oj-phase.*child exited" diag/start-ssr-hmr-iso-1.log | head -20
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: diag-logs
+          path: diag/
 
   # i need to fix this or automate
   build:
