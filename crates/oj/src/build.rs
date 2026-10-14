@@ -640,11 +640,11 @@ fn out_dir_emptiable(root: &Path, out_dir: &Path, empty: Option<bool>, warn: boo
     let (r, o) = (canonical_or_self(root), canonical_or_self(out_dir));
     let inside = o != r && o.starts_with(&r);
     if !inside && warn && out_dir.exists() {
-        eprintln!(
+        build_warning(format!(
             "oj build: (!) outDir {} is not inside project root and will not be emptied.\n\
              Use --emptyOutDir to override.",
             out_dir.display()
-        );
+        ));
     }
     inside
 }

@@ -8,13 +8,17 @@ use super::{build, CliOptions};
 
 mod build_assets_dir;
 mod build_css_options;
+mod build_options;
 mod build_unresolved;
 mod css_plugin_transform;
+mod css_rebase;
 mod emit_chunk;
 mod emit_chunk_buildstart;
 mod emit_html_chunk;
 mod generate_bundle_fidelity;
 mod html_attribute_quotes;
+mod manifest;
+mod modulepreload;
 mod multi_html_input;
 mod plugin_close_hooks;
 mod plugin_ctx_chain;
@@ -23,6 +27,7 @@ mod plugin_load_jsx;
 mod rolldown_options;
 mod ssr_options;
 mod vite_build_manifest_in_bundle;
+mod vite_config_build;
 mod vite_css_post_shim;
 
 /// A fresh app dir, pid-keyed and cleaned before use, never after: a later
