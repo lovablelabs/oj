@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-import { importPkg, makeResolver } from "./resolve-pkg.mjs";
+import { importPkg, makeResolver, phase } from "./resolve-pkg.mjs";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1087,12 +1087,14 @@ export async function loadPluginContainer(app, opts = {}) {
     return null;
   }
   if (typeof vite?.loadConfigFromFile !== "function") return null;
+  phase(`plugins: vite imported (${opts.environment ?? "client"})`);
   let loaded;
   try {
     loaded = await vite.loadConfigFromFile({ command, mode }, configFile, app);
   } catch {
     return null;
   }
+  phase("plugins: config file loaded");
   // Vite runs every plugin's `config` hook (in order, async, gated by `apply`)
   // and merges the returned partials before resolving; the Start loader has its
   // own plugin instances, so it must do the same for them.
@@ -1163,6 +1165,7 @@ export async function loadPluginContainer(app, opts = {}) {
         .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)])
         .filter(([, value]) => typeof value === "string"),
     );
+  phase("plugins: container ready");
   return { ...container, publicDir, configDependencies, defines, config };
 }
 

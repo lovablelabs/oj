@@ -3,7 +3,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { importPkg, importOjRolldown, viteEnvDefine, environmentDefines, jsxTransformOptions } from "./resolve-pkg.mjs";
+import {
+  importPkg,
+  importOjRolldown,
+  viteEnvDefine,
+  environmentDefines,
+  jsxTransformOptions,
+  phase,
+} from "./resolve-pkg.mjs";
 import {
   assetsPlugin,
   clientChunkPolicy,
@@ -39,6 +46,7 @@ async function main() {
   // output is indistinguishable from one that never started.
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundling\n`);
   const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
+  phase("client bundle: rolldown imported");
   const WORKSPACE = workspaceRoot(APP);
   const SERVER_FN_BASE = process.env.TSS_SERVER_FN_BASE ?? "/_serverFn/";
   // Vite's `--mode` (OJ_MODE from oj; `development` for `oj dev` without one).
@@ -139,6 +147,7 @@ async function main() {
   }
 
   const container = await loadPluginContainer(APP, { command: "serve", mode: MODE, environment: "client" });
+  phase("client bundle: plugin container loaded");
 
   const cssUrls = [];
   // Every import.meta.glob scan base this bundle expanded; the dev rebundle
@@ -184,6 +193,7 @@ async function main() {
   };
 
   const chunkPolicy = devSafeChunkPolicy(clientChunkPolicy(container?.config));
+  phase("client bundle: build starting");
   const result = await build({
     input: join(HERE, "client-entry.tsx"),
     platform: "browser",
@@ -248,6 +258,7 @@ async function main() {
   // Module count for the editor's update-progress narration ("(N modules)").
   writeFileSync(join(HERE, "client-entry.modules"), String(moduleCount));
 
+  phase(`client bundle: build done (${result.output.length} files)`);
   const closure = new Set([
     routerEntry(),
     ...visitedIds,
@@ -282,6 +293,7 @@ async function main() {
   writeFileSync(join(HERE, "closure.json"), JSON.stringify(closureFiles));
   writeFileSync(join(HERE, "glob-scopes.json"), JSON.stringify([...globScopes].sort()));
 
+  phase("client bundle: closure written");
   const devManifest = {
     routes: {
       __root__: {
@@ -294,6 +306,7 @@ async function main() {
   writeFileSync(join(HERE, "manifest.ts"), `export const tsrStartManifest = () => (${JSON.stringify(devManifest)});\n`);
   writeFileSync(join(HERE, "css-urls.json.tmp"), JSON.stringify(cssUrls));
   renameSync(join(HERE, "css-urls.json.tmp"), join(HERE, "css-urls.json"));
+  phase("client bundle: outputs written");
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundled (${result.output.length} files)\n`);
 }
 

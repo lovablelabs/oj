@@ -1758,6 +1758,7 @@ fn run_script_process(
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| anyhow::anyhow!("could not run {what}: {e}"))?;
+    oj_server::boot_phase(&format!("{what}: child {} spawned", child.id()));
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -1769,6 +1770,7 @@ fn run_script_process(
     let status = child
         .wait()
         .map_err(|e| anyhow::anyhow!("could not wait for {what}: {e}"))?;
+    oj_server::boot_phase(&format!("{what}: child exited ({status})"));
     if !status.success() {
         anyhow::bail!("{what} failed");
     }

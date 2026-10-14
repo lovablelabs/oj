@@ -36,6 +36,14 @@ function pkgJsonOf(req, name) {
   return null;
 }
 
+// `[oj-phase] <ms> <label>` on stderr when OJ_BOOT_PHASES is set, the dev
+// server's boot_phase format, so a Start script's steps line up with the
+// server's own phases in one log.
+export function phase(label) {
+  if (process.env.OJ_BOOT_PHASES === undefined) return;
+  process.stderr.write(`[oj-phase] ${Date.now()} ${label}\n`);
+}
+
 export function makeResolver(root) {
   const appRequire = createRequire(pathToFileURL(root + "/package.json").href);
   const directDeps = depsOf(root + "/package.json");
