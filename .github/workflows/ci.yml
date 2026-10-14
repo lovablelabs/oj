@@ -79,6 +79,8 @@ jobs:
           npm ci --prefix www
       - name: build oj
         run: cargo build -p oj
+      - name: "diag: timestamp Vite's config loading"
+        run: node diag/patch-vite.mjs e2e/fixtures/start-app/node_modules/vite/dist/node/chunks/node.js
       - name: "diag: flaky suites in isolation, traced, 3-minute grace"
         env:
           OJ_BOOT_PHASES: "1"
@@ -86,8 +88,8 @@ jobs:
           OJ_E2E_DUMP: "1"
         run: |
           mkdir -p diag
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            for t in start-rebundle-gate start-ssr-hmr; do
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            for t in start-ssr-hmr; do
               s=$(date +%s); node e2e/$t.mjs > diag/$t-iso-$i.log 2>&1; c=$?; echo "$t iso#$i exit $c ($(( $(date +%s) - s ))s)"
             done
           done
