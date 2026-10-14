@@ -92,6 +92,15 @@ impl PinnedBundle {
         self.chunks.is_empty()
     }
 
+    /// No chunks: what start dev serves while the client bundle has never
+    /// built (its boot bundle failed), until an edit bundles it.
+    pub fn empty() -> Self {
+        Self {
+            entry: String::new(),
+            chunks: HashMap::new(),
+        }
+    }
+
     pub fn from_build_dir(start_dir: &Path) -> Option<Self> {
         let index = read_chunk_index(start_dir)?;
         let chunk_dir = start_dir.join(CHUNKS_DIR);

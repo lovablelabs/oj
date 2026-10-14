@@ -14,11 +14,13 @@ import {
 import {
   appAliasPlugin,
   assetsPlugin,
+  clientExternal,
   clientChunkPolicy,
   makeVitePlugins,
   nodeBuiltinShims,
   workspaceRoot,
   contentHashEmitter,
+  viteOnLog,
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob } from "./glob-transform.mjs";
@@ -301,6 +303,8 @@ async function main() {
       platform: "browser",
       transform: { jsx: jsxTransformOptions(NODE_ENV !== "production"), define: clientDefine },
       resolve: { conditionNames: CLIENT_CONDITIONS, alias: clientAlias },
+      ...clientExternal(clientContainer?.config),
+      onLog: viteOnLog,
       // Vite's bundleWorkerEntry runs the worker plugin pipeline, so imports
       // inside a worker entry resolve exactly as in its importer: the app's
       // plugins (a Cloudflare-shaped `#subpath` rule, `virtual:` modules) and
@@ -328,6 +332,8 @@ async function main() {
       define: clientDefine,
     },
     resolve: { conditionNames: CLIENT_CONDITIONS, alias: clientAlias },
+    ...clientExternal(clientContainer?.config),
+    onLog: viteOnLog,
     plugins: [
       appAliasPlugin(clientContainer?.config),
       makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit }),

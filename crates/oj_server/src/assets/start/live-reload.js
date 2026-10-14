@@ -105,10 +105,34 @@
   if (document.readyState === "complete") restore();
   else window.addEventListener("load", restore);
 
+  function showError(err) {
+    import("/@oj-start/error-overlay.js")
+      .then(() => {
+        const Overlay = customElements.get("vite-error-overlay");
+        document.querySelectorAll("vite-error-overlay").forEach((n) => (n.close ? n.close() : n.remove()));
+        document.body.appendChild(new Overlay(err));
+      })
+      .catch(() => {});
+    console.error("[oj] build error\n" + ((err && err.message) || err));
+  }
+
   let ws;
   const connect = () => {
     ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/@oj-start/hmr");
-    ws.onmessage = () => {
+    ws.onmessage = (ev) => {
+      // Vite's bundled dev error frame ({type:"error", err}): the client
+      // bundle failed, so the page keeps what it has and shows the overlay;
+      // the fixed rebundle's reload clears it.
+      if (typeof ev.data === "string" && ev.data.startsWith("{")) {
+        let msg = null;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch {}
+        if (msg && msg.type === "error") {
+          showError(msg.err);
+          return;
+        }
+      }
       snapshot();
       location.reload();
     };

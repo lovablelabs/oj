@@ -49,6 +49,11 @@ struct StartState {
     live_reload: PathBuf,
     workspace_root: PathBuf,
     reload_tx: broadcast::Sender<()>,
+    /// The client bundle's last failure as a `{type:"error", err}` frame,
+    /// Vite's bundled dev `lastBuildError`: sent to every page when a bundle
+    /// fails, replayed to each page that connects until one succeeds.
+    build_error: std::sync::RwLock<Option<String>>,
+    error_tx: broadcast::Sender<String>,
     // The oj_server /__ws broadcast: the channel the editor reads boot +
     // update narration frames from (the start path's own /@oj-start/hmr socket
     // only drives the app iframe's live reload).
@@ -260,7 +265,20 @@ pub async fn start_dev(
     };
     let (reload_tx, _) = broadcast::channel::<()>(16);
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
-    let pinned = bundle_res??;
+    // A build error in the app's code (bundle-client.mjs recorded it) keeps
+    // the server up, as Vite's bundled dev does: pages render the overlay and
+    // the next edit rebundles. Anything else (the bundler failing to load)
+    // still aborts the boot.
+    let (pinned, boot_error) = match bundle_res? {
+        Ok(pinned) => (pinned, None),
+        Err(e) => match client_error_frame(&cache) {
+            Some(frame) => {
+                eprintln!("  oj start: client bundle failed, serving the error overlay: {e:#}");
+                (oj_cache::start_bundle::PinnedBundle::empty(), Some(frame))
+            }
+            None => return Err(e),
+        },
+    };
     let (built, watch_rx) = built_res??;
     oj_server::boot_phase("bundle+build joined");
     // The in-process Start runner: an embedded engine whose module host runs
@@ -426,6 +444,8 @@ pub async fn start_dev(
         live_reload: cache.join("live-reload.js"),
         workspace_root: workspace_root(&root),
         reload_tx: reload_tx.clone(),
+        build_error: std::sync::RwLock::new(boot_error.clone()),
+        error_tx: broadcast::channel(16).0,
         ws_tx: built.reload_tx.clone(),
         gate: built.hmr_gate.clone(),
         css_host,
@@ -442,8 +462,8 @@ pub async fn start_dev(
         ),
         client_closure: std::sync::RwLock::new(load_client_closure(&cache)),
         client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
-        // The boot bundle succeeded (start_dev aborts otherwise).
-        bundle_ok: std::sync::atomic::AtomicBool::new(true),
+        // A failed boot bundle rebundles on every next batch until one succeeds.
+        bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         ssr: built.ssr.clone(),
     });
 
@@ -1096,7 +1116,7 @@ async fn rebundle_worker(
             hit
         };
         let (client, worker_hit) = tokio::join!(client, side);
-        let (mut bundled, mut server_fn_changed) = (false, false);
+        let (mut bundled, mut server_fn_changed, mut bundle_failed) = (false, false, false);
         if let Ok((routes_now, fn_changed, bundling, pinned)) = client {
             prev_routes = routes_now;
             server_fn_changed = fn_changed;
@@ -1105,6 +1125,23 @@ async fn rebundle_worker(
                 state
                     .bundle_ok
                     .store(pinned.is_some(), std::sync::atomic::Ordering::SeqCst);
+                bundle_failed = pinned.is_none();
+                let frame = bundle_failed.then(|| {
+                    client_error_frame(&cache).unwrap_or_else(|| {
+                        serde_json::json!({
+                            "type": "error",
+                            "err": { "message": "client bundle failed (see the dev server log)" },
+                        })
+                        .to_string()
+                    })
+                });
+                if let Some(frame) = &frame {
+                    let _ = state.error_tx.send(frame.clone());
+                }
+                *state
+                    .build_error
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = frame;
                 if let Some(pinned) = pinned {
                     let pinned = Arc::new(pinned);
                     state.gzip.retain(|h| pinned.has_hash(h));
@@ -1178,12 +1215,15 @@ async fn rebundle_worker(
         // one, or a module the generic pipeline served (a dev worker script).
         // A change outside every graph (a README, a config of some other
         // tool) reloads nothing, as in Vite.
-        let reload = bundled
-            || server_fn_changed
-            || !regen_changed.is_empty()
-            || worker_hit
-            || engine_hit
-            || paths.iter().any(|p| state.ssr.graph_knows_file(p));
+        // A failed bundle reloads nothing: the page keeps what it runs under
+        // the overlay (Vite's bundled dev), and the fixed bundle reloads it.
+        let reload = !bundle_failed
+            && (bundled
+                || server_fn_changed
+                || !regen_changed.is_empty()
+                || worker_hit
+                || engine_hit
+                || paths.iter().any(|p| state.ssr.graph_knows_file(p)));
         // The hold was taken at the watcher event; by now the editor's flush
         // may have consumed it, in which case this run's reload goes out with
         // the fresh bundle instead of waiting for a flush that already came.
@@ -1777,11 +1817,26 @@ fn run_script_process(
     Ok(())
 }
 
+/// Where bundle-client.mjs records a failed client bundle (Vite's
+/// prepareError shape); absent after a success.
+const CLIENT_ERROR_FILE: &str = "client-error.json";
+
+/// The client bundle's recorded failure as the `{type:"error", err}` frame
+/// Vite's bundled dev sends its clients; None when no bundle failed.
+fn client_error_frame(cache: &Path) -> Option<String> {
+    let bytes = std::fs::read(cache.join(CLIENT_ERROR_FILE)).ok()?;
+    let err: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    Some(serde_json::json!({ "type": "error", "err": err }).to_string())
+}
+
 fn bundle_client_entry(
     root: &Path,
     cache: &Path,
     script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
+    // Only this run's failure may read as an app build error: a stale record
+    // would let a bundler that never started pass for one.
+    let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     run_script_process(
         root,
         &cache.join("bundle-client.mjs"),
@@ -1805,6 +1860,7 @@ fn bundle_client_entry_cached(
     script_env: &[(String, String)],
     mode: &str,
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
+    let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
     match store.restore(cache) {
         Ok((stats, pinned)) => {
@@ -1955,18 +2011,32 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
             Ok(ws) => {
                 let rx = state.reload_tx.subscribe();
+                // Subscribed before the replay read: an error landing between
+                // the two arrives twice, never not at all.
+                let errors = state.error_tx.subscribe();
+                let replay = state
+                    .build_error
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
                 // Echo the `oj-hmr` subprotocol when a client offers it: the
                 // positive identity signal for readiness probes, exactly as
                 // Vite's `vite-hmr` echo is theirs. oj's own client offers no
                 // subprotocol and is untouched (no match, no header).
                 ws.protocols(["oj-hmr"])
-                    .on_upgrade(move |socket| start_hmr_socket(socket, rx))
+                    .on_upgrade(move |socket| start_hmr_socket(socket, rx, errors, replay))
             }
             Err(e) => e.into_response(),
         };
     }
     if req.uri().path() == "/@oj-start/live-reload.js" {
         return serve_js(&state.live_reload, "live-reload client").await;
+    }
+    // The overlay element the live-reload client shows build errors in,
+    // written beside it by write_start_assets.
+    if req.uri().path() == "/@oj-start/error-overlay.js" {
+        let overlay = state.live_reload.with_file_name("error-overlay.js");
+        return serve_js(&overlay, "error overlay").await;
     }
     if let Some(rest) = req.uri().path().strip_prefix("/@oj-start/fs/") {
         return serve_fs_asset(&state, &format!("/{rest}")).await;
@@ -2001,9 +2071,30 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     }
 }
 
-async fn start_hmr_socket(mut socket: WebSocket, mut rx: broadcast::Receiver<()>) {
+async fn start_hmr_socket(
+    mut socket: WebSocket,
+    mut rx: broadcast::Receiver<()>,
+    mut errors: broadcast::Receiver<String>,
+    replay: Option<String>,
+) {
+    if let Some(frame) = replay {
+        if socket.send(Message::Text(frame.into())).await.is_err() {
+            return;
+        }
+    }
     loop {
         tokio::select! {
+            error = errors.recv() => match error {
+                Ok(frame) => {
+                    if socket.send(Message::Text(frame.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // A lagged receiver missed older failures; the newest one
+                // still arrives (or the reload that clears them).
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
             reload = rx.recv() => match reload {
                 Err(broadcast::error::RecvError::Closed) => break,
                 // A lagged receiver only missed reload pings; one reload
@@ -2679,6 +2770,7 @@ mod tests {
     struct HmrTestServer {
         url: String,
         reload_tx: broadcast::Sender<()>,
+        error_tx: broadcast::Sender<String>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -2688,33 +2780,46 @@ mod tests {
         }
     }
 
+    type HmrTestState = (
+        broadcast::Sender<()>,
+        broadcast::Sender<String>,
+        Option<String>,
+        Option<Arc<tokio::sync::Notify>>,
+    );
+
     impl HmrTestServer {
         async fn start() -> Self {
-            Self::start_with_gate(None).await
+            Self::start_with(None, None).await
         }
 
         async fn start_with_gate(gate: Option<Arc<tokio::sync::Notify>>) -> Self {
+            Self::start_with(gate, None).await
+        }
+
+        async fn start_with(
+            gate: Option<Arc<tokio::sync::Notify>>,
+            replay: Option<String>,
+        ) -> Self {
             let (reload_tx, _) = broadcast::channel(16);
+            let (error_tx, _) = broadcast::channel(16);
             let app = axum::Router::new()
                 .route(
                     "/@oj-start/hmr",
                     axum::routing::get(
                         |ws: WebSocketUpgrade,
-                         State((tx, gate)): State<(
-                            broadcast::Sender<()>,
-                            Option<Arc<tokio::sync::Notify>>,
-                        )>| async move {
+                         State((tx, error_tx, replay, gate)): State<HmrTestState>| async move {
                             let rx = tx.subscribe();
+                            let errors = error_tx.subscribe();
                             ws.on_upgrade(move |socket| async move {
                                 if let Some(gate) = gate {
                                     gate.notified().await;
                                 }
-                                start_hmr_socket(socket, rx).await;
+                                start_hmr_socket(socket, rx, errors, replay).await;
                             })
                         },
                     ),
                 )
-                .with_state((reload_tx.clone(), gate));
+                .with_state((reload_tx.clone(), error_tx.clone(), replay, gate));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("ws://{}/@oj-start/hmr", listener.local_addr().unwrap());
             let task = tokio::spawn(async move {
@@ -2723,6 +2828,7 @@ mod tests {
             Self {
                 url,
                 reload_tx,
+                error_tx,
                 task,
             }
         }
@@ -2736,6 +2842,71 @@ mod tests {
             .await
             .expect("disconnected HMR client retained its reload subscription");
         }
+    }
+
+    async fn next_text<S>(client: &mut S) -> String
+    where
+        S: futures_util::Stream<
+                Item = Result<ClientMessage, tokio_tungstenite::tungstenite::Error>,
+            > + Unpin,
+    {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+            .await
+            .expect("a frame arrives")
+            .unwrap()
+            .unwrap();
+        match msg {
+            ClientMessage::Text(t) => t.to_string(),
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    /// Vite's bundled dev error path: a page connecting while the client
+    /// bundle is broken gets the stored failure first (lastBuildError replay),
+    /// a later failure arrives as its own frame, and a reload still follows.
+    #[tokio::test]
+    async fn start_hmr_replays_the_build_error_then_forwards_new_ones() {
+        let stored = r#"{"type":"error","err":{"message":"first"}}"#.to_string();
+        let server = HmrTestServer::start_with(None, Some(stored.clone())).await;
+        let (mut client, _) = connect_async(&server.url).await.unwrap();
+        assert_eq!(
+            next_text(&mut client).await,
+            stored,
+            "the stored error replays on connect"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while server.error_tx.receiver_count() != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let later = r#"{"type":"error","err":{"message":"second"}}"#.to_string();
+        server.error_tx.send(later.clone()).unwrap();
+        assert_eq!(next_text(&mut client).await, later);
+        server.reload_tx.send(()).unwrap();
+        assert_eq!(next_text(&mut client).await, "reload");
+    }
+
+    #[test]
+    fn client_error_frame_wraps_the_recorded_failure_as_a_vite_error_payload() {
+        let dir = std::env::temp_dir().join(format!("oj-client-error-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(client_error_frame(&dir), None, "no record, no frame");
+        std::fs::write(
+            dir.join(CLIENT_ERROR_FILE),
+            r#"{"message":"boom","id":"/app/src/a.jsx","loc":{"line":1,"column":2}}"#,
+        )
+        .unwrap();
+        let frame: serde_json::Value =
+            serde_json::from_str(&client_error_frame(&dir).unwrap()).unwrap();
+        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["err"]["message"], "boom");
+        assert_eq!(frame["err"]["id"], "/app/src/a.jsx");
+        assert_eq!(frame["err"]["loc"]["line"], 1);
+        std::fs::write(dir.join(CLIENT_ERROR_FILE), "not json").unwrap();
+        assert_eq!(client_error_frame(&dir), None, "a torn record is no frame");
     }
 
     #[tokio::test]

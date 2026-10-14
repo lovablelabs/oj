@@ -83,7 +83,12 @@ pub use proxy::*;
 use sidecar::is_tailwind_css;
 use tokio::sync::broadcast;
 
-const CLIENT_JS: &str = include_str!("assets/client.js");
+// The overlay is its own asset so the Start live-reload client serves the
+// same element; the SPA client carries (and exports) it inline.
+const CLIENT_JS: &str = concat!(
+    include_str!("assets/error-overlay.js"),
+    include_str!("assets/client.js")
+);
 pub const OJ_ROUTES_JS: &str = include_str!("assets/oj-routes.js");
 const SERVER_FN_JS: &str = include_str!("assets/server-fn.js");
 const LINGUI_MACRO_SHIM_JS: &str = include_str!("assets/lingui-macro-shim.mjs");
@@ -135,6 +140,7 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/bundle-client.mjs"),
     ),
     ("build.mjs", include_str!("assets/start/build.mjs")),
+    ("error-overlay.js", include_str!("assets/error-overlay.js")),
     (
         "live-reload.js",
         include_str!("assets/start/live-reload.js"),

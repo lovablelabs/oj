@@ -14,10 +14,13 @@ import {
 import {
   appAliasPlugin,
   assetsPlugin,
+  buildErrorPayload,
+  clientExternal,
   clientChunkPolicy,
   devSafeChunkPolicy,
   makeVitePlugins,
   nodeBuiltinShims,
+  viteOnLog,
   workspaceRoot,
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
@@ -195,53 +198,66 @@ async function main() {
 
   const chunkPolicy = devSafeChunkPolicy(clientChunkPolicy(container?.config));
   phase("client bundle: build starting");
-  const result = await build({
-    input: join(HERE, "client-entry.tsx"),
-    platform: "browser",
-    ...chunkPolicy.input,
-    transform: {
-      jsx: jsxTransformOptions(NODE_ENV !== "production"),
-      define: {
-        "process.env": JSON.stringify({ NODE_ENV, TSS_SERVER_FN_BASE: SERVER_FN_BASE }),
-        // Explicit, like Vite's define plugin. It also guards a regression if
-        // minify is ever enabled: rolldown's minifier folds the key to
-        // "production" and React picks its prod jsx runtime (no jsxDEV).
-        "process.env.NODE_ENV": JSON.stringify(NODE_ENV),
-        global: "globalThis",
-        ...viteEnvDefine({ ssr: false, mode: MODE }),
-        ...USER_DEFINE,
-        ...environmentDefines("client"),
-        ...(container?.defines?.() ?? {}),
+  // The last failure, as Vite's bundled dev keeps lastBuildError: the dev
+  // server replays it to every page as the error overlay until a bundle
+  // succeeds.
+  const errorFile = join(HERE, "client-error.json");
+  let result;
+  try {
+    result = await build({
+      input: join(HERE, "client-entry.tsx"),
+      platform: "browser",
+      ...chunkPolicy.input,
+      ...clientExternal(container?.config),
+      onLog: viteOnLog,
+      transform: {
+        jsx: jsxTransformOptions(NODE_ENV !== "production"),
+        define: {
+          "process.env": JSON.stringify({ NODE_ENV, TSS_SERVER_FN_BASE: SERVER_FN_BASE }),
+          // Explicit, like Vite's define plugin. It also guards a regression if
+          // minify is ever enabled: rolldown's minifier folds the key to
+          // "production" and React picks its prod jsx runtime (no jsxDEV).
+          "process.env.NODE_ENV": JSON.stringify(NODE_ENV),
+          global: "globalThis",
+          ...viteEnvDefine({ ssr: false, mode: MODE }),
+          ...USER_DEFINE,
+          ...environmentDefines("client"),
+          ...(container?.defines?.() ?? {}),
+        },
       },
-    },
-    resolve: {
-      conditionNames: CLIENT_CONDITIONS,
-      alias: {
-        "#tanstack-router-entry": routerEntry(),
-        "#tanstack-start-entry": startEntry(),
-        "#tanstack-start-plugin-adapters": join(HERE, "plugin-adapters.ts"),
-        "tanstack-start-manifest:v": join(HERE, "manifest.ts"),
-        "tanstack-start-injected-head-scripts:v": join(HERE, "injected-head-scripts.ts"),
-        "@tanstack/start-fn-stubs": join(HERE, "fn-stubs.mjs"),
+      resolve: {
+        conditionNames: CLIENT_CONDITIONS,
+        alias: {
+          "#tanstack-router-entry": routerEntry(),
+          "#tanstack-start-entry": startEntry(),
+          "#tanstack-start-plugin-adapters": join(HERE, "plugin-adapters.ts"),
+          "tanstack-start-manifest:v": join(HERE, "manifest.ts"),
+          "tanstack-start-injected-head-scripts:v": join(HERE, "injected-head-scripts.ts"),
+          "@tanstack/start-fn-stubs": join(HERE, "fn-stubs.mjs"),
+        },
       },
-    },
-    plugins: [
-      closureRecorder,
-      appAliasPlugin(container?.config),
-      makeVitePlugins({ container, appRoot: APP, mode: "dev" }),
-      assetsPlugin({ mode: "dev", cssUrls, root: APP }),
-      serverFnClient,
-      nodeBuiltinShims({ production: false }),
-    ],
-    output: {
-      format: "esm",
-      banner:
-        `globalThis.process=globalThis.process||{env:{NODE_ENV:${JSON.stringify(NODE_ENV)},TSS_SERVER_FN_BASE:${JSON.stringify(SERVER_FN_BASE)}}};` +
-        "globalThis.global=globalThis.global||globalThis;",
-      ...chunkPolicy.output,
-    },
-    write: false,
-  });
+      plugins: [
+        closureRecorder,
+        appAliasPlugin(container?.config),
+        makeVitePlugins({ container, appRoot: APP, mode: "dev" }),
+        assetsPlugin({ mode: "dev", cssUrls, root: APP }),
+        serverFnClient,
+        nodeBuiltinShims({ production: false }),
+      ],
+      output: {
+        format: "esm",
+        banner:
+          `globalThis.process=globalThis.process||{env:{NODE_ENV:${JSON.stringify(NODE_ENV)},TSS_SERVER_FN_BASE:${JSON.stringify(SERVER_FN_BASE)}}};` +
+          "globalThis.global=globalThis.global||globalThis;",
+        ...chunkPolicy.output,
+      },
+      write: false,
+    });
+  } catch (error) {
+    writeFileSync(errorFile, JSON.stringify(buildErrorPayload(error)));
+    throw error;
+  }
+  rmSync(errorFile, { force: true });
 
   const entryChunk = result.output.find((o) => o.type === "chunk" && o.isEntry) ?? result.output[0];
   const chunksDir = join(HERE, "client-chunks");

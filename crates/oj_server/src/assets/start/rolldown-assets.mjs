@@ -324,6 +324,79 @@ export function appAliasPlugin(config) {
   };
 }
 
+const stripAnsi = (s) => String(s ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+
+// Vite's generateCodeFrame layout (utils.ts) for one position: two lines of
+// context either side and a caret under the column. Null when the file cannot
+// be read.
+function sourceFrame(loc) {
+  if (!loc?.file || !loc.line) return null;
+  let source;
+  try {
+    source = readFileSync(loc.file, "utf8");
+  } catch {
+    return null;
+  }
+  const lines = source.split(/\r?\n/);
+  const at = loc.line - 1;
+  const width = Math.max(3, String(Math.min(lines.length, loc.line + 2)).length + 1);
+  const out = [];
+  for (let i = Math.max(0, at - 2); i <= Math.min(lines.length - 1, at + 2); i++) {
+    const n = String(i + 1);
+    out.push(`${" ".repeat(width - n.length)}${n}|  ${lines[i]}`);
+    if (i === at) out.push(`${" ".repeat(width)}|  ${" ".repeat(loc.column ?? 0)}^`);
+  }
+  return out.join("\n");
+}
+
+// Vite's onRollupLog (build.ts), shared by its bundled dev engine and the
+// build: an import nothing resolved throws, where rolldown's default warns
+// and leaves it external. A typo or an unaliased `@/x` then fails the bundle
+// with the file and position instead of shipping a bare specifier the browser
+// cannot load (a blank page). `?commonjs-external` ids stay exempt, as there.
+export function viteOnLog(level, log, defaultHandler) {
+  if (log.code === "UNRESOLVED_IMPORT" && !log.id?.endsWith("?commonjs-external")) {
+    const err = new Error(
+      `[vite]: Rolldown failed to resolve import "${log.exporter}" from "${log.id}".\n` +
+        `This is most likely unintended because it can break your application at runtime.\n` +
+        `If you do want to externalize this module explicitly add it to\n` +
+        "`build.rolldownOptions.external`",
+    );
+    // The code frame from the source (rolldown's own frame says it is
+    // "treating it as an external dependency", which this error is not), and
+    // no stack: this throw site is oj's, not the app's.
+    Object.assign(err, { id: log.id, loc: log.loc, frame: sourceFrame(log.loc) ?? stripAnsi(log.message), stack: "" });
+    throw err;
+  }
+  defaultHandler(level, log);
+}
+
+// The app's own `external` for a client bundle, which Vite's
+// resolveRolldownOptions passes to bundled dev and the build alike: an import
+// the app externalizes on purpose is never an unresolved one.
+export function clientExternal(config) {
+  const env = config?.environments?.client?.build?.rolldownOptions?.external;
+  const top = config?.build?.rolldownOptions?.external ?? config?.build?.rollupOptions?.external;
+  const external = env ?? top;
+  return external === undefined ? {} : { external };
+}
+
+// Vite's prepareError (middlewares/error.ts): the ErrorPayload `err` its
+// clients render. A rolldown build failure aggregates its causes under
+// `errors`; the first one carries the file, position and frame.
+export function buildErrorPayload(error) {
+  const e = error?.errors?.[0] ?? error;
+  return {
+    message: stripAnsi(e?.message ?? e),
+    stack: stripAnsi(e?.stack ?? ""),
+    id: e?.id,
+    frame: stripAnsi(e?.frame ?? ""),
+    plugin: e?.plugin,
+    pluginCode: e?.pluginCode?.toString(),
+    loc: e?.loc,
+  };
+}
+
 // `lifecycle: false` for a nested build (a worker bundle): the container's
 // buildStart/buildEnd/renderStart belong to the build that owns it, not to a
 // bundle it triggers mid-build (Vite's bundleWorkerEntry runs its own worker
