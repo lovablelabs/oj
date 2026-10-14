@@ -451,3 +451,61 @@ fn resolve_module_spec(config: &EngineConfig, spec: &str) -> Result<Url, EngineE
     }
     resolve_module_path(config, std::path::Path::new(spec))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A task a native thread hands the isolate (a napi threadsafe call: the
+    /// way rolldown's workers call JS plugins) must run without waiting for
+    /// some unrelated wake. The ping-pong spawns each task the moment the
+    /// previous one ran, inside the poll that ran it: deno_core's spawner
+    /// checks its queue before registering the waker, and a spawn landing
+    /// between the two is never woken for.
+    #[test]
+    fn cross_thread_tasks_never_wait_for_an_unrelated_wake() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"p"}"#).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut scheduler = Scheduler::boot(EngineConfig::new(dir.path()), None).unwrap();
+            let spawner = scheduler
+                .isolate
+                .worker
+                .js_runtime
+                .op_state()
+                .borrow()
+                .borrow::<deno_core::V8CrossThreadTaskSpawner>()
+                .clone();
+            let (_jobs_tx, mut jobs_rx) = mpsc::unbounded_channel::<Job>();
+            let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<Option<usize>>();
+            std::thread::spawn(move || {
+                let (ran_tx, ran_rx) = std::sync::mpsc::channel::<()>();
+                for i in 0..100_000 {
+                    let ran_tx = ran_tx.clone();
+                    spawner.spawn(move |_| {
+                        let _ = ran_tx.send(());
+                    });
+                    if ran_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+                        let _ = done_tx.send(Some(i));
+                        return;
+                    }
+                }
+                let _ = done_tx.send(None);
+            });
+            let lost = loop {
+                tokio::select! {
+                    done = &mut done_rx => break done.unwrap(),
+                    _ = scheduler.next_tick(&mut jobs_rx) => {}
+                }
+            };
+            assert_eq!(
+                lost, None,
+                "a cross-thread task waited 2s for a wake that never came"
+            );
+        });
+    }
+}
