@@ -270,6 +270,8 @@ jobs:
         run: node e2e/start-chunk-policy.mjs
       - name: start dev serves a raw-TypeScript dependency through the pipeline
         run: node e2e/start-node-modules-ts.mjs
+      - name: start dev ssr ignores the browser main field, the client bundle keeps it
+        run: node e2e/start-ssr-browser-field.mjs
       - name: start dev ssr renders route, module and css module edits
         run: node e2e/start-ssr-hmr.mjs
       - name: start css modules scope the same class on server, client and stylesheet

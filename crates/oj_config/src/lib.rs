@@ -33,7 +33,8 @@ pub use optimize::{
 pub use resolve::{
     node_server_conditions, node_server_external_conditions, resolve_alias, resolve_conditions,
     resolve_conditions_for, resolve_dedupe, resolve_extensions, resolve_main_fields,
-    resolve_preserve_symlinks, user_external_conditions, user_resolve_conditions,
+    resolve_preserve_symlinks, ssr_resolve_main_fields, user_external_conditions,
+    user_resolve_conditions,
 };
 pub use schema::*;
 pub use server::{

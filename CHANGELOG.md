@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Dev SSR and TanStack Start SSR no longer resolve dependencies through their `browser` main field. Vite's environments never inherit the top-level `resolve.mainFields` (its config drops `mainFields` and `conditions` from what environments inherit), so its server environment resolves with the browser-less server defaults; oj's SSR resolver took the top-level list, which a resolved config always carries filled with Vite's client defaults (`browser` first). A package like `react-simple-maps@3` (`browser` = UMD build, `module` = ESM, `main` = CJS) then served its UMD to the server runtime, whose static CJS analysis cannot see exports a factory assigns at runtime, and every route 500'd at link time with "The requested module … does not provide an export named …". The SSR resolver and the SSR production bundle now take `environments.ssr.resolve.mainFields` (or `ssr.resolve.mainFields`) when set and the server defaults otherwise; client resolution keeps the browser field, as Vite's client environment does.
+
 ## [0.2.31] - 2026-10-14
 
 ### Fixed

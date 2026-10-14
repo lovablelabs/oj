@@ -173,6 +173,20 @@ pub fn resolve_main_fields(config: &OjConfig) -> Option<Vec<String>> {
     config.resolve.as_ref().and_then(|r| r.main_fields.clone())
 }
 
+/// The ssr environment's `resolve.mainFields`. The top-level list never
+/// applies: Vite drops `mainFields` and `conditions` from the resolve options
+/// its environments inherit (getDefaultEnvironmentOptions, config.ts), so a
+/// server environment resolves with DEFAULT_SERVER_MAIN_FIELDS — no `browser` —
+/// unless `environments.ssr.resolve.mainFields` (or legacy
+/// `ssr.resolve.mainFields`) names its own list. An adopted resolved config
+/// always carries the top-level list filled with Vite's CLIENT defaults, so
+/// inheriting it here resolved server modules through `browser` entries (a
+/// UMD build's named exports are invisible to CJS analysis, and SSR died at
+/// link with "does not provide an export named").
+pub fn ssr_resolve_main_fields(config: &OjConfig) -> Option<Vec<String>> {
+    env_resolve_list(config, "ssr", "mainFields")
+}
+
 pub fn resolve_preserve_symlinks(config: &OjConfig) -> bool {
     config
         .resolve
@@ -398,6 +412,37 @@ mod tests {
         assert!(resolve_extensions(&empty).is_none());
         assert!(resolve_main_fields(&empty).is_none());
         assert!(!resolve_preserve_symlinks(&empty));
+    }
+
+    // Vite never inherits the top-level mainFields into an environment
+    // (getDefaultEnvironmentOptions drops mainFields and conditions), and a
+    // resolved config always carries the CLIENT defaults there (`browser`
+    // first). The ssr consumer must only see the ssr environment's own list.
+    #[test]
+    fn ssr_main_fields_ignore_the_top_level_list() {
+        let top_level: OjConfig = serde_json::from_str(
+            r#"{ "resolve": { "mainFields": ["browser", "module", "jsnext:main", "jsnext"] } }"#,
+        )
+        .unwrap();
+        assert_eq!(ssr_resolve_main_fields(&top_level), None);
+
+        let env: OjConfig = serde_json::from_str(
+            r#"{ "resolve": { "mainFields": ["browser"] },
+                 "environments": { "ssr": { "resolve": { "mainFields": ["module", "custom"] } } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ssr_resolve_main_fields(&env),
+            Some(vec!["module".to_string(), "custom".to_string()])
+        );
+
+        let legacy: OjConfig =
+            serde_json::from_str(r#"{ "ssr": { "resolve": { "mainFields": ["main"] } } }"#)
+                .unwrap();
+        assert_eq!(
+            ssr_resolve_main_fields(&legacy),
+            Some(vec!["main".to_string()])
+        );
     }
 
     #[test]

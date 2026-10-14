@@ -1551,8 +1551,18 @@ fn rolldown_resolve(
     let extensions = oj_config::resolve_extensions(config);
     // Vite's pkg.main fallback (entryPoint ||= data.main): rolldown walks the
     // list verbatim, so a Vite-shaped main-less list must get "main" appended
-    // here too, or an import that resolves in dev fails in the build.
-    let main_fields = oj_config::resolve_main_fields(config).map(oj_resolver::with_main_fallback);
+    // here too, or an import that resolves in dev fails in the build. The ssr
+    // bundle takes the ssr environment's own list (environments never inherit
+    // the top-level mainFields in Vite, and a resolved config carries the
+    // CLIENT defaults there) and falls to Vite's server list — no `browser`.
+    let main_fields = if env == "ssr" {
+        Some(oj_resolver::with_main_fallback(
+            oj_config::ssr_resolve_main_fields(config)
+                .unwrap_or_else(oj_resolver::default_server_main_fields),
+        ))
+    } else {
+        oj_config::resolve_main_fields(config).map(oj_resolver::with_main_fallback)
+    };
     // Conditions are always explicit: Vite resolves a build with `production`
     // (its `development|production` default), and the dev server passes the
     // same list, so a dep with a `development` export never differs between
@@ -5943,6 +5953,38 @@ mod tests {
             .unwrap()
             .main_fields
             .is_none());
+    }
+
+    // The ssr bundle never resolves through the top-level mainFields: Vite's
+    // environments don't inherit them, and a resolved config carries the
+    // CLIENT defaults there (`browser` first), which would pick UMD entries
+    // whose named exports CJS analysis cannot see.
+    #[test]
+    fn rolldown_ssr_main_fields_drop_browser() {
+        let from = |json: &str| -> oj_config::OjConfig { serde_json::from_str(json).unwrap() };
+        let root = Path::new("/some/app");
+        let adopted = from(
+            r#"{ "resolve": { "mainFields": ["browser", "module", "jsnext:main", "jsnext"] } }"#,
+        );
+        assert_eq!(
+            rolldown_resolve(root, &adopted, "ssr")
+                .unwrap()
+                .main_fields
+                .unwrap(),
+            ["module", "jsnext:main", "jsnext", "main"].map(String::from)
+        );
+        // The ssr environment's own list is the one source that applies.
+        let env = from(
+            r#"{ "resolve": { "mainFields": ["browser"] },
+                 "environments": { "ssr": { "resolve": { "mainFields": ["module", "main"] } } } }"#,
+        );
+        assert_eq!(
+            rolldown_resolve(root, &env, "ssr")
+                .unwrap()
+                .main_fields
+                .unwrap(),
+            ["module", "main"].map(String::from)
+        );
     }
 
     #[test]
