@@ -11,6 +11,7 @@ import {
   pnpmStorePaths,
   contentHashEmitter,
   makeVitePlugins,
+  appAliasPlugin,
 } from "../../crates/oj_server/src/assets/start/rolldown-assets.mjs";
 
 const tmp = (p) => mkdtempSync(join(tmpdir(), "oj-assets-" + p + "-"));
@@ -192,4 +193,61 @@ test("the Rolldown adapter forwards render initialization only to its active con
   await adapter.renderStart(output, input);
 
   assert.deepEqual(rendered, [{ environment: "active", options: [output, input] }]);
+});
+
+// Drives the alias plugin's resolveId with a resolver that echoes the rewritten
+// id, as the rest of the pipeline would resolve it.
+const aliasResolve = async (alias, source, warnings = []) => {
+  const plugin = appAliasPlugin({ resolve: { alias } });
+  if (!plugin) return null;
+  const seen = [];
+  const ctx = {
+    resolve: async (id, importer, options) => {
+      seen.push(options);
+      return id.startsWith("/missing/") || id.startsWith("missing/") ? null : { id };
+    },
+    warn: (msg) => warnings.push(msg),
+  };
+  const r = await plugin.resolveId.call(ctx, source, "/app/src/a.jsx", { kind: "import-statement" });
+  if (r) assert.ok(seen.every((o) => o.skipSelf === true && o.kind === "import-statement"));
+  return r?.id ?? null;
+};
+
+test("the app alias matches like @rollup/plugin-alias: the key itself or the key plus a slash", async () => {
+  const alias = { "@": "/app/src" };
+  assert.equal(await aliasResolve(alias, "@/lib/x"), "/app/src/lib/x");
+  assert.equal(await aliasResolve(alias, "@"), "/app/src");
+  // A scoped package shares the `@` prefix but never the `@/` one.
+  assert.equal(await aliasResolve(alias, "@tanstack/react-router"), null);
+  assert.equal(await aliasResolve(alias, "./@/x"), null);
+});
+
+test("the app alias takes Vite's entry forms: arrays in order, RegExp finds, trailing slashes", async () => {
+  // First matching entry wins, in array order.
+  const ordered = [
+    { find: "@/lib", replacement: "/app/lib" },
+    { find: "@", replacement: "/app/src" },
+  ];
+  assert.equal(await aliasResolve(ordered, "@/lib/x"), "/app/lib/x");
+  assert.equal(await aliasResolve(ordered, "@/ui/x"), "/app/src/ui/x");
+  assert.equal(await aliasResolve([{ find: /^~(.*)$/, replacement: "/app/src/$1" }], "~ui/b"), "/app/src/ui/b");
+  // Vite's normalizeSingleAlias drops the trailing slash from both sides.
+  assert.equal(await aliasResolve({ "src/": "/app/src/" }, "src/x"), "/app/src/x");
+  // Entries without a string replacement (a customResolver-only shape) are not aliases here.
+  assert.equal(appAliasPlugin({ resolve: { alias: [{ find: "x", replacement: null }] } }), null);
+  assert.equal(appAliasPlugin({}), null);
+  assert.equal(appAliasPlugin(undefined), null);
+});
+
+test("an alias whose target does not resolve keeps the rewritten id, as Vite's alias plugins do", async () => {
+  // The rewritten id stands so the import fails to load, instead of the bare
+  // `@/x` falling through to be externalized and shipped to the browser.
+  const absolute = [];
+  assert.equal(await aliasResolve({ "@": "/missing" }, "@/x", absolute), "/missing/x");
+  assert.deepEqual(absolute, []);
+  // A relative rewrite nothing handled gets plugin-alias's duplicate-module warning.
+  const relative = [];
+  assert.equal(await aliasResolve({ "@": "missing" }, "@/x", relative), "missing/x");
+  assert.equal(relative.length, 1);
+  assert.match(relative[0], /rewrote @\/x to missing\/x but was not an absolute path/);
 });

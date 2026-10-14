@@ -12,6 +12,7 @@ import {
   phase,
 } from "./resolve-pkg.mjs";
 import {
+  appAliasPlugin,
   assetsPlugin,
   clientChunkPolicy,
   devSafeChunkPolicy,
@@ -226,6 +227,7 @@ async function main() {
     },
     plugins: [
       closureRecorder,
+      appAliasPlugin(container?.config),
       makeVitePlugins({ container, appRoot: APP, mode: "dev" }),
       assetsPlugin({ mode: "dev", cssUrls, root: APP }),
       serverFnClient,

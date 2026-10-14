@@ -12,6 +12,7 @@ import {
   ssrExternalRule,
 } from "./resolve-pkg.mjs";
 import {
+  appAliasPlugin,
   assetsPlugin,
   clientChunkPolicy,
   makeVitePlugins,
@@ -306,6 +307,7 @@ async function main() {
       // the Start aliases included. Module workers are always ES here, as in
       // oj's dev serving; a `worker.format: "iife"` config has no oj analog.
       plugins: [
+        appAliasPlugin(clientContainer?.config),
         makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit, lifecycle: false }),
         assetsPlugin({ mode: "prod", server: false, emit }),
         nodeBuiltinShims({ production: true }),
@@ -327,6 +329,7 @@ async function main() {
     },
     resolve: { conditionNames: CLIENT_CONDITIONS, alias: clientAlias },
     plugins: [
+      appAliasPlugin(clientContainer?.config),
       makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit }),
       {
         name: "oj-client-render-chunk",
@@ -408,6 +411,7 @@ async function main() {
     "@tanstack/react-start/server-entry": OJ_SERVER_ENTRY,
   };
   const serverPlugins = () => [
+    appAliasPlugin((serverContainer ?? clientContainer)?.config),
     makeVitePlugins({ container: serverContainer, fallback: clientContainer, appRoot: APP, mode: "prod", emit }),
     {
       name: "oj-server-render-chunk",

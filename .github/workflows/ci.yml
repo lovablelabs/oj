@@ -37,6 +37,9 @@ jobs:
       # it so they run instead of skipping.
       - name: install start-app fixture (bundlers for optimizer + config tests)
         run: npm ci --prefix e2e/fixtures/start-app
+      # The workspace run above precedes the fixture install, where these skip.
+      - name: engine + real rolldown integration tests (optimizer, start app alias)
+        run: cargo test --release -p oj_server --test optimize_prebundle --test start_app_alias
       - name: js unit tests (adapter helpers)
         run: node --test e2e/unit/*.test.mjs
       - name: fuzz targets still build
@@ -272,6 +275,8 @@ jobs:
         run: node e2e/start-node-modules-ts.mjs
       - name: start dev ssr ignores the browser main field, the client bundle keeps it
         run: node e2e/start-ssr-browser-field.mjs
+      - name: start dev and build client bundles apply the app's resolve.alias to every importer
+        run: node e2e/start-app-alias.mjs
       - name: start dev ssr renders route, module and css module edits
         run: node e2e/start-ssr-hmr.mjs
       - name: start css modules scope the same class on server, client and stylesheet

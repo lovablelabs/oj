@@ -268,6 +268,62 @@ const matchesAny = (res, id) =>
     return hit;
   });
 
+// Vite's normalizeAlias (utils.ts): an object or array `resolve.alias` as an
+// ordered entry list, a trailing `/` dropped from both sides when both carry it.
+function normalizeAlias(alias) {
+  const entries = Array.isArray(alias)
+    ? alias
+    : Object.entries(alias ?? {}).map(([find, replacement]) => ({ find, replacement }));
+  return entries
+    .filter((e) => e && typeof e.replacement === "string" && (typeof e.find === "string" || e.find instanceof RegExp))
+    .map(({ find, replacement }) =>
+      typeof find === "string" && find.endsWith("/") && replacement.endsWith("/")
+        ? { find: find.slice(0, -1), replacement: replacement.slice(0, -1) }
+        : { find, replacement },
+    );
+}
+
+// @rollup/plugin-alias's matcher: a string matches itself or itself plus `/…`.
+function aliasMatches(find, id) {
+  if (find instanceof RegExp) {
+    find.lastIndex = 0;
+    return find.test(id);
+  }
+  return id === find || id.startsWith(`${find}/`);
+}
+
+// The app's `resolve.alias`, as Vite applies it (plugins/index.ts): the
+// alias plugin runs ahead of every app plugin and the core resolver, the
+// first matching entry rewrites the specifier, and the rewritten id resolves
+// through the rest of the pipeline. Without it an `@/x` import resolves only
+// where a tsconfig-paths plugin happens to cover the importer. A rewritten id
+// nothing resolves stays the answer, as in rolldown's viteAliasPlugin and
+// Vite's viteAliasCustomResolver: the import then fails to load, loudly,
+// instead of reaching later resolvers as the original bare `@/x` and
+// shipping to the browser unresolved.
+export function appAliasPlugin(config) {
+  const entries = normalizeAlias(config?.resolve?.alias);
+  if (!entries.length) return null;
+  return {
+    name: "oj-app-alias",
+    async resolveId(source, importer, options) {
+      const entry = entries.find((e) => aliasMatches(e.find, source));
+      if (!entry) return null;
+      const updated = source.replace(entry.find, entry.replacement);
+      const resolved = await this.resolve(updated, importer, { ...options, skipSelf: true });
+      if (resolved) return resolved;
+      if (!isAbsolute(updated)) {
+        this.warn(
+          `rewrote ${source} to ${updated} but was not an absolute path and was not handled by other plugins. ` +
+            `This will lead to duplicated modules for the same path. ` +
+            `To avoid duplicating modules, you should resolve to an absolute path.`,
+        );
+      }
+      return { id: updated };
+    },
+  };
+}
+
 // `lifecycle: false` for a nested build (a worker bundle): the container's
 // buildStart/buildEnd/renderStart belong to the build that owns it, not to a
 // bundle it triggers mid-build (Vite's bundleWorkerEntry runs its own worker
