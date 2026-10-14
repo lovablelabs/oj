@@ -100,7 +100,8 @@ async function main() {
     return pathResolve(root, "src/router.tsx");
   }
 
-  // The client bundle's `#tanstack-start-entry` probe; null = the framework's default entry.
+  // start-plugin-core's resolveStartEntryPlan (the same ladder as oj's
+  // `#tanstack-start-entry` alias): null = the framework's default entry.
   function startEntry() {
     try {
       const declared = JSON.parse(readFileSync(pathJoin(root, "package.json"), "utf8")).imports?.[
@@ -119,7 +120,9 @@ async function main() {
   }
 
   function importPath(abs) {
-    const rel = pathRelative(dirname(pathResolve(root, GENERATED_ROUTE_TREE)), abs).split(sep).join("/");
+    const rel = pathRelative(dirname(pathResolve(root, GENERATED_ROUTE_TREE)), abs)
+      .split(sep)
+      .join("/");
     return rel.startsWith(".") ? rel : "./" + rel;
   }
 

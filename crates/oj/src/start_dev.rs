@@ -120,9 +120,8 @@ fn is_declaration_file(name: &str) -> bool {
 }
 
 /// Paths whose change can flip which file `app_start_entry` resolves to: the
-/// `src/start.*` ladder (file, extensionless file or directory index) and any
-/// `package.json`, whose `imports` may map the entry. Name-shaped matching
-/// over-approximates (a nested src dir, a dependency's package.json); the
+/// `src/start.*` ladder and any `package.json`, whose `imports` may map the
+/// entry. Name-shaped matching over-approximates (a nested src dir, a dependency's package.json); the
 /// re-probe a hit triggers is a handful of stats, and the server restarts
 /// only when the resolved entry actually changed.
 fn start_entry_candidate(p: &Path) -> bool {
@@ -137,10 +136,7 @@ fn start_entry_candidate(p: &Path) -> bool {
             .and_then(|d| d.file_name())
             .is_some_and(|n| n == dir)
     };
-    (under(p, "src") && (name == "start" || name.starts_with("start.")))
-        || (under(p, "start")
-            && name.starts_with("index.")
-            && p.parent().is_some_and(|d| under(d, "src")))
+    under(p, "src") && name.starts_with("start.")
 }
 
 // Vite's watcher distinguishes add/change/unlink; notify's batched events are
@@ -1610,12 +1606,14 @@ fn codegen_store(
     marker: Option<&str>,
 ) -> oj_cache::start_codegen::StartCodegenStore {
     let mut extra = std::fs::read(cache.join(script)).unwrap_or_default();
-    // The route tree's footer names the start entry, so which file (if any) the
-    // probe finds keys the output; its content does not.
-    if let Some(entry) = crate::start_host::app_start_entry(root) {
-        extra.extend_from_slice(entry.to_string_lossy().as_bytes());
+    // The route tree's footer names the start entry, so which file (if any)
+    // resolves keys the output; its content does not.
+    if kind == "route-tree" {
+        if let Some(entry) = crate::start_host::app_start_entry(root) {
+            extra.extend_from_slice(entry.to_string_lossy().as_bytes());
+        }
+        extra.push(0);
     }
-    extra.push(0);
     for name in [
         "tsr.config.json",
         "package.json",
@@ -2655,17 +2653,18 @@ mod tests {
     use tokio_tungstenite::{connect_async, tungstenite::Message as ClientMessage};
 
     // The watcher re-probes the start entry only for paths that can flip it:
-    // the src/start ladder (file, extensionless, directory index) and any
-    // package.json (its `imports` may map the entry). Ordinary sources never
-    // trigger the probe, so an edit to an existing src/start.ts stays an
+    // the src/start.* ladder and any package.json (its `imports` may map the
+    // entry). Ordinary sources never trigger the probe, so an edit to an existing src/start.ts stays an
     // ordinary rebundle (the probe's answer is unchanged either way).
     #[test]
     fn start_entry_candidates_are_the_probe_shapes() {
         let hit = |p: &str| start_entry_candidate(&PathBuf::from(p));
         assert!(hit("/app/src/start.ts"));
         assert!(hit("/app/src/start.jsx"));
-        assert!(hit("/app/src/start"));
-        assert!(hit("/app/src/start/index.ts"));
+        assert!(
+            !hit("/app/src/start/index.ts"),
+            "a directory index is not an entry"
+        );
         assert!(hit("/app/package.json"));
         assert!(hit("/app/packages/dep/package.json"));
         assert!(!hit("/app/src/starter.ts"));
@@ -2676,6 +2675,52 @@ mod tests {
         );
         assert!(!hit("/app/src/main.tsx"));
         assert!(!hit("/app/other/start.ts"));
+    }
+
+    // The route tree's footer names the start entry, so a tree cached without
+    // one must not restore once src/start.ts exists (and the reverse). Edits to
+    // the entry's content keep the key. The server-fn resolver never reads it.
+    #[test]
+    fn route_tree_cache_keys_on_the_start_entry() {
+        let root = std::env::temp_dir().join(format!("oj-treekey-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/routes")).unwrap();
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(root.join("src/routes/index.tsx"), "export const Route = 1;").unwrap();
+        let tree = root.join("src/routeTree.gen.ts");
+        std::fs::write(&tree, "// tree").unwrap();
+        let inputs = vec![root.join("src/routes/index.tsx")];
+        let outputs = [("routeTree.gen.ts", tree.as_path())];
+        let store = |kind: &str| codegen_store(&root, &cache, kind, "generate.mjs", None);
+
+        store("route-tree").persist(&inputs, &outputs).unwrap();
+        store("server-fn").persist(&inputs, &outputs).unwrap();
+        assert!(store("route-tree").restore(&inputs, &outputs).is_ok());
+
+        std::fs::write(root.join("src/start.ts"), "export const startInstance = 1;").unwrap();
+        assert!(
+            store("route-tree").restore(&inputs, &outputs).is_err(),
+            "a created start entry re-keys the route tree"
+        );
+        assert!(
+            store("server-fn").restore(&inputs, &outputs).is_ok(),
+            "the server-fn resolver does not key on the start entry"
+        );
+
+        store("route-tree").persist(&inputs, &outputs).unwrap();
+        std::fs::write(root.join("src/start.ts"), "export const startInstance = 2;").unwrap();
+        assert!(
+            store("route-tree").restore(&inputs, &outputs).is_ok(),
+            "an edit to the entry keeps the key"
+        );
+
+        std::fs::remove_file(root.join("src/start.ts")).unwrap();
+        assert!(
+            store("route-tree").restore(&inputs, &outputs).is_ok(),
+            "removing it restores the entry-less tree"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     struct HmrTestServer {

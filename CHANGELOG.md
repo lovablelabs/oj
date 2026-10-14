@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - TanStack Start's generated route tree names the start entry like the framework's. For an app with `src/start.*`, oj wrote the `import type { createStart }` footer while the framework's generator (which oj's plugin host also runs) writes `import type { startInstance }` and a `config:` line, so the two rewrote each other and a committed `routeTree.gen.ts` kept going dirty under `oj dev`. The route-tree cache key now includes which start entry exists, so adding or removing it regenerates the tree.
+- TanStack Start's `#tanstack-start-entry` resolves `src/start.*` with the framework's own lookup (`.ts`, `.js`, `.mts`, `.mjs`, `.tsx`, `.jsx`, no `src/start/index.*`), so the served entry, the dev restart on its creation or deletion, and the route tree's footer always agree on which file it is.
 
 ## [0.2.33] - 2026-10-15
 

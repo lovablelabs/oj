@@ -678,12 +678,18 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
 /// call. The app's package.json `imports` still wins over both in
 /// `resolve_inner`.
 fn start_entry_target(root: &Path, cache: &Path) -> PathBuf {
-    let base = root.join("src/start");
-    if probe(&base).is_some() {
-        base
-    } else {
-        cache.join("start-entry.ts")
-    }
+    start_file(root).unwrap_or_else(|| cache.join("start-entry.ts"))
+}
+
+/// Upstream's `src/start` lookup (start-plugin-core's resolveStartEntryPlan):
+/// exsolve with these extensions in this order, no directory index.
+const START_ENTRY_EXTS: [&str; 6] = [".ts", ".js", ".mts", ".mjs", ".tsx", ".jsx"];
+
+fn start_file(root: &Path) -> Option<PathBuf> {
+    START_ENTRY_EXTS
+        .iter()
+        .map(|ext| root.join(format!("src/start{ext}")))
+        .find(|p| p.is_file())
 }
 
 /// The app's own start entry when one exists: the `package.json`
@@ -708,7 +714,7 @@ pub(crate) fn app_start_entry(root: &Path) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    probe(&root.join("src/start"))
+    start_file(root)
 }
 
 fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
@@ -2114,13 +2120,32 @@ mod tests {
             "export const startInstance = 1;\n",
         )
         .unwrap();
-        let app = start_entry_target(&root, &cache);
         assert_eq!(
-            app,
-            root.join("src/start"),
-            "an existing src/start.* wins, extension resolved by probe()"
+            start_entry_target(&root, &cache),
+            root.join("src/start.ts"),
+            "an existing src/start.* wins"
         );
-        assert_eq!(probe(&app).unwrap(), root.join("src/start.ts"));
+    }
+
+    // Upstream's ladder, not probe(): .js outranks .tsx, and a src/start/
+    // directory index is not a start entry (upstream serves its default).
+    #[test]
+    fn start_file_follows_the_framework_ladder() {
+        let root = std::env::temp_dir().join(format!("oj-startladder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/start")).unwrap();
+        std::fs::write(root.join("src/start/index.ts"), "").unwrap();
+        assert_eq!(start_file(&root), None, "a directory index is not an entry");
+
+        std::fs::write(root.join("src/start.tsx"), "").unwrap();
+        assert_eq!(start_file(&root), Some(root.join("src/start.tsx")));
+        std::fs::write(root.join("src/start.js"), "").unwrap();
+        assert_eq!(
+            start_file(&root),
+            Some(root.join("src/start.js")),
+            ".js outranks .tsx"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // app_start_entry is the presence probe the dev watcher restarts on: it
