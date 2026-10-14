@@ -8,8 +8,9 @@ use lightningcss::css_modules;
 use lightningcss::dependencies::DependencyOptions;
 use lightningcss::error::{Error as CssError, ParserError};
 use lightningcss::printer::PrinterOptions;
-use lightningcss::stylesheet::{MinifyOptions, ParserOptions, StyleSheet};
+use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleSheet};
 
+use crate::lightning::LightningOptions;
 use crate::modules::{is_css_module, module_exports, module_is_scoped, scoped_name_pattern};
 use crate::rebase::{css_base_dir, dev_url_of, rewrite_dependencies};
 use crate::resolve::CssResolve;
@@ -95,15 +96,17 @@ pub fn compile_css_dev(
 /// Parse with error recovery: like Vite's postcss pipeline, a legacy hack
 /// (`*zoom: 1`, IE `filter: progid:...`) or a stray invalid rule is dropped
 /// with a warning instead of failing the file.
-pub(crate) fn parse_stylesheet<'i>(
+fn parse_stylesheet<'i>(
     source: &'i str,
     filename: &str,
     css_modules: Option<css_modules::Config>,
+    flags: ParserFlags,
 ) -> Result<StyleSheet<'i>, String> {
     let warnings = Arc::new(RwLock::new(Vec::new()));
     let options = ParserOptions {
         filename: filename.to_string(),
         css_modules,
+        flags,
         error_recovery: true,
         warnings: Some(Arc::clone(&warnings)),
         ..ParserOptions::default()
@@ -140,13 +143,18 @@ pub(crate) fn compile_css_depth(
         pattern: scoped_name_pattern(resolve.modules),
         ..css_modules::Config::default()
     });
-    let mut stylesheet = parse_stylesheet(source, url, modules)?;
+    // `css.lightningcss` belongs to the build minify (Vite's minifyCSS), the
+    // only lightningcss pass Vite runs under its default transformer.
+    let lightning = mode.minify.then_some(resolve.lightning);
+    let flags = lightning.map_or(ParserFlags::empty(), |l| l.parser_flags());
+    let mut stylesheet = parse_stylesheet(source, url, modules, flags)?;
 
     let targets = browser_targets(resolve.targets);
+    let targets = lightning.map_or(targets, |l| l.targets(targets));
     stylesheet
         .minify(MinifyOptions {
             targets,
-            ..MinifyOptions::default()
+            unused_symbols: lightning.map(|l| l.unused_symbols()).unwrap_or_default(),
         })
         .map_err(|err| format!("css transform error in {url}: {err}"))?;
 
@@ -160,6 +168,7 @@ pub(crate) fn compile_css_depth(
         .to_css(PrinterOptions {
             minify: mode.minify,
             targets,
+            pseudo_classes: lightning.and_then(|l| l.pseudo_classes()),
             analyze_dependencies: base.as_ref().map(|_| DependencyOptions::default()),
             source_map: mode.source_map.then_some(&mut sm),
             ..PrinterOptions::default()
@@ -192,11 +201,113 @@ pub(crate) fn compile_css_depth(
     Ok(CssOutput { css, exports })
 }
 
+/// Vite's build `minifyCSS` (lightningcss, the default `build.cssMinify`):
+/// a finished sheet minified for `build.cssTarget` under `css.lightningcss`,
+/// nothing else rewritten.
+pub fn minify_css(
+    filename: &str,
+    source: &str,
+    targets: &[String],
+    lightning: &LightningOptions,
+) -> Result<String, String> {
+    let mut stylesheet = parse_stylesheet(source, filename, None, lightning.parser_flags())?;
+    let targets = lightning.targets(browser_targets(targets));
+    stylesheet
+        .minify(MinifyOptions {
+            targets,
+            unused_symbols: lightning.unused_symbols(),
+        })
+        .map_err(|err| format!("css minify error in {filename}: {err}"))?;
+    let result = stylesheet
+        .to_css(PrinterOptions {
+            minify: true,
+            targets,
+            pseudo_classes: lightning.pseudo_classes(),
+            ..PrinterOptions::default()
+        })
+        .map_err(|err| format!("css print error in {filename}: {err}"))?;
+    Ok(result.code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::*;
     use std::path::Path;
+
+    #[test]
+    fn minify_css_minifies_for_the_css_target() {
+        let src = ".a {\n  .b { color: #ff0000 }\n}\n";
+        let none = LightningOptions::default();
+        assert_eq!(
+            minify_css("x.css", src, &[], &none).unwrap(),
+            ".a .b{color:red}"
+        );
+        let modern = ["chrome120".to_string()];
+        assert_eq!(
+            minify_css("x.css", src, &modern, &none).unwrap(),
+            ".a{& .b{color:red}}"
+        );
+    }
+
+    /// Vite's minifyCSS spreads `css.lightningcss` into the transform.
+    #[test]
+    fn minify_css_applies_css_lightningcss() {
+        let modern = ["chrome120".to_string()];
+        let opts = |json: &str| LightningOptions::from_json(&serde_json::from_str(json).unwrap());
+        let src =
+            ".a {\n  .b { color: red }\n}\n.gone { color: blue }\n.c:hover { color: green }\n";
+        // include: Features.Nesting (1) compiles nesting even for chrome120;
+        // unusedSymbols drops `.gone`; pseudoClasses rewrites :hover.
+        let o =
+            opts(r#"{"include":1,"unusedSymbols":["gone"],"pseudoClasses":{"hover":"is-hover"}}"#);
+        assert_eq!(
+            minify_css("x.css", src, &modern, &o).unwrap(),
+            ".a .b{color:red}.c.is-hover{color:green}"
+        );
+        // exclude: Features.Nesting keeps nesting on the baseline targets.
+        let nested = ".a {\n  .b { color: red }\n}\n";
+        assert_eq!(
+            minify_css("x.css", nested, &[], &opts(r#"{"exclude":1}"#)).unwrap(),
+            ".a{& .b{color:red}}"
+        );
+        // drafts.customMedia parses (and resolves) @custom-media.
+        let media =
+            "@custom-media --narrow (max-width: 30em);\n@media (--narrow) { .a { color: red } }\n";
+        let out = minify_css(
+            "x.css",
+            media,
+            &modern,
+            &opts(r#"{"drafts":{"customMedia":true}}"#),
+        )
+        .unwrap();
+        assert_eq!(out, "@media (width<=30em){.a{color:red}}");
+        let plain = minify_css("x.css", media, &modern, &LightningOptions::default()).unwrap();
+        assert!(plain.contains("--narrow"), "{plain}");
+    }
+
+    /// The build compile's minify pass takes `css.lightningcss` too; an
+    /// unminified compile never does.
+    #[test]
+    fn build_compile_applies_css_lightningcss_only_when_minifying() {
+        let lightning =
+            LightningOptions::from_json(&serde_json::json!({ "unusedSymbols": ["gone"] }));
+        let src = ".kept { color: red }\n.gone { color: blue }\n";
+        let mut cfg = CssResolveConfig {
+            minify: true,
+            lightning,
+            ..Default::default()
+        };
+        assert_eq!(
+            compile_css_with("/x.css", src, &cfg.as_ref()).unwrap().css,
+            ".kept{color:red}"
+        );
+        cfg.minify = false;
+        assert!(compile_css_with("/x.css", src, &cfg.as_ref())
+            .unwrap()
+            .css
+            .contains(".gone"));
+    }
 
     #[test]
     fn plain_css_passes_through_and_minifies() {

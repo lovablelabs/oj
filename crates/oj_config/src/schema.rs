@@ -101,6 +101,9 @@ pub struct CssConfig {
     pub dev_sourcemap: Option<bool>,
     /// Vite's `css.modules` (postcss-modules options); see `css_modules`.
     pub modules: Option<CssModulesConfig>,
+    /// Vite's `css.lightningcss`, as JSON (its build minify spreads it into
+    /// lightningcss; see oj_css's `LightningOptions`).
+    pub lightningcss: Option<serde_json::Value>,
 }
 
 /// Vite's `css.modules` as it crosses the config boundary: functions arrive

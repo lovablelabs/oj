@@ -556,6 +556,16 @@ pub(crate) async fn style_file(
     compile_style_file(&inputs, path, source, engine).await
 }
 
+/// Vite's `css.lightningcss` as the build minify applies it.
+pub fn css_lightning_options(config: &oj_config::OjConfig) -> oj_css::LightningOptions {
+    config
+        .css
+        .as_ref()
+        .and_then(|c| c.lightningcss.as_ref())
+        .map(oj_css::LightningOptions::from_json)
+        .unwrap_or_default()
+}
+
 /// Vite's `css.modules` options as the CSS compiler applies them (dev and build).
 pub fn css_modules_options(config: &oj_config::OjConfig) -> oj_css::CssModulesOptions {
     let m = oj_config::css_modules(config);

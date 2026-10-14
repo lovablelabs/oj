@@ -1520,6 +1520,7 @@ impl DevServer {
             targets: oj_config::build_css_targets(&config),
             minify: false,
             modules: css_modules_options(&config),
+            lightning: css_lightning_options(&config),
         };
         let state = Arc::new(ServerState {
             persistent_cache,

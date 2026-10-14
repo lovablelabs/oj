@@ -183,7 +183,7 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
           // A build gives a CSS module's class map even inlined (css.ts:
           // modulesCode wins over `inlined` there, not in dev).
           if (CSS_MODULE_RE.test(v.path)) return js(compiled.code);
-          const css = await emit.inlineCss(v.path, compiled.css);
+          const css = await emit.inlineCss(v.path, compiled.css, server);
           return js(`export default ${JSON.stringify(css)};`);
         }
         if (v.tag === "inline") return js(`export default ${JSON.stringify(dataUri(v.path))};`);
@@ -566,7 +566,15 @@ export function workspaceRoot(app) {
   return best;
 }
 
-export function contentHashEmitter(clientDir, compileCss, base = "/") {
+// Vite's build minifyCSS (lightningcss), on oj's CSS pipeline: a finished
+// sheet minified for build.cssTarget.
+const minifyCss = async (file, css, targets) =>
+  (await import(STYLE_SCHEME + "///?" + new URLSearchParams({ file, minify: css, targets: JSON.stringify(targets) })))
+    .css;
+
+// `cssMinify`: Vite's build.cssMinify per environment ({ client, ssr }) and
+// build.cssTarget ({ targets }); unset minifies nothing.
+export function contentHashEmitter(clientDir, compileCss, base = "/", cssMinify = null) {
   const assetsDir = join(clientDir, "assets");
   const seen = new Set();
   const emitting = new Set();
@@ -599,7 +607,11 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
       if (compileCss && needsCssCompile(css)) css = await compileCss(absPath, css);
       // A compiled .scss/.less sheet ships as .css.
       const sheet = absPath.replace(/\.[^./\\]+$/, ".css");
-      const url = write(sheet, Buffer.from(await rewriteCss(css, dirname(absPath)), "utf8"));
+      css = await rewriteCss(css, dirname(absPath));
+      // Vite's finalizeCss: an emitted sheet is minified under the client's
+      // cssMinify, ending in a newline (minifyCSS, not inlined).
+      if (cssMinify?.client) css = (await minifyCss(absPath, css, cssMinify.targets)) + "\n";
+      const url = write(sheet, Buffer.from(css, "utf8"));
       if (!cssUrls.includes(url)) cssUrls.push(url);
       return url;
     } finally {
@@ -608,10 +620,13 @@ export function contentHashEmitter(clientDir, compileCss, base = "/") {
   }
   emit.css = emitCss;
   // A `?inline` sheet's text: compiled and its urls emitted, as emitCss does,
-  // but returned instead of written.
-  emit.inlineCss = async (absPath, css) => {
+  // but returned instead of written, and minified under the importing
+  // environment's cssMinify with no trailing newline (css.ts minifyCSS).
+  emit.inlineCss = async (absPath, css, server = false) => {
     if (compileCss && needsCssCompile(css)) css = await compileCss(absPath, css);
-    return rewriteCss(css, dirname(absPath));
+    css = await rewriteCss(css, dirname(absPath));
+    if (cssMinify?.[server ? "ssr" : "client"]) css = await minifyCss(absPath, css, cssMinify.targets);
+    return css;
   };
 
   async function rewriteCss(css, dir) {

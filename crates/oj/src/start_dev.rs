@@ -1571,6 +1571,17 @@ pub async fn start_build(
             "OJ_MINIFY".to_string(),
             if minify { "true" } else { "false" }.to_string(),
         ),
+        // Vite's build.cssMinify per environment (server on unless set,
+        // client following build.minify) and build.cssTarget.
+        (
+            "OJ_START_CSS_MINIFY".to_string(),
+            serde_json::json!({
+                "client": oj_config::build_css_minify(&config, false),
+                "ssr": oj_config::build_css_minify(&config, true),
+                "targets": oj_config::build_css_targets(&config),
+            })
+            .to_string(),
+        ),
     ];
     env.extend(start_script_env(
         &root,

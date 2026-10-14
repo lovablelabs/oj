@@ -272,6 +272,10 @@ jobs:
         run: node e2e/start-node-modules-ts.mjs
       - name: start css modules scope the same class on server, client and stylesheet
         run: node e2e/start-css-modules.mjs
+      - name: start css options (preprocessorOptions, cssMinify, css.lightningcss) reach dev and build
+        run: node e2e/start-css-options.mjs
+      - name: dev ssr compiles sass with css.preprocessorOptions like the client
+        run: node e2e/ssr-css-preprocessor-options.mjs
 
   # i need to fix this or automate
   build:

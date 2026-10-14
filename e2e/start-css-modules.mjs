@@ -159,6 +159,7 @@ function checkInline(where, html, js, imageUrl) {
     js.some((c) => literals.some((l) => c.includes(l))),
     `${where}: client bundle does not carry the rendered inline sheet:\n${css}`,
   );
+  return css;
 }
 
 let srv;
@@ -227,7 +228,14 @@ try {
       `built /about returned ${res.status}:\n${page.slice(0, 800)}\n---\n${builtLog.slice(-1200)}`,
     );
     const buildClasses = checkStyles("build", page, builtJs, builtCss);
-    checkInline("build", page, builtJs, (u) => /^\/assets\/hero-[0-9a-f]+\.png$/.test(u));
+    const inlined = checkInline("build", page, builtJs, (u) => /^\/assets\/hero-[0-9a-f]+\.png$/.test(u));
+    // Vite's build.cssMinify (on by default for both environments): emitted
+    // sheets and inlined text are minified.
+    must(!/\s{2}|\n/.test(inlined), `build: inline sheet not minified: ${JSON.stringify(inlined)}`);
+    must(
+      builtCss.length && builtCss.every((css) => !/\{\n\s/.test(css) && css.endsWith("}\n")),
+      "build: an emitted stylesheet is not minified (one line, ending in a newline)",
+    );
     for (const mark of Object.keys(MODULES)) {
       must(
         buildClasses[mark] === devClasses[mark],

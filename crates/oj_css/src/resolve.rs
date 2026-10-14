@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::lightning::LightningOptions;
 use crate::path::normalize;
 
 /// How specifiers inside a stylesheet resolve beyond plain relative paths, as
@@ -17,7 +18,18 @@ pub struct CssResolve<'a> {
     /// `build.cssMinify` (dev never minifies).
     pub minify: bool,
     pub modules: &'a CssModulesOptions,
+    /// `css.lightningcss`, applied by a minifying (build) compile.
+    pub lightning: &'a LightningOptions,
 }
+
+static DEFAULT_LIGHTNING: LightningOptions = LightningOptions {
+    include: 0,
+    exclude: 0,
+    custom_media: false,
+    deep_selector_combinator: false,
+    pseudo_classes: [None, None, None, None, None],
+    unused_symbols: Vec::new(),
+};
 
 static DEFAULT_MODULES: CssModulesOptions = CssModulesOptions {
     locals_convention: None,
@@ -35,6 +47,7 @@ impl Default for CssResolve<'_> {
             targets: &[],
             minify: false,
             modules: &DEFAULT_MODULES,
+            lightning: &DEFAULT_LIGHTNING,
         }
     }
 }
@@ -61,6 +74,7 @@ pub struct CssResolveConfig {
     pub targets: Vec<String>,
     pub minify: bool,
     pub modules: CssModulesOptions,
+    pub lightning: LightningOptions,
 }
 
 impl CssResolveConfig {
@@ -75,6 +89,7 @@ impl CssResolveConfig {
             targets: &self.targets,
             minify: self.minify,
             modules: &self.modules,
+            lightning: &self.lightning,
         }
     }
 }
@@ -88,6 +103,7 @@ impl From<CssResolve<'_>> for CssResolveConfig {
             targets: r.targets.to_vec(),
             minify: r.minify,
             modules: r.modules.clone(),
+            lightning: r.lightning.clone(),
         }
     }
 }

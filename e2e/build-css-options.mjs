@@ -3,8 +3,9 @@
 
 // build.cssMinify and build.cssTarget (Vite build.ts): cssMinify defaults to
 // build.minify and can be set on its own; cssTarget defaults to build.target
-// and decides what lightningcss lowers (CSS nesting here). Run with a built
-// target/debug/oj.
+// and decides what lightningcss lowers (CSS nesting here). css.lightningcss
+// is spread into the build minify (css.ts minifyCSS), the only lightningcss
+// pass under Vite's default transformer. Run with a built target/debug/oj.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,7 +16,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 
-function buildCss(config) {
+const NESTED = `.a {\n  color: red;\n  .b { color: blue }\n}\n`;
+
+function buildCss(config, source = NESTED) {
   const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-css-options-"));
   try {
     fs.mkdirSync(path.join(app, "src"));
@@ -26,7 +29,7 @@ function buildCss(config) {
       `<!doctype html><html><head></head><body><script type="module" src="/src/main.js"></script></body></html>`,
     );
     fs.writeFileSync(path.join(app, "src", "main.js"), `import "./app.css";\n`);
-    fs.writeFileSync(path.join(app, "src", "app.css"), `.a {\n  color: red;\n  .b { color: blue }\n}\n`);
+    fs.writeFileSync(path.join(app, "src", "app.css"), source);
     const r = spawnSync(oj, ["build", app], { cwd: repo, encoding: "utf8" });
     if (r.status !== 0) throw new Error(`build failed:\n${r.stdout}\n${r.stderr}`);
     const assets = path.join(app, "dist", "assets");
@@ -86,6 +89,21 @@ check(
 
 const viaTarget = buildCss(`export default { build: { target: ["chrome120", "safari17.2", "firefox117"] } };\n`);
 check("cssTarget defaults to build.target", !/\.a \.b/.test(viaTarget), JSON.stringify(viaTarget));
+
+const LIGHTNING_SRC = `.kept { color: red }\n.gone { color: blue }\n.c:hover { color: green }\n`;
+const LIGHTNING = `css: { lightningcss: { unusedSymbols: ["gone"], pseudoClasses: { hover: "is-hover" } } }`;
+const lightning = buildCss(`export default { ${LIGHTNING} };\n`, LIGHTNING_SRC);
+check(
+  "css.lightningcss applies to the build minify",
+  /\.kept{/.test(lightning) && !/\.gone/.test(lightning) && /\.c\.is-hover{/.test(lightning),
+  JSON.stringify(lightning),
+);
+const lightningUnminified = buildCss(`export default { build: { minify: false }, ${LIGHTNING} };\n`, LIGHTNING_SRC);
+check(
+  "css.lightningcss stays out of an unminified build",
+  /\.gone/.test(lightningUnminified) && /:hover/.test(lightningUnminified),
+  JSON.stringify(lightningUnminified),
+);
 
 if (failed) process.exit(1);
 console.log("BUILD-CSS-OPTIONS E2E PASSED");

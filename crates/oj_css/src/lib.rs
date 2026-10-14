@@ -7,6 +7,7 @@
 
 mod compile;
 mod imports;
+mod lightning;
 mod modules;
 mod path;
 mod rebase;
@@ -16,12 +17,13 @@ mod targets;
 
 pub use compile::{
     compile_css, compile_css_dev, compile_css_rebased, compile_css_rebased_with_map,
-    compile_css_with, CssOutput,
+    compile_css_with, minify_css, CssOutput,
 };
 pub use imports::{
     inline_imports, inline_imports_collecting, inline_imports_with, resolve_css_import,
     resolve_css_import_with,
 };
+pub use lightning::LightningOptions;
 pub use modules::{css_modules_esm, is_css_module};
 pub use path::{node_modules_load_paths, normalize};
 pub use resolve::{CssModulesOptions, CssResolve, CssResolveConfig};

@@ -1574,7 +1574,35 @@ async fn script_style_module(
         .find(|(k, _)| k == "file")
         .map(|(_, v)| PathBuf::from(v.as_ref()))
         .ok_or_else(|| format!("{specifier}: no file"))?;
-    let dev_inline = url.query_pairs().any(|(k, v)| k == "inline" && v == "dev");
+    let param = |key: &str| {
+        url.query_pairs()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    };
+    // `minify=<css>&targets=<json>`: a finished sheet the build minifies
+    // (Vite's minifyCSS under `build.cssMinify` and `css.lightningcss`),
+    // named by `file`.
+    if let Some(minified_source) = param("minify") {
+        let targets: Vec<String> = param("targets")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        let lightning = css
+            .as_ref()
+            .and_then(|c| c.lightningcss.as_ref())
+            .map(oj_css::LightningOptions::from_json)
+            .unwrap_or_default();
+        let css = oj_css::minify_css(
+            &file.to_string_lossy(),
+            &minified_source,
+            &targets,
+            &lightning,
+        )?;
+        return Ok(HostModule {
+            code: format!("export const css = {};\n", json_str(&css)),
+            module_type: HostModuleType::JavaScript,
+        });
+    }
+    let dev_inline = param("inline").as_deref() == Some("dev");
     let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let engine = if oj_server::needs_preprocess_engine(&file) {
         let engine = preprocess
@@ -2220,6 +2248,8 @@ mod tests {
   const panel = await load(env.PANEL);
   if (!panel.code.includes('"panel-title"')) throw new Error("scss class map: " + panel.code);
   if (panel.css.includes("$c") || panel.css.includes("&")) throw new Error("scss sheet: " + panel.css);
+  const min = await import("oj-style:///?" + new URLSearchParams({ file: env.CARD, minify: ".a {\n  color: #ff0000;\n}\n.gone { color: blue }\n", targets: "[]" }));
+  if (min.css !== env.MINIFIED) throw new Error("minify: " + min.css);
   return null;
 }
 "#,
@@ -2253,14 +2283,19 @@ mod tests {
                 &script,
                 &[
                     files.to_vec(),
-                    vec![var("CARD_CODE", &ssr.code), var("CARD_CLASS", &ssr_class)],
+                    vec![
+                        var("CARD_CODE", &ssr.code),
+                        var("CARD_CLASS", &ssr_class),
+                        var("MINIFIED", ".a{color:red}.gone{color:#00f}"),
+                    ],
                 ]
                 .concat(),
                 "default css",
             )
             .await
             .expect("default options compile as SSR does");
-        let configured = r#"{"modules":{"generateScopedName":"[local]-scoped"}}"#;
+        // css.lightningcss reaches the build minify (unusedSymbols drops .gone).
+        let configured = r#"{"modules":{"generateScopedName":"[local]-scoped"},"lightningcss":{"unusedSymbols":["gone"]}}"#;
         let code =
             "export const card = \"card-scoped\";\nexport default {\"card\":\"card-scoped\"};\n";
         ScriptEngine::new(&dir)
@@ -2272,6 +2307,7 @@ mod tests {
                     vec![
                         var("CARD_CODE", code),
                         var("CARD_CLASS", "card-scoped"),
+                        var("MINIFIED", ".a{color:red}"),
                         var(CSS_ENV, configured),
                     ],
                 ]

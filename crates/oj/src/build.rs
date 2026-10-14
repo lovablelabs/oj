@@ -250,6 +250,7 @@ fn css_resolve_of(
         targets: oj_config::build_css_targets(config),
         minify: oj_config::build_css_minify(config, env == "ssr"),
         modules: oj_server::css_modules_options(config),
+        lightning: oj_server::css_lightning_options(config),
     }
 }
 

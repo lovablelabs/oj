@@ -261,7 +261,8 @@ async function main() {
     } catch {}
     return null;
   })();
-  const emit = contentHashEmitter(CLIENT, compileCss, BASE);
+  const CSS_MINIFY = process.env.OJ_START_CSS_MINIFY ? JSON.parse(process.env.OJ_START_CSS_MINIFY) : null;
+  const emit = contentHashEmitter(CLIENT, compileCss, BASE, CSS_MINIFY);
   const clientContainer = await loadPluginContainer(APP, { command: "build", mode: MODE, environment: "client" });
   let serverContainer = await loadPluginContainer(APP, { command: "build", mode: MODE, environment: "ssr" });
   // With @cloudflare/vite-plugin the server build is the Worker environment the
