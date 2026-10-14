@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- TanStack Start's generated route tree names the start entry like the framework's. For an app with `src/start.*`, oj wrote the `import type { createStart }` footer while the framework's generator (which oj's plugin host also runs) writes `import type { startInstance }` and a `config:` line, so the two rewrote each other and a committed `routeTree.gen.ts` kept going dirty under `oj dev`. The route-tree cache key now includes which start entry exists, so adding or removing it regenerates the tree.
+
 ## [0.2.33] - 2026-10-15
 
 ### Fixed

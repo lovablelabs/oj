@@ -52,6 +52,7 @@ maybe("the generated tree carries the framework's declare-module footer", () => 
     assert.match(tree, /import type \{ createStart \} from '@tanstack\/react-start'/);
     assert.match(tree, /declare module '@tanstack\/react-start'/);
     assert.match(tree, /router: Awaited<ReturnType<typeof getRouter>>/);
+    assert.doesNotMatch(tree, /startInstance/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -67,6 +68,37 @@ maybe("the footer names the router entry the app declared", () => {
     generate(dir);
     const tree = readFileSync(join(dir, "src", "routeTree.gen.ts"), "utf8");
     assert.match(tree, /import type \{ getRouter \} from '\.\/lib\/router\.ts'/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// With a start entry the framework writes this exact block; a tree that differs
+// from it is rewritten by the framework's own generator on the next run.
+maybe("an app with a start entry gets the framework's startInstance footer", () => {
+  const dir = app("start");
+  try {
+    writeFileSync(join(dir, "src", "router.tsx"), "export function getRouter() {}\n");
+    writeFileSync(join(dir, "src", "start.ts"), "export const startInstance = undefined;\n");
+    generate(dir);
+    const tree = readFileSync(join(dir, "src", "routeTree.gen.ts"), "utf8");
+    assert.ok(
+      tree.endsWith(
+        [
+          "import type { getRouter } from './router.tsx'",
+          "import type { startInstance } from './start.ts'",
+          "declare module '@tanstack/react-start' {",
+          "  interface Register {",
+          "    ssr: true",
+          "    router: Awaited<ReturnType<typeof getRouter>>",
+          "    config: Awaited<ReturnType<typeof startInstance.getOptions>>",
+          "  }",
+          "}",
+        ].join("\n") + "\n",
+      ),
+      tree.slice(-600),
+    );
+    assert.doesNotMatch(tree, /createStart/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

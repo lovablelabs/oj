@@ -1610,6 +1610,12 @@ fn codegen_store(
     marker: Option<&str>,
 ) -> oj_cache::start_codegen::StartCodegenStore {
     let mut extra = std::fs::read(cache.join(script)).unwrap_or_default();
+    // The route tree's footer names the start entry, so which file (if any) the
+    // probe finds keys the output; its content does not.
+    if let Some(entry) = crate::start_host::app_start_entry(root) {
+        extra.extend_from_slice(entry.to_string_lossy().as_bytes());
+    }
+    extra.push(0);
     for name in [
         "tsr.config.json",
         "package.json",
