@@ -1,0 +1,81 @@
+name: setup piu webkit
+description: >
+  Provide the static JSCOnly WebKit that piu_jsc (the engine's JavaScriptCore
+  backend) links against, and export JSC_VENDOR_BUILD_DIR / WEBKIT_SRC_DIR for
+  every later step. The WebKit source checkout and build are cached per
+  (os, arch, piu-ref); a cache hit takes seconds, a miss builds WebKit once
+  (roughly an hour). The piu checkout only supplies the pinned WebKit revision,
+  the patch series and the build script; while github.com/raphamorim/piu is
+  private this clone needs `piu-token`, afterwards it works anonymously.
+
+inputs:
+  piu-ref:
+    description: raphamorim/piu commit providing the WebKit pin, patches and build script
+    default: 455cc1d12d0ee26a3ef03ad5a59dfdb3391b2ad7
+  piu-token:
+    description: token able to read raphamorim/piu (only needed while it is private)
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: webkit cache
+      id: wk
+      uses: actions/cache@v4
+      with:
+        path: |
+          .piu-webkit/webkit-src
+          .piu-webkit/webkit-build
+        key: piu-webkit-${{ runner.os }}-${{ runner.arch }}-${{ inputs.piu-ref }}
+
+    - name: build tools
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          cmake ninja-build ruby python3 build-essential libicu-dev
+
+    - name: fetch piu (webkit pin, patches, build script)
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PIU_TOKEN: ${{ inputs.piu-token }}
+      run: |
+        url="https://github.com/raphamorim/piu.git"
+        [ -n "$PIU_TOKEN" ] && url="https://x-access-token:${PIU_TOKEN}@github.com/raphamorim/piu.git"
+        rm -rf .piu-webkit/piu
+        git init -q .piu-webkit/piu
+        cd .piu-webkit/piu
+        git remote add origin "$url"
+        git sparse-checkout set libs/v8x
+        git fetch -q --filter=blob:none --depth 1 origin ${{ inputs.piu-ref }}
+        git checkout -q FETCH_HEAD
+
+    - name: fetch webkit source
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        rev="$(cat .piu-webkit/piu/libs/v8x/tools/WEBKIT_REVISION)"
+        rm -rf .piu-webkit/webkit-src
+        git init -q .piu-webkit/webkit-src
+        cd .piu-webkit/webkit-src
+        git remote add origin https://github.com/WebKit/WebKit.git
+        git sparse-checkout set Source/JavaScriptCore Source/ThirdParty \
+          Source/WTF Source/bmalloc Source/cmake Tools/Scripts
+        git fetch -q --filter=blob:none --depth 1 origin "$rev"
+        git checkout -q FETCH_HEAD
+
+    - name: build webkit (JSCOnly static)
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        WEBKIT_SRC_DIR="$PWD/.piu-webkit/webkit-src" \
+        WEBKIT_BUILD_DIR="$PWD/.piu-webkit/webkit-build" \
+          bash .piu-webkit/piu/libs/v8x/tools/build_webkit.sh
+
+    - name: export engine env
+      shell: bash
+      run: |
+        echo "JSC_VENDOR_BUILD_DIR=$PWD/.piu-webkit/webkit-build" >> "$GITHUB_ENV"
+        echo "WEBKIT_SRC_DIR=$PWD/.piu-webkit/webkit-src" >> "$GITHUB_ENV"

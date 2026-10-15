@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/oj_compiler",
-    "crates/oj_deno_process",
     "crates/oj_css",
     "crates/oj_diag",
     "crates/oj_env",
@@ -14,39 +13,46 @@ members = [
     "crates/oj",
     "crates/oj_js",
     "crates/oj_wasm",
-    "crates/oj_deno_napi",
-    "crates/oj_deno_runtime",
-    "crates/oj_deno_snapshots",
 ]
 
 [workspace.package]
-version = "0.2.34"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/lovablelabs/oj"
 
 [workspace.dependencies]
-oj_compiler = { version = "0.2.34", path = "crates/oj_compiler" }
-oj_resolver = { version = "0.2.34", path = "crates/oj_resolver" }
-oj_graph = { version = "0.2.34", path = "crates/oj_graph" }
-oj_cache = { version = "0.2.34", path = "crates/oj_cache" }
-oj_css = { version = "0.2.34", path = "crates/oj_css" }
-oj_diag = { version = "0.2.34", path = "crates/oj_diag" }
-oj_env = { version = "0.2.34", path = "crates/oj_env" }
-oj_config = { version = "0.2.34", path = "crates/oj_config" }
-oj_server = { version = "0.2.34", path = "crates/oj_server" }
-oj_js = { version = "0.2.34", path = "crates/oj_js" }
+oj_compiler = { version = "0.3.0", path = "crates/oj_compiler" }
+oj_resolver = { version = "0.3.0", path = "crates/oj_resolver" }
+oj_graph = { version = "0.3.0", path = "crates/oj_graph" }
+oj_cache = { version = "0.3.0", path = "crates/oj_cache" }
+oj_css = { version = "0.3.0", path = "crates/oj_css" }
+oj_diag = { version = "0.3.0", path = "crates/oj_diag" }
+oj_env = { version = "0.3.0", path = "crates/oj_env" }
+oj_config = { version = "0.3.0", path = "crates/oj_config" }
+oj_server = { version = "0.3.0", path = "crates/oj_server" }
+oj_js = { version = "0.3.0", path = "crates/oj_js" }
 
-# oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
-# to crates.io under these names), carrying oj's napi finalizer-registry patch:
-# the upstream Vec makes reference deregistration a linear scan + shift, which
-# goes quadratic under GC when an addon (rolldown bundling a large app) holds
-# hundreds of thousands of live references — it dominated one-shot rebundle
-# children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
-# dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
-# published oj resolves them by version from crates.io.
-oj_deno_napi = { package = "oj_deno_napi", version = "0.2.34", path = "crates/oj_deno_napi" }
-oj_deno_runtime = { package = "oj_deno_runtime", version = "0.2.34", path = "crates/oj_deno_runtime" }
+# The embedded engine is Piu (github.com/raphamorim/piu), a Deno fork running
+# on JavaScriptCore instead of V8. The piu_* crates are the deno crates
+# republished under Piu's names, same version lineage as the deno release they
+# fork (piu_core 0.412.x = deno_core 0.412, ...), with the engine swapped and
+# snapshots removed (extension sources are embedded; nothing to snapshot).
+# They carry the patches the old oj_deno_* forks existed for (napi
+# finalizer-registry, fs_events watcher scaling, process groups), so those
+# vendored forks are gone.
+#
+# Building piu_jsc needs a static JSCOnly WebKit build:
+#   JSC_VENDOR_BUILD_DIR=<webkit-build> WEBKIT_SRC_DIR=<webkit-src> cargo build
+# (see github.com/raphamorim/piu libs/v8x/tools/build_webkit.sh).
+piu_core = "0.412.1"
+piu_runtime = "0.267.0"
+piu_napi = "0.190.0"
+piu_process = "0.74.0"
+piu_resolver = "0.90.0"
+piu_node_resolver = "0.97.0"
+piu_config = "0.109.0"
+piu_signals = "0.50.0"
 
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"
@@ -158,22 +164,23 @@ grass = { opt-level = 3 }
 grass_compiler = { opt-level = 3 }
 tokio = { opt-level = 3 }
 hyper = { opt-level = 3 }
-deno_core = { opt-level = 3 }
-v8 = { opt-level = 3 }
+piu_core = { opt-level = 3 }
+# The JSC engine backend (Piu's v8-API facade over JavaScriptCore); the
+# heaviest Rust in the graph, same role the `v8` entry had.
+piu_jsc = { opt-level = 3 }
+piu_engine = { opt-level = 3 }
 # The engine's Node-compat hot paths, per deno's own release profile (which
 # opts deno_napi/deno_node/deno_runtime/deno_web/serde_v8 back to 3), plus
 # deno_fs/deno_io: the one-shot rebundle child funnels every napi call, sync
 # fs op and chunk write through these.
-oj_deno_napi = { opt-level = 3 }
-deno_node = { opt-level = 3 }
-oj_deno_runtime = { opt-level = 3 }
-# Vanilla deno_runtime stays in the graph as deno_snapshots' build-dependency.
-deno_runtime = { opt-level = 3 }
-deno_web = { opt-level = 3 }
-deno_fs = { opt-level = 3 }
-deno_io = { opt-level = 3 }
+piu_napi = { opt-level = 3 }
+piu_node = { opt-level = 3 }
+piu_runtime = { opt-level = 3 }
+piu_web = { opt-level = 3 }
+piu_fs = { opt-level = 3 }
+piu_io = { opt-level = 3 }
 deno_unsync = { opt-level = 3 }
-serde_v8 = { opt-level = 3 }
+piu_serde_v8 = { opt-level = 3 }
 serde = { opt-level = 3 }
 serde_core = { opt-level = 3 }
 serde_json = { opt-level = 3 }

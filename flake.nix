@@ -21,60 +21,16 @@
           ./crates
         ];
       };
-      # The v8 crate's build script downloads a prebuilt static lib, which the
-      # nix sandbox forbids; fetch it as a fixed-output derivation and hand it
-      # over via RUSTY_V8_ARCHIVE (the same approach nixpkgs uses for deno).
-      # On a rusty_v8 bump: update the version and re-prefetch the four hashes
-      # (nix store prefetch-file <url>).
-      rustyV8Version = "150.4.0";
-      rustyV8Hashes = {
-        aarch64-darwin = "sha256-Wu/9jVoMG3msHXCvg9WxkJllX9nGRaeU3EPxAfd5g4w=";
-        x86_64-darwin = "sha256-p1AnH+xrIRRX7Qpc99LqsZJLJlYhqC2oarlZ1v8II+Q=";
-        aarch64-linux = "sha256-U54oOBWjlqV5bzKFi0LlF7hY66rqqtBdAykO6MhkpSc=";
-        x86_64-linux = "sha256-9IdiyhDR8fxgWkQcWuQw7Izh6egPFNePvELLh4wwtHY=";
-      };
-      rustyV8Target = {
-        aarch64-darwin = "aarch64-apple-darwin";
-        x86_64-darwin = "x86_64-apple-darwin";
-        aarch64-linux = "aarch64-unknown-linux-gnu";
-        x86_64-linux = "x86_64-unknown-linux-gnu";
-      };
-      rustyV8Archive = pkgs: pkgs.fetchurl {
-        # The "_simdutf" archive variant matches the v8 crate's feature set here
-        # (deno_core enables v8/simdutf; build.rs appends "_simdutf" to the name).
-        url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_simdutf_release_${rustyV8Target.${pkgs.stdenv.hostPlatform.system}}.a.gz";
-        hash = rustyV8Hashes.${pkgs.stdenv.hostPlatform.system};
-      };
-      # Pinned V8 snapshot bundles (issue #211): snapshot CREATION is not
-      # run-deterministic (rusty_v8 serializes live embedder memory into the
-      # blob), so reproducible builds consume a prebuilt per-target bundle via
-      # crates/oj_deno_snapshots. The bundles are GitHub release assets (same
-      # shape as RUSTY_V8_ARCHIVE above: fetched by SRI hash, uniquely named,
-      # never overwritten — old revisions keep building), so ~8MB of generated
-      # artifacts stay out of the git tree. The release pipeline regenerates
-      # them: on a version tag, release.yml compares the pinned manifest with
-      # Cargo.lock and, when a deno_runtime / deno_core bump made it stale,
-      # harvests a fresh bundle onto that version's release and opens a PR
-      # updating release/file/hash here (tools/gen-snapshot-pin.sh is the
-      # manual fallback). Systems without a pin build the snapshot live, like
-      # plain cargo does — their output is then not bit-reproducible, which
-      # only the darwin cache's two-builder agreement actually requires today.
-      snapshotPins = {
-        aarch64-darwin = {
-          release = "snapshot-pins";
-          file = "oj-snapshot-pin-aarch64-apple-darwin-dc0.412.0-6f8e4d21.tar.gz";
-          hash = "sha256-RTe+9f4HGqaIm417kZ49C8HbYtGX02gi3Jij6L/e3ko=";
-        };
-      };
-      snapshotPin = pkgs:
-        let pin = snapshotPins.${pkgs.stdenv.hostPlatform.system};
-        in pkgs.runCommand "oj-snapshot-pin" { } ''
-          mkdir -p "$out"
-          tar -xzf ${pkgs.fetchurl {
-            url = "https://github.com/lovablelabs/oj/releases/download/${pin.release}/${pin.file}";
-            hash = pin.hash;
-          }} -C "$out"
-        '';
+      # ENGINE NOTE (piu migration): the engine is now Piu's JavaScriptCore
+      # backend (piu_jsc), which links a static JSCOnly WebKit build handed
+      # over via JSC_VENDOR_BUILD_DIR + WEBKIT_SRC_DIR. The old RUSTY_V8_ARCHIVE
+      # fixed-output fetch and the pinned V8 snapshot bundles (issue #211,
+      # snapshot creation was run-nondeterministic; snapshots no longer exist)
+      # are gone with V8. The nix build needs the same pattern rebuilt for
+      # WebKit: a per-target prebuilt JSCOnly bundle fetched by SRI hash (from
+      # github.com/raphamorim/piu release assets) and exposed through those two
+      # env vars. Until that bundle exists, this derivation does not build:
+      # piu_jsc's build script fails fast asking for JSC_VENDOR_BUILD_DIR.
       # oj's Start bundles run on rolldown, and they are oj's own code: they
       # get the version oj is written and tested against, vendored next to
       # the binary, rather than whatever the app's vite pins (a vite <= 7 app
@@ -163,7 +119,6 @@
             ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.autoSignDarwinBinariesHook pkgs.python3 ]
             ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.patchelf ];
           buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
-          RUSTY_V8_ARCHIVE = rustyV8Archive pkgs;
           OJ_VENDORED_ROLLDOWN = rolldownVendor pkgs;
           # The build directory name varies between nix implementations (and is
           # randomized on some), and rustc embeds dependency source paths from
@@ -203,9 +158,9 @@
           # Compiling from store paths embeds $src and vendor-crate store paths
           # in the binary, and the reference scanner would promote the whole
           # vendor tree (~1.2GiB) to a RUNTIME dependency of every consumer.
-          # The strings are compile-time-only (deno_core reads them while
-          # building the snapshot; dead bytes at runtime — a crates.io-built oj
-          # carries ~/.cargo paths and runs fine without them), so break the
+          # The strings are compile-time-only (dead bytes at runtime — a
+          # crates.io-built oj carries ~/.cargo paths and runs fine without
+          # them), so break the
           # references: nuke-refs rewrites their hash part to a constant,
           # keeping the bytes deterministic while restoring the ~170MiB
           # closure. The binary's REAL link-time references (dylib install
@@ -296,8 +251,6 @@ PYUUID
             license = nixpkgs.lib.licenses.mit;
             mainProgram = "oj";
           };
-        } // nixpkgs.lib.optionalAttrs (snapshotPins ? ${pkgs.stdenv.hostPlatform.system}) {
-          OJ_SNAPSHOT_ARCHIVE = snapshotPin pkgs;
         });
     in
     {

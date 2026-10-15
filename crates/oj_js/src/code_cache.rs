@@ -13,12 +13,12 @@
 use std::hash::Hasher;
 use std::path::PathBuf;
 
-use deno_core::url::Url;
-use deno_resolver::cjs::analyzer::DenoCjsAnalysis;
-use deno_resolver::cjs::analyzer::NodeAnalysisCache;
-use deno_resolver::cjs::analyzer::NodeAnalysisCacheSourceHash;
-use deno_runtime::code_cache::CodeCache;
-use deno_runtime::code_cache::CodeCacheType;
+use piu_core::url::Url;
+use piu_resolver::cjs::analyzer::DenoCjsAnalysis;
+use piu_resolver::cjs::analyzer::NodeAnalysisCache;
+use piu_resolver::cjs::analyzer::NodeAnalysisCacheSourceHash;
+use piu_runtime::code_cache::CodeCache;
+use piu_runtime::code_cache::CodeCacheType;
 
 pub struct FsCodeCache {
     dir: PathBuf,
@@ -31,7 +31,7 @@ pub struct FsCodeCache {
 /// bytecode — it only keeps incompatible generations from piling up as dead
 /// weight.
 pub fn engine_abi_key() -> String {
-    format!("v8-{}", deno_core::v8::VERSION_STRING)
+    format!("v8-{}", piu_core::v8::VERSION_STRING)
 }
 
 /// Stable across processes: `DefaultHasher::new()` is keyless SipHash, so two
@@ -335,12 +335,12 @@ mod tests {
     #[test]
     fn abi_key_is_the_v8_version_not_the_crate_version() {
         let key = engine_abi_key();
-        assert_eq!(key, format!("v8-{}", deno_core::v8::VERSION_STRING));
+        assert_eq!(key, format!("v8-{}", piu_core::v8::VERSION_STRING));
         // Guard against reintroducing release-version keying. (Skip the
         // assert only in the pathological case where the V8 version string
         // itself embeds the crate version.)
         let crate_version = env!("CARGO_PKG_VERSION");
-        if !deno_core::v8::VERSION_STRING.contains(crate_version) {
+        if !piu_core::v8::VERSION_STRING.contains(crate_version) {
             assert!(!key.contains(crate_version));
         }
     }

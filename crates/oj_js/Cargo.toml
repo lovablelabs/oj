@@ -7,22 +7,18 @@ repository.workspace = true
 description = "Embedded JavaScript engine: Deno runtime with Node compatibility over the app's node_modules"
 
 [dependencies]
-deno_core = { version = "0.412", features = ["v8"] }
-# oj-maintained forks (napi finalizer-registry patch, see the workspace
-# manifest); the dependency keys keep `use deno_runtime::`/`use deno_napi::`
-# paths working unchanged.
-deno_runtime = { package = "oj_deno_runtime", version = "0.2.12", path = "../oj_deno_runtime" }
+# Piu engine stack (the deno crates on JavaScriptCore; see the workspace
+# manifest). Snapshots went with V8: Piu embeds the extension sources
+# instead, so there is no snapshots crate and workers boot without a
+# startup_snapshot.
+piu_core.workspace = true
+piu_runtime.workspace = true
 # "deno_ast" is required for the CJS-to-ESM translation used when an ES
 # module imports a CommonJS package from node_modules.
-deno_resolver = { version = "0.90", features = ["sync", "deno_ast"] }
-node_resolver = { version = "0.97", features = ["sync"] }
-# Fork of deno_snapshots (see crates/oj_deno_snapshots): identical unless
-# OJ_SNAPSHOT_ARCHIVE pins a prebuilt per-target snapshot bundle, which
-# reproducible builds need (V8 snapshot creation is run-nondeterministic,
-# lovablelabs/oj#211). Vanilla deno_runtime stays its build-dependency.
-deno_snapshots = { package = "oj_deno_snapshots", version = "0.2.12", path = "../oj_deno_snapshots" }
-deno_napi = { package = "oj_deno_napi", version = "0.2.12", path = "../oj_deno_napi" }
-deno_config = "0.109"
+piu_resolver = { workspace = true, features = ["sync", "deno_ast"] }
+piu_node_resolver = { workspace = true, features = ["sync"] }
+piu_napi.workspace = true
+piu_config.workspace = true
 deno_error = "0.7"
 deno_media_type = "0.4"
 deno_path_util = "0.6"
@@ -33,10 +29,10 @@ tokio.workspace = true
 
 [build-dependencies]
 # Resolver v2 unifies build-dependency features separately from normal
-# dependencies. Keeping deno_core with "v8" here pins the host-side build of
-# deno_core (pulled in by build scripts in the dep train, e.g. deno_napi's)
-# to the same features as the target-side build.
-deno_core = { version = "0.412", features = ["v8"] }
+# dependencies. Keeping piu_core here pins the host-side build of piu_core
+# (pulled in by build scripts in the dep train, e.g. piu_napi's) to the same
+# features as the target-side build.
+piu_core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

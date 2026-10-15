@@ -516,7 +516,7 @@ fn two_engines_run_concurrently() {
 ///
 /// Loading a `.node` addon resolves napi_* symbols against the running
 /// executable, so this doubles as a check that the test binary exports them
-/// (the `oj` binary gets them explicitly via `deno_napi::print_linker_flags`
+/// (the `oj` binary gets them explicitly via `piu_napi::print_linker_flags`
 /// in crates/oj/build.rs).
 #[tokio::test]
 #[ignore = "needs npm + network; see doc comment"]
