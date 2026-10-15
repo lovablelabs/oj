@@ -5,12 +5,13 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.33] - 2026-10-15
 
 ### Fixed
 
 - A dev-server restart (a plugin's `server.restart()`, a config or `.env` edit) boots like a fresh launch again. The Start SSR runner primed `process.env` (`NODE_ENV`, the `.env` values, the `TSS_*` defaults, oj's script settings) on the real process environment, and the restart's exec carried all of it into the next boot. There the leaked `NODE_ENV`/`VITE_*`/`TSS_SERVER_FN_BASE` re-keyed the Start client bundle cache, so every restart rebuilt the client bundle from scratch (minutes on a large app), and a leaked `.env` value posed as shell env, so an edited `.env` value lost to the old one. The runner now keeps a private `process.env` copy like the plugin host and the Start scripts, and a restart execs with the environment oj was launched with.
 - A call whose deadline passed while it waited on the engine no longer terminates an unrelated call. The watchdog's termination is isolate-wide, so when the deadline fired while another call ran synchronous JS, that innocent call died with "execution terminated" and every other pending call failed with it. The same happened when a call's deadline passed during its module's top-level await, and the killed call then hung forever. The watchdog now runs only while no other call is waiting; a waiting call's deadline settles on its own timer.
+- TanStack Start client bundles apply the app's `resolve.alias`, in dev and in production builds. Only SSR applied it, so an `@/` import in the client graph reached the browser as a bare specifier and the page rendered blank. The client, worker and server bundles now match aliases the way Vite does (`find` strings and regexes, object or array form), and an alias whose target does not resolve keeps the rewritten id, as Vite's alias plugin does.
 
 ### Changed
 
