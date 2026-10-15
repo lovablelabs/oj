@@ -2136,8 +2136,10 @@ function freshChange({ file, real, type }, environments) {
       if (graphKnowsFile(environments, file) || (real && graphKnowsFile(environments, real))) {
         contentHash = createHash("sha256").update(readFileSync(file)).digest("hex");
       } else {
-        const st = statSync(file);
-        contentHash = `stat:${st.ino}:${st.size}:${st.mtimeMs}`;
+        // Nanosecond times: a database rewrites pages in place at a fixed
+        // size, so two writes inside one millisecond must still differ.
+        const st = statSync(file, { bigint: true });
+        contentHash = `stat:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
       }
     } catch {
       lastProcessedChange.delete(file);
@@ -2153,6 +2155,7 @@ function freshChange({ file, real, type }, environments) {
 // atomic save's recreate half (chokidar's atomic handling reports these as
 // change): reclassify to update, so the update-then-create pair dedups into
 // one pass and plugins never see a phantom watcher "add" for a live module.
+// It also decides which changed files freshChange reads to hash.
 function graphKnowsFile(environments, file) {
   for (const env of Object.values(environments || {})) {
     if (!env || env.__ojStub) continue;
