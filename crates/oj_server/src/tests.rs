@@ -1968,3 +1968,25 @@ fn child_registry_lifecycle_persists_and_drains() {
     child_groups::unregister(std::process::id());
     drop(sleeper.try_wait());
 }
+
+/// Start scripts import siblings by `./name`: each one must be written into
+/// the same directory, or the script fails to load in the app.
+#[test]
+fn start_assets_sibling_imports_are_written() {
+    let names: std::collections::HashSet<&str> = START_ASSETS.iter().map(|(n, _)| *n).collect();
+    // Top-level import/export statements only: build.mjs also writes import
+    // lines into the server entry it generates, as string literals.
+    let sibling =
+        regex::Regex::new(r#"(?m)^(?:import|export)\b[^;]*?\bfrom\s*["']\./([^"'/]+)["']"#)
+            .unwrap();
+    for (name, source) in START_ASSETS {
+        for cap in sibling.captures_iter(source) {
+            assert!(
+                names.contains(&cap[1]),
+                "{name} imports ./{} but START_ASSETS does not write it",
+                &cap[1]
+            );
+        }
+    }
+    assert!(names.contains("vite-config-node.mjs"));
+}

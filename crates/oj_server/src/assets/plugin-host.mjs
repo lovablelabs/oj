@@ -20,6 +20,7 @@ import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
+import { asNode } from "./vite-config-node.mjs";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format as formatUtil, stripVTControlCharacters } from "node:util";
@@ -773,11 +774,13 @@ async function loadUserResolvedViteConfig() {
     // command-based defaultNodeEnv (never the mode) and lift oj's untouched
     // pre-set first so it computes isNodeEnvSet like a real CLI run.
     unsetOjNodeEnvForResolve();
-    const rc = await vite.resolveConfig(
-      { root: appRoot, configFile: pluginsPath, mode: env.mode, logLevel: "silent" },
-      env.command,
-      env.mode,
-      defaultNodeEnv,
+    const rc = await asNode(() =>
+      vite.resolveConfig(
+        { root: appRoot, configFile: pluginsPath, mode: env.mode, logLevel: "silent" },
+        env.command,
+        env.mode,
+        defaultNodeEnv,
+      ),
     );
     return rc && typeof rc === "object" ? rc : null;
   } catch (e) {
@@ -1096,7 +1099,9 @@ async function loadViteConfig(configPath) {
     // fallback bundler is missing, buries it under a bundler error ("Cannot
     // find module 'esbuild'", #215) -- so propagate it instead, as Vite's
     // loadConfigFromFile itself rethrows.
-    const loaded = await vite.loadConfigFromFile({ command: env.command, mode: env.mode }, configPath, appRoot);
+    const loaded = await asNode(() =>
+      vite.loadConfigFromFile({ command: env.command, mode: env.mode }, configPath, appRoot),
+    );
     if (loaded && loaded.config) return loaded.config;
   }
   let mod;
@@ -2012,11 +2017,13 @@ async function buildEnvironments(server) {
     // in configureServer, and the two agree because both resolve from `root`.
     hostPhase("cf: resolveConfig begin");
     initStage("cf:resolveConfig");
-    rc = await vite.resolveConfig(
-      { root, configFile: undefined, mode: environment.mode },
-      "serve",
-      "development",
-      "development",
+    rc = await asNode(() =>
+      vite.resolveConfig(
+        { root, configFile: undefined, mode: environment.mode },
+        "serve",
+        "development",
+        "development",
+      ),
     );
     hostPhase("cf: resolveConfig done");
     initStage("cf:resolveConfig-done");

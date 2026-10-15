@@ -12,6 +12,7 @@ mod build_config_flag;
 mod config_flag;
 mod config_function;
 mod config_proxy;
+mod config_temp_file;
 mod css_import_inline;
 mod css_preprocessor_options;
 mod css_url_inline;

@@ -9,15 +9,24 @@ use oj_resolver::OjResolver;
 pub const PLUGIN_HOST_JS: &str = include_str!("../assets/plugin-host.mjs");
 /// Sibling module the plugin host and preseed optimizer child import as `./discovered-deps.mjs`.
 pub const DISCOVERED_DEPS_JS: &str = include_str!("../assets/discovered-deps.mjs");
+/// Sibling module (`./vite-config-node.mjs`) of every script that has Vite load
+/// the app's config file: the plugin host, the extractor, the preseed child and
+/// the Start scripts.
+pub const VITE_CONFIG_NODE_JS: &str = include_str!("../assets/vite-config-node.mjs");
 
-/// Idempotent, atomic materialization of an embedded asset into `dir`.
+/// Idempotent, atomic materialization of an embedded asset into `dir`. The
+/// tmp name is unique per call: the plugin host and the config extractor
+/// write the same sibling from two threads of one process at boot, and a
+/// shared tmp let one rename it away before the other's rename.
 pub(crate) fn ensure_asset(dir: &Path, name: &str, bytes: &str) -> std::io::Result<()> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = dir.join(name);
     if std::fs::read(&path).ok().as_deref() == Some(bytes.as_bytes()) {
         return Ok(());
     }
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!("{name}.tmp-{}", std::process::id()));
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!("{name}.tmp-{}-{seq}", std::process::id()));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, &path)
 }
@@ -136,6 +145,8 @@ pub use self::host::*;
 // case, serialized on one lock (env-knob tests must hold it too).
 #[cfg(test)]
 mod engine_extraction_tests;
+#[cfg(test)]
+mod ensure_asset_tests;
 #[cfg(test)]
 mod hook_plan_tests;
 #[cfg(test)]

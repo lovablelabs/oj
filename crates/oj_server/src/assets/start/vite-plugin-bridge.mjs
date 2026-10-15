@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { importPkg, makeResolver, phase } from "./resolve-pkg.mjs";
+import { asNode } from "./vite-config-node.mjs";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1090,7 +1091,7 @@ export async function loadPluginContainer(app, opts = {}) {
   phase(`plugins: vite imported (${opts.environment ?? "client"})`);
   let loaded;
   try {
-    loaded = await vite.loadConfigFromFile({ command, mode }, configFile, app);
+    loaded = await asNode(() => vite.loadConfigFromFile({ command, mode }, configFile, app));
   } catch {
     return null;
   }

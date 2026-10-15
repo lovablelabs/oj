@@ -483,10 +483,10 @@ pub(crate) fn watch_excluded(
 }
 
 /// Vite's `loadConfigFromBundledFile` temp (`<config>.timestamp-<ms>-<hash>.mjs`).
-/// Vite prefers `node_modules/.vite-temp/` for it, but skips that dir under
-/// Deno -- oj's runtime -- and writes beside the config instead, so every
-/// config load drops a short-lived file at the root the watch would see;
-/// under Start, whose rebundle loads the config, that was a rebuild loop.
+/// oj loads configs as Node's Vite does (assets/vite-config-node.mjs), so it
+/// lands in `node_modules/.vite-temp/`; Vite still writes it beside the config
+/// when no node_modules exists. Under Start, whose rebundle loads the config,
+/// a temp the watch saw was a rebuild loop.
 fn is_config_timestamp_temp(name: &str) -> bool {
     name.ends_with(".mjs")
         && name.find(".timestamp-").is_some_and(|i| {

@@ -188,6 +188,11 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
         "discovered-deps.mjs",
         crate::plugins::DISCOVERED_DEPS_JS,
     )?;
+    crate::plugins::ensure_asset(
+        &cache,
+        "vite-config-node.mjs",
+        crate::plugins::VITE_CONFIG_NODE_JS,
+    )?;
     let report = cache.join(REPORT_FILE);
     let _ = std::fs::remove_file(&report);
     let exe = std::env::current_exe()?;

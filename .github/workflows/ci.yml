@@ -176,6 +176,8 @@ jobs:
         run: node e2e/start-define-mode.mjs
       - name: start dev client chunks revalidate by ETag and gzip
         run: node e2e/start-client-transfer.mjs
+      - name: start dev config loads write no temp file into the app root
+        run: node e2e/start-config-temp.mjs
       - name: start prod build honors ssr.external (bare imports, server still renders)
         run: node e2e/start-ssr-external.mjs
       - name: start dev SIGTERM sweeps plugin children; detached child outlives

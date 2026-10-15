@@ -376,6 +376,7 @@ pub(crate) fn extract_vite_values_timed(
 fn materialize_extract_script(cache: &Path) -> Option<PathBuf> {
     static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    super::ensure_asset(cache, "vite-config-node.mjs", super::VITE_CONFIG_NODE_JS).ok()?;
     let script = cache.join("oj-vite-extract.mjs");
     if std::fs::read(&script).ok().as_deref() != Some(VITE_EXTRACT_JS.as_bytes()) {
         let tmp = cache.join(format!(

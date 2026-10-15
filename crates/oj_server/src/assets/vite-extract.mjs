@@ -6,6 +6,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
+import { asNode } from "./vite-config-node.mjs";
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -653,7 +654,7 @@ async function loadConfig() {
           // inline config only, isSsrBuild from the inline config only (see
           // the emit below for the isSsrBuild rule).
           const configEnv = { command, mode, isSsrBuild: false };
-          loaded = (await vite.loadConfigFromFile(configEnv, configPath, appRoot)) ?? null;
+          loaded = (await asNode(() => vite.loadConfigFromFile(configEnv, configPath, appRoot))) ?? null;
         } catch (e) {
           loadErr = e;
         }
@@ -701,7 +702,7 @@ async function loadConfig() {
             const inline = { root: appRoot, configFile: configPath };
             if (modeExplicit) inline.mode = mode;
             unsetOjNodeEnvForResolve();
-            resolved = await vite.resolveConfig(inline, command, mode, defaultNodeEnv);
+            resolved = await asNode(() => vite.resolveConfig(inline, command, mode, defaultNodeEnv));
           }
           if (resolved) {
             // The raw user file, for the "not applied" warnings: the resolved

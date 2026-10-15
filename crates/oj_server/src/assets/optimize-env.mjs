@@ -30,6 +30,7 @@ import {
   priorDepIds,
   writeIncludeSnapshot,
 } from "./discovered-deps.mjs";
+import { asNode } from "./vite-config-node.mjs";
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj:";
@@ -71,7 +72,9 @@ async function main() {
     return report([], false);
   }
 
-  const rc = await vite.resolveConfig({ root, configFile: undefined, mode }, "serve", "development", "development");
+  const rc = await asNode(() =>
+    vite.resolveConfig({ root, configFile: undefined, mode }, "serve", "development", "development"),
+  );
   // Snapshot BEFORE folding: the host folds the same file, and this child's
   // own optimize rewrites the metadata the snapshot was derived from.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
