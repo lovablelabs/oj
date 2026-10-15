@@ -412,6 +412,15 @@ pub fn capture_startup_cwd() {
     }
 }
 
+/// inotify reports every open, read and close as an Access event; none is a
+/// change, and chokidar's fs.watch never sees them. Dropped at the source:
+/// a file someone keeps reading (an editor, an indexer, a poller) otherwise
+/// floods the batch loops, whose settle window restarts on every event, so
+/// an edit landing in that stream is never handed off.
+pub(crate) fn is_access(ev: &notify::Event) -> bool {
+    matches!(ev.kind, notify::EventKind::Access(_))
+}
+
 /// The watcher thread's inbox: filesystem notifications, and directories to
 /// add because an outside-root file was served (`ensure_watched_file`). One
 /// channel, so the thread owns the watcher outright with no lock.
@@ -715,6 +724,9 @@ pub(crate) fn spawn_watcher(
         let mut watcher =
             match notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
                 if let Ok(ev) = &ev {
+                    if is_access(ev) {
+                        return;
+                    }
                     feed.publish(ev, &ignored, &root, &cache);
                 }
                 let _ = tx.send(WatchMsg::Fs(ev));

@@ -884,6 +884,29 @@ fn restart_triggers_include_every_config_flavor() {
     }
 }
 
+// inotify's open/read/close events are dropped before any batch loop sees
+// them; real changes still pass.
+#[test]
+fn access_events_are_noise_and_changes_are_not() {
+    use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind};
+    use notify::{Event, EventKind};
+    for kind in [
+        EventKind::Access(AccessKind::Open(AccessMode::Any)),
+        EventKind::Access(AccessKind::Read),
+        EventKind::Access(AccessKind::Close(AccessMode::Read)),
+        EventKind::Access(AccessKind::Close(AccessMode::Write)),
+    ] {
+        assert!(crate::watch::is_access(&Event::new(kind)), "{kind:?}");
+    }
+    for kind in [
+        EventKind::Create(CreateKind::File),
+        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+        EventKind::Remove(notify::event::RemoveKind::File),
+    ] {
+        assert!(!crate::watch::is_access(&Event::new(kind)), "{kind:?}");
+    }
+}
+
 #[test]
 fn tsconfig_files_trigger_the_reload_path() {
     for f in ["tsconfig.json", "app/tsconfig.json", "tsconfig.base.json"] {

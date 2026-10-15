@@ -44,6 +44,7 @@ mod plugin_ws_execute;
 mod postcss_config_discovery;
 mod vite_hmr_socket;
 mod warm_transform_virtual;
+mod watch_reads;
 mod watcher;
 
 use std::path::{Path, PathBuf};
