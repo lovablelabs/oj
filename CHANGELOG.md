@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A file no module graph knows no longer gets read when it changes. The plugin host hashed every changed file's full contents to drop oj's duplicate notification for one edit, so a database a local worker rewrites on every request (Miniflare's trace store under `.wrangler/state`, which grows to gigabytes) was read whole on each write: memory spiked by the file's size and the host stalled, leaving every page request hanging. Such files are now told apart by their stat, as Vite never reads a changed file unless a plugin asks; module files still compare by content.
+
 ## [0.2.34] - 2026-10-15
 
 ### Fixed
