@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { settles, waitUp } from "./util.mjs";
+import { restartedBoot, settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -99,6 +99,8 @@ try {
   if (!(await settles(() => restarts() >= 1, { timeoutMs: 30000 }))) {
     throw new Error(`server.restart() did not restart; log tail:\n${log.slice(-3000)}`);
   }
+  // The .env edit below needs the restarted process watching.
+  await restartedBoot(() => log, mark);
   await waitUp(`http://localhost:${PORT}/`, { proc: srv });
   const afterRestart = () => log.slice(mark);
   if (!(await settles(() => /client bundle (restored|cache miss)/.test(afterRestart()), { timeoutMs: 30000 }))) {

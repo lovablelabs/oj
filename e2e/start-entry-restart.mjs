@@ -16,7 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { settles, waitUp } from "./util.mjs";
+import { restartedBoot, settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -114,10 +114,13 @@ try {
   // A created src/start.ts restarts the dev server (a config-shaped input
   // flipped), and the rebooted client bundle carries the app's entry: the
   // cache re-keys on the probed entry instead of restoring the stub bundle.
+  const beforeCreate = log.length;
   fs.writeFileSync(startFile, startSource("OJ_ENTRY_MARKER_ONE"));
   if (!(await settles(() => restarts() >= 1, { timeoutMs: 30000 }))) {
     throw new Error(`creating src/start.ts did not restart; log tail:\n${log.slice(-3000)}`);
   }
+  // The entry edit below needs the restarted process watching.
+  await restartedBoot(() => log, beforeCreate);
   await waitUp(`http://localhost:${PORT}/`, { proc: srv });
   if (!(await settles(() => chunksHold("OJ_ENTRY_MARKER_ONE"), { timeoutMs: 30000 }))) {
     throw new Error(`the restarted client bundle lacks the created entry; log tail:\n${log.slice(-3000)}`);
