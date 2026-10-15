@@ -119,11 +119,10 @@ async fn a_hung_hot_update_hook_never_holds_a_restart_back() {
     let mut restarts = Vec::new();
     while restarts.is_empty() && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        restarts = crate::take_restarts();
+        restarts = crate::take_restarts_for(&app.root);
     }
-    assert_eq!(
-        restarts,
-        ["config/env changed"],
-        "the .env edit never restarted"
+    assert!(
+        restarts.len() == 1 && restarts[0].ends_with("/.env changed"),
+        "the .env edit never restarted: {restarts:?}"
     );
 }

@@ -682,12 +682,18 @@ fn handle_batch(
     created: &std::collections::HashSet<PathBuf>,
     hmr: &tokio::sync::mpsc::UnboundedSender<HmrBatch>,
 ) {
-    // Config/.env can't be hot-applied (read once at startup): restart, as Vite does.
-    if paths
+    // Config/.env can't be hot-applied (read once at startup): restart, as
+    // Vite does, naming the file relative to the launch dir as Vite's
+    // "<file> changed, restarting server" does.
+    if let Some(file) = paths
         .iter()
-        .any(|p| is_restart_trigger(p) || is_config_dependency(p))
+        .find(|p| is_restart_trigger(p) || is_config_dependency(p))
     {
-        restart_process("config/env changed");
+        let shown = STARTUP_CWD
+            .get()
+            .and_then(|cwd| pathdiff::diff_paths(file, cwd))
+            .unwrap_or_else(|| file.clone());
+        restart_process(&format!("{} changed", shown.display()));
     }
     // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
     // key folds class-field semantics in, so stale persistent-cache entries

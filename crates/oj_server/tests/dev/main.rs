@@ -179,9 +179,17 @@ pub struct Server {
 /// Restarts asked for so far, by any server in this process.
 static RESTARTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// The restarts asked for so far, cleared: for a test that expects one.
-pub fn take_restarts() -> Vec<String> {
-    std::mem::take(&mut *RESTARTS.lock().unwrap())
+/// The restarts asked for so far over a file under `root` (a watcher restart
+/// names its file), taken out: for a test that expects one. Any other
+/// server's restart stays for its own drop to fail on.
+pub fn take_restarts_for(root: &std::path::Path) -> Vec<String> {
+    let dir = root.file_name().unwrap().to_string_lossy().into_owned();
+    let mut all = RESTARTS.lock().unwrap();
+    let (ours, rest) = std::mem::take(&mut *all)
+        .into_iter()
+        .partition(|r: &String| r.contains(&dir));
+    *all = rest;
+    ours
 }
 
 /// No test expects a restart, so any one fails the test whose server drops
