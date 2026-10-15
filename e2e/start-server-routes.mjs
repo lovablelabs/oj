@@ -5,7 +5,7 @@
 // non-GET on a dotted path reaches the app's server route (Vite hands every
 // request nothing else owns to the app), bodies stream through as bytes (no
 // size cap, binary intact) and every set-cookie header of the response
-// survives the proxy.
+// survives the proxy. An app route under `/__` renders like any other.
 
 import { spawn, execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -108,6 +108,16 @@ async function assertServerRoutes(port, label) {
     );
   }
   console.log(`${label}: configured tanstackStart server.entry wraps the handler`);
+
+  // An app route under `/__` (a component-preview page) is the app's: Vite
+  // reserves no `/__` prefix, only the dev server's own endpoints are its.
+  const dunder = await fetch(`http://localhost:${port}/__preview/Badge`);
+  const dunderBody = await dunder.text();
+  must(
+    dunder.status === 200 && dunderBody.includes("dunder-route-marker") && dunderBody.includes("Badge"),
+    `${label}: GET /__preview/Badge did not render the app's route (${dunder.status}): ${dunderBody.slice(0, 300)}`,
+  );
+  console.log(`${label}: an app route under /__ renders`);
 }
 
 async function devPhase() {

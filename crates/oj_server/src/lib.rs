@@ -60,6 +60,17 @@ mod hmr;
 pub use hmr::*;
 mod watch;
 pub use watch::*;
+
+const HMR_WS_PATH: &str = "/__ws";
+const HMR_FLUSH_PATH: &str = "/__hmr_flush";
+const HMR_GATE_PATH: &str = "/__hmr_gate";
+
+/// The `/__` paths the dev server itself serves. Everything else under `/__`
+/// is the app's, as in Vite, which reserves no such prefix: a framework route
+/// or a plugin middleware page (`/__component/preview/X`) must reach them.
+pub fn is_dev_server_path(path: &str) -> bool {
+    matches!(path, HMR_WS_PATH | HMR_FLUSH_PATH | HMR_GATE_PATH)
+}
 mod html;
 pub mod tls;
 pub use html::*;
@@ -1246,13 +1257,13 @@ fn build_router(
         )
         .route("/@ssr-resolve", get(ssr_resolve))
         .route("/@ssr-module", get(ssr_module))
-        .route("/__ws", get(ws_upgrade))
-        .route("/__hmr_flush", post(hmr_flush))
-        .route("/__hmr_gate", get(hmr_gate_status))
+        .route(HMR_WS_PATH, get(ws_upgrade))
+        .route(HMR_FLUSH_PATH, post(hmr_flush))
+        .route(HMR_GATE_PATH, get(hmr_gate_status))
         .fallback(serve_fallback);
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).
-    if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
+    if hmr_ws_path != HMR_WS_PATH && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
         app = app.route(hmr_ws_path, get(ws_upgrade));
     }
     // Layer order is reversed at request time (last added runs first). Vite's

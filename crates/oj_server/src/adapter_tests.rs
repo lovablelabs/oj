@@ -347,6 +347,9 @@ fn is_spa_navigation_rules() {
     assert!(is_spa_navigation("projects/abc", &empty));
     assert!(!is_spa_navigation("main.js", &empty));
     assert!(!is_spa_navigation("@vite/client", &empty));
+    // Vite's htmlFallback reserves no `__` prefix (oj's own endpoints are
+    // routed before the fallback).
+    assert!(is_spa_navigation("__component/preview/Badge", &empty));
     assert!(!is_spa_navigation("src/App.tsx", &empty));
     assert!(!is_spa_navigation("node_modules/react/index.js", &empty));
     let mut html = HeaderMap::new();

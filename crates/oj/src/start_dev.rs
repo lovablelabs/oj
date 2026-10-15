@@ -1967,7 +1967,10 @@ enum Route {
 
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     let path = req.uri().path();
-    if path.starts_with("/@") || path.starts_with("/__") {
+    // Only oj's own `/__` endpoints are the dev server's: Vite reserves no
+    // `/__` prefix, so an app route or a plugin middleware page under it
+    // goes through the middleware and SSR like any document.
+    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
         return Route::Pass;
     }
     if proxy_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
@@ -3814,8 +3817,22 @@ mod tests {
             classify(&req("GET", "/@oj-start/hmr"), &no_proxy),
             Route::Pass
         ));
+        // `/__` is not reserved (Vite reserves no such prefix): an app route
+        // or plugin page there is a document; only oj's own endpoints pass.
         assert!(matches!(
             classify(&req("GET", "/__health"), &no_proxy),
+            Route::Document
+        ));
+        assert!(matches!(
+            classify(&req("GET", "/__component/preview/Badge"), &no_proxy),
+            Route::Document
+        ));
+        assert!(matches!(
+            classify(&req("GET", "/__hmr_gate"), &no_proxy),
+            Route::Pass
+        ));
+        assert!(matches!(
+            classify(&req("POST", "/__hmr_flush"), &no_proxy),
             Route::Pass
         ));
         assert!(matches!(

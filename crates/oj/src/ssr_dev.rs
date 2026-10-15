@@ -217,7 +217,8 @@ async fn ssr_route(State(state): State<Arc<SsrState>>, req: Request, next: Next)
 
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     let path = req.uri().path();
-    if path.starts_with("/@") || path.starts_with("/__") {
+    // Vite reserves no `/__` prefix: only oj's own endpoints skip SSR.
+    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
         return Route::Pass;
     }
     if path.rsplit('/').next().is_some_and(|seg| seg.contains('.')) {
@@ -431,8 +432,12 @@ mod tests {
         };
         assert!(route("GET", "/@oj/client.js"), "internal urls pass through");
         assert!(
-            route("GET", "/__oj_fn"),
-            "double-underscore urls pass through"
+            route("GET", "/__hmr_gate"),
+            "oj's own endpoints pass through"
+        );
+        assert!(
+            !route("GET", "/__component/preview/Badge"),
+            "an app page under /__ is rendered, Vite reserves no /__ prefix"
         );
         assert!(route("GET", "/src/App.tsx"), "a file url passes through");
         assert!(

@@ -25,6 +25,7 @@ mod dev_condition;
 mod dev_cors_host;
 mod dev_mode;
 mod dev_process_env;
+mod dunder_paths;
 mod dynamic_import;
 mod hmr_client_behaviors;
 mod hmr_dep_update;
