@@ -509,6 +509,15 @@ pub(crate) fn ensure_watched_file(state: &ServerState, file: &Path) {
     }
 }
 
+/// A file being opened or read, which inotify reports and chokidar never
+/// surfaces. Dropped at the source: the settle loops extend their window on
+/// every event, so anything reading a watched file in a loop (an editor, a
+/// language server, a poller) kept a batch from ever settling and its edits
+/// from ever rebuilding.
+fn is_read_event(ev: &notify::Event) -> bool {
+    matches!(ev.kind, notify::EventKind::Access(_))
+}
+
 /// Recorded only on success, so a directory that does not exist yet (a plugin
 /// watch file created later) is retried instead of skipped forever.
 fn watch_served_dir(
@@ -714,6 +723,9 @@ pub(crate) fn spawn_watcher(
         );
         let mut watcher =
             match notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
+                if ev.as_ref().is_ok_and(is_read_event) {
+                    return;
+                }
                 if let Ok(ev) = &ev {
                     feed.publish(ev, &ignored, &root, &cache);
                 }

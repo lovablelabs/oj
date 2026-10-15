@@ -57,3 +57,43 @@ async fn ready_watcher_sees_one_edit_and_a_closed_one_sees_none() {
     let late = next_reload(&mut rx, Duration::from_secs(2)).await;
     assert!(late.is_none(), "closed watcher still delivered {late:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_read_in_a_loop_never_holds_an_edit_back() {
+    // inotify reports every open of a watched file; an editor, a language
+    // server or a poller reading one in a loop must not keep the settle
+    // window open forever (chokidar never surfaces reads at all).
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"watch-reads","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "document.title = \"v1\";\n"),
+        ("src/polled.js", "export const polled = 1;\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    server.text("/src/main.js").await;
+    let mut rx = server.built.reload_tx.subscribe();
+
+    let polled = app.root.join("src/polled.js");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = std::fs::read(&polled);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    app.write(&[("src/main.js", "document.title = \"v2\";\n")]);
+    let reload = next_reload(&mut rx, Duration::from_secs(10)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    reader.join().unwrap();
+    assert!(
+        reload.is_some(),
+        "an edit made while another watched file is read in a loop reaches the browser"
+    );
+}
