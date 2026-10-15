@@ -24,6 +24,8 @@ struct StartState {
     /// The scripts' env (see `script_env`), resolved once at boot for the
     /// watch-reload codegen and rebundles.
     script_env: Arc<[(String, String)]>,
+    /// The session's client bundler, shared by the boot bundle and rebundles.
+    bundler: Arc<ClientBundler>,
     proxy_prefixes: Vec<String>,
     /// Live plugin-middleware state, shared with oj_server: the middleware port
     /// and whether worker environments serve the documents. A slow plugin host
@@ -250,14 +252,17 @@ pub async fn start_dev(
     };
     resolver.await??;
     oj_server::boot_phase("resolver ready");
+    let bundler = Arc::new(ClientBundler::new(&root, &cache));
     let bundle = {
-        let (root, cache, env, mode) = (
-            root.clone(),
+        let (bundler, cache, env, mode) = (
+            Arc::clone(&bundler),
             cache.clone(),
             Arc::clone(&script_vars),
             mode.clone(),
         );
-        tokio::task::spawn_blocking(move || bundle_client_entry_cached(&root, &cache, &env, &mode))
+        tokio::task::spawn_blocking(move || {
+            bundle_client_entry_cached(&bundler, &cache, &env, &mode)
+        })
     };
     let (reload_tx, _) = broadcast::channel::<()>(16);
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
@@ -426,6 +431,7 @@ pub async fn start_dev(
     };
     let state = Arc::new(StartState {
         script_env: Arc::clone(&script_vars),
+        bundler,
         proxy_prefixes: built.proxy_prefixes.clone(),
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
@@ -1039,6 +1045,7 @@ async fn rebundle_worker(
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
             let env = Arc::clone(&state.script_env);
+            let bundler = Arc::clone(&state.bundler);
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
             tokio::task::spawn_blocking(move || {
@@ -1085,7 +1092,7 @@ async fn rebundle_worker(
                         println!("  oj start: rebuilding for {shown}");
                     }
                 }
-                let pinned = if !bundling || bundle_client_entry(&r, &c, &env).is_err() {
+                let pinned = if !bundling || bundler.bundle(&c, &env).is_err() {
                     None
                 } else {
                     match start_bundle_store(&r, &m).persist(&c) {
@@ -1768,7 +1775,7 @@ fn list_src_ts_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Runs a Start one-shot script in a fresh `oj start-script` child process
+/// Runs a Start codegen script in a fresh `oj start-script` child process
 /// (the embedded engine, one process per run), replacing the long-lived
 /// ScriptEngine the dev server briefly used. In-process was a leak: rolldown's
 /// binding retains native memory per `build()` invocation — on an ~18k-module
@@ -1829,20 +1836,128 @@ fn client_error_frame(cache: &Path) -> Option<String> {
     Some(serde_json::json!({ "type": "error", "err": err }).to_string())
 }
 
-fn bundle_client_entry(
-    root: &Path,
-    cache: &Path,
-    script_env: &[(String, String)],
-) -> anyhow::Result<()> {
-    // Only this run's failure may read as an app build error: a stale record
-    // would let a bundler that never started pass for one.
-    let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
-    run_script_process(
-        root,
-        &cache.join("bundle-client.mjs"),
-        script_env,
-        "client entry bundling",
-    )
+/// The dev session's client bundler: one `oj start-script --serve` child
+/// running bundle-client.mjs, spawned by the first bundle and reused by every
+/// rebundle, so the app's plugins keep one container for the server's
+/// lifetime, as in Vite (buildStart once, plugin state across rebuilds). A
+/// fresh container per rebundle re-ran buildStart each time: a plugin that
+/// writes a generated input from it rewrote that file on every bundle, and
+/// the watcher fed the write back as the next rebundle, forever. A child that
+/// died is respawned by the next bundle; it exits on its own when stdin
+/// closes (this process exiting or exec'ing a restart).
+pub(crate) struct ClientBundler {
+    root: PathBuf,
+    script: PathBuf,
+    child: std::sync::Mutex<Option<BundlerChild>>,
+}
+
+struct BundlerChild {
+    process: std::process::Child,
+    stdin: std::process::ChildStdin,
+    replies: std::sync::mpsc::Receiver<String>,
+}
+
+impl ClientBundler {
+    pub(crate) fn new(root: &Path, cache: &Path) -> ClientBundler {
+        ClientBundler {
+            root: root.to_path_buf(),
+            script: cache.join("bundle-client.mjs"),
+            child: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn spawn(&self) -> anyhow::Result<BundlerChild> {
+        let exe =
+            std::env::current_exe().map_err(|e| anyhow::anyhow!("oj executable path: {e}"))?;
+        let mut process = std::process::Command::new(exe)
+            .arg("start-script")
+            .arg(&self.script)
+            .arg("--root")
+            .arg(&self.root)
+            .arg("--serve")
+            .current_dir(&self.root)
+            .env(
+                oj_server::plugins::PARENT_PID_ENV,
+                std::process::id().to_string(),
+            )
+            // rolldown's mimalloc keeps the pages of finished builds resident;
+            // purging on free holds a long-lived bundler near one build's
+            // footprint (Linux, 3k-module app: ~580MB flat over 15 rebundles
+            // vs ~800MB by default, no measurable rebundle cost).
+            .env(
+                "MIMALLOC_PURGE_DELAY",
+                oj_env::get().var("MIMALLOC_PURGE_DELAY").unwrap_or("0"),
+            )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("could not run client entry bundling: {e}"))?;
+        oj_server::register_child(process.id());
+        oj_server::boot_phase(&format!("client bundler: child {} spawned", process.id()));
+        let stdin = process.stdin.take().expect("piped stdin");
+        let stdout = process.stdout.take().expect("piped stdout");
+        let (tx, replies) = std::sync::mpsc::channel();
+        // The script's own output passes through; reply lines answer bundle().
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                match line.strip_prefix(crate::start_host::SCRIPT_REPLY) {
+                    Some(reply) => {
+                        let _ = tx.send(reply.to_string());
+                    }
+                    None => {
+                        let mut out = std::io::stdout().lock();
+                        let _ = writeln!(out, "{line}");
+                    }
+                }
+            }
+        });
+        Ok(BundlerChild {
+            process,
+            stdin,
+            replies,
+        })
+    }
+
+    /// One client bundle on the session's bundler; Err when it failed (the
+    /// app's error, if any, is in client-error.json) or the child died.
+    fn bundle(&self, cache: &Path, script_env: &[(String, String)]) -> anyhow::Result<()> {
+        use std::io::Write;
+        // Only this run's failure may read as an app build error: a stale
+        // record would let a bundler that never started pass for one.
+        let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
+        let mut slot = self.child.lock().unwrap();
+        let mut child = match slot.take() {
+            Some(mut c) => match c.process.try_wait() {
+                Ok(None) => c,
+                _ => {
+                    oj_server::unregister_child(c.process.id());
+                    self.spawn()?
+                }
+            },
+            None => self.spawn()?,
+        };
+        let request = format!("{}\n", serde_json::to_string(script_env)?);
+        let reply = child
+            .stdin
+            .write_all(request.as_bytes())
+            .and_then(|_| child.stdin.flush())
+            .ok()
+            .and_then(|_| child.replies.recv().ok());
+        let Some(reply) = reply else {
+            // Dead mid-bundle: reap it; the next bundle spawns a new one.
+            let _ = child.process.kill();
+            let _ = child.process.wait();
+            oj_server::unregister_child(child.process.id());
+            anyhow::bail!("client entry bundling failed: the bundler exited");
+        };
+        *slot = Some(child);
+        match reply.strip_prefix("err") {
+            None => Ok(()),
+            Some(e) => anyhow::bail!("client entry bundling failed:{e}"),
+        }
+    }
 }
 
 fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartBundleStore {
@@ -1855,11 +1970,12 @@ fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartB
 }
 
 fn bundle_client_entry_cached(
-    root: &Path,
+    bundler: &ClientBundler,
     cache: &Path,
     script_env: &[(String, String)],
     mode: &str,
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
+    let root = bundler.root.as_path();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
     match store.restore(cache) {
@@ -1879,7 +1995,7 @@ fn bundle_client_entry_cached(
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
-    bundle_client_entry(root, cache, script_env)?;
+    bundler.bundle(cache, script_env)?;
     if let Some((key, pinned)) = store.persist(cache) {
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",

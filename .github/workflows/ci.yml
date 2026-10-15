@@ -280,6 +280,8 @@ jobs:
         run: node e2e/start-hmr-gate.mjs
       - name: start dev skips rebundle and reload for changes outside every served graph
         run: node e2e/start-rebundle-gate.mjs
+      - name: start dev keeps one client plugin container, a buildStart codegen write never loops
+        run: node e2e/start-plugin-state.mjs
       - name: a src/start.ts created or deleted mid-session restarts start dev
         run: node e2e/start-entry-restart.mjs
       - name: a plugin's server.restart() reboots like a fresh launch (bundle cache hit, edited .env wins)
