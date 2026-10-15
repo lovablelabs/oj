@@ -512,14 +512,16 @@ pub async fn start_dev(
         });
     }
 
-    let app = built.router.layer(axum::middleware::from_fn_with_state(
-        Arc::clone(&state),
-        start_route,
-    ));
+    let app = built
+        .router
+        .clone()
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            start_route,
+        ));
 
     let _ = app_tx.send(app.clone());
-    let (listener, port) =
-        oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
+    let (listener, port) = built.bind_listener().await?;
     oj_server::boot_phase("listening");
     if let Some(host) = built.plugin_host.clone() {
         let _ = host_slot.set(host);

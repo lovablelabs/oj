@@ -658,11 +658,19 @@ pub struct BuiltApp {
 }
 
 impl BuiltApp {
-    /// Resolves once the watcher covers the root (chokidar's `ready`): HTTP
-    /// answers before that, so an edit made earlier may go unseen. Also
-    /// resolves if the watcher failed to start.
+    /// Resolves once the watcher covers the root (chokidar's `ready`), or
+    /// once it failed to start.
     pub async fn watcher_ready(&self) {
         let _ = self.watch_ready.clone().wait_for(|ready| *ready).await;
+    }
+
+    /// The dev listener, bound only once the watcher covers the root. Vite
+    /// creates its watcher in createServer, before listen, so an edit made
+    /// after the server first answers is always seen; binding earlier lost
+    /// one that landed in between (a `.env` edit right after a restart).
+    pub async fn bind_listener(&self) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
+        self.watcher_ready().await;
+        bind_dev_listener(self.host, self.port, self.strict_port).await
     }
 
     /// Stops the file watcher and returns once it is gone, so nothing under
@@ -1348,7 +1356,7 @@ impl DevServer {
         let host_slot: Arc<std::sync::OnceLock<Arc<PluginHost>>> = Arc::default();
         tokio::spawn(close_plugins_on_shutdown(host_slot.clone()));
         let built = self.build_app().await?;
-        let (listener, port) = bind_dev_listener(built.host, built.port, built.strict_port).await?;
+        let (listener, port) = built.bind_listener().await?;
         println!("  {} dev server", oj_brand());
         println!("  root: {}", built.root.display());
         let url = format!(

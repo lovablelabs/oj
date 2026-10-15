@@ -82,13 +82,15 @@ pub async fn ssr_dev(
         engine,
     });
 
-    let app = built.router.layer(axum::middleware::from_fn_with_state(
-        Arc::clone(&ssr_state),
-        ssr_route,
-    ));
+    let app = built
+        .router
+        .clone()
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&ssr_state),
+            ssr_route,
+        ));
 
-    let (listener, port) =
-        oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
+    let (listener, port) = built.bind_listener().await?;
     if let Some(host) = built.plugin_host.clone() {
         let _ = host_slot.set(host);
     }
