@@ -1048,6 +1048,9 @@ async fn rebundle_worker(
             let bundler = Arc::clone(&state.bundler);
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
+            // Every batch, bundled or not: a style edit the gate passes over
+            // must still recompile at the next bundle.
+            bundler.note_changes(&changed);
             tokio::task::spawn_blocking(move || {
                 let routes_now = list_route_files(&r);
                 let routes_changed = routes_now != routes_prev;
@@ -1836,6 +1839,23 @@ fn client_error_frame(cache: &Path) -> Option<String> {
     Some(serde_json::json!({ "type": "error", "err": err }).to_string())
 }
 
+/// A file a compiled stylesheet can read: a sheet in any language oj
+/// compiles (a partial or a `composes` source included) or the PostCSS or
+/// Tailwind config.
+fn is_style_input(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if matches!(
+        ext,
+        "css" | "scss" | "sass" | "less" | "styl" | "stylus" | "pcss" | "postcss" | "sss"
+    ) {
+        return true;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name.starts_with("postcss.config.")
+        || name.starts_with(".postcssrc")
+        || name.starts_with("tailwind.config.")
+}
+
 /// The dev session's client bundler: one `oj start-script --serve` child
 /// running bundle-client.mjs, spawned by the first bundle and reused by every
 /// rebundle, so the app's plugins keep one container for the server's
@@ -1849,6 +1869,12 @@ pub(crate) struct ClientBundler {
     root: PathBuf,
     script: PathBuf,
     child: std::sync::Mutex<Option<BundlerChild>>,
+    /// Bumped by every batch that touched a style input, and handed to each
+    /// bundle (`OJ_START_STYLE_EPOCH`). The child's engine caches each
+    /// `import("oj-style:...")` by its url for the session, so the epoch in
+    /// that url is what makes a style edit recompile, a partial's included,
+    /// while unchanged sheets keep their one cached module.
+    style_epoch: std::sync::atomic::AtomicU64,
 }
 
 struct BundlerChild {
@@ -1863,6 +1889,15 @@ impl ClientBundler {
             root: root.to_path_buf(),
             script: cache.join("bundle-client.mjs"),
             child: std::sync::Mutex::new(None),
+            style_epoch: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// A watch batch's changed paths: any style input moves the style epoch.
+    pub(crate) fn note_changes(&self, paths: &[PathBuf]) {
+        if paths.iter().any(|p| is_style_input(p)) {
+            self.style_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -1938,7 +1973,13 @@ impl ClientBundler {
             },
             None => self.spawn()?,
         };
-        let request = format!("{}\n", serde_json::to_string(script_env)?);
+        let epoch = self
+            .style_epoch
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .to_string();
+        let mut env = script_env.to_vec();
+        env.push(("OJ_START_STYLE_EPOCH".into(), epoch));
+        let request = format!("{}\n", serde_json::to_string(&env)?);
         let reply = child
             .stdin
             .write_all(request.as_bytes())
@@ -2856,6 +2897,30 @@ fn collect_headers(headers: &header::HeaderMap) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_style_edit_moves_the_bundlers_style_epoch() {
+        let bundler = ClientBundler::new(Path::new("/app"), Path::new("/app/.oj-cache"));
+        let epoch = || {
+            bundler
+                .style_epoch
+                .load(std::sync::atomic::Ordering::SeqCst)
+        };
+        bundler.note_changes(&[PathBuf::from("/app/src/routes/about.tsx")]);
+        assert_eq!(epoch(), 0, "a script edit keeps every style import cached");
+        bundler.note_changes(&[
+            PathBuf::from("/app/src/a.tsx"),
+            PathBuf::from("/app/src/_vars.scss"),
+        ]);
+        assert_eq!(
+            epoch(),
+            1,
+            "a partial edit recompiles the sheets that use it"
+        );
+        bundler.note_changes(&[PathBuf::from("/app/postcss.config.mjs")]);
+        bundler.note_changes(&[PathBuf::from("/app/src/card.module.css")]);
+        assert_eq!(epoch(), 3);
+    }
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::{connect_async, tungstenite::Message as ClientMessage};
 
