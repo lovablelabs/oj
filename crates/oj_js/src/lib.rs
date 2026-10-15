@@ -55,7 +55,8 @@ pub struct EngineConfig {
     /// [`EngineError::MemoryLimit`] instead of aborting the process.
     pub memory_limit_bytes: Option<usize>,
     /// Default wall-clock deadline applied to every job that does not carry
-    /// its own.
+    /// its own. It stops running JS only while no other call is parked (see
+    /// [`JsEngine::call`]); engines that multiplex calls set none, like Vite.
     pub default_deadline: Option<Duration>,
     /// Persistent V8 code-cache directory (see [`code_cache`]). The caller
     /// keys the directory by [`engine_abi_key`]; entries self-invalidate on

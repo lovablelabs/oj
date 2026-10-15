@@ -7,6 +7,16 @@
 // invalidation) all live in Rust. Unchanged specifiers hit the isolate's
 // module cache, so concurrent requests share one evaluation.
 
+// A private process.env copy, the plugin host's and the script engines'
+// isolation: Deno.env writes are process-real, so `init`'s priming (NODE_ENV,
+// the .env values, OJ_*) and the TSS defaults below would otherwise land in
+// oj's own environment and ride a restart's exec into the next boot.
+Object.defineProperty(process, "env", {
+  value: { ...process.env },
+  configurable: true,
+  writable: true,
+});
+
 // The TSS defaults the node runner exported for the Start runtime.
 process.env.TSS_SERVER_FN_BASE ??= "/_serverFn/";
 process.env.TSS_DEV_SERVER ??= "true";

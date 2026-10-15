@@ -40,6 +40,13 @@ impl Env {
         self.vars.get(OsStr::new(key)).map(OsString::as_os_str)
     }
 
+    /// Every variable, non-UTF-8 included, sorted by name.
+    pub fn vars_os(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
+        self.vars
+            .iter()
+            .map(|(k, v)| (k.as_os_str(), v.as_os_str()))
+    }
+
     /// Every UTF-8 variable, sorted by name.
     pub fn vars(&self) -> impl Iterator<Item = (&str, &str)> {
         self.vars

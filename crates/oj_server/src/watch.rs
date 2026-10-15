@@ -357,6 +357,11 @@ pub fn restart_process(reason: &str) -> ! {
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The next boot gets the env oj was launched with, not whatever the live
+    // environment became: anything that wrote to it mid-session (an engine's
+    // Deno.env, a native addon's setenv) would otherwise look like shell env
+    // there, outranking `.env` files and re-keying the Start bundle cache.
+    let launch_env = oj_env::get().vars_os();
     // In-process plugin hosts chdir the process to their app root; restart from
     // the launch dir so relative CLI args (`oj dev ./web`) resolve correctly.
     let launch_dir = STARTUP_CWD.get().filter(|d| d.is_dir());
@@ -364,7 +369,7 @@ pub fn restart_process(reason: &str) -> ! {
     {
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new(&exe);
-        cmd.args(&args);
+        cmd.args(&args).env_clear().envs(launch_env);
         if let Some(dir) = launch_dir {
             cmd.current_dir(dir);
         }
@@ -375,7 +380,7 @@ pub fn restart_process(reason: &str) -> ! {
     #[cfg(not(unix))]
     {
         let mut cmd = std::process::Command::new(&exe);
-        cmd.args(&args);
+        cmd.args(&args).env_clear().envs(launch_env);
         if let Some(dir) = launch_dir {
             cmd.current_dir(dir);
         }

@@ -1620,13 +1620,7 @@ async fn script_style_module(
     let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let engine = if oj_server::needs_preprocess_engine(&file) {
         let engine = preprocess
-            .get_or_try_init(|| {
-                oj_server::css_engine::CssEngine::preprocess(
-                    root,
-                    oj_server::css_engine::BUILD_DEADLINE,
-                    None,
-                )
-            })
+            .get_or_try_init(|| oj_server::css_engine::CssEngine::preprocess(root, None))
             .await
             .map_err(|e| e.to_string())?;
         Some(Arc::clone(engine))
@@ -1649,13 +1643,7 @@ async fn script_style_module(
     if dev_inline {
         let tailwind = async || {
             tailwind
-                .get_or_try_init(|| {
-                    oj_server::css_engine::CssEngine::tailwind(
-                        root,
-                        oj_server::css_engine::BUILD_DEADLINE,
-                        None,
-                    )
-                })
+                .get_or_try_init(|| oj_server::css_engine::CssEngine::tailwind(root, None))
                 .await
                 .cloned()
                 .map_err(|e| e.to_string())
@@ -2235,6 +2223,54 @@ mod tests {
             std::env::var("NODE_ENV").ok(),
             node_env_before,
             "the script's NODE_ENV write must not alter oj's real env"
+        );
+    }
+
+    // The Start runner's bootstrap primes process.env (init's env, the TSS
+    // defaults) on its own shadow too: a leak would ride a restart's exec into
+    // the next boot as shell env, re-keying the client bundle cache and
+    // outranking edited .env files.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_runner_env_priming_does_not_leak_into_the_oj_process() {
+        let dir = std::env::temp_dir().join(format!("oj-runnerenv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bootstrap = dir.join("start-bootstrap.mjs");
+        std::fs::write(&bootstrap, START_BOOTSTRAP_JS).unwrap();
+        let probe = dir.join("probe.mjs");
+        std::fs::write(
+            &probe,
+            "export function read() { return process.env.OJ_RUNNER_ENV_PROBE ?? null; }\n",
+        )
+        .unwrap();
+        let engine = JsEngine::spawn(EngineConfig::new(&dir), None, None).unwrap();
+        let fn_base_before = std::env::var("TSS_SERVER_FN_BASE").ok();
+        engine
+            .call(
+                bootstrap.to_string_lossy().into_owned(),
+                "init",
+                vec![serde_json::json!({ "OJ_RUNNER_ENV_PROBE": "primed" })],
+                None,
+            )
+            .await
+            .expect("the bootstrap init runs");
+        let seen = engine
+            .call(probe.to_string_lossy().into_owned(), "read", vec![], None)
+            .await
+            .unwrap();
+        assert_eq!(
+            seen,
+            serde_json::json!("primed"),
+            "the runner sees its primed env"
+        );
+        assert!(
+            std::env::var("OJ_RUNNER_ENV_PROBE").is_err(),
+            "init's priming must stay on the isolate's shadow"
+        );
+        assert_eq!(
+            std::env::var("TSS_SERVER_FN_BASE").ok(),
+            fn_base_before,
+            "the TSS defaults must not alter oj's real env"
         );
     }
 

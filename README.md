@@ -115,7 +115,7 @@ node e2e/assets.mjs                               # asset url imports + new URL(
 node e2e/dynamic-import.mjs                       # dynamic import with variables (glob switch)
 node e2e/wasm.mjs                                 # wasm ?init instantiation (dev + build)
 node e2e/query-assets.mjs                         # ?url/?raw/?inline/?init asset queries
-node e2e/rolldown-options.mjs                     # build.rollupOptions filenames + external
+cargo test -p oj --bin oj plugin_api_tests       # build plugin API, rollupOptions, ssr, css and assetsDir options (in-process)
 node e2e/preprocessors.mjs                        # less + stylus css (installs both, then dev+build)
 node e2e/assets-inline.mjs                        # assetsInlineLimit: small assets become data uris
 node e2e/config-proxy.mjs                         # adopt vite.config server.proxy + ignored-config warnings
