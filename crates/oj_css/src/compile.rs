@@ -8,13 +8,11 @@ use lightningcss::css_modules;
 use lightningcss::dependencies::DependencyOptions;
 use lightningcss::error::{Error as CssError, ParserError};
 use lightningcss::printer::PrinterOptions;
-use lightningcss::stylesheet::{
-    MinifyOptions, ParserFlags, ParserOptions, StyleAttribute, StyleSheet,
-};
+use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleSheet};
 
 use crate::lightning::LightningOptions;
 use crate::modules::{is_css_module, module_exports, module_is_scoped, scoped_name_pattern};
-use crate::rebase::{css_base_dir, dev_url_of, rewrite_dependencies};
+use crate::rebase::{css_base_dir, dev_url_of, rewrite_css_image_set, rewrite_dependencies};
 use crate::resolve::CssResolve;
 use crate::targets::browser_targets;
 
@@ -93,42 +91,6 @@ pub fn compile_css_dev(
         source_map,
     };
     compile_css_depth(url, source, mode, resolve, 0)
-}
-
-/// A `style` attribute's declarations for dev, as Vite compiles an
-/// `?html-proxy&inline-css&style-attr` id (lightningcss's
-/// `transformStyleAttribute`): urls rebased as in a sheet served at `url`.
-pub fn compile_style_attribute_dev(
-    url: &str,
-    code: &str,
-    resolve: &CssResolve<'_>,
-) -> Result<String, String> {
-    let options = ParserOptions {
-        filename: url.to_string(),
-        error_recovery: true,
-        ..ParserOptions::default()
-    };
-    let mut attr = StyleAttribute::parse(code, options)
-        .map_err(|err| format!("css parse error in {url}: {err}"))?;
-    let targets = browser_targets(resolve.targets);
-    attr.minify(MinifyOptions {
-        targets,
-        ..MinifyOptions::default()
-    });
-    let base = css_base_dir(url);
-    let result = attr
-        .to_css(PrinterOptions {
-            targets,
-            analyze_dependencies: base.as_ref().map(|_| DependencyOptions::default()),
-            ..PrinterOptions::default()
-        })
-        .map_err(|err| format!("css print error in {url}: {err}"))?;
-    Ok(match (base, result.dependencies) {
-        (Some(base), Some(deps)) => {
-            rewrite_dependencies(result.code, deps, |spec| dev_url_of(&spec, &base, resolve))
-        }
-        _ => result.code,
-    })
 }
 
 /// Parse with error recovery: like Vite's postcss pipeline, a legacy hack
@@ -215,7 +177,15 @@ pub(crate) fn compile_css_depth(
 
     let mut css = match (base, result.dependencies) {
         (Some(base), Some(deps)) => {
-            rewrite_dependencies(result.code, deps, |spec| dev_url_of(&spec, &base, resolve))
+            let css =
+                rewrite_dependencies(result.code, deps, |spec| dev_url_of(&spec, &base, resolve));
+            // lightningcss prints an `image-set()` candidate as a bare string,
+            // which Vite's url rewrite wraps in `url()`; the urls are final.
+            if css.contains("image-set(") {
+                rewrite_css_image_set(&css, &|url| Some(url.to_string()))
+            } else {
+                css
+            }
         }
         _ => result.code,
     };

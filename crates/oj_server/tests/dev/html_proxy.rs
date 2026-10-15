@@ -196,8 +196,8 @@ async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
         "plugin transforms run:\n{html}"
     );
     assert!(
-        html.contains("style=\"background: url(&quot;/src/bg.png&quot;)\""),
-        "a style attribute's relative url is rebased, quotes escaped:\n{html}"
+        html.contains("style=\"background: url(/src/bg.png)\""),
+        "a style attribute's relative url is rebased:\n{html}"
     );
     assert!(
         html.contains("<p style=\"color: red\">"),
@@ -211,5 +211,42 @@ async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
         page.body.contains("/src/bg.png") && page.body.contains(".from-plugin"),
         "a middleware page's style compiles too:\n{}",
         page.body
+    );
+}
+
+/// A `style` attribute goes through the app's PostCSS plugins before its urls
+/// are rewritten (Vite's PostCSS pass, url rewrite last): a url a plugin
+/// writes is rebased too, and the declarations otherwise stay as written.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_style_attribute_runs_the_apps_postcss_plugins_first() {
+    crate::require_fixture!("postcss");
+    let app = App::new(&[
+        ("package.json", r#"{"name":"attr-postcss","private":true}"#),
+        ("oj.plugins.mjs", "export default [{ name: \"noop\" }];\n"),
+        ("src/main.js", "export {};\n"),
+        (
+            "postcss.config.mjs",
+            "export default { plugins: [{ postcssPlugin: \"icon\", Declaration: { \"--icon\": (decl) => { decl.value = \"url(./src/bg.png)\"; } } }] };\n",
+        ),
+        (
+            "index.html",
+            "<html><head></head><body>\
+             <div style=\"color:red;background: url(./src/bg.png); --icon: none\"></div>\
+             </body></html>",
+        ),
+    ]);
+    std::fs::write(app.root.join("src/bg.png"), [7u8; 4]).unwrap();
+    let node_modules = crate::fixture("postcss")
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::os::unix::fs::symlink(node_modules, app.root.join("node_modules")).unwrap();
+    let server = app.serve().await;
+
+    let html = server.text("/").await;
+    assert!(
+        html.contains("style=\"color:red;background: url(/src/bg.png); --icon: url(/src/bg.png)\""),
+        "{html}"
     );
 }

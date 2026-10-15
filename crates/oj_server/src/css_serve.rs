@@ -23,8 +23,8 @@ pub(crate) async fn serve_css_direct(state: &Arc<ServerState>, file: &Path, url:
 /// container. `id` is its html-proxy id (`/index.html?html-proxy&direct&index=0.css`,
 /// `\0/page?html-proxy&inline-css&style-attr&index=1.css` for a page with no
 /// file). A sheet compiles like a `.css` file beside its page; an attribute's
-/// declarations get their urls rebased and their quotes escaped for the
-/// attribute, as vite:css-post records them.
+/// declarations go through the app's PostCSS plugins and get their urls
+/// rebased, as text, and their quotes escaped as vite:css-post records them.
 pub(crate) async fn compile_html_style(
     state: &Arc<ServerState>,
     id: &str,
@@ -39,7 +39,14 @@ pub(crate) async fn compile_html_style(
     };
     let url = format!("{}?{query}", url_of(&state.root, &page_file));
     if query.split('&').any(|kv| kv == "style-attr") {
-        let css = oj_css::compile_style_attribute_dev(&url, &code, &state.css_resolve.as_ref())?;
+        // Vite's PostCSS pass parses the declarations as a root of their own:
+        // the app's plugins run first, the url rewrite last.
+        let code = if state.has_postcss {
+            run_css_engine(state, &url, &code).await?
+        } else {
+            code
+        };
+        let css = oj_css::rewrite_style_attribute_dev(&url, &code, &state.css_resolve.as_ref());
         return Ok(css.replace('"', "&quot;"));
     }
     let file = PathBuf::from(format!("{}.css", page_file.display()));
