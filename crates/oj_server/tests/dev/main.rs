@@ -8,6 +8,7 @@
 //! integration test so build.rs's exported-symbols link flag applies to the
 //! napi addons a plugin host loads.
 
+mod browser;
 mod build_config_flag;
 mod config_flag;
 mod config_function;
@@ -22,6 +23,7 @@ mod dev_cors_host;
 mod dev_mode;
 mod dev_process_env;
 mod hmr_disabled;
+mod hmr_hot_accept;
 mod host_binding;
 mod html_env;
 mod jsx_import_source;
@@ -61,7 +63,7 @@ pub struct App {
 
 /// This process's parent dir for apps; the first call removes the dirs of
 /// runs whose process is gone.
-fn run_dir() -> &'static Path {
+pub fn run_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let tmp = std::env::temp_dir().canonicalize().unwrap();

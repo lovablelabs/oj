@@ -36,6 +36,10 @@ jobs:
       # archive in the restored cache.
       - name: install start-app fixture (bundlers for optimizer + config tests)
         run: npm ci --prefix e2e/fixtures/start-app
+      # The dev tests that need a page drive headless Chrome over the DevTools
+      # protocol and skip without one; Playwright only installs the browser.
+      - run: npm install --prefix e2e
+      - run: npx --prefix e2e playwright install --with-deps chromium
       # Release, not debug: the tests must exercise the codegen that ships.
       # A debug-only suite stayed green through a release-only engine
       # miscompilation (every job on an uncapped isolate failed MemoryLimit).

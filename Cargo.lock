@@ -6349,6 +6349,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rustls-platform-verifier",
+ "serde",
  "serde_json",
  "simdutf8",
  "tempfile",
