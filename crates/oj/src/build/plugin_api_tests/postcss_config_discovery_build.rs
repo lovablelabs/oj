@@ -16,7 +16,11 @@ use super::{build_app, files_under, scratch, write_files};
 async fn workspace_root_postcss_config_runs_on_sass_output_in_build() {
     let node_modules =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fixtures/start-app/node_modules");
-    if !node_modules.join("postcss/package.json").exists() {
+    if super::fixture("postcss").is_none() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but postcss is not installed"
+        );
         eprintln!("skipping: fixture postcss not installed");
         return;
     }

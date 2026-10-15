@@ -12,6 +12,18 @@ pub(crate) async fn ensure_module(
     file: &Path,
     url: &str,
 ) -> Result<(String, Arc<CachedModule>), String> {
+    ensure_module_from(state, file, url, None).await
+}
+
+/// `preloaded`: source a plugin `load` already produced for a module with no
+/// file of its own (an html-proxy inline script); `file` then only names its
+/// language and the directory its imports resolve from.
+pub(crate) async fn ensure_module_from(
+    state: &Arc<ServerState>,
+    file: &Path,
+    url: &str,
+    preloaded: Option<String>,
+) -> Result<(String, Arc<CachedModule>), String> {
     let ext = file.extension().and_then(|e| e.to_str());
     let react_svg = ext == Some("svg")
         && url
@@ -29,13 +41,19 @@ pub(crate) async fn ensure_module(
         return Ok(register_uncached(state, url, url_asset_module(url)));
     }
 
-    let stamp = file_stamp(file).await;
+    let stamp = match preloaded {
+        Some(_) => None,
+        None => file_stamp(file).await,
+    };
     if let Some(hit) = warm_hit(state, url, stamp) {
         return Ok(hit);
     }
 
     let is_dep = is_dep_module(url, file);
-    let source = load_source(state, file, url, is_dep).await?;
+    let source = match preloaded {
+        Some(source) => source,
+        None => load_source(state, file, url, is_dep).await?,
+    };
     record_glob_importer(state, file, url, &source);
     if ext == Some("css") && is_tailwind_css(&source) {
         let css = compile_tailwind(state, url, &source).await?;

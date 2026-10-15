@@ -535,6 +535,12 @@ impl PluginHost {
             VITE_CONFIG_NODE_JS,
         )
         .map_err(|e| e.to_string())?;
+        ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
+            "vite-html.mjs",
+            VITE_HTML_JS,
+        )
+        .map_err(|e| e.to_string())?;
         if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
             let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
             std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;

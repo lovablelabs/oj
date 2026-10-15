@@ -344,10 +344,11 @@ export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const hostScript = path.join(runDir, "plugin-host.mjs");
   fs.copyFileSync(asset("plugin-host.mjs"), hostScript);
-  // The host's siblings (./discovered-deps.mjs, ./vite-config-node.mjs) are
-  // materialized next to it by oj the same way.
+  // The host's siblings (./discovered-deps.mjs, ./vite-config-node.mjs,
+  // ./vite-html.mjs) are materialized next to it by oj the same way.
   fs.copyFileSync(asset("discovered-deps.mjs"), path.join(runDir, "discovered-deps.mjs"));
   fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
+  fs.copyFileSync(asset("vite-html.mjs"), path.join(runDir, "vite-html.mjs"));
   const host = rpcSidecar(hostScript, {
     args: [
       fx.configPath,

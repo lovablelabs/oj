@@ -1,40 +1,52 @@
 use super::*;
 
-/// `url` is the request path (ctx.path), `file` the html on disk (ctx.filename).
+/// `url` is the request path (ctx.path), `file` the html on disk (ctx.filename),
+/// `original_url` the url the browser asked for (ctx.originalUrl: the route a
+/// SPA fallback served index.html for). With a plugin host the whole of Vite's
+/// dev HTML transform runs there (env, plugin hooks, the dev client, inline
+/// module proxies, nonces), handed the env map and nonce oj already derives.
 /// A throwing transformIndexHtml fails the request (Vite parity), not served raw.
 pub(crate) async fn serve_html(
     state: &ServerState,
     bytes: Vec<u8>,
     url: &str,
+    original_url: &str,
     file: &Path,
 ) -> Response {
-    let mut raw = String::from_utf8_lossy(&bytes).into_owned();
-    // %VITE_*% substitution (Vite htmlEnvHook) runs before transformIndexHtml.
-    raw = oj_env::replace_html_env(&raw, &state.html_env);
-    if let Some(host) = &state.plugins {
-        let ctx = serde_json::json!({
-            "path": url,
-            "filename": file.display().to_string(),
-            "originalUrl": url,
-        })
-        .to_string();
-        match host.transform_index_html(&raw, &ctx).await {
-            Ok(out) => raw = out,
-            Err(e) => {
-                eprintln!("oj: transformIndexHtml failed for {url}: {e}");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                    format!("oj: transformIndexHtml failed for {url}\n{e}"),
-                )
-                    .into_response();
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    let html = match &state.plugins {
+        Some(host) => {
+            let ctx = serde_json::json!({
+                "path": url,
+                "filename": file.display().to_string(),
+                "originalUrl": original_url,
+                "ojHtmlEnv": state.html_env,
+                "ojCspNonce": state.csp_nonce,
+            })
+            .to_string();
+            match host.transform_index_html(&raw, &ctx).await {
+                Ok(out) => inject_module_preloads(out, state),
+                Err(e) => {
+                    eprintln!("oj: transformIndexHtml failed for {url}: {e}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                        format!("oj: transformIndexHtml failed for {url}\n{e}"),
+                    )
+                        .into_response();
+                }
             }
         }
-    }
-    let mut html = inject_module_preloads(inject_dev_scripts(raw), state);
-    if let Some(nonce) = &state.csp_nonce {
-        html = inject_csp_nonce(&html, nonce);
-    }
+        None => {
+            // %VITE_*% substitution (Vite htmlEnvHook) runs before the client injection.
+            let raw = oj_env::replace_html_env(&raw, &state.html_env);
+            let mut html = inject_module_preloads(inject_dev_scripts(raw), state);
+            if let Some(nonce) = &state.csp_nonce {
+                html = inject_csp_nonce(&html, nonce);
+            }
+            html
+        }
+    };
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
@@ -111,9 +123,18 @@ pub(crate) fn insert_after_head(html: &str, tags: &str) -> String {
     }
 }
 
-pub(crate) async fn serve_index_html(state: &ServerState) -> Response {
+pub(crate) async fn serve_index_html(state: &ServerState, original_url: &str) -> Response {
     match tokio::fs::read(state.root.join("index.html")).await {
-        Ok(bytes) => serve_html(state, bytes, "/index.html", &state.root.join("index.html")).await,
+        Ok(bytes) => {
+            serve_html(
+                state,
+                bytes,
+                "/index.html",
+                original_url,
+                &state.root.join("index.html"),
+            )
+            .await
+        }
         Err(_) => (StatusCode::NOT_FOUND, "oj: index.html not found").into_response(),
     }
 }

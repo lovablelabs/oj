@@ -42,7 +42,9 @@ pub(crate) async fn preview_host_check(
     next.run(req).await
 }
 
-pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
+/// The router `oj preview` serves (Vite's preview middleware stack over the
+/// build dir), with the canonical dir; binding is the caller's.
+pub fn preview_router(opts: &PreviewOptions) -> anyhow::Result<(Router, PathBuf)> {
     let dir = opts.dir.canonicalize().with_context(|| {
         format!(
             "build dir not found: {} (run `oj build` first)",
@@ -89,6 +91,11 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
             preview_host_check,
         ));
     }
+    Ok((app, dir))
+}
+
+pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
+    let (app, dir) = preview_router(&opts)?;
     let (listener, port) = bind_dev_listener(
         resolve_host(opts.host.as_deref()),
         opts.port,
