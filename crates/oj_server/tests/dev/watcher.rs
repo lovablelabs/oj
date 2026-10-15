@@ -126,3 +126,35 @@ async fn a_hung_hot_update_hook_never_holds_a_restart_back() {
         "the .env edit never restarted: {restarts:?}"
     );
 }
+
+/// A hot-update hook that never settles for one file leaves every other
+/// file's HMR alone: Vite handles each watcher event on its own
+/// (`onFileChange(file).catch(...)`), never queued behind an earlier one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hung_hot_update_hook_never_holds_another_files_update() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"hung-other","version":"1.0.0"}"#),
+        (
+            "oj.plugins.mjs",
+            "export default [{ name: \"hang\", handleHotUpdate(ctx) {\n  if (ctx.file.endsWith(\"/src/a.js\")) return new Promise(() => {});\n} }];\n",
+        ),
+        ("src/main.js", "import \"./a.js\";\nimport \"./b.js\";\n"),
+        ("src/a.js", "export const a = 1;\n"),
+        ("src/b.js", "export const b = 1;\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    for url in ["/src/main.js", "/src/a.js", "/src/b.js"] {
+        server.text(url).await;
+    }
+    let mut rx = server.built.reload_tx.subscribe();
+    app.write(&[("src/a.js", "export const a = 2;\n")]);
+    // Let that batch reach the hook before the other edit lands.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    app.write(&[("src/b.js", "export const b = 2;\n")]);
+    let frame = next_reload(&mut rx, Duration::from_secs(10)).await;
+    assert!(
+        frame.as_deref().is_some_and(|f| f.contains("/src/b.js")),
+        "b.js's update never arrived behind a.js's hung hook: {frame:?}"
+    );
+}
