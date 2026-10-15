@@ -1492,6 +1492,13 @@ impl PluginHost {
         self.call_flag("getHasTransform", true).await
     }
 
+    /// Whether any active plugin has a `resolveId` hook: only one can answer a
+    /// bare import oj's resolver cannot. Defaults to true on RPC failure, so a
+    /// plugin-served bare id is never failed by mistake.
+    pub async fn has_resolve_id(&self) -> bool {
+        self.call_flag("getHasResolveId", true).await
+    }
+
     /// Whether any active plugin has a `load` hook (Vite runs load before the fs
     /// read). Defaults to false on RPC failure (the fs read alone is always correct).
     pub async fn has_load(&self) -> bool {

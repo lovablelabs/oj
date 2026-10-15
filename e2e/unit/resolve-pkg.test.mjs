@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,8 @@ import {
   envPrefixes,
   environmentDefines,
   makeResolver,
+  freeRolldownOutputs,
+  importOjRolldown,
   importPkg,
   resolveOjRolldown,
   ssrExternalRule,
@@ -387,3 +389,28 @@ test("a missing rolldown names the fallback, or the broken vendor, in its error"
     rmSync(app, { recursive: true, force: true });
   }
 });
+
+// A long-lived bundler idles between rebundles, so nothing would collect a
+// build's outputs: freeRolldownOutputs releases their native memory through
+// the app's own rolldown (rolldown/experimental's freeExternalMemory).
+const fixtureApp = join(import.meta.dirname, "..", "fixtures", "start-app");
+const fixtureRolldown = existsSync(join(fixtureApp, "node_modules", "rolldown", "package.json"));
+test(
+  "freeRolldownOutputs releases every output of the app's rolldown build",
+  { skip: !fixtureRolldown && "start-app fixture not installed" },
+  async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "oj-free-outputs-")));
+    try {
+      writeFileSync(join(dir, "entry.js"), 'export const value = "free-outputs-marker";\n');
+      const { build } = await importOjRolldown(fixtureApp);
+      const result = await build({ input: join(dir, "entry.js"), write: false, logLevel: "silent" });
+      assert.ok(result.output[0].code.includes("free-outputs-marker"));
+      assert.equal(await freeRolldownOutputs(fixtureApp, [], result.output), result.output.length);
+      assert.equal(await freeRolldownOutputs(fixtureApp, [], result.output), 0, "already freed");
+      // An app without rolldown frees nothing instead of failing the bundle.
+      assert.equal(await freeRolldownOutputs(dir, [], result.output), 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);

@@ -801,7 +801,10 @@ impl ImportRewrite<'_> {
     fn rewrite(&self, spec: &str, resolver: &OjResolver) -> Option<String> {
         let job = self.job;
         let state = &*job.state;
-        let plugin_fallback = state.plugins.is_some();
+        // Only a plugin's resolveId can answer what oj's resolver cannot. The
+        // host runs for every app (it hosts the dev HTML transform), plugins
+        // or not, so its presence alone says nothing.
+        let plugin_fallback = state.plugins.is_some() && state.plugins_have_resolve_id;
         if spec == "virtual:oj-routes" {
             return Some("/@oj/routes.js".to_string());
         }
