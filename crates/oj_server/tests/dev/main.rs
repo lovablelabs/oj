@@ -27,6 +27,7 @@ mod dev_mode;
 mod dev_process_env;
 mod dunder_paths;
 mod dynamic_import;
+mod fs_allow_node_modules;
 mod hmr_client_behaviors;
 mod hmr_dep_update;
 mod hmr_disabled;

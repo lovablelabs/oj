@@ -1146,6 +1146,17 @@ fn fs_allow_list(
     for r in roots {
         insert_allow_root(&mut set, r);
     }
+    // Every node_modules on the root's lookup path: a bare import resolves
+    // into one, and Vite serves whatever its resolver resolved (its safe
+    // module paths). Allowing a dep's package only once its importer compiled
+    // made a reload after a restart 403: the browser fetches the imports it
+    // remembers before the new process has compiled their importer.
+    for dir in root.ancestors() {
+        let node_modules = dir.join("node_modules");
+        if node_modules.is_dir() {
+            insert_allow_root(&mut set, node_modules);
+        }
+    }
     set
 }
 
