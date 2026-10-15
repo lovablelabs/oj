@@ -158,7 +158,7 @@ async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         if (!req.url.startsWith("/__styled/")) return next();
-        const html = `<html><head><style>.p { background: url(@/bg.png) }</style></head><body></body></html>`;
+        const html = `<html><head><style>.p { background: url(@/bg.png) } .r { background: url(./bg.png) }</style></head><body></body></html>`;
         res.setHeader("content-type", "text/html");
         res.end(await server.transformIndexHtml(req.url, html));
       });
@@ -175,10 +175,15 @@ async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
              </head><body>\n\
              <div style=\"background: url(./src/bg.png)\"></div>\n\
              <p style=\"color: red\"></p>\n\
+             <i style=\"background: url(./missing.png)\"></i>\n\
              </body></html>",
         ),
     ]);
     std::fs::write(app.root.join("src/bg.png"), [7u8; 4]).unwrap();
+    // Beside the middleware page's path: Vite still never resolves a
+    // relative url from a page with no file.
+    std::fs::create_dir_all(app.root.join("__styled")).unwrap();
+    std::fs::write(app.root.join("__styled/bg.png"), [7u8; 4]).unwrap();
     let src = serde_json::to_string(&app.root.join("src").to_string_lossy()).unwrap();
     app.write(&[("vite.config.js", STYLED.replace("SRC", &src).as_str())]);
     let server = app.serve().await;
@@ -203,6 +208,10 @@ async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
         html.contains("<p style=\"color: red\">"),
         "an attribute with no url stays as written:\n{html}"
     );
+    assert!(
+        html.contains("<i style=\"background: url(./missing.png)\">"),
+        "a url naming no file stays as written:\n{html}"
+    );
 
     middleware_ready(&server).await;
     let page = server.get("/__styled/Card").await;
@@ -210,6 +219,11 @@ async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
     assert!(
         page.body.contains("/src/bg.png") && page.body.contains(".from-plugin"),
         "a middleware page's style compiles too:\n{}",
+        page.body
+    );
+    assert!(
+        page.body.contains("url(\"./bg.png\")"),
+        "a page with no file keeps its relative urls:\n{}",
         page.body
     );
 }

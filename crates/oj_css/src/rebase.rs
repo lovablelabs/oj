@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use lightningcss::dependencies::Dependency;
 use regex::Regex;
 
-use crate::path::{is_external, join_relative, posix_join, relative_path, split_query};
+use crate::path::{is_external, join_relative, normalize, posix_join, relative_path, split_query};
 use crate::resolve::CssResolve;
 
 /// Rewrite the relative urls of a stylesheet in `from_dir` so they are
@@ -342,13 +342,54 @@ pub(crate) fn css_base_dir(url: &str) -> Option<String> {
 
 /// The server url a spec in a stylesheet served from `base_dir` stands for:
 /// an alias becomes the file's url, a relative path joins `base_dir`, the
-/// rest (root-absolute, external, data:) is kept.
+/// rest (root-absolute, external, data:) is kept. Like Vite's dev url
+/// resolver, a relative path is rewritten only when it names a file: one that
+/// resolves nowhere (a missing file, a sheet whose url has no directory on
+/// disk, such as a page's with no file) stays as written.
 pub(crate) fn dev_url_of(spec: &str, base_dir: &str, resolve: &CssResolve<'_>) -> String {
     let (path, suffix) = split_query(spec);
     if let Some(file) = resolve.alias_path(path) {
         return format!("{}{suffix}", resolve.dev_url(&file));
     }
-    rebase_relative(spec, base_dir).unwrap_or_else(|| spec.to_string())
+    match rebase_relative(spec, base_dir) {
+        Some(url) if relative_resolves(path, base_dir, resolve) => url,
+        _ => spec.to_string(),
+    }
+}
+
+/// Whether relative `path` names a file from the directory `base_dir` is
+/// served from. Without a root there is no disk to ask, and it is assumed to.
+fn relative_resolves(path: &str, base_dir: &str, resolve: &CssResolve<'_>) -> bool {
+    let Some(root) = resolve.root else {
+        return true;
+    };
+    let dir = match base_dir.strip_prefix("/@fs") {
+        Some(abs) if abs.starts_with('/') => Path::new(abs).to_path_buf(),
+        _ => root.join(base_dir.trim_start_matches('/')),
+    };
+    // Vite resolves `decodeURI(url)` minus its `#fragment`.
+    let path = path.split('#').next().unwrap_or(path);
+    normalize(&dir.join(percent_decode(path))).is_file()
+}
+
+/// `decodeURI` for a path: `%XX` escapes decoded, a malformed one kept.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// A relative spec joined onto `base_dir`; None for anything not relative.
@@ -410,14 +451,26 @@ mod tests {
     use lightningcss::printer::PrinterOptions;
     use lightningcss::stylesheet::{ParserOptions, StyleSheet};
 
+    /// An app root holding `src/a.png`, `src/b.png`, `a.png` and
+    /// `__preview/a.png`, with `@` aliased to its `src`.
+    fn url_app(name: &str) -> (std::path::PathBuf, [(String, String); 1]) {
+        let root = std::env::temp_dir().join(format!("oj-css-urls-{name}-{}", std::process::id()));
+        for f in ["src/a.png", "src/b.png", "a.png", "__preview/a.png"] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let alias = [("@".to_string(), root.join("src").display().to_string())];
+        (root, alias)
+    }
+
     /// Each pair is a `style` attribute of a page at `/index.html` and what
-    /// Vite 8.2.1's dev transform writes for it (`@` aliased to `/app/src`),
-    /// quotes unescaped.
+    /// Vite 8.2.1's dev transform writes for it, quotes unescaped.
     #[test]
     fn style_attribute_urls_rewrite_like_vites() {
-        let alias = [("@".to_string(), "/app/src".to_string())];
+        let (root, alias) = url_app("attr");
         let resolve = CssResolve {
-            root: Some(Path::new("/app")),
+            root: Some(&root),
             alias: &alias,
             ..CssResolve::default()
         };
@@ -450,6 +503,10 @@ mod tests {
                 r#"background: url(./src/b.png) no-repeat, image-set( "./src/a.png"   1x ,"./src/b.png" 2x )"#,
                 r#"background: url(/src/b.png) no-repeat, image-set(url("/src/a.png") 1x, url("/src/b.png") 2x)"#,
             ),
+            (
+                r#"background: url(./missing.png), url(./src/a.png), url(./a.png), url("./src/a.png?v=1#x")"#,
+                r#"background: url(./missing.png), url(/src/a.png), url(/a.png), url("/src/a.png?v=1#x")"#,
+            ),
         ];
         for (attr, vite) in cases {
             let url = "/index.html?html-proxy&inline-css&style-attr&index=0.css";
@@ -459,18 +516,59 @@ mod tests {
                 "{attr}"
             );
         }
+        // A page with no file: nothing relative resolves, even `./a.png`
+        // beside its path; an alias still does.
+        let url = "/@id/__x00__/__preview/Card?html-proxy&inline-css&style-attr&index=0.css";
+        assert_eq!(
+            rewrite_style_attribute_dev(
+                url,
+                "background: url(./missing.png), url(./src/a.png), url(./a.png), url(@/a.png)",
+                &resolve
+            ),
+            "background: url(./missing.png), url(./src/a.png), url(./a.png), url(/src/a.png)"
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
     fn a_sheets_image_set_strings_print_as_urls_like_vites() {
+        let (root, _) = url_app("sheet");
+        let resolve = CssResolve {
+            root: Some(&root),
+            ..CssResolve::default()
+        };
         let src = r#".s { background-image: image-set("./a.png" 1x, url(./b.png) 2x) }"#;
-        let css = compile_css_dev("/src/x.css", src, false, &CssResolve::default())
+        let css = compile_css_dev("/src/x.css", src, false, &resolve)
             .unwrap()
             .css;
         assert!(
             css.contains(r#"image-set(url("/src/a.png") 1x, url("/src/b.png") 2x)"#),
             "{css}"
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Vite's dev url resolver rewrites a relative url only when it resolves
+    /// to a file; a missing one, or any in a sheet whose url has no directory
+    /// on disk, stays as written.
+    #[test]
+    fn a_sheets_relative_urls_resolve_only_to_files() {
+        let (root, _) = url_app("miss");
+        let resolve = CssResolve {
+            root: Some(&root),
+            ..CssResolve::default()
+        };
+        let src = ".a { background: url(./a.png) } .m { background: url(./missing.png) }";
+        let css = compile_css_dev("/src/x.css", src, false, &resolve)
+            .unwrap()
+            .css;
+        assert!(css.contains(r#"url("/src/a.png")"#), "{css}");
+        assert!(css.contains(r#"url("./missing.png")"#), "{css}");
+        let css = compile_css_dev("/@id/__x00__virtual.css", src, false, &resolve)
+            .unwrap()
+            .css;
+        assert!(css.contains(r#"url("./a.png")"#), "{css}");
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// The sequential `str::replace` loop `substitute_placeholders` replaced.
