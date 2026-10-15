@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The embedded JavaScript engine is now Piu (github.com/raphamorim/piu), a Deno fork running on JavaScriptCore instead of V8, consumed as the published `piu_*` crates. The vendored `oj_deno_napi`, `oj_deno_runtime`, `oj_deno_process` and `oj_deno_snapshots` forks are gone: the piu crates carry the same patches (napi finalizer registry, fs_events watcher scaling, process spawn hook and own groups). Startup snapshots no longer exist, with their whole pipeline (`OJ_SNAPSHOT_ARCHIVE`, `tools/gen-snapshot-pin.sh`, the release snapshot-pin job and the flake's pinned bundles): Piu embeds the extension sources in the binary instead, which also removes the one non-reproducible build step. Building now needs a static JSCOnly WebKit (`JSC_VENDOR_BUILD_DIR` + `WEBKIT_SRC_DIR`); the nix package needs a prebuilt WebKit bundle pin before it builds again.
 
+## [0.2.35] - 2026-10-15
+
 ### Fixed
 
 - A dependency in a `node_modules` above the app root (a workspace's hoisted install) is served however its request arrives. oj allowed such a package only once a module importing it had compiled, so a page reloading into a restarted dev server, which fetches the imports it remembers before their importers, got a 403 for `react-dom`'s `scheduler` and rendered nothing. Every `node_modules` on the root's lookup path is now allowed from boot, as Vite serves what its resolver resolves.
