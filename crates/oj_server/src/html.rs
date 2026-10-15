@@ -126,7 +126,14 @@ pub(crate) fn insert_after_head(html: &str, tags: &str) -> String {
 pub(crate) async fn serve_index_html(state: &ServerState, original_url: &str) -> Response {
     match tokio::fs::read(state.root.join("index.html")).await {
         Ok(bytes) => {
-            serve_html(state, bytes, "/index.html", original_url, &state.root.join("index.html")).await
+            serve_html(
+                state,
+                bytes,
+                "/index.html",
+                original_url,
+                &state.root.join("index.html"),
+            )
+            .await
         }
         Err(_) => (StatusCode::NOT_FOUND, "oj: index.html not found").into_response(),
     }

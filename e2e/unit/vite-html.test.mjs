@@ -158,9 +158,7 @@ viteTest("the dev HTML transform matches Vite's byte for byte", async () => {
         bind: (_p, handler) => ({ fn: handler }),
         proxy,
         moduleGraph: server.environments.client.moduleGraph,
-        clientTags: [
-          { tag: "script", attrs: { type: "module", src: "/@vite/client" }, injectTo: "head-prepend" },
-        ],
+        clientTags: [{ tag: "script", attrs: { type: "module", src: "/@vite/client" }, injectTo: "head-prepend" }],
       });
       assert.equal(actual, expected, page.name);
       // Each lifted module loads the same code from both caches.
@@ -192,10 +190,16 @@ test("scanning finds elements the way parse5 does", () => {
     { name: "type", value: "module" },
     { name: "src", value: "a.js" },
   ]);
-  assert.equal(html.slice(script.sourceCodeLocation.attrs.src.startOffset, script.sourceCodeLocation.attrs.src.endOffset), "src=a.js");
+  assert.equal(
+    html.slice(script.sourceCodeLocation.attrs.src.startOffset, script.sourceCodeLocation.attrs.src.endOffset),
+    "src=a.js",
+  );
   assert.equal(style.childNodes[0].value, "p{}");
   // A raw-text element ends only at its own end tag.
   assert.equal(classic.childNodes[0].value, "if (a </script) {}");
-  assert.equal(html.slice(classic.sourceCodeLocation.startOffset, classic.sourceCodeLocation.endOffset), "<script>if (a </script) {}</script >");
+  assert.equal(
+    html.slice(classic.sourceCodeLocation.startOffset, classic.sourceCodeLocation.endOffset),
+    "<script>if (a </script) {}</script >",
+  );
   assert.deepEqual(img.attrs[0], { name: "alt", value: '"q&' });
 });

@@ -57,9 +57,20 @@ async fn an_inline_module_in_index_html_is_served_as_an_html_proxy_module() {
     ]);
     let server = app.serve().await;
     let html = server.text("/").await;
-    assert_eq!(src_of_proxy(&html), "/index.html?html-proxy&index=0.js", "{html}");
-    assert!(!html.contains("import { mark }"), "the inline body was lifted out:\n{html}");
-    assert_eq!(html.matches("/@oj/client.js").count(), 1, "one dev client:\n{html}");
+    assert_eq!(
+        src_of_proxy(&html),
+        "/index.html?html-proxy&index=0.js",
+        "{html}"
+    );
+    assert!(
+        !html.contains("import { mark }"),
+        "the inline body was lifted out:\n{html}"
+    );
+    assert_eq!(
+        html.matches("/@oj/client.js").count(),
+        1,
+        "one dev client:\n{html}"
+    );
 
     let module = server.get("/index.html?html-proxy&index=0.js").await;
     assert_eq!(module.status, 200, "{}", module.body);
@@ -76,14 +87,21 @@ async fn a_middleware_page_gets_the_dev_client_and_a_loadable_proxy_module() {
         ("package.json", r#"{"name":"preview-app","private":true}"#),
         ("oj.plugins.mjs", PLUGINS),
         ("src/mark.js", "export const mark = \"preview-ok\";\n"),
-        ("index.html", "<!doctype html><html><head></head><body></body></html>"),
+        (
+            "index.html",
+            "<!doctype html><html><head></head><body></body></html>",
+        ),
     ]);
     let server = app.serve().await;
     middleware_ready(&server).await;
 
     let page = server.get("/__preview/Badge").await;
     assert_eq!(page.status, 200, "{}", page.body);
-    assert!(page.body.contains("/@oj/client.js"), "dev client injected:\n{}", page.body);
+    assert!(
+        page.body.contains("/@oj/client.js"),
+        "dev client injected:\n{}",
+        page.body
+    );
     // The page has no file: its proxy is a `\0` id behind /@id/, as in Vite.
     let src = src_of_proxy(&page.body);
     assert_eq!(src, "/@id/__x00__/__preview/Badge?html-proxy&index=0.js");

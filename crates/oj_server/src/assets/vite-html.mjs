@@ -412,7 +412,11 @@ function extractImportExpressionFromClassicScript(scriptTextNode) {
     const [, [urlStart, urlEnd]] = match.indices;
     const start = urlStart + 1;
     const end = urlEnd - 1;
-    scriptUrls.push({ start: start + startOffset, end: end + startOffset, url: scriptTextNode.value.slice(start, end) });
+    scriptUrls.push({
+      start: start + startOffset,
+      end: end + startOffset,
+      url: scriptTextNode.value.slice(start, end),
+    });
   }
   return scriptUrls;
 }
@@ -477,7 +481,8 @@ function injectToBody(html, tags, prepend = false) {
   if (prepend) {
     if (bodyPrependInjectRE.test(html))
       return html.replace(bodyPrependInjectRE, (match, p1) => `${match}\n${serializeTags(tags, incrementIndent(p1))}`);
-    if (headInjectRE.test(html)) return html.replace(headInjectRE, (match, p1) => `${match}\n${serializeTags(tags, p1)}`);
+    if (headInjectRE.test(html))
+      return html.replace(headInjectRE, (match, p1) => `${match}\n${serializeTags(tags, p1)}`);
     return prependInjectFallback(html, tags);
   }
   if (bodyInjectRE.test(html))
@@ -772,7 +777,18 @@ export function createDevHtmlHook({ config, proxy, moduleGraph, clientTags }) {
 }
 
 /** Vite's createDevHtmlTransformFn hook order. */
-export function devHtmlHooks({ preHooks, normalHooks, postHooks, root, env, envPrefix, nonce, devHtmlHook, warn, warnOnce }) {
+export function devHtmlHooks({
+  preHooks,
+  normalHooks,
+  postHooks,
+  root,
+  env,
+  envPrefix,
+  nonce,
+  devHtmlHook,
+  warn,
+  warnOnce,
+}) {
   const own = (fn) => ({ fn, thisArg: undefined });
   return [
     own(preImportMapHook(root, warnOnce)),

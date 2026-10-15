@@ -3669,7 +3669,8 @@ const htmlProxy = createHtmlProxy(() => resolvedConfig?.root ?? initial.config?.
 function withHtmlProxy(entries, hook, id) {
   if (env.command === "build" || !isHtmlProxyRE.test(id)) return entries;
   let at = 0;
-  while (at < entries.length && (entries[at].rank < 0 || (entries[at].rank === 0 && entries[at].p.enforce === "pre"))) at++;
+  while (at < entries.length && (entries[at].rank < 0 || (entries[at].rank === 0 && entries[at].p.enforce === "pre")))
+    at++;
   const entry = { p: htmlProxy.plugin, fn: htmlProxy.plugin[hook].handler, rank: 0 };
   return [...entries.slice(0, at), entry, ...entries.slice(at)];
 }
