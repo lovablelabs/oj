@@ -8,12 +8,15 @@
 //! integration test so build.rs's exported-symbols link flag applies to the
 //! napi addons a plugin host loads.
 
+mod assets;
 mod browser;
+mod browser_errors;
 mod build_config_flag;
 mod config_flag;
 mod config_function;
 mod config_proxy;
 mod config_temp_file;
+mod config_wrapper;
 mod css_import_inline;
 mod css_preprocessor_options;
 mod css_url_inline;
@@ -22,12 +25,19 @@ mod dev_condition;
 mod dev_cors_host;
 mod dev_mode;
 mod dev_process_env;
+mod dynamic_import;
+mod hmr_client_behaviors;
+mod hmr_dep_update;
 mod hmr_disabled;
+mod hmr_gate;
 mod hmr_hot_accept;
+mod hmr_protocol;
 mod host_binding;
+mod html_entry;
 mod html_env;
 mod jsx_import_source;
 mod lazy_flag;
+mod lingui_macro_shim;
 mod listen;
 mod new_url_asset;
 mod optimize_linked;
@@ -42,10 +52,17 @@ mod plugin_skip;
 mod plugin_ws;
 mod plugin_ws_execute;
 mod postcss_config_discovery;
+mod preprocessors;
+mod query_assets;
+mod svelte;
+mod svgr;
+mod tailwind_js_import;
 mod vite_hmr_socket;
 mod warm_transform_virtual;
+mod wasm;
 mod watch_reads;
 mod watcher;
+mod worker_modes;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -141,6 +158,12 @@ pub fn fixture(pkg: &str) -> Option<PathBuf> {
 macro_rules! require_fixture {
     ($($pkg:literal),+) => {
         $(if $crate::fixture($pkg).is_none() {
+            // CI installs the fixture; a skip there would pass the test unrun.
+            assert!(
+                std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+                "OJ_REQUIRE_FIXTURES is set but fixture {} is not installed",
+                $pkg
+            );
             eprintln!("skipping: fixture {} not installed", $pkg);
             return;
         })+

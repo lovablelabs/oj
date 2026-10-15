@@ -6049,6 +6049,7 @@ dependencies = [
  "rolldown_std_utils",
  "rolldown_tracing",
  "rolldown_utils",
+ "serde",
  "serde_json",
  "string_wizard",
  "tokio",
