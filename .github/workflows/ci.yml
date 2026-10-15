@@ -147,7 +147,7 @@ jobs:
       - name: unresolved relative import errors, creating the file recovers
         run: node e2e/hmr-unresolved-import.mjs
       - name: an env-file edit restarts dev and the open page reloads
-        run: node e2e/hmr-client-behaviors.mjs
+        run: for i in 1 2 3 4; do echo "== iter $i"; node e2e/hmr-client-behaviors.mjs || f=1; done; exit ${f:-0}
       - name: lingui macros warn they get the runtime identity shim
         run: node e2e/lingui-macro-shim.mjs
       - name: server.proxy regex (^) contexts match path plus query

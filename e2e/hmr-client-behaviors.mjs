@@ -46,6 +46,13 @@ try {
   await waitUp(`http://localhost:${PORT}/`);
   const browser = await chromium.launch();
   const page = await browser.newPage();
+  const t0 = Date.now();
+  const diag = (m) => console.log(`DIAG +${Date.now() - t0}ms ${m}`);
+  page.on("console", (m) => diag(`console.${m.type()}: ${m.text()}`));
+  page.on("pageerror", (e) => diag(`pageerror: ${e.stack || e.message}`));
+  page.on("requestfailed", (r) => diag(`requestfailed: ${r.url()} ${r.failure()?.errorText}`));
+  page.on("response", (r) => r.status() >= 400 && diag(`response ${r.status()}: ${r.url()}`));
+  page.on("framenavigated", (f) => f === page.mainFrame() && diag(`navigated: ${f.url()}`));
   try {
     await page.goto(`http://localhost:${PORT}/`, { waitUntil: "networkidle", timeout: 30000 });
     await page.locator("h1", { hasText: "v1" }).waitFor({ timeout: 20000 });
@@ -67,6 +74,13 @@ try {
     if (!reloaded) throw new Error("a .env edit never reloaded the page");
     await page.locator("h1", { hasText: "v1" }).waitFor({ timeout: 30000 });
     console.log("HMR-CLIENT-BEHAVIORS E2E PASSED");
+  } catch (e) {
+    diag(`root html: ${await page.evaluate(() => document.documentElement.outerHTML.slice(0, 1500)).catch((x) => x.message)}`);
+    for (const u of ["/", "/src/main.tsx", "/src/App.tsx"]) {
+      const r = await fetch(`http://localhost:${PORT}${u}`).catch((x) => ({ status: x.message, text: async () => "" }));
+      diag(`fetch ${u} -> ${r.status}: ${(await r.text()).slice(0, 600)}`);
+    }
+    throw e;
   } finally {
     await browser.close();
   }
