@@ -9,9 +9,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { asset, repo } from "./harness.mjs";
 
 const fixture = join(repo, "e2e/fixtures/start-app");
@@ -103,3 +112,61 @@ maybe("an app with a start entry gets the framework's startInstance footer", () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The footer start-plugin-core itself builds, against the installed package's
+// internals: a TanStack upgrade that changes the footer or the start-entry
+// lookup fails here instead of flipping committed route trees under `oj dev`.
+// A moved internal file fails too, on purpose.
+const spc = join(fixture, "node_modules/@tanstack/start-plugin-core/dist/esm");
+async function upstreamFooter(dir, generatedRouteTree) {
+  const { buildRouteTreeFileFooterFromConfig } = await import(join(spc, "start-router-plugin/route-tree-footer.js"));
+  const { resolveStartEntryPlan } = await import(join(spc, "planning.js"));
+  const plan = resolveStartEntryPlan({
+    root: dir,
+    startConfig: { srcDirectory: "src", start: {}, router: {}, client: {}, server: {} },
+    defaultEntryPaths: {},
+  });
+  return buildRouteTreeFileFooterFromConfig({
+    generatedRouteTreePath: join(dir, generatedRouteTree),
+    corePluginOpts: { framework: "react" },
+    getConfig: () => ({ startConfig: { router: {} }, resolvedStartConfig: plan }),
+  }).join("\n");
+}
+
+const LAYOUTS = {
+  "no start entry": {},
+  "src/start.ts": { "src/start.ts": "" },
+  "src/start.tsx": { "src/start.tsx": "" },
+  ".js outranks .tsx": { "src/start.tsx": "", "src/start.js": "" },
+  "src/start.mts": { "src/start.mts": "" },
+  "a directory index is not an entry": { "src/start/index.ts": "" },
+  "src/router.ts": { "src/start.ts": "", "src/router.ts": "export function getRouter() {}\n", "src/router.tsx": null },
+  "a nested generatedRouteTree": {
+    "src/start.ts": "",
+    "src/app/.keep": "",
+    "tsr.config.json": JSON.stringify({ generatedRouteTree: "./src/app/routeTree.gen.ts" }),
+  },
+};
+
+for (const [name, files] of Object.entries(LAYOUTS)) {
+  maybe(`the footer matches start-plugin-core's: ${name}`, async () => {
+    const dir = realpathSync(app("upstream"));
+    try {
+      const all = { "src/router.tsx": "export function getRouter() {}\n", ...files };
+      for (const [f, body] of Object.entries(all)) {
+        if (body === null) continue;
+        mkdirSync(dirname(join(dir, f)), { recursive: true });
+        writeFileSync(join(dir, f), body);
+      }
+      const treePath = files["tsr.config.json"]
+        ? JSON.parse(files["tsr.config.json"]).generatedRouteTree
+        : "./src/routeTree.gen.ts";
+      generate(dir);
+      const tree = readFileSync(join(dir, treePath), "utf8");
+      const want = await upstreamFooter(dir, treePath);
+      assert.ok(tree.trimEnd().endsWith(want), `want tail:\n${want}\n\ngot tail:\n${tree.slice(-600)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
