@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writ
 import { dirname, isAbsolute, join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  freeRolldownOutputs,
   importPkg,
   importOjRolldown,
   viteEnvDefine,
@@ -355,6 +356,9 @@ async function main() {
   writeFileSync(join(HERE, "css-urls.json.tmp"), JSON.stringify(cssUrls));
   renameSync(join(HERE, "css-urls.json.tmp"), join(HERE, "css-urls.json"));
   phase("client bundle: outputs written");
+  // The session's bundler idles until the next edit: hand the outputs' native
+  // memory back now (Linux, 3k-module app: idle ~570MB -> ~455MB).
+  await freeRolldownOutputs(APP, ["vite", "@tanstack/react-start"], result.output);
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundled (${result.output.length} files)\n`);
 }
 

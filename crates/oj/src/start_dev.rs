@@ -1782,13 +1782,15 @@ fn list_src_ts_files(root: &Path) -> Vec<PathBuf> {
 
 /// Runs a Start codegen script in a fresh `oj start-script` child process
 /// (the embedded engine, one process per run), replacing the long-lived
-/// ScriptEngine the dev server briefly used. In-process was a leak: rolldown's
-/// binding retains native memory per `build()` invocation — on an ~18k-module
-/// app ~650MB PER CLIENT REBUNDLE — and neither `bundler.close()`, a forced
-/// full GC, nor tearing the whole isolate down releases it; only process exit
-/// does. That is also exact parity with the retired one-shot `node` spawns,
-/// whose per-run process death kept the dev server flat. The env pairs travel
-/// on stdin (they used to be spawn env; argv would print values in `ps`).
+/// ScriptEngine the dev server briefly used. In-process, rolldown's binding
+/// keeps native memory resident after every `build()` (its mimalloc holds
+/// finished builds' pages, rolldown/rolldown#10985) on top of the dev server
+/// itself; only process exit releases all of it, as the retired one-shot
+/// `node` spawns did. The client bundle is the exception: it runs on one
+/// long-lived [`ClientBundler`] for plugin state, which frees each build's
+/// outputs and purges on free to stay near one build's footprint. The env
+/// pairs travel on stdin (they used to be spawn env; argv would print values
+/// in `ps`).
 fn run_script_process(
     root: &Path,
     script: &Path,
@@ -1917,10 +1919,12 @@ impl ClientBundler {
                 oj_server::plugins::PARENT_PID_ENV,
                 std::process::id().to_string(),
             )
-            // rolldown's mimalloc keeps the pages of finished builds resident;
-            // purging on free holds a long-lived bundler near one build's
-            // footprint (Linux, 3k-module app: ~580MB flat over 15 rebundles
-            // vs ~800MB by default, no measurable rebundle cost).
+            // rolldown's mimalloc keeps the pages of finished builds resident
+            // (rolldown/rolldown#10985); purging on free holds a long-lived
+            // bundler near one build's footprint. Linux, 3k-module app, idle
+            // after 15 rebundles: ~455MB at 0, ~495MB at 10ms, ~650MB at
+            // 1000ms, still growing past 900MB with purging off; no
+            // measurable rebundle cost.
             .env(
                 "MIMALLOC_PURGE_DELAY",
                 oj_env::get().var("MIMALLOC_PURGE_DELAY").unwrap_or("0"),

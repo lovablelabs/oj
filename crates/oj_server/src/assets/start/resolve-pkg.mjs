@@ -152,6 +152,27 @@ export async function importOjRolldown(root, preferred = []) {
   }
 }
 
+// A build's outputs hold their code in rolldown's native memory until the JS
+// wrappers are garbage collected, and a bundler that idles between rebundles
+// allocates nothing, so V8 never collects them (rolldown/rolldown#11189).
+// `freeExternalMemory` (rolldown/experimental) releases each one now; call it
+// once the outputs are written. Returns how many were freed: none from a
+// rolldown without the API, which keeps the old behavior.
+export async function freeRolldownOutputs(root, preferred, output) {
+  let free;
+  try {
+    const main = resolveOjRolldown(root, preferred);
+    const experimental = createRequire(main).resolve("rolldown/experimental");
+    ({ freeExternalMemory: free } = await import(pathToFileURL(experimental).href));
+  } catch {
+    return 0;
+  }
+  if (typeof free !== "function") return 0;
+  let freed = 0;
+  for (const o of output) if (free(o)?.freed) freed++;
+  return freed;
+}
+
 /// JSX transform options for rolldown / oxc-transform from `OJ_JSX` (the config's
 /// `oxc.jsx` / `esbuild.jsx*`, serialized by oj). Defaults to the automatic React
 /// runtime; a file's own `@jsx*` pragma comments still win inside oxc.
