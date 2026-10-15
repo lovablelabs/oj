@@ -45,6 +45,10 @@ fs.writeFileSync(
   'import { createStart } from "@tanstack/react-start";\nexport const startInstance = createStart(() => ({}));\n',
 );
 const tree = path.join(app, "src", "routeTree.gen.ts");
+// A fresh checkout has no tree (it is gitignored), but earlier dev runs on the
+// fixture leave one behind with whatever footer they wrote; copied along, the
+// poller would count that stale file as a write.
+fs.rmSync(tree, { force: true });
 
 // The framework's own footer and start-entry lookup, from the installed
 // package's internals (a moved file fails here loudly, which is the point).
