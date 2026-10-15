@@ -18,9 +18,16 @@ import { createHash } from "node:crypto";
 import { readFile, stat as fsStat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, isAbsolute, join, relative, resolve as pathResolve } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import { asNode } from "./vite-config-node.mjs";
+import {
+  applyHtmlTransforms,
+  createHtmlProxy,
+  isHtmlProxyRE,
+  resolveHtmlTransforms,
+  transformDevHtml,
+} from "./vite-html.mjs";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format as formatUtil, stripVTControlCharacters } from "node:util";
@@ -3022,7 +3029,7 @@ async function setupConfigureServer() {
     // which is how it already handles a config-file change.
     restart: async () => ojServerEvent("restart"),
     close: async () => {},
-    transformIndexHtml: async (_url, html) => transformIndexHtml(html),
+    transformIndexHtml: async (url, html, originalUrl) => devTransformIndexHtml(url, html, originalUrl),
     transformRequest: async () => null,
     ssrLoadModule: async () => {
       throw new Error("oj: server.ssrLoadModule is not available in configureServer");
@@ -3601,7 +3608,7 @@ async function resolveIdFull(source, importer, opts) {
   };
   const skip = opts && opts.skip;
   const skipCalls = (opts && opts.skipCalls) || null;
-  for (const { p, fn: handler } of pluginsWithHook("resolveId")) {
+  for (const { p, fn: handler } of withHtmlProxy(pluginsWithHook("resolveId"), "resolveId", source)) {
     if (skip && p === skip) continue;
     // Vite merges skipCalls into the skip set: a plugin is skipped when its
     // recorded call re-issues the same id + importer, or when it already
@@ -3654,12 +3661,25 @@ async function optimizeScan(inputJson) {
   return deps == null ? null : JSON.stringify(deps);
 }
 
+// Vite's vite:html-inline-proxy, which loads the inline module scripts the dev
+// HTML transform lifts out. It sits among Vite's core plugins, after every
+// `enforce: "pre"` plugin; it joins a hook's chain only for an html-proxy id in
+// dev, so the plugin list (and every hook gate derived from it) is unchanged.
+const htmlProxy = createHtmlProxy(() => resolvedConfig?.root ?? initial.config?.root ?? process.cwd());
+function withHtmlProxy(entries, hook, id) {
+  if (env.command === "build" || !isHtmlProxyRE.test(id)) return entries;
+  let at = 0;
+  while (at < entries.length && (entries[at].rank < 0 || (entries[at].rank === 0 && entries[at].p.enforce === "pre"))) at++;
+  const entry = { p: htmlProxy.plugin, fn: htmlProxy.plugin[hook].handler, rank: 0 };
+  return [...entries.slice(0, at), entry, ...entries.slice(at)];
+}
+
 // The load chain (Vite pluginContainer.load): `{ ssr }` options, the first
 // non-null result returned whole (code, map, meta) and its meta folded into
 // the module info.
 async function loadFull(id) {
   const options = { ssr: environment.config?.consumer === "server" };
-  for (const { p, fn: handler } of pluginsWithHook("load")) {
+  for (const { p, fn: handler } of withHtmlProxy(pluginsWithHook("load"), "load", id)) {
     if (!hookIdMatches(p.load, id)) continue;
     let r;
     try {
@@ -3745,82 +3765,82 @@ function hotUpdatePlugins() {
   return out;
 }
 
-function escapeAttr(v) {
-  return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-}
-function renderTag(t) {
-  const attrs = Object.entries(t.attrs ?? {})
-    .map(([k, v]) => (v === true ? ` ${k}` : v === false || v == null ? "" : ` ${k}="${escapeAttr(v)}"`))
-    .join("");
-  const inner = t.children ?? "";
-  const voidTag = ["meta", "link", "base"].includes(t.tag);
-  return voidTag ? `<${t.tag}${attrs}>` : `<${t.tag}${attrs}>${inner}</${t.tag}>`;
-}
-
-function injectTags(html, tags) {
-  const at = { "head-prepend": [], head: [], "body-prepend": [], body: [] };
-  // Vite's default injection point is head-prepend, not head-append.
-  for (const t of tags) (at[t.injectTo ?? "head-prepend"] ?? at["head-prepend"]).push(renderTag(t));
-  const put = (h, marker, html2, after) => {
-    const i = h.indexOf(marker);
-    if (i === -1) return h + html2;
-    const at2 = after ? i + marker.length : i;
-    return h.slice(0, at2) + html2 + h.slice(at2);
-  };
-  html = put(html, "<head>", at["head-prepend"].join(""), true);
-  html = put(html, "</head>", at.head.join(""), false);
-  html = put(html, "<body>", at["body-prepend"].join(""), true);
-  html = put(html, "</body>", at.body.join(""), false);
-  return html;
-}
-
-function htmlHookRank(hook) {
-  const order = hook && typeof hook === "object" ? (hook.order ?? hook.enforce) : undefined;
-  return order === "pre" ? -1 : order === "post" ? 1 : 0;
-}
 // `ctxJson`: Vite's IndexHtmlTransformContext for this page. Dev (indexHtml
 // middleware): `{ path: url, filename: <abs file>, originalUrl }` plus the dev
 // server; build (html.ts): `{ path: "/" + rel, filename: <abs file>, bundle,
 // chunk }`. A throwing hook fails the request / build under Vite (the error
 // reaches the error middleware), so it is rethrown decorated, not swallowed.
 async function transformIndexHtml(html, ctxJson) {
-  let current = html;
   let htmlCtx = null;
   try {
     htmlCtx = ctxJson ? JSON.parse(ctxJson) : null;
   } catch {}
   if (!htmlCtx || typeof htmlCtx !== "object") htmlCtx = {};
   if (htmlCtx.path == null) htmlCtx.path = "/index.html";
+  if (env.command !== "build") return devTransformIndexHtml(htmlCtx.path, html, htmlCtx.originalUrl, htmlCtx);
   if (htmlCtx.filename == null)
     htmlCtx.filename = pathResolve(
       resolvedConfig?.root ?? initial.config?.root ?? process.cwd(),
       htmlCtx.path.replace(/^\//, ""),
     );
-  if (env.command !== "build" && devServer) htmlCtx.server = devServer;
-  // Honor per-hook order: 'pre' hooks run first, 'post' last (stable within a rank).
-  const entries = [];
-  for (const p of plugins) {
-    const fn = htmlHookFn(p);
-    if (!fn) continue;
-    entries.push({ p, fn, rank: htmlHookRank(p.transformIndexHtml) });
-  }
-  entries.sort((a, b) => a.rank - b.rank);
-  for (const { p, fn } of entries) {
-    let r;
-    try {
-      r = await fn.call(ctxFor(p), current, htmlCtx);
-    } catch (e) {
-      throw decoratePluginError(e, p, htmlCtx.filename);
-    }
-    if (r == null) continue;
-    if (typeof r === "string") current = r;
-    else if (Array.isArray(r)) current = injectTags(current, r);
-    else {
-      if (typeof r.html === "string") current = r.html;
-      if (Array.isArray(r.tags)) current = injectTags(current, r.tags);
-    }
-  }
-  return current;
+  const [preHooks, normalHooks, postHooks] = resolveHtmlTransforms(plugins, bindHtmlHook);
+  return applyHtmlTransforms(html, [...preHooks, ...normalHooks, ...postHooks], htmlCtx, htmlWarn);
+}
+
+// A plugin's transformIndexHtml handler with its plugin context, its error
+// decorated with the plugin name like every other hook's.
+function bindHtmlHook(p, handler) {
+  return {
+    async fn(html, ctx) {
+      try {
+        return await handler.call(ctxFor(p), html, ctx);
+      } catch (e) {
+        throw decoratePluginError(e, p, ctx.filename);
+      }
+    },
+  };
+}
+const htmlWarn = (msg) => {
+  const logger = resolvedConfig?.logger;
+  if (logger && typeof logger.warn === "function") logger.warn(msg);
+  else process.stderr.write(`${msg}\n`);
+};
+const htmlWarned = new Set();
+const htmlWarnOnce = (msg) => {
+  if (htmlWarned.has(msg)) return;
+  htmlWarned.add(msg);
+  htmlWarn(msg);
+};
+
+// Vite's createDevHtmlTransformFn: every dev page and `server.transformIndexHtml`.
+// The dev client oj serves stands where Vite injects `/@vite/client`. `extra`
+// carries what the Rust page server knows exactly: the file, and the env map
+// and CSP nonce it derives from the same defines and config Vite reads.
+async function devTransformIndexHtml(url, html, originalUrl, extra = {}) {
+  const config = { ...(resolvedConfig ?? {}) };
+  config.root = config.root ?? initial.config?.root ?? process.cwd();
+  const base = config.base || "/";
+  return transformDevHtml({
+    url,
+    html,
+    originalUrl,
+    filename: extra.filename,
+    server: devServer,
+    config,
+    plugins,
+    bind: bindHtmlHook,
+    proxy: htmlProxy,
+    moduleGraph,
+    clientTags: ["/@oj/refresh-preamble.js", "/@oj/client.js"].map((src) => ({
+      tag: "script",
+      attrs: { type: "module", src: posix.join(base, src) },
+      injectTo: "head-prepend",
+    })),
+    env: extra.ojHtmlEnv ?? undefined,
+    nonce: extra.ojCspNonce ?? undefined,
+    warn: htmlWarn,
+    warnOnce: htmlWarnOnce,
+  });
 }
 
 // A throwing lifecycle hook (buildStart, buildEnd, renderStart, generateBundle,

@@ -13,6 +13,8 @@ pub const DISCOVERED_DEPS_JS: &str = include_str!("../assets/discovered-deps.mjs
 /// the app's config file: the plugin host, the extractor, the preseed child and
 /// the Start scripts.
 pub const VITE_CONFIG_NODE_JS: &str = include_str!("../assets/vite-config-node.mjs");
+/// Sibling module (`./vite-html.mjs`) of the plugin host: Vite's dev HTML transform.
+pub const VITE_HTML_JS: &str = include_str!("../assets/vite-html.mjs");
 
 /// Idempotent, atomic materialization of an embedded asset into `dir`. The
 /// tmp name is unique per call: the plugin host and the config extractor

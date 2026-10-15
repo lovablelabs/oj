@@ -95,15 +95,48 @@ async fn serve_internal_route(
         return Some(serve_plugin_resolve(state, &id).await);
     }
     if let Some(seg) = path.strip_prefix("/@id/") {
-        let spec = decode_at_id(seg);
-        let importer = uri
-            .query()
-            .and_then(|q| q.strip_prefix("importer="))
-            .map(decode_at_id)
-            .unwrap_or_default();
+        // `/@id/<id>` names the whole id, query included (Vite's unwrapId of
+        // the url): `/@id/__x00__/page?html-proxy&index=0.js`. oj's own
+        // `?importer=` is the one query that is not part of the id.
+        let mut spec = decode_at_id(seg);
+        let importer = match uri.query() {
+            Some(q) => match q.strip_prefix("importer=") {
+                Some(importer) => decode_at_id(importer),
+                None => {
+                    spec = at_id_with_query(&spec, q);
+                    String::new()
+                }
+            },
+            None => String::new(),
+        };
         return Some(serve_plugin_id(state, &spec, &importer).await);
     }
     None
+}
+
+/// A `/@id/` id with its url query, minus the HMR timestamp and the `import`
+/// flag, which Vite's transform middleware strips before resolving.
+fn at_id_with_query(spec: &str, query: &str) -> String {
+    let joined = strip_hmr_timestamp(&format!("{spec}?{query}"));
+    let Some((id, query)) = joined.split_once('?') else {
+        return joined;
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|kv| *kv != "import" && *kv != "import=")
+        .collect();
+    if kept.is_empty() {
+        id.to_string()
+    } else {
+        format!("{id}?{}", kept.join("&"))
+    }
+}
+
+/// The original request url (Vite's `req.originalUrl`): path and query.
+fn original_url(uri: &Uri) -> String {
+    uri.path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| uri.path().to_string())
 }
 
 /// The file a request names: a gated `/@fs` path, or `rel` under the root or
@@ -153,7 +186,9 @@ async fn serve_missing(
             .and_then(|c| locate(&state.root, state.public_dir.as_deref(), &c))
         {
             return match tokio::fs::read(&page).await {
-                Ok(bytes) => serve_html(state, bytes, &format!("/{rel}"), &page).await,
+                Ok(bytes) => {
+                    serve_html(state, bytes, &format!("/{rel}"), &original_url(uri), &page).await
+                }
                 Err(_) => {
                     (StatusCode::NOT_FOUND, format!("oj: no such file: /{rel}")).into_response()
                 }
@@ -161,7 +196,7 @@ async fn serve_missing(
         }
     }
     if state.app_type == "spa" && is_spa_navigation(rel, headers) {
-        return serve_index_html(state).await;
+        return serve_index_html(state, &original_url(uri)).await;
     }
     (StatusCode::NOT_FOUND, format!("oj: no such file: /{rel}")).into_response()
 }
@@ -175,6 +210,15 @@ async fn serve_file(
 ) -> Response {
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
     let query = uri.query();
+    // An inline module the dev HTML transform lifted out of this page
+    // (`/index.html?html-proxy&index=0.js`): Vite's html-inline-proxy plugin
+    // resolves and loads it, then it compiles like any module.
+    if ext == "html" {
+        if let Some(q) = query.filter(|q| q.split('&').any(|kv| kv == "html-proxy" || kv.starts_with("html-proxy="))) {
+            let id = at_id_with_query(&url_of(&state.root, file), q);
+            return serve_plugin_id(state, &id, "").await;
+        }
+    }
     // A publicDir file is served verbatim, never compiled (Vite's servePublicMiddleware
     // runs before transform); only an explicit asset query still yields a module.
     let in_public = state
@@ -263,7 +307,10 @@ async fn serve_raw_file(state: &Arc<ServerState>, file: &Path, ext: &str) -> Res
         Err(err) => return read_error(err),
     };
     match ext {
-        "html" => serve_html(state, bytes, &url_of(&state.root, file), file).await,
+        "html" => {
+            let url = url_of(&state.root, file);
+            serve_html(state, bytes, &url, &url, file).await
+        }
         "css" => {
             let source = String::from_utf8_lossy(&bytes).into_owned();
             if !is_tailwind_css(&source) {
