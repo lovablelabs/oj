@@ -94,3 +94,36 @@ async fn an_edit_right_after_the_listener_binds_is_seen() {
         late.display()
     );
 }
+
+/// A plugin's hot-update hook that never settles parks that edit's HMR, not
+/// the watcher: a `.env` edit after it still restarts, as Vite keeps
+/// handling chokidar events while a hook awaits.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hung_hot_update_hook_never_holds_a_restart_back() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"hung-hook","version":"1.0.0"}"#),
+        (
+            "oj.plugins.mjs",
+            "export default [{ name: \"hang\", handleHotUpdate(ctx) {\n  if (ctx.file.endsWith(\"/src/main.js\")) return new Promise(() => {});\n} }];\n",
+        ),
+        ("src/main.js", "document.title = \"v1\";\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    server.text("/src/main.js").await;
+    app.write(&[("src/main.js", "document.title = \"v2\";\n")]);
+    // Let that batch reach the hook before the restart trigger lands.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    app.write(&[(".env", "VITE_X=1\n")]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut restarts = Vec::new();
+    while restarts.is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        restarts = crate::take_restarts();
+    }
+    assert_eq!(
+        restarts,
+        ["config/env changed"],
+        "the .env edit never restarted"
+    );
+}

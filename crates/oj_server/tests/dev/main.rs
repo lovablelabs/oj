@@ -179,6 +179,11 @@ pub struct Server {
 /// Restarts asked for so far, by any server in this process.
 static RESTARTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// The restarts asked for so far, cleared: for a test that expects one.
+pub fn take_restarts() -> Vec<String> {
+    std::mem::take(&mut *RESTARTS.lock().unwrap())
+}
+
 /// No test expects a restart, so any one fails the test whose server drops
 /// next (a panic on the asking thread would never reach a test).
 impl Drop for Server {

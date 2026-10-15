@@ -667,12 +667,20 @@ impl Batch {
     }
 }
 
+/// A batch for the HMR worker: its paths and the ones it saw created.
+type HmrBatch = (Vec<PathBuf>, std::collections::HashSet<PathBuf>);
+
 /// Act on a debounced batch: restart on config changes, full reload on
-/// tsconfig changes, otherwise gate or dispatch HMR.
+/// tsconfig changes, otherwise hand it to the HMR worker. That part awaits
+/// the plugin host (its watch files, `handleHotUpdate`), which can take as
+/// long as host init or a slow hook, so it never runs on the watcher thread:
+/// a batch parked there would hold every later one back, a `.env` restart
+/// included. Vite keeps delivering chokidar events while a hook awaits.
 fn handle_batch(
     state: &Arc<ServerState>,
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
+    hmr: &tokio::sync::mpsc::UnboundedSender<HmrBatch>,
 ) {
     // Config/.env can't be hot-applied (read once at startup): restart, as Vite does.
     if paths
@@ -695,18 +703,29 @@ fn handle_batch(
     if !state.hmr_enabled {
         return;
     }
-    if let Some(gate) = &state.hmr_gate {
-        if gate.hold(state, paths, false) {
-            return;
+    let _ = hmr.send((paths.to_vec(), created.clone()));
+}
+
+/// The batches' HMR, one at a time in arrival order, so updates still apply
+/// in the order the edits happened. Ends when the watcher drops its sender.
+async fn hmr_worker(
+    state: Arc<ServerState>,
+    mut batches: tokio::sync::mpsc::UnboundedReceiver<HmrBatch>,
+) {
+    while let Some((paths, created)) = batches.recv().await {
+        if let Some(gate) = &state.hmr_gate {
+            if gate.hold(&state, &paths, false) {
+                continue;
+            }
         }
-    }
-    let messages = state.rt.block_on(decide(state, paths, created));
-    if messages.is_empty() {
-        return;
-    }
-    state.dir_cache.lock().unwrap().clear();
-    for message in messages {
-        let _ = state.reload_tx.send(message);
+        let messages = decide(&state, &paths, &created).await;
+        if messages.is_empty() {
+            continue;
+        }
+        state.dir_cache.lock().unwrap().clear();
+        for message in messages {
+            let _ = state.reload_tx.send(message);
+        }
     }
 }
 
@@ -747,6 +766,8 @@ pub(crate) fn spawn_watcher(
                     return;
                 }
             };
+        let (hmr, batches) = tokio::sync::mpsc::unbounded_channel();
+        state.rt.spawn(hmr_worker(Arc::clone(&state), batches));
         let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
         if let Err(err) = watch_root(&mut watcher, &state.root, &cache_base) {
             eprintln!("oj: cannot watch {}: {err}", state.root.display());
@@ -817,7 +838,7 @@ pub(crate) fn spawn_watcher(
             }
             created.retain(|p| !seen_paths.contains(p));
             seen_paths.extend(paths.iter().cloned());
-            handle_batch(&state, &paths, &created);
+            handle_batch(&state, &paths, &created, &hmr);
         }
     });
 }
