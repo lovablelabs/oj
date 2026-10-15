@@ -489,6 +489,16 @@ test("mergeConfigLite twins are byte-identical across the two shipped assets", (
   );
 });
 
+// The Start scripts import the Node-style config loader from their own dir,
+// so it ships twice; the two copies must not drift.
+test("vite-config-node twins are byte-identical across the two asset dirs", () => {
+  assert.equal(
+    fs.readFileSync(asset("start/vite-config-node.mjs"), "utf8"),
+    fs.readFileSync(asset("vite-config-node.mjs"), "utf8"),
+    "assets/start/vite-config-node.mjs drifted from assets/vite-config-node.mjs",
+  );
+});
+
 // Same drift guard for the other twins the two assets carry: the NODE_ENV
 // rule (the extractor runs it per call against an isolated process.env on the
 // embedded engine while the plugin host still runs it at module scope in its

@@ -52,6 +52,7 @@ test("the extractor emits ssr.runnerBacked and rawResolve", () => {
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-rb-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "rb-app", type: "module" }));
     // A raw plugin list nests, as a plugin factory's return does.
     writeFileSync(
@@ -90,6 +91,7 @@ test("the extractor emits ssr.runnerBacked and rawResolve", () => {
 function extractorDir(prefix) {
   const base = mkdtempSync(join(tmpdir(), prefix));
   copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+  copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
   writeFileSync(
     join(base, "package.json"),
     JSON.stringify({ name: "fx", type: "module", dependencies: { vite: "*" } }),
@@ -113,6 +115,7 @@ test("extract() resolves even when a hook keeps the event loop alive", () => {
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-exit-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -140,6 +143,7 @@ test("config hooks see isSsrBuild false even when the file sets build.ssr under 
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-ssrbuild-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -347,6 +351,7 @@ const skipNoVite = hasRealVite ? false : "fixture vite not installed";
 function realViteDir(prefix) {
   const base = mkdtempSync(join(tmpdir(), prefix));
   copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+  copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
   writeFileSync(
     join(base, "package.json"),
     JSON.stringify({ name: "fx", type: "module", dependencies: { vite: "*" } }),
@@ -553,6 +558,7 @@ test("config-shaped files the evaluation reads travel in __deps, custom names an
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-wrangler-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     mkdirSync(join(base, "config"));
     mkdirSync(join(base, "node_modules"));
@@ -639,6 +645,7 @@ test("recorder overflow sets __depsTruncated; re-reads at the cap do not", () =>
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-trunc-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(join(base, "a.json"), "{}");
     writeFileSync(join(base, "b.json"), "{}");
@@ -684,6 +691,7 @@ test("a config branching on NODE_ENV during module evaluation sees the command's
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-nodeenv-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -816,6 +824,7 @@ test("Vite server and optimizer settings survive actual config loading", () => {
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-adopt-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),

@@ -317,6 +317,7 @@ export function runExtract(fx, { prefix = "oj-extract-run-" } = {}) {
   try {
     const script = path.join(runDir, "vite-extract.mjs");
     fs.copyFileSync(asset("vite-extract.mjs"), script);
+    fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
     const r = spawnSync(
       process.execPath,
       ["--input-type=module", "-e", EXTRACT_WRAPPER, script, fx.configPath, fx.appRoot],
@@ -343,9 +344,10 @@ export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const hostScript = path.join(runDir, "plugin-host.mjs");
   fs.copyFileSync(asset("plugin-host.mjs"), hostScript);
-  // The host is a two-file asset: it imports ./discovered-deps.mjs as a
-  // sibling (materialized next to it by oj the same way).
+  // The host's siblings (./discovered-deps.mjs, ./vite-config-node.mjs) are
+  // materialized next to it by oj the same way.
   fs.copyFileSync(asset("discovered-deps.mjs"), path.join(runDir, "discovered-deps.mjs"));
+  fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
   const host = rpcSidecar(hostScript, {
     args: [
       fx.configPath,

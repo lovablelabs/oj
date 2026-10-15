@@ -146,6 +146,7 @@ try {
   console.log(`tree writers: cold boot wrote ${versions.length} version(s), all with the framework's footer`);
 
   let mark = versions.length;
+  const logMark = log.length;
   fs.writeFileSync(
     path.join(app, "src", "routes", "zzz.tsx"),
     'import { createFileRoute } from "@tanstack/react-router";\n' +
@@ -154,8 +155,11 @@ try {
   // oj's own regen runs in the rebundle worker, which can still be busy with
   // the boot's rebundle when the plugin's rewrite lands; wait for it, or the
   // phase checks one writer only and the warm restart finds nothing cached.
-  const regens = () => log.split("route tree generated").length - 1;
-  if (!(await settles(() => regens() >= 2, { timeoutMs: 120000 }))) {
+  // Counted from the add on: a boot can log more than one generation, so a
+  // total says nothing about this one, and stopping before it persists
+  // leaves the warm boot a miss.
+  const regenSinceAdd = () => /route tree cache miss[\s\S]*route tree generated/.test(log.slice(logMark));
+  if (!(await settles(regenSinceAdd, { timeoutMs: 120000 }))) {
     throw new Error(`route add: oj never regenerated the tree; log tail:\n${log.slice(-3000)}`);
   }
   await quiet((s) => s.includes("/zzz"), "route add");

@@ -115,7 +115,10 @@ const START_ASSETS: &[(&str, &str)] = &[
         "vite-plugin-bridge.mjs",
         include_str!("assets/start/vite-plugin-bridge.mjs"),
     ),
-    ("vite-config-node.mjs", plugins::VITE_CONFIG_NODE_JS),
+    (
+        "vite-config-node.mjs",
+        include_str!("assets/start/vite-config-node.mjs"),
+    ),
     (
         "glob-transform.mjs",
         include_str!("assets/start/glob-transform.mjs"),
