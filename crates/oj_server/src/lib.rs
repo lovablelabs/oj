@@ -1182,6 +1182,20 @@ fn spawn_state_tasks(
                 handle_plugin_server_event(&st, &ev).await;
             }
         });
+        let (rpc_tx, mut rpc_rx) = tokio::sync::mpsc::unbounded_channel();
+        host.set_rpc_request_sender(rpc_tx);
+        let st = Arc::clone(state);
+        tokio::spawn(async move {
+            while let Some(rpc) = rpc_rx.recv().await {
+                let st = Arc::clone(&st);
+                tokio::spawn(async move {
+                    let result = answer_host_rpc(&st, &rpc).await;
+                    if let Some(host) = &st.plugins {
+                        host.rpc_reply(rpc.id, result);
+                    }
+                });
+            }
+        });
     }
     {
         let state = Arc::clone(state);
@@ -1192,6 +1206,21 @@ fn spawn_state_tasks(
         });
     }
     spawn_watcher(Arc::clone(state), watch_rx, watch_ready);
+}
+
+/// The plugin host's async reverse RPC: `htmlStyle(id, code)` compiles an
+/// inline style of a page the host is transforming.
+async fn answer_host_rpc(
+    state: &Arc<ServerState>,
+    rpc: &plugins::HostRpc,
+) -> Result<serde_json::Value, String> {
+    let arg = |i: usize| rpc.args.get(i).and_then(|v| v.as_str()).unwrap_or("");
+    match rpc.method.as_str() {
+        "htmlStyle" => css_serve::compile_html_style(state, arg(0), arg(1).to_string())
+            .await
+            .map(serde_json::Value::String),
+        other => Err(format!("unknown host rpc: {other}")),
+    }
 }
 
 /// `server.warmup`: precompile the client files.

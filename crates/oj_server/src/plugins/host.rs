@@ -17,6 +17,9 @@ pub struct PluginHost {
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart(). Wired once.
     server_events: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
+    /// The host's async reverse RPC (`{ rpc, method, args }` pushes), answered
+    /// by the dev server with [`PluginHost::rpc_reply`]. Wired once.
+    rpc_requests: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<HostRpc>>,
     /// Host's `{ ojServeInfo }` push: None until top-level init completes; late
     /// subscribers can still activate the middleware path.
     serve_info_push: tokio::sync::watch::Sender<Option<ServeInfo>>,
@@ -246,6 +249,14 @@ pub(crate) fn process_rss_mb() -> Option<u64> {
     None
 }
 
+/// One async reverse RPC from the host, for work that calls back into it.
+#[derive(Debug)]
+pub struct HostRpc {
+    pub id: u64,
+    pub method: String,
+    pub args: Vec<serde_json::Value>,
+}
+
 /// The host's reverse ctx-RPC (`this.resolve` fallbacks, `this.load` module
 /// info), answered SYNCHRONOUSLY on the isolate thread via the `__oj_rpc` bridge.
 pub(crate) fn ctx_rpc(
@@ -452,6 +463,7 @@ impl PluginHost {
             hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
             ws_out: std::sync::OnceLock::new(),
             server_events: std::sync::OnceLock::new(),
+            rpc_requests: std::sync::OnceLock::new(),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
@@ -643,8 +655,29 @@ impl PluginHost {
         });
     }
 
-    fn dispatch_push(&self, msg: &serde_json::Value) {
-        if let Some(info) = msg.get("ojServeInfo") {
+    fn dispatch_push(self: &std::sync::Arc<Self>, msg: &serde_json::Value) {
+        if let Some(id) = msg.get("rpc").and_then(|v| v.as_u64()) {
+            let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let args = match msg.get("args") {
+                Some(serde_json::Value::Array(args)) => args.clone(),
+                _ => Vec::new(),
+            };
+            let rpc = HostRpc {
+                id,
+                method: method.to_string(),
+                args,
+            };
+            // Without a server to answer (`oj build`), fail the call: an
+            // unanswered one would leave its hook awaiting forever.
+            match self.rpc_requests.get() {
+                Some(tx) => {
+                    if let Err(e) = tx.send(rpc) {
+                        self.rpc_reply(id, Err(format!("no handler for {}", e.0.method)));
+                    }
+                }
+                None => self.rpc_reply(id, Err(format!("no handler for {method}"))),
+            }
+        } else if let Some(info) = msg.get("ojServeInfo") {
             self.serve_info_push
                 .send_replace(Some(ServeInfo::from_json(info)));
             self.mark_initialized();
@@ -1525,6 +1558,27 @@ impl PluginHost {
     /// The dev server's defines for `moduleInfo` compiles (`oj build` leaves it unset).
     pub fn set_import_meta_env(&self, env: Arc<oj_compiler::ImportMetaEnv>) {
         let _ = self.boot.import_meta_env.set(env);
+    }
+
+    pub fn set_rpc_request_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<HostRpc>) {
+        let _ = self.rpc_requests.set(tx);
+    }
+
+    /// Answers the host's async reverse RPC `id`.
+    pub fn rpc_reply(
+        self: &std::sync::Arc<Self>,
+        id: u64,
+        result: Result<serde_json::Value, String>,
+    ) {
+        let reply = match result {
+            Ok(result) => serde_json::json!({ "result": result }),
+            Err(error) => serde_json::json!({ "error": error }),
+        }
+        .to_string();
+        let host = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = host.call("rpcReply", &[&id.to_string(), &reply]).await;
+        });
     }
 
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {

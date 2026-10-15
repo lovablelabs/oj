@@ -139,3 +139,77 @@ async fn a_spa_fallback_rebases_the_pages_relative_urls() {
         page.body
     );
 }
+
+/// Vite's devHtmlHook runs an inline `<style>` through the CSS plugin
+/// container (plugin transforms, `@import` inlining, aliased and relative
+/// urls) and a `style` attribute holding a url through it too, in index.html
+/// and in a page a middleware renders.
+#[tokio::test(flavor = "multi_thread")]
+async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
+    // In vite.config.js, which also carries the alias (an oj.plugins.mjs
+    // would take its place).
+    const STYLED: &str = r#"export default { resolve: { alias: { "@": SRC } }, plugins: [{
+    name: "css-mark",
+    transform(code, id) {
+      if (id.includes("html-proxy") && id.endsWith(".css")) return code + "\n.from-plugin { color: red }\n";
+    },
+  }, {
+    name: "styled-page",
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        if (!req.url.startsWith("/__styled/")) return next();
+        const html = `<html><head><style>.p { background: url(@/bg.png) }</style></head><body></body></html>`;
+        res.setHeader("content-type", "text/html");
+        res.end(await server.transformIndexHtml(req.url, html));
+      });
+    },
+  }] };
+"#;
+    let app = App::new(&[
+        ("package.json", r#"{"name":"styled-app","private":true}"#),
+        ("src/base.css", ".base { margin: 0 }\n"),
+        (
+            "index.html",
+            "<!doctype html><html><head>\n\
+             <style>@import \"./src/base.css\";\n.hero { background: url(@/bg.png) }</style>\n\
+             </head><body>\n\
+             <div style=\"background: url(./src/bg.png)\"></div>\n\
+             <p style=\"color: red\"></p>\n\
+             </body></html>",
+        ),
+    ]);
+    std::fs::write(app.root.join("src/bg.png"), [7u8; 4]).unwrap();
+    let src = serde_json::to_string(&app.root.join("src").to_string_lossy()).unwrap();
+    app.write(&[("vite.config.js", STYLED.replace("SRC", &src).as_str())]);
+    let server = app.serve().await;
+
+    let html = server.text("/").await;
+    let sheet = &html[html.find("<style>").expect("style kept")..html.find("</style>").unwrap()];
+    assert!(sheet.contains(".base"), "the @import is inlined:\n{html}");
+    assert!(!sheet.contains("@import"), "{html}");
+    assert!(
+        sheet.contains("/src/bg.png"),
+        "the aliased url points at the file:\n{html}"
+    );
+    assert!(
+        sheet.contains(".from-plugin"),
+        "plugin transforms run:\n{html}"
+    );
+    assert!(
+        html.contains("style=\"background: url(&quot;/src/bg.png&quot;)\""),
+        "a style attribute's relative url is rebased, quotes escaped:\n{html}"
+    );
+    assert!(
+        html.contains("<p style=\"color: red\">"),
+        "an attribute with no url stays as written:\n{html}"
+    );
+
+    middleware_ready(&server).await;
+    let page = server.get("/__styled/Card").await;
+    assert_eq!(page.status, 200, "{}", page.body);
+    assert!(
+        page.body.contains("/src/bg.png") && page.body.contains(".from-plugin"),
+        "a middleware page's style compiles too:\n{}",
+        page.body
+    );
+}

@@ -17,7 +17,7 @@ mod targets;
 
 pub use compile::{
     compile_css, compile_css_dev, compile_css_rebased, compile_css_rebased_with_map,
-    compile_css_with, minify_css, CssOutput,
+    compile_css_with, compile_style_attribute_dev, minify_css, CssOutput,
 };
 pub use imports::{
     inline_imports, inline_imports_collecting, inline_imports_with, resolve_css_import,

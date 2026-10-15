@@ -1243,11 +1243,25 @@ function ctxRpc(method, args) {
       return Promise.reject(e);
     }
   }
+  return asyncRpc(method, args);
+}
+// The reverse RPC Rust answers later, by the `rpcReply` hook: a push of
+// `{ rpc, method, args }`. Compiling an inline style runs oj's CSS pipeline,
+// which calls this host's own transform hooks, so it cannot ride the
+// synchronous bridge that holds the isolate until it returns.
+function asyncRpc(method, args) {
   const rpc = rpcCounter++;
   return new Promise((resolve, reject) => {
     rpcPending.set(rpc, { resolve, reject });
     ctl({ rpc, method, args });
   });
+}
+function settleRpc(rpc, { result, error }) {
+  const p = rpcPending.get(rpc);
+  if (!p) return;
+  rpcPending.delete(rpc);
+  if (error != null) p.reject(new Error(error));
+  else p.resolve(result ?? null);
 }
 
 let emitCounter = 0;
@@ -3850,6 +3864,9 @@ async function devTransformIndexHtml(url, html, originalUrl, extra = {}) {
       attrs: { type: "module", src: posix.join(base, src) },
       injectTo: "head-prepend",
     })),
+    // oj's CSS pipeline lives in Rust; the direct-drive tests (plain node)
+    // have none, and leave inline styles as written.
+    compileStyle: ojEnginePost ? (id, code) => asyncRpc("htmlStyle", [id, code]) : undefined,
     env: extra.ojHtmlEnv ?? undefined,
     nonce: extra.ojCspNonce ?? undefined,
     warn: htmlWarn,
@@ -3973,6 +3990,10 @@ async function run(hook, args) {
     // oj's dev listener is bound (args = [port, interface address]): fire the
     // stub httpServer's "listening" — Vite's listen()-time signal.
     await ojAnnounceDevListener(Number(args[0]), args[1]);
+    return null;
+  }
+  if (hook === "rpcReply") {
+    settleRpc(Number(args[0]), JSON.parse(args[1] ?? "{}"));
     return null;
   }
   if (hook === "seedChunkNames") {
@@ -4304,12 +4325,7 @@ if (!ojEngineBoot) {
       return;
     }
     if (msg.rpcReply != null) {
-      const p = rpcPending.get(msg.rpcReply);
-      if (p) {
-        rpcPending.delete(msg.rpcReply);
-        if (msg.error != null) p.reject(new Error(msg.error));
-        else p.resolve(msg.result ?? null);
-      }
+      settleRpc(msg.rpcReply, msg);
       return;
     }
     const { id, hook, args } = msg;

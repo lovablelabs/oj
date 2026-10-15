@@ -122,6 +122,24 @@ const pages = [
 `,
   },
   {
+    name: "inline styles and style attributes with urls",
+    file: "index.html",
+    url: "/index.html",
+    originalUrl: "/",
+    html: `<html><head>
+<style>body { margin: 0 }</style>
+<script type="module">import "/src/a.js"</script>
+</head><body>
+<div style="background: url('/bg.png')"></div>
+<p style="color: red"></p>
+<script type="module">import "/src/b.js"</script>
+<span style='background: url("/a.png"), url(/b.png)'></span>
+<style></style>
+<style>.b { color: blue }</style>
+</body></html>
+`,
+  },
+  {
     name: "a page without head or body",
     url: "/bare.html",
     originalUrl: "/bare.html",
@@ -148,6 +166,14 @@ viteTest("the dev HTML transform matches Vite's byte for byte", async () => {
     for (const page of pages) {
       const expected = await server.transformIndexHtml(page.url, page.html, page.originalUrl);
       const proxy = createHtmlProxy(() => root);
+      // Vite's CSS pipeline leaves these sheets as written (no PostCSS config,
+      // root-absolute urls): what is held to Vite is where each style goes
+      // and under which id; vite:css-post escapes an attribute's quotes.
+      const styleIds = [];
+      const compileStyle = async (id, code) => {
+        styleIds.push(id);
+        return /[?&]style-attr\b/.test(id) ? code.replace(/"/g, "&quot;") : code;
+      };
       const actual = await transformDevHtml({
         url: page.url,
         html: page.html,
@@ -159,8 +185,13 @@ viteTest("the dev HTML transform matches Vite's byte for byte", async () => {
         proxy,
         moduleGraph: server.environments.client.moduleGraph,
         clientTags: [{ tag: "script", attrs: { type: "module", src: "/@vite/client" }, injectTo: "head-prepend" }],
+        compileStyle,
       });
       assert.equal(actual, expected, page.name);
+      // Vite registered each style under the id the port compiled it as.
+      for (const id of styleIds) {
+        assert.ok(await server.environments.client.moduleGraph.getModuleByUrl(id), `${page.name}: ${id}`);
+      }
       // Each lifted module loads the same code from both caches.
       const ids = [...actual.matchAll(/src="([^"]*html-proxy[^"]*)"/g)].map((m) => m[1]);
       assert.ok(ids.length > 0, `${page.name}: inline modules were lifted`);
