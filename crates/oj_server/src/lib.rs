@@ -379,6 +379,9 @@ struct ServerState {
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
+    /// Some active plugin has `resolveId`: an import oj cannot resolve may
+    /// still be one a plugin serves (`/@id/`), else it fails like Vite's.
+    plugins_have_resolve_id: bool,
     // A dep is transformed only when its source matches one of these (the plugins'
     // own transform `filter.code` patterns); app source always goes through.
     dep_transform_res: Vec<regex::Regex>,
@@ -957,6 +960,7 @@ struct PluginCaps {
     use_module_parsed: bool,
     have_transform: bool,
     have_load: bool,
+    have_resolve_id: bool,
     dep_transform_res: Vec<regex::Regex>,
     dep_load_res: Vec<regex::Regex>,
     resolve_id_res: Vec<regex::Regex>,
@@ -976,6 +980,7 @@ impl PluginCaps {
         let use_module_parsed = host.has_module_parsed().await;
         let have_transform = host.has_transform().await;
         let have_load = host.has_load().await;
+        let have_resolve_id = host.has_resolve_id().await;
         let dep_transform_res = compile_filters(&host.dep_transform_filters().await);
         let dep_load_res = compile_filters(&host.dep_load_filters().await);
         let resolve_id_res = compile_filters(&host.resolve_id_filters().await);
@@ -987,6 +992,7 @@ impl PluginCaps {
             use_module_parsed,
             have_transform,
             have_load,
+            have_resolve_id,
             dep_transform_res,
             dep_load_res,
             resolve_id_res,
@@ -1676,6 +1682,7 @@ impl DevServer {
             plugins_use_module_parsed: caps.use_module_parsed,
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,
+            plugins_have_resolve_id: caps.have_resolve_id,
             dep_transform_res: caps.dep_transform_res,
             dep_load_res: caps.dep_load_res,
             resolve_id_res: caps.resolve_id_res,
