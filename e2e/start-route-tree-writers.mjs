@@ -151,6 +151,13 @@ try {
     'import { createFileRoute } from "@tanstack/react-router";\n' +
       'export const Route = createFileRoute("/zzz")({ component: () => null });\n',
   );
+  // oj's own regen runs in the rebundle worker, which can still be busy with
+  // the boot's rebundle when the plugin's rewrite lands; wait for it, or the
+  // phase checks one writer only and the warm restart finds nothing cached.
+  const regens = () => log.split("route tree generated").length - 1;
+  if (!(await settles(() => regens() >= 2, { timeoutMs: 120000 }))) {
+    throw new Error(`route add: oj never regenerated the tree; log tail:\n${log.slice(-3000)}`);
+  }
   await quiet((s) => s.includes("/zzz"), "route add");
   expectAll(mark, withEntry, "route add");
   console.log("tree writers: a route add never put a different footer on disk");
