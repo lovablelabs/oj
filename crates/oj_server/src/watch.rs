@@ -724,9 +724,6 @@ pub(crate) fn spawn_watcher(
         let mut watcher =
             match notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
                 if let Ok(ev) = &ev {
-                    if is_access(ev) {
-                        return;
-                    }
                     feed.publish(ev, &ignored, &root, &cache);
                 }
                 let _ = tx.send(WatchMsg::Fs(ev));
