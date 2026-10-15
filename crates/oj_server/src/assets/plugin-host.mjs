@@ -2124,18 +2124,30 @@ const unmatchedChangeLogged = new Set();
 // whose type AND file content hash match the last processed one — consecutive
 // identical content is the same FS change (the early/settled pair), while a
 // write landing inside the settle window, a revert, or same-mtime distinct
-// writes all hash differently and process. A read error means the file's
-// state is unknown: process and forget the entry, never suppress on error.
-// Consecutive deletes dedup by type alone.
+// writes all hash differently and process. Only a file some runner graph
+// knows is read: it is a module, and its update depends on its bytes. Any
+// other file is identified by its stat and never read, as Vite never reads a
+// changed file unless a plugin asks (`ctx.read()`); hashing a database a
+// worker keeps writing (miniflare's trace store grows to gigabytes) read it
+// whole on every write and blocked the host. A stat or read error means the
+// file's state is unknown: process and forget the entry, never suppress on
+// error. Consecutive deletes dedup by type alone.
 const lastProcessedChange = new Map(); // file -> { type, contentHash }
 // Correctness never depends on an entry existing (a cleared entry only costs
 // one extra processing pass), so bound the map instead of growing forever.
 const LAST_PROCESSED_MAX = 5000;
-function freshChange({ file, type }) {
+function freshChange({ file, real, type }, environments) {
   let contentHash = null;
   if (type !== "delete") {
     try {
-      contentHash = createHash("sha256").update(readFileSync(file)).digest("hex");
+      if (graphKnowsFile(environments, file) || (real && graphKnowsFile(environments, real))) {
+        contentHash = createHash("sha256").update(readFileSync(file)).digest("hex");
+      } else {
+        // Nanosecond times: a database rewrites pages in place at a fixed
+        // size, so two writes inside one millisecond must still differ.
+        const st = statSync(file, { bigint: true });
+        contentHash = `stat:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+      }
     } catch {
       lastProcessedChange.delete(file);
       return true;
@@ -2150,6 +2162,7 @@ function freshChange({ file, type }) {
 // atomic save's recreate half (chokidar's atomic handling reports these as
 // change): reclassify to update, so the update-then-create pair dedups into
 // one pass and plugins never see a phantom watcher "add" for a live module.
+// It also decides which changed files freshChange reads to hash.
 function graphKnowsFile(environments, file) {
   for (const env of Object.values(environments || {})) {
     if (!env || env.__ojStub) continue;
@@ -2209,7 +2222,7 @@ async function invalidateEnvironments(environments, watcher, changes) {
         t = "update";
       return { file, real, type: t };
     })
-    .filter(freshChange);
+    .filter((change) => freshChange(change, environments));
   for (const { file, type } of normalized) {
     try {
       watcher.emit(WATCHER_EVENT[type], file);

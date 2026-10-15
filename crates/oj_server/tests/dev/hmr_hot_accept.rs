@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use crate::browser::Page;
-use crate::{require_chrome, App, INDEX_HTML};
+use crate::{App, INDEX_HTML};
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -35,7 +35,9 @@ if (import.meta.hot) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hot_accept_dispose_and_dep_boundaries_apply_without_reload() {
-    require_chrome!();
+    if crate::browser::skip() {
+        return;
+    }
     let app = App::new(&[
         ("package.json", r#"{"name":"hot-accept","version":"1.0.0"}"#),
         ("src/util.js", "export const value = \"u1\";\n"),

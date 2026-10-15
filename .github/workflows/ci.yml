@@ -43,7 +43,12 @@ jobs:
       # Release, not debug: the tests must exercise the codegen that ships.
       # A debug-only suite stayed green through a release-only engine
       # miscompilation (every job on an uncapped isolate failed MemoryLimit).
+      # Chrome and the fixture are installed above: a missing one fails the
+      # tests that need it instead of letting them pass unrun.
       - run: cargo test --workspace --release
+        env:
+          OJ_REQUIRE_BROWSER: "1"
+          OJ_REQUIRE_FIXTURES: "1"
       - name: js unit tests (adapter helpers)
         run: node --test e2e/unit/*.test.mjs
       - name: fuzz targets still build
@@ -141,6 +146,10 @@ jobs:
         run: node e2e/hmr-json-update.mjs
       - name: unresolved relative import errors, creating the file recovers
         run: node e2e/hmr-unresolved-import.mjs
+      - name: an env-file edit restarts dev and the open page reloads
+        run: node e2e/hmr-client-behaviors.mjs
+      - name: lingui macros warn they get the runtime identity shim
+        run: node e2e/lingui-macro-shim.mjs
       - name: server.proxy regex (^) contexts match path plus query
         run: node e2e/proxy-regex-context.mjs
       - name: server.proxy URL/object targets and a bypass string served locally
