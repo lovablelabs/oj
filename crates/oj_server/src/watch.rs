@@ -668,18 +668,28 @@ impl Batch {
 }
 
 /// Act on a debounced batch: restart on config changes, full reload on
-/// tsconfig changes, otherwise gate or dispatch HMR.
+/// tsconfig changes, otherwise gate or dispatch HMR. The HMR awaits the
+/// plugin host (its watch files, `handleHotUpdate`), which can take as long
+/// as host init or a slow hook, so each batch's runs as its own task, as
+/// Vite handles each chokidar event on its own: one parked batch never holds
+/// another back, a `.env` restart or another file's update included.
 fn handle_batch(
     state: &Arc<ServerState>,
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
-    // Config/.env can't be hot-applied (read once at startup): restart, as Vite does.
-    if paths
+    // Config/.env can't be hot-applied (read once at startup): restart, as
+    // Vite does, naming the file relative to the launch dir as Vite's
+    // "<file> changed, restarting server" does.
+    if let Some(file) = paths
         .iter()
-        .any(|p| is_restart_trigger(p) || is_config_dependency(p))
+        .find(|p| is_restart_trigger(p) || is_config_dependency(p))
     {
-        restart_process("config/env changed");
+        let shown = STARTUP_CWD
+            .get()
+            .and_then(|cwd| pathdiff::diff_paths(file, cwd))
+            .unwrap_or_else(|| file.clone());
+        restart_process(&format!("{} changed", shown.display()));
     }
     // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
     // key folds class-field semantics in, so stale persistent-cache entries
@@ -700,14 +710,17 @@ fn handle_batch(
             return;
         }
     }
-    let messages = state.rt.block_on(decide(state, paths, created));
-    if messages.is_empty() {
-        return;
-    }
-    state.dir_cache.lock().unwrap().clear();
-    for message in messages {
-        let _ = state.reload_tx.send(message);
-    }
+    let (state, paths, created) = (Arc::clone(state), paths.to_vec(), created.clone());
+    state.rt.clone().spawn(async move {
+        let messages = decide(&state, &paths, &created).await;
+        if messages.is_empty() {
+            return;
+        }
+        state.dir_cache.lock().unwrap().clear();
+        for message in messages {
+            let _ = state.reload_tx.send(message);
+        }
+    });
 }
 
 pub(crate) fn spawn_watcher(

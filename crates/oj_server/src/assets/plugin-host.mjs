@@ -4247,6 +4247,10 @@ async function run(hook, args) {
     }
     return JSON.stringify(pats);
   }
+  if (hook === "getHasResolveId") {
+    const has = plugins.some((p) => typeof hookHandler(p.resolveId) === "function");
+    return String(has);
+  }
   if (hook === "getHasLoad") {
     const has = plugins.some((p) => typeof hookHandler(p.load) === "function");
     return String(has);
