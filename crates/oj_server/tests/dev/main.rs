@@ -175,30 +175,50 @@ macro_rules! require_fixture {
 
 pub struct Server {
     pub built: oj_server::BuiltApp,
+    root: PathBuf,
 }
 
 /// Restarts asked for so far, by any server in this process.
-static RESTARTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+pub(crate) static RESTARTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// The restarts asked for so far over a file under `root` (a watcher restart
-/// names its file), taken out: for a test that expects one. Any other
-/// server's restart stays for its own drop to fail on.
-pub fn take_restarts_for(root: &std::path::Path) -> Vec<String> {
-    let dir = root.file_name().unwrap().to_string_lossy().into_owned();
+/// Whether a restart belongs to the app at `root`: a watcher restart names
+/// the file that changed ("<file> changed"), relative to the cwd or absolute.
+fn restart_is_under(reason: &str, root: &Path) -> bool {
+    let Some(file) = reason.strip_suffix(" changed") else {
+        return false;
+    };
+    let file = std::env::current_dir().unwrap().join(file);
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    file.starts_with(root) || file.starts_with(&canonical)
+}
+
+/// Takes out the recorded restarts `keep` claims, leaving the rest.
+fn take_restarts_where(keep: impl Fn(&str) -> bool) -> Vec<String> {
     let mut all = RESTARTS.lock().unwrap();
     let (ours, rest) = std::mem::take(&mut *all)
         .into_iter()
-        .partition(|r: &String| r.contains(&dir));
+        .partition(|r: &String| keep(r));
     *all = rest;
     ours
 }
 
-/// No test expects a restart, so any one fails the test whose server drops
-/// next (a panic on the asking thread would never reach a test).
+/// The restarts asked for so far over a file under `root`, taken out: for a
+/// test that expects one. Any other server's restart stays for its own drop
+/// to fail on.
+pub fn take_restarts_for(root: &Path) -> Vec<String> {
+    take_restarts_where(|r| restart_is_under(r, root))
+}
+
+/// No test expects a restart, so one over this app's files fails the test
+/// as its server drops (a panic on the asking thread would never reach a
+/// test). A restart naming no file (a plugin's `server.restart()`) can't be
+/// told apart, so it fails whichever server drops next.
 impl Drop for Server {
     fn drop(&mut self) {
         self.built.close_watcher();
-        let restarts = std::mem::take(&mut *RESTARTS.lock().unwrap());
+        let root = self.root.clone();
+        let restarts =
+            take_restarts_where(|r| restart_is_under(r, &root) || !r.ends_with(" changed"));
         if !restarts.is_empty() && !std::thread::panicking() {
             panic!("a dev server asked for a restart: {restarts:?}");
         }
@@ -217,11 +237,12 @@ fn restart_in_test(reason: &str) -> ! {
 
 pub async fn serve(dev: oj_server::DevServer) -> Server {
     oj_server::set_restart_hook(restart_in_test);
+    let root = dev.root.clone();
     match dev.build_app().await {
         Ok(built) => {
             // An edit a test makes must not race the watcher's start.
             built.watcher_ready().await;
-            Server { built }
+            Server { built, root }
         }
         Err(err) => panic!("dev server failed to build:\n{err:#}"),
     }

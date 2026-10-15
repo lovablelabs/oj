@@ -158,3 +158,39 @@ async fn a_hung_hot_update_hook_never_holds_another_files_update() {
         "b.js's update never arrived behind a.js's hung hook: {frame:?}"
     );
 }
+
+/// One app's restart is that app's test's to claim: another server dropping
+/// meanwhile neither fails on it nor takes it away.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_belongs_to_its_own_apps_server() {
+    let files = [
+        (
+            "package.json",
+            r#"{"name":"own-restart","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "document.title = \"v1\";\n"),
+        ("index.html", INDEX_HTML),
+    ];
+    let (ours, other) = (App::new(&files), App::new(&files));
+    let _server = ours.serve().await;
+    let bystander = other.serve().await;
+    ours.write(&[(".env", "VITE_X=1\n")]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let restarted = crate::RESTARTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.ends_with("/.env changed"));
+        if restarted {
+            break;
+        }
+    }
+    drop(bystander);
+    let restarts = crate::take_restarts_for(&ours.root);
+    assert!(
+        restarts.len() == 1 && restarts[0].ends_with("/.env changed"),
+        "the restart was not left for its own app: {restarts:?}"
+    );
+}
