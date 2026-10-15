@@ -131,7 +131,18 @@ function assetTagFor(source, mode) {
   return null;
 }
 
-export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-start/fs", emit, cssUrls, root } = {}) {
+// `styleKey`: query params a long-lived engine adds to its style imports,
+// which it caches by url: `css` moves when a style input changed, `inline`
+// every bundle (a Tailwind sheet reads every source file).
+export function assetsPlugin({
+  mode = "dev",
+  server = false,
+  fsBase = "/@oj-start/fs",
+  emit,
+  cssUrls,
+  root,
+  styleKey = {},
+} = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
   const workerUrlFor = makeWorkerUrlFor({ mode, root, emit });
   return {
@@ -178,7 +189,7 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
           // (css.ts), never linked. Dev takes the module oj's dev server
           // renders for SSR; the build compiles it as it emits sheets.
           const style = (extra) => import(STYLE_SCHEME + "///?" + new URLSearchParams({ file: v.path, ...extra }));
-          if (mode === "dev") return js((await style({ inline: "dev" })).code);
+          if (mode === "dev") return js((await style({ inline: "dev", ...styleKey.inline })).code);
           const compiled = await style({});
           // A build gives a CSS module's class map even inlined (css.ts:
           // modulesCode wins over `inlined` there, not in dev).
@@ -214,7 +225,7 @@ export function assetsPlugin({ mode = "dev", server = false, fsBase = "/@oj-star
           // by url. A plain .css file is linked as written.
           const compiled =
             CSS_MODULE_RE.test(v.path) || !v.path.endsWith(".css")
-              ? await import(STYLE_SCHEME + "///?" + new URLSearchParams({ file: v.path }))
+              ? await import(STYLE_SCHEME + "///?" + new URLSearchParams({ file: v.path, ...styleKey.css }))
               : null;
           if (!server) {
             const href = compiled && mode !== "dev" ? await emit.css(v.path, compiled.css) : await urlFor(v.path);

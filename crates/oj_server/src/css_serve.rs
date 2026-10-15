@@ -45,7 +45,14 @@ pub(crate) async fn compile_html_style(
     } else {
         format!("{}?{query}", page_file.display())
     };
-    let url = format!("{}?{query}", url_of(&state.root, &page_file));
+    // A page with no file is `/@id/__x00__<page>` (Vite's url for its `\0`
+    // id), a directory nothing is on disk under: its relative urls resolve
+    // nowhere and stay as written, as under Vite.
+    let url = if virtual_page {
+        format!("/@id/__x00__{page}?{query}")
+    } else {
+        format!("{}?{query}", url_of(&state.root, &page_file))
+    };
     if query.split('&').any(|kv| kv == "style-attr") {
         // Vite's PostCSS pass parses the declarations as a root of their own:
         // the app's plugins run first, the url rewrite last.
