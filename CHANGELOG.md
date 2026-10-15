@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Dev pages go through Vite's whole dev HTML transform. An inline `<script type="module">` is lifted into an html-proxy module (`/index.html?html-proxy&index=0.js`, or `/@id/__x00__/<page>?html-proxy&index=0.js` for a page with no file) whose imports resolve like any module's, so a bare `import React from "react"` in a page reaches the optimized dep instead of the browser. The same chain backs `server.transformIndexHtml`, which ran only the plugins' hooks, ignored its url and injected no dev client, so an HTML page a `configureServer` middleware rendered through it shipped unresolvable imports. Hooks run in Vite's order (import map, CSP meta, `pre`, `%ENV%`, the dev transform, normal, `post`, nonces), tags inject after each hook the way Vite's do (`<head lang>` included), script and asset urls are rebased like Vite's (a SPA fallback on `/a/b` points `./src/main.tsx` at `/src/main.tsx`), and a `/@id/` url keeps its query as part of the id. Inline `<style>` and `style` attribute urls are not transformed yet.
+
 ## [0.2.34] - 2026-10-15
 
 ### Fixed

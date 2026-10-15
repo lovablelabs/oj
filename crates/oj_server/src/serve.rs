@@ -99,6 +99,7 @@ async fn serve_internal_route(
         // the url): `/@id/__x00__/page?html-proxy&index=0.js`. oj's own
         // `?importer=` is the one query that is not part of the id.
         let mut spec = decode_at_id(seg);
+        let id_path = path.to_string();
         let importer = match uri.query() {
             Some(q) => match q.strip_prefix("importer=") {
                 Some(importer) => decode_at_id(importer),
@@ -109,6 +110,9 @@ async fn serve_internal_route(
             },
             None => String::new(),
         };
+        if is_html_proxy(&spec) {
+            return Some(serve_html_proxy(state, headers, &spec, &id_path).await);
+        }
         return Some(serve_plugin_id(state, &spec, &importer).await);
     }
     None
@@ -130,6 +134,51 @@ fn at_id_with_query(spec: &str, query: &str) -> String {
     } else {
         format!("{id}?{}", kept.join("&"))
     }
+}
+
+/// Vite's `isHtmlProxyRE` (`/[?&]html-proxy\b/`) over a url or id.
+fn is_html_proxy(id: &str) -> bool {
+    id.match_indices("html-proxy").any(|(at, m)| {
+        at > 0
+            && matches!(id.as_bytes()[at - 1], b'?' | b'&')
+            && id[at + m.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+    })
+}
+
+/// An inline module the dev HTML transform lifted out of a page: `id` is
+/// Vite's html-proxy id (`/index.html?html-proxy&index=0.js`, or
+/// `\0/page?...` for a page with no file), `url` the request path. The
+/// plugin host resolves and loads it (Vite's html-inline-proxy plugin), then
+/// it compiles like any module, as `<page>.js` beside its page so its
+/// relative imports resolve from the page's directory.
+async fn serve_html_proxy(
+    state: &Arc<ServerState>,
+    headers: &HeaderMap,
+    id: &str,
+    url: &str,
+) -> Response {
+    let Some(host) = &state.plugins else {
+        return (StatusCode::NOT_FOUND, "oj: no plugin host").into_response();
+    };
+    let id = match host.resolve_id(id, "").await {
+        Ok(Some(resolved)) => resolved,
+        Ok(None) => id.to_string(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let source = match host.load(&id).await {
+        Ok(Some(source)) => source,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}")).into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let (page, query) = id.split_once('?').unwrap_or((&id, ""));
+    let page = page.trim_start_matches('\0').trim_start_matches('/');
+    let file = PathBuf::from(format!("{}.js", state.root.join(page).display()));
+    serve_compiled_from(state, &file, url, Some(query), headers, Some(source)).await
 }
 
 /// The original request url (Vite's `req.originalUrl`): path and query.
@@ -214,9 +263,9 @@ async fn serve_file(
     // (`/index.html?html-proxy&index=0.js`): Vite's html-inline-proxy plugin
     // resolves and loads it, then it compiles like any module.
     if ext == "html" {
-        if let Some(q) = query.filter(|q| q.split('&').any(|kv| kv == "html-proxy" || kv.starts_with("html-proxy="))) {
-            let id = at_id_with_query(&url_of(&state.root, file), q);
-            return serve_plugin_id(state, &id, "").await;
+        if let Some(q) = query.filter(|q| is_html_proxy(&format!("?{q}"))) {
+            let url = url_of(&state.root, file);
+            return serve_html_proxy(state, headers, &at_id_with_query(&url, q), &url).await;
         }
     }
     // A publicDir file is served verbatim, never compiled (Vite's servePublicMiddleware
@@ -397,6 +446,19 @@ pub(crate) async fn serve_compiled(
     query: Option<&str>,
     headers: &HeaderMap,
 ) -> Response {
+    serve_compiled_from(state, file, url, query, headers, None).await
+}
+
+/// [`serve_compiled`] for a module whose source a plugin `load` produced
+/// (see [`ensure_module_from`]).
+async fn serve_compiled_from(
+    state: &Arc<ServerState>,
+    file: &Path,
+    url: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+    preloaded: Option<String>,
+) -> Response {
     // Key and transform per full url incl. query (the same file yields per-query
     // variants), but the HMR `t=` buster is stripped: not part of module identity.
     let base_url = url;
@@ -405,7 +467,7 @@ pub(crate) async fn serve_compiled(
         None => url.to_string(),
     };
     let url = url_with_query.as_str();
-    let (key, module) = match ensure_module(state, file, url).await {
+    let (key, module) = match ensure_module_from(state, file, url, preloaded).await {
         Ok(pair) => pair,
         Err(err) => {
             send_error(state, &err);

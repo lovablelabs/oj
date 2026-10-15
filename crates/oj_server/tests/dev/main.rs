@@ -26,6 +26,7 @@ mod hmr_disabled;
 mod hmr_hot_accept;
 mod host_binding;
 mod html_env;
+mod html_proxy;
 mod jsx_import_source;
 mod lazy_flag;
 mod listen;
