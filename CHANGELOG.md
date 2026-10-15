@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- TanStack Start dev keeps one client plugin container for the whole session, as Vite keeps one per server, so a plugin's `buildStart` runs once and its state survives rebundles. Each rebundle used to load the app's plugins fresh, so a plugin that writes a generated module from `buildStart` whenever its in-memory copy differs (the usual codegen shape) rewrote that file on every bundle, the watcher fed the write back as the next rebundle, and the page reloaded about once a second forever. The client bundler is now one long-lived child per dev server; plugin `buildEnd` runs when the session ends, as in Vite dev.
+
 ## [0.2.34] - 2026-10-15
 
 ### Fixed
