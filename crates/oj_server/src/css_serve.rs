@@ -200,12 +200,12 @@ pub(crate) async fn lazy_engine(
         EngineKind::Svelte => &state.svelte,
     };
     cell.get_or_try_init(|| async {
-        let (root, deadline) = (&state.root, css_engine::DEV_DEADLINE);
+        let root = &state.root;
         let registry = Some(state.engine_registry.clone());
         match kind {
-            EngineKind::Tailwind => CssEngine::tailwind(root, deadline, registry).await,
-            EngineKind::Preprocess => CssEngine::preprocess(root, deadline, registry).await,
-            EngineKind::Svelte => CssEngine::svelte(root, deadline, registry).await,
+            EngineKind::Tailwind => CssEngine::tailwind(root, registry).await,
+            EngineKind::Preprocess => CssEngine::preprocess(root, registry).await,
+            EngineKind::Svelte => CssEngine::svelte(root, registry).await,
         }
     })
     .await

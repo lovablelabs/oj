@@ -176,12 +176,13 @@ impl JsEngine {
     /// `export` with `args` (JSON in, JSON out). A returned promise is
     /// resolved before replying; calls run concurrently on the isolate.
     /// `deadline` bounds this one call (`None` falls back to the engine's
-    /// default): through the exclusive setup phase a watchdog terminates a
-    /// wedged run; once the call parks, the scheduler abandons the
-    /// still-pending promise at the deadline, replying
+    /// default): during setup, with no other call parked, a watchdog
+    /// terminates a wedged run; once the call parks, the scheduler abandons
+    /// the still-pending promise at the deadline, replying
     /// [`EngineError::Deadline`] while the isolate and every concurrent call
-    /// carry on. The watchdog stays armed underneath solely for a
-    /// continuation that wedges the event loop in a busy loop.
+    /// carry on. Synchronous JS is never cut off while another call is
+    /// parked, since termination is isolate-wide: a busy loop after the
+    /// first await, or in a setup that overlaps a parked call, runs on.
     pub async fn call(
         &self,
         module: impl Into<String>,

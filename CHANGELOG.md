@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A dev-server restart (a plugin's `server.restart()`, a config or `.env` edit) boots like a fresh launch again. The Start SSR runner primed `process.env` (`NODE_ENV`, the `.env` values, the `TSS_*` defaults, oj's script settings) on the real process environment, and the restart's exec carried all of it into the next boot. There the leaked `NODE_ENV`/`VITE_*`/`TSS_SERVER_FN_BASE` re-keyed the Start client bundle cache, so every restart rebuilt the client bundle from scratch (minutes on a large app), and a leaked `.env` value posed as shell env, so an edited `.env` value lost to the old one. The runner now keeps a private `process.env` copy like the plugin host and the Start scripts, and a restart execs with the environment oj was launched with.
+- A call whose deadline passed while it waited on the engine no longer terminates an unrelated call. The watchdog's termination is isolate-wide, so when the deadline fired while another call ran synchronous JS, that innocent call died with "execution terminated" and every other pending call failed with it. The same happened when a call's deadline passed during its module's top-level await, and the killed call then hung forever. The watchdog now runs only while no other call is waiting; a waiting call's deadline settles on its own timer.
+
+### Changed
+
+- Tailwind/PostCSS, Less/Stylus and Svelte compiles no longer fail on elapsed time (the 20s dev, 30s Start and 60s build budgets are gone), matching Vite's CSS pipeline, which runs with no timeout. Compiles share one engine, and a slow one under CPU contention used to fail as "compile timed out".
 
 ## [0.2.32] - 2026-10-14
 

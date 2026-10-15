@@ -44,10 +44,49 @@ macro_rules! rolldown_failure {
 }
 
 fn warn_fn_option(key: &str, hint: &str) {
-    eprintln!(
+    build_warning(format!(
         "oj build: (!) build.rollupOptions.{key} is a function, which oj cannot run (the \
          config is serialized before the build); the option is ignored. {hint}"
-    );
+    ));
+}
+
+/// A `(!)` config warning on stderr, as `vite build` prints its own. Unit
+/// tests read back the ones their build printed (`take_build_warnings`): a
+/// `#[tokio::test]` build reads its config on the test's own thread.
+fn build_warning(msg: String) {
+    eprintln!("{msg}");
+    #[cfg(test)]
+    BUILD_WARNINGS.with(|w| w.borrow_mut().push(msg));
+}
+
+#[cfg(test)]
+thread_local! {
+    static BUILD_WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The config warnings builds on this thread printed since the last call.
+#[cfg(test)]
+pub(crate) fn take_build_warnings() -> Vec<String> {
+    BUILD_WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
+
+/// Every closeBundle's gated-out RPC counts `[resolveId, load, transform]`
+/// by app root: what OJ_DEBUG_HOOK_GATE prints, for the gate's tests.
+#[cfg(test)]
+static GATE_SKIPS: std::sync::Mutex<Vec<(PathBuf, [u64; 3])>> = std::sync::Mutex::new(Vec::new());
+
+/// The gate counts of the builds of `root`, in closeBundle order.
+#[cfg(test)]
+pub(crate) fn gate_skips(root: &Path) -> Vec<[u64; 3]> {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let root = canonical(root);
+    GATE_SKIPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|(r, _)| canonical(r) == root)
+        .map(|(_, counts)| *counts)
+        .collect()
 }
 
 fn is_fn_marker(v: &serde_json::Value) -> bool {
@@ -112,10 +151,10 @@ fn ro_output_overrides(ro: Option<&serde_json::Value>) -> OutputOverrides {
     let mut ov = OutputOverrides::default();
     if let Some(arr) = ro.and_then(|r| r.get("output")).and_then(|o| o.as_array()) {
         if arr.len() > 1 {
-            eprintln!(
+            build_warning(format!(
                 "oj build: (!) build.rollupOptions.output lists {} outputs; oj builds the first one only.",
                 arr.len()
-            );
+            ));
         }
     }
     let Some(out) = ro_output(ro) else { return ov };
@@ -601,11 +640,11 @@ fn out_dir_emptiable(root: &Path, out_dir: &Path, empty: Option<bool>, warn: boo
     let (r, o) = (canonical_or_self(root), canonical_or_self(out_dir));
     let inside = o != r && o.starts_with(&r);
     if !inside && warn && out_dir.exists() {
-        eprintln!(
+        build_warning(format!(
             "oj build: (!) outDir {} is not inside project root and will not be emptied.\n\
              Use --emptyOutDir to override.",
             out_dir.display()
-        );
+        ));
     }
     inside
 }
@@ -1475,13 +1514,7 @@ static BUILD_SVELTE: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>
 /// re-read from disk).
 async fn expand_css_via_engine(root: &Path, css_file: &Path, css: &str) -> anyhow::Result<String> {
     let engine = BUILD_TAILWIND
-        .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::tailwind(
-                root,
-                oj_server::css_engine::BUILD_DEADLINE,
-                None,
-            )
-        })
+        .get_or_try_init(|| oj_server::css_engine::CssEngine::tailwind(root, None))
         .await?;
     engine
         .compile_path(css, css_file, serde_json::Value::Null, false)
@@ -1491,13 +1524,7 @@ async fn expand_css_via_engine(root: &Path, css_file: &Path, css: &str) -> anyho
 
 async fn svelte_via_engine(root: &Path, file: &Path) -> anyhow::Result<String> {
     let engine = BUILD_SVELTE
-        .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::svelte(
-                root,
-                oj_server::css_engine::BUILD_DEADLINE,
-                None,
-            )
-        })
+        .get_or_try_init(|| oj_server::css_engine::CssEngine::svelte(root, None))
         .await?;
     let source = fs::read_to_string(file)?;
     engine
@@ -1513,13 +1540,7 @@ async fn preprocess_via_engine(
     options: serde_json::Value,
 ) -> anyhow::Result<String> {
     let engine = BUILD_PREPROCESS
-        .get_or_try_init(|| {
-            oj_server::css_engine::CssEngine::preprocess(
-                root,
-                oj_server::css_engine::BUILD_DEADLINE,
-                None,
-            )
-        })
+        .get_or_try_init(|| oj_server::css_engine::CssEngine::preprocess(root, None))
         .await?;
     engine
         .compile_path(css, css_file, options, false)
@@ -1687,8 +1708,10 @@ struct OjUserPlugin {
     // per-call gates read the live plan, which a respawned host resets.
     gate: oj_server::plugins::BuildHookPlan,
     // OJ_DEBUG_HOOK_GATE=1: count gated-out RPCs and report at closeBundle,
-    // so a test can assert the gate actually skipped something.
+    // so a test can assert the gate actually skipped something. Unit tests
+    // always count, and read the totals back by app root (`gate_skips`).
     gate_debug: bool,
+    gate_count: bool,
     skipped_resolve: std::sync::atomic::AtomicU64,
     skipped_load: std::sync::atomic::AtomicU64,
     skipped_transform: std::sync::atomic::AtomicU64,
@@ -1706,6 +1729,7 @@ impl OjUserPlugin {
             emit,
             gate,
             gate_debug: oj_server::plugins::hook_gate_debug(),
+            gate_count: oj_server::plugins::hook_gate_debug() || cfg!(test),
             skipped_resolve: Default::default(),
             skipped_load: Default::default(),
             skipped_transform: Default::default(),
@@ -1848,7 +1872,7 @@ impl Plugin for OjUserPlugin {
         args: &HookResolveIdArgs<'_>,
     ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
         let pass = self.host.hook_wants_resolve_id(args.specifier);
-        if !pass && self.gate_debug {
+        if !pass && self.gate_count {
             self.skipped_resolve
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1872,7 +1896,7 @@ impl Plugin for OjUserPlugin {
         args: &HookLoadArgs<'_>,
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
         let pass = self.host.hook_wants_load(args.id);
-        if !pass && self.gate_debug {
+        if !pass && self.gate_count {
             self.skipped_load
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1925,7 +1949,7 @@ impl Plugin for OjUserPlugin {
         args: &HookTransformArgs<'_>,
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
         let pass = self.host.hook_wants_transform(args.id, args.code.as_str());
-        if !pass && self.gate_debug {
+        if !pass && self.gate_count {
             self.skipped_transform
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -2089,6 +2113,21 @@ impl Plugin for OjUserPlugin {
                 self.skipped_load.load(Relaxed),
                 self.skipped_transform.load(Relaxed),
             );
+        }
+        #[cfg(test)]
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            GATE_SKIPS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((
+                    self.emit.root.clone(),
+                    [
+                        self.skipped_resolve.load(Relaxed),
+                        self.skipped_load.load(Relaxed),
+                        self.skipped_transform.load(Relaxed),
+                    ],
+                ));
         }
         self.host
             .close_bundle()
@@ -5822,6 +5861,12 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
     }
     serde_json::Value::Object(map)
 }
+
+// The plugin-API build contract (emitFile, generateBundle, hook gating, ...)
+// end to end through `build`: real plugins in the in-process host, assertions
+// on dist/. Ported from process-level e2e scripts.
+#[cfg(test)]
+mod plugin_api_tests;
 
 #[cfg(test)]
 mod tests {
