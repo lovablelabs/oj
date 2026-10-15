@@ -75,8 +75,8 @@ enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// Internal: run one Start one-shot script (route-tree regen, the client
-    /// rebundle) to completion on a fresh embedded engine, in a process of its
+    /// Internal: run one Start one-shot script (route-tree regen, the server-fn
+    /// resolver) to completion on a fresh embedded engine, in a process of its
     /// own, then exit. The env pairs the script's `run(env)` receives arrive
     /// as JSON on stdin (they used to be spawn env; argv would print values
     /// in `ps`). A process per run on purpose: rolldown's binding retains
@@ -89,6 +89,14 @@ enum Command {
         /// The engine root (bare imports resolve from its node_modules).
         #[arg(long)]
         root: PathBuf,
+        /// Serve runs for the dev session instead of one (the client bundle):
+        /// each stdin line is one run's env JSON, answered by a
+        /// [`start_host::SCRIPT_REPLY`] line on stdout, all on one engine so
+        /// the script's module state (its plugin container) lives as long
+        /// as the dev server, as Vite's does. EOF calls the script's
+        /// `close()` and exits.
+        #[arg(long)]
+        serve: bool,
     },
     /// Internal: run one export of an oj-owned module (config extraction) on a
     /// fresh embedded engine, in a process of its own, then exit. The JSON
@@ -540,7 +548,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("{value}");
             Ok(())
         }
-        Command::StartScript { script, root } => {
+        Command::StartScript {
+            script,
+            root,
+            serve: true,
+        } => {
+            let root = root.canonicalize().context("engine root not found")?;
+            let scripts = start_host::ScriptEngine::new(&root)?;
+            scripts.serve(&script).await
+        }
+        Command::StartScript { script, root, .. } => {
             let root = root.canonicalize().context("engine root not found")?;
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)

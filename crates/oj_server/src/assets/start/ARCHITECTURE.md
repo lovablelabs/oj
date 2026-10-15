@@ -74,10 +74,12 @@ Dev:
 - `bundle-client.mjs` bundles the browser client entry with rolldown.
 - The three above export `run(env)` and execute on an embedded engine
   (`ScriptEngine`), not on spawned `node`; rolldown's napi binding loads
-  against the oj binary's exported Node-API symbols. In dev each run gets a
-  one-shot `oj start-script` child process (env pairs on stdin), because
-  rolldown retains native memory per `build()` that only process exit
-  releases; `oj build` hosts the engine in its own (exiting) process.
+  against the oj binary's exported Node-API symbols. In dev the codegen runs
+  each get a one-shot `oj start-script` child process (env pairs on stdin);
+  the client bundle runs on one `oj start-script --serve` child for the
+  whole session, so the app's plugins keep one container (one buildStart,
+  state across rebundles) as Vite keeps one per server. `oj build` hosts the
+  engine in its own (exiting) process.
 - `live-reload.js` is the dev client that snapshots and restores form state
   across a warm reload.
 
@@ -101,7 +103,7 @@ Framework entries (synthesized, what the TanStack Vite plugin would inject):
 
 1. Write the assets into `.oj-cache/start/`.
 2. Generate the route tree and the server-fn resolver (one-shot children).
-3. Bundle the browser client entry (another one-shot child).
+3. Bundle the browser client entry (on the session's bundler child).
 4. Build on top of the normal oj dev server for module and asset serving.
 5. Boot the in-process SSR engine (`StartEngine`) on the built app's
    `SsrBridge`, plus a loopback shim for the plugin middleware's

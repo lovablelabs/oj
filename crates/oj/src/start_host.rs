@@ -1522,7 +1522,7 @@ impl StartEngine {
 /// values that used to be spawn env travel as the argument.
 ///
 /// Hosted only in processes that EXIT after their scripts (`oj build`, the
-/// `oj start-script` child the dev server spawns per rebundle): rolldown's
+/// `oj start-script` children of the dev server): rolldown's
 /// binding retains native memory per `build()` invocation that neither
 /// closing the bundler nor tearing the isolate down releases, so a long-lived
 /// process must never run these scripts on its own engine (measured ~650MB
@@ -1541,6 +1541,9 @@ pub struct ScriptEngine {
 /// take stylesheets and class names from here so they match what the dev
 /// server's SSR renders and serves.
 pub const STYLE_SCHEME: &str = "oj-style:";
+/// Prefixes a `start-script --serve` reply on stdout (`ok` or `err <msg>`);
+/// every other stdout line is the script's own output.
+pub const SCRIPT_REPLY: &str = "\u{1e}oj-start-script:";
 const CSS_ENV: &str = "OJ_START_CSS";
 
 fn serve_script_host(
@@ -1714,6 +1717,34 @@ impl ScriptEngine {
             .await
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("{what} failed: {e}"))
+    }
+
+    /// `start-script --serve`: one run per stdin line (its env JSON), each
+    /// answered on stdout by a [`SCRIPT_REPLY`] line, on this one engine.
+    /// Stdin closing (the dev server exiting or exec'ing a restart) ends the
+    /// session: the script's `close()` runs, then the process exits.
+    pub async fn serve(&self, script: &Path) -> anyhow::Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        let mut stdout = tokio::io::stdout();
+        while let Some(line) = lines.next_line().await? {
+            let reply = match serde_json::from_str::<Vec<(String, String)>>(&line) {
+                Ok(env) => match self.call(script, &env).await {
+                    Ok(_) => "ok".to_string(),
+                    Err(e) => format!("err {}", e.to_string().replace('\n', " ")),
+                },
+                Err(e) => format!("err bad request: {e}"),
+            };
+            stdout
+                .write_all(format!("{SCRIPT_REPLY}{reply}\n").as_bytes())
+                .await?;
+            stdout.flush().await?;
+        }
+        let _ = self
+            .engine
+            .call(script.to_string_lossy().into_owned(), "close", vec![], None)
+            .await;
+        Ok(())
     }
 
     async fn call(

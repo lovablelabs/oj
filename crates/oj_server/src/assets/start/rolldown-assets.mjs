@@ -409,6 +409,9 @@ export function makeVitePlugins({
   fsBase = "/@oj-start/fs",
   emit,
   lifecycle = true,
+  // False when the container outlives this build (the dev client bundle):
+  // its buildEnd belongs to the session's end.
+  buildEnd = lifecycle,
 } = {}) {
   const urlFor = makeUrlFor({ mode, fsBase, emit });
   const warnedVirtual = new Set();
@@ -442,7 +445,7 @@ export function makeVitePlugins({
       if (fallback?.buildStart && fallback !== container) await fallback.buildStart();
     },
     async buildEnd(error) {
-      if (lifecycle && container?.buildEnd) await container.buildEnd(error);
+      if (lifecycle && buildEnd && container?.buildEnd) await container.buildEnd(error);
     },
     async renderStart(outputOptions, inputOptions) {
       if (lifecycle && container?.renderStart) await container.renderStart(outputOptions, inputOptions);

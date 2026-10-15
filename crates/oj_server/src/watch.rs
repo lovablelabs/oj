@@ -342,6 +342,16 @@ pub(crate) mod child_groups {
 /// `reason` names what asked for the exec (a config/env change, a plugin's
 /// `server.restart()`): the log line and the diagnostics record say which,
 /// since the exec keeps the PID and a supervisor sees nothing else.
+/// Registers a child spawned outside oj_server (Start's client bundler) so a
+/// restart or shutdown kills it with the rest.
+pub fn register_child(pid: u32) {
+    child_groups::register(pid, false);
+}
+
+pub fn unregister_child(pid: u32) {
+    child_groups::unregister(pid);
+}
+
 pub fn restart_process(reason: &str) -> ! {
     if let Some(hook) = RESTART_HOOK.get() {
         hook(reason);

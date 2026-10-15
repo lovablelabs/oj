@@ -41,6 +41,29 @@ export async function run(env = null) {
   return main();
 }
 
+// One plugin container per dev server, as Vite has: `oj dev` keeps this
+// script's engine alive across rebundles (`start-script --serve`), so every
+// rebundle reuses the same plugin instances and buildStart runs once. A
+// plugin's state survives rebuilds; a fresh container per rebundle made a
+// plugin that writes a generated file from buildStart rewrite it on every
+// bundle, and the watcher fed that write back as the next rebundle.
+let containerLoad = null;
+
+function pluginContainer(app, mode) {
+  containerLoad ??= loadPluginContainer(app, { command: "serve", mode, environment: "client" }).catch((e) => {
+    containerLoad = null;
+    throw e;
+  });
+  return containerLoad;
+}
+
+// The server closing: Vite's container.close() runs buildEnd once, at the
+// end of the session, not after each request.
+export async function close() {
+  const container = await containerLoad?.catch(() => null);
+  if (container?.buildEnd) await container.buildEnd();
+}
+
 async function main() {
   const HERE = dirname(fileURLToPath(import.meta.url));
   const APP = process.env.OJ_APP_ROOT ?? process.cwd();
@@ -150,7 +173,7 @@ async function main() {
     return join(HERE, "start-entry.ts");
   }
 
-  const container = await loadPluginContainer(APP, { command: "serve", mode: MODE, environment: "client" });
+  const container = await pluginContainer(APP, MODE);
   phase("client bundle: plugin container loaded");
 
   const cssUrls = [];
@@ -239,7 +262,7 @@ async function main() {
       plugins: [
         closureRecorder,
         appAliasPlugin(container?.config),
-        makeVitePlugins({ container, appRoot: APP, mode: "dev" }),
+        makeVitePlugins({ container, appRoot: APP, mode: "dev", buildEnd: false }),
         assetsPlugin({ mode: "dev", cssUrls, root: APP }),
         serverFnClient,
         nodeBuiltinShims({ production: false }),

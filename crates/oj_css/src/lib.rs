@@ -26,6 +26,7 @@ pub use imports::{
 pub use lightning::LightningOptions;
 pub use modules::{css_modules_esm, is_css_module};
 pub use path::{node_modules_load_paths, normalize};
+pub use rebase::rewrite_style_attribute_dev;
 pub use resolve::{CssModulesOptions, CssResolve, CssResolveConfig};
 pub use sass::{
     compile_sass, compile_sass_collecting, compile_sass_opts, compile_sass_with, is_sass,

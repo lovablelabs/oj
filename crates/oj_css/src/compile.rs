@@ -12,7 +12,7 @@ use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleS
 
 use crate::lightning::LightningOptions;
 use crate::modules::{is_css_module, module_exports, module_is_scoped, scoped_name_pattern};
-use crate::rebase::{css_base_dir, dev_url_of, rewrite_dependencies};
+use crate::rebase::{css_base_dir, dev_url_of, rewrite_css_image_set, rewrite_dependencies};
 use crate::resolve::CssResolve;
 use crate::targets::browser_targets;
 
@@ -177,7 +177,15 @@ pub(crate) fn compile_css_depth(
 
     let mut css = match (base, result.dependencies) {
         (Some(base), Some(deps)) => {
-            rewrite_dependencies(result.code, deps, |spec| dev_url_of(&spec, &base, resolve))
+            let css =
+                rewrite_dependencies(result.code, deps, |spec| dev_url_of(&spec, &base, resolve));
+            // lightningcss prints an `image-set()` candidate as a bare string,
+            // which Vite's url rewrite wraps in `url()`; the urls are final.
+            if css.contains("image-set(") {
+                rewrite_css_image_set(&css, &|url| Some(url.to_string()))
+            } else {
+                css
+            }
         }
         _ => result.code,
     };

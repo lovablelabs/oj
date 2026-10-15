@@ -8,9 +8,9 @@
 // so an inline `<script type="module">` becomes an html-proxy module whose
 // imports resolve like any other module, exactly as under Vite.
 //
-// Not ported: inline `<style>` and `style="url(...)"` attribute transforms
-// (Vite runs them through its CSS plugin container) and preTransformRequest
-// (a warm-up with no effect on the response).
+// Inline `<style>` and `style="url(...)"` bodies go to `compileStyle`, the
+// host's stand-in for Vite's CSS plugin container. Not ported:
+// preTransformRequest (a warm-up with no effect on the response).
 
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
@@ -321,6 +321,16 @@ const DEFAULT_HTML_ASSET_SOURCES = {
     },
   },
 };
+function findNeedTransformStyleAttribute(node) {
+  const attr = node.attrs.find(
+    (prop) =>
+      prop.prefix === undefined &&
+      prop.name === "style" &&
+      (prop.value.includes("url(") || prop.value.includes("image-set(")),
+  );
+  if (!attr) return undefined;
+  return { attr, location: node.sourceCodeLocation?.attrs?.style };
+}
 function getNodeAssetAttributes(node, additionalAssetSources) {
   const defaults = DEFAULT_HTML_ASSET_SOURCES[node.nodeName];
   const additional = additionalAssetSources?.[node.nodeName];
@@ -710,9 +720,13 @@ function processNodeUrl(url, useSrcSetReplacer, config, htmlPath, originalUrl, m
 
 /**
  * Vite's devHtmlHook. `config`: root, base, decodedBase, publicDir, html;
- * `clientTags`: the dev client's tags (Vite's `/@vite/client`), injected head-prepend.
+ * `clientTags`: the dev client's tags (Vite's `/@vite/client`), injected
+ * head-prepend; `compileStyle(id, code)`: the compiled text of an inline
+ * style's html-proxy id (Vite's client pluginContainer.transform, for a
+ * `style-attr` id the attribute value vite:css-post records), absent to leave
+ * styles as written.
  */
-export function createDevHtmlHook({ config, proxy, moduleGraph, clientTags }) {
+export function createDevHtmlHook({ config, proxy, moduleGraph, clientTags, compileStyle }) {
   return async (html, { path: htmlPath, filename, originalUrl }) => {
     const root = config.root;
     const decodedBase = config.decodedBase || "/";
@@ -730,6 +744,8 @@ export function createDevHtmlHook({ config, proxy, moduleGraph, clientTags }) {
     const s = new Edits(html);
     let inlineModuleIndex = -1;
     const proxyCacheUrl = decodeURI(cleanUrl(proxyModulePath).replace(normalizePath(root), ""));
+    const styleUrl = [];
+    const inlineStyles = [];
     const addInlineModule = (node, ext) => {
       inlineModuleIndex++;
       const contentNode = node.childNodes[0];
@@ -757,7 +773,19 @@ export function createDevHtmlHook({ config, proxy, moduleGraph, clientTags }) {
           }
         }
       }
-      // Inline style and style-attribute transforms are not ported (see the header).
+      const inlineStyle = findNeedTransformStyleAttribute(node);
+      if (inlineStyle) {
+        inlineModuleIndex++;
+        inlineStyles.push({ index: inlineModuleIndex, location: inlineStyle.location, code: inlineStyle.attr.value });
+      }
+      if (node.nodeName === "style" && node.childNodes.length) {
+        const children = node.childNodes[0];
+        styleUrl.push({
+          start: children.sourceCodeLocation.startOffset,
+          end: children.sourceCodeLocation.endOffset,
+          code: children.value,
+        });
+      }
       for (const attr of getNodeAssetAttributes(node, config.html?.additionalAssetSources)) {
         if (attr.type === "remove") s.remove(attr.location.startOffset, attr.location.endOffset);
         else {
@@ -771,6 +799,18 @@ export function createDevHtmlHook({ config, proxy, moduleGraph, clientTags }) {
       const url = `${proxyModuleUrl}?html-proxy&index=${i}.js`;
       const mod = moduleGraph?.urlToModuleMap?.get(url);
       if (mod && typeof moduleGraph.invalidateModule === "function") moduleGraph.invalidateModule(mod);
+    }
+    if (compileStyle) {
+      await Promise.all([
+        ...styleUrl.map(async ({ start, end, code }, index) => {
+          const url = `${proxyModulePath}?html-proxy&direct&index=${index}.css`;
+          s.update(start, end, (await compileStyle(url, code)) ?? code);
+        }),
+        ...inlineStyles.map(async ({ index, location, code }) => {
+          const url = `${proxyModulePath}?html-proxy&inline-css&style-attr&index=${index}.css`;
+          overwriteAttrValue(s, location, (await compileStyle(url, code)) ?? "");
+        }),
+      ]);
     }
     return { html: s.toString(), tags: clientTags };
   };
@@ -821,6 +861,7 @@ export async function transformDevHtml({
   proxy,
   moduleGraph,
   clientTags,
+  compileStyle,
   env,
   nonce,
   warn = () => {},
@@ -842,6 +883,7 @@ export async function transformDevHtml({
     proxy,
     moduleGraph,
     clientTags,
+    compileStyle,
   });
   const [preHooks, normalHooks, postHooks] = resolveHtmlTransforms(plugins, bind);
   const hooks = devHtmlHooks({
