@@ -50,6 +50,7 @@ rolldown_plugin = "=1.2.5"
 tempfile.workspace = true
 # test-util: paused time for the debounce test, like crates/oj.
 tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

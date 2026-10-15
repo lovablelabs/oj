@@ -116,11 +116,11 @@ node e2e/dynamic-import.mjs                       # dynamic import with variable
 node e2e/wasm.mjs                                 # wasm ?init instantiation (dev + build)
 node e2e/query-assets.mjs                         # ?url/?raw/?inline/?init asset queries
 cargo test -p oj --bin oj plugin_api_tests       # build plugin API, rollupOptions, ssr, css and assetsDir options (in-process)
+cargo test -p oj_server --test dev                # dev server config, css, plugin hooks, ws and HMR sockets (in-process)
 node e2e/preprocessors.mjs                        # less + stylus css (installs both, then dev+build)
 node e2e/assets-inline.mjs                        # assetsInlineLimit: small assets become data uris
 node e2e/config-proxy.mjs                         # adopt vite.config server.proxy + ignored-config warnings
 node e2e/proxy-regex-context.mjs                  # server.proxy "^..." regex contexts (path + query), like Vite
-node e2e/config-function.mjs                      # oj.config function form ({ command, mode }) => config
 node e2e/build-target-raw-inline.mjs              # build.target downleveling + ?raw/?inline in build
 node e2e/manual-chunks.mjs                        # rollupOptions output.manualChunks vendor splitting
 node e2e/svgr.mjs                                 # svg as react component (?react), installs react
@@ -133,11 +133,7 @@ node e2e/hmr-overlay-recovery.mjs                 # startup compile error: buffe
 node e2e/hmr-json-update.mjs                      # editing an imported .json hot-updates its boundary (?t= stamp)
 node e2e/hmr-unresolved-import.mjs                # missing ./import fails with an overlay; creating the file recovers
 node e2e/host-binding.mjs                         # dev/preview --host + server.host bind all interfaces
-node e2e/plugin-ws.mjs                             # plugin server.ws custom events (send/on) round-trip
-node e2e/plugin-ws-execute.mjs                     # post -> ws broadcast -> client reply -> collect (bridge execute)
-node e2e/plugin-middleware.mjs                     # configureServer post body forwarding + transformIndexHtml
 node e2e/hmr-gate.mjs                              # hmr gate holds updates until POST /__hmr_flush
-node e2e/config-flag.mjs                           # oj dev --config <path> loads an override config
 node e2e/config-wrapper.mjs                        # vite.config that calls an external defineConfig wrapper
 node e2e/awkward-paths.mjs                         # percent-encoded filenames served, traversal contained
 node bench/generate.mjs 1000                      # generate a benchmark app (then npm i inside it)

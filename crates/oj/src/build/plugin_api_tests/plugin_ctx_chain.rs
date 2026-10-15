@@ -9,8 +9,8 @@ use super::{build_app, js_under, scratch, write_files};
 /// a sibling plugin serves must get that plugin's answer: Vite runs the
 /// container's resolveId/load chain inside ctx.resolve/ctx.load. Before, the
 /// host went straight to the Rust resolver and the disk (null / throw). Ids no
-/// plugin claims still resolve on disk. (The dev-server half of this stays in
-/// e2e/plugin-ctx-chain.mjs.)
+/// plugin claims still resolve on disk. The dev half is
+/// crates/oj_server/tests/dev/plugin_ctx_chain.rs.
 #[tokio::test]
 async fn build_ctx_resolve_and_load_run_the_sibling_plugin_chain() {
     let root = scratch("ctx-chain-build");

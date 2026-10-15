@@ -643,6 +643,26 @@ pub struct BuiltApp {
     /// The SSR resolve/load pipeline, for the in-process SSR module runner.
     pub ssr: SsrBridge,
     pub watch_feed: WatchFeed,
+    watch_tx: std::sync::mpsc::Sender<WatchMsg>,
+    watch_ready: tokio::sync::watch::Receiver<bool>,
+}
+
+impl BuiltApp {
+    /// Resolves once the watcher covers the root (chokidar's `ready`): HTTP
+    /// answers before that, so an edit made earlier may go unseen. Also
+    /// resolves if the watcher failed to start.
+    pub async fn watcher_ready(&self) {
+        let _ = self.watch_ready.clone().wait_for(|ready| *ready).await;
+    }
+
+    /// Stops the file watcher and returns once it is gone, so nothing under
+    /// the root (its removal included) can reach HMR or a restart after.
+    pub fn close_watcher(&self) {
+        let (ack, done) = std::sync::mpsc::channel();
+        if self.watch_tx.send(WatchMsg::Close(ack)).is_ok() {
+            let _ = done.recv_timeout(Duration::from_secs(10));
+        }
+    }
 }
 
 pub async fn bind_dev_listener(
@@ -1140,6 +1160,7 @@ fn spawn_state_tasks(
     state: &Arc<ServerState>,
     mut write_rx: tokio::sync::mpsc::Receiver<(String, Arc<CachedModule>)>,
     watch_rx: std::sync::mpsc::Receiver<WatchMsg>,
+    watch_ready: tokio::sync::watch::Sender<bool>,
 ) {
     if let Some(host) = &state.plugins {
         host.set_ws_sender(state.reload_tx.clone());
@@ -1160,7 +1181,7 @@ fn spawn_state_tasks(
             }
         });
     }
-    spawn_watcher(Arc::clone(state), watch_rx);
+    spawn_watcher(Arc::clone(state), watch_rx, watch_ready);
 }
 
 /// `server.warmup`: precompile the client files.
@@ -1512,6 +1533,7 @@ impl DevServer {
         let (crawl_tx, crawl_rx) = tokio::sync::watch::channel(false);
         let (write_tx, write_rx) = tokio::sync::mpsc::channel::<(String, Arc<CachedModule>)>(65536);
         let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
+        let (watch_ready_tx, watch_ready) = tokio::sync::watch::channel(false);
         let public_dir = oj_config::public_dir(&config, &root);
         let client_resolver = Arc::new(client_resolver(&root, &config));
         let css_resolve = oj_css::CssResolveConfig {
@@ -1593,7 +1615,7 @@ impl DevServer {
             ssr_watch: Arc::new(SsrWatchQueue::default()),
             ssr_plugin_config: payloads.ssr,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            watch_tx,
+            watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),
             plugins_use_module_parsed: caps.use_module_parsed,
             plugins_have_transform: caps.have_transform,
@@ -1635,7 +1657,7 @@ impl DevServer {
                 ))
             },
         });
-        spawn_state_tasks(&state, write_rx, watch_rx);
+        spawn_state_tasks(&state, write_rx, watch_rx, watch_ready_tx);
         // A dep re-optimization that changed previously served chunks (or
         // whose batch failed) commits a new map: drop every compiled module
         // (their rewrites carry the old URLs) and reload the page, Vite's
@@ -1696,6 +1718,8 @@ impl DevServer {
             hmr_gate,
             ssr,
             watch_feed,
+            watch_tx,
+            watch_ready,
         })
     }
 }
@@ -1773,19 +1797,9 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     };
     // A signal during boot finds no host yet: skip the hooks, still sweep.
     if let Some(host) = host.get() {
-        if tokio::time::timeout(Duration::from_secs(5), async {
-            if let Err(e) = host.close_dev_server().await {
-                eprintln!("oj: dev server close on shutdown failed: {e}");
-            }
-            if let Err(e) = host.build_end(None).await {
-                eprintln!("oj: plugin buildEnd on close failed: {e}");
-            }
-            if let Err(e) = host.close_bundle().await {
-                eprintln!("oj: plugin closeBundle on close failed: {e}");
-            }
-        })
-        .await
-        .is_err()
+        if tokio::time::timeout(Duration::from_secs(5), close_plugins(host))
+            .await
+            .is_err()
         {
             eprintln!("oj: plugin close on shutdown timed out after 5s; killing plugin children");
         }
@@ -1794,6 +1808,20 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // the signal that ends oj never reaches them; forward it.
     child_groups::kill_all();
     std::process::exit(code);
+}
+
+/// Vite's server.close() for the plugins: the dev server's close, then
+/// buildEnd and closeBundle. Failures are reported, never fatal.
+pub async fn close_plugins(host: &PluginHost) {
+    if let Err(e) = host.close_dev_server().await {
+        eprintln!("oj: dev server close on shutdown failed: {e}");
+    }
+    if let Err(e) = host.build_end(None).await {
+        eprintln!("oj: plugin buildEnd on close failed: {e}");
+    }
+    if let Err(e) = host.close_bundle().await {
+        eprintln!("oj: plugin closeBundle on close failed: {e}");
+    }
 }
 
 pub fn resolve_host(host: Option<&str>) -> std::net::IpAddr {

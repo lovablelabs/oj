@@ -168,8 +168,6 @@ jobs:
         run: node e2e/start-build-options.mjs
       - name: throwing lifecycle hooks fail the build and dev startup
         run: node e2e/plugin-lifecycle-errors.mjs
-      - name: this.resolve / this.load consult sibling plugins first
-        run: node e2e/plugin-ctx-chain.mjs
       - name: plugin config() define reaches dev and build compiles
         run: node e2e/plugin-config-define.mjs
       - name: removed files reach hotUpdate / watchChange as delete

@@ -343,6 +343,9 @@ pub(crate) mod child_groups {
 /// `server.restart()`): the log line and the diagnostics record say which,
 /// since the exec keeps the PID and a supervisor sees nothing else.
 pub fn restart_process(reason: &str) -> ! {
+    if let Some(hook) = RESTART_HOOK.get() {
+        hook(reason);
+    }
     eprintln!("{} {reason} — restarting dev server", oj_brand());
     oj_diag::emit(
         oj_diag::Event::new(
@@ -389,6 +392,15 @@ pub fn restart_process(reason: &str) -> ! {
     }
 }
 
+static RESTART_HOOK: std::sync::OnceLock<fn(&str) -> !> = std::sync::OnceLock::new();
+
+/// Takes every restart in place of the exec, for a process hosting dev
+/// servers it must outlive (oj's integration tests): an exec there would
+/// replace the whole process. Set once; later calls are ignored.
+pub fn set_restart_hook(hook: fn(&str) -> !) {
+    let _ = RESTART_HOOK.set(hook);
+}
+
 /// The directory oj was launched from, pinned by `capture_startup_cwd` before
 /// any engine boots (each in-process host really chdirs to its app root).
 pub(crate) static STARTUP_CWD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -406,6 +418,9 @@ pub fn capture_startup_cwd() {
 pub(crate) enum WatchMsg {
     Fs(notify::Result<notify::Event>),
     Dir(PathBuf),
+    /// Stop watching (Vite's `server.close()` closes its watcher); acked once
+    /// the watcher is dropped, so no event can follow.
+    Close(std::sync::mpsc::Sender<()>),
 }
 
 /// The dev watcher's raw events, for servers layered on oj_server (the Start
@@ -676,7 +691,11 @@ fn handle_batch(
     }
 }
 
-pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiver<WatchMsg>) {
+pub(crate) fn spawn_watcher(
+    state: Arc<ServerState>,
+    rx: std::sync::mpsc::Receiver<WatchMsg>,
+    ready: tokio::sync::watch::Sender<bool>,
+) {
     std::thread::spawn(move || {
         use std::sync::mpsc::RecvTimeoutError;
 
@@ -711,6 +730,7 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
             eprintln!("oj: cannot watch {}: {err}", state.root.display());
             return;
         }
+        let _ = ready.send(true);
 
         let debounce_ms: u64 = oj_env::get().knobs.hmr_debounce_ms.unwrap_or(10);
         // FSEvents keeps a file's "created" flag on later events for a while, so
@@ -724,6 +744,11 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
                 Ok(WatchMsg::Dir(dir)) => {
                     watch_served_dir(&mut watcher, &mut served_dirs, dir);
                     continue;
+                }
+                Ok(WatchMsg::Close(ack)) => {
+                    drop(watcher);
+                    let _ = ack.send(());
+                    return;
                 }
                 Err(_) => break,
             };
@@ -751,6 +776,11 @@ pub(crate) fn spawn_watcher(state: Arc<ServerState>, rx: std::sync::mpsc::Receiv
                     ),
                     Ok(WatchMsg::Fs(Err(_))) => {}
                     Ok(WatchMsg::Dir(dir)) => watch_served_dir(&mut watcher, &mut served_dirs, dir),
+                    Ok(WatchMsg::Close(ack)) => {
+                        drop(watcher);
+                        let _ = ack.send(());
+                        return;
+                    }
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
