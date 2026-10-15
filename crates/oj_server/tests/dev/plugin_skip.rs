@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! oj keeps no plugin host when the config has no plugins oj needs (e.g.
-//! React-only, where oj does JSX in oxc): the host may boot to report zero
-//! active plugins, then is shut down, and the app is served natively. The
-//! built app's `plugin_host` slot records that.
+//! A config with no plugins oj needs (e.g. React-only, where oj does JSX in
+//! oxc) still keeps its plugin host, idle: Vite's dev HTML transform runs
+//! there for every page. Modules are served natively, with no hook calls.
 
 use crate::App;
 
@@ -20,12 +19,12 @@ fn app(vite_config: &str) -> App {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn no_active_plugins_drops_the_host_and_serves_natively() {
+async fn no_active_plugins_keeps_an_idle_host_and_serves_natively() {
     let app = app("export default { plugins: [] };\n");
     let server = app.serve().await;
     assert!(
-        server.built.plugin_host.is_none(),
-        "a zero-plugin config must not keep a plugin host"
+        server.built.plugin_host.is_some(),
+        "a zero-plugin config keeps the host for the dev HTML transform"
     );
     let home = server.text("/").await;
     assert!(home.contains("main.js"), "app not served:\n{home}");
@@ -36,7 +35,6 @@ async fn no_active_plugins_drops_the_host_and_serves_natively() {
     );
 }
 
-// Without this, a host that failed to boot at all would pass the test above.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_active_plugin_keeps_the_host() {
     let app = app(

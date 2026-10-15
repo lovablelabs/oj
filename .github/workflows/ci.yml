@@ -272,6 +272,8 @@ jobs:
           node e2e/watch-config-deps-ignored.mjs
       - name: transformIndexHtml per-page ctx (dev + build) via the css fixture
         run: node e2e/html-transform-ctx.mjs
+      - name: dev page inline styles and style attributes compile like Vite's
+        run: node e2e/html-inline-style-vite.mjs
       - name: start dotted non-GET server routes, streamed bodies, set-cookie (dev + prod server)
         run: node e2e/start-server-routes.mjs
       - name: generic ssr dev runs requests concurrently, action bodies stay bytes

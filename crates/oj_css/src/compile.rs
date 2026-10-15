@@ -505,9 +505,11 @@ mod tests {
             !out.contains("/src/@/"),
             "alias must not be treated as a relative segment: {out}"
         );
+        // No /proj on disk: a relative url resolves nowhere and stays, as
+        // Vite's dev url resolver leaves a miss.
         assert!(
-            out.contains("/src/ui/y.png"),
-            "relative still rebased: {out}"
+            out.contains("url(\"./y.png\")"),
+            "an unresolved relative url stays as written: {out}"
         );
         assert!(out.contains("/logo.svg#id"), "public url kept: {out}");
         // An alias to a file outside the root is served through /@fs.

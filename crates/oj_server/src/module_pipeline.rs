@@ -24,6 +24,19 @@ pub(crate) async fn ensure_module_from(
     url: &str,
     preloaded: Option<String>,
 ) -> Result<(String, Arc<CachedModule>), String> {
+    ensure_module_as(state, file, url, preloaded, None).await
+}
+
+/// [`ensure_module_from`] with the id plugin transforms see given outright
+/// (else `file` plus `url`'s query): an html-proxy style compiles as a `.css`
+/// beside its page, while plugins see Vite's id for it.
+pub(crate) async fn ensure_module_as(
+    state: &Arc<ServerState>,
+    file: &Path,
+    url: &str,
+    preloaded: Option<String>,
+    transform_id: Option<&str>,
+) -> Result<(String, Arc<CachedModule>), String> {
     let ext = file.extension().and_then(|e| e.to_str());
     let react_svg = ext == Some("svg")
         && url
@@ -98,7 +111,8 @@ pub(crate) async fn ensure_module_from(
         return Ok((key, module));
     }
 
-    let transformed = plugin_transform(state, file, url, source, is_dep).await?;
+    let transform_id = transform_id.map_or_else(|| hook_id(file, url), str::to_string);
+    let transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
     let source = if is_preprocessor(url) {
         preprocess_less_stylus(state, url, transformed.code).await?
     } else {
@@ -409,16 +423,16 @@ fn persistent_hit(state: &ServerState, key: &str, is_dep: bool) -> Option<Arc<Ca
     (!needs_retransform).then_some(module)
 }
 
-struct Transformed {
-    code: String,
+pub(crate) struct Transformed {
+    pub(crate) code: String,
     watch_files: Vec<String>,
     maps: Vec<String>,
 }
 
-async fn plugin_transform(
+pub(crate) async fn plugin_transform(
     state: &ServerState,
     file: &Path,
-    url: &str,
+    transform_id: &str,
     source: String,
     is_dep: bool,
 ) -> Result<Transformed, String> {
@@ -437,15 +451,14 @@ async fn plugin_transform(
         Some(host) if state.plugins_have_transform && (!is_dep || dep_wants_transform) => host,
         _ => return Ok(untouched(source)),
     };
-    let transform_id = hook_id(file, url);
-    if !host.hook_wants_transform(&transform_id, &source) {
+    if !host.hook_wants_transform(transform_id, &source) {
         if plugins::hook_gate_debug() {
             eprintln!("oj: hook gate skipped transform for {transform_id}");
         }
         return Ok(untouched(source));
     }
     let resolved = resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
-    match host.transform(&source, &transform_id, &resolved).await {
+    match host.transform(&source, transform_id, &resolved).await {
         Ok((code, watch_files, maps, _)) => Ok(Transformed {
             code,
             watch_files,

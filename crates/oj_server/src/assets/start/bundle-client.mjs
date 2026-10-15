@@ -48,6 +48,8 @@ export async function run(env = null) {
 // plugin that writes a generated file from buildStart rewrite it on every
 // bundle, and the watcher fed that write back as the next rebundle.
 let containerLoad = null;
+// Bundles this engine ran: the `?inline` sheets' import key.
+let bundles = 0;
 
 function pluginContainer(app, mode) {
   containerLoad ??= loadPluginContainer(app, { command: "serve", mode, environment: "client" }).catch((e) => {
@@ -263,7 +265,12 @@ async function main() {
         closureRecorder,
         appAliasPlugin(container?.config),
         makeVitePlugins({ container, appRoot: APP, mode: "dev", buildEnd: false }),
-        assetsPlugin({ mode: "dev", cssUrls, root: APP }),
+        assetsPlugin({
+          mode: "dev",
+          cssUrls,
+          root: APP,
+          styleKey: { css: { epoch: process.env.OJ_START_STYLE_EPOCH ?? "0" }, inline: { bundle: String(++bundles) } },
+        }),
         serverFnClient,
         nodeBuiltinShims({ production: false }),
       ],

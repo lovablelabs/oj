@@ -669,11 +669,19 @@ pub struct BuiltApp {
 }
 
 impl BuiltApp {
-    /// Resolves once the watcher covers the root (chokidar's `ready`): HTTP
-    /// answers before that, so an edit made earlier may go unseen. Also
-    /// resolves if the watcher failed to start.
+    /// Resolves once the watcher covers the root (chokidar's `ready`), or
+    /// once it failed to start.
     pub async fn watcher_ready(&self) {
         let _ = self.watch_ready.clone().wait_for(|ready| *ready).await;
+    }
+
+    /// The dev listener, bound only once the watcher covers the root. Vite
+    /// creates its watcher in createServer, before listen, so an edit made
+    /// after the server first answers is always seen; binding earlier lost
+    /// one that landed in between (a `.env` edit right after a restart).
+    pub async fn bind_listener(&self) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
+        self.watcher_ready().await;
+        bind_dev_listener(self.host, self.port, self.strict_port).await
     }
 
     /// Stops the file watcher and returns once it is gone, so nothing under
@@ -805,8 +813,21 @@ struct PluginFile {
     label: String,
 }
 
+/// The app's plugin file, else an empty `oj.plugins.mjs` in the cache: Vite's
+/// dev HTML transform (inline modules and styles, the dev client, `%ENV%`,
+/// nonces) runs in the host, and Vite runs it for every page, plugins or not.
 fn plugin_file(root: &Path, config_file: Option<&Path>) -> Option<PluginFile> {
-    match plugins::plugin_source(root, config_file)? {
+    let Some(source) = plugins::plugin_source(root, config_file) else {
+        let path = oj_cache::cache_root(root).join("empty.plugins.mjs");
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        std::fs::write(&path, "export default [];\n").ok()?;
+        return Some(PluginFile {
+            path,
+            format: PluginsFormat::Oj,
+            label: "no plugin file".to_string(),
+        });
+    };
+    match source {
         plugins::PluginSource::OjPlugins(p) => Some(PluginFile {
             label: p.file_name().unwrap().to_string_lossy().into_owned(),
             path: p,
@@ -889,7 +910,6 @@ async fn spawn_plugin_host(
     file: &PluginFile,
     payload: &str,
     registry: &oj_js::EngineRegistry,
-    keep_for_proxy: bool,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
     let host = match PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await {
@@ -899,15 +919,9 @@ async fn spawn_plugin_host(
             return Ok(None);
         }
     };
-    let plugin_count = host.plugin_count().await;
-    if plugin_count == 0 && !keep_for_proxy {
-        host.shutdown();
-        println!("  plugins: {label} (none active after native filtering; served natively)");
-        return Ok(None);
-    }
-    if plugin_count == 0 {
-        // Kept only to host `server.proxy` in the middleware stack.
-        println!("  plugins: {label} (none active; host kept for server.proxy)");
+    // Kept with no plugins too: it hosts the dev HTML transform and `server.proxy`.
+    if host.plugin_count().await == 0 {
+        println!("  plugins: {label} (none active)");
         return Ok(Some(host));
     }
     println!("  plugins: {label}");
@@ -1359,7 +1373,7 @@ impl DevServer {
         let host_slot: Arc<std::sync::OnceLock<Arc<PluginHost>>> = Arc::default();
         tokio::spawn(close_plugins_on_shutdown(host_slot.clone()));
         let built = self.build_app().await?;
-        let (listener, port) = bind_dev_listener(built.host, built.port, built.strict_port).await?;
+        let (listener, port) = built.bind_listener().await?;
         println!("  {} dev server", oj_brand());
         println!("  root: {}", built.root.display());
         let url = format!(
@@ -1491,15 +1505,7 @@ impl DevServer {
         let engine_registry = oj_js::EngineRegistry::new();
         let plugin_host = match &plugin_file {
             Some(file) => {
-                let keep_for_proxy = server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
-                spawn_plugin_host(
-                    &root,
-                    file,
-                    &payloads.client,
-                    &engine_registry,
-                    keep_for_proxy,
-                )
-                .await?
+                spawn_plugin_host(&root, file, &payloads.client, &engine_registry).await?
             }
             None => None,
         };

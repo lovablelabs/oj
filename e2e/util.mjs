@@ -34,6 +34,17 @@ export async function settles(cond, { timeoutMs = 45000, pollMs = 100, touch, to
   return true;
 }
 
+// Wait for a restarted dev server's own boot to finish: its banner after
+// `from` in the captured `log()`. A reachable port proves nothing right
+// after a restart is seen: the old process keeps answering while it reaps its
+// children before the exec, and parts of the new boot (a restored bundle)
+// report before its watcher is armed, so an edit made then is never seen.
+export async function restartedBoot(log, from, { banner = "oj dev (", timeoutMs = 60000 } = {}) {
+  if (!(await settles(() => log().slice(from).includes(banner), { timeoutMs }))) {
+    throw new Error(`the restarted server never finished booting; log tail:\n${log().slice(-3000)}`);
+  }
+}
+
 // Wait until `url` answers: `res.ok` by default, or a custom `until(res)`
 // (which may read the body). Throws on timeout with the last failure, and
 // fails fast when `proc` has already exited. Returns the accepted response.
