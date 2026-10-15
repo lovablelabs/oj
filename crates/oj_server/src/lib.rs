@@ -794,8 +794,21 @@ struct PluginFile {
     label: String,
 }
 
+/// The app's plugin file, else an empty `oj.plugins.mjs` in the cache: Vite's
+/// dev HTML transform (inline modules and styles, the dev client, `%ENV%`,
+/// nonces) runs in the host, and Vite runs it for every page, plugins or not.
 fn plugin_file(root: &Path, config_file: Option<&Path>) -> Option<PluginFile> {
-    match plugins::plugin_source(root, config_file)? {
+    let Some(source) = plugins::plugin_source(root, config_file) else {
+        let path = oj_cache::cache_root(root).join("empty.plugins.mjs");
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        std::fs::write(&path, "export default [];\n").ok()?;
+        return Some(PluginFile {
+            path,
+            format: PluginsFormat::Oj,
+            label: "no plugin file".to_string(),
+        });
+    };
+    match source {
         plugins::PluginSource::OjPlugins(p) => Some(PluginFile {
             label: p.file_name().unwrap().to_string_lossy().into_owned(),
             path: p,
@@ -878,7 +891,6 @@ async fn spawn_plugin_host(
     file: &PluginFile,
     payload: &str,
     registry: &oj_js::EngineRegistry,
-    keep_for_proxy: bool,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
     let host = match PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await {
@@ -888,15 +900,9 @@ async fn spawn_plugin_host(
             return Ok(None);
         }
     };
-    let plugin_count = host.plugin_count().await;
-    if plugin_count == 0 && !keep_for_proxy {
-        host.shutdown();
-        println!("  plugins: {label} (none active after native filtering; served natively)");
-        return Ok(None);
-    }
-    if plugin_count == 0 {
-        // Kept only to host `server.proxy` in the middleware stack.
-        println!("  plugins: {label} (none active; host kept for server.proxy)");
+    // Kept with no plugins too: it hosts the dev HTML transform and `server.proxy`.
+    if host.plugin_count().await == 0 {
+        println!("  plugins: {label} (none active)");
         return Ok(Some(host));
     }
     println!("  plugins: {label}");
@@ -1480,15 +1486,7 @@ impl DevServer {
         let engine_registry = oj_js::EngineRegistry::new();
         let plugin_host = match &plugin_file {
             Some(file) => {
-                let keep_for_proxy = server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
-                spawn_plugin_host(
-                    &root,
-                    file,
-                    &payloads.client,
-                    &engine_registry,
-                    keep_for_proxy,
-                )
-                .await?
+                spawn_plugin_host(&root, file, &payloads.client, &engine_registry).await?
             }
             None => None,
         };

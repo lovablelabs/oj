@@ -151,7 +151,8 @@ async fn inline_styles_compile_like_a_stylesheet_beside_the_page() {
     const STYLED: &str = r#"export default { resolve: { alias: { "@": SRC } }, plugins: [{
     name: "css-mark",
     transform(code, id) {
-      if (id.includes("html-proxy") && id.endsWith(".css")) return code + "\n.from-plugin { color: red }\n";
+      // A rule only fits a sheet; style-attr ids carry declarations.
+      if (id.includes("html-proxy&direct")) return code + "\n.from-plugin { color: red }\n";
     },
   }, {
     name: "styled-page",
