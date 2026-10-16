@@ -105,7 +105,13 @@
   if (document.readyState === "complete") restore();
   else window.addEventListener("load", restore);
 
+  // Vite's `server.hmr.overlay` (its client's __HMR_ENABLE_OVERLAY__), filled
+  // in when the dev server serves this file: off, a build error is only logged.
+  const enableOverlay = __HMR_ENABLE_OVERLAY__;
+
   function showError(err) {
+    console.error("[oj] build error\n" + ((err && err.message) || err));
+    if (!enableOverlay) return;
     import("/@oj-start/error-overlay.js")
       .then(() => {
         const Overlay = customElements.get("vite-error-overlay");
@@ -113,7 +119,6 @@
         document.body.appendChild(new Overlay(err));
       })
       .catch(() => {});
-    console.error("[oj] build error\n" + ((err && err.message) || err));
   }
 
   let ws;
