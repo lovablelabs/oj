@@ -2,7 +2,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  readdirSync,
+  rmSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,7 +21,9 @@ import {
   contentHashEmitter,
   makeVitePlugins,
   appAliasPlugin,
+  assetsPlugin,
 } from "../../crates/oj_server/src/assets/start/rolldown-assets.mjs";
+import { repo, testWithRolldown } from "./harness.mjs";
 
 const tmp = (p) => mkdtempSync(join(tmpdir(), "oj-assets-" + p + "-"));
 
@@ -250,4 +261,59 @@ test("an alias whose target does not resolve keeps the rewritten id, as Vite's a
   assert.equal(await aliasResolve({ "@": "missing" }, "@/x", relative), "missing/x");
   assert.equal(relative.length, 1);
   assert.match(relative[0], /rewrote @\/x to missing\/x but was not an absolute path/);
+});
+
+// Asset imports are classified by the resolved id at load, as Vite's asset,
+// css and worker plugins do, never by a resolve-time marker: rolldown swaps
+// `custom` between concurrent this.resolve calls, which once handed a bare
+// `/abs/x.png` to rolldown to read as UTF-8 source.
+testWithRolldown(test)("asset imports load by their resolved id, whichever resolver answered", async () => {
+  const base = realpathSync(tmp("plain"));
+  try {
+    const png = join(base, "logo.png");
+    writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00]));
+    writeFileSync(join(base, "pov.css"), ".pov{color:red}");
+    writeFileSync(join(base, "note.txt"), "hello raw");
+    writeFileSync(join(base, "w.ts"), "self.postMessage(1);");
+    writeFileSync(join(base, "star.svg"), "<svg/>");
+    writeFileSync(
+      join(base, "entry.js"),
+      [
+        'import a from "@/logo.png";',
+        'import b from "./logo.png?url";',
+        'import c from "@/note.txt?raw";',
+        'import d from "./logo.png?no-inline";',
+        'import w from "@/w.ts?worker&url";',
+        'import s from "./star.svg?react";',
+        'import "@/pov.css";',
+        'import "./pov.css";',
+        // A resolver answering with the bare file, as a swapped `custom` did.
+        'import e from "bare:logo.png";',
+        'import "bare:pov.css";',
+        "export { a, b, c, d, e, w, s };",
+      ].join("\n"),
+    );
+    const { rolldown } = await import(join(repo, "e2e/fixtures/start-app/node_modules/rolldown/dist/index.mjs"));
+    const cssUrls = [];
+    const bundle = await rolldown({
+      input: join(base, "entry.js"),
+      plugins: [
+        { name: "bare", resolveId: (s) => (s.startsWith("bare:") ? join(base, s.slice(5)) : null) },
+        appAliasPlugin({ resolve: { alias: { "@": base } } }),
+        makeVitePlugins({ appRoot: base, mode: "dev" }),
+        assetsPlugin({ mode: "dev", cssUrls, root: base }),
+      ],
+    });
+    const { output } = await bundle.generate({ format: "esm" });
+    await bundle.close();
+    const code = output[0].code;
+    const fs = (p) => JSON.stringify("/@oj-start/fs" + join(base, p));
+    assert.ok(code.includes(fs("logo.png")), code);
+    assert.ok(code.includes(JSON.stringify("hello raw")), code);
+    assert.ok(code.includes(fs("star.svg")), code);
+    assert.ok(code.includes(JSON.stringify("/w.ts")), code);
+    assert.deepEqual(cssUrls, ["/@oj-start/fs" + join(base, "pov.css")]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

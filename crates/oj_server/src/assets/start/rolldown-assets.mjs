@@ -101,17 +101,6 @@ export default function WorkerWrapper(options) {
 `;
 }
 
-// oj's asset plugin resolving the file behind an asset import (`x.css` for
-// `x.css?url`): in flight, keyed by specifier and importer, so the app-plugin
-// routing can leave it alone. RESIDUAL RACE, accepted: a real `./x.css`
-// import from the same importer resolving concurrently with the sibling
-// `./x.css?url`'s inner resolve is indistinguishable by value (rolldown does
-// not reliably deliver `custom` across plugins, so causality is invisible)
-// and skips the app-plugin routing for that one resolution -- which is
-// exactly the pre-routing behavior, never worse; the asset still serves.
-const assetInnerResolves = new Map();
-const assetInnerKey = (source, importer) => `${source}\0${importer ?? ""}`;
-
 // The oj asset module a specifier (or a resolved `/abs/x.css?url`) maps to, by
 // its query and extension; null when it is not an asset import.
 function assetTagFor(source, mode) {
@@ -131,6 +120,22 @@ function assetTagFor(source, mode) {
   return null;
 }
 
+// The asset a module id is, classified by the id at load like Vite's asset,
+// css and worker plugins (vite:asset's load keys on urlRE/assetsInclude,
+// vite:css on CSS_LANGS_RE): the resolvers keep the query (`/abs/x.png?url`),
+// so whichever plugin answered the import, the id says what it is. Nothing
+// rides rolldown's `custom` here: concurrent this.resolve calls can swap it
+// (PluginContextData keys saved options by the map's size, so a finished call
+// frees an index a live one still holds).
+const ASSET_IDS = [ASSET_EXT, STYLE_RE, WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE];
+function assetFor(id, mode) {
+  if (id.startsWith("\0")) return null;
+  const path = id.replace(/\?.*$/, "");
+  if (!isAbsolute(path)) return null;
+  const tag = assetTagFor(id, mode);
+  return tag ? { tag, path } : null;
+}
+
 // `styleKey`: query params a long-lived engine adds to its style imports,
 // which it caches by url: `css` moves when a style input changed, `inline`
 // every bundle (a Tailwind sheet reads every source file).
@@ -147,39 +152,10 @@ export function assetsPlugin({
   const workerUrlFor = makeWorkerUrlFor({ mode, root, emit });
   return {
     name: "oj-assets",
-    resolveId: {
-      filter: { id: { include: [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, STYLE_RE] } },
-      async handler(source, importer, options) {
-        if (options?.custom?.ojAsset) return null;
-        const tag = assetTagFor(source, mode);
-        if (!tag) return null;
-        const clean = source.replace(/\?.*$/, "");
-        // Marked in-flight rather than only by `custom`: rolldown does not
-        // reliably hand `custom` to the hooks this resolve reaches (observed:
-        // the routing plugin saw it without), and the app plugins must stay out.
-        const key = assetInnerKey(clean, importer);
-        assetInnerResolves.set(key, (assetInnerResolves.get(key) ?? 0) + 1);
-        let r;
-        try {
-          r = await this.resolve(clean, importer, { skipSelf: true, custom: { ojAsset: true } });
-        } finally {
-          const left = assetInnerResolves.get(key) - 1;
-          if (left > 0) assetInnerResolves.set(key, left);
-          else assetInnerResolves.delete(key);
-        }
-        if (!r) return null;
-        // The file may come back as an oj module id: a concurrent resolution of
-        // the same file (`import "./x.css"` next to this `./x.css?url`) can
-        // answer this one. Its file is what this import's tag wraps.
-        const v = parseV(r.id);
-        const file = v ? v.path.replace(/\?.*$/, "") : r.id;
-        return V(tag, file);
-      },
-    },
     load: {
-      filter: { id: /^\0oj-(raw|url|inline|css|(?:shared)?worker(?:-url|-inline)?):/ },
+      filter: { id: { include: ASSET_IDS, exclude: /^\0/ } },
       async handler(id) {
-        const v = parseV(id);
+        const v = assetFor(id, mode);
         if (!v) return null;
         const js = (code) => ({ code, moduleType: "js" });
         if (v.tag === "raw") return js(`export default ${JSON.stringify(readFileSync(v.path, "utf8"))};`);
@@ -243,18 +219,16 @@ export function assetsPlugin({
 // stays external, an absolute path is that file, loaded like any other (a
 // missing one fails loudly, as in Vite). A path with a query (`/a/x.css?url`)
 // is what Vite's load hooks key on (vite:asset, vite:worker), as is a
-// stylesheet or asset path (vite:css); oj answers those with its asset module
-// for the same id (the path is already resolved, so no second resolve). Any
-// other id with a query, and a virtual id, is served by the plugins' load.
+// stylesheet or asset path (vite:css); oj's asset plugin loads those by id.
+// Any other id with a query, and a virtual id, is served by the plugins' load.
 function bundlerIdFor(r, mode) {
   if (r.external) return { id: r.id, external: true };
-  // oj's own module ids (an asset or worker module the bundler resolved and a
-  // plugin handed back from its this.resolve) are already bundler ids.
+  // oj's own module ids (a plugin handed back from its this.resolve) are
+  // already bundler ids.
   if (parseV(r.id)) return r.id;
   const file = r.id.replace(/\?.*$/, "");
   if (!r.id.startsWith("\0") && isAbsolute(file)) {
-    const tag = assetTagFor(r.id, mode);
-    if (tag) return V(tag, file);
+    if (assetTagFor(r.id, mode) || SVG_REACT_RE.test(r.id)) return r.id;
     if (!r.id.includes("?")) return r.id;
     // A real source file with a foreign query (`/abs/route.ts?tsr-split=x`)
     // stays a PIPELINE id: transform and load filters key on it (Vite's
@@ -267,8 +241,8 @@ function bundlerIdFor(r, mode) {
 }
 // Specifiers oj's asset plugin owns. Vite's core resolver answers them (the
 // file exists), so a normal plugin's resolveId never sees them; the post
-// phase leaves them to the asset plugin, which also keeps its own nested
-// this.resolve out of the core-resolve round trip below.
+// phase leaves them to the core resolver.
+const SVG_REACT_RE = /\.svg\?react$/;
 const ASSET_OWNED = [WORKER_RE, URL_RE, RAW_RE, INLINE_RE, NO_INLINE_RE, ASSET_EXT, STYLE_RE];
 // A bare specifier: not relative, absolute, a \0 id or a `scheme:` URL.
 const BARE_RE = /^(?![./\\\0]|[a-zA-Z]:[\\/]|[a-zA-Z][\w+.-]*:)/;
@@ -462,29 +436,20 @@ export function makeVitePlugins({
       if (lifecycle && container?.renderStart) await container.renderStart(outputOptions, inputOptions);
     },
     resolveId: {
-      filter: { id: { include: [/\.svg\?react$/, /^virtual:/, /^\0/, ...userIncludes] } },
+      filter: { id: { include: [/^virtual:/, /^\0/, ...userIncludes] } },
       async handler(source, importer, options) {
-        if (options?.custom?.ojSvg || options?.custom?.ojCoreResolve) return null;
-        if (/\.svg\?react$/.test(source)) {
-          const r = await this.resolve(source.slice(0, -"?react".length), importer, {
-            skipSelf: true,
-            custom: { ojSvg: true },
-          });
-          return r ? V("svg-react", r.id) : null;
-        }
         if (!container) return null;
         if (/^virtual:/.test(source) || source.startsWith("\0")) {
           if (parseV(source)) return null;
           const rid = await container.resolveId(source, importer);
           return rid ? V("vite-virtual", rid) : null;
         }
-        // oj's asset plugin resolving the file behind `x.css?url` is not an
-        // import: Vite never resolves the bare file separately, so the app
-        // plugins (which saw the full specifier) stay out of it.
-        if (options?.custom?.ojAsset || assetInnerResolves.has(assetInnerKey(source, importer))) return null;
-        // A plugin's own this.resolve ends in this bundler's resolution.
+        // A plugin's own this.resolve ends in this bundler's resolution: the
+        // container already ran the app plugins (with Vite's skipCalls), and
+        // skipSelf keeps this hook out of every nested resolve of the same
+        // specifier, as Rollup's skip list does.
         const bundlerResolve = async (s, i) => {
-          const r = await this.resolve(s, i, { skipSelf: true, custom: { ojCoreResolve: true } });
+          const r = await this.resolve(s, i, { skipSelf: true });
           return r ? { id: r.id, external: r.external } : null;
         };
         if (matchesAny(plan.pre.filters, source) || (plan.pre.all && BARE_RE.test(source))) {
@@ -495,11 +460,7 @@ export function makeVitePlugins({
           !matchesAny(ASSET_OWNED, source) &&
           (matchesAny(plan.post.filters, source) || (plan.post.all && BARE_RE.test(source)))
         ) {
-          const core = await this.resolve(source, importer, {
-            ...options,
-            skipSelf: true,
-            custom: { ...options?.custom, ojCoreResolve: true },
-          });
+          const core = await this.resolve(source, importer, { ...options, skipSelf: true });
           if (core) return core;
           const r = await container.resolveIdResult(source, importer, null, "post", bundlerResolve);
           if (r) return bundlerIdFor(r, mode);
@@ -508,10 +469,14 @@ export function makeVitePlugins({
       },
     },
     load: {
-      filter: { id: { include: [/^\0oj-/, /\.svg$/, /^(?!.*\/node_modules\/).*\.(jsx?|mjs|tsx?)(\?|$)/] } },
+      filter: {
+        id: { include: [/^\0oj-/, /\.svg$/, SVG_REACT_RE, /^(?!.*\/node_modules\/).*\.(jsx?|mjs|tsx?)(\?|$)/] },
+      },
       async handler(id) {
         const v = parseV(id);
-        if (v && v.tag === "svg-react") return svgModule(v.path, v.path + "?react");
+        // `./w.ts?worker`, `./x.js?raw`: the asset plugin's, by id.
+        if (!v && assetFor(id, mode)) return null;
+        if (!v && SVG_REACT_RE.test(id)) return svgModule(id.slice(0, -"?react".length), id);
         if (v && v.tag === "vite-virtual") {
           let code = await container.load(v.path);
           if (code == null && fallback) code = await fallback.load(v.path);

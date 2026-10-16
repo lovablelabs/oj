@@ -319,10 +319,9 @@ async function main() {
     for (const id of Object.keys(o.modules ?? {})) closure.add(id);
   }
   const closureFiles = [...closure]
-    // An asset module's id is virtual (\0oj-css:/abs/x.css and friends), but
-    // its FILE is an input: raw/inline embed its bytes, css lands in
-    // css-urls.json. The closure must carry the file, or an edit to it never
-    // rebundles.
+    // An oj module id wraps a file (\0oj-vite-virtual:/abs/x.ts?q), and an
+    // asset id carries a query (/abs/x.css?inline); the FILE is the input, or
+    // an edit to it never rebundles.
     .map((id) => {
       const s = String(id);
       return s.startsWith("\0oj-") ? s.slice(s.indexOf(":") + 1) : s;

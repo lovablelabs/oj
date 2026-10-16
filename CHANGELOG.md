@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.36] - 2026-10-16
+
+### Fixed
+
+- A TanStack Start client bundle no longer fails at random on an image or stylesheet import with `[UNLOADABLE_DEPENDENCY] ... stream did not contain valid UTF-8` (or `Bundling CSS is no longer supported` for a `.css` file). oj's asset plugin tagged asset imports while resolving them and passed private markers through rolldown's `this.resolve` `custom` option, which concurrent resolves can swap: rolldown keys each call's saved options by the size of a map, so a finished call frees an index another call still holds. An aliased `@/logo.png` resolving next to a `./pov.css` import from the same file could then skip the asset plugin and hand rolldown the bare file to read as source, and the overlay stayed until the next edit. Asset, stylesheet, worker and `?raw`/`?url`/`?inline` imports are now classified by their resolved id when they load, as Vite's asset and css plugins do, `.svg?react` loads by its id too, and oj's Start bundle plugins pass nothing through `custom`. This applies to Start builds as well.
+
 ## [0.2.35] - 2026-10-15
 
 ### Fixed
