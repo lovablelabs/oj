@@ -81,7 +81,9 @@ server.stderr.on("data", (d) => {
   serverLog += d;
 });
 let up = false;
-const deadline = Date.now() + 60_000;
+// Generous: a debug binary on a cold .oj-cache boots the Start-based www app
+// slowly on CI runners (the JSC engine has no startup snapshot).
+const deadline = Date.now() + 180_000;
 while (!up && Date.now() < deadline && server.exitCode === null) {
   try {
     up = (await fetch(`http://localhost:${PORT}/`)).ok;
