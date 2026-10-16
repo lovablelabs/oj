@@ -13,7 +13,7 @@ inputs:
     description: >
       piu_jsc crate version supplying the WebKit pin, patches and build
       script; keep it matching the piu_jsc entry in Cargo.lock.
-    default: 149.4.0-rc.8
+    default: 149.4.0-rc.11
 
 runs:
   using: composite

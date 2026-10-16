@@ -21,16 +21,116 @@
           ./crates
         ];
       };
-      # ENGINE NOTE (piu migration): the engine is now Piu's JavaScriptCore
-      # backend (piu_jsc), which links a static JSCOnly WebKit build handed
-      # over via JSC_VENDOR_BUILD_DIR + WEBKIT_SRC_DIR. The old RUSTY_V8_ARCHIVE
+      # ENGINE (piu migration): the engine is Piu's JavaScriptCore backend
+      # (piu_jsc), which links a static JSCOnly WebKit handed over via
+      # JSC_VENDOR_BUILD_DIR + WEBKIT_SRC_DIR. The old RUSTY_V8_ARCHIVE
       # fixed-output fetch and the pinned V8 snapshot bundles (issue #211,
       # snapshot creation was run-nondeterministic; snapshots no longer exist)
-      # are gone with V8. The nix build needs the same pattern rebuilt for
-      # WebKit: a per-target prebuilt JSCOnly bundle fetched by SRI hash (from
-      # github.com/lovablelabs/piu release assets) and exposed through those two
-      # env vars. Until that bundle exists, this derivation does not build:
-      # piu_jsc's build script fails fast asking for JSC_VENDOR_BUILD_DIR.
+      # are gone with V8. WebKit is built from source in its own derivation
+      # below: the recipe (pinned revision, patch series, build_webkit.sh)
+      # ships inside the piu_jsc crate, which the cargo vendor tree already
+      # carries hash-checked through Cargo.lock, so the only extra pin here is
+      # the WebKit source checkout itself (webkitRev + webkitSrcHash — the
+      # moral successor of the RUSTY_V8_ARCHIVE pin).
+      cargoLockToml = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+      piuJscVersion =
+        (nixpkgs.lib.findFirst (p: p.name == "piu_jsc")
+          (throw "piu_jsc not in Cargo.lock")
+          cargoLockToml.package).version;
+      # The same hash-checked vendor tree buildRustPackage uses; the webkit
+      # derivation reads the build recipe out of its piu_jsc crate.
+      cargoVendor = pkgs: pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+      # Darwin links ICU by unversioned u_* symbols (U_DISABLE_RENAMING,
+      # Apple-icucore convention baked into the JSC build); nixpkgs' SDK
+      # strips Apple-private libraries, so supply a regular ICU built
+      # without symbol renaming instead and tell piu_jsc's build script to
+      # link it (JSC_MACOS_ICU=package).
+      icuNoRenaming = pkgs:
+        pkgs.icu.overrideAttrs (old: {
+          configureFlags = (old.configureFlags or [ ]) ++ [ "--disable-renaming" ];
+        });
+      # Keep in sync with tools/WEBKIT_REVISION inside the vendored piu_jsc
+      # crate (build_webkit.sh patches and builds exactly that revision). On a
+      # piu_jsc bump that moves the revision: update the rev, clear the hash,
+      # and nix prints the right one on the mismatch.
+      webkitRev = "0f307e93cf9eb941494046a829baf7dcb15f67c9";
+      webkitSrcHash = "sha256-m3moSjhvgw71bnNO1yjCEjsNJbLSbVs8PQ+1PcE3JL0=";
+      webkitJsc = pkgs:
+        pkgs.stdenv.mkDerivation {
+          pname = "piu-webkit-jsc";
+          version = piuJscVersion;
+          src = pkgs.fetchgit {
+            url = "https://github.com/WebKit/WebKit.git";
+            rev = webkitRev;
+            sparseCheckout = [
+              "Source/JavaScriptCore"
+              "Source/ThirdParty"
+              "Source/WTF"
+              "Source/bmalloc"
+              "Source/cmake"
+              "Tools/Scripts"
+            ];
+            hash = webkitSrcHash;
+          };
+          nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.ruby pkgs.python3 pkgs.perl ]
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
+              # WebKitXcodeSDK.cmake resolves its whole tool roster through
+              # xcrun (PATH-backed under nix): gperf and mig are really used
+              # by the JSC build; swiftc only has to resolve - JSCOnly
+              # compiles no Swift - so a stub satisfies the lookup.
+              pkgs.gperf
+              pkgs.darwin.bootstrap_cmds
+              (pkgs.writeShellScriptBin "swiftc" ''
+                echo "swiftc stub: JSCOnly compiles no Swift" >&2; exit 1
+              '')
+            ];
+          buildInputs = nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.icu ]
+            # This WebKit revision needs the macOS 15 SDK and deployment
+            # target (libpas calls os_unfair_lock_lock_with_flags, macOS 15+);
+            # the default darwin stdenv SDK and min version are older. The
+            # no-renaming ICU keeps find_package(ICU) off whatever the host
+            # happens to have (purity) and matches the unversioned u_*
+            # convention the Apple JSC build uses.
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.apple-sdk_15
+              (pkgs.darwinMinVersionHook "15.0")
+              (icuNoRenaming pkgs)
+            ];
+          # build_webkit.sh drives cmake+ninja itself.
+          dontUseCmakeConfigure = true;
+          # The archives carry offlineasm objects whose Mach-O subsection
+          # flags build_webkit.sh clears deliberately (computed-jump-only
+          # LLInt/IPInt handlers vs -dead_strip); leave the output alone.
+          dontStrip = true;
+          buildPhase = ''
+            runHook preBuild
+            export WEBKIT_SRC_DIR="$PWD"
+            export WEBKIT_BUILD_DIR="$PWD/wkbuild"
+            bash ${cargoVendor pkgs}/piu_jsc-${piuJscVersion}/tools/build_webkit.sh
+            runHook postBuild
+          '';
+          # piu_jsc's build.rs wants both halves: the patched checkout
+          # (bindgen + native-glue headers) and the build tree (lib/*.a plus
+          # derived headers).
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out/src"
+            srcroot="$PWD"
+            mv wkbuild "$out/build"
+            mv Source Tools "$out/src/"
+            # The cmake tree's Headers/ dirs are symlink farms into the build
+            # directory, which dies with the sandbox; retarget every link at
+            # the installed copies.
+            find "$out" -type l | while read -r l; do
+              t="$(readlink "$l")"
+              case "$t" in
+                "$srcroot"/wkbuild/*) ln -sfn "$out/build/''${t#"$srcroot"/wkbuild/}" "$l" ;;
+                "$srcroot"/*) ln -sfn "$out/src/''${t#"$srcroot"/}" "$l" ;;
+              esac
+            done
+            runHook postInstall
+          '';
+        };
       # oj's Start bundles run on rolldown, and they are oj's own code: they
       # get the version oj is written and tested against, vendored next to
       # the binary, rather than whatever the app's vite pins (a vite <= 7 app
@@ -118,8 +218,26 @@
             # rewrite; patchelf for the RUNPATH keep-list.
             ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.autoSignDarwinBinariesHook pkgs.python3 ]
             ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.patchelf ];
-          buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          buildInputs = [ pkgs.openssl pkgs.sqlite ]
+            # apple-sdk_15 + the 15.0 floor match what the WebKit archives
+            # above were built against (and supply icucore + the frameworks
+            # they link).
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.libiconv
+              pkgs.apple-sdk_15
+              (pkgs.darwinMinVersionHook "15.0")
+              (icuNoRenaming pkgs)
+            ]
+            # piu_jsc links the system ICU on Linux (icui18n/icuuc/icudata);
+            # darwin links the SDK's icucore instead.
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.icu ];
           OJ_VENDORED_ROLLDOWN = rolldownVendor pkgs;
+          # The static JSCOnly WebKit piu_jsc links against (see ENGINE note).
+          # Compile-time inputs only: the archives are linked into the binary
+          # and the nuke-refs pass below keeps them out of the closure.
+          JSC_VENDOR_BUILD_DIR = "${webkitJsc pkgs}/build";
+          WEBKIT_SRC_DIR = "${webkitJsc pkgs}/src";
+          JSC_MACOS_ICU = nixpkgs.lib.optionalString pkgs.stdenv.isDarwin "package";
           # The build directory name varies between nix implementations (and is
           # randomized on some), and rustc embeds dependency source paths from
           # the vendored tree in panic locations — remap them so the output is
@@ -258,6 +376,7 @@ PYUUID
         oj = mkOj pkgs;
         default = oj;
         rolldown-vendor = rolldownVendor pkgs;
+        piu-webkit = webkitJsc pkgs;
       });
       overlays.default = final: prev: { oj = mkOj final; };
     };
