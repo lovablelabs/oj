@@ -2,20 +2,18 @@ name: setup piu webkit
 description: >
   Provide the static JSCOnly WebKit that piu_jsc (the engine's JavaScriptCore
   backend) links against, and export JSC_VENDOR_BUILD_DIR / WEBKIT_SRC_DIR for
-  every later step. The WebKit source checkout and build are cached per
-  (os, arch, piu-ref); a cache hit takes seconds, a miss builds WebKit once
-  (roughly an hour). The piu checkout only supplies the pinned WebKit revision,
-  the patch series and the build script; while github.com/lovablelabs/piu is
-  internal this clone needs `piu-token` (oj is public, so its workflow token
-  cannot read it), if piu goes public it works anonymously.
+  every later step. The build recipe (pinned WebKit revision, patch series,
+  build script) ships inside the published piu_jsc crate and is fetched from
+  crates.io unauthenticated, so no piu repo access or token is needed. The
+  WebKit source checkout and build are cached per (os, arch, piu_jsc version);
+  a cache hit takes seconds, a miss builds WebKit once (roughly an hour).
 
 inputs:
-  piu-ref:
-    description: lovablelabs/piu commit providing the WebKit pin, patches and build script
-    default: 3054234824852068719784341d66264a0f2a6921
-  piu-token:
-    description: token able to read lovablelabs/piu (needed while it is internal)
-    default: ""
+  piu-jsc-version:
+    description: >
+      piu_jsc crate version supplying the WebKit pin, patches and build
+      script; keep it matching the piu_jsc entry in Cargo.lock.
+    default: 149.4.0-rc.8
 
 runs:
   using: composite
@@ -27,7 +25,7 @@ runs:
         path: |
           .piu-webkit/webkit-src
           .piu-webkit/webkit-build
-        key: piu-webkit-${{ runner.os }}-${{ runner.arch }}-${{ inputs.piu-ref }}
+        key: piu-webkit-${{ runner.os }}-${{ runner.arch }}-crate-${{ inputs.piu-jsc-version }}
 
     - name: build tools
       if: steps.wk.outputs.cache-hit != 'true'
@@ -36,28 +34,32 @@ runs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           cmake ninja-build ruby python3 build-essential libicu-dev
+        # WebKit needs GCC >= 12.2; some runner images (Ubuntu 22.04) still
+        # default to gcc 11. Install gcc-12 there and point the build at it.
+        if [ "$(gcc -dumpversion | cut -d. -f1)" -lt 12 ]; then
+          sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+          echo "CC=gcc-12" >> "$GITHUB_ENV"
+          echo "CXX=g++-12" >> "$GITHUB_ENV"
+        fi
 
-    - name: fetch piu (webkit pin, patches, build script)
+    - name: fetch piu_jsc crate (webkit pin, patches, build script)
       if: steps.wk.outputs.cache-hit != 'true'
       shell: bash
-      env:
-        PIU_TOKEN: ${{ inputs.piu-token }}
       run: |
-        url="https://github.com/lovablelabs/piu.git"
-        [ -n "$PIU_TOKEN" ] && url="https://x-access-token:${PIU_TOKEN}@github.com/lovablelabs/piu.git"
-        rm -rf .piu-webkit/piu
-        git init -q .piu-webkit/piu
-        cd .piu-webkit/piu
-        git remote add origin "$url"
-        git sparse-checkout set libs/v8x
-        git fetch -q --filter=blob:none --depth 1 origin ${{ inputs.piu-ref }}
-        git checkout -q FETCH_HEAD
+        ver="${{ inputs.piu-jsc-version }}"
+        rm -rf .piu-webkit/crate
+        mkdir -p .piu-webkit/crate
+        curl -fsSL --retry 3 \
+          "https://crates.io/api/v1/crates/piu_jsc/${ver}/download" \
+          -o .piu-webkit/piu_jsc.crate
+        tar -xzf .piu-webkit/piu_jsc.crate -C .piu-webkit/crate --strip-components 1
+        test -f .piu-webkit/crate/tools/build_webkit.sh
 
     - name: fetch webkit source
       if: steps.wk.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        rev="$(cat .piu-webkit/piu/libs/v8x/tools/WEBKIT_REVISION)"
+        rev="$(cat .piu-webkit/crate/tools/WEBKIT_REVISION)"
         rm -rf .piu-webkit/webkit-src
         git init -q .piu-webkit/webkit-src
         cd .piu-webkit/webkit-src
@@ -73,7 +75,7 @@ runs:
       run: |
         WEBKIT_SRC_DIR="$PWD/.piu-webkit/webkit-src" \
         WEBKIT_BUILD_DIR="$PWD/.piu-webkit/webkit-build" \
-          bash .piu-webkit/piu/libs/v8x/tools/build_webkit.sh
+          bash .piu-webkit/crate/tools/build_webkit.sh
 
     - name: export engine env
       shell: bash
