@@ -31,6 +31,17 @@ async function up() {
 }
 const parsedModules = async () =>
   (await (await fetch(`http://localhost:${PORT}/__oj_parsed`)).text()).trim().split(",");
+// The plugin host boots alongside the server and reports hooks as modules
+// parse; poll with a deadline instead of betting on a fixed delay (the
+// JSC engine's snapshotless cold boot made an 800ms sleep flaky).
+async function waitParsed(name, ms = 15000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if ((await parsedModules()).includes(name)) return true;
+    await sleep(250);
+  }
+  return false;
+}
 function fail(msg) {
   console.error("FAIL:", msg);
   process.exit(1);
@@ -41,8 +52,7 @@ let srv = start();
 try {
   await up();
   await fetch(`http://localhost:${PORT}/`);
-  await sleep(800);
-  if (!(await parsedModules()).includes("App.tsx")) fail("cold: moduleParsed missing App.tsx");
+  if (!(await waitParsed("App.tsx"))) fail("cold: moduleParsed missing App.tsx");
 } finally {
   srv.kill("SIGKILL");
 }
@@ -52,9 +62,7 @@ srv = start();
 try {
   await up();
   await fetch(`http://localhost:${PORT}/`);
-  await sleep(800);
-
-  if (!(await parsedModules()).includes("App.tsx")) {
+  if (!(await waitParsed("App.tsx"))) {
     fail("warm: moduleParsed did not replay App.tsx (transform side effect lost on cache hit)");
   }
   console.log("warm-cache: moduleParsed replayed for cache-hit App.tsx");
