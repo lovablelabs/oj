@@ -377,9 +377,10 @@ pub(crate) fn send_or_buffer(state: &ServerState, frame: String) {
 }
 
 /// A Vite `ErrorPayload` frame for every connected client, or the next one.
-/// Also the diagnostics record for every served compile/transform failure:
-/// the browser overlay was the only witness before.
+/// Also the terminal line (Vite's "Internal server error") and diagnostics
+/// record for every served compile/transform failure.
 pub(crate) fn send_error(state: &ServerState, message: &str) {
+    eprintln!("oj: internal server error: {message}");
     oj_diag::emit(
         oj_diag::Event::new(oj_diag::Kind::CompileError, message)
             .module(loc_captures(message).map(|c| c[1].to_string())),

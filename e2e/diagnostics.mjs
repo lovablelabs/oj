@@ -6,7 +6,7 @@
 // of the same error must fold into one entry with a bumped count, the
 // `?after=` cursor must filter, and a request carrying an Origin header must
 // be refused. With OJ_LOG_JSON=1 the same event must also reach stderr as one
-// parseable NDJSON line marked `"oj":"diag"`.
+// parseable NDJSON line marked `"oj":"diag"`, next to the human line.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -108,6 +108,11 @@ try {
     }),
   );
   assert.ok(ok, `stderr carries the NDJSON diag line, got:\n${stderr}`);
+
+  // NDJSON is the machine copy: the person reading the terminal still gets
+  // Vite's "Internal server error" line, so a supervisor can drop the JSON.
+  const human = await settles(() => /^oj: internal server error: compile error:\n.*main\.tsx/m.test(stderr));
+  assert.ok(human, `stderr carries the human compile error line, got:\n${stderr}`);
 
   console.log("PASS diagnostics");
 } catch (e) {
