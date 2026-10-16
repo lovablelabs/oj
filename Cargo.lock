@@ -2193,7 +2193,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -6494,9 +6494,9 @@ dependencies = [
 
 [[package]]
 name = "piu_jsc"
-version = "149.4.0-rc.5"
+version = "149.4.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "244e386d24f2db3f02a8cc6397f66e48bc022be1f32fd4292b3909f6ee6416b7"
+checksum = "92f2b70dff51d323bbebac298cebda6315b668635cabbc413aa137e9d6932363"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags",
@@ -10013,7 +10013,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
