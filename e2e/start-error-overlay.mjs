@@ -64,6 +64,8 @@ function About() {
 }
 `;
 const BROKEN = about("no-such-dep-typo");
+// The fixture's config with Vite's `server.hmr.overlay: false`.
+const overlayOffConfig = path.join(app, "vite.overlay-off.config.ts");
 const FIXED = about("../lib/format");
 
 let srv;
@@ -107,6 +109,31 @@ try {
     "a failed rebundle reloaded the page instead of overlaying it",
   );
   console.log("start dev: a failed rebundle overlays the page without a reload");
+  srv.kill("SIGKILL");
+  srv = null;
+
+  // `server.hmr.overlay: false`: Vite's client only logs the error frame.
+  fs.writeFileSync(
+    overlayOffConfig,
+    'import base from "./vite.config";\n' +
+      "export default { ...base, server: { ...base.server, hmr: { overlay: false } } };\n",
+  );
+  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+  srv = spawn(oj, ["dev", app, "--port", String(PORT), "--config", overlayOffConfig], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  srv.stdout.on("data", (d) => (log += d));
+  srv.stderr.on("data", (d) => (log += d));
+  await waitUp(`http://localhost:${PORT}/`);
+  const quiet = await browser.newPage();
+  const logged = new Promise((resolve) =>
+    quiet.on("console", (m) => m.type() === "error" && m.text().includes("[oj] build error") && resolve(m.text())),
+  );
+  await quiet.goto(`http://localhost:${PORT}/about`, { waitUntil: "load", timeout: 30000 });
+  const message = await Promise.race([logged, new Promise((r) => setTimeout(() => r(null), 15000))]);
+  must(message?.includes('failed to resolve import "no-such-dep-typo"'), `no build error was logged: ${message}`);
+  must((await quiet.locator(DIALOG).count()) === 0, "the overlay mounted with server.hmr.overlay false");
+  console.log("start dev: server.hmr.overlay false logs the build error without the overlay");
   await browser.close();
   browser = null;
   srv.kill("SIGKILL");
@@ -133,4 +160,5 @@ try {
   await browser?.close();
   srv?.kill("SIGKILL");
   fs.writeFileSync(aboutFile, originalAbout);
+  fs.rmSync(overlayOffConfig, { force: true });
 }

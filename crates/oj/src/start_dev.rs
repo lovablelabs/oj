@@ -49,6 +49,8 @@ struct StartState {
     /// Gzip bodies of the live client chunks, by content hash.
     gzip: crate::start_chunks::GzipCache,
     live_reload: PathBuf,
+    /// `server.hmr.overlay` (default true), filled into the live-reload client.
+    hmr_overlay: bool,
     workspace_root: PathBuf,
     reload_tx: broadcast::Sender<()>,
     /// The client bundle's last failure as a `{type:"error", err}` frame,
@@ -289,6 +291,7 @@ pub async fn start_dev(
     // the adopted config; they join the route tree in the runner transform
     // warm below.
     let warm_patterns;
+    let hmr_overlay;
     let engine = {
         let mut config = oj_config::load(&root).unwrap_or_default();
         oj_server::plugins::adopt_vite_config_values(
@@ -302,6 +305,10 @@ pub async fn start_dev(
         warm_patterns = {
             let (client, ssr) = oj_config::server_warmup_files(&config);
             [client, ssr].concat()
+        };
+        hmr_overlay = match config.server.as_ref().and_then(|s| s.hmr.as_ref()) {
+            Some(oj_config::HmrConfig::Options(o)) => o.overlay.unwrap_or(true),
+            _ => true,
         };
         let entry = configured_start_server_entry(&config, &root)
             .unwrap_or_else(|| cache.join("server-entry.tsx"));
@@ -440,6 +447,7 @@ pub async fn start_dev(
         verify: oj_cache::integrity::VerifyMode::from_env(),
         gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
+        hmr_overlay,
         workspace_root: workspace_root(&root),
         reload_tx: reload_tx.clone(),
         build_error: std::sync::RwLock::new(boot_error.clone()),
@@ -2196,7 +2204,21 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         };
     }
     if req.uri().path() == "/@oj-start/live-reload.js" {
-        return serve_js(&state.live_reload, "live-reload client").await;
+        return match tokio::fs::read_to_string(&state.live_reload).await {
+            Ok(js) => (
+                [
+                    (header::CONTENT_TYPE, "text/javascript"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                render_live_reload(&js, state.hmr_overlay),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("oj start: live-reload client: {e}"),
+            )
+                .into_response(),
+        };
     }
     // The overlay element the live-reload client shows build errors in,
     // written beside it by write_start_assets.
@@ -2499,6 +2521,14 @@ async fn serve_client_chunk(
             respond(req, chunk, None, || async { Ok(bytes) }).await
         }
     }
+}
+
+/// The live-reload client with Vite's `__HMR_ENABLE_OVERLAY__` filled in.
+fn render_live_reload(js: &str, overlay: bool) -> String {
+    js.replace(
+        "__HMR_ENABLE_OVERLAY__",
+        if overlay { "true" } else { "false" },
+    )
 }
 
 async fn serve_js(path: &Path, what: &str) -> Response {
@@ -3123,6 +3153,24 @@ mod tests {
         assert_eq!(next_text(&mut client).await, later);
         server.reload_tx.send(()).unwrap();
         assert_eq!(next_text(&mut client).await, "reload");
+    }
+
+    #[test]
+    fn live_reload_client_takes_the_hmr_overlay_setting_like_vites_client() {
+        let dir = std::env::temp_dir().join(format!("oj-live-reload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        oj_server::write_start_assets(&dir).unwrap();
+        let js = std::fs::read_to_string(dir.join("live-reload.js")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let on = render_live_reload(&js, true);
+        let off = render_live_reload(&js, false);
+        assert!(on.contains("const enableOverlay = true;"), "{on}");
+        assert!(off.contains("const enableOverlay = false;"), "{off}");
+        assert!(!off.contains("__HMR_ENABLE_OVERLAY__"));
+        // Off, an error frame is logged and the overlay never mounts.
+        let show = &off[off.find("function showError").unwrap()..];
+        let guard = show.find("if (!enableOverlay) return;").unwrap();
+        assert!(guard < show.find("error-overlay.js").unwrap());
     }
 
     #[test]

@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The embedded JavaScript engine is now Piu (github.com/lovablelabs/piu), a Deno fork running on JavaScriptCore instead of V8, consumed as the published `piu_*` crates. The vendored `oj_deno_napi`, `oj_deno_runtime`, `oj_deno_process` and `oj_deno_snapshots` forks are gone: the piu crates carry the same patches (napi finalizer registry, fs_events watcher scaling, process spawn hook and own groups). Startup snapshots no longer exist, with their whole pipeline (`OJ_SNAPSHOT_ARCHIVE`, `tools/gen-snapshot-pin.sh`, the release snapshot-pin job and the flake's pinned bundles): Piu embeds the extension sources in the binary instead, which also removes the one non-reproducible build step. Building now needs a static JSCOnly WebKit (`JSC_VENDOR_BUILD_DIR` + `WEBKIT_SRC_DIR`); the nix package needs a prebuilt WebKit bundle pin before it builds again.
 
+## [0.2.36] - 2026-10-16
+
+### Fixed
+
+- A TanStack Start client bundle no longer fails at random on an image or stylesheet import with `[UNLOADABLE_DEPENDENCY] ... stream did not contain valid UTF-8` (or `Bundling CSS is no longer supported` for a `.css` file). oj's asset plugin tagged asset imports while resolving them and passed private markers through rolldown's `this.resolve` `custom` option, which concurrent resolves can swap: rolldown keys each call's saved options by the size of a map, so a finished call frees an index another call still holds. An aliased `@/logo.png` resolving next to a `./pov.css` import from the same file could then skip the asset plugin and hand rolldown the bare file to read as source, and the overlay stayed until the next edit. Asset, stylesheet, worker and `?raw`/`?url`/`?inline` imports are now classified by their resolved id when they load, as Vite's asset and css plugins do, `.svg?react` loads by its id too, and oj's Start bundle plugins pass nothing through `custom`. This applies to Start builds as well.
+- TanStack Start dev honors `server.hmr.overlay: false`. A failed client bundle mounted the full-page error overlay on every page whatever the config said; now, as in Vite's client (`__HMR_ENABLE_OVERLAY__`), the error is only logged to the browser console when the overlay is off.
+- A served compile or transform failure prints a human line to the terminal (`oj: internal server error: <message>`), as Vite logs `Internal server error`. It only reached the browser overlay and, under `OJ_LOG_JSON=1`, the NDJSON diagnostics line, so a supervisor that keeps the NDJSON record out of its stored logs lost the error entirely.
+
 ## [0.2.35] - 2026-10-15
 
 ### Fixed
