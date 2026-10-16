@@ -42,8 +42,10 @@ function pluginError(e, plugin, id) {
 }
 const hookFilter = (h) => (typeof h === "object" && h ? h.filter : undefined);
 
-const ojReimplemented = (name = "") =>
-  name.startsWith("vite:") || /^tanstack[-:]/.test(name) || name.startsWith("@tanstack/");
+// TanStack's router/Start plugins are named `tanstack-*` / `tanstack:*`;
+// `@tanstack/devtools:*` is dev tooling oj does not reimplement (its
+// inject-source tags JSX with data-tsd-source), so it runs like any user plugin.
+const ojReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 
 // Vite's Environment passed to applyToEnvironment carries `config.consumer`
 // ("client"/"server"); @vitejs/plugin-react reads it directly, so the bare
@@ -196,12 +198,19 @@ function byHook(plugins, name) {
   return sorted;
 }
 
-function applyMatches(plugin, command, mode) {
+// Vite (config.ts filterPlugin): `apply({ ...config, mode }, configEnv)` with
+// the loaded user config, once, before any config hook runs. Plugins gate on
+// `config.mode` (e.g. @tanstack/devtools-vite's source tagging), so an empty
+// config would silently drop them.
+function applyMatches(plugin, command, mode, config = {}) {
   const a = plugin.apply;
   if (!a) return true;
   if (typeof a === "function") {
     try {
-      return !!a({}, { command, mode });
+      return !!a(
+        { ...config, mode },
+        { command, mode, isSsrBuild: command === "build" && !!config.build?.ssr, isPreview: false },
+      );
     } catch {
       return true;
     }
@@ -502,6 +511,7 @@ export function createPluginContainer(
     mode = command === "build" ? "production" : "development",
     environment = "client",
     config = {},
+    applied = false,
   } = {},
 ) {
   const plugins = ordered(
@@ -519,7 +529,7 @@ export function createPluginContainer(
           p.closeBundle ||
           p.buildEnd ||
           p.renderStart) &&
-        applyMatches(p, command, mode),
+        (applied || applyMatches(p, command, mode, config)),
     ),
   );
 
@@ -1100,14 +1110,14 @@ export async function loadPluginContainer(app, opts = {}) {
   // and merges the returned partials before resolving; the Start loader has its
   // own plugin instances, so it must do the same for them.
   let config = loaded?.config ?? {};
-  const all = (config.plugins ?? []).flat(Infinity).filter(Boolean);
+  const all = (config.plugins ?? []).flat(Infinity).filter((p) => p && applyMatches(p, command, mode, config));
   // Only user plugins: the framework plugins oj reimplements (TanStack, Vite's
   // own, React) never ran hooks under oj, and their config hooks have side
   // effects (the router plugin starts its generator) that fight oj's own.
   for (const plugin of all) {
     if (ojReimplemented(plugin.name)) continue;
     const handler = hookHandler(plugin.config);
-    if (!handler || !applyMatches(plugin, command, mode)) continue;
+    if (!handler) continue;
     try {
       const partial = await handler.call(plugin, config, { command, mode });
       if (partial)
@@ -1129,7 +1139,7 @@ export async function loadPluginContainer(app, opts = {}) {
     for (const plugin of all) {
       if (ojReimplemented(plugin.name)) continue;
       const handler = hookHandler(plugin.configEnvironment);
-      if (!handler || !applyMatches(plugin, command, mode)) continue;
+      if (!handler) continue;
       try {
         const partial = await handler.call(plugin, name, environmentOptions, {
           command,
@@ -1153,6 +1163,7 @@ export async function loadPluginContainer(app, opts = {}) {
   const container = createPluginContainer(vite, all, {
     ...opts,
     config: { ...config, root: config.root ?? app },
+    applied: true,
   });
   const publicDir = config.publicDir === false ? false : typeof config.publicDir === "string" ? config.publicDir : null;
   const configDependencies = [configFile, ...(loaded?.dependencies ?? [])];

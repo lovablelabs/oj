@@ -79,6 +79,22 @@ test("applyMatches: no apply -> always; string vs command; function form", () =>
   );
 });
 
+test("applyMatches: function form sees { ...config, mode } and Vite's configEnv", () => {
+  let seen;
+  const plugin = {
+    apply(config, env) {
+      seen = { config, env };
+      return config.mode === "development";
+    },
+  };
+  assert.ok(applyMatches(plugin, "serve", "development", { server: { port: 1 } }));
+  assert.deepEqual(seen.config, { server: { port: 1 }, mode: "development" });
+  assert.deepEqual(seen.env, { command: "serve", mode: "development", isSsrBuild: false, isPreview: false });
+  assert.ok(!applyMatches(plugin, "build", "production"));
+  applyMatches(plugin, "build", "production", { build: { ssr: true } });
+  assert.equal(seen.env.isSsrBuild, true);
+});
+
 test("ordered: pre first, normal next, post last (stable within a band)", () => {
   const names = ordered([
     { name: "n1" },
@@ -99,11 +115,19 @@ test("ojReimplemented: skips React / Vite built-ins / TanStack; keeps app plugin
     "tanstack-start-core::server-fn:client",
     "tanstack:router-generator",
     "tanstack-router:code-splitter:compile-reference-file",
-    "@tanstack/react-start",
   ]) {
     assert.ok(ojReimplemented(n), `expected ${n} to be oj-reimplemented`);
   }
-  for (const n of ["fixture-i18n", "ssr-stub-scopes", "transitive-preloads", "customer-mdx", "i18n-dev", ""]) {
+  // @tanstack/devtools-vite is dev tooling, not a framework plugin oj reimplements.
+  for (const n of [
+    "fixture-i18n",
+    "ssr-stub-scopes",
+    "transitive-preloads",
+    "customer-mdx",
+    "i18n-dev",
+    "@tanstack/devtools:inject-source",
+    "",
+  ]) {
     assert.ok(!ojReimplemented(n), `expected ${n} to be treated as an app plugin`);
   }
 });
@@ -1089,4 +1113,69 @@ test("plugin environment preserves an existing configured resolver", async () =>
   );
 
   assert.equal(await container.transform("", "/entry.ts"), "/configured/entry");
+});
+
+test("loadPluginContainer gates plugins once on the loaded config, before config hooks", async () => {
+  const root = mkdtempSync(join(tmpdir(), "oj-plugin-apply-"));
+  try {
+    const vite = join(root, "node_modules", "vite");
+    mkdirSync(vite, { recursive: true });
+    writeFileSync(join(root, "package.json"), '{"name":"synthetic-app"}');
+    writeFileSync(join(root, "vite.config.mjs"), "export default {};\n");
+    writeFileSync(join(vite, "package.json"), '{"name":"vite","type":"module","main":"./index.mjs"}');
+    writeFileSync(
+      join(vite, "index.mjs"),
+      `
+      globalThis.__ojApplyCalls = 0;
+      export async function loadConfigFromFile() {
+        return {
+          config: {
+            tagSource: true,
+            plugins: [
+              // The @tanstack/devtools-vite inject-source shape: apply reads
+              // config.mode, enforce pre, exclude-only transform filter.
+              {
+                name: "synthetic-inject-source",
+                enforce: "pre",
+                apply(config) {
+                  globalThis.__ojApplyCalls++;
+                  return config.mode === "development" && config.tagSource === true;
+                },
+                configEnvironment() {},
+                transform: {
+                  filter: { id: { exclude: [/node_modules/] } },
+                  handler(code, id) {
+                    return code.replace("<button", '<button data-tsd-source="' + id + ':1:1"');
+                  },
+                },
+              },
+              {
+                name: "synthetic-build-only",
+                apply: (config) => config.mode === "production",
+                config() {
+                  throw new Error("config hook of an unapplied plugin ran");
+                },
+                transform() {
+                  return "unapplied";
+                },
+              },
+            ],
+          },
+        };
+      }
+    `,
+    );
+
+    const container = await loadPluginContainer(root, { command: "serve", mode: "development" });
+    const out = await container.transform("export const B = () => <button>Go</button>;", "/src/B.tsx");
+    assert.equal(out, 'export const B = () => <button data-tsd-source="/src/B.tsx:1:1">Go</button>;');
+    assert.equal(globalThis.__ojApplyCalls, 1, "apply runs once, like Vite's filterPlugin");
+    assert.equal(
+      await container.transform("<button>", "/node_modules/x/B.js"),
+      null,
+      "exclude-only filter still skips node_modules",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -1218,8 +1218,7 @@ try {
   // (mdx, svgr, virtual modules) run. The same rule as vite-plugin-bridge's
   // ojReimplemented, which the retired FIFO container applied.
   if (ojStartMode && (initial.environment && initial.environment.name) === "ssr") {
-    const reimplemented = (name = "") =>
-      name.startsWith("vite:") || /^tanstack[-:]/.test(name) || name.startsWith("@tanstack/");
+    const reimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
     plugins = plugins.filter((p) => !reimplemented(p && p.name));
   }
   plugins.sort((a, b) => enforceRank(a) - enforceRank(b));

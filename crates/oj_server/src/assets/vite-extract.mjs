@@ -1119,8 +1119,7 @@ const declaresRunnerEnvironment = (cfg) =>
 // the skipped set is oj-reimplemented framework plugins, whose runtimes oj
 // itself provides, and dev-only tooling, which declares no environments. The
 // Cloudflare plugins match neither rule, so their declaration is seen.
-const ojReimplemented = (name = "") =>
-  name.startsWith("vite:") || /^tanstack[-:]/.test(name) || name.startsWith("@tanstack/");
+const ojReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 const SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES = new Set(["vite-plugin-checker"]);
 const skipsConfigHook = (p) => {
   const name = (p && p.name) || "";

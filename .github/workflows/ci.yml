@@ -187,6 +187,8 @@ jobs:
         run: node e2e/plugin-hot-update-delete.mjs
       - name: start dev applies config define to the client bundle; --mode selects .env.<mode>
         run: node e2e/start-define-mode.mjs
+      - name: start dev runs @tanstack/devtools inject-source on SSR and client
+        run: node e2e/start-devtools-source.mjs
       - name: start dev client chunks revalidate by ETag and gzip
         run: node e2e/start-client-transfer.mjs
       - name: start dev config loads write no temp file into the app root
