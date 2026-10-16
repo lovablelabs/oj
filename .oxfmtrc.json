@@ -7,6 +7,7 @@
     "**/node_modules/**",
     "**/dist/**",
     "**/*.gen.ts",
-    "target*/**"
+    "target*/**",
+    ".piu-webkit/**"
   ]
 }
