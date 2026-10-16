@@ -1272,6 +1272,7 @@ async fn rebundle_worker(
 /// once per command.
 struct ScriptInputs {
     root: PathBuf,
+    config_file: Option<PathBuf>,
     command: String,
     config: oj_config::OjConfig,
     app_env: oj_env::AppEnv,
@@ -1302,6 +1303,7 @@ fn script_inputs(
     );
     Ok(ScriptInputs {
         root: root.to_path_buf(),
+        config_file: config_file.map(Path::to_path_buf),
         command: command.to_string(),
         config,
         app_env,
@@ -1444,6 +1446,14 @@ fn start_script_vars(
         ))
         .unwrap_or_default(),
     ));
+    // `--config`: the Start plugin containers load this file instead of the
+    // default `vite.config.*` lookup (Vite's `configFile`).
+    if let Some(file) = &inputs.config_file {
+        vars.push((
+            "OJ_START_CONFIG_FILE".into(),
+            file.to_string_lossy().into_owned(),
+        ));
+    }
     if let Some(entry) = configured_start_server_entry(config, root) {
         vars.push((
             "OJ_START_SERVER_ENTRY".into(),

@@ -1089,7 +1089,8 @@ function mergeConfigValues(current, update) {
 export async function loadPluginContainer(app, opts = {}) {
   // Vite's default mode follows the command (config hooks see it as env.mode).
   const { command = "serve", mode = command === "build" ? "production" : "development" } = opts;
-  const configFile = findConfig(app);
+  // `--config` (Vite's configFile) arrives as OJ_START_CONFIG_FILE; else the default lookup.
+  const configFile = opts.configFile ?? (process.env.OJ_START_CONFIG_FILE || findConfig(app));
   if (!configFile) return null;
   let vite;
   try {

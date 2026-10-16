@@ -1179,3 +1179,35 @@ test("loadPluginContainer gates plugins once on the loaded config, before config
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("loadPluginContainer loads the --config file (OJ_START_CONFIG_FILE), not the default", async () => {
+  const root = mkdtempSync(join(tmpdir(), "oj-plugin-config-file-"));
+  const prev = process.env.OJ_START_CONFIG_FILE;
+  try {
+    const vite = join(root, "node_modules", "vite");
+    mkdirSync(vite, { recursive: true });
+    writeFileSync(join(root, "package.json"), '{"name":"synthetic-app"}');
+    writeFileSync(join(root, "vite.config.mjs"), "export default {};\n");
+    const alt = join(root, "vite.alt.config.mjs");
+    writeFileSync(alt, "export default {};\n");
+    writeFileSync(join(vite, "package.json"), '{"name":"vite","type":"module","main":"./index.mjs"}');
+    // Vite's loadConfigFromFile(env, configFile): the plugin set depends on which file.
+    writeFileSync(
+      join(vite, "index.mjs"),
+      `
+      export async function loadConfigFromFile(_env, file) {
+        const tag = file.endsWith("vite.alt.config.mjs") ? "alt" : "default";
+        return { config: { plugins: [{ name: "which-config", transform: () => tag }] } };
+      }
+    `,
+    );
+    process.env.OJ_START_CONFIG_FILE = alt;
+    const container = await loadPluginContainer(root, { command: "serve", mode: "development" });
+    assert.equal(await container.transform("x", "/src/a.ts"), "alt");
+    assert.ok(container.configDependencies.includes(alt), "the --config file is watched");
+  } finally {
+    if (prev === undefined) delete process.env.OJ_START_CONFIG_FILE;
+    else process.env.OJ_START_CONFIG_FILE = prev;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
