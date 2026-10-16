@@ -5,15 +5,16 @@ description: >
   every later step. The WebKit source checkout and build are cached per
   (os, arch, piu-ref); a cache hit takes seconds, a miss builds WebKit once
   (roughly an hour). The piu checkout only supplies the pinned WebKit revision,
-  the patch series and the build script; while github.com/raphamorim/piu is
-  private this clone needs `piu-token`, afterwards it works anonymously.
+  the patch series and the build script; while github.com/lovablelabs/piu is
+  internal this clone needs `piu-token` (oj is public, so its workflow token
+  cannot read it), if piu goes public it works anonymously.
 
 inputs:
   piu-ref:
-    description: raphamorim/piu commit providing the WebKit pin, patches and build script
-    default: 455cc1d12d0ee26a3ef03ad5a59dfdb3391b2ad7
+    description: lovablelabs/piu commit providing the WebKit pin, patches and build script
+    default: 3054234824852068719784341d66264a0f2a6921
   piu-token:
-    description: token able to read raphamorim/piu (only needed while it is private)
+    description: token able to read lovablelabs/piu (needed while it is internal)
     default: ""
 
 runs:
@@ -42,8 +43,8 @@ runs:
       env:
         PIU_TOKEN: ${{ inputs.piu-token }}
       run: |
-        url="https://github.com/raphamorim/piu.git"
-        [ -n "$PIU_TOKEN" ] && url="https://x-access-token:${PIU_TOKEN}@github.com/raphamorim/piu.git"
+        url="https://github.com/lovablelabs/piu.git"
+        [ -n "$PIU_TOKEN" ] && url="https://x-access-token:${PIU_TOKEN}@github.com/lovablelabs/piu.git"
         rm -rf .piu-webkit/piu
         git init -q .piu-webkit/piu
         cd .piu-webkit/piu

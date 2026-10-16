@@ -28,7 +28,7 @@
       # snapshot creation was run-nondeterministic; snapshots no longer exist)
       # are gone with V8. The nix build needs the same pattern rebuilt for
       # WebKit: a per-target prebuilt JSCOnly bundle fetched by SRI hash (from
-      # github.com/raphamorim/piu release assets) and exposed through those two
+      # github.com/lovablelabs/piu release assets) and exposed through those two
       # env vars. Until that bundle exists, this derivation does not build:
       # piu_jsc's build script fails fast asking for JSC_VENDOR_BUILD_DIR.
       # oj's Start bundles run on rolldown, and they are oj's own code: they

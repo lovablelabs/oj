@@ -33,7 +33,7 @@ oj_config = { version = "0.3.0", path = "crates/oj_config" }
 oj_server = { version = "0.3.0", path = "crates/oj_server" }
 oj_js = { version = "0.3.0", path = "crates/oj_js" }
 
-# The embedded engine is Piu (github.com/raphamorim/piu), a Deno fork running
+# The embedded engine is Piu (github.com/lovablelabs/piu), a Deno fork running
 # on JavaScriptCore instead of V8. The piu_* crates are the deno crates
 # republished under Piu's names, same version lineage as the deno release they
 # fork (piu_core 0.412.x = deno_core 0.412, ...), with the engine swapped and
@@ -44,7 +44,7 @@ oj_js = { version = "0.3.0", path = "crates/oj_js" }
 #
 # Building piu_jsc needs a static JSCOnly WebKit build:
 #   JSC_VENDOR_BUILD_DIR=<webkit-build> WEBKIT_SRC_DIR=<webkit-src> cargo build
-# (see github.com/raphamorim/piu libs/v8x/tools/build_webkit.sh).
+# (see github.com/lovablelabs/piu libs/v8x/tools/build_webkit.sh).
 piu_core = "0.412.1"
 piu_runtime = "0.267.0"
 piu_napi = "0.190.0"
