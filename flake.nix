@@ -98,6 +98,11 @@
             ];
           # build_webkit.sh drives cmake+ninja itself.
           dontUseCmakeConfigure = true;
+          # nix stdenv hardening (fortify/stack-protector and friends) breaks
+          # the JS engine: the Linux binary segfaulted on its first JS call
+          # (JsRuntime boot, JSObjectCallAsFunction). The cargo builds this
+          # engine is validated with carry none of these flags; match them.
+          hardeningDisable = [ "all" ];
           # The archives carry offlineasm objects whose Mach-O subsection
           # flags build_webkit.sh clears deliberately (computed-jump-only
           # LLInt/IPInt handlers vs -dead_strip); leave the output alone.
@@ -194,6 +199,9 @@
         pkgs.rustPlatform.buildRustPackage ({
           pname = "oj";
           inherit version src;
+          # See the webkit derivation: hardening flags break the embedded JS
+          # engine (they also reach piu_jsc's native glue through this build).
+          hardeningDisable = [ "all" ];
           # All dependencies are crates.io; the checked-in lockfile is the
           # single source of truth, so no fixed-output hash to maintain.
           cargoLock.lockFile = ./Cargo.lock;
