@@ -1,4 +1,5 @@
 use super::*;
+use crate::css_engine::CssDeps;
 
 /// The compiled stylesheet as `text/css` (Vite's `?direct` / raw `<link>` request).
 pub(crate) async fn serve_css_direct(state: &Arc<ServerState>, file: &Path, url: &str) -> Response {
@@ -305,9 +306,84 @@ pub(crate) async fn compile_tailwind(
         return Ok(css.to_string());
     }
     let generation = sheets.generation();
-    let css: Arc<str> = run_css_engine(state, url, source).await?.into();
+    let engine = lazy_engine(state, EngineKind::Tailwind).await?;
+    let (css, deps) = engine.compile_tracked(source, url).await?;
+    watch_css_deps(state, deps).await;
+    let css: Arc<str> = css.into();
     sheets.put(url, digest, generation, Arc::clone(&css));
     Ok(css.to_string())
+}
+
+/// Vite's compileCSS hands a sheet's PostCSS deps to the watcher
+/// (`addWatchFile`), so an edit to a scanned source outside the root still
+/// moves the sheet's generation. The root watch covers the rest. As with
+/// chokidar's `add`, a watch takes effect a moment after it is asked for.
+async fn watch_css_deps(state: &Arc<ServerState>, deps: CssDeps) {
+    let root = state.root.clone();
+    let files = tokio::task::spawn_blocking(move || outside_root_deps(&root, deps))
+        .await
+        .unwrap_or_default();
+    for file in files {
+        ensure_watched_file(state, &file);
+    }
+}
+
+/// The dep files outside `root`, one per directory (the watcher watches
+/// directories). A `dir-dependency` expands as Vite's globSync does: files
+/// under `dir` matching `glob`, no node_modules, no dotfiles; the root's own
+/// subtree is skipped, already watched.
+fn outside_root_deps(root: &Path, deps: CssDeps) -> Vec<PathBuf> {
+    let outside =
+        |p: &Path| !p.starts_with(root) && !p.components().any(|c| c.as_os_str() == "node_modules");
+    let mut dirs = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut keep = |file: PathBuf| {
+        if file.parent().is_some_and(|d| dirs.insert(d.to_path_buf())) {
+            out.push(file);
+        }
+    };
+    for file in deps.files {
+        if outside(&file) {
+            keep(file);
+        }
+    }
+    for (dir, glob) in deps.dirs {
+        if dir.starts_with(root) {
+            continue;
+        }
+        let Ok(matcher) = globset::GlobBuilder::new(&glob)
+            .literal_separator(true)
+            .build()
+            .map(|g| g.compile_matcher())
+        else {
+            continue;
+        };
+        let mut stack = vec![dir.clone()];
+        while let Some(at) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&at) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') || name == "node_modules" {
+                    continue;
+                }
+                let path = entry.path();
+                if path == root {
+                    continue;
+                }
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    stack.push(path);
+                } else if path
+                    .strip_prefix(&dir)
+                    .is_ok_and(|rel| matcher.is_match(rel))
+                {
+                    keep(path);
+                }
+            }
+        }
+    }
+    out
 }
 
 pub(crate) enum EngineKind {
@@ -359,6 +435,51 @@ mod tailwind_sheet_tests {
 
         sheets.invalidate();
         assert!(sheets.get("/src/index.css", src).is_none());
+    }
+
+    #[test]
+    fn outside_root_deps_expand_dir_globs_and_skip_the_root() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let root = base.join("app");
+        let pkg = base.join("packages/ui");
+        for dir in [
+            root.join("src"),
+            pkg.join("src/deep"),
+            pkg.join("node_modules/x"),
+            pkg.join(".cache"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        for file in [
+            root.join("src/App.tsx"),
+            pkg.join("src/Button.tsx"),
+            pkg.join("src/deep/Card.tsx"),
+            pkg.join("src/notes.md"),
+            pkg.join("node_modules/x/y.tsx"),
+            pkg.join(".cache/z.tsx"),
+            base.join("theme.css"),
+        ] {
+            std::fs::write(file, "").unwrap();
+        }
+        let deps = CssDeps {
+            files: vec![base.join("theme.css"), root.join("src/App.tsx")],
+            dirs: vec![
+                (pkg.clone(), "**/*.{ts,tsx}".into()),
+                (base.clone(), "app/**/*.tsx".into()),
+                (root.join("src"), "**/*.tsx".into()),
+            ],
+        };
+        let mut got = outside_root_deps(&root, deps);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                pkg.join("src/Button.tsx"),
+                pkg.join("src/deep/Card.tsx"),
+                base.join("theme.css"),
+            ]
+        );
     }
 
     #[test]

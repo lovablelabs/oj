@@ -6326,6 +6326,7 @@ dependencies = [
  "deno_signals",
  "futures-util",
  "glob",
+ "globset",
  "hyper",
  "hyper-util",
  "json-strip-comments",
