@@ -12,12 +12,25 @@ inputs:
   piu-jsc-version:
     description: >
       piu_jsc crate version supplying the WebKit pin, patches and build
-      script; keep it matching the piu_jsc entry in Cargo.lock.
-    default: 149.4.0-rc.13
+      script. Defaults to the piu_jsc entry in Cargo.lock, so a plain
+      `cargo update -p piu_jsc` bump is picked up without touching CI.
+    default: ""
 
 runs:
   using: composite
   steps:
+    - name: resolve piu_jsc version
+      id: ver
+      shell: bash
+      run: |
+        ver="${{ inputs.piu-jsc-version }}"
+        if [ -z "$ver" ]; then
+          ver="$(awk '/^name = "piu_jsc"$/ { getline; sub(/^version = "/, ""); sub(/"$/, ""); print; exit }' Cargo.lock)"
+        fi
+        test -n "$ver" || { echo "piu_jsc not found in Cargo.lock" >&2; exit 1; }
+        echo "version=$ver" >> "$GITHUB_OUTPUT"
+        echo "resolved piu_jsc $ver"
+
     - name: webkit cache
       id: wk
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -25,7 +38,7 @@ runs:
         path: |
           .piu-webkit/webkit-src
           .piu-webkit/webkit-build
-        key: piu-webkit-${{ runner.os }}-${{ runner.arch }}-crate-${{ inputs.piu-jsc-version }}
+        key: piu-webkit-${{ runner.os }}-${{ runner.arch }}-crate-${{ steps.ver.outputs.version }}
 
     - name: build tools
       if: steps.wk.outputs.cache-hit != 'true'
@@ -46,7 +59,7 @@ runs:
       if: steps.wk.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        ver="${{ inputs.piu-jsc-version }}"
+        ver="${{ steps.ver.outputs.version }}"
         rm -rf .piu-webkit/crate
         mkdir -p .piu-webkit/crate
         curl -fsSL --retry 3 \
