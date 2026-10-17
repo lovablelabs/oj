@@ -1,39 +1,39 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! Assembles a deno_runtime `MainWorker` with Node compatibility over the
-//! app's existing node_modules (byonm), booted from the prebuilt
-//! `deno_snapshots::CLI_SNAPSHOT` so startup never transpiles internal TS.
+//! Assembles a piu_runtime `MainWorker` with Node compatibility over the
+//! app's existing node_modules (byonm). The Piu runtime boots from extension
+//! sources embedded in the binary; there is no startup snapshot.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use deno_config::deno_json::NodeModulesDirMode;
-use deno_core::url::Url;
-use deno_core::v8;
-use deno_core::CompiledWasmModuleStore;
-use deno_core::SharedArrayBufferStore;
-use deno_resolver::cjs::IsCjsResolutionMode;
-use deno_resolver::factory::ResolverFactory;
-use deno_resolver::factory::ResolverFactoryOptions;
-use deno_resolver::factory::WorkspaceFactory;
-use deno_resolver::factory::WorkspaceFactoryOptions;
-use deno_resolver::npm::DenoInNpmPackageChecker;
-use deno_resolver::npm::NpmResolver;
-use deno_runtime::deno_fs::RealFs;
-use deno_runtime::deno_node::NodeExtInitServices;
-use deno_runtime::deno_permissions::Permissions;
-use deno_runtime::deno_permissions::PermissionsContainer;
-use deno_runtime::deno_web::BlobStore;
-use deno_runtime::deno_web::InMemoryBroadcastChannel;
-use deno_runtime::permissions::RuntimePermissionDescriptorParser;
-use deno_runtime::worker::MainWorker;
-use deno_runtime::worker::WorkerOptions;
-use deno_runtime::worker::WorkerServiceOptions;
-use deno_runtime::BootstrapOptions;
-use deno_runtime::WorkerExecutionMode;
+use piu_config::deno_json::NodeModulesDirMode;
+use piu_core::url::Url;
+use piu_core::v8;
+use piu_core::CompiledWasmModuleStore;
+use piu_core::SharedArrayBufferStore;
+use piu_resolver::cjs::IsCjsResolutionMode;
+use piu_resolver::factory::ResolverFactory;
+use piu_resolver::factory::ResolverFactoryOptions;
+use piu_resolver::factory::WorkspaceFactory;
+use piu_resolver::factory::WorkspaceFactoryOptions;
+use piu_resolver::npm::DenoInNpmPackageChecker;
+use piu_resolver::npm::NpmResolver;
+use piu_runtime::deno_fs::RealFs;
+use piu_runtime::deno_node::NodeExtInitServices;
+use piu_runtime::deno_permissions::Permissions;
+use piu_runtime::deno_permissions::PermissionsContainer;
+use piu_runtime::deno_web::BlobStore;
+use piu_runtime::deno_web::InMemoryBroadcastChannel;
+use piu_runtime::permissions::RuntimePermissionDescriptorParser;
+use piu_runtime::worker::MainWorker;
+use piu_runtime::worker::WorkerOptions;
+use piu_runtime::worker::WorkerServiceOptions;
+use piu_runtime::BootstrapOptions;
+use piu_runtime::WorkerExecutionMode;
 
 use crate::code_cache::FsCodeCache;
 use crate::host::ModuleHost;
@@ -86,7 +86,7 @@ fn engine_loaders(
             // swc parse it costs is a per-spawn repeat otherwise.
             node_analysis_cache: code_cache
                 .clone()
-                .map(|cache| cache as deno_resolver::cjs::analyzer::NodeAnalysisCacheRc),
+                .map(|cache| cache as piu_resolver::cjs::analyzer::NodeAnalysisCacheRc),
             ..Default::default()
         },
     );
@@ -175,12 +175,12 @@ pub(crate) fn build_worker(
         fetch_dns_resolver: Default::default(),
         shared_array_buffer_store: Some(shared.shared_array_buffer_store.clone()),
         compiled_wasm_module_store: Some(shared.compiled_wasm_module_store.clone()),
-        // Covers the CJS path: deno_runtime wires this into the eval-context
+        // Covers the CJS path: piu_runtime wires this into the eval-context
         // compile callbacks `require` goes through. The ESM and ext-script
         // paths ride the module loader (see loader.rs).
         v8_code_cache: loaders
             .code_cache
-            .map(|cache| cache as Arc<dyn deno_runtime::code_cache::CodeCache>),
+            .map(|cache| cache as Arc<dyn piu_runtime::code_cache::CodeCache>),
         bundle_provider: None,
     };
 
@@ -194,9 +194,6 @@ pub(crate) fn build_worker(
             has_node_modules_dir: true,
             ..Default::default()
         },
-        startup_snapshot: deno_snapshots::CLI_SNAPSHOT,
-        residual_lazy_js_sources: deno_snapshots::RESIDUAL_LAZY_JS,
-        residual_lazy_esm_sources: deno_snapshots::RESIDUAL_LAZY_ESM,
         create_params,
         create_web_worker_cb: create_web_worker_cb(shared),
         ..Default::default()
@@ -211,7 +208,7 @@ pub(crate) fn build_worker(
 
 /// Web workers for the engine, which Node code reaches through the
 /// `node:worker_threads` compat layer (terser, workbox, jest-worker all spawn
-/// them; deno_runtime's default panics the process instead).
+/// them; piu_runtime's default panics the process instead).
 ///
 /// worker_host's op runs this callback ON the spawned worker thread, so the
 /// closure captures only Send data and rebuilds the byonm stack there through
@@ -219,12 +216,12 @@ pub(crate) fn build_worker(
 /// payloads are dependency code, which resolves with plain Node semantics.
 fn create_web_worker_cb(
     shared: WorkerShared,
-) -> Arc<deno_runtime::ops::worker_host::CreateWebWorkerCb> {
-    use deno_runtime::deno_node::ops::worker_threads::ResolvedResourceLimits;
-    use deno_runtime::deno_node::ops::worker_threads::DEFAULT_STACK_SIZE_MB;
-    use deno_runtime::web_worker::WebWorker;
-    use deno_runtime::web_worker::WebWorkerOptions;
-    use deno_runtime::web_worker::WebWorkerServiceOptions;
+) -> Arc<piu_runtime::ops::worker_host::CreateWebWorkerCb> {
+    use piu_runtime::deno_node::ops::worker_threads::ResolvedResourceLimits;
+    use piu_runtime::deno_node::ops::worker_threads::DEFAULT_STACK_SIZE_MB;
+    use piu_runtime::web_worker::WebWorker;
+    use piu_runtime::web_worker::WebWorkerOptions;
+    use piu_runtime::web_worker::WebWorkerServiceOptions;
 
     Arc::new(move |args| {
         // The callback type is infallible, so a failure here PANICS BY
@@ -298,9 +295,6 @@ fn create_web_worker_cb(
                 ..Default::default()
             },
             extensions: vec![],
-            startup_snapshot: deno_snapshots::CLI_SNAPSHOT,
-            residual_lazy_js_sources: deno_snapshots::RESIDUAL_LAZY_JS,
-            residual_lazy_esm_sources: deno_snapshots::RESIDUAL_LAZY_ESM,
             unsafely_ignore_certificate_errors: None,
             create_params,
             seed: None,
@@ -319,6 +313,9 @@ fn create_web_worker_cb(
             enable_stack_trace_arg_in_ops: false,
             wait_for_debugger_on_start: args.wait_for_debugger_on_start,
             wait_for_page_wait_for_debugger: args.wait_for_page_wait_for_debugger,
+            // Deno version strings for `Deno.version` (piu threads these since
+            // snapshot removal); None reports the runtime defaults.
+            version_options: None,
         };
 
         // from_options + explicit bootstrap, not bootstrap_from_options: the

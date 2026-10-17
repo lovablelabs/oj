@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use deno_core::v8;
+use piu_core::v8;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
@@ -93,7 +93,7 @@ impl JsEngine {
     ) -> Result<JsEngine, EngineError> {
         // Idempotent and concurrency-safe: deno_core guards platform init
         // with its own process-wide Once.
-        deno_core::JsRuntime::init_platform(None);
+        piu_core::JsRuntime::init_platform(None);
         let default_deadline = config.default_deadline;
         // Unbounded on purpose: every caller awaits its reply before it can
         // send again, so queue depth is bounded by caller concurrency; a

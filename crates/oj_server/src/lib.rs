@@ -1472,11 +1472,11 @@ impl DevServer {
 
         // BEFORE any engine boots: plugin-hook children register here (own process
         // group each) so restarts and shutdown can kill whole plugin-spawned trees.
-        deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
+        piu_process::spawn_hook::set(child_groups::register, child_groups::unregister);
         // The engine's own signal path (deno_signals) exits the process itself on an
         // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
         // too or a supervisor restart strands every plugin child (workerd) on pid 1.
-        deno_process::oj_hook::set_shutdown_sweep(|| {
+        piu_process::spawn_hook::set_shutdown_sweep(|| {
             child_groups::kill_all();
         });
         let server_cfg = config.server.clone().unwrap_or_default();
@@ -1846,9 +1846,9 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // Held until exit: Deno kills oj for a signal no Deno handler prevents (e.g. signal-exit's re-raise).
     #[cfg(unix)]
     let (code, _held) = match (
-        deno_signals::signal_stream(libc::SIGINT),
-        deno_signals::signal_stream(libc::SIGTERM),
-        deno_signals::signal_stream(libc::SIGHUP),
+        piu_signals::signal_stream(libc::SIGINT),
+        piu_signals::signal_stream(libc::SIGTERM),
+        piu_signals::signal_stream(libc::SIGHUP),
     ) {
         (Ok(mut int), Ok(mut term), Ok(mut hup)) => {
             // SIGHUP too: own-group children don't share the terminal's session.

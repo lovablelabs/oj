@@ -21,60 +21,121 @@
           ./crates
         ];
       };
-      # The v8 crate's build script downloads a prebuilt static lib, which the
-      # nix sandbox forbids; fetch it as a fixed-output derivation and hand it
-      # over via RUSTY_V8_ARCHIVE (the same approach nixpkgs uses for deno).
-      # On a rusty_v8 bump: update the version and re-prefetch the four hashes
-      # (nix store prefetch-file <url>).
-      rustyV8Version = "150.4.0";
-      rustyV8Hashes = {
-        aarch64-darwin = "sha256-Wu/9jVoMG3msHXCvg9WxkJllX9nGRaeU3EPxAfd5g4w=";
-        x86_64-darwin = "sha256-p1AnH+xrIRRX7Qpc99LqsZJLJlYhqC2oarlZ1v8II+Q=";
-        aarch64-linux = "sha256-U54oOBWjlqV5bzKFi0LlF7hY66rqqtBdAykO6MhkpSc=";
-        x86_64-linux = "sha256-9IdiyhDR8fxgWkQcWuQw7Izh6egPFNePvELLh4wwtHY=";
-      };
-      rustyV8Target = {
-        aarch64-darwin = "aarch64-apple-darwin";
-        x86_64-darwin = "x86_64-apple-darwin";
-        aarch64-linux = "aarch64-unknown-linux-gnu";
-        x86_64-linux = "x86_64-unknown-linux-gnu";
-      };
-      rustyV8Archive = pkgs: pkgs.fetchurl {
-        # The "_simdutf" archive variant matches the v8 crate's feature set here
-        # (deno_core enables v8/simdutf; build.rs appends "_simdutf" to the name).
-        url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_simdutf_release_${rustyV8Target.${pkgs.stdenv.hostPlatform.system}}.a.gz";
-        hash = rustyV8Hashes.${pkgs.stdenv.hostPlatform.system};
-      };
-      # Pinned V8 snapshot bundles (issue #211): snapshot CREATION is not
-      # run-deterministic (rusty_v8 serializes live embedder memory into the
-      # blob), so reproducible builds consume a prebuilt per-target bundle via
-      # crates/oj_deno_snapshots. The bundles are GitHub release assets (same
-      # shape as RUSTY_V8_ARCHIVE above: fetched by SRI hash, uniquely named,
-      # never overwritten — old revisions keep building), so ~8MB of generated
-      # artifacts stay out of the git tree. The release pipeline regenerates
-      # them: on a version tag, release.yml compares the pinned manifest with
-      # Cargo.lock and, when a deno_runtime / deno_core bump made it stale,
-      # harvests a fresh bundle onto that version's release and opens a PR
-      # updating release/file/hash here (tools/gen-snapshot-pin.sh is the
-      # manual fallback). Systems without a pin build the snapshot live, like
-      # plain cargo does — their output is then not bit-reproducible, which
-      # only the darwin cache's two-builder agreement actually requires today.
-      snapshotPins = {
-        aarch64-darwin = {
-          release = "snapshot-pins";
-          file = "oj-snapshot-pin-aarch64-apple-darwin-dc0.412.0-6f8e4d21.tar.gz";
-          hash = "sha256-RTe+9f4HGqaIm417kZ49C8HbYtGX02gi3Jij6L/e3ko=";
+      # ENGINE (piu migration): the engine is Piu's JavaScriptCore backend
+      # (piu_jsc), which links a static JSCOnly WebKit handed over via
+      # JSC_VENDOR_BUILD_DIR + WEBKIT_SRC_DIR. The old RUSTY_V8_ARCHIVE
+      # fixed-output fetch and the pinned V8 snapshot bundles (issue #211,
+      # snapshot creation was run-nondeterministic; snapshots no longer exist)
+      # are gone with V8. WebKit is built from source in its own derivation
+      # below: the recipe (pinned revision, patch series, build_webkit.sh)
+      # ships inside the piu_jsc crate, which the cargo vendor tree already
+      # carries hash-checked through Cargo.lock, so the only extra pin here is
+      # the WebKit source checkout itself (webkitRev + webkitSrcHash — the
+      # moral successor of the RUSTY_V8_ARCHIVE pin).
+      cargoLockToml = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+      piuJscVersion =
+        (nixpkgs.lib.findFirst (p: p.name == "piu_jsc")
+          (throw "piu_jsc not in Cargo.lock")
+          cargoLockToml.package).version;
+      # The same hash-checked vendor tree buildRustPackage uses; the webkit
+      # derivation reads the build recipe out of its piu_jsc crate.
+      cargoVendor = pkgs: pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+      # Darwin links ICU by unversioned u_* symbols (U_DISABLE_RENAMING,
+      # Apple-icucore convention baked into the JSC build); nixpkgs' SDK
+      # strips Apple-private libraries, so supply a regular ICU built
+      # without symbol renaming instead and tell piu_jsc's build script to
+      # link it (JSC_MACOS_ICU=package).
+      icuNoRenaming = pkgs:
+        pkgs.icu.overrideAttrs (old: {
+          configureFlags = (old.configureFlags or [ ]) ++ [ "--disable-renaming" ];
+        });
+      # Keep in sync with tools/WEBKIT_REVISION inside the vendored piu_jsc
+      # crate (build_webkit.sh patches and builds exactly that revision). On a
+      # piu_jsc bump that moves the revision: update the rev, clear the hash,
+      # and nix prints the right one on the mismatch.
+      webkitRev = "0f307e93cf9eb941494046a829baf7dcb15f67c9";
+      webkitSrcHash = "sha256-m3moSjhvgw71bnNO1yjCEjsNJbLSbVs8PQ+1PcE3JL0=";
+      webkitJsc = pkgs:
+        pkgs.stdenv.mkDerivation {
+          pname = "piu-webkit-jsc";
+          version = piuJscVersion;
+          src = pkgs.fetchgit {
+            url = "https://github.com/WebKit/WebKit.git";
+            rev = webkitRev;
+            sparseCheckout = [
+              "Source/JavaScriptCore"
+              "Source/ThirdParty"
+              "Source/WTF"
+              "Source/bmalloc"
+              "Source/cmake"
+              "Tools/Scripts"
+            ];
+            hash = webkitSrcHash;
+          };
+          nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.ruby pkgs.python3 pkgs.perl ]
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
+              # WebKitXcodeSDK.cmake resolves its whole tool roster through
+              # xcrun (PATH-backed under nix): gperf and mig are really used
+              # by the JSC build; swiftc only has to resolve - JSCOnly
+              # compiles no Swift - so a stub satisfies the lookup.
+              pkgs.gperf
+              pkgs.darwin.bootstrap_cmds
+              (pkgs.writeShellScriptBin "swiftc" ''
+                echo "swiftc stub: JSCOnly compiles no Swift" >&2; exit 1
+              '')
+            ];
+          buildInputs = nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.icu ]
+            # This WebKit revision needs the macOS 15 SDK and deployment
+            # target (libpas calls os_unfair_lock_lock_with_flags, macOS 15+);
+            # the default darwin stdenv SDK and min version are older. The
+            # no-renaming ICU keeps find_package(ICU) off whatever the host
+            # happens to have (purity) and matches the unversioned u_*
+            # convention the Apple JSC build uses.
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.apple-sdk_15
+              (pkgs.darwinMinVersionHook "15.0")
+              (icuNoRenaming pkgs)
+            ];
+          # build_webkit.sh drives cmake+ninja itself.
+          dontUseCmakeConfigure = true;
+          # nix stdenv hardening (fortify/stack-protector and friends) breaks
+          # the JS engine: the Linux binary segfaulted on its first JS call
+          # (JsRuntime boot, JSObjectCallAsFunction). The cargo builds this
+          # engine is validated with carry none of these flags; match them.
+          hardeningDisable = [ "all" ];
+          # The archives carry offlineasm objects whose Mach-O subsection
+          # flags build_webkit.sh clears deliberately (computed-jump-only
+          # LLInt/IPInt handlers vs -dead_strip); leave the output alone.
+          dontStrip = true;
+          buildPhase = ''
+            runHook preBuild
+            export WEBKIT_SRC_DIR="$PWD"
+            export WEBKIT_BUILD_DIR="$PWD/wkbuild"
+            bash ${cargoVendor pkgs}/piu_jsc-${piuJscVersion}/tools/build_webkit.sh
+            runHook postBuild
+          '';
+          # piu_jsc's build.rs wants both halves: the patched checkout
+          # (bindgen + native-glue headers) and the build tree (lib/*.a plus
+          # derived headers).
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out/src"
+            srcroot="$PWD"
+            mv wkbuild "$out/build"
+            mv Source Tools "$out/src/"
+            # The cmake tree's Headers/ dirs are symlink farms into the build
+            # directory, which dies with the sandbox; retarget every link at
+            # the installed copies.
+            find "$out" -type l | while read -r l; do
+              t="$(readlink "$l")"
+              case "$t" in
+                "$srcroot"/wkbuild/*) ln -sfn "$out/build/''${t#"$srcroot"/wkbuild/}" "$l" ;;
+                "$srcroot"/*) ln -sfn "$out/src/''${t#"$srcroot"/}" "$l" ;;
+              esac
+            done
+            runHook postInstall
+          '';
         };
-      };
-      snapshotPin = pkgs:
-        let pin = snapshotPins.${pkgs.stdenv.hostPlatform.system};
-        in pkgs.runCommand "oj-snapshot-pin" { } ''
-          mkdir -p "$out"
-          tar -xzf ${pkgs.fetchurl {
-            url = "https://github.com/lovablelabs/oj/releases/download/${pin.release}/${pin.file}";
-            hash = pin.hash;
-          }} -C "$out"
-        '';
       # oj's Start bundles run on rolldown, and they are oj's own code: they
       # get the version oj is written and tested against, vendored next to
       # the binary, rather than whatever the app's vite pins (a vite <= 7 app
@@ -138,6 +199,9 @@
         pkgs.rustPlatform.buildRustPackage ({
           pname = "oj";
           inherit version src;
+          # See the webkit derivation: hardening flags break the embedded JS
+          # engine (they also reach piu_jsc's native glue through this build).
+          hardeningDisable = [ "all" ];
           # All dependencies are crates.io; the checked-in lockfile is the
           # single source of truth, so no fixed-output hash to maintain.
           cargoLock.lockFile = ./Cargo.lock;
@@ -162,9 +226,26 @@
             # rewrite; patchelf for the RUNPATH keep-list.
             ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.autoSignDarwinBinariesHook pkgs.python3 ]
             ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.patchelf ];
-          buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
-          RUSTY_V8_ARCHIVE = rustyV8Archive pkgs;
+          buildInputs = [ pkgs.openssl pkgs.sqlite ]
+            # apple-sdk_15 + the 15.0 floor match what the WebKit archives
+            # above were built against (and supply icucore + the frameworks
+            # they link).
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.libiconv
+              pkgs.apple-sdk_15
+              (pkgs.darwinMinVersionHook "15.0")
+              (icuNoRenaming pkgs)
+            ]
+            # piu_jsc links the system ICU on Linux (icui18n/icuuc/icudata);
+            # darwin links the SDK's icucore instead.
+            ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.icu ];
           OJ_VENDORED_ROLLDOWN = rolldownVendor pkgs;
+          # The static JSCOnly WebKit piu_jsc links against (see ENGINE note).
+          # Compile-time inputs only: the archives are linked into the binary
+          # and the nuke-refs pass below keeps them out of the closure.
+          JSC_VENDOR_BUILD_DIR = "${webkitJsc pkgs}/build";
+          WEBKIT_SRC_DIR = "${webkitJsc pkgs}/src";
+          JSC_MACOS_ICU = nixpkgs.lib.optionalString pkgs.stdenv.isDarwin "package";
           # The build directory name varies between nix implementations (and is
           # randomized on some), and rustc embeds dependency source paths from
           # the vendored tree in panic locations — remap them so the output is
@@ -203,9 +284,9 @@
           # Compiling from store paths embeds $src and vendor-crate store paths
           # in the binary, and the reference scanner would promote the whole
           # vendor tree (~1.2GiB) to a RUNTIME dependency of every consumer.
-          # The strings are compile-time-only (deno_core reads them while
-          # building the snapshot; dead bytes at runtime — a crates.io-built oj
-          # carries ~/.cargo paths and runs fine without them), so break the
+          # The strings are compile-time-only (dead bytes at runtime — a
+          # crates.io-built oj carries ~/.cargo paths and runs fine without
+          # them), so break the
           # references: nuke-refs rewrites their hash part to a constant,
           # keeping the bytes deterministic while restoring the ~170MiB
           # closure. The binary's REAL link-time references (dylib install
@@ -296,8 +377,6 @@ PYUUID
             license = nixpkgs.lib.licenses.mit;
             mainProgram = "oj";
           };
-        } // nixpkgs.lib.optionalAttrs (snapshotPins ? ${pkgs.stdenv.hostPlatform.system}) {
-          OJ_SNAPSHOT_ARCHIVE = snapshotPin pkgs;
         });
     in
     {
@@ -305,6 +384,7 @@ PYUUID
         oj = mkOj pkgs;
         default = oj;
         rolldown-vendor = rolldownVendor pkgs;
+        piu-webkit = webkitJsc pkgs;
       });
       overlays.default = final: prev: { oj = mkOj final; };
     };

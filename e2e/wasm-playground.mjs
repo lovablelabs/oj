@@ -17,7 +17,7 @@ import net from "node:net";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { settles } from "./util.mjs";
+import { settles, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -73,24 +73,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // wall-clock deadline; a dead server fails immediately instead of waiting
 // out the clock.
 let serverLog = "";
-const server = spawn(oj, ["dev", www, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+// The cold-cache dep pre-seed child has wedged on CI runners (engine
+// follow-up); its designed bound is OJ_PRESEED_TIMEOUT, after which the
+// in-host optimizer takes over. A tight bound here keeps boot inside the
+// waitUp budget while still exercising the fallback path when it happens.
+const server = spawn(oj, ["dev", www, "--port", String(PORT)], {
+  stdio: ["ignore", "pipe", "pipe"],
+  env: { ...process.env, OJ_PRESEED_TIMEOUT: "60" },
+});
 server.stdout.on("data", (d) => {
   serverLog += d;
 });
 server.stderr.on("data", (d) => {
   serverLog += d;
 });
-let up = false;
-const deadline = Date.now() + 60_000;
-while (!up && Date.now() < deadline && server.exitCode === null) {
-  try {
-    up = (await fetch(`http://localhost:${PORT}/`)).ok;
-  } catch {}
-  if (!up) await sleep(250);
-}
-if (!up) {
+try {
+  // The www app is the heaviest boot in the suite (Start bundle + wasm) and
+  // CI runs it on a cold cache with a debug binary; give it headroom beyond
+  // waitUp's default.
+  await waitUp(`http://localhost:${PORT}/`, { proc: server, timeoutMs: 300_000 });
+} catch (e) {
   server.kill("SIGKILL");
-  throw new Error(`dev server did not start:\n${serverLog}`);
+  throw new Error(`dev server did not start (${e.message}):\n${serverLog}`);
 }
 
 const bad = [];

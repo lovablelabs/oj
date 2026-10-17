@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! In-process JavaScript engine for oj, backed by Deno (deno_core +
-//! deno_runtime) with Node compatibility over the app's own node_modules.
+//! piu_runtime) with Node compatibility over the app's own node_modules.
 //!
 //! A [`JsEngine`] is a handle to a dedicated OS thread that owns a
 //! `MainWorker` (a V8 isolate is `!Send`, so it can never leave that thread).
@@ -24,14 +24,6 @@ mod worker;
 pub use bridge::EngineHooks;
 pub use bridge::RpcHandler;
 pub use code_cache::engine_abi_key;
-/// Native addons that would re-initialize into dangling process-global state
-/// if a new engine loaded them now (every runtime that registered them is
-/// gone) — a pre-3.10 napi-rs addon can crash the process on that. Embedders
-/// gate in-process engine respawns on this being empty.
-pub use deno_napi::addons_pending_unsafe_reregistration;
-/// Native addons some live engine currently holds, for a keeper env that
-/// pre-registers them before a dying engine's teardown can orphan them.
-pub use deno_napi::addons_with_live_registrations;
 pub use engine::EngineRegistry;
 pub use engine::JsEngine;
 pub use host::HostModule;
@@ -40,6 +32,14 @@ pub use host::HostRequest;
 pub use host::HostRequests;
 pub use host::HostResolved;
 pub use host::ModuleHost;
+/// Native addons that would re-initialize into dangling process-global state
+/// if a new engine loaded them now (every runtime that registered them is
+/// gone) — a pre-3.10 napi-rs addon can crash the process on that. Embedders
+/// gate in-process engine respawns on this being empty.
+pub use piu_napi::addons_pending_unsafe_reregistration;
+/// Native addons some live engine currently holds, for a keeper env that
+/// pre-registers them before a dying engine's teardown can orphan them.
+pub use piu_napi::addons_with_live_registrations;
 
 use std::path::PathBuf;
 use std::time::Duration;

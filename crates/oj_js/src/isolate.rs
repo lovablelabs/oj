@@ -12,10 +12,10 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
-use deno_core::url::Url;
-use deno_core::v8;
-use deno_core::PollEventLoopOptions;
-use deno_runtime::worker::MainWorker;
+use piu_core::url::Url;
+use piu_core::v8;
+use piu_core::PollEventLoopOptions;
+use piu_runtime::worker::MainWorker;
 
 use crate::bridge;
 use crate::bridge::EngineHooks;
@@ -190,7 +190,7 @@ impl Isolate {
     pub(crate) fn poll_events(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<(), deno_core::error::CoreError>> {
+    ) -> Poll<Result<(), piu_core::error::CoreError>> {
         match self.poll_event_loop_once(cx) {
             Poll::Pending => self.poll_event_loop_once(cx),
             ready => ready,
@@ -200,7 +200,7 @@ impl Isolate {
     fn poll_event_loop_once(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<(), deno_core::error::CoreError>> {
+    ) -> Poll<Result<(), piu_core::error::CoreError>> {
         self.worker
             .js_runtime
             .poll_event_loop(cx, PollEventLoopOptions::default())
