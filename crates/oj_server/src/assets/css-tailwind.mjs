@@ -149,17 +149,46 @@ async function loadPostcss(base, cfgPath) {
   return processor;
 }
 
-// Tailwind v4: no PostCSS plugin, compile through @tailwindcss/node + scan
-// class candidates with @tailwindcss/oxide (both transitive dependencies of
-// whichever tailwind package the app installed).
+// Tailwind v4 with no PostCSS config, compiled as @tailwindcss/postcss does:
+// `@import` / `@source` resolve from the sheet's own directory, the scan covers
+// `source(...)` (the root, `**/*` when unset) plus every `@source`, and the
+// scanner's files and globs are the sheet's dependencies. Both packages are
+// transitive dependencies of whichever tailwind package the app installed.
 async function v4Compile(base, css, from) {
   const anchors = ["@tailwindcss/vite", "@tailwindcss/postcss", "tailwindcss"];
   const tw = await importPkg(base, "@tailwindcss/node", anchors, "tailwindcss");
   const oxide = await importPkg(base, "@tailwindcss/oxide", anchors, "tailwindcss");
   const deps = [];
-  const compiler = await tw.compile(css, { base, from, onDependency: (path) => deps.push(path) });
-  const scanner = new oxide.Scanner({ sources: [{ base, pattern: "**/*", negated: false }] });
-  return { css: compiler.build(scanner.scan()), deps, dirDeps: [] };
+  const dirDeps = [];
+  const compiler = await tw.compile(css, {
+    base: from ? dirname(from) : base,
+    from,
+    onDependency: (path) => deps.push(path),
+  });
+  const scanner = new oxide.Scanner({ sources: v4Sources(base, compiler) });
+  const candidates = scanner.scan();
+  for (const file of scanner.files) {
+    if (file !== from) deps.push(file);
+  }
+  for (const { base: dir, pattern } of scanner.globs) {
+    if (pattern === "*" && dir === base) continue;
+    if (pattern === "") deps.push(resolve(dir));
+    else dirDeps.push({ dir: resolve(dir), glob: pattern });
+  }
+  return { css: compiler.build(candidates), deps, dirDeps };
+}
+
+// The scanner's sources for a compiled sheet. Before 4.1 the compiler named
+// its `@source` entries `globs`, with no negation.
+function v4Sources(base, compiler) {
+  const root =
+    compiler.root === "none"
+      ? []
+      : compiler.root == null
+        ? [{ base, pattern: "**/*", negated: false }]
+        : [{ ...compiler.root, negated: false }];
+  const sources = compiler.sources ?? (compiler.globs ?? []).map((g) => ({ ...g, negated: false }));
+  return root.concat(sources);
 }
 
 // The sheet's css plus what it read, as Vite's compileCSS collects PostCSS

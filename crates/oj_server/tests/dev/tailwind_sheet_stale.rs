@@ -79,31 +79,29 @@ async fn default_sheet_picks_up_an_edit() {
 }
 
 /// A source the sheet scans from outside the root (`@source` into a sibling
-/// package) reaches the watcher through PostCSS's `dir-dependency`, as Vite
-/// watches a sheet's deps: an edit there refreshes the cached sheet.
-#[tokio::test(flavor = "multi_thread")]
-async fn outside_root_source_edit_refreshes_the_sheet() {
+/// package, relative to the sheet as Tailwind resolves it) is styled, and an
+/// edit there refreshes the cached sheet: its deps reach the watcher, as Vite
+/// watches a sheet's deps. Through the app's PostCSS config, and through oj's
+/// own Tailwind v4 compile when there is none.
+async fn outside_root_source_refreshes_the_sheet(postcss: bool) {
     require_fixture!("tailwindcss", "@tailwindcss", "postcss");
     let app = App::new(&[
         ("package.json", r#"{"name":"tw-outside","version":"1.0.0"}"#),
-        (
-            "postcss.config.mjs",
-            "export default { plugins: { \"@tailwindcss/postcss\": {} } };\n",
-        ),
         ("index.html", crate::INDEX_HTML),
     ]);
-    let ui = app.root.with_file_name(format!(
-        "{}-ui",
-        app.root.file_name().unwrap().to_string_lossy()
-    ));
+    if postcss {
+        app.write(&[(
+            "postcss.config.mjs",
+            "export default { plugins: { \"@tailwindcss/postcss\": {} } };\n",
+        )]);
+    }
+    let name = format!("{}-ui", app.root.file_name().unwrap().to_string_lossy());
+    let ui = app.root.with_file_name(&name);
     std::fs::create_dir_all(ui.join("src")).unwrap();
     std::fs::write(ui.join("src/Button.tsx"), component("underline")).unwrap();
     app.write(&[(
         "src/index.css",
-        &format!(
-            "@import \"tailwindcss\";\n@source \"{}\";\n",
-            ui.join("src").display()
-        ),
+        &format!("@import \"tailwindcss\";\n@source \"../../{name}/src\";\n"),
     )]);
     for pkg in ["tailwindcss", "@tailwindcss", "postcss"] {
         app.link_fixture(pkg);
@@ -131,4 +129,14 @@ async fn outside_root_source_edit_refreshes_the_sheet() {
         );
     }
     let _ = std::fs::remove_dir_all(&ui);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn outside_root_source_refreshes_the_postcss_sheet() {
+    outside_root_source_refreshes_the_sheet(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn outside_root_source_refreshes_the_v4_sheet() {
+    outside_root_source_refreshes_the_sheet(false).await;
 }

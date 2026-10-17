@@ -254,7 +254,7 @@ test("tailwind engine module resolves Tailwind v4 dependencies beneath the Vite 
     });
     writePkg(anchor, "@tailwindcss/oxide", {
       "package.json": '{"name":"@tailwindcss/oxide","type":"module","main":"index.mjs"}',
-      "index.mjs": "export class Scanner { scan() { return ['synthetic-tailwind-token']; } }",
+      "index.mjs": "export class Scanner { files = []; globs = []; scan() { return ['synthetic-tailwind-token']; } }",
     });
 
     const requireFromApp = createRequire(join(root, "package.json"));
@@ -266,8 +266,54 @@ test("tailwind engine module resolves Tailwind v4 dependencies beneath the Vite 
     const { compile } = await import(
       new URL("../../crates/oj_server/src/assets/css-tailwind.mjs", import.meta.url).href
     );
-    const css = await compile({ base: root, css: '@import "tailwindcss";', from: stylesheet });
+    const { css } = await compile({ base: root, css: '@import "tailwindcss";', from: stylesheet });
     assert.equal(css, '@import "tailwindcss";synthetic-tailwind-token');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("tailwind v4 engine scans every @source from the sheet's dir and reports what it read", async () => {
+  const root = mkdtempSync(join(tmpdir(), "oj-tailwind-sources-"));
+  try {
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "synthetic-app", dependencies: { tailwindcss: "1.0.0" } }),
+    );
+    writePkg(root, "@tailwindcss/node", {
+      "package.json": '{"name":"@tailwindcss/node","type":"module","main":"index.mjs"}',
+      "index.mjs": `export async function compile(source, opts) {
+        globalThis.__twBase = opts.base;
+        opts.onDependency("/ui/theme.css");
+        return {
+          root: null,
+          sources: [{ base: "/ui/src", pattern: "**/*", negated: false }],
+          build(tokens) { return tokens.join(","); },
+        };
+      }`,
+    });
+    writePkg(root, "@tailwindcss/oxide", {
+      "package.json": '{"name":"@tailwindcss/oxide","type":"module","main":"index.mjs"}',
+      "index.mjs": `export class Scanner {
+        constructor({ sources }) { globalThis.__twSources = sources; }
+        files = ["/ui/src/Button.tsx", "${join(root, "src", "index.css")}"];
+        globs = [{ base: "${root}", pattern: "*" }, { base: "/ui/src", pattern: "**/*" }];
+        scan() { return ["underline"]; }
+      }`,
+    });
+    const { compile } = await import(
+      new URL("../../crates/oj_server/src/assets/css-tailwind.mjs", import.meta.url).href
+    );
+    const from = join(root, "src", "index.css");
+    const out = await compile({ base: root, css: '@import "tailwindcss";', from });
+    assert.equal(out.css, "underline");
+    assert.equal(globalThis.__twBase, join(root, "src"), "@source resolves from the sheet's dir");
+    assert.deepEqual(globalThis.__twSources, [
+      { base: root, pattern: "**/*", negated: false },
+      { base: "/ui/src", pattern: "**/*", negated: false },
+    ]);
+    assert.deepEqual(out.deps, ["/ui/theme.css", "/ui/src/Button.tsx"]);
+    assert.deepEqual(out.dirDeps, [{ dir: "/ui/src", glob: "**/*" }]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

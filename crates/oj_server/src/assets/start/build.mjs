@@ -257,8 +257,17 @@ async function main() {
       const tw = await importPkg(APP, "@tailwindcss/node", anchors);
       const oxide = await importPkg(APP, "@tailwindcss/oxide", anchors);
       return async (from, src) => {
-        const compiler = await tw.compile(src, { base: APP, from, onDependency: () => {} });
-        const scanner = new oxide.Scanner({ sources: [{ base: APP, pattern: "**/*", negated: false }] });
+        // As @tailwindcss/postcss: `@source` resolves from the sheet's dir and
+        // the scan covers `source(...)` plus every `@source`.
+        const compiler = await tw.compile(src, { base: dirname(from), from, onDependency: () => {} });
+        const root =
+          compiler.root === "none"
+            ? []
+            : compiler.root == null
+              ? [{ base: APP, pattern: "**/*", negated: false }]
+              : [{ ...compiler.root, negated: false }];
+        const sources = compiler.sources ?? (compiler.globs ?? []).map((g) => ({ ...g, negated: false }));
+        const scanner = new oxide.Scanner({ sources: root.concat(sources) });
         return compiler.build(scanner.scan());
       };
     } catch {}
