@@ -6494,9 +6494,9 @@ dependencies = [
 
 [[package]]
 name = "piu_jsc"
-version = "149.4.0-rc.15"
+version = "149.4.0-rc.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c5b6ce405cd4475af2a605c745e45e32e85fc784f5aad31de1447629509246d"
+checksum = "ed20e858371ca2a97ff93edff3c49df556942279756891261bd7f4670c84d65a"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags",
