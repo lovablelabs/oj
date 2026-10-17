@@ -8,7 +8,7 @@
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const processors = new Map();
 
@@ -156,17 +156,29 @@ async function v4Compile(base, css, from) {
   const anchors = ["@tailwindcss/vite", "@tailwindcss/postcss", "tailwindcss"];
   const tw = await importPkg(base, "@tailwindcss/node", anchors, "tailwindcss");
   const oxide = await importPkg(base, "@tailwindcss/oxide", anchors, "tailwindcss");
-  const compiler = await tw.compile(css, { base, from, onDependency: () => {} });
+  const deps = [];
+  const compiler = await tw.compile(css, { base, from, onDependency: (path) => deps.push(path) });
   const scanner = new oxide.Scanner({ sources: [{ base, pattern: "**/*", negated: false }] });
-  return compiler.build(scanner.scan());
+  return { css: compiler.build(scanner.scan()), deps, dirDeps: [] };
 }
 
+// The sheet's css plus what it read, as Vite's compileCSS collects PostCSS
+// `dependency` / `dir-dependency` messages for the dev watcher.
 export async function compile(request) {
   const { base, css, from } = request;
   const processor = await loadPostcss(base, request.postcssConfig || null);
   if (processor) {
     const result = await processor.process(css, { from, map: false });
-    return result.css;
+    const deps = [];
+    const dirDeps = [];
+    for (const message of result.messages) {
+      if (message.type === "dependency") {
+        deps.push(message.file);
+      } else if (message.type === "dir-dependency") {
+        dirDeps.push({ dir: resolve(dirname(from), message.dir), glob: message.glob || "**" });
+      }
+    }
+    return { css: result.css, deps, dirDeps };
   }
   return v4Compile(base, css, from);
 }

@@ -60,6 +60,7 @@ mod query_assets;
 mod svelte;
 mod svgr;
 mod tailwind_js_import;
+mod tailwind_sheet_stale;
 mod unresolved_bare;
 mod vite_hmr_socket;
 mod warm_transform_virtual;
