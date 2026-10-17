@@ -16,9 +16,23 @@ class OjHotContext {
     this.client = client;
     this.id = id;
     if (!client.dataMap.has(id)) client.dataMap.set(id, {});
-    // A re-executed module registers its callbacks again.
+    // A re-executed module registers its callbacks and listeners again
+    // (Vite's HMRContext drops the stale ones by owner).
     const mod = client.hotModules.get(id);
     if (mod) mod.callbacks = [];
+    const stale = client.ownListeners.get(id);
+    if (stale) {
+      for (const [event, fns] of stale) {
+        const list = client.listeners.get(event);
+        if (list)
+          client.listeners.set(
+            event,
+            list.filter((l) => !fns.includes(l)),
+          );
+      }
+    }
+    this.own = new Map();
+    client.ownListeners.set(id, this.own);
   }
   get data() {
     return this.client.dataMap.get(this.id);
@@ -48,17 +62,25 @@ class OjHotContext {
     this.client.invalidate(this.id, message);
   }
   on(event, cb) {
-    const list = this.client.listeners.get(event) || [];
-    list.push(cb);
-    this.client.listeners.set(event, list);
+    const add = (map) => {
+      const list = map.get(event) || [];
+      list.push(cb);
+      map.set(event, list);
+    };
+    add(this.client.listeners);
+    add(this.own);
   }
   off(event, cb) {
-    const list = this.client.listeners.get(event);
-    if (list)
-      this.client.listeners.set(
-        event,
-        list.filter((l) => l !== cb),
-      );
+    const drop = (map) => {
+      const list = map.get(event);
+      if (list)
+        map.set(
+          event,
+          list.filter((l) => l !== cb),
+        );
+    };
+    drop(this.client.listeners);
+    drop(this.own);
   }
   send() {}
 }
@@ -71,6 +93,8 @@ class OjHmrClient {
     this.pruneMap = new Map();
     this.dataMap = new Map();
     this.listeners = new Map();
+    // Each module's own listeners, by event (Vite's ctxToListenersMap).
+    this.ownListeners = new Map();
     this.queue = Promise.resolve();
     this.lastSeq = 0;
     this.reloadPending = false;

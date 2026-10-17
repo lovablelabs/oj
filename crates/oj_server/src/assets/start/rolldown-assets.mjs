@@ -380,14 +380,30 @@ export function unresolvedImportIn(output, config) {
 }
 
 // The same, in a hot patch: the engine renders an external import as a plain
-// `import`/`import()` of its specifier (the modules it bundles go through the
-// runtime), so one in the patch is an import that never resolved.
-export function unresolvedImportInPatch(code, importer, config) {
-  const unresolved = unresolvedSpecifier(config, new Set());
-  for (const m of code.matchAll(/\bimport\s*(?:[\w$*{}\s,]+\bfrom\s*)?\(?\s*["']([^"']+)["']/g)) {
-    if (unresolved(m[1])) return unresolvedImportAt(m[1], importer);
+// `import`/`export from`/`import()` of its specifier (the modules it bundles
+// go through the runtime), so one in the patch is an import that never
+// resolved. Read from the parsed module record (`parseSync`, oxc's), never
+// the text: a string or JSX text that reads like an import is no import.
+export function unresolvedImportInPatch(code, importer, config, parseSync) {
+  if (typeof parseSync !== "function") return null;
+  let module;
+  try {
+    ({ module } = parseSync("patch.js", code, { lang: "js", sourceType: "module" }));
+  } catch {
+    return null;
   }
-  return null;
+  const specs = [
+    ...(module?.staticImports ?? []).map((i) => i.moduleRequest?.value),
+    ...(module?.staticExports ?? []).flatMap((e) => e.entries.map((x) => x.moduleRequest?.value)),
+    // Only a string literal names a module; a computed import() is the app's.
+    ...(module?.dynamicImports ?? []).map(({ moduleRequest: r }) => {
+      const lit = code.slice(r.start, r.end);
+      return /^(["'])[^"'\\]*\1$/.test(lit) ? lit.slice(1, -1) : undefined;
+    }),
+  ];
+  const unresolved = unresolvedSpecifier(config, new Set());
+  const spec = specs.find((s) => s !== undefined && unresolved(s));
+  return spec === undefined ? null : unresolvedImportAt(spec, importer);
 }
 
 function unresolvedSpecifier(config, files) {
@@ -409,6 +425,26 @@ function unresolvedImportAt(spec, importer) {
     if (line >= 0) loc = { file, line: line + 1, column: lines[line].indexOf(spec) - 1 };
   } catch {}
   return unresolvedImportError(spec, importer, loc, "");
+}
+
+// The dev engine's watcher options from the app's `server.watch`, as Vite's
+// bundled dev hands them over (watch.ts convertToDevWatchOptions): polling
+// apps (containers, network mounts) poll here too, and `null` turns
+// watching off.
+export function devWatchOptions(config) {
+  const watch = config?.server?.watch;
+  if (watch === null) return { enabled: false };
+  if (!watch) return {};
+  return {
+    usePolling: watch.usePolling,
+    pollInterval: watch.pollInterval ?? watch.interval,
+    useDebounce: watch.useDebounce,
+    debounceDuration: watch.debounceDuration,
+    debounceTickRate: watch.debounceTickRate,
+    compareContentsForPolling: watch.compareContentsForPolling,
+    include: watch.include,
+    exclude: watch.exclude,
+  };
 }
 
 // The app's own `external` for a client bundle, which Vite's

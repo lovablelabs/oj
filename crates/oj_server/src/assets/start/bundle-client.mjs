@@ -22,6 +22,7 @@ import {
   devSafeChunkPolicy,
   makeVitePlugins,
   nodeBuiltinShims,
+  devWatchOptions,
   unresolvedImportIn,
   unresolvedImportInPatch,
   viteOnLog,
@@ -132,6 +133,7 @@ function onHmrUpdates(result) {
       update.code,
       resolve(process.cwd(), update.changedIds[0] ?? ""),
       live?.config,
+      live?.parseSync,
     );
     if (unresolved) {
       hotError = unresolved;
@@ -178,6 +180,7 @@ async function startEngine(experimental, options, state, epoch, config) {
     outputs: 0,
     error: null,
     config,
+    parseSync: experimental.parseSync,
   };
   engine.engine = await experimental.dev(input, output, {
     onHmrUpdates,
@@ -190,7 +193,7 @@ async function startEngine(experimental, options, state, epoch, config) {
       }
       engine.outputs++;
     },
-    watch: { skipWrite: true },
+    watch: { skipWrite: true, ...devWatchOptions(config) },
   });
   engine.engine.run().catch(() => {});
   for (const id of clients) await engine.engine.registerClient(id);
@@ -477,9 +480,11 @@ async function main() {
   const epoch = process.env.OJ_START_STYLE_EPOCH ?? "0";
   ++bundles;
   // Vite's bundled dev runs only when HMR is on: never for a production
-  // client (`NODE_ENV=production oj dev`) or `server.hmr: false`.
+  // client (`NODE_ENV=production oj dev`) or `server.hmr: false`. Nor under
+  // the editor's HMR gate (OJ_START_HOT=0): its pages reload on every edit,
+  // so they never take a patch, and a plain build serves them as before.
   const experimental =
-    NODE_ENV !== "production" && container?.config?.server?.hmr !== false
+    NODE_ENV !== "production" && container?.config?.server?.hmr !== false && process.env.OJ_START_HOT !== "0"
       ? await importOjRolldownExperimental(APP, ["vite", "@tanstack/react-start"])
       : null;
   const hot = typeof experimental?.dev === "function";

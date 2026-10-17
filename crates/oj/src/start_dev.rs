@@ -478,6 +478,9 @@ pub async fn start_dev(
     } else {
         None
     };
+    // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
+    // boot's engine at the next rebundle.
+    bundler.set_hot_enabled(built.hmr_gate.is_none());
     let state = Arc::new(StartState {
         script_env: Arc::clone(&script_vars),
         bundler,
@@ -2103,6 +2106,11 @@ pub(crate) struct ClientBundler {
     clients: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The bundler's hot updates on their way to the pages.
     pub(crate) hot: Arc<crate::start_hot::HotUpdates>,
+    /// Whether pages may take hot updates (`OJ_START_HOT`): not while the
+    /// editor's HMR gate holds updates, where every edit reloads and a
+    /// bundler engine would only add cost. Known from the env knob at boot,
+    /// settled by the server's resolved gate once it is up.
+    hot_enabled: std::sync::atomic::AtomicBool,
     /// Bumped by every batch that touched a style input, and handed to each
     /// bundle (`OJ_START_STYLE_EPOCH`). The child's engine caches each
     /// `import("oj-style:...")` by its url for the session, so the epoch in
@@ -2126,8 +2134,14 @@ impl ClientBundler {
             ops: std::sync::Mutex::new(None),
             clients: std::sync::Mutex::new(std::collections::HashSet::new()),
             hot: Arc::new(crate::start_hot::HotUpdates::new()),
+            hot_enabled: std::sync::atomic::AtomicBool::new(!oj_env::get().knobs.hmr_gate),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    pub(crate) fn set_hot_enabled(&self, enabled: bool) {
+        self.hot_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// A watch batch's changed paths: any style input moves the style epoch.
@@ -2248,6 +2262,27 @@ impl ClientBundler {
         })
     }
 
+    /// The env of one bundle run. Every run sets every key: the script's env
+    /// outlives the run.
+    fn run_env(
+        &self,
+        script_env: &[(String, String)],
+        changed: &[PathBuf],
+        refresh: bool,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let flag = |on: bool| if on { "1" } else { "0" }.to_string();
+        let mut env = script_env.to_vec();
+        env.push((
+            "OJ_START_STYLE_EPOCH".into(),
+            self.style_epoch.load(SeqCst).to_string(),
+        ));
+        env.push(("OJ_START_CHANGED".into(), serde_json::to_string(changed)?));
+        env.push(("OJ_START_REFRESH".into(), flag(refresh)));
+        env.push(("OJ_START_HOT".into(), flag(self.hot_enabled.load(SeqCst))));
+        Ok(env)
+    }
+
     /// One client bundle on the session's bundler, given the batch's changed
     /// paths. Ok(true) when every change already reached the pages as a hot
     /// update (no reload needed); Err when it failed (the app's error, if
@@ -2274,18 +2309,7 @@ impl ClientBundler {
             },
             None => self.spawn()?,
         };
-        let epoch = self
-            .style_epoch
-            .load(std::sync::atomic::Ordering::SeqCst)
-            .to_string();
-        let mut env = script_env.to_vec();
-        env.push(("OJ_START_STYLE_EPOCH".into(), epoch));
-        env.push(("OJ_START_CHANGED".into(), serde_json::to_string(changed)?));
-        // Every run sets every key: the script's env outlives the run.
-        env.push((
-            "OJ_START_REFRESH".into(),
-            if refresh { "1" } else { "0" }.into(),
-        ));
+        let env = self.run_env(script_env, changed, refresh)?;
         let request = format!("{}\n", serde_json::to_string(&env)?);
         let sent = {
             let mut stdin = child
@@ -3319,6 +3343,32 @@ fn collect_headers(headers: &header::HeaderMap) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hmr_gate_turns_the_bundlers_hot_updates_off() {
+        let bundler = ClientBundler::new(Path::new("/app"), Path::new("/app/.oj-cache"));
+        let hot = |bundler: &ClientBundler| {
+            let env = bundler
+                .run_env(&[], &[PathBuf::from("/app/src/a.tsx")], false)
+                .unwrap();
+            let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+            for key in [
+                "OJ_START_STYLE_EPOCH",
+                "OJ_START_CHANGED",
+                "OJ_START_REFRESH",
+            ] {
+                assert!(keys.contains(&key), "{key} missing from the run env");
+            }
+            env.into_iter()
+                .find(|(k, _)| k == "OJ_START_HOT")
+                .map(|(_, v)| v)
+        };
+        bundler.set_hot_enabled(true);
+        assert_eq!(hot(&bundler).as_deref(), Some("1"));
+        // A gated server: every edit reloads, so the script keeps build().
+        bundler.set_hot_enabled(false);
+        assert_eq!(hot(&bundler).as_deref(), Some("0"));
+    }
 
     #[test]
     fn a_style_edit_moves_the_bundlers_style_epoch() {
