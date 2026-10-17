@@ -2940,6 +2940,15 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
   };
 }
 
+// Vite runs the server-level setup once per dev server (server/index.ts:
+// configureServer hooks, the proxy, the environments), on plugin instances
+// every environment shares; a per-environment plugin's configureServer is
+// ignored (plugin.ts resolveEnvironmentPlugins). oj's ssr host holds its own
+// instances of the same plugins, and the client host is the server oj routes
+// to, so only the client host does that setup. Running it in both started
+// every plugin's side effects twice (e.g. a second devtools event bus).
+const ownsServer = hostEnvName === "client";
+
 async function setupConfigureServer() {
   const stack = [];
   function runStack(req, res, done) {
@@ -3091,7 +3100,7 @@ async function setupConfigureServer() {
     : initial.runnerBacked === false
       ? "host declaration check (extraction said no)"
       : "host declaration check";
-  if (runnerDeclared) {
+  if (runnerDeclared && ownsServer) {
     process.stderr.write(
       `${OJ} plugin host: a custom dev environment is declared (decided by ${runnerBackedSource})\n`,
     );
@@ -3114,7 +3123,7 @@ async function setupConfigureServer() {
   // factory failed, the app's Vite would not load) — say so instead of
   // degrading to the Node SSR runner silently (the per-failure causes are on
   // stderr above).
-  if (runnerDeclared && !runnerEnvironmentsBuilt) {
+  if (runnerDeclared && ownsServer && !runnerEnvironmentsBuilt) {
     process.stderr.write(
       `${OJ} warning: a plugin declared a custom dev environment but none came up; documents are served by the Node SSR runner\n`,
     );
@@ -3132,7 +3141,7 @@ async function setupConfigureServer() {
   }
   devServer = server;
   const post = [];
-  for (const { p, fn } of pluginsWithHook("configureServer")) {
+  for (const { p, fn } of ownsServer ? pluginsWithHook("configureServer") : []) {
     let r;
     initStage(`configureServer:${p.name ?? "?"}`);
     try {
@@ -3155,7 +3164,7 @@ async function setupConfigureServer() {
   // loadable vite config, so its `server.proxy` (with a {from,to} rewrite that
   // DOES cross the JSON bridge) arrives in the spawn payload's `initial.config`.
   const proxyConfig = userViteConfig?.server?.proxy ?? initial.config?.server?.proxy ?? resolvedConfig?.server?.proxy;
-  if (proxyConfig && typeof proxyConfig === "object") {
+  if (ownsServer && proxyConfig && typeof proxyConfig === "object") {
     try {
       const proxyMw = await createProxyMiddleware(proxyConfig, initial.config?.root ?? process.cwd());
       if (proxyMw) middlewares.use(proxyMw);
