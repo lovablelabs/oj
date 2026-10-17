@@ -702,6 +702,11 @@ fn handle_batch(
             .reload_tx
             .send(full_reload_frame("tsconfig change", None, None));
     }
+    // Ahead of the HMR-off return and the gate hold: a Tailwind sheet must
+    // not outlive a source it scanned, whether or not an update goes out.
+    if !paths.is_empty() {
+        state.tailwind_sheets.invalidate();
+    }
     if !state.hmr_enabled {
         return;
     }
