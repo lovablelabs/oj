@@ -1720,14 +1720,24 @@ impl ScriptEngine {
     }
 
     /// `start-script --serve`: one run per stdin line (its env JSON), each
-    /// answered on stdout by a [`SCRIPT_REPLY`] line, on this one engine.
-    /// Stdin closing (the dev server exiting or exec'ing a restart) ends the
-    /// session: the script's `close()` runs, then the process exits.
+    /// answered on stdout by a [`SCRIPT_REPLY`] line, on this one engine. A
+    /// JSON object line is an event for the script's `op` export instead,
+    /// answered by nothing. Stdin closing (the dev server exiting or exec'ing
+    /// a restart) ends the session: the script's `close()` runs, then the
+    /// process exits.
     pub async fn serve(&self, script: &Path) -> anyhow::Result<()> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let module = script.to_string_lossy().into_owned();
         let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
         let mut stdout = tokio::io::stdout();
         while let Some(line) = lines.next_line().await? {
+            if let Ok(msg @ serde_json::Value::Object(_)) = serde_json::from_str(&line) {
+                let _ = self
+                    .engine
+                    .call(module.clone(), "op", vec![msg], None)
+                    .await;
+                continue;
+            }
             let reply = match serde_json::from_str::<Vec<(String, String)>>(&line) {
                 Ok(env) => match self.call(script, &env).await {
                     Ok(_) => "ok".to_string(),
@@ -1735,10 +1745,19 @@ impl ScriptEngine {
                 },
                 Err(e) => format!("err bad request: {e}"),
             };
-            stdout
-                .write_all(format!("{SCRIPT_REPLY}{reply}\n").as_bytes())
-                .await?;
-            stdout.flush().await?;
+            let reply = format!("{SCRIPT_REPLY}{reply}\n");
+            // A script that writes its own lines to stdout (bundle-client's
+            // hot updates) also writes the reply, through the same stream:
+            // two writers on the pipe could interleave a long line with it.
+            let written = self
+                .engine
+                .call(module.clone(), "reply", vec![reply.clone().into()], None)
+                .await
+                .is_ok();
+            if !written {
+                stdout.write_all(reply.as_bytes()).await?;
+                stdout.flush().await?;
+            }
         }
         let _ = self
             .engine

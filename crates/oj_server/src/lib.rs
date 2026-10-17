@@ -161,6 +161,11 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/live-reload.js"),
     ),
     (
+        "hmr-runtime.js",
+        include_str!("assets/start/hmr-runtime.js"),
+    ),
+    ("react-refresh-runtime.js", REFRESH_RUNTIME_JS),
+    (
         "server-entry.tsx",
         include_str!("assets/start/server-entry.tsx"),
     ),

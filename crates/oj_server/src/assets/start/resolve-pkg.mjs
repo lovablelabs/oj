@@ -152,6 +152,17 @@ export async function importOjRolldown(root, preferred = []) {
   }
 }
 
+// `rolldown/experimental` of the rolldown importOjRolldown picks, or null
+// when that rolldown has none.
+export async function importOjRolldownExperimental(root, preferred = []) {
+  try {
+    const main = resolveOjRolldown(root, preferred);
+    return await import(pathToFileURL(createRequire(main).resolve("rolldown/experimental")).href);
+  } catch {
+    return null;
+  }
+}
+
 // A build's outputs hold their code in rolldown's native memory until the JS
 // wrappers are garbage collected, and a bundler that idles between rebundles
 // allocates nothing, so V8 never collects them (rolldown/rolldown#11189).
@@ -159,14 +170,7 @@ export async function importOjRolldown(root, preferred = []) {
 // once the outputs are written. Returns how many were freed: none from a
 // rolldown without the API, which keeps the old behavior.
 export async function freeRolldownOutputs(root, preferred, output) {
-  let free;
-  try {
-    const main = resolveOjRolldown(root, preferred);
-    const experimental = createRequire(main).resolve("rolldown/experimental");
-    ({ freeExternalMemory: free } = await import(pathToFileURL(experimental).href));
-  } catch {
-    return 0;
-  }
+  const free = (await importOjRolldownExperimental(root, preferred))?.freeExternalMemory;
   if (typeof free !== "function") return 0;
   let freed = 0;
   for (const o of output) if (free(o)?.freed) freed++;
