@@ -81,6 +81,42 @@ pub fn dev_listener_bound(port: u16, interface: &str) {
 }
 
 /// See [`PluginHost::boot`].
+/// An engine started ahead of its host (see [`PluginHost::prewarm`]).
+pub struct HostPrewarm {
+    engine: std::sync::Arc<oj_js::JsEngine>,
+    post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    registry: Option<oj_js::EngineRegistry>,
+}
+
+fn new_host_engine(
+    root: &Path,
+    memory_limit_bytes: usize,
+    registry: Option<oj_js::EngineRegistry>,
+    import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+) -> Result<oj_js::JsEngine, String> {
+    let root = root.to_path_buf();
+    let resolver = std::sync::Arc::new(OjResolver::new(&root));
+    let rpc_handler: oj_js::RpcHandler = {
+        let root = root.clone();
+        Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root, import_meta_env.get()))
+    };
+    let mut engine_config = oj_js::EngineConfig::new(&root);
+    engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
+    engine_config.memory_limit_bytes = Some(memory_limit_bytes);
+    engine_config.registry = registry;
+    oj_js::JsEngine::spawn(
+        engine_config,
+        None,
+        Some(oj_js::EngineHooks {
+            post: post_tx,
+            rpc: Some(rpc_handler),
+        }),
+    )
+    .map_err(|e| format!("cannot start the embedded plugin host: {e}"))
+}
+
 pub(crate) struct BootContext {
     boot_seed: String,
     root: PathBuf,
@@ -439,12 +475,80 @@ impl PluginHost {
         Self::spawn_with_policy(root, plugins_file, config_json, timeouts, None).await
     }
 
+    /// [`PluginHost::spawn`] onto the engine a [`PluginHost::prewarm`] started.
+    pub async fn spawn_prewarmed(
+        root: &Path,
+        plugins_file: &Path,
+        config_json: &str,
+        prewarm: HostPrewarm,
+    ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
+        let registry = prewarm.registry.clone();
+        Self::spawn_inner(
+            root,
+            plugins_file,
+            config_json,
+            SpawnTimeouts::default(),
+            registry,
+            Some(prewarm),
+        )
+        .await
+    }
+
+    /// The host's engine, started before its config payload exists: the
+    /// engine boot and the import of the app's vite (most of a host's start)
+    /// need none of it, so the dev server runs them alongside the config
+    /// extraction instead of after it. The engine is configured exactly as
+    /// [`PluginHost::spawn`] would; its first generation adopts it.
+    pub fn prewarm(root: &Path, registry: Option<oj_js::EngineRegistry>) -> Option<HostPrewarm> {
+        let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
+        let import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>> =
+            Arc::default();
+        let engine = new_host_engine(
+            root,
+            plugin_host_memory_mb() * 1024 * 1024,
+            registry.clone(),
+            Arc::clone(&import_meta_env),
+            post_tx,
+        )
+        .ok()?;
+        let engine = std::sync::Arc::new(engine);
+        // The specifier the host's loadViteConfig imports, so the module it
+        // finds is this one, already evaluated. A failure is the host's to
+        // report when it imports for real.
+        let source = format!(
+            "import {{ createRequire }} from \"node:module\";\n\
+             try {{ await import(createRequire({}).resolve(\"vite\")); }} catch {{}}\n",
+            serde_json::to_string(&root.join("package.json").to_string_lossy()).unwrap_or_default()
+        );
+        let warming = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            let _ = warming.eval(oj_js::EvalInput::Source(source), None).await;
+        });
+        Some(HostPrewarm {
+            engine,
+            post_rx,
+            import_meta_env,
+            registry,
+        })
+    }
+
     async fn spawn_with_policy(
         root: &Path,
         plugins_file: &Path,
         config_json: &str,
         timeouts: SpawnTimeouts,
         registry: Option<oj_js::EngineRegistry>,
+    ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
+        Self::spawn_inner(root, plugins_file, config_json, timeouts, registry, None).await
+    }
+
+    async fn spawn_inner(
+        root: &Path,
+        plugins_file: &Path,
+        config_json: &str,
+        timeouts: SpawnTimeouts,
+        registry: Option<oj_js::EngineRegistry>,
+        mut prewarm: Option<HostPrewarm>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
 
@@ -481,7 +585,10 @@ impl PluginHost {
                     .memory
                     .unwrap_or_else(|| plugin_host_memory_mb() * 1024 * 1024),
                 registry,
-                import_meta_env: Arc::default(),
+                import_meta_env: prewarm
+                    .as_ref()
+                    .map(|p| Arc::clone(&p.import_meta_env))
+                    .unwrap_or_default(),
             },
             revive: Mutex::new(ReviveState {
                 generation: 0,
@@ -498,18 +605,35 @@ impl PluginHost {
             .lock()
             .unwrap()
             .push(std::sync::Arc::downgrade(&host));
-        Self::ignite(&host, 0).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let warm = prewarm.take().map(|p| (p.engine, p.post_rx));
+        Self::ignite_with(&host, 0, warm).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(host)
     }
 
     /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
     /// superseded `generation` abandons the just-spawned engine: racing ignites must never leave a live loser.
     fn ignite(host: &std::sync::Arc<PluginHost>, generation: u64) -> Result<(), String> {
+        Self::ignite_with(host, generation, None)
+    }
+
+    fn ignite_with(
+        host: &std::sync::Arc<PluginHost>,
+        generation: u64,
+        warm: Option<(
+            std::sync::Arc<oj_js::JsEngine>,
+            tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        )>,
+    ) -> Result<(), String> {
         host.write_host_module()?;
         // Pushes arrive as values on `post_rx`, so nothing a plugin prints can
         // splice into the protocol.
-        let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
-        let engine = std::sync::Arc::new(host.spawn_engine(post_tx)?);
+        let (engine, post_rx) = match warm {
+            Some(warm) => warm,
+            None => {
+                let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
+                (std::sync::Arc::new(host.spawn_engine(post_tx)?), post_rx)
+            }
+        };
         {
             let revive = host.revive.lock().unwrap();
             // A shutdown racing this boot must not gain a live engine it can no
@@ -567,26 +691,13 @@ impl PluginHost {
         &self,
         post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     ) -> Result<oj_js::JsEngine, String> {
-        let root = self.boot.root.clone();
-        let resolver = std::sync::Arc::new(OjResolver::new(&root));
-        let rpc_handler: oj_js::RpcHandler = {
-            let root = root.clone();
-            let env = Arc::clone(&self.boot.import_meta_env);
-            Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root, env.get()))
-        };
-        let mut engine_config = oj_js::EngineConfig::new(&root);
-        engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
-        engine_config.memory_limit_bytes = Some(self.boot.memory_limit_bytes);
-        engine_config.registry = self.boot.registry.clone();
-        oj_js::JsEngine::spawn(
-            engine_config,
-            None,
-            Some(oj_js::EngineHooks {
-                post: post_tx,
-                rpc: Some(rpc_handler),
-            }),
+        new_host_engine(
+            &self.boot.root,
+            self.boot.memory_limit_bytes,
+            self.boot.registry.clone(),
+            Arc::clone(&self.boot.import_meta_env),
+            post_tx,
         )
-        .map_err(|e| format!("cannot start the embedded plugin host: {e}"))
     }
 
     /// BOOT task: seed the host's identity, then trigger top-level init via a trivial

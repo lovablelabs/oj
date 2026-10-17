@@ -1599,3 +1599,48 @@ fn merge_unions_watch_ignored() {
         Some(vec!["**/.wrangler/**".to_string()])
     );
 }
+
+// The engine started ahead of the payload (dev boot overlaps it with the
+// config extraction) becomes the host's first generation: the plugins it
+// loads serve, and a revive still boots a fresh engine the ordinary way.
+#[tokio::test]
+async fn a_prewarmed_engine_hosts_the_plugins_and_revives_normally() {
+    let root = std::env::temp_dir().join(format!("oj-prewarm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        "export default [{ name: \"t\", resolveId(id) { if (id === \"virtual:x\") return \"\\0x\"; } }];\n",
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    // No vite under this root: the warm import fails quietly, as it must.
+    let warm = PluginHost::prewarm(&root, None).expect("the engine starts ahead");
+    let host = PluginHost::spawn_prewarmed(&root, &plugins, &config, warm)
+        .await
+        .expect("the host adopts the engine");
+    let resolved = host
+        .resolve_id("virtual:x", "")
+        .await
+        .expect("a live host serves");
+    assert!(
+        resolved
+            .as_deref()
+            .is_some_and(|r| r.ends_with('x') || r.contains("x\"")),
+        "the plugin loaded on the prewarmed engine resolves: {resolved:?}"
+    );
+
+    let generation = host.revive.lock().unwrap().generation;
+    host.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    host.resolve_id("virtual:x", "")
+        .await
+        .expect("a revive boots a fresh engine and serves");
+    assert_eq!(host.revive.lock().unwrap().generation, generation + 1);
+    let _ = std::fs::remove_dir_all(&root);
+}
