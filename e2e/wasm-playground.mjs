@@ -81,7 +81,10 @@ server.stderr.on("data", (d) => {
   serverLog += d;
 });
 try {
-  await waitUp(`http://localhost:${PORT}/`, { proc: server });
+  // The www app is the heaviest boot in the suite (Start bundle + wasm) and
+  // CI runs it on a cold cache with a debug binary; give it headroom beyond
+  // waitUp's default.
+  await waitUp(`http://localhost:${PORT}/`, { proc: server, timeoutMs: 300_000 });
 } catch (e) {
   server.kill("SIGKILL");
   throw new Error(`dev server did not start (${e.message}):\n${serverLog}`);
