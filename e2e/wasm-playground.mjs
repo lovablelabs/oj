@@ -73,7 +73,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // wall-clock deadline; a dead server fails immediately instead of waiting
 // out the clock.
 let serverLog = "";
-const server = spawn(oj, ["dev", www, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+// The cold-cache dep pre-seed child has wedged on CI runners (engine
+// follow-up); its designed bound is OJ_PRESEED_TIMEOUT, after which the
+// in-host optimizer takes over. A tight bound here keeps boot inside the
+// waitUp budget while still exercising the fallback path when it happens.
+const server = spawn(oj, ["dev", www, "--port", String(PORT)], {
+  stdio: ["ignore", "pipe", "pipe"],
+  env: { ...process.env, OJ_PRESEED_TIMEOUT: "60" },
+});
 server.stdout.on("data", (d) => {
   serverLog += d;
 });
