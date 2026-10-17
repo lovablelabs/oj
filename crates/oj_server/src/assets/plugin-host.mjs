@@ -3687,9 +3687,9 @@ async function flattenPlugins(value) {
   return v ? [v] : [];
 }
 async function optimizeScan(inputJson) {
-  const { scan } = await import(new URL("./optimize-deps.mjs", import.meta.url).href);
+  const { scanPlan } = await import(new URL("./optimize-deps.mjs", import.meta.url).href);
   const ro = resolvedConfig?.optimizeDeps?.rolldownOptions;
-  const deps = await scan(JSON.parse(inputJson), {
+  const deps = await scanPlan(JSON.parse(inputJson), {
     plugins: await flattenPlugins(ro?.plugins),
     resolveId: (id, importer) => resolveIdFull(id, importer, { scan: true }),
   });
