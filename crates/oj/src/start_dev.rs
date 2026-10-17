@@ -97,9 +97,51 @@ struct StartState {
     /// the generic pipeline serves (a dev worker script fetched by URL) are
     /// in no other graph the reload decision consults.
     ssr: oj_server::SsrBridge,
+    /// Hot updates outrun the client output: a rebundle whose changes all
+    /// went out as patches writes no output (on a large app that is most of
+    /// the time between two saves), and the refresher brings it current once
+    /// edits pause. A document waits for it (`HotUpdates::stale`), so a
+    /// reload never loads the bundle from before an edit.
+    ///
+    /// Wakes the refresher; `urgent` skips its wait for edits to pause (a
+    /// document or a page's reload waits on it).
+    refresh_wake: tokio::sync::Notify,
+    urgent: std::sync::atomic::AtomicBool,
+    /// Refreshes started.
+    refreshes: std::sync::atomic::AtomicU64,
+    /// A page found no hot-update boundary: the refreshes started count it
+    /// saw. The first refresh started after that reloads the pages once its
+    /// output is current (Vite's reload-needed flush).
+    reload_wanted: std::sync::Mutex<Option<u64>>,
 }
 
 impl StartState {
+    fn page_needs_reload(&self) {
+        let mark = self.refreshes.load(std::sync::atomic::Ordering::SeqCst);
+        self.reload_wanted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert(mark);
+        self.refresh_now();
+    }
+
+    fn refresh_now(&self) {
+        self.urgent.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.refresh_wake.notify_one();
+    }
+
+    /// Waits until the client output covers every hot update (bounded: a
+    /// stuck refresh must not hold documents forever).
+    async fn client_output_fresh(&self) {
+        let mut stale = self.bundler.hot.stale();
+        if !*stale.borrow() {
+            return;
+        }
+        self.refresh_now();
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(60), stale.wait_for(|s| !*s)).await;
+    }
+
     /// Cloudflare worker environments serve the documents; the runner is only a
     /// fallback, kept cold and reloaded lazily (see `runner_dirty`) instead of
     /// eagerly on every edit. Live: a slow plugin host flips this after boot.
@@ -436,6 +478,9 @@ pub async fn start_dev(
     } else {
         None
     };
+    // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
+    // boot's engine at the next rebundle.
+    bundler.set_hot_enabled(built.hmr_gate.is_none());
     let state = Arc::new(StartState {
         script_env: Arc::clone(&script_vars),
         bundler,
@@ -471,6 +516,10 @@ pub async fn start_dev(
         // A failed boot bundle rebundles on every next batch until one succeeds.
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         ssr: built.ssr.clone(),
+        refresh_wake: tokio::sync::Notify::new(),
+        urgent: std::sync::atomic::AtomicBool::new(false),
+        refreshes: std::sync::atomic::AtomicU64::new(0),
+        reload_wanted: std::sync::Mutex::new(None),
     });
 
     // The activation handler: when the plugin middleware comes up after boot,
@@ -813,6 +862,44 @@ fn client_bundle_affected(
     created_in_glob_scope(&scopes, created)
 }
 
+/// A batch's paths the client bundle reads: those in the closure (as it
+/// spells them) and creates under a glob scan base. Everything, when there is
+/// no closure to consult. The bundler's engine rebuilds in full for one it
+/// does not know as a module.
+fn client_inputs(
+    state: &StartState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    let closure = state
+        .client_closure
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if closure.is_empty() || !state.bundle_ok.load(std::sync::atomic::Ordering::SeqCst) {
+        return paths.to_vec();
+    }
+    let scopes = state
+        .client_glob_scopes
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut inputs = Vec::new();
+    for p in paths {
+        if closure.contains(p) {
+            inputs.push(p.clone());
+        } else if let Some(real) = std::fs::canonicalize(p)
+            .ok()
+            .filter(|r| closure.contains(r))
+        {
+            inputs.push(real);
+        } else if created.contains(p)
+            && created_in_glob_scope(&scopes, &std::iter::once(p.clone()).collect())
+        {
+            inputs.push(p.clone());
+        }
+    }
+    inputs
+}
+
 /// The files the regen steps write, which the watcher deliberately never
 /// forwards: routeTree.gen events are filtered (`watch_relevant`) to stop
 /// generator-feedback rebuild loops, and the server-fn resolver lives in the
@@ -888,6 +975,11 @@ fn spawn_start_watcher(
     // module changes and never flip this.
     let watch_root = root.clone();
     let boot_entry = crate::start_host::app_start_entry(&watch_root);
+    rt.spawn(refresh_worker(
+        root.clone(),
+        cache.clone(),
+        Arc::clone(&state),
+    ));
     rt.spawn(rebundle_worker(
         root,
         cache,
@@ -1051,6 +1143,7 @@ async fn rebundle_worker(
         // either way: a server fn can live in a file the client never
         // imports, since gen-resolver scans all of src.
         let needs_bundle = client_bundle_affected(&state, &paths, &run.created);
+        let inputs = client_inputs(&state, &paths, &run.created);
         let no_invalidates_sent = run.invalidates.is_empty();
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
@@ -1058,6 +1151,7 @@ async fn rebundle_worker(
             let bundler = Arc::clone(&state.bundler);
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
+            let generation = state.bundler.hot.generation();
             // Every batch, bundled or not: a style edit the gate passes over
             // must still recompile at the next bundle.
             bundler.note_changes(&changed);
@@ -1105,15 +1199,16 @@ async fn rebundle_worker(
                         println!("  oj start: rebuilding for {shown}");
                     }
                 }
-                let pinned = if !bundling || bundler.bundle(&c, &env).is_err() {
-                    None
-                } else {
-                    match start_bundle_store(&r, &m).persist(&c) {
-                        Some((_, pinned)) => Some(pinned),
-                        None => oj_cache::start_bundle::PinnedBundle::from_build_dir(&c),
-                    }
+                let outcome = match bundling.then(|| bundler.bundle(&c, &env, &inputs, false)) {
+                    None => ClientRun::Skipped,
+                    Some(Ok(true)) => ClientRun::Hot,
+                    Some(Ok(false)) => match pinned_output(&r, &c, &m) {
+                        Some(pinned) => ClientRun::Fresh(pinned),
+                        None => ClientRun::Failed,
+                    },
+                    Some(Err(_)) => ClientRun::Failed,
                 };
-                (routes_now, server_fn_changed, bundling, pinned)
+                (routes_now, server_fn_changed, bundling, outcome, generation)
             })
         };
         let side = async {
@@ -1129,15 +1224,18 @@ async fn rebundle_worker(
         };
         let (client, worker_hit) = tokio::join!(client, side);
         let (mut bundled, mut server_fn_changed, mut bundle_failed) = (false, false, false);
-        if let Ok((routes_now, fn_changed, bundling, pinned)) = client {
+        let mut hot = false;
+        let mut fresh = false;
+        if let Ok((routes_now, fn_changed, bundling, outcome, generation)) = client {
             prev_routes = routes_now;
             server_fn_changed = fn_changed;
             bundled = bundling;
             if bundling {
+                let failed = matches!(outcome, ClientRun::Failed);
                 state
                     .bundle_ok
-                    .store(pinned.is_some(), std::sync::atomic::Ordering::SeqCst);
-                bundle_failed = pinned.is_none();
+                    .store(!failed, std::sync::atomic::Ordering::SeqCst);
+                bundle_failed = failed;
                 let frame = bundle_failed.then(|| {
                     client_error_frame(&cache).unwrap_or_else(|| {
                         serde_json::json!({
@@ -1154,20 +1252,17 @@ async fn rebundle_worker(
                     .build_error
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = frame;
-                if let Some(pinned) = pinned {
-                    let pinned = Arc::new(pinned);
-                    state.gzip.retain(|h| pinned.has_hash(h));
-                    *state.bundle.write().unwrap() = pinned;
-                    *state
-                        .client_closure
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        load_client_closure(&cache);
-                    *state
-                        .client_glob_scopes
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        load_client_glob_scopes(&cache);
+                match outcome {
+                    ClientRun::Fresh(pinned) => {
+                        install_bundle(&state, &cache, pinned);
+                        state.bundler.hot.served_output_of(generation);
+                        fresh = true;
+                    }
+                    ClientRun::Hot => {
+                        hot = true;
+                        state.refresh_wake.notify_one();
+                    }
+                    ClientRun::Skipped | ClientRun::Failed => {}
                 }
             }
         }
@@ -1222,6 +1317,14 @@ async fn rebundle_worker(
         } else {
             false
         };
+        // A page that asked for a reload gets it with any fresh output.
+        let forced = fresh
+            && state
+                .reload_wanted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .is_some();
         // Reload the browser only when something it can observe changed: the
         // bundle, a regen output, a worker-served module, an engine-served
         // one, or a module the generic pipeline served (a dev worker script).
@@ -1229,13 +1332,32 @@ async fn rebundle_worker(
         // tool) reloads nothing, as in Vite.
         // A failed bundle reloads nothing: the page keeps what it runs under
         // the overlay (Vite's bundled dev), and the fixed bundle reloads it.
-        let reload = !bundle_failed
-            && (bundled
-                || server_fn_changed
-                || !regen_changed.is_empty()
-                || worker_hit
-                || engine_hit
-                || paths.iter().any(|p| state.ssr.graph_knows_file(p)));
+        // A bundle whose changes all went out as hot updates reloads only
+        // for what the pages cannot take in place (a server-fn or route-set
+        // change). The server render of the same modules is fresh for the
+        // next document, as Vite leaves SSR to the next request once client
+        // HMR applied the edit.
+        let server_signals =
+            worker_hit || engine_hit || paths.iter().any(|p| state.ssr.graph_knows_file(p));
+        let reload = forced
+            || !bundle_failed
+                && (server_fn_changed
+                    || !regen_changed.is_empty()
+                    || !hot && (bundled || server_signals));
+        // Tailwind generates rules from the sources it scans: an update
+        // applied in place re-links the sheets instead of reloading. A sheet
+        // the update imported for the first time is linked in the pages.
+        let added = if hot {
+            hot_styles_added(&cache)
+        } else {
+            Vec::new()
+        };
+        if hot && !reload && (state.css_host.is_some() || !added.is_empty()) {
+            state
+                .bundler
+                .hot
+                .refresh_styles(state.css_host.is_some(), &added);
+        }
         // The hold was taken at the watcher event; by now the editor's flush
         // may have consumed it, in which case this run's reload goes out with
         // the fresh bundle instead of waiting for a flush that already came.
@@ -1252,7 +1374,9 @@ async fn rebundle_worker(
             Some(0),
             true,
         ));
-        if !reload {
+        if hot && !reload {
+            println!("  oj start: hot updated");
+        } else if !reload {
             println!("  oj start: change outside every served graph, no rebundle, no reload");
         } else if held {
             println!(
@@ -1264,6 +1388,96 @@ async fn rebundle_worker(
                 "  oj start: {}, reloading",
                 if bundled { "rebuilt" } else { "updated" }
             );
+        }
+    }
+}
+
+/// What a rebundle did with the client.
+enum ClientRun {
+    /// The batch missed the client's inputs.
+    Skipped,
+    Failed,
+    /// Every change went out as a hot update; the output is the refresher's.
+    Hot,
+    Fresh(oj_cache::start_bundle::PinnedBundle),
+}
+
+/// The output a successful bundle wrote, cached for the next boot.
+fn pinned_output(
+    root: &Path,
+    cache: &Path,
+    mode: &str,
+) -> Option<oj_cache::start_bundle::PinnedBundle> {
+    match start_bundle_store(root, mode).persist(cache) {
+        Some((_, pinned)) => Some(pinned),
+        None => oj_cache::start_bundle::PinnedBundle::from_build_dir(cache),
+    }
+}
+
+/// Serve a fresh client output, with the inputs it was built from.
+fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bundle::PinnedBundle) {
+    let pinned = Arc::new(pinned);
+    state.gzip.retain(|h| pinned.has_hash(h));
+    *state.bundle.write().unwrap() = pinned;
+    *state
+        .client_closure
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_closure(cache);
+    *state
+        .client_glob_scopes
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_glob_scopes(cache);
+}
+
+/// How long edits must pause before the refresher writes the client output:
+/// on a large app that takes about a second, and the engine queues the next
+/// edit's patch behind it, so it waits out a typing cadence. A document or a
+/// page's reload needs it at once and skips the wait.
+const REFRESH_PAUSE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Brings the client output current after hot updates, once edits pause or
+/// as soon as a document or a page's reload needs it.
+async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
+    use std::sync::atomic::Ordering::SeqCst;
+    loop {
+        state.refresh_wake.notified().await;
+        while !state.urgent.swap(false, SeqCst) {
+            let patches = state.bundler.hot.generation();
+            tokio::select! {
+                _ = tokio::time::sleep(REFRESH_PAUSE) => {}
+                _ = state.refresh_wake.notified() => continue,
+            }
+            if state.bundler.hot.generation() == patches {
+                break;
+            }
+        }
+        let generation = state.bundler.hot.generation();
+        let started = state.refreshes.fetch_add(1, SeqCst) + 1;
+        let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
+        let env = Arc::clone(&state.script_env);
+        let bundler = Arc::clone(&state.bundler);
+        let pinned = tokio::task::spawn_blocking(move || {
+            bundler.bundle(&c, &env, &[], true)?;
+            pinned_output(&r, &c, &m).ok_or_else(|| anyhow::anyhow!("no client chunk index"))
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|r| r);
+        match pinned {
+            Ok(pinned) => install_bundle(&state, &cache, pinned),
+            // The rebundle that fixes it reports the error to the pages;
+            // documents stop waiting either way.
+            Err(e) => println!("  oj start: client output refresh failed: {e}"),
+        }
+        state.bundler.hot.served_output_of(generation);
+        let wanted = state
+            .reload_wanted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take_if(|mark| *mark < started)
+            .is_some();
+        if wanted {
+            let _ = state.reload_tx.send(());
         }
     }
 }
@@ -1852,6 +2066,9 @@ fn run_script_process(
 /// Where bundle-client.mjs records a failed client bundle (Vite's
 /// prepareError shape); absent after a success.
 const CLIENT_ERROR_FILE: &str = "client-error.json";
+/// Where bundle-client.mjs records whether a rebundle's changes all reached
+/// the pages as hot updates.
+const CLIENT_HMR_FILE: &str = "client-hmr.json";
 
 /// The client bundle's recorded failure as the `{type:"error", err}` frame
 /// Vite's bundled dev sends its clients; None when no bundle failed.
@@ -1891,6 +2108,18 @@ pub(crate) struct ClientBundler {
     root: PathBuf,
     script: PathBuf,
     child: std::sync::Mutex<Option<BundlerChild>>,
+    /// The live child's stdin, for page events (`op`) sent while a bundle
+    /// holds `child`.
+    ops: std::sync::Mutex<Option<Arc<std::sync::Mutex<std::process::ChildStdin>>>>,
+    /// Pages that announced their runtime id, replayed to a respawned child.
+    clients: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// The bundler's hot updates on their way to the pages.
+    pub(crate) hot: Arc<crate::start_hot::HotUpdates>,
+    /// Whether pages may take hot updates (`OJ_START_HOT`): not while the
+    /// editor's HMR gate holds updates, where every edit reloads and a
+    /// bundler engine would only add cost. Known from the env knob at boot,
+    /// settled by the server's resolved gate once it is up.
+    hot_enabled: std::sync::atomic::AtomicBool,
     /// Bumped by every batch that touched a style input, and handed to each
     /// bundle (`OJ_START_STYLE_EPOCH`). The child's engine caches each
     /// `import("oj-style:...")` by its url for the session, so the epoch in
@@ -1901,7 +2130,7 @@ pub(crate) struct ClientBundler {
 
 struct BundlerChild {
     process: std::process::Child,
-    stdin: std::process::ChildStdin,
+    stdin: Arc<std::sync::Mutex<std::process::ChildStdin>>,
     replies: std::sync::mpsc::Receiver<String>,
 }
 
@@ -1911,8 +2140,17 @@ impl ClientBundler {
             root: root.to_path_buf(),
             script: cache.join("bundle-client.mjs"),
             child: std::sync::Mutex::new(None),
+            ops: std::sync::Mutex::new(None),
+            clients: std::sync::Mutex::new(std::collections::HashSet::new()),
+            hot: Arc::new(crate::start_hot::HotUpdates::new()),
+            hot_enabled: std::sync::atomic::AtomicBool::new(!oj_env::get().knobs.hmr_gate),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    pub(crate) fn set_hot_enabled(&self, enabled: bool) {
+        self.hot_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// A watch batch's changed paths: any style input moves the style epoch.
@@ -1921,6 +2159,43 @@ impl ClientBundler {
             self.style_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+    }
+
+    /// A page event for the bundler's engine; dropped when no child runs
+    /// (the next one replays the pages).
+    fn op(&self, msg: serde_json::Value) {
+        use std::io::Write;
+        let stdin = self
+            .ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(stdin) = stdin {
+            let mut stdin = stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = writeln!(stdin, "{msg}").and_then(|_| stdin.flush());
+        }
+    }
+
+    pub(crate) fn page_connected(&self, id: &str) {
+        self.clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_string());
+        self.op(serde_json::json!({ "op": "client", "id": id }));
+    }
+
+    pub(crate) fn page_gone(&self, id: &str) {
+        self.clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+        self.op(serde_json::json!({ "op": "gone", "id": id }));
+    }
+
+    pub(crate) fn patch_delivered(&self, filename: &str) {
+        self.op(serde_json::json!({ "op": "delivered", "filename": filename }));
     }
 
     fn spawn(&self) -> anyhow::Result<BundlerChild> {
@@ -1953,25 +2228,42 @@ impl ClientBundler {
             .map_err(|e| anyhow::anyhow!("could not run client entry bundling: {e}"))?;
         oj_server::register_child(process.id());
         oj_server::boot_phase(&format!("client bundler: child {} spawned", process.id()));
-        let stdin = process.stdin.take().expect("piped stdin");
+        let stdin = Arc::new(std::sync::Mutex::new(
+            process.stdin.take().expect("piped stdin"),
+        ));
         let stdout = process.stdout.take().expect("piped stdout");
         let (tx, replies) = std::sync::mpsc::channel();
-        // The script's own output passes through; reply lines answer bundle().
+        let hot = Arc::clone(&self.hot);
+        // The script's own output passes through; reply lines answer bundle(),
+        // event lines are its hot updates.
         std::thread::spawn(move || {
             use std::io::{BufRead, Write};
             for line in std::io::BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                match line.strip_prefix(crate::start_host::SCRIPT_REPLY) {
-                    Some(reply) => {
-                        let _ = tx.send(reply.to_string());
-                    }
-                    None => {
-                        let mut out = std::io::stdout().lock();
-                        let _ = writeln!(out, "{line}");
-                    }
+                if let Some(reply) = line.strip_prefix(crate::start_host::SCRIPT_REPLY) {
+                    let _ = tx.send(reply.to_string());
+                } else if let Some(event) = line.strip_prefix(crate::start_hot::SCRIPT_EVENT) {
+                    hot.accept(event);
+                } else {
+                    let mut out = std::io::stdout().lock();
+                    let _ = writeln!(out, "{line}");
                 }
             }
         });
+        *self
+            .ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&stdin));
+        let pages: Vec<String> = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        for id in pages {
+            self.op(serde_json::json!({ "op": "client", "id": id }));
+        }
         Ok(BundlerChild {
             process,
             stdin,
@@ -1979,15 +2271,44 @@ impl ClientBundler {
         })
     }
 
-    /// One client bundle on the session's bundler; Err when it failed (the
-    /// app's error, if any, is in client-error.json) or the child died.
-    fn bundle(&self, cache: &Path, script_env: &[(String, String)]) -> anyhow::Result<()> {
+    /// The env of one bundle run. Every run sets every key: the script's env
+    /// outlives the run.
+    fn run_env(
+        &self,
+        script_env: &[(String, String)],
+        changed: &[PathBuf],
+        refresh: bool,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let flag = |on: bool| if on { "1" } else { "0" }.to_string();
+        let mut env = script_env.to_vec();
+        env.push((
+            "OJ_START_STYLE_EPOCH".into(),
+            self.style_epoch.load(SeqCst).to_string(),
+        ));
+        env.push(("OJ_START_CHANGED".into(), serde_json::to_string(changed)?));
+        env.push(("OJ_START_REFRESH".into(), flag(refresh)));
+        env.push(("OJ_START_HOT".into(), flag(self.hot_enabled.load(SeqCst))));
+        Ok(env)
+    }
+
+    /// One client bundle on the session's bundler, given the batch's changed
+    /// paths. Ok(true) when every change already reached the pages as a hot
+    /// update (no reload needed); Err when it failed (the app's error, if
+    /// any, is in client-error.json) or the child died.
+    fn bundle(
+        &self,
+        cache: &Path,
+        script_env: &[(String, String)],
+        changed: &[PathBuf],
+        refresh: bool,
+    ) -> anyhow::Result<bool> {
         use std::io::Write;
         // Only this run's failure may read as an app build error: a stale
         // record would let a bundler that never started pass for one.
         let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
         let mut slot = self.child.lock().unwrap();
-        let mut child = match slot.take() {
+        let child = match slot.take() {
             Some(mut c) => match c.process.try_wait() {
                 Ok(None) => c,
                 _ => {
@@ -1997,32 +2318,57 @@ impl ClientBundler {
             },
             None => self.spawn()?,
         };
-        let epoch = self
-            .style_epoch
-            .load(std::sync::atomic::Ordering::SeqCst)
-            .to_string();
-        let mut env = script_env.to_vec();
-        env.push(("OJ_START_STYLE_EPOCH".into(), epoch));
+        let env = self.run_env(script_env, changed, refresh)?;
         let request = format!("{}\n", serde_json::to_string(&env)?);
-        let reply = child
-            .stdin
-            .write_all(request.as_bytes())
-            .and_then(|_| child.stdin.flush())
-            .ok()
-            .and_then(|_| child.replies.recv().ok());
+        let sent = {
+            let mut stdin = child
+                .stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            stdin
+                .write_all(request.as_bytes())
+                .and_then(|_| stdin.flush())
+                .is_ok()
+        };
+        let reply = sent.then(|| child.replies.recv().ok()).flatten();
         let Some(reply) = reply else {
             // Dead mid-bundle: reap it; the next bundle spawns a new one.
+            let mut child = child;
             let _ = child.process.kill();
             let _ = child.process.wait();
             oj_server::unregister_child(child.process.id());
+            *self
+                .ops
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             anyhow::bail!("client entry bundling failed: the bundler exited");
         };
         *slot = Some(child);
         match reply.strip_prefix("err") {
-            None => Ok(()),
+            None => Ok(hot_handled(cache)),
             Some(e) => anyhow::bail!("client entry bundling failed:{e}"),
         }
     }
+}
+
+/// The stylesheets the last bundle's hot updates imported for the first time
+/// (client-hmr.json `css`).
+fn hot_styles_added(cache: &Path) -> Vec<String> {
+    std::fs::read_to_string(cache.join(CLIENT_HMR_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| serde_json::from_value(v.get("css")?.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Whether the last bundle's changes all went out as hot updates
+/// (client-hmr.json, written by bundle-client.mjs).
+fn hot_handled(cache: &Path) -> bool {
+    std::fs::read_to_string(cache.join(CLIENT_HMR_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("handled").and_then(|h| h.as_bool()))
+        .unwrap_or(false)
 }
 
 fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartBundleStore {
@@ -2060,7 +2406,7 @@ fn bundle_client_entry_cached(
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
-    bundler.bundle(cache, script_env)?;
+    bundler.bundle(cache, script_env, &[], false)?;
     if let Some((key, pinned)) = store.persist(cache) {
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
@@ -2203,12 +2549,26 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
+                // Hot updates reach a page unless the HMR gate holds updates
+                // for the editor's flush: then each edit reloads, as before.
+                let hot = state.gate.is_none().then(|| {
+                    let weak = Arc::downgrade(&state);
+                    HotPage {
+                        bundler: Arc::clone(&state.bundler),
+                        frames: state.bundler.hot.subscribe(),
+                        reload_needed: Arc::new(move || {
+                            if let Some(state) = weak.upgrade() {
+                                state.page_needs_reload();
+                            }
+                        }),
+                    }
+                });
                 // Echo the `oj-hmr` subprotocol when a client offers it: the
                 // positive identity signal for readiness probes, exactly as
                 // Vite's `vite-hmr` echo is theirs. oj's own client offers no
                 // subprotocol and is untouched (no match, no header).
                 ws.protocols(["oj-hmr"])
-                    .on_upgrade(move |socket| start_hmr_socket(socket, rx, errors, replay))
+                    .on_upgrade(move |socket| start_hmr_socket(socket, rx, errors, replay, hot))
             }
             Err(e) => e.into_response(),
         };
@@ -2235,6 +2595,13 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if req.uri().path() == "/@oj-start/error-overlay.js" {
         let overlay = state.live_reload.with_file_name("error-overlay.js");
         return serve_js(&overlay, "error overlay").await;
+    }
+    if let Some(name) = req
+        .uri()
+        .path()
+        .strip_prefix(crate::start_hot::PATCH_PREFIX)
+    {
+        return state.bundler.hot.serve(name);
     }
     if let Some(rest) = req.uri().path().strip_prefix("/@oj-start/fs/") {
         return serve_fs_asset(&state, &format!("/{rest}")).await;
@@ -2269,18 +2636,36 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     }
 }
 
+/// A page's end of the hot updates: its patches arrive here, and what it
+/// says (its runtime id, a delivered patch, a reload it needs) goes to the
+/// bundler.
+struct HotPage {
+    bundler: Arc<ClientBundler>,
+    frames: broadcast::Receiver<Arc<crate::start_hot::Frame>>,
+    reload_needed: Arc<dyn Fn() + Send + Sync>,
+}
+
 async fn start_hmr_socket(
     mut socket: WebSocket,
     mut rx: broadcast::Receiver<()>,
     mut errors: broadcast::Receiver<String>,
     replay: Option<String>,
+    mut hot: Option<HotPage>,
 ) {
+    use crate::start_hot::PageMessage;
     if let Some(frame) = replay {
         if socket.send(Message::Text(frame.into())).await.is_err() {
             return;
         }
     }
+    let mut page: Option<String> = None;
     loop {
+        let frame = async {
+            match hot.as_mut() {
+                Some(h) => h.frames.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             error = errors.recv() => match error {
                 Ok(frame) => {
@@ -2305,15 +2690,44 @@ async fn start_hmr_socket(
                     }
                 }
             },
+            frame = frame => {
+                let text = match frame {
+                    Ok(f) if f.client.is_none() || f.client == page => f.text.clone(),
+                    Ok(_) => continue,
+                    // A missed patch leaves the page behind: reload it.
+                    Err(broadcast::error::RecvError::Lagged(_)) => "reload".to_string(),
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            },
             incoming = socket.recv() => match incoming {
                 None | Some(Err(_)) => break,
                 Some(Ok(Message::Close(_))) => {
                     let _ = socket.close().await;
                     break;
                 }
+                Some(Ok(Message::Text(text))) => {
+                    let Some(h) = hot.as_ref() else { continue };
+                    match crate::start_hot::page_message(&text) {
+                        Some(PageMessage::Client(id)) => {
+                            if let Some(old) = page.replace(id.clone()) {
+                                h.bundler.page_gone(&old);
+                            }
+                            h.bundler.page_connected(&id);
+                        }
+                        Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
+                        Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
+                        None => {}
+                    }
+                }
                 Some(Ok(_)) => {}
             },
         }
+    }
+    if let (Some(h), Some(id)) = (hot.as_ref(), page) {
+        h.bundler.page_gone(&id);
     }
 }
 
@@ -2330,6 +2744,8 @@ async fn forward_document(
     raw: String,
     headers: &header::HeaderMap,
 ) -> Response {
+    // A document loads the client output: never one from before a hot update.
+    state.client_output_fresh().await;
     // Editor plugins (dev-server bridge) register configureServer routes
     // with no path prefix, so a GET like /_sandbox/preview/viewers can only
     // be told from an app route by asking the middleware first; it returns
@@ -2948,6 +3364,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_hmr_gate_turns_the_bundlers_hot_updates_off() {
+        let bundler = ClientBundler::new(Path::new("/app"), Path::new("/app/.oj-cache"));
+        let hot = |bundler: &ClientBundler| {
+            let env = bundler
+                .run_env(&[], &[PathBuf::from("/app/src/a.tsx")], false)
+                .unwrap();
+            let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+            for key in [
+                "OJ_START_STYLE_EPOCH",
+                "OJ_START_CHANGED",
+                "OJ_START_REFRESH",
+            ] {
+                assert!(keys.contains(&key), "{key} missing from the run env");
+            }
+            env.into_iter()
+                .find(|(k, _)| k == "OJ_START_HOT")
+                .map(|(_, v)| v)
+        };
+        bundler.set_hot_enabled(true);
+        assert_eq!(hot(&bundler).as_deref(), Some("1"));
+        // A gated server: every edit reloads, so the script keeps build().
+        bundler.set_hot_enabled(false);
+        assert_eq!(hot(&bundler).as_deref(), Some("0"));
+    }
+
+    #[test]
     fn a_style_edit_moves_the_bundlers_style_epoch() {
         let bundler = ClientBundler::new(Path::new("/app"), Path::new("/app/.oj-cache"));
         let epoch = || {
@@ -3091,7 +3533,7 @@ mod tests {
                                 if let Some(gate) = gate {
                                     gate.notified().await;
                                 }
-                                start_hmr_socket(socket, rx, errors, replay).await;
+                                start_hmr_socket(socket, rx, errors, replay, None).await;
                             })
                         },
                     ),

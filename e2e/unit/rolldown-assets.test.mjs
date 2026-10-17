@@ -22,6 +22,8 @@ import {
   makeVitePlugins,
   appAliasPlugin,
   assetsPlugin,
+  unresolvedImportInPatch,
+  devWatchOptions,
 } from "../../crates/oj_server/src/assets/start/rolldown-assets.mjs";
 import { repo, testWithRolldown } from "./harness.mjs";
 
@@ -316,4 +318,49 @@ testWithRolldown(test)("asset imports load by their resolved id, whichever resol
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+testWithRolldown(test)("a hot patch's unresolved import is read from its module record, not its text", async () => {
+  const { parseSync } = await import(
+    join(repo, "e2e/fixtures/start-app/node_modules/rolldown/dist/experimental-index.mjs")
+  );
+  const importer = join(tmpdir(), "oj-no-such-dir", "widget.tsx");
+  const text = [
+    `__rolldown_runtime__.registerFactory("src/widget.tsx", () => {`,
+    `  const a = jsx("p", { children: "Data imported from 'Excel'" });`,
+    '  const b = `import { Button } from "@/components/ui/button"`;',
+    `  const c = "Click import 'now'";`,
+    "  const d = () => import(`./pages/${name}`);",
+    `});`,
+  ].join("\n");
+  assert.equal(unresolvedImportInPatch(text, importer, {}, parseSync), null);
+
+  for (const [code, spec] of [
+    [`import x from "left-pad";\n${text}`, "left-pad"],
+    [`export * from "ext-b";`, "ext-b"],
+    [`const m = () => import('ext-d');`, "ext-d"],
+  ]) {
+    const err = unresolvedImportInPatch(code, importer, {}, parseSync);
+    assert.ok(err, `missed ${spec}`);
+    assert.match(err.message, new RegExp(`resolve import "${spec}"`));
+  }
+  // The app's own externals and URLs are imports on purpose.
+  const config = { build: { rolldownOptions: { external: ["left-pad"] } } };
+  assert.equal(
+    unresolvedImportInPatch(`import x from "left-pad"; import("https://x.dev/m.js");`, importer, config, parseSync),
+    null,
+  );
+  // No parser, no scan: never a guess from the text.
+  assert.equal(unresolvedImportInPatch(`import x from "left-pad";`, importer, {}, undefined), null);
+});
+
+test("the dev engine watches with the app's server.watch, as Vite's bundled dev", () => {
+  assert.deepEqual(devWatchOptions({}), {});
+  assert.deepEqual(devWatchOptions({ server: { watch: null } }), { enabled: false });
+  const opts = devWatchOptions({ server: { watch: { usePolling: true, interval: 300, ignored: ["**/x/**"] } } });
+  assert.equal(opts.usePolling, true);
+  assert.equal(opts.pollInterval, 300);
+  assert.equal(devWatchOptions({ server: { watch: { pollInterval: 50, interval: 300 } } }).pollInterval, 50);
+  // chokidar-only keys stay with oj's own watcher.
+  assert.ok(!("ignored" in opts));
 });

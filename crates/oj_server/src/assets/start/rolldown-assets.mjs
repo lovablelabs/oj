@@ -341,19 +341,110 @@ function sourceFrame(loc) {
 // cannot load (a blank page). `?commonjs-external` ids stay exempt, as there.
 export function viteOnLog(level, log, defaultHandler) {
   if (log.code === "UNRESOLVED_IMPORT" && !log.id?.endsWith("?commonjs-external")) {
-    const err = new Error(
-      `[vite]: Rolldown failed to resolve import "${log.exporter}" from "${log.id}".\n` +
-        `This is most likely unintended because it can break your application at runtime.\n` +
-        `If you do want to externalize this module explicitly add it to\n` +
-        "`build.rolldownOptions.external`",
-    );
-    // The code frame from the source (rolldown's own frame says it is
-    // "treating it as an external dependency", which this error is not), and
-    // no stack: this throw site is oj's, not the app's.
-    Object.assign(err, { id: log.id, loc: log.loc, frame: sourceFrame(log.loc) ?? stripAnsi(log.message), stack: "" });
-    throw err;
+    throw unresolvedImportError(log.exporter, log.id, log.loc, stripAnsi(log.message));
   }
   defaultHandler(level, log);
+}
+
+function unresolvedImportError(spec, importer, loc, fallbackFrame) {
+  const err = new Error(
+    `[vite]: Rolldown failed to resolve import "${spec}" from "${importer}".\n` +
+      `This is most likely unintended because it can break your application at runtime.\n` +
+      `If you do want to externalize this module explicitly add it to\n` +
+      "`build.rolldownOptions.external`",
+  );
+  // The code frame from the source (rolldown's own frame says it is
+  // "treating it as an external dependency", which this error is not), and
+  // no stack: this throw site is oj's, not the app's.
+  return Object.assign(err, { id: importer, loc, frame: sourceFrame(loc) ?? fallbackFrame, stack: "" });
+}
+
+// The unresolved import viteOnLog fails a build on, found in a dev engine's
+// output instead: rolldown's DevEngine reports no logs, and keeps the import
+// as an external one. A client output imports nothing outside itself but
+// URLs and the app's own externals, so any other import is one, and the
+// module whose rendered code carries it is its importer.
+export function unresolvedImportIn(output, config) {
+  const files = new Set(output.map((o) => o.fileName));
+  const unresolved = unresolvedSpecifier(config, files);
+  for (const chunk of output) {
+    if (chunk.type !== "chunk") continue;
+    const spec = [...(chunk.imports ?? []), ...(chunk.dynamicImports ?? [])].find(unresolved);
+    if (spec === undefined) continue;
+    const quoted = [`"${spec}"`, `'${spec}'`];
+    const [importer] =
+      Object.entries(chunk.modules ?? {}).find(([, m]) => quoted.some((q) => m?.code?.includes(q))) ?? [];
+    return unresolvedImportAt(spec, importer ?? chunk.fileName);
+  }
+  return null;
+}
+
+// The same, in a hot patch: the engine renders an external import as a plain
+// `import`/`export from`/`import()` of its specifier (the modules it bundles
+// go through the runtime), so one in the patch is an import that never
+// resolved. Read from the parsed module record (`parseSync`, oxc's), never
+// the text: a string or JSX text that reads like an import is no import.
+export function unresolvedImportInPatch(code, importer, config, parseSync) {
+  if (typeof parseSync !== "function") return null;
+  let module;
+  try {
+    ({ module } = parseSync("patch.js", code, { lang: "js", sourceType: "module" }));
+  } catch {
+    return null;
+  }
+  const specs = [
+    ...(module?.staticImports ?? []).map((i) => i.moduleRequest?.value),
+    ...(module?.staticExports ?? []).flatMap((e) => e.entries.map((x) => x.moduleRequest?.value)),
+    // Only a string literal names a module; a computed import() is the app's.
+    ...(module?.dynamicImports ?? []).map(({ moduleRequest: r }) => {
+      const lit = code.slice(r.start, r.end);
+      return /^(["'])[^"'\\]*\1$/.test(lit) ? lit.slice(1, -1) : undefined;
+    }),
+  ];
+  const unresolved = unresolvedSpecifier(config, new Set());
+  const spec = specs.find((s) => s !== undefined && unresolved(s));
+  return spec === undefined ? null : unresolvedImportAt(spec, importer);
+}
+
+function unresolvedSpecifier(config, files) {
+  const { external } = clientExternal(config);
+  const declared = (spec) =>
+    typeof external === "function"
+      ? !!external(spec, undefined, false)
+      : [external ?? []].flat().some((e) => (e instanceof RegExp ? e.test(spec) : e === spec));
+  return (spec) => !files.has(spec) && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(spec) && !declared(spec);
+}
+
+function unresolvedImportAt(spec, importer) {
+  const file = importer.split("?")[0];
+  const quoted = [`"${spec}"`, `'${spec}'`];
+  let loc;
+  try {
+    const lines = readFileSync(file, "utf8").split(/\r?\n/);
+    const line = lines.findIndex((l) => quoted.some((q) => l.includes(q)));
+    if (line >= 0) loc = { file, line: line + 1, column: lines[line].indexOf(spec) - 1 };
+  } catch {}
+  return unresolvedImportError(spec, importer, loc, "");
+}
+
+// The dev engine's watcher options from the app's `server.watch`, as Vite's
+// bundled dev hands them over (watch.ts convertToDevWatchOptions): polling
+// apps (containers, network mounts) poll here too, and `null` turns
+// watching off.
+export function devWatchOptions(config) {
+  const watch = config?.server?.watch;
+  if (watch === null) return { enabled: false };
+  if (!watch) return {};
+  return {
+    usePolling: watch.usePolling,
+    pollInterval: watch.pollInterval ?? watch.interval,
+    useDebounce: watch.useDebounce,
+    debounceDuration: watch.debounceDuration,
+    debounceTickRate: watch.debounceTickRate,
+    compareContentsForPolling: watch.compareContentsForPolling,
+    include: watch.include,
+    exclude: watch.exclude,
+  };
 }
 
 // The app's own `external` for a client bundle, which Vite's

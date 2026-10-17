@@ -121,20 +121,74 @@
       .catch(() => {});
   }
 
+  // A Tailwind sheet scans the sources it styles, so an edit applied in place
+  // can need new rules: re-link each same-origin stylesheet (Vite's css-update
+  // swap: the old sheet stays until the new one loads, no unstyled flash).
+  function refreshStyles() {
+    for (const el of document.querySelectorAll('link[rel="stylesheet"]')) {
+      const url = new URL(el.href, location.href);
+      if (url.origin !== location.origin) continue;
+      url.searchParams.set("t", Date.now());
+      const next = el.cloneNode();
+      next.href = url.href;
+      const drop = () => el.remove();
+      next.addEventListener("load", drop);
+      next.addEventListener("error", drop);
+      el.after(next);
+    }
+  }
+
+  // Sheets an update imported for the first time (a CSS import is a link in
+  // Start dev, never a module that injects its own sheet).
+  function linkStyles(hrefs) {
+    const have = new Set(
+      [...document.querySelectorAll('link[rel="stylesheet"]')].map((el) => new URL(el.href, location.href).pathname),
+    );
+    for (const href of hrefs) {
+      if (have.has(new URL(href, location.href).pathname)) continue;
+      const el = document.createElement("link");
+      el.rel = "stylesheet";
+      el.href = href;
+      document.head.appendChild(el);
+    }
+  }
+
+  // The bundle's HMR runtime (hmr-runtime.js) and this script share the bus;
+  // either may run first, so whichever comes second makes the introduction.
+  const bus = (globalThis.__ojStartHmr ??= {});
   let ws;
+  const send = (msg) => {
+    if (!ws || ws.readyState !== 1) return false;
+    ws.send(JSON.stringify(msg));
+    return true;
+  };
+  bus.send = send;
+  bus.onRuntime = (runtime) => send({ type: "oj:client", id: runtime.clientId });
   const connect = () => {
     ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/@oj-start/hmr");
+    ws.onopen = () => {
+      if (bus.runtime) send({ type: "oj:client", id: bus.runtime.clientId });
+    };
     ws.onmessage = (ev) => {
-      // Vite's bundled dev error frame ({type:"error", err}): the client
-      // bundle failed, so the page keeps what it has and shows the overlay;
-      // the fixed rebundle's reload clears it.
       if (typeof ev.data === "string" && ev.data.startsWith("{")) {
         let msg = null;
         try {
           msg = JSON.parse(ev.data);
         } catch {}
+        // Vite's bundled dev error frame ({type:"error", err}): the client
+        // bundle failed, so the page keeps what it has and shows the overlay;
+        // the fixed rebundle's update or reload clears it.
         if (msg && msg.type === "error") {
           showError(msg.err);
+          return;
+        }
+        if (msg && msg.type === "oj:hmr" && bus.runtime && bus.runtime.ojApply) {
+          bus.runtime.ojApply(msg);
+          return;
+        }
+        if (msg && msg.type === "oj:css") {
+          if (msg.relink !== false) refreshStyles();
+          linkStyles(msg.add || []);
           return;
         }
       }

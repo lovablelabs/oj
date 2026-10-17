@@ -304,6 +304,8 @@ jobs:
         run: node e2e/start-error-overlay.mjs
       - name: start dev ssr renders route, module and css module edits
         run: node e2e/start-ssr-hmr.mjs
+      - name: start dev applies a component edit in place and reloads what no module accepts
+        run: node e2e/start-hot-update.mjs
       - name: start css modules scope the same class on server, client and stylesheet
         run: node e2e/start-css-modules.mjs
       - name: start css options (preprocessorOptions, cssMinify, css.lightningcss) reach dev and build
