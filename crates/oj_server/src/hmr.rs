@@ -782,6 +782,10 @@ pub(crate) async fn decide(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) -> Vec<String> {
+    // HMR on or off, a Tailwind sheet must not outlive a source it scanned.
+    if !paths.is_empty() {
+        state.tailwind_sheets.invalidate();
+    }
     if !state.hmr_enabled {
         return Vec::new();
     }

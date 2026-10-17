@@ -227,14 +227,87 @@ pub(crate) async fn run_svelte_engine(
     engine.compile(source, url).await
 }
 
+/// Tailwind sheets as last compiled, by url. Vite keeps a CSS module's
+/// transform in its module graph until a file it depends on changes; a
+/// Tailwind sheet depends on every source it scans, so any watched change
+/// moves the generation and the next request compiles again. Without it,
+/// every request compiled: the eager crawl and the page's own fetch on a
+/// cold load, and each reload after.
+#[derive(Default)]
+pub(crate) struct TailwindSheets {
+    generation: std::sync::atomic::AtomicU64,
+    sheets: Mutex<HashMap<String, Sheet>>,
+}
+
+struct Sheet {
+    source: u64,
+    generation: u64,
+    css: Arc<str>,
+}
+
+impl TailwindSheets {
+    /// A watched file changed.
+    pub(crate) fn invalidate(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn get(&self, url: &str, source: u64) -> Option<Arc<str>> {
+        let generation = self.generation();
+        let sheets = self.sheets.lock().unwrap();
+        let sheet = sheets.get(url)?;
+        (sheet.source == source && sheet.generation == generation).then(|| Arc::clone(&sheet.css))
+    }
+
+    /// `generation` is the one read before the compile started: a change
+    /// landing mid-compile leaves the sheet stale, never fresh.
+    fn put(&self, url: &str, source: u64, generation: u64, css: Arc<str>) {
+        self.sheets.lock().unwrap().insert(
+            url.to_string(),
+            Sheet {
+                source,
+                generation,
+                css,
+            },
+        );
+    }
+}
+
+fn source_digest(source: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut h);
+    h.finish()
+}
+
 pub(crate) async fn compile_tailwind(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let css = run_css_engine(state, url, source).await?;
     state.tailwind_urls.lock().unwrap().insert(url.to_string());
-    Ok(css)
+    let digest = source_digest(source);
+    let sheets = &state.tailwind_sheets;
+    if let Some(css) = sheets.get(url, digest) {
+        return Ok(css.to_string());
+    }
+    // One compile per sheet at a time: the crawl and the page ask together.
+    let lock = {
+        let mut locks = state.compile_locks.lock().unwrap();
+        Arc::clone(locks.entry(format!("tailwind:{url}")).or_default())
+    };
+    let _guard = lock.lock().await;
+    if let Some(css) = sheets.get(url, digest) {
+        return Ok(css.to_string());
+    }
+    let generation = sheets.generation();
+    let css: Arc<str> = run_css_engine(state, url, source).await?.into();
+    sheets.put(url, digest, generation, Arc::clone(&css));
+    Ok(css.to_string())
 }
 
 pub(crate) enum EngineKind {
@@ -264,4 +337,37 @@ pub(crate) async fn lazy_engine(
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tailwind_sheet_tests {
+    use super::*;
+
+    #[test]
+    fn a_sheet_serves_until_its_source_or_a_watched_file_changes() {
+        let sheets = TailwindSheets::default();
+        let src = source_digest("@tailwind utilities;");
+        assert!(sheets.get("/src/index.css", src).is_none());
+
+        let generation = sheets.generation();
+        sheets.put("/src/index.css", src, generation, "a{}".into());
+        assert_eq!(sheets.get("/src/index.css", src).as_deref(), Some("a{}"));
+        assert!(sheets.get("/src/other.css", src).is_none());
+        assert!(sheets
+            .get("/src/index.css", source_digest("@tailwind base;"))
+            .is_none());
+
+        sheets.invalidate();
+        assert!(sheets.get("/src/index.css", src).is_none());
+    }
+
+    #[test]
+    fn a_change_during_the_compile_leaves_its_sheet_stale() {
+        let sheets = TailwindSheets::default();
+        let src = source_digest("@tailwind utilities;");
+        let started = sheets.generation();
+        sheets.invalidate();
+        sheets.put("/src/index.css", src, started, "a{}".into());
+        assert!(sheets.get("/src/index.css", src).is_none());
+    }
 }
