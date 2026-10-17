@@ -913,9 +913,14 @@ async fn spawn_plugin_host(
     file: &PluginFile,
     payload: &str,
     registry: &oj_js::EngineRegistry,
+    prewarm: Option<plugins::HostPrewarm>,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
-    let host = match PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await {
+    let spawned = match prewarm {
+        Some(warm) => PluginHost::spawn_prewarmed(root, &file.path, payload, warm).await,
+        None => PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await,
+    };
+    let host = match spawned {
         Ok(host) => host,
         Err(e) => {
             eprintln!("oj: plugin host failed to start: {e}");
@@ -1451,6 +1456,24 @@ impl DevServer {
         // (OOM kill, supervisor escalation) left behind, then start our file.
         child_groups::init_registry(&oj_cache::cache_root(&root).join("children"));
         let dev_mode = self.dev_mode();
+        // BEFORE any engine boots: plugin-hook children register here (own process
+        // group each) so restarts and shutdown can kill whole plugin-spawned trees.
+        deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
+        // The engine's own signal path (deno_signals) exits the process itself on an
+        // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
+        // too or a supervisor restart strands every plugin child (workerd) on pid 1.
+        deno_process::oj_hook::set_shutdown_sweep(|| {
+            child_groups::kill_all();
+        });
+        let engine_registry = oj_js::EngineRegistry::new();
+        let plugin_file = plugin_file(&root, config_file.as_deref());
+        // The plugin host's engine boots and imports vite while the config is
+        // extracted, instead of after: neither needs the other until the host's
+        // payload, which the extracted values build.
+        let prewarm = plugin_file
+            .as_ref()
+            .filter(|f| f.format == PluginsFormat::Vite)
+            .and_then(|_| PluginHost::prewarm(&root, Some(engine_registry.clone())));
         let config = load_dev_config(&root, config_file.as_deref(), &dev_mode)?;
 
         let env_dir = config
@@ -1470,15 +1493,6 @@ impl DevServer {
         };
         let mut defines = client_defines.build(&[]);
 
-        // BEFORE any engine boots: plugin-hook children register here (own process
-        // group each) so restarts and shutdown can kill whole plugin-spawned trees.
-        deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
-        // The engine's own signal path (deno_signals) exits the process itself on an
-        // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
-        // too or a supervisor restart strands every plugin child (workerd) on pid 1.
-        deno_process::oj_hook::set_shutdown_sweep(|| {
-            child_groups::kill_all();
-        });
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
@@ -1498,7 +1512,6 @@ impl DevServer {
         // TanStack Start owns its module graph and SSR; oj runs the plugin host only
         // for configureServer middleware, in start mode so lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
-        let plugin_file = plugin_file(&root, config_file.as_deref());
         let payloads = plugin_host_payloads(
             &root,
             &config,
@@ -1519,10 +1532,9 @@ impl DevServer {
             preseed::preseed_server_deps(&root, HOST_ENV_MODE).await;
         }
         boot_phase("plugin host spawning");
-        let engine_registry = oj_js::EngineRegistry::new();
         let plugin_host = match &plugin_file {
             Some(file) => {
-                spawn_plugin_host(&root, file, &payloads.client, &engine_registry).await?
+                spawn_plugin_host(&root, file, &payloads.client, &engine_registry, prewarm).await?
             }
             None => None,
         };
@@ -1775,7 +1787,6 @@ impl DevServer {
         };
         let watch_feed = state.watch_feed.clone();
         let router = build_router(state, &server_cfg, &hmr.ws_path);
-
         Ok(BuiltApp {
             router,
             host,
