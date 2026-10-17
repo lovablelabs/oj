@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { settles, waitUp } from "./util.mjs";
+import { settles, sleep, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
@@ -36,17 +36,33 @@ const must = (cond, msg) => {
 
 const widget = path.join(app, "src", "widgets", "glob-widget.jsx");
 const format = path.join(app, "src", "lib", "format.ts");
+const sheet = path.join(app, "src", "widgets", "hot-sheet.css");
 const originals = new Map([widget, format].map((f) => [f, fs.readFileSync(f, "utf8")]));
 const restore = () => {
   for (const [f, src] of originals) fs.writeFileSync(f, src);
+  fs.rmSync(sheet, { force: true });
 };
 process.on("exit", restore);
 
 fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
 let log = "";
-const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+// Its own process group: the bundler and plugin host children go with it.
+const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
 srv.stdout.on("data", (d) => (log += d));
 srv.stderr.on("data", (d) => (log += d));
+const exited = new Promise((r) => srv.once("exit", r));
+const stop = async () => {
+  try {
+    process.kill(-srv.pid, "SIGTERM");
+  } catch {}
+  const kill = setTimeout(() => {
+    try {
+      process.kill(-srv.pid, "SIGKILL");
+    } catch {}
+  }, 3000);
+  await exited;
+  clearTimeout(kill);
+};
 
 const browser = await chromium.launch();
 let failed = false;
@@ -82,6 +98,38 @@ try {
     "a reload after a hot update loaded the old bundle",
   );
 
+  // A stylesheet the patched component imports for the first time: linked in
+  // place (no reload), and in the server render's head from then on.
+  await page.click('[data-testid="counter"]');
+  await page.waitForSelector('[data-testid="counter"]:has-text("count: 1")');
+  await page.evaluate(() => (window.__hotProbe = "kept"));
+  fs.writeFileSync(sheet, ".hot-sheet { color: rgb(1, 2, 3); }\n");
+  fs.writeFileSync(
+    widget,
+    'import "./hot-sheet.css";\n' +
+      originals
+        .get(widget)
+        .replace('"jsxglob:"', '"jsxsheet:"')
+        .replace("return <span>", 'return <span className="hot-sheet">'),
+  );
+  await page.waitForSelector('[data-testid="glob-jsx"]:has-text("jsxsheet:")', { timeout: 30000 });
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector(".hot-sheet");
+      return el && getComputedStyle(el).color === "rgb(1, 2, 3)";
+    },
+    null,
+    { timeout: 30000 },
+  );
+  must((await page.evaluate(() => window.__hotProbe)) === "kept", "a new stylesheet import reloaded the page");
+  must((await page.textContent('[data-testid="counter"]')) === "count: 1", "a new stylesheet import reset state");
+  const head = await (await fetch(`http://localhost:${PORT}/`)).text();
+  must(head.includes("hot-sheet.css"), "the server render does not link the new stylesheet");
+  // The client output catches up once edits pause and rewrites the manifest
+  // the bundle imports: that update applies in place too.
+  await sleep(5000);
+  must((await page.evaluate(() => window.__hotProbe)) === "kept", "the manifest rewrite reloaded the page");
+
   // An edit no module accepts (a plain function the route imports): the page
   // reloads into the fresh bundle.
   await page.evaluate(() => (window.__hotProbe = "kept"));
@@ -95,14 +143,16 @@ try {
     "the reload after an unaccepted edit missed the edit",
   );
   must(errors.length === 0, `page errors: ${errors.join(" | ")}`);
-  console.log("start hot update: component patched in place (state kept), reload fresh, unaccepted edit reloads");
+  console.log(
+    "start hot update: component patched in place (state kept), reload fresh, new stylesheet linked in place, unaccepted edit reloads",
+  );
 } catch (e) {
   failed = true;
   console.error(e);
   console.error(log.split("\n").slice(-40).join("\n"));
 } finally {
   await browser.close();
-  srv.kill("SIGKILL");
+  await stop();
   restore();
 }
 process.exit(failed ? 1 : 0);

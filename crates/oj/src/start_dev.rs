@@ -1345,9 +1345,18 @@ async fn rebundle_worker(
                     || !regen_changed.is_empty()
                     || !hot && (bundled || server_signals));
         // Tailwind generates rules from the sources it scans: an update
-        // applied in place re-links the sheets instead of reloading.
-        if hot && !reload && state.css_host.is_some() {
-            state.bundler.hot.refresh_styles();
+        // applied in place re-links the sheets instead of reloading. A sheet
+        // the update imported for the first time is linked in the pages.
+        let added = if hot {
+            hot_styles_added(&cache)
+        } else {
+            Vec::new()
+        };
+        if hot && !reload && (state.css_host.is_some() || !added.is_empty()) {
+            state
+                .bundler
+                .hot
+                .refresh_styles(state.css_host.is_some(), &added);
         }
         // The hold was taken at the watcher event; by now the editor's flush
         // may have consumed it, in which case this run's reload goes out with
@@ -2340,6 +2349,16 @@ impl ClientBundler {
             Some(e) => anyhow::bail!("client entry bundling failed:{e}"),
         }
     }
+}
+
+/// The stylesheets the last bundle's hot updates imported for the first time
+/// (client-hmr.json `css`).
+fn hot_styles_added(cache: &Path) -> Vec<String> {
+    std::fs::read_to_string(cache.join(CLIENT_HMR_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| serde_json::from_value(v.get("css")?.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// Whether the last bundle's changes all went out as hot updates

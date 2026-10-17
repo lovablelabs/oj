@@ -71,13 +71,13 @@ impl HotUpdates {
         self.tx.subscribe()
     }
 
-    /// Re-link every page's stylesheets (a Tailwind sheet's rules follow the
-    /// sources an update changed in place).
-    pub(crate) fn refresh_styles(&self) {
-        let _ = self.tx.send(Arc::new(Frame {
-            client: None,
-            text: r#"{"type":"oj:css"}"#.into(),
-        }));
+    /// Every page's stylesheets after an update applied in place: `relink`
+    /// re-links the ones it has (a Tailwind sheet's rules follow the sources
+    /// the update changed), `add` links the ones it newly imported.
+    pub(crate) fn refresh_styles(&self, relink: bool, add: &[String]) {
+        let text =
+            serde_json::json!({ "type": "oj:css", "relink": relink, "add": add }).to_string();
+        let _ = self.tx.send(Arc::new(Frame { client: None, text }));
     }
 
     /// One event line from the bundler, past its SCRIPT_EVENT prefix.
@@ -232,6 +232,19 @@ mod tests {
         hot.accept("not json");
         hot.accept(&patch_line("c1", "../escape.js", 1));
         assert_eq!(hot.serve("../escape.js").status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_style_refresh_tells_every_page_what_to_relink_and_link() {
+        let hot = HotUpdates::new();
+        let mut rx = hot.subscribe();
+        hot.refresh_styles(false, &["/@oj-start/fs/app/src/new.css".to_string()]);
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.client, None);
+        let v: serde_json::Value = serde_json::from_str(&frame.text).unwrap();
+        assert_eq!(v["type"], "oj:css");
+        assert_eq!(v["relink"], false);
+        assert_eq!(v["add"][0], "/@oj-start/fs/app/src/new.css");
     }
 
     #[test]

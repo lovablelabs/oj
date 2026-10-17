@@ -248,6 +248,24 @@ async function settle(live, changed) {
   );
 }
 
+// The stylesheets a hot update imported for the first time: the server
+// render links them from now on (manifest-dev.ts reads css-urls.json per
+// request), and the dev server links them in the open pages. Under Vite a
+// CSS import is a module that injects its own sheet; here it is a link.
+function linkNewStyles(dir, cssUrls) {
+  const file = join(dir, "css-urls.json");
+  let linked = [];
+  try {
+    linked = JSON.parse(readFileSync(file, "utf8"));
+  } catch {}
+  const added = cssUrls.filter((href) => !linked.includes(href));
+  if (added.length) {
+    writeFileSync(file + ".tmp", JSON.stringify(cssUrls));
+    renameSync(file + ".tmp", file);
+  }
+  return added;
+}
+
 async function main() {
   const HERE = dirname(fileURLToPath(import.meta.url));
   const APP = process.env.OJ_APP_ROOT ?? process.cwd();
@@ -491,12 +509,17 @@ async function main() {
   // A style input moved: CSS modules and preprocessor sheets load under the
   // epoch, which the running engine's cached modules predate, and a partial
   // is no module of its graph at all. A fresh engine compiles them anew (a
-  // reload follows, as before).
-  if (live && (!hot || live.epoch !== epoch)) {
+  // reload follows, as before). An engine that compiled no sheet (plain CSS
+  // is linked, never compiled) has nothing the epoch could change: it keeps
+  // running, so a new plain stylesheet goes out with the update importing it.
+  if (live && (!hot || (live.epoch !== epoch && live.state.compiledSheets))) {
     await live.engine.close().catch(() => {});
     live = null;
   }
-  const state = live?.state ?? { cssUrls, globScopes, visitedIds };
+  if (live) live.epoch = epoch;
+  const state = live?.state ?? { cssUrls, globScopes, visitedIds, compiledSheets: false };
+  // A sheet compiled from now on compiles under the current epoch.
+  state.epoch = epoch;
   let result;
   let hmrHandled = false;
   try {
@@ -508,7 +531,7 @@ async function main() {
       // server's refresh once edits pause, off the next edit's path.
       if (hmrHandled) {
         rmSync(errorFile, { force: true });
-        writeFileSync(hmrFile, JSON.stringify({ handled: true }));
+        writeFileSync(hmrFile, JSON.stringify({ handled: true, css: linkNewStyles(HERE, state.cssUrls) }));
         return;
       }
       result = { output: await latestOutput(live) };
@@ -555,7 +578,12 @@ async function main() {
             root: APP,
             // Read per load: an engine outlives the rebundle that created it.
             styleKey: {
-              css: { epoch },
+              // Read only for a sheet oj compiles (a CSS module or a
+              // preprocessor file).
+              get css() {
+                state.compiledSheets = true;
+                return { epoch: state.epoch };
+              },
               get inline() {
                 return { bundle: String(bundles) };
               },
@@ -650,8 +678,12 @@ async function main() {
     },
   };
   // Only a changed manifest is written: the client bundle imports this file,
-  // so the engine's watcher takes every write as an edit.
-  const manifest = `export const tsrStartManifest = () => (${JSON.stringify(devManifest)});\n`;
+  // so the engine's watcher takes every write as an edit. Under the engine it
+  // accepts its own update: the pages read it once, at hydration, and a
+  // sheet it adds reached them already (linkNewStyles).
+  const manifest =
+    `export const tsrStartManifest = () => (${JSON.stringify(devManifest)});\n` +
+    (live ? "if (import.meta.hot) import.meta.hot.accept();\n" : "");
   if (!existsSync(join(HERE, "manifest.ts")) || readFileSync(join(HERE, "manifest.ts"), "utf8") !== manifest) {
     writeFileSync(join(HERE, "manifest.ts"), manifest);
   }

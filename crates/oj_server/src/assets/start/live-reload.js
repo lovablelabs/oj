@@ -138,6 +138,21 @@
     }
   }
 
+  // Sheets an update imported for the first time (a CSS import is a link in
+  // Start dev, never a module that injects its own sheet).
+  function linkStyles(hrefs) {
+    const have = new Set(
+      [...document.querySelectorAll('link[rel="stylesheet"]')].map((el) => new URL(el.href, location.href).pathname),
+    );
+    for (const href of hrefs) {
+      if (have.has(new URL(href, location.href).pathname)) continue;
+      const el = document.createElement("link");
+      el.rel = "stylesheet";
+      el.href = href;
+      document.head.appendChild(el);
+    }
+  }
+
   // The bundle's HMR runtime (hmr-runtime.js) and this script share the bus;
   // either may run first, so whichever comes second makes the introduction.
   const bus = (globalThis.__ojStartHmr ??= {});
@@ -172,7 +187,8 @@
           return;
         }
         if (msg && msg.type === "oj:css") {
-          refreshStyles();
+          if (msg.relink !== false) refreshStyles();
+          linkStyles(msg.add || []);
           return;
         }
       }
