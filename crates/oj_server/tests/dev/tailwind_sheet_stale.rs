@@ -113,9 +113,10 @@ async fn outside_root_source_refreshes_the_sheet(postcss: bool) {
     assert!(first.contains(".underline"), "seeded sheet: {first}");
     assert!(!first.contains(".italic"), "seeded sheet has no italic");
 
-    // A watch added on the fly starts delivering a moment later (FSEvents
-    // restarts its stream): rewrite until an event lands, never a fixed sleep.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    // A watch added on the fly starts delivering a moment later: rewrite until
+    // an event lands, never a fixed sleep. On macOS FSEvents restarts its
+    // stream, which under the whole suite's churn has taken close to a minute.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     for n in 0.. {
         let class = format!("underline italic p-{n}");
         std::fs::write(ui.join("src/Button.tsx"), component(&class)).unwrap();

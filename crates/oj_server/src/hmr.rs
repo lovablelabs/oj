@@ -1141,11 +1141,24 @@ fn decide_file(
             Some(path),
         ));
     }
-    if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
+    let url = url_of(&state.root, path);
+    // Any other file updates only as a stylesheet's dep: a PostCSS plugin's
+    // `dependency` sits in Vite's graph whatever its extension.
+    let css_dep = || {
+        state
+            .graph
+            .lock()
+            .unwrap()
+            .node(Path::new(&url))
+            .is_some_and(|n| {
+                n.importers
+                    .iter()
+                    .any(|p| is_style_url(&p.to_string_lossy()))
+            })
+    };
+    if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json" || css_dep()) {
         return Flow::Done;
     }
-
-    let url = url_of(&state.root, path);
     if !state.graph.lock().unwrap().contains(Path::new(&url)) {
         return Flow::Done;
     }

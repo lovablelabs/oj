@@ -329,26 +329,26 @@ async fn watch_css_deps(state: &Arc<ServerState>, deps: CssDeps) {
 }
 
 /// The dep files outside `root`, one per directory (the watcher watches
-/// directories). A `dir-dependency` expands as Vite's globSync does: files
-/// under `dir` matching `glob`, no node_modules, no dotfiles; the root's own
-/// subtree is skipped, already watched.
+/// directories); the root watch covers the rest.
 fn outside_root_deps(root: &Path, deps: CssDeps) -> Vec<PathBuf> {
-    let outside =
-        |p: &Path| !p.starts_with(root) && !p.components().any(|c| c.as_os_str() == "node_modules");
     let mut dirs = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    let mut keep = |file: PathBuf| {
-        if file.parent().is_some_and(|d| dirs.insert(d.to_path_buf())) {
-            out.push(file);
-        }
-    };
-    for file in deps.files {
-        if outside(&file) {
-            keep(file);
-        }
-    }
+    css_dep_files(deps, Some(root))
+        .into_iter()
+        .filter(|p| {
+            !p.starts_with(root) && !p.components().any(|c| c.as_os_str() == "node_modules")
+        })
+        .filter(|p| p.parent().is_some_and(|d| dirs.insert(d.to_path_buf())))
+        .collect()
+}
+
+/// A compile's deps as files, as Vite's compileCSS collects them: a
+/// `dir-dependency` expands as its globSync does, files under `dir` matching
+/// `glob` with no node_modules and no dotfiles. `prune` is a subtree left
+/// out (already watched).
+pub(crate) fn css_dep_files(deps: CssDeps, prune: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = deps.files;
     for (dir, glob) in deps.dirs {
-        if dir.starts_with(root) {
+        if prune.is_some_and(|p| dir.starts_with(p)) {
             continue;
         }
         let Ok(matcher) = globset::GlobBuilder::new(&glob)
@@ -369,7 +369,7 @@ fn outside_root_deps(root: &Path, deps: CssDeps) -> Vec<PathBuf> {
                     continue;
                 }
                 let path = entry.path();
-                if path == root {
+                if prune.is_some_and(|p| path == p) {
                     continue;
                 }
                 if entry.file_type().is_ok_and(|t| t.is_dir()) {
@@ -378,7 +378,7 @@ fn outside_root_deps(root: &Path, deps: CssDeps) -> Vec<PathBuf> {
                     .strip_prefix(&dir)
                     .is_ok_and(|rel| matcher.is_match(rel))
                 {
-                    keep(path);
+                    out.push(path);
                 }
             }
         }
