@@ -5,6 +5,28 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.37] - 2026-10-18
+
+### Added
+
+- TanStack Start dev applies an edit in place, as Vite's bundled dev does. The client bundler keeps a rolldown dev engine running, a save becomes a patch for each open page, React Fast Refresh swaps the component, and the page keeps its state. An edit no module accepts still reloads the page, and the next document always loads a bundle that carries the edit. Save to paint on the Start fixture went from about 450ms to under 50ms. Under the editor HMR gate every edit still reloads, as before.
+
+### Changed
+
+- The Start hot update client follows Vite's on failures and events. An update that throws is logged and the page keeps running instead of reloading. `vite:beforeUpdate` fires before the patch is imported. The first update after the page opened on a failed build (the error overlay is up) reloads, and later updates close the overlay. `import.meta.hot.invalidate` notifies `vite:invalidate`, and `import.meta.hot.send` reaches a plugin's `server.ws.on`, whose `server.ws.send` reaches the page's `import.meta.hot.on`.
+- A Tailwind sheet compiles once until a file it depends on changes, as Vite keeps a CSS module's transform in its module graph. It used to compile on every request, twice on a cold load. On a Tailwind v3 app with about 5,000 sources, a cold load went from 1,602ms to 1,090ms and a reload from 219ms to 113ms.
+- A cold `oj dev` boots the plugin host's engine and imports vite while the vite config's values are still being extracted, instead of after. Cold boot to the first response is about 18% faster on a shadcn app.
+- On a cold deps cache, source compiles start once the dependency scan finishes, not the whole pre-bundle, as Vite's transforms wait only for its scan. Requests for the optimized deps still wait for the bundle, and a bundle that disagrees with the scan's plan reloads the page.
+- A function vite config gets Vite's full config env (`{ mode, command, isSsrBuild, isPreview }`) in every evaluation: the config extraction, the plugin host and the Start plugin bridge each passed a shorter object.
+- `server.hmr: false` no longer restarts the dev server on a config or `.env` change, as in Vite. The change still reaches plugins' `watchChange`.
+
+### Fixed
+
+- `@tanstack/devtools-vite` plugins run in TanStack Start dev, so its source tags (`data-tsd-source`) reach both the server render and the client bundle. The Start plugin bridge called `apply` without the config's `mode`, and every `@tanstack/` plugin name was treated as one oj reimplements. The Start client bundle also honors `--config` now.
+- A plugin's `configureServer` runs once per dev server, as in Vite. oj's client and SSR plugin hosts both ran it, so a plugin's server side effects (an event bus, a custom dev environment) started twice.
+- Tailwind v4 compiled by oj (no PostCSS config) honors `@source`, and a stylesheet's dependencies outside the root (an `@source` or `@import` into a sibling package, a file a PostCSS plugin reports) are watched, so editing them refreshes the sheet.
+- A file change invalidates the modules that depend on it whether or not HMR runs, as Vite's watcher does, so with `server.hmr: false` or under the editor gate an `@import`ed sheet's edit reaches its importer.
+
 ## [0.2.36] - 2026-10-16
 
 ### Fixed
