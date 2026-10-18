@@ -15,6 +15,9 @@ pub const DISCOVERED_DEPS_JS: &str = include_str!("../assets/discovered-deps.mjs
 pub const VITE_CONFIG_NODE_JS: &str = include_str!("../assets/vite-config-node.mjs");
 /// Sibling module (`./vite-html.mjs`) of the plugin host: Vite's dev HTML transform.
 pub const VITE_HTML_JS: &str = include_str!("../assets/vite-html.mjs");
+/// Sibling module (`./plugin-host-boot.mjs`) of the plugin host: what its
+/// engine runs before the host module is imported.
+pub const PLUGIN_HOST_BOOT_JS: &str = include_str!("../assets/plugin-host-boot.mjs");
 
 /// Idempotent, atomic materialization of an embedded asset into `dir`. The
 /// tmp name is unique per call: the plugin host and the config extractor

@@ -80,7 +80,6 @@ pub fn dev_listener_bound(port: u16, interface: &str) {
     });
 }
 
-/// See [`PluginHost::boot`].
 /// An engine started ahead of its host (see [`PluginHost::prewarm`]).
 pub struct HostPrewarm {
     engine: std::sync::Arc<oj_js::JsEngine>,
@@ -117,8 +116,19 @@ fn new_host_engine(
     .map_err(|e| format!("cannot start the embedded plugin host: {e}"))
 }
 
+/// Writes the boot module the host's engine calls before the host module.
+fn ensure_boot_module(root: &Path) -> Result<String, String> {
+    let dir = oj_cache::cache_root(root);
+    ensure_asset(&dir, "plugin-host-boot.mjs", PLUGIN_HOST_BOOT_JS).map_err(|e| e.to_string())?;
+    Ok(dir
+        .join("plugin-host-boot.mjs")
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// See [`PluginHost::boot`].
 pub(crate) struct BootContext {
-    boot_seed: String,
+    boot_seed: serde_json::Value,
     root: PathBuf,
     stall_wait: std::time::Duration,
     /// Heap cap every generation is spawned with (see `plugin_host_memory_mb`).
@@ -500,6 +510,7 @@ impl PluginHost {
     /// extraction instead of after it. The engine is configured exactly as
     /// [`PluginHost::spawn`] would; its first generation adopts it.
     pub fn prewarm(root: &Path, registry: Option<oj_js::EngineRegistry>) -> Option<HostPrewarm> {
+        let boot_module = ensure_boot_module(root).ok()?;
         let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
         let import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>> =
             Arc::default();
@@ -512,17 +523,12 @@ impl PluginHost {
         )
         .ok()?;
         let engine = std::sync::Arc::new(engine);
-        // The specifier the host's loadViteConfig imports, so the module it
-        // finds is this one, already evaluated. A failure is the host's to
-        // report when it imports for real.
-        let source = format!(
-            "import {{ createRequire }} from \"node:module\";\n\
-             try {{ await import(createRequire({}).resolve(\"vite\")); }} catch {{}}\n",
-            serde_json::to_string(&root.join("package.json").to_string_lossy()).unwrap_or_default()
-        );
+        let anchor = serde_json::json!(root.join("package.json"));
         let warming = std::sync::Arc::clone(&engine);
         tokio::spawn(async move {
-            let _ = warming.eval(oj_js::EvalInput::Source(source), None).await;
+            let _ = warming
+                .call(boot_module, "warmVite", vec![anchor], None)
+                .await;
         });
         Some(HostPrewarm {
             engine,
@@ -578,7 +584,7 @@ impl PluginHost {
             probe_wait,
             init_progress: Mutex::new(std::time::Instant::now()),
             boot: BootContext {
-                boot_seed: boot_seed.to_string(),
+                boot_seed,
                 root: root.to_path_buf(),
                 stall_wait,
                 memory_limit_bytes: timeouts
@@ -708,10 +714,17 @@ impl PluginHost {
         generation: u64,
     ) {
         let host = std::sync::Arc::clone(host);
-        let prelude = format!("globalThis.__ojPluginHost = {};", host.boot.boot_seed);
+        let seed = host.boot.boot_seed.clone();
         let host_module = host.host_module.clone();
         tokio::spawn(async move {
-            if let Err(e) = engine.eval(oj_js::EvalInput::Source(prelude), None).await {
+            let seeded = match ensure_boot_module(&host.boot.root) {
+                Ok(boot_module) => engine
+                    .call(boot_module, "seed", vec![seed], None)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = seeded {
                 host.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
                 return;
             }

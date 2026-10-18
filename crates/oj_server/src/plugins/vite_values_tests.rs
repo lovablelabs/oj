@@ -1644,3 +1644,73 @@ async fn a_prewarmed_engine_hosts_the_plugins_and_revives_normally() {
     assert_eq!(host.revive.lock().unwrap().generation, generation + 1);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// The app's vite, warmed ahead of the host, is the module the host's
+// loadViteConfig gets (evaluated once), and a timer it leaves running at
+// import does not hold the host's boot: nothing on the host's engine waits
+// for its event loop to go idle.
+#[tokio::test]
+async fn a_prewarmed_vite_is_shared_and_its_timers_never_hold_the_boot() {
+    let root = std::env::temp_dir().join(format!("oj-prewarm-vite-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let vite = root.join("node_modules/vite");
+    std::fs::create_dir_all(&vite).unwrap();
+    std::fs::write(
+        vite.join("package.json"),
+        r#"{"name":"vite","version":"8.0.0","type":"module","exports":{".":"./index.js"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        vite.join("index.js"),
+        r#"import { appendFileSync } from "node:fs";
+appendFileSync(new URL("./evals.log", import.meta.url), "x");
+setInterval(() => {}, 1000);
+export async function loadConfigFromFile() {
+  return { config: { plugins: [{ name: "t", resolveId(id) { if (id === "virtual:x") return "\0x"; } }] } };
+}
+"#,
+    )
+    .unwrap();
+    let plugins = root.join("vite.config.mjs");
+    std::fs::write(&plugins, "export default {};\n").unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+        "pluginsFormat": "vite",
+    })
+    .to_string();
+    let evals = vite.join("evals.log");
+
+    let warm = PluginHost::prewarm(&root, None).expect("the engine starts ahead");
+    // The dev server adopts the engine after the config extraction, by when
+    // the warm import has run and its interval is live.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !evals.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the warm import never ran"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let host = PluginHost::spawn_prewarmed(&root, &plugins, &config, warm)
+        .await
+        .expect("the host adopts the engine");
+    let resolved = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        host.resolve_id("virtual:x", ""),
+    )
+    .await
+    .expect("the host boots while vite's interval runs")
+    .expect("a live host serves");
+    assert!(
+        resolved.as_deref().is_some_and(|r| r.ends_with('x')),
+        "the plugin from the warmed vite resolves: {resolved:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&evals).unwrap(),
+        "x",
+        "vite evaluates once"
+    );
+    host.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
