@@ -194,3 +194,96 @@ async fn a_restart_belongs_to_its_own_apps_server() {
         "the restart was not left for its own app: {restarts:?}"
     );
 }
+
+/// Watching a directory outside the root (an `@import`ed sheet's) never drops
+/// a change under the root. Vite's chokidar opens an FSEvents stream per
+/// watched path, leaving the running ones alone; restarting the one stream
+/// to add a path lost whatever landed meanwhile. Each write here is a new
+/// file, so no two coalesce into one event.
+#[tokio::test(flavor = "multi_thread")]
+async fn adding_an_outside_watch_drops_no_root_change() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"outside-watch","version":"1.0.0"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+    ]);
+    let name = format!("{}-theme", app.root.file_name().unwrap().to_string_lossy());
+    let outside = app.root.with_file_name(&name);
+    std::fs::create_dir_all(&outside).unwrap();
+    let theme = outside.join("theme.css");
+    std::fs::write(&theme, ".seed { margin: 0 }\n").unwrap();
+    app.write(&[(
+        "src/app.css",
+        &format!("@import \"../../{name}/theme.css\";\n"),
+    )]);
+    let server = app.serve().await;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let feed = server.built.watch_feed.subscribe();
+    let collector = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        while let Ok(ev) = feed.recv() {
+            collector.lock().unwrap().extend(ev.paths);
+        }
+    });
+
+    // Keep creating root files from before the outside watch is asked for
+    // until a while after it delivers.
+    let (root, theme_w, seen_w) = (
+        app.root.clone(),
+        theme.clone(),
+        std::sync::Arc::clone(&seen),
+    );
+    let writer = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        let (mut written, mut after_live) = (Vec::new(), None);
+        for i in 0.. {
+            let file = root.join(format!("src/t{i}.txt"));
+            std::fs::write(&file, "x").unwrap();
+            written.push(file);
+            std::fs::write(&theme_w, format!(".e{i} {{ margin: 0 }}\n")).unwrap();
+            if after_live.is_none() && seen_w.lock().unwrap().contains(&theme_w) {
+                after_live = Some(i);
+            }
+            if after_live.is_some_and(|live| i >= live + 20) || std::time::Instant::now() > deadline
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (written, after_live.is_some())
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Serving the sheet asks for its outside dependency's directory.
+    server.text("/src/app.css?direct").await;
+    let (written, live) = tokio::task::spawn_blocking(move || writer.join().unwrap())
+        .await
+        .unwrap();
+    assert!(live, "the outside watch never delivered");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let missing: Vec<_> = {
+            let seen = seen.lock().unwrap();
+            written
+                .iter()
+                .filter(|f| !seen.contains(*f))
+                .cloned()
+                .collect()
+        };
+        if missing.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{} of {} root files never reached the watcher, e.g. {:?}",
+            missing.len(),
+            written.len(),
+            missing.first()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = std::fs::remove_dir_all(&outside);
+}

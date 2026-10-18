@@ -531,13 +531,50 @@ pub(crate) fn ensure_watched_file(state: &ServerState, file: &Path) {
 /// Recorded only on success, so a directory that does not exist yet (a plugin
 /// watch file created later) is retried instead of skipped forever.
 fn watch_served_dir(
-    watcher: &mut notify::RecommendedWatcher,
+    watchers: &mut Watchers,
     watched: &mut std::collections::HashSet<PathBuf>,
     dir: PathBuf,
 ) {
-    use notify::{RecursiveMode, Watcher};
-    if !watched.contains(&dir) && watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+    if !watched.contains(&dir)
+        && watchers
+            .watch(&dir, notify::RecursiveMode::NonRecursive)
+            .is_ok()
+    {
         watched.insert(dir);
+    }
+}
+
+type EventSink = Arc<dyn Fn(notify::Result<notify::Event>) + Send + Sync>;
+
+/// chokidar's fsevents handler caps its streams at 128.
+const MAX_OWN_STREAMS: usize = 128;
+
+/// The root watcher, plus a watcher per directory watched after boot on
+/// macOS. Vite's chokidar opens an FSEvents stream per watched path, so a new
+/// watch never touches the running streams; notify's FSEvents watcher restarts
+/// its one stream on every `watch`, dropping the events that land meanwhile
+/// (root edits included). An inotify or Windows watch restarts nothing, so
+/// there the root watcher takes them all.
+struct Watchers {
+    root: notify::RecommendedWatcher,
+    sink: EventSink,
+    own: std::collections::HashMap<PathBuf, notify::RecommendedWatcher>,
+}
+
+impl Watchers {
+    fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()> {
+        use notify::Watcher;
+        if !cfg!(target_os = "macos") || self.own.len() >= MAX_OWN_STREAMS {
+            return self.root.watch(path, mode);
+        }
+        if self.own.contains_key(path) {
+            return Ok(());
+        }
+        let sink = Arc::clone(&self.sink);
+        let mut watcher = notify::recommended_watcher(move |ev| sink(ev))?;
+        watcher.watch(path, mode)?;
+        self.own.insert(path.to_path_buf(), watcher);
+        Ok(())
     }
 }
 
@@ -603,12 +640,11 @@ fn watch_root(
 /// and plain file renames fall through the `is_dir` check, and re-watching an
 /// already-watched dir is idempotent (notify keys watches by path).
 fn adopt_created_root_dirs(
-    watcher: &mut notify::RecommendedWatcher,
+    watchers: &mut Watchers,
     root: &Path,
     cache_base: &Path,
     ev: &notify::Event,
 ) -> Vec<PathBuf> {
-    use notify::{RecursiveMode, Watcher};
     if !matches!(
         ev.kind,
         notify::EventKind::Create(_)
@@ -625,7 +661,10 @@ fn adopt_created_root_dirs(
         {
             continue;
         }
-        if watcher.watch(path, RecursiveMode::Recursive).is_ok() {
+        if watchers
+            .watch(path, notify::RecursiveMode::Recursive)
+            .is_ok()
+        {
             scan_files(path, &mut found);
         }
     }
@@ -778,24 +817,29 @@ pub(crate) fn spawn_watcher(
             state.root.clone(),
             cache_base.clone(),
         );
-        let mut watcher =
-            match notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
-                if let Ok(ev) = &ev {
-                    if is_access(ev) {
-                        return;
-                    }
-                    feed.publish(ev, &ignored, &root, &cache);
-                }
-                let _ = tx.send(WatchMsg::Fs(ev));
-            }) {
-                Ok(w) => w,
-                Err(err) => {
-                    eprintln!("oj: file watcher failed to start: {err}");
+        let sink: EventSink = Arc::new(move |ev: notify::Result<notify::Event>| {
+            if let Ok(ev) = &ev {
+                if is_access(ev) {
                     return;
                 }
-            };
+                feed.publish(ev, &ignored, &root, &cache);
+            }
+            let _ = tx.send(WatchMsg::Fs(ev));
+        });
+        let root_sink = Arc::clone(&sink);
+        let mut watchers = match notify::recommended_watcher(move |ev| root_sink(ev)) {
+            Ok(root) => Watchers {
+                root,
+                sink,
+                own: Default::default(),
+            },
+            Err(err) => {
+                eprintln!("oj: file watcher failed to start: {err}");
+                return;
+            }
+        };
         let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
-        if let Err(err) = watch_root(&mut watcher, &state.root, &cache_base) {
+        if let Err(err) = watch_root(&mut watchers.root, &state.root, &cache_base) {
             eprintln!("oj: cannot watch {}: {err}", state.root.display());
             return;
         }
@@ -811,11 +855,11 @@ pub(crate) fn spawn_watcher(
                 Ok(WatchMsg::Fs(Ok(ev))) => ev,
                 Ok(WatchMsg::Fs(Err(_))) => continue,
                 Ok(WatchMsg::Dir(dir)) => {
-                    watch_served_dir(&mut watcher, &mut served_dirs, dir);
+                    watch_served_dir(&mut watchers, &mut served_dirs, dir);
                     continue;
                 }
                 Ok(WatchMsg::Close(ack)) => {
-                    drop(watcher);
+                    drop(watchers);
                     let _ = ack.send(());
                     return;
                 }
@@ -824,7 +868,7 @@ pub(crate) fn spawn_watcher(
             let mut batch = Batch::default();
             ingest_event(
                 &state,
-                &mut watcher,
+                &mut watchers,
                 &cache_base,
                 &mut changes,
                 &mut batch,
@@ -837,16 +881,18 @@ pub(crate) fn spawn_watcher(
                 match rx.recv_timeout(Duration::from_millis(debounce_ms)) {
                     Ok(WatchMsg::Fs(Ok(ev))) => ingest_event(
                         &state,
-                        &mut watcher,
+                        &mut watchers,
                         &cache_base,
                         &mut changes,
                         &mut batch,
                         &ev,
                     ),
                     Ok(WatchMsg::Fs(Err(_))) => {}
-                    Ok(WatchMsg::Dir(dir)) => watch_served_dir(&mut watcher, &mut served_dirs, dir),
+                    Ok(WatchMsg::Dir(dir)) => {
+                        watch_served_dir(&mut watchers, &mut served_dirs, dir)
+                    }
                     Ok(WatchMsg::Close(ack)) => {
-                        drop(watcher);
+                        drop(watchers);
                         let _ = ack.send(());
                         return;
                     }
@@ -874,13 +920,13 @@ pub(crate) fn spawn_watcher(
 /// which only hears the notify callback) as a synthesized create.
 fn ingest_event(
     state: &ServerState,
-    watcher: &mut notify::RecommendedWatcher,
+    watchers: &mut Watchers,
     cache_base: &Path,
     changes: &mut ContentChanges,
     batch: &mut Batch,
     ev: &notify::Event,
 ) {
-    let adopted = adopt_created_root_dirs(watcher, &state.root, cache_base, ev);
+    let adopted = adopt_created_root_dirs(watchers, &state.root, cache_base, ev);
     if !adopted.is_empty() {
         let mut synth =
             notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Any));
