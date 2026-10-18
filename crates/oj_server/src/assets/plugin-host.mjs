@@ -2205,7 +2205,15 @@ function realSpelling(file) {
     return null;
   }
 }
-let invalidateQueue = Promise.resolve();
+// Vite handles each watcher event on its own, so a burst's changes run their
+// hooks concurrently: a hook that debounces by awaiting a timer and checking
+// for a newer call (a ticket) sees that newer call. Here each file has its own
+// chain: a file's changes run in arrival order (the early and settled sends
+// for one edit never interleave their graph walks), other files never wait.
+const fileTails = new Map(); // file -> its latest change, settled or not
+// A resync runs after every change queued before it, and every change queued
+// after it waits for it.
+let resyncBarrier = Promise.resolve();
 // Whether a resync is already enqueued (and not yet run): duplicates coalesce
 // into it — see the /__oj_invalidate resync branch.
 let resyncPending = false;
@@ -2225,43 +2233,59 @@ function resyncEnvironments(environments) {
     hotSend(env, { type: "full-reload", path: "*" });
   }
 }
+function enqueueResync(run) {
+  const queued = [resyncBarrier, ...fileTails.values()];
+  resyncBarrier = Promise.allSettled(queued).then(run);
+  return resyncBarrier;
+}
+// Resolves to how many changes matched a runner-backed graph, or null when a
+// change's handling threw (the caller must assume a hit).
 async function invalidateEnvironments(environments, watcher, changes) {
+  const runs = changes.map(({ path, type }) => {
+    const file = String(path).replace(/\\/g, "/");
+    const run = Promise.allSettled([resyncBarrier, fileTails.get(file)])
+      .then(() => invalidateChange(environments, watcher, file, type || "update"))
+      .catch(() => null);
+    fileTails.set(file, run);
+    run.then(() => {
+      if (fileTails.get(file) === run) fileTails.delete(file);
+    });
+    return run;
+  });
+  const results = await Promise.all(runs);
+  if (results.includes(null)) return null;
+  return results.filter(Boolean).length;
+}
+// One change, as Vite's watcher handles one event: watcher listeners, then
+// each runner-backed environment's hotUpdate pipeline. Returns whether a
+// graph matched it.
+async function invalidateChange(environments, watcher, file, type) {
   // Re-classify at handling time: the early (pre-settle) send classifies from
   // a raw event, and an atomic-save editor's momentary delete may have been
   // recreated by the time this runs; a stale "delete" would prune a live
   // module from the graph.
-  const normalized = changes
-    .map(({ path: file, type }) => {
-      let t = type || "update";
-      file = String(file).replace(/\\/g, "/");
-      const real = realSpelling(file);
-      if (t === "delete" && existsSync(file)) t = "update";
-      if (t === "create" && (graphKnowsFile(environments, file) || (real && graphKnowsFile(environments, real))))
-        t = "update";
-      return { file, real, type: t };
-    })
-    .filter((change) => freshChange(change, environments));
-  for (const { file, type } of normalized) {
-    try {
-      watcher.emit(WATCHER_EVENT[type], file);
-    } catch {}
-  }
-  if (!environments) return;
+  const real = realSpelling(file);
+  if (type === "delete" && existsSync(file)) type = "update";
+  if (type === "create" && (graphKnowsFile(environments, file) || (real && graphKnowsFile(environments, real))))
+    type = "update";
+  if (!freshChange({ file, real, type }, environments)) return false;
+  try {
+    watcher.emit(WATCHER_EVENT[type], file);
+  } catch {}
+  if (!environments) return false;
   const timestamp = Date.now();
-  const matched = new Set();
+  let matched = false;
   for (const env of Object.values(environments)) {
     // oj's own HMR already covers the stub environments; only runner-backed
     // (real Vite) environments need their graph invalidated and updates sent.
     if (!env || env.__ojStub) continue;
-    for (const { file, real, type } of normalized) {
-      try {
-        let hit = await hotUpdateEnvironment(env, file, timestamp, type);
-        if (!hit && real) hit = await hotUpdateEnvironment(env, real, timestamp, type);
-        if (hit) matched.add(file);
-      } catch (e) {
-        process.stderr.write(`${OJ} plugin host: hot update failed (${env.name}): ${(e && e.stack) || e}\n`);
-        hotSend(env, { type: "error", err: prepareErrorPayload(e) });
-      }
+    try {
+      let hit = await hotUpdateEnvironment(env, file, timestamp, type);
+      if (!hit && real) hit = await hotUpdateEnvironment(env, real, timestamp, type);
+      if (hit) matched = true;
+    } catch (e) {
+      process.stderr.write(`${OJ} plugin host: hot update failed (${env.name}): ${(e && e.stack) || e}\n`);
+      hotSend(env, { type: "error", err: prepareErrorPayload(e) });
     }
   }
   // A changed file no runner-backed graph knows is Vite's "no modules matched"
@@ -2269,12 +2293,11 @@ async function invalidateEnvironments(environments, watcher, changes) {
   // file differently than the graph keys (casing; the symlink case is retried
   // through its real path above) — make the staleness visible once per file
   // instead of silently serving old modules.
-  for (const { file, type } of normalized) {
-    if (type === "delete" || matched.has(file) || unmatchedChangeLogged.has(file)) continue;
+  if (type !== "delete" && !matched && !unmatchedChangeLogged.has(file)) {
     unmatchedChangeLogged.add(file);
     process.stderr.write(`${OJ} plugin host: change to ${file} matched no module in any runner environment\n`);
   }
-  return matched.size;
+  return matched;
 }
 
 // Vite's prepareError: the payload hot.send({type:"error"}) carries.
@@ -3257,15 +3280,13 @@ async function ensureConfigureServerMiddleware() {
           // one done push may answer several coalesced enqueues.
           if (!resyncPending) {
             resyncPending = true;
-            invalidateQueue = invalidateQueue
-              .then(() => {
-                resyncPending = false;
-                resyncEnvironments(server.environments);
-                ctl({ ojResyncDone: true });
-              })
-              .catch(() => {
-                resyncPending = false;
-              });
+            enqueueResync(() => {
+              resyncPending = false;
+              resyncEnvironments(server.environments);
+              ctl({ ojResyncDone: true });
+            }).catch(() => {
+              resyncPending = false;
+            });
           }
           res.statusCode = 204;
           res.end();
@@ -3273,16 +3294,10 @@ async function ensureConfigureServerMiddleware() {
         }
         // Answer only once the invalidation is done, so the Rust side's POST
         // completing means a next request cannot be served from stale modules.
-        // Serialized: the early (pre-settle) and settled sends for one edit
-        // batch must not interleave their module-graph walks. The reply says
-        // how many changes matched a runner-backed graph (null: the walk
-        // threw, the caller must assume a hit): the Rust side reloads the
-        // browser only when something actually served changed.
-        const run = invalidateQueue
-          .then(() => invalidateEnvironments(server.environments, fileWatcher, changes))
-          .catch(() => null);
-        invalidateQueue = run;
-        const matchedCount = await run;
+        // The reply says how many changes matched a runner-backed graph
+        // (null: the walk threw, the caller must assume a hit): the Rust side
+        // reloads the browser only when something actually served changed.
+        const matchedCount = await invalidateEnvironments(server.environments, fileWatcher, changes);
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ matched: matchedCount === null ? null : matchedCount || 0 }));

@@ -38,6 +38,7 @@ mod hmr_gate;
 mod hmr_hot_accept;
 mod hmr_protocol;
 mod host_binding;
+mod hot_update_burst;
 mod html_entry;
 mod html_env;
 mod html_proxy;

@@ -814,18 +814,27 @@ pub(crate) async fn decide(
         }
     }
 
-    for path in &paths {
-        // Vite's default watch ignores: `**/node_modules/**` and `**/.git/**`
-        // at any depth (a nested package's node_modules included).
-        if !gate_relevant(path) || path.components().any(|c| c.as_os_str() == ".git") {
-            continue;
-        }
-        let mut flow = match &state.plugins {
+    // Vite's default watch ignores: `**/node_modules/**` and `**/.git/**`
+    // at any depth (a nested package's node_modules included).
+    paths.retain(|path| gate_relevant(path) && !path.components().any(|c| c.as_os_str() == ".git"));
+    // Each file's hotUpdate runs concurrently, as Vite's watcher handles each
+    // event on its own: a hook that debounces a burst by awaiting a timer and
+    // checking for a newer call sees that newer call. The outcomes are then
+    // applied in path order.
+    let hooked = futures_util::future::join_all(paths.iter().map(|path| async move {
+        let (mut messages, mut updates) = (Vec::new(), Vec::new());
+        let flow = match &state.plugins {
             Some(host) => {
                 run_plugin_hooks(state, host, path, created, &mut messages, &mut updates).await
             }
             None => Flow::Next,
         };
+        (flow, messages, updates)
+    }))
+    .await;
+    for (path, (mut flow, hook_messages, hook_updates)) in paths.iter().zip(hooked) {
+        messages.extend(hook_messages);
+        updates.extend(hook_updates);
         if let Flow::Next = flow {
             flow = decide_file(state, path, &plugin_watched, &mut updates);
         }
@@ -1000,24 +1009,26 @@ pub(crate) async fn run_watch_change(
     let Some(host) = &state.plugins else {
         return;
     };
-    for path in paths {
-        if !gate_relevant(path) || path.components().any(|c| c.as_os_str() == ".git") {
-            continue;
-        }
-        let file = path.display().to_string();
-        let change_type = change_type(state, path, created);
-        let ssr_host = ssr_host_for_hooks(state, &file, change_type).await;
-        if let Err(e) = host.watch_change(&file, change_type).await {
-            eprintln!("oj: watchChange failed for {file}: {e}");
-            emit_hook_failure("watchChange", &file, &e);
-        }
-        if let Some(ssr) = &ssr_host {
-            if let Err(e) = ssr.watch_change(&file, change_type).await {
-                eprintln!("oj: watchChange (ssr) failed for {file}: {e}");
-                emit_hook_failure("watchChange (ssr)", &file, &e);
+    // Concurrent across files, as Vite's watcher handles each event on its own.
+    let changes = paths
+        .iter()
+        .filter(|path| gate_relevant(path) && !path.components().any(|c| c.as_os_str() == ".git"))
+        .map(|path| async move {
+            let file = path.display().to_string();
+            let change_type = change_type(state, path, created);
+            let ssr_host = ssr_host_for_hooks(state, &file, change_type).await;
+            if let Err(e) = host.watch_change(&file, change_type).await {
+                eprintln!("oj: watchChange failed for {file}: {e}");
+                emit_hook_failure("watchChange", &file, &e);
             }
-        }
-    }
+            if let Some(ssr) = &ssr_host {
+                if let Err(e) = ssr.watch_change(&file, change_type).await {
+                    eprintln!("oj: watchChange (ssr) failed for {file}: {e}");
+                    emit_hook_failure("watchChange (ssr)", &file, &e);
+                }
+            }
+        });
+    futures_util::future::join_all(changes).await;
 }
 
 /// Dispatch `hotUpdate` for a path to the client and ssr plugin hosts. A
