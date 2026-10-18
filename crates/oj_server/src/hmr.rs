@@ -938,17 +938,14 @@ fn change_type(
     }
 }
 
-/// The ssr environment's plugin instances (Vite dispatches hotUpdate and
-/// watchChange to every environment) when that host is up.
+/// The ssr environment's plugin instances for `watchChange` (Vite dispatches
+/// it to every environment) when that host is up.
 async fn ssr_host_for_hooks(
     state: &ServerState,
     file: &str,
     change_type: &str,
 ) -> Option<Arc<PluginHost>> {
     let ssr = state.plugins_ssr.get().and_then(|h| h.clone())?;
-    if !(state.plugins_watch_change || state.plugins_hot_update) {
-        return Some(ssr);
-    }
     // Pre-init fast-skip: each hook toward a still-initializing lazy host
     // would await a full per-call init window on this serial path (a wedged
     // init froze every save's HMR). Queue a watchChange catch-up instead,
@@ -988,19 +985,28 @@ fn hot_update_modules_json(state: &ServerState, path: &Path) -> String {
     }
 }
 
-/// Dispatch `watchChange` and `hotUpdate` for a path to the client and ssr plugin hosts.
-async fn run_plugin_hooks(
+/// Vite's `pluginContainer.watchChange` for each environment, on every
+/// watched change: its watcher awaits it before invalidating the module graph
+/// and before HMR, which `server.hmr: false` skips and the editor gate holds,
+/// so it runs here once per change and never from `decide`.
+pub(crate) async fn run_watch_change(
     state: &ServerState,
-    host: &PluginHost,
-    path: &PathBuf,
+    paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
-    messages: &mut Vec<String>,
-    updates: &mut Vec<serde_json::Value>,
-) -> Flow {
-    let file = path.display().to_string();
-    let change_type = change_type(state, path, created);
-    let ssr_host = ssr_host_for_hooks(state, &file, change_type).await;
-    if state.plugins_watch_change {
+) {
+    if !state.plugins_watch_change {
+        return;
+    }
+    let Some(host) = &state.plugins else {
+        return;
+    };
+    for path in paths {
+        if !gate_relevant(path) || path.components().any(|c| c.as_os_str() == ".git") {
+            continue;
+        }
+        let file = path.display().to_string();
+        let change_type = change_type(state, path, created);
+        let ssr_host = ssr_host_for_hooks(state, &file, change_type).await;
         if let Err(e) = host.watch_change(&file, change_type).await {
             eprintln!("oj: watchChange failed for {file}: {e}");
             emit_hook_failure("watchChange", &file, &e);
@@ -1012,9 +1018,29 @@ async fn run_plugin_hooks(
             }
         }
     }
+}
+
+/// Dispatch `hotUpdate` for a path to the client and ssr plugin hosts. A
+/// still-initializing ssr host is skipped: its catch-up replays only
+/// `watchChange`, which [`run_watch_change`] already queued.
+async fn run_plugin_hooks(
+    state: &ServerState,
+    host: &PluginHost,
+    path: &PathBuf,
+    created: &std::collections::HashSet<PathBuf>,
+    messages: &mut Vec<String>,
+    updates: &mut Vec<serde_json::Value>,
+) -> Flow {
     if !state.plugins_hot_update {
         return Flow::Next;
     }
+    let file = path.display().to_string();
+    let change_type = change_type(state, path, created);
+    let ssr_host = state
+        .plugins_ssr
+        .get()
+        .and_then(|h| h.clone())
+        .filter(|h| h.is_initialized());
     let ts = now_millis() as u64;
     let modules_json = hot_update_modules_json(state, path);
     if let Some(ssr) = &ssr_host {

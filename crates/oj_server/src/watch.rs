@@ -702,24 +702,25 @@ fn handle_batch(
             .reload_tx
             .send(full_reload_frame("tsconfig change", None, None));
     }
-    // Ahead of the HMR-off return and the gate hold, as Vite's onFileChange
-    // invalidates its module graph before (and whether or not) HMR runs: a
-    // Tailwind sheet must not outlive a source it scanned, nor a stylesheet
-    // an edited file it inlines.
+    // Vite's watcher, per change: plugin watchChange, then the module graph
+    // invalidation, then HMR, which `server.hmr: false` skips and the editor
+    // gate holds until its flush. The first two run either way. A Tailwind
+    // sheet is dropped at once, as it carries no plugin state.
     if !paths.is_empty() {
         state.tailwind_sheets.invalidate();
     }
-    invalidate_changed(state, paths);
-    if !state.hmr_enabled {
-        return;
-    }
-    if let Some(gate) = &state.hmr_gate {
-        if gate.hold(state, paths, false) {
-            return;
-        }
-    }
+    let dispatch = state.hmr_enabled
+        && !state
+            .hmr_gate
+            .as_ref()
+            .is_some_and(|gate| gate.hold(state, paths, false));
     let (state, paths, created) = (Arc::clone(state), paths.to_vec(), created.clone());
     state.rt.clone().spawn(async move {
+        run_watch_change(&state, &paths, &created).await;
+        invalidate_changed(&state, &paths);
+        if !dispatch {
+            return;
+        }
         let messages = decide(&state, &paths, &created).await;
         if messages.is_empty() {
             return;

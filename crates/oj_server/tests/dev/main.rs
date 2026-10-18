@@ -54,6 +54,7 @@ mod plugin_module_graph;
 mod plugin_object_hooks;
 mod plugin_parse;
 mod plugin_skip;
+mod plugin_watch_change;
 mod plugin_ws;
 mod plugin_ws_execute;
 mod postcss_config_discovery;
