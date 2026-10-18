@@ -1214,36 +1214,33 @@ function configure(input) {
   ];
 }
 
-/// The dep scan alone, run inside the plugin host so every import resolves
+/// The dep scan, run inside the plugin host so every import resolves
 /// through the app's plugins first (Vite's scan goes through
 /// `pluginContainer.resolveId(..., { scan: true })`) and the config's live
 /// `optimizeDeps.rolldownOptions.plugins` take part. Only the scan runs there:
-/// a dep bundle in that long-lived isolate keeps hundreds of MB resident. The
-/// result feeds `optimize()` as `scanned`.
-export async function scan(input, host) {
-  configure(input);
-  const rd = await loadRolldown(pickRolldown(root, input.vendoredRolldown));
-  return Object.fromEntries(await rolldownScan(rd, autoDiscover, host));
-}
-
-/// The scan plus the metadata its bundle is going to commit, guessed before
-/// bundling (Vite's discovered-deps optimization: file names are known up
-/// front, interop is read off each entry's source). The dev server serves
-/// source modules against it while the bundle runs, so a cold boot's first
-/// compiles wait for the scan, not the whole pre-bundle; a commit that
-/// disagrees with a guess reloads the page.
+/// a dep bundle in that long-lived isolate keeps hundreds of MB resident, so
+/// nothing here bundles or requires a dep. `scanned` feeds `optimize()`.
+///
+/// With `input.plan` (the initial run only) it also returns `provisional`,
+/// the metadata the bundle is going to commit, guessed before bundling
+/// (Vite's discovered-deps optimization: file names are known up front,
+/// interop is read off each entry's source). The dev server serves source
+/// modules against it while the bundle runs, so a cold boot's first compiles
+/// wait for the scan, not the whole pre-bundle; a commit that disagrees with
+/// a guess reloads the page.
 export async function scanPlan(input, host) {
   configure(input);
   const rd = await loadRolldown(pickRolldown(root, input.vendoredRolldown));
   const candidates = await rolldownScan(rd, autoDiscover, host);
   const scanned = Object.fromEntries(candidates);
-  const planned = new Map(candidates);
-  for (const inc of includeIds) if (!planned.has(inc)) planned.set(inc, null);
-  const { entryPoints, nameOf } = planEntries(planned, { warn: false });
+  if (!input.plan) return { scanned };
+  const { entryPoints, nameOf } = planEntries(new Map(candidates), { warn: false });
   const provisional = {};
   for (const [dep, name] of Object.entries(nameOf)) {
     const cjs = entryIsCommonJs(rd.parseSync, entryPoints[name]);
-    if (cjs && DEDUPE.has(dep) && namedExportsOf(dep).length) {
+    // A CJS react-family dep gets the named facade; one with no names to
+    // facade (rare) bundles plain and the commit reloads.
+    if (cjs && DEDUPE.has(dep)) {
       provisional[dep] = { file: `${name}__oj_named.mjs`, needsInterop: NEEDS_INTEROP.has(dep) };
     } else {
       provisional[dep] = { file: `${name}.mjs`, needsInterop: cjs || NEEDS_INTEROP.has(dep) };

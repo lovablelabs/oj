@@ -561,7 +561,7 @@ impl OptimizedDeps {
                             *planned.lock().unwrap() = Some(map.clone());
                             let _ = rerun.tx.send(Some(Arc::new(map)));
                         };
-                        let map = match run_optimizer(
+                        let bundled = run_optimizer(
                             &root,
                             &dir,
                             &input,
@@ -571,29 +571,27 @@ impl OptimizedDeps {
                             false,
                             Some(&publish),
                         )
-                        .await
-                        {
-                            Some(map) => {
-                                // A failed run writes NO manifest: an empty
-                                // one would warm-boot the next session into
-                                // the same dead optimizer with discovery on.
-                                write_manifest(&dir, &hash, &hash[..8], [].iter(), &map);
-                                map
-                            }
-                            None => {
-                                // No pre-bundle at all (no rolldown via vite,
-                                // vendored, or installed, or the run failed):
-                                // discovery off, deps serve per-file as a
-                                // bundler-less app always did.
-                                rerun.dead.store(true, std::sync::atomic::Ordering::Release);
-                                eprintln!(
-                                    "oj: dep pre-bundling unavailable; serving dependencies per-file"
-                                );
-                                DepMap::new()
-                            }
-                        };
+                        .await;
+                        if bundled.is_none() {
+                            // No pre-bundle at all (no rolldown via vite,
+                            // vendored, or installed, or the run failed):
+                            // discovery off, deps serve per-file as a
+                            // bundler-less app always did.
+                            rerun.dead.store(true, std::sync::atomic::Ordering::Release);
+                            eprintln!(
+                                "oj: dep pre-bundling unavailable; serving dependencies per-file"
+                            );
+                        }
                         let planned = planned.lock().unwrap().take();
-                        commit_initial(&rerun, map, planned);
+                        let ok = bundled.is_some();
+                        let (map, version) =
+                            commit_initial(&rerun, bundled.unwrap_or_default(), planned);
+                        // A failed run writes NO manifest: an empty one would
+                        // warm-boot the next session into the same dead
+                        // optimizer with discovery on.
+                        if ok {
+                            write_manifest(&dir, &hash, &version, [].iter(), &map);
+                        }
                     }
                 }
                 // Vite's debouncedProcessing: every registration slides the
@@ -619,10 +617,29 @@ impl OptimizedDeps {
 /// The initial pre-bundle's commit. Deps a compile discovered meanwhile keep
 /// their provisional entries for the rerun that bundles them. A plan the
 /// bundle disagrees with (another file, another interop, a dep more or less,
-/// or no bundle at all) compiled modules against the wrong metadata: they
-/// are dropped and the page reloads, Vite's "optimized dependencies changed".
-fn commit_initial(rerun: &RerunState, mut map: DepMap, planned: Option<DepMap>) {
+/// or no bundle at all) compiled modules against the wrong metadata: every
+/// URL moves to a new version, so no compile key (persistent cache included)
+/// still matches a module compiled against the plan, and the page reloads,
+/// Vite's "optimized dependencies changed" (its committed browserHash drops
+/// the discovery's session timestamp). Returns the bundled entries and their
+/// version, for the manifest.
+fn commit_initial(
+    rerun: &RerunState,
+    mut map: DepMap,
+    planned: Option<DepMap>,
+) -> (DepMap, String) {
     let changed = planned.as_ref().is_some_and(|plan| !same_plan(plan, &map));
+    let version = if changed {
+        let version = browser_hash(&format!("{}+committed", rerun.hash), map.keys());
+        for meta in map.values_mut() {
+            meta.url = dep_url(&meta.file, &version);
+        }
+        *rerun.browser_version.write().unwrap() = version.clone();
+        version
+    } else {
+        rerun.browser_version.read().unwrap().clone()
+    };
+    let bundled = map.clone();
     {
         let mut pending = rerun.pending.lock().unwrap();
         if let Some(plan) = &planned {
@@ -643,6 +660,7 @@ fn commit_initial(rerun: &RerunState, mut map: DepMap, planned: Option<DepMap>) 
             cb(&[]);
         }
     }
+    (bundled, version)
 }
 
 /// Whether a planned map names the same entries the bundle committed.
@@ -1241,6 +1259,8 @@ async fn run_optimizer(
     // include list, and Vite's container resolves manual includes through
     // plugins either way.
     if let Some(host) = host {
+        // Only the initial run publishes a plan; a rerun skips the guessing.
+        cfg["plan"] = on_plan.is_some().into();
         let scan = scan_through_plugins(host, &cfg).await;
         if let (Some(plan), Some(provisional)) = (on_plan, scan.get("provisional")) {
             if let Some(map) = parse_metadata(provisional, browser_version) {
@@ -1279,8 +1299,8 @@ async fn run_optimizer(
 }
 
 /// The scan run in the plugin host (see `optimizeScan` in plugin-host.mjs):
-/// `{ scanned, provisional }`, the deps found and the metadata their bundle
-/// is planned to commit.
+/// `{ scanned, provisional }`, the deps found and, on the initial run, the
+/// metadata their bundle is planned to commit.
 /// Null keeps the scan in the optimizer job: a host that failed, which is
 /// logged and costs only plugin-aware resolution.
 async fn scan_through_plugins(
@@ -2075,6 +2095,11 @@ mod tests {
             .expect("the discovery survived the commit");
         assert_eq!(map.file, "late.mjs");
         assert_eq!(deps.meta_now("react").unwrap().file_hash, "abc");
+        assert_eq!(
+            deps.browser_version(),
+            "00000000",
+            "a confirmed plan keeps the version its URLs were served under"
+        );
     }
 
     // A bundle that disagrees with the plan (interop, file, a dep more or
@@ -2119,6 +2144,14 @@ mod tests {
             assert!(
                 r.pending.lock().unwrap().is_empty(),
                 "{label} releases the waits"
+            );
+            let version = deps.browser_version();
+            assert_ne!(version, "00000000", "{label} moves to a new version");
+            let map = r.tx.borrow().clone().unwrap();
+            assert!(
+                map.values()
+                    .all(|m| m.url.ends_with(&format!("?v={version}"))),
+                "{label} restamps every URL"
             );
         }
     }
