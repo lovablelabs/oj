@@ -214,3 +214,102 @@ export default {{ plugins: [runner, debounced] }};
 
     assert_one_rebuild_each(&settle(&log, FILES).await);
 }
+
+/// `watchChange` runs before HMR for each change, concurrently across a
+/// burst's files too: a plugin debouncing there sees the newer call.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_runs_watch_change_hooks_concurrently() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let (log, literal) = log_path(&log_dir);
+    let plugin = DEBOUNCED
+        .replace("__LOG__", &literal)
+        .replace("async hotUpdate({ file })", "async watchChange(file)")
+        .replace(
+            "((this && this.environment && this.environment.name) || \"default\")",
+            "\"watch\"",
+        );
+    let plugins = format!("import fs from \"node:fs\";\n{plugin}\nexport default [debounced];\n");
+    let mut files: Vec<(String, String)> = vec![
+        (
+            "package.json".into(),
+            r#"{"name":"burst-watch","version":"1.0.0"}"#.into(),
+        ),
+        ("index.html".into(), INDEX_HTML.into()),
+        ("src/main.js".into(), "window.__ok = 1;\n".into()),
+        ("oj.plugins.mjs".into(), plugins),
+    ];
+    files.extend(message_files());
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let app = App::new(&borrowed);
+    let server = app.serve().await;
+    assert!(server.text("/src/main.js").await.contains("__ok"));
+
+    let edits: Vec<(String, String)> = message_files()
+        .into_iter()
+        .map(|(p, c)| (p, c.replace("\"v", "\"edited-v")))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = edits
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    app.write(&borrowed);
+
+    let counts = settle(&log, FILES).await;
+    assert!(
+        counts.keys().all(|tag| tag.ends_with(":watch")),
+        "{counts:?}"
+    );
+    assert_one_rebuild_each(&counts);
+}
+
+/// Within one file, Vite's handleHMRUpdate runs the client environment's
+/// `hotUpdate` hooks before any other environment's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_files_client_hot_update_runs_before_its_ssr_one() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let (log, literal) = log_path(&log_dir);
+    let plugins = format!(
+        r#"import fs from "node:fs";
+export default [{{
+  name: "order",
+  async hotUpdate({{ file }}) {{
+    if (!file.endsWith("/src/main.js")) return;
+    const env = (this && this.environment && this.environment.name) || "default";
+    fs.appendFileSync({literal}, env + "\n");
+  }},
+}}];
+"#
+    );
+    let app = App::new(&[
+        ("package.json", r#"{"name":"hot-order","version":"1.0.0"}"#),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("oj.plugins.mjs", &plugins),
+    ]);
+    let server = app.serve().await;
+    assert!(server.text("/src/main.js").await.contains("__ok"));
+    // Brings the ssr plugin host up, as an SSR request does.
+    let main = app.root.join("src/main.js");
+    server
+        .text(&format!("/@ssr-module?id={}", main.display()))
+        .await;
+
+    app.write(&[("src/main.js", "window.__ok = 2;\n")]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let lines = loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        if lines.len() >= 2 {
+            break lines;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "hotUpdate never ran in both environments: {lines:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(lines, ["client", "ssr"], "client first, as Vite");
+}

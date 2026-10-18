@@ -1054,6 +1054,11 @@ async fn run_plugin_hooks(
         .filter(|h| h.is_initialized());
     let ts = now_millis() as u64;
     let modules_json = hot_update_modules_json(state, path);
+    // The client's hooks first, then the ssr host's, as Vite's
+    // handleHMRUpdate runs the client environment before the others.
+    let client = host
+        .handle_hot_update(&file, ts, change_type, &modules_json)
+        .await;
     if let Some(ssr) = &ssr_host {
         // Its result steers no client update (the ssr environment has
         // no browser); only a throwing hook is worth reporting.
@@ -1065,10 +1070,7 @@ async fn run_plugin_hooks(
             emit_hook_failure("hotUpdate (ssr)", &file, &e);
         }
     }
-    match host
-        .handle_hot_update(&file, ts, change_type, &modules_json)
-        .await
-    {
+    match client {
         // Vite (hmr.ts): a throwing hotUpdate is logged, sent as an
         // error payload, and no update is dispatched for that file.
         Err(e) => {
