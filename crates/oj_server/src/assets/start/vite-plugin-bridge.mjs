@@ -1102,7 +1102,10 @@ export async function loadPluginContainer(app, opts = {}) {
   phase(`plugins: vite imported (${opts.environment ?? "client"})`);
   let loaded;
   try {
-    loaded = await asNode(() => vite.loadConfigFromFile({ command, mode }, configFile, app));
+    // Vite's configEnv (resolveConfig): isSsrBuild comes from the inline
+    // config alone, which has no build.ssr here.
+    const configEnv = { mode, command, isSsrBuild: false, isPreview: false };
+    loaded = await asNode(() => vite.loadConfigFromFile(configEnv, configFile, app));
   } catch {
     return null;
   }

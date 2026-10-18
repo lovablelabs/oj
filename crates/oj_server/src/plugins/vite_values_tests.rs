@@ -1714,3 +1714,68 @@ export async function loadConfigFromFile() {
     host.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// Vite's order: `vite`'s cli.js statically imports the chunk its index.js
+// re-exports, so vite evaluates at CLI start with the launching process's
+// NODE_ENV; resolveConfig sets the default only later, right before
+// loadConfigFromFile. The prewarmed host keeps that order: the config sees
+// the default, vite's import did not.
+#[tokio::test]
+async fn a_prewarmed_vite_evaluates_before_the_node_env_default_like_vite() {
+    let root = std::env::temp_dir().join(format!("oj-prewarm-order-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let vite = root.join("node_modules/vite");
+    std::fs::create_dir_all(&vite).unwrap();
+    std::fs::write(
+        vite.join("package.json"),
+        r#"{"name":"vite","version":"8.0.0","type":"module","exports":{".":"./index.js"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        vite.join("index.js"),
+        r#"import { appendFileSync } from "node:fs";
+const log = (line) => appendFileSync(new URL("./order.log", import.meta.url), line + "\n");
+log("import " + (process.env.NODE_ENV ?? "unset"));
+export async function loadConfigFromFile() {
+  log("config " + (process.env.NODE_ENV ?? "unset"));
+  return { config: { plugins: [] } };
+}
+"#,
+    )
+    .unwrap();
+    let plugins = root.join("vite.config.mjs");
+    std::fs::write(&plugins, "export default {};\n").unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+        "pluginsFormat": "vite",
+    })
+    .to_string();
+    let order = vite.join("order.log");
+
+    let warm = PluginHost::prewarm(&root, None).expect("the engine starts ahead");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !order.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the warm import never ran"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let host = PluginHost::spawn_prewarmed(&root, &plugins, &config, warm)
+        .await
+        .expect("the host adopts the engine");
+    tokio::time::timeout(std::time::Duration::from_secs(20), host.plugin_names())
+        .await
+        .expect("the host boots");
+
+    let launched = std::env::var("NODE_ENV").ok();
+    let at_import = launched.clone().unwrap_or_else(|| "unset".into());
+    let at_config = launched.unwrap_or_else(|| "development".into());
+    assert_eq!(
+        std::fs::read_to_string(&order).unwrap(),
+        format!("import {at_import}\nconfig {at_config}\n"),
+    );
+    host.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -1107,7 +1107,12 @@ async function loadViteConfig(configPath) {
     // find module 'esbuild'", #215) -- so propagate it instead, as Vite's
     // loadConfigFromFile itself rethrows.
     const loaded = await asNode(() =>
-      vite.loadConfigFromFile({ command: env.command, mode: env.mode }, configPath, appRoot),
+      vite.loadConfigFromFile(
+        // Vite's configEnv (resolveConfig), in its key order.
+        { mode: env.mode, command: env.command, isSsrBuild: env.isSsrBuild, isPreview: env.isPreview },
+        configPath,
+        appRoot,
+      ),
     );
     if (loaded && loaded.config) return loaded.config;
   }

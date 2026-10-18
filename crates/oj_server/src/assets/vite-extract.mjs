@@ -653,7 +653,7 @@ async function loadConfig() {
           // The configEnv Vite computes before the file loads: mode from the
           // inline config only, isSsrBuild from the inline config only (see
           // the emit below for the isSsrBuild rule).
-          const configEnv = { command, mode, isSsrBuild: false };
+          const configEnv = { mode, command, isSsrBuild: false, isPreview: false };
           loaded = (await asNode(() => vite.loadConfigFromFile(configEnv, configPath, appRoot))) ?? null;
         } catch (e) {
           loadErr = e;

@@ -12,6 +12,7 @@ mod assets;
 mod browser;
 mod browser_errors;
 mod build_config_flag;
+mod config_env;
 mod config_flag;
 mod config_function;
 mod config_proxy;
