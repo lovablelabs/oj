@@ -702,11 +702,14 @@ fn handle_batch(
             .reload_tx
             .send(full_reload_frame("tsconfig change", None, None));
     }
-    // Ahead of the HMR-off return and the gate hold: a Tailwind sheet must
-    // not outlive a source it scanned, whether or not an update goes out.
+    // Ahead of the HMR-off return and the gate hold, as Vite's onFileChange
+    // invalidates its module graph before (and whether or not) HMR runs: a
+    // Tailwind sheet must not outlive a source it scanned, nor a stylesheet
+    // an edited file it inlines.
     if !paths.is_empty() {
         state.tailwind_sheets.invalidate();
     }
+    invalidate_changed(state, paths);
     if !state.hmr_enabled {
         return;
     }
@@ -726,6 +729,29 @@ fn handle_batch(
             let _ = state.reload_tx.send(message);
         }
     });
+}
+
+/// Vite's `moduleGraph.onFileChange` for each edited file: one still on disk
+/// and already in the graph (a first save by rename arrives as a create, a
+/// `change` to chokidar). A hard-invalidated module drops its mtime fast-path
+/// key, so its next request recomputes the cache key, which carries the new
+/// invalidation stamp.
+fn invalidate_changed(state: &ServerState, paths: &[PathBuf]) {
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let url = url_of(&state.root, path);
+        let hard = state
+            .graph
+            .lock()
+            .unwrap()
+            .invalidate_on_change(Path::new(&url), |m| !is_style_url(&m.to_string_lossy()));
+        let mut keys = state.mtime_keys.lock().unwrap();
+        for module in hard {
+            keys.remove(&module.display().to_string());
+        }
+    }
 }
 
 pub(crate) fn spawn_watcher(

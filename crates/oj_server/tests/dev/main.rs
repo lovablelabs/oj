@@ -18,6 +18,7 @@ mod config_proxy;
 mod config_temp_file;
 mod config_wrapper;
 mod css_import_inline;
+mod css_importer_invalidation;
 mod css_outside_root_deps;
 mod css_preprocessor_options;
 mod css_url_inline;

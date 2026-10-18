@@ -372,16 +372,23 @@ fn compile_key(
     let mode = if is_server { "server" } else { "dev" };
     // Fold the newest HMR stamp among imports into the key: an unchanged importer
     // must recompile after a dep update so its import carries the new `?t=`.
-    let imports_stamp = state
-        .graph
-        .lock()
-        .unwrap()
-        .imports_timestamp(Path::new(url));
+    let (imports_stamp, invalidated) = {
+        let graph = state.graph.lock().unwrap();
+        (
+            graph.imports_timestamp(Path::new(url)),
+            graph.invalidation_timestamp(Path::new(url)),
+        )
+    };
     let mut mode_key = if imports_stamp > 0 {
         format!("{mode}@{imports_stamp}")
     } else {
         mode.to_string()
     };
+    // A file change hard-invalidated it (a stylesheet whose inlined dep
+    // changed): the next request re-transforms, HMR on or off.
+    if invalidated > 0 {
+        mode_key.push_str(&format!("+inv{invalidated}"));
+    }
     // tsconfig class-field semantics change the output, so they are part of the key.
     let class_field_semantics = oj_compiler::tsconfig::class_field_set_semantics(file);
     if class_field_semantics {
