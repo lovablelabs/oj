@@ -1180,6 +1180,10 @@ fn optimized_deps(
         env!("CARGO_PKG_VERSION"),
         optimize::OptimizeInput {
             no_discovery: config.optimize_deps.as_ref().and_then(|o| o.no_discovery),
+            hold_until_crawl_end: config
+                .optimize_deps
+                .as_ref()
+                .and_then(|o| o.hold_until_crawl_end),
             include,
             exclude,
             entries,
@@ -1737,6 +1741,7 @@ impl DevServer {
         // (their rewrites carry the old URLs) and reload the page, Vite's
         // "optimized dependencies changed. reloading". A commit that left
         // served chunks byte-identical never reaches here.
+        state.optimized.set_crawl_end(state.crawl_done.clone());
         {
             let weak = Arc::downgrade(&state);
             state.optimized.set_on_commit(Box::new(move |newly| {

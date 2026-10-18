@@ -1186,6 +1186,7 @@ fn merge_fills_partial_server_and_optimizer_configuration() {
             "serverFlags": { "fsDeny": ["**/*.private"], "warmup": {
                 "clientFiles": ["other.ts"], "ssrFiles": ["server.ts"] } },
             "optimizeDeps": { "include": ["dep"], "exclude": ["other-dep"], "noDiscovery": true,
+                "holdUntilCrawlEnd": false,
                 "rolldownOptions": { "transform": { "define": { "FLAG": "true" }, "target": "es2015" } } }
         })),
     );
@@ -1201,6 +1202,7 @@ fn merge_fills_partial_server_and_optimizer_configuration() {
     assert_eq!(od.exclude.as_ref().unwrap(), &["own-dep"]);
     assert_eq!(od.include.as_ref().unwrap(), &["dep"]);
     assert_eq!(od.no_discovery, Some(true));
+    assert_eq!(od.hold_until_crawl_end, Some(false));
     let opts = oj_config::optimize_deps_bundler_options(&config).unwrap();
     assert_eq!(opts["define"]["FLAG"], "true");
     assert_eq!(opts["target"], "es2015");

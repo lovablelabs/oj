@@ -134,6 +134,10 @@ pub struct PreprocessorEntry {
 #[serde(default, rename_all = "camelCase")]
 pub struct OptimizeDepsConfig {
     pub no_discovery: Option<bool>,
+    /// Vite's `optimizeDeps.holdUntilCrawlEnd` (default true): a cold boot's
+    /// first pre-bundle is held until the static-import crawl ends, so deps
+    /// the scanner missed join it instead of costing a rerun.
+    pub hold_until_crawl_end: Option<bool>,
     pub include: Option<Vec<String>>,
     pub exclude: Option<Vec<String>>,
     pub entries: Option<Vec<String>>,

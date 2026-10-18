@@ -134,6 +134,9 @@ struct RerunState {
     exclude: Vec<String>,
     discovery: bool,
     on_commit: std::sync::OnceLock<OnCommit>,
+    /// The dev server's static-import crawl, done once it flips true; the
+    /// initial commit holds for it (see [`hold_for_crawl_end`]).
+    crawl_end: std::sync::OnceLock<watch::Receiver<bool>>,
 }
 
 /// What the dep route should do once `await_dep` settles.
@@ -369,6 +372,14 @@ impl OptimizedDeps {
         }
     }
 
+    /// The dev server's crawl signal (true once every static import of the
+    /// entries compiled). Without one the initial commit never holds.
+    pub fn set_crawl_end(&self, crawl_done: watch::Receiver<bool>) {
+        if let Some(r) = &self.rerun {
+            let _ = r.crawl_end.set(crawl_done);
+        }
+    }
+
     /// Cheap pre-gate for the serve-time rewrite: whether `dep` could register
     /// at all, checked before the resolve and CJS-sniff work a registration
     /// needs.
@@ -539,6 +550,7 @@ impl OptimizedDeps {
             exclude: input.exclude.clone(),
             discovery: effective_auto_discover(input.no_discovery),
             on_commit: std::sync::OnceLock::new(),
+            crawl_end: std::sync::OnceLock::new(),
         });
         {
             let rerun = Arc::clone(&rerun);
@@ -557,11 +569,10 @@ impl OptimizedDeps {
                         // for the commit (pending).
                         let planned: std::sync::Mutex<Option<DepMap>> = Default::default();
                         let publish = |map: DepMap| {
-                            rerun.pending.lock().unwrap().extend(map.keys().cloned());
                             *planned.lock().unwrap() = Some(map.clone());
-                            let _ = rerun.tx.send(Some(Arc::new(map)));
+                            publish_plan(&rerun, map);
                         };
-                        let bundled = run_optimizer(
+                        let mut bundled = run_optimizer(
                             &root,
                             &dir,
                             &input,
@@ -572,6 +583,35 @@ impl OptimizedDeps {
                             Some(&publish),
                         )
                         .await;
+                        let mut planned = planned.lock().unwrap().take();
+                        let mut missed = std::collections::BTreeSet::new();
+                        if let (Some(_), Some(plan)) = (&bundled, &mut planned) {
+                            if input.hold_until_crawl_end != Some(false) {
+                                hold_for_crawl_end(&rerun).await;
+                                let late = scanner_missed(&rerun, plan);
+                                if !late.is_empty() {
+                                    let names = late.keys().cloned().collect();
+                                    // A failed rebundle commits the first one; the
+                                    // queued rerun retries the missed deps.
+                                    if let Some(map) = run_optimizer(
+                                        &root,
+                                        &dir,
+                                        &input,
+                                        host.as_deref(),
+                                        &names,
+                                        &hash[..8],
+                                        true,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        bundled = Some(map);
+                                        plan.extend(late);
+                                        missed = names;
+                                    }
+                                }
+                            }
+                        }
                         if bundled.is_none() {
                             // No pre-bundle at all (no rolldown via vite,
                             // vendored, or installed, or the run failed):
@@ -582,7 +622,6 @@ impl OptimizedDeps {
                                 "oj: dep pre-bundling unavailable; serving dependencies per-file"
                             );
                         }
-                        let planned = planned.lock().unwrap().take();
                         let ok = bundled.is_some();
                         let (map, version) =
                             commit_initial(&rerun, bundled.unwrap_or_default(), planned);
@@ -590,7 +629,7 @@ impl OptimizedDeps {
                         // warm-boot the next session into the same dead
                         // optimizer with discovery on.
                         if ok {
-                            write_manifest(&dir, &hash, &version, [].iter(), &map);
+                            write_manifest(&dir, &hash, &version, missed.iter(), &map);
                         }
                     }
                 }
@@ -637,6 +676,15 @@ fn commit_initial(
         *rerun.browser_version.write().unwrap() = version.clone();
         version
     } else {
+        // Every entry keeps the URL it was served under: the base version,
+        // or a missed dep's registration version.
+        if let Some(plan) = &planned {
+            for (dep, meta) in map.iter_mut() {
+                if let Some(p) = plan.get(dep) {
+                    meta.url = p.url.clone();
+                }
+            }
+        }
         rerun.browser_version.read().unwrap().clone()
     };
     let bundled = map.clone();
@@ -661,6 +709,37 @@ fn commit_initial(
         }
     }
     (bundled, version)
+}
+
+/// Vite's scanProcessing resolving: the scan's plan becomes the live map, so
+/// source compiles (which wait for a map) proceed against it, while every
+/// planned dep turns pending and its own requests wait for the commit.
+fn publish_plan(rerun: &RerunState, map: DepMap) {
+    rerun.pending.lock().unwrap().extend(map.keys().cloned());
+    let _ = rerun.tx.send(Some(Arc::new(map)));
+}
+
+/// Vite's holdUntilCrawlEnd: the initial pre-bundle stays uncommitted (its
+/// deps' requests held) until the static-import crawl ends, so the deps it
+/// discovers can still join it. Unbounded, as Vite's wait for requests idle.
+async fn hold_for_crawl_end(rerun: &RerunState) {
+    if let Some(rx) = rerun.crawl_end.get() {
+        let _ = rx.clone().wait_for(|done| *done).await;
+    }
+}
+
+/// Vite's scannerMissedDeps at crawl end: deps a compile registered that the
+/// scan's plan does not name, with the provisional meta they were served
+/// under. The initial pre-bundle is redone with them rather than committed
+/// and rerun.
+fn scanner_missed(rerun: &RerunState, plan: &DepMap) -> DepMap {
+    let pending = rerun.pending.lock().unwrap();
+    let discovered = rerun.discovered.lock().unwrap();
+    pending
+        .iter()
+        .filter(|dep| !plan.contains_key(*dep))
+        .filter_map(|dep| discovered.get(dep).map(|m| (dep.clone(), m.clone())))
+        .collect()
 }
 
 /// Whether a planned map names the same entries the bundle committed.
@@ -919,6 +998,8 @@ fn vendored_rolldown() -> Option<(&'static str, &'static str)> {
 #[derive(Default, Clone)]
 pub struct OptimizeInput {
     pub no_discovery: Option<bool>,
+    /// `optimizeDeps.holdUntilCrawlEnd`; unset is Vite's default, true.
+    pub hold_until_crawl_end: Option<bool>,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub entries: Vec<String>,
@@ -1657,6 +1738,7 @@ mod tests {
             exclude,
             discovery,
             on_commit: std::sync::OnceLock::new(),
+            crawl_end: std::sync::OnceLock::new(),
         });
         OptimizedDeps {
             rx,
@@ -2154,5 +2236,168 @@ mod tests {
                 "{label} restamps every URL"
             );
         }
+    }
+
+    // Vite's holdUntilCrawlEnd + scannerMissedDeps: a dep the crawl found that
+    // the scan's plan lacks joins the initial pre-bundle. Folded into the
+    // plan, a bundle that confirms both commits with no reload, every entry
+    // keeps the URL it was served under (the missed dep its registration
+    // version), and nothing is left pending for a rerun.
+    #[test]
+    fn a_dep_the_scanner_missed_joins_the_initial_commit_quietly() {
+        let deps = test_deps(true, vec![]);
+        let r = deps.rerun.as_ref().unwrap();
+        let reloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&reloads);
+        let _ = r.on_commit.set(Box::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let mut plan: DepMap = [("react".to_string(), meta("react.mjs", true))].into();
+        r.tx.send(Some(Arc::new(plan.clone()))).unwrap();
+        r.pending.lock().unwrap().insert("react".into());
+        let late = deps.register_missing("late", false).expect("registers");
+        assert_ne!(url_version(&late.url), "00000000");
+
+        let missed = scanner_missed(r, &plan);
+        assert_eq!(missed.keys().collect::<Vec<_>>(), ["late"]);
+        plan.extend(missed);
+        let mut bundled: DepMap = [
+            ("react".to_string(), meta("react.mjs", true)),
+            ("late".to_string(), meta("late.mjs", false)),
+        ]
+        .into();
+        for m in bundled.values_mut() {
+            m.file_hash = "h".into();
+        }
+        commit_initial(r, bundled, Some(plan));
+
+        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            r.pending.lock().unwrap().is_empty(),
+            "nothing left for a rerun"
+        );
+        assert_eq!(deps.meta_now("late").unwrap().url, late.url);
+        assert_eq!(
+            deps.meta_now("react").unwrap().url,
+            dep_url("react.mjs", "00000000")
+        );
+        assert_eq!(deps.meta_now("late").unwrap().file_hash, "h");
+    }
+
+    // Vite's optimizedDepsPlugin.load: a request held on a dep's processing
+    // whose browserHash the commit changed is an outdated request (504, the
+    // page is reloading); one the commit confirmed serves.
+    #[tokio::test]
+    async fn a_request_held_across_the_initial_commit_is_outdated_only_on_a_mismatch() {
+        for (confirmed, outdated) in [(true, false), (false, true)] {
+            let deps = test_deps(true, vec![]);
+            let r = deps.rerun.as_ref().unwrap();
+            let plan: DepMap = [("zod".to_string(), meta("zod.mjs", false))].into();
+            r.tx.send(Some(Arc::new(plan.clone()))).unwrap();
+            r.pending.lock().unwrap().insert("zod".into());
+            let held = {
+                let rx = deps.rx.clone();
+                let rerun = deps.rerun.clone();
+                tokio::spawn(async move {
+                    let deps = OptimizedDeps {
+                        rx,
+                        dir: PathBuf::new(),
+                        version: "00000000".into(),
+                        rerun,
+                        link_memo: LinkMemo::default(),
+                    };
+                    matches!(
+                        deps.await_dep("zod.mjs", Some("00000000")).await,
+                        DepServe::Outdated
+                    )
+                })
+            };
+            tokio::task::yield_now().await;
+            assert!(!held.is_finished(), "a pending dep's request waits");
+            let mut bundled = plan.clone();
+            bundled.get_mut("zod").unwrap().needs_interop = !confirmed;
+            commit_initial(r, bundled, Some(plan));
+            assert_eq!(held.await.unwrap(), outdated, "confirmed: {confirmed}");
+        }
+    }
+
+    // The hold ends with the crawl, never before it; with no crawl signal
+    // (no dev server) there is nothing to hold for.
+    #[tokio::test]
+    async fn the_initial_commit_holds_until_the_crawl_ends() {
+        let deps = test_deps(true, vec![]);
+        let r = Arc::clone(deps.rerun.as_ref().unwrap());
+        hold_for_crawl_end(&r).await;
+
+        let (crawl_tx, crawl_rx) = watch::channel(false);
+        deps.set_crawl_end(crawl_rx);
+        let hold = {
+            let r = Arc::clone(&r);
+            tokio::spawn(async move { hold_for_crawl_end(&r).await })
+        };
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!hold.is_finished(), "held while the crawl runs");
+        crawl_tx.send(true).unwrap();
+        hold.await.unwrap();
+    }
+
+    // Vite's scanProcessing: before the scan, a compile waits for a map; the
+    // published plan releases it, while the planned dep's own request still
+    // waits for the bundle's commit.
+    #[tokio::test]
+    async fn the_plan_releases_compiles_but_not_dep_requests() {
+        let (tx, rx) = watch::channel(None);
+        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let rerun = Arc::new(RerunState {
+            hash: "testhash".into(),
+            tx,
+            discovered: Default::default(),
+            pending: Default::default(),
+            wake,
+            browser_version: std::sync::RwLock::new("00000000".into()),
+            failed: Default::default(),
+            dead: Default::default(),
+            exclude: vec![],
+            discovery: true,
+            on_commit: std::sync::OnceLock::new(),
+            crawl_end: std::sync::OnceLock::new(),
+        });
+        let deps = Arc::new(OptimizedDeps {
+            rx,
+            dir: PathBuf::new(),
+            version: "00000000".into(),
+            rerun: Some(Arc::clone(&rerun)),
+            link_memo: LinkMemo::default(),
+        });
+        let compile = {
+            let deps = Arc::clone(&deps);
+            tokio::spawn(async move { deps.ready().await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!compile.is_finished(), "a compile waits for the scan");
+
+        let plan: DepMap = [("zod".to_string(), meta("zod.mjs", false))].into();
+        publish_plan(&rerun, plan.clone());
+        let map = compile.await.unwrap();
+        assert_eq!(
+            map.get("zod").map(|m| m.url.as_str()),
+            Some("/@oj-deps/zod.mjs?v=00000000")
+        );
+
+        let request = {
+            let deps = Arc::clone(&deps);
+            tokio::spawn(async move { deps.await_dep("zod.mjs", Some("00000000")).await })
+        };
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !request.is_finished(),
+            "the dep's request waits for the bundle"
+        );
+        commit_initial(&rerun, plan.clone(), Some(plan));
+        assert!(matches!(request.await.unwrap(), DepServe::Ready));
     }
 }

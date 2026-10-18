@@ -944,6 +944,8 @@ function extractOptimizeDeps(od, rawOd) {
   if (typeof od.noDiscovery === "boolean" && typeof rawOd?.noDiscovery === "boolean") {
     out.noDiscovery = od.noDiscovery;
   }
+  // Resolved to Vite's default (true) when unset, which is oj's default too.
+  if (typeof od.holdUntilCrawlEnd === "boolean") out.holdUntilCrawlEnd = od.holdUntilCrawlEnd;
   for (const key of ["esbuildOptions", "rolldownOptions"]) {
     if (od[key] && typeof od[key] === "object") out[key] = markFunctions(od[key]);
   }

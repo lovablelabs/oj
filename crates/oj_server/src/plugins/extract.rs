@@ -833,6 +833,7 @@ fn merge_optimize_deps(config: &mut oj_config::OjConfig, od: serde_json::Value) 
     o.needs_interop = o.needs_interop.take().or(parsed.needs_interop);
     o.force = o.force.or(parsed.force);
     o.no_discovery = o.no_discovery.or(parsed.no_discovery);
+    o.hold_until_crawl_end = o.hold_until_crawl_end.or(parsed.hold_until_crawl_end);
     o.esbuild_options = o.esbuild_options.take().or(parsed.esbuild_options);
     o.rolldown_options = o.rolldown_options.take().or(parsed.rolldown_options);
 }
