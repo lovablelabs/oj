@@ -623,14 +623,19 @@ impl OptimizedDeps {
                             );
                         }
                         let ok = bundled.is_some();
-                        let (map, version) =
-                            commit_initial(&rerun, bundled.unwrap_or_default(), planned);
-                        // A failed run writes NO manifest: an empty one would
-                        // warm-boot the next session into the same dead
-                        // optimizer with discovery on.
-                        if ok {
-                            write_manifest(&dir, &hash, &version, missed.iter(), &map);
-                        }
+                        commit_initial(
+                            &rerun,
+                            bundled.unwrap_or_default(),
+                            planned,
+                            |map, version| {
+                                // A failed run writes NO manifest: an empty one
+                                // would warm-boot the next session into the
+                                // same dead optimizer with discovery on.
+                                if ok {
+                                    write_manifest(&dir, &hash, version, missed.iter(), map);
+                                }
+                            },
+                        );
                     }
                 }
                 // Vite's debouncedProcessing: every registration slides the
@@ -660,13 +665,15 @@ impl OptimizedDeps {
 /// URL moves to a new version, so no compile key (persistent cache included)
 /// still matches a module compiled against the plan, and the page reloads,
 /// Vite's "optimized dependencies changed" (its committed browserHash drops
-/// the discovery's session timestamp). Returns the bundled entries and their
-/// version, for the manifest.
+/// the discovery's session timestamp). `persist` gets the bundled entries and
+/// their version before the commit releases any held request, as Vite's
+/// commit writes the metadata before resolving the processing promise.
 fn commit_initial(
     rerun: &RerunState,
     mut map: DepMap,
     planned: Option<DepMap>,
-) -> (DepMap, String) {
+    persist: impl FnOnce(&DepMap, &str),
+) {
     let changed = planned.as_ref().is_some_and(|plan| !same_plan(plan, &map));
     let version = if changed {
         let version = browser_hash(&format!("{}+committed", rerun.hash), map.keys());
@@ -687,7 +694,7 @@ fn commit_initial(
         }
         rerun.browser_version.read().unwrap().clone()
     };
-    let bundled = map.clone();
+    persist(&map, &version);
     {
         let mut pending = rerun.pending.lock().unwrap();
         if let Some(plan) = &planned {
@@ -708,7 +715,6 @@ fn commit_initial(
             cb(&[]);
         }
     }
-    (bundled, version)
 }
 
 /// Vite's scanProcessing resolving: the scan's plan becomes the live map, so
@@ -2160,7 +2166,7 @@ mod tests {
 
         let mut bundled = plan.clone();
         bundled.get_mut("react").unwrap().file_hash = "abc".into();
-        commit_initial(r, bundled, Some(plan));
+        commit_initial(r, bundled, Some(plan), |_, _| {});
 
         assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 0);
         let pending = r.pending.lock().unwrap().clone();
@@ -2217,7 +2223,7 @@ mod tests {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
             r.pending.lock().unwrap().extend(plan.keys().cloned());
-            commit_initial(r, bundled, Some(plan.clone()));
+            commit_initial(r, bundled, Some(plan.clone()), |_, _| {});
             assert_eq!(
                 reloads.load(std::sync::atomic::Ordering::SeqCst),
                 1,
@@ -2269,7 +2275,7 @@ mod tests {
         for m in bundled.values_mut() {
             m.file_hash = "h".into();
         }
-        commit_initial(r, bundled, Some(plan));
+        commit_initial(r, bundled, Some(plan), |_, _| {});
 
         assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(
@@ -2316,7 +2322,7 @@ mod tests {
             assert!(!held.is_finished(), "a pending dep's request waits");
             let mut bundled = plan.clone();
             bundled.get_mut("zod").unwrap().needs_interop = !confirmed;
-            commit_initial(r, bundled, Some(plan));
+            commit_initial(r, bundled, Some(plan), |_, _| {});
             assert_eq!(held.await.unwrap(), outdated, "confirmed: {confirmed}");
         }
     }
@@ -2397,7 +2403,14 @@ mod tests {
             !request.is_finished(),
             "the dep's request waits for the bundle"
         );
-        commit_initial(&rerun, plan.clone(), Some(plan));
+        // The manifest lands before the commit releases the request.
+        commit_initial(&rerun, plan.clone(), Some(plan), |map, _| {
+            assert!(map.contains_key("zod"));
+            assert!(
+                rerun.pending.lock().unwrap().contains("zod"),
+                "persisted while the dep's requests are still held"
+            );
+        });
         assert!(matches!(request.await.unwrap(), DepServe::Ready));
     }
 }
