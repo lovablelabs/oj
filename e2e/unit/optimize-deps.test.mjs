@@ -419,15 +419,15 @@ only("rolldown", "ESM entries need no interop; linked packages are crawled, not 
   cleanup(root);
 });
 
-// Runs the exported scan() with a host object the way the plugin host hands
+// Runs the exported scanPlan() with a host object the way the plugin host hands
 // it over: `hostModule` exports `host` ({ resolveId, plugins }).
 const SCAN_WRAPPER = `
 import { writeSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const [script, hostModule, cfg] = process.argv.slice(1);
-const { scan } = await import(pathToFileURL(script).href);
+const { scanPlan } = await import(pathToFileURL(script).href);
 const { host } = await import(pathToFileURL(hostModule).href);
-writeSync(1, JSON.stringify(await scan(JSON.parse(cfg), host)));
+writeSync(1, JSON.stringify((await scanPlan(JSON.parse(cfg), host)).scanned));
 process.exit(0);
 `;
 const runScan = (root, hostSource, cfg) => {
