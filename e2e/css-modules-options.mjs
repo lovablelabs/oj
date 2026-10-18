@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitUp } from "./util.mjs";
+import { rmrf, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -111,7 +111,13 @@ function checkExports(mode, styles, theme, css) {
     check("dev: module wrapper carries a default export map", !!styles, wrapper);
     if (styles) checkExports("dev", styles, theme, css);
   } finally {
-    srv.kill();
+    // Wait it out: a server still exiting writes its code cache into the app
+    // dir the cleanup below removes.
+    if (srv.exitCode === null && srv.signalCode === null) {
+      const exited = new Promise((resolve) => srv.once("exit", resolve));
+      srv.kill();
+      await exited;
+    }
   }
 }
 
@@ -146,6 +152,6 @@ function checkExports(mode, styles, theme, css) {
   }
 }
 
-fs.rmSync(app, { recursive: true, force: true });
+await rmrf(app);
 if (failed) process.exit(1);
 console.log("CSS-MODULES-OPTIONS E2E PASSED");
