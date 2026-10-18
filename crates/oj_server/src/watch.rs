@@ -680,9 +680,11 @@ fn handle_batch(
 ) {
     // Config/.env can't be hot-applied (read once at startup): restart, as
     // Vite does, naming the file relative to the launch dir as Vite's
-    // "<file> changed, restarting server" does.
+    // "<file> changed, restarting server" does. Vite restarts from
+    // handleHMRUpdate, so not with `server.hmr: false`.
     if let Some(file) = paths
         .iter()
+        .filter(|_| state.hmr_enabled)
         .find(|p| is_restart_trigger(p) || is_config_dependency(p))
     {
         let shown = STARTUP_CWD

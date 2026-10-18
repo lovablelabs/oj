@@ -163,6 +163,30 @@ async fn hmr_on_calls_watch_change_before_hot_update() {
     );
 }
 
+/// Vite restarts on a config or `.env` change from `handleHMRUpdate`, which
+/// `server.hmr: false` skips: the change still reaches `watchChange`.
+#[tokio::test(flavor = "multi_thread")]
+async fn hmr_off_config_and_env_edits_never_restart() {
+    let (app, server) = boot("{ hmr: false }", false).await;
+    app.write(&[(".env", "VITE_X=1\n")]);
+    log_until(&server, "the .env edit never reached watchChange", |l| {
+        count(l, "watch ", "/.env") >= 1
+    })
+    .await;
+    let config = format!("{}// edited\n", config("{ hmr: false }"));
+    app.write(&[("vite.config.mjs", &config)]);
+    log_until(&server, "the config edit never reached watchChange", |l| {
+        count(l, "watch update ", "/vite.config.mjs") >= 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let restarts = crate::take_restarts_for(&app.root);
+    assert!(
+        restarts.is_empty(),
+        "restarted with hmr: false: {restarts:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn watch_change_reports_create_and_delete() {
     let (app, server) = boot("{ hmr: false }", false).await;
