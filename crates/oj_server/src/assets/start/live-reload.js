@@ -163,39 +163,74 @@
     return true;
   };
   bus.send = send;
+  // `import.meta.hot.send`: one sent before the socket opens waits for it.
+  const outbox = (bus.outbox ??= []);
+  bus.post = (msg) => send(msg) || outbox.push(msg);
   bus.onRuntime = (runtime) => send({ type: "oj:client", id: runtime.clientId });
+  const notify = (event, data) => bus.runtime?.hmr?.notify(event, data);
+
+  // Vite's clearOverlayOrReloadOnFirstUpdate: an overlay up before the first
+  // update means the page opened on a failed build and its bundle never ran,
+  // so an update cannot fix it; otherwise the update clears the overlay.
+  let firstUpdate = true;
+  bus.beforeApply = () => {
+    const overlays = document.querySelectorAll("vite-error-overlay");
+    if (firstUpdate && overlays.length) {
+      snapshot();
+      location.reload();
+      return "reload";
+    }
+    if (enableOverlay) overlays.forEach((n) => (n.close ? n.close() : n.remove()));
+    firstUpdate = false;
+    return "continue";
+  };
+
   const connect = () => {
     ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/@oj-start/hmr");
     ws.onopen = () => {
       if (bus.runtime) send({ type: "oj:client", id: bus.runtime.clientId });
+      while (outbox.length && send(outbox[0])) outbox.shift();
     };
+    // One message at a time, as Vite's createHMRHandler queues them: a
+    // listener awaited for one finishes before the next message runs.
     ws.onmessage = (ev) => {
-      if (typeof ev.data === "string" && ev.data.startsWith("{")) {
-        let msg = null;
-        try {
-          msg = JSON.parse(ev.data);
-        } catch {}
-        // Vite's bundled dev error frame ({type:"error", err}): the client
-        // bundle failed, so the page keeps what it has and shows the overlay;
-        // the fixed rebundle's update or reload clears it.
-        if (msg && msg.type === "error") {
-          showError(msg.err);
-          return;
-        }
-        if (msg && msg.type === "oj:hmr" && bus.runtime && bus.runtime.ojApply) {
-          bus.runtime.ojApply(msg);
-          return;
-        }
-        if (msg && msg.type === "oj:css") {
-          if (msg.relink !== false) refreshStyles();
-          linkStyles(msg.add || []);
-          return;
-        }
-      }
-      snapshot();
-      location.reload();
+      inbox = inbox.then(() => handle(ev.data)).catch((err) => console.error("[oj]", err));
     };
     ws.onclose = () => setTimeout(connect, 1000);
+  };
+  let inbox = Promise.resolve();
+  const handle = async (data) => {
+    if (typeof data === "string" && data.startsWith("{")) {
+      let msg = null;
+      try {
+        msg = JSON.parse(data);
+      } catch {}
+      // Vite's bundled dev error frame ({type:"error", err}): the client
+      // bundle failed, so the page keeps what it has and shows the overlay;
+      // the fixed rebundle's update or reload clears it.
+      if (msg && msg.type === "error") {
+        await notify("vite:error", msg);
+        showError(msg.err);
+        return;
+      }
+      // A plugin's `server.ws.send`: to the page's `import.meta.hot.on`.
+      if (msg && msg.type === "custom") {
+        if (typeof msg.event === "string") await notify(msg.event, msg.data);
+        return;
+      }
+      if (msg && msg.type === "oj:hmr" && bus.runtime && bus.runtime.ojApply) {
+        bus.runtime.ojApply(msg);
+        return;
+      }
+      if (msg && msg.type === "oj:css") {
+        if (msg.relink !== false) refreshStyles();
+        linkStyles(msg.add || []);
+        return;
+      }
+    }
+    await notify("vite:beforeFullReload", { type: "full-reload" });
+    snapshot();
+    location.reload();
   };
   connect();
 })();

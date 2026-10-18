@@ -53,6 +53,16 @@ function freshModulePlugin(): Plugin {
   };
 }
 
+// Echoes a page's import.meta.hot.send back to it (server.ws.on -> send).
+function wsEchoPlugin(): Plugin {
+  return {
+    name: "fixture-ws-echo",
+    configureServer(server) {
+      server.ws.on("fixture:ping", (data) => server.ws.send("fixture:pong", { echo: data }));
+    },
+  };
+}
+
 export default defineConfig({
   // A non-default publicDir, to exercise oj adopting vite's publicDir.
   publicDir: "public",
@@ -70,6 +80,7 @@ export default defineConfig({
   plugins: [
     buildInfoPlugin(),
     freshModulePlugin(),
+    wsEchoPlugin(),
     // .mdx before react/tanstack so its output is plain JSX for them to handle.
     mdx(),
     // exportType:"default" makes a bare `.svg` import a component; the second

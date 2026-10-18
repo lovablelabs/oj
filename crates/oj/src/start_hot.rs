@@ -161,6 +161,8 @@ pub(crate) enum PageMessage {
     Delivered(String),
     /// The page found no boundary for an update and needs a reload.
     ReloadNeeded,
+    /// `import.meta.hot.send(event, data)`, the data as JSON.
+    Custom { event: String, data: String },
 }
 
 pub(crate) fn page_message(text: &str) -> Option<PageMessage> {
@@ -172,6 +174,13 @@ pub(crate) fn page_message(text: &str) -> Option<PageMessage> {
             .map(PageMessage::Client),
         "oj:delivered" => field("filename").map(PageMessage::Delivered),
         "oj:reload-needed" => Some(PageMessage::ReloadNeeded),
+        "custom" => Some(PageMessage::Custom {
+            event: field("event")?,
+            data: v
+                .get("data")
+                .unwrap_or(&serde_json::Value::Null)
+                .to_string(),
+        }),
         _ => None,
     }
 }
@@ -261,6 +270,21 @@ mod tests {
             page_message(r#"{"type":"oj:reload-needed","reason":"x"}"#),
             Some(PageMessage::ReloadNeeded)
         );
+        assert_eq!(
+            page_message(r#"{"type":"custom","event":"app:ping","data":{"n":1}}"#),
+            Some(PageMessage::Custom {
+                event: "app:ping".into(),
+                data: r#"{"n":1}"#.into()
+            })
+        );
+        assert_eq!(
+            page_message(r#"{"type":"custom","event":"app:ping"}"#),
+            Some(PageMessage::Custom {
+                event: "app:ping".into(),
+                data: "null".into()
+            })
+        );
+        assert_eq!(page_message(r#"{"type":"custom","data":1}"#), None);
         assert_eq!(page_message(r#"{"type":"oj:client","id":""}"#), None);
         assert_eq!(page_message("ping"), None);
     }

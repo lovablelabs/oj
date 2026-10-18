@@ -88,6 +88,21 @@ try {
     "the dev server did not report a hot update",
   );
 
+  // import.meta.hot.send reaches a plugin's server.ws.on, and its
+  // server.ws.send reply reaches the page's import.meta.hot.on.
+  fs.writeFileSync(
+    widget,
+    originals.get(widget).replace('"jsxglob:"', '"jsxhot:"') +
+      '\nif (import.meta.hot) {\n  import.meta.hot.on("fixture:pong", (d) => (window.__pong = d));\n' +
+      '  import.meta.hot.send("fixture:ping", { n: 1 });\n}\n',
+  );
+  await page.waitForFunction(() => window.__pong, null, { timeout: 30000 });
+  must(
+    JSON.stringify(await page.evaluate(() => window.__pong)) === '{"echo":{"n":1}}',
+    "the plugin's reply carried the wrong data",
+  );
+  must((await page.evaluate(() => window.__hotProbe)) === "kept", "the hot.send edit reloaded the page");
+
   // A reload right after serves the edit from the server render and bundle.
   const html = await (await fetch(`http://localhost:${PORT}/`)).text();
   must(html.includes("jsxhot:"), "the server render after a hot update is stale");

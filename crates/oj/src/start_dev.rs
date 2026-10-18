@@ -62,6 +62,9 @@ struct StartState {
     // update narration frames from (the start path's own /@oj-start/hmr socket
     // only drives the app iframe's live reload).
     ws_tx: broadcast::Sender<String>,
+    /// A page's `import.meta.hot.send` (event, JSON data), to the plugins'
+    /// `server.ws.on(event)` listeners.
+    to_plugins: ToPlugins,
     css_host: Option<Arc<oj_server::css_engine::CssEngine>>,
     /// The dev mode (`oj dev --mode`), handed to every node script respawn.
     mode: String,
@@ -498,6 +501,16 @@ pub async fn start_dev(
         build_error: std::sync::RwLock::new(boot_error.clone()),
         error_tx: broadcast::channel(16).0,
         ws_tx: built.reload_tx.clone(),
+        to_plugins: {
+            let host = built.plugin_host.clone();
+            Arc::new(move |event: &str, data: &str| {
+                let Some(host) = host.clone() else { return };
+                let (event, data) = (event.to_string(), data.to_string());
+                tokio::spawn(async move {
+                    let _ = host.ws_message(&event, &data).await;
+                });
+            })
+        },
         gate: built.hmr_gate.clone(),
         css_host,
         mode: mode.clone(),
@@ -2567,8 +2580,13 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                 // positive identity signal for readiness probes, exactly as
                 // Vite's `vite-hmr` echo is theirs. oj's own client offers no
                 // subprotocol and is untouched (no match, no header).
-                ws.protocols(["oj-hmr"])
-                    .on_upgrade(move |socket| start_hmr_socket(socket, rx, errors, replay, hot))
+                let events = PageEvents {
+                    frames: state.ws_tx.subscribe(),
+                    to_plugins: Arc::clone(&state.to_plugins),
+                };
+                ws.protocols(["oj-hmr"]).on_upgrade(move |socket| {
+                    start_hmr_socket(socket, rx, errors, replay, hot, Some(events))
+                })
             }
             Err(e) => e.into_response(),
         };
@@ -2645,12 +2663,30 @@ struct HotPage {
     reload_needed: Arc<dyn Fn() + Send + Sync>,
 }
 
+type ToPlugins = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// The custom events Vite's ws server carries both ways: a plugin's
+/// `server.ws.send` (on the editor channel) to the page, the page's
+/// `import.meta.hot.send` to the plugins.
+struct PageEvents {
+    frames: broadcast::Receiver<String>,
+    to_plugins: ToPlugins,
+}
+
+/// A plugin's frame on the editor channel the page should see: only custom
+/// events (the channel also carries the plain dev path's own HMR frames).
+fn page_custom_frame(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .is_ok_and(|v| v["type"] == "custom" && v["event"].is_string())
+}
+
 async fn start_hmr_socket(
     mut socket: WebSocket,
     mut rx: broadcast::Receiver<()>,
     mut errors: broadcast::Receiver<String>,
     replay: Option<String>,
     mut hot: Option<HotPage>,
+    mut events: Option<PageEvents>,
 ) {
     use crate::start_hot::PageMessage;
     if let Some(frame) = replay {
@@ -2666,7 +2702,24 @@ async fn start_hmr_socket(
                 None => std::future::pending().await,
             }
         };
+        let custom = async {
+            match events.as_mut() {
+                Some(e) => e.frames.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
+            custom = custom => match custom {
+                Ok(text) if page_custom_frame(&text) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // Events, not state: a lagged page skips them, as oj_server's
+                // HMR socket does.
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => events = None,
+            },
             error = errors.recv() => match error {
                 Ok(frame) => {
                     if socket.send(Message::Text(frame.into())).await.is_err() {
@@ -2709,8 +2762,13 @@ async fn start_hmr_socket(
                     break;
                 }
                 Some(Ok(Message::Text(text))) => {
+                    let message = crate::start_hot::page_message(&text);
+                    if let (Some(PageMessage::Custom { event, data }), Some(e)) = (&message, &events) {
+                        (e.to_plugins)(event, data);
+                        continue;
+                    }
                     let Some(h) = hot.as_ref() else { continue };
-                    match crate::start_hot::page_message(&text) {
+                    match message {
                         Some(PageMessage::Client(id)) => {
                             if let Some(old) = page.replace(id.clone()) {
                                 h.bundler.page_gone(&old);
@@ -2719,7 +2777,7 @@ async fn start_hmr_socket(
                         }
                         Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
                         Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
-                        None => {}
+                        Some(PageMessage::Custom { .. }) | None => {}
                     }
                 }
                 Some(Ok(_)) => {}
@@ -3490,6 +3548,10 @@ mod tests {
         url: String,
         reload_tx: broadcast::Sender<()>,
         error_tx: broadcast::Sender<String>,
+        /// The editor channel a plugin's `server.ws.send` lands on.
+        ws_tx: broadcast::Sender<String>,
+        /// What pages sent the plugins (event, data).
+        to_plugins: Arc<std::sync::Mutex<Vec<(String, String)>>>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -3504,6 +3566,8 @@ mod tests {
         broadcast::Sender<String>,
         Option<String>,
         Option<Arc<tokio::sync::Notify>>,
+        broadcast::Sender<String>,
+        ToPlugins,
     );
 
     impl HmrTestServer {
@@ -3521,24 +3585,57 @@ mod tests {
         ) -> Self {
             let (reload_tx, _) = broadcast::channel(16);
             let (error_tx, _) = broadcast::channel(16);
-            let app = axum::Router::new()
-                .route(
-                    "/@oj-start/hmr",
-                    axum::routing::get(
-                        |ws: WebSocketUpgrade,
-                         State((tx, error_tx, replay, gate)): State<HmrTestState>| async move {
-                            let rx = tx.subscribe();
-                            let errors = error_tx.subscribe();
-                            ws.on_upgrade(move |socket| async move {
-                                if let Some(gate) = gate {
-                                    gate.notified().await;
-                                }
-                                start_hmr_socket(socket, rx, errors, replay, None).await;
-                            })
-                        },
-                    ),
-                )
-                .with_state((reload_tx.clone(), error_tx.clone(), replay, gate));
+            let (ws_tx, _) = broadcast::channel(16);
+            let to_plugins = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink: ToPlugins = {
+                let to_plugins = Arc::clone(&to_plugins);
+                Arc::new(move |event: &str, data: &str| {
+                    to_plugins
+                        .lock()
+                        .unwrap()
+                        .push((event.to_string(), data.to_string()));
+                })
+            };
+            let app =
+                axum::Router::new()
+                    .route(
+                        "/@oj-start/hmr",
+                        axum::routing::get(
+                            |ws: WebSocketUpgrade,
+                             State((tx, error_tx, replay, gate, ws_tx, sink)): State<
+                                HmrTestState,
+                            >| async move {
+                                let rx = tx.subscribe();
+                                let errors = error_tx.subscribe();
+                                let events = PageEvents {
+                                    frames: ws_tx.subscribe(),
+                                    to_plugins: sink,
+                                };
+                                ws.on_upgrade(move |socket| async move {
+                                    if let Some(gate) = gate {
+                                        gate.notified().await;
+                                    }
+                                    start_hmr_socket(
+                                        socket,
+                                        rx,
+                                        errors,
+                                        replay,
+                                        None,
+                                        Some(events),
+                                    )
+                                    .await;
+                                })
+                            },
+                        ),
+                    )
+                    .with_state((
+                        reload_tx.clone(),
+                        error_tx.clone(),
+                        replay,
+                        gate,
+                        ws_tx.clone(),
+                        sink,
+                    ));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("ws://{}/@oj-start/hmr", listener.local_addr().unwrap());
             let task = tokio::spawn(async move {
@@ -3548,6 +3645,8 @@ mod tests {
                 url,
                 reload_tx,
                 error_tx,
+                ws_tx,
+                to_plugins,
                 task,
             }
         }
@@ -3605,6 +3704,53 @@ mod tests {
         assert_eq!(next_text(&mut client).await, later);
         server.reload_tx.send(()).unwrap();
         assert_eq!(next_text(&mut client).await, "reload");
+    }
+
+    /// Vite's ws server carries custom events both ways: a plugin's
+    /// `server.ws.send` reaches the page (only custom frames: the editor
+    /// channel also carries the plain dev path's own HMR frames), and the
+    /// page's `import.meta.hot.send` reaches `server.ws.on`. The HMR gate
+    /// (no hot page here) leaves both on, as Vite's send never depends on it.
+    #[tokio::test]
+    async fn start_hmr_relays_custom_events_between_the_page_and_the_plugins() {
+        let server = HmrTestServer::start().await;
+        let (mut client, _) = connect_async(&server.url).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while server.ws_tx.receiver_count() != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        server
+            .ws_tx
+            .send(r#"{"type":"full-reload","path":"*"}"#.to_string())
+            .unwrap();
+        let custom = r#"{"type":"custom","event":"app:pong","data":{"n":2}}"#.to_string();
+        server.ws_tx.send(custom.clone()).unwrap();
+        assert_eq!(
+            next_text(&mut client).await,
+            custom,
+            "the custom frame arrives, the full-reload frame before it never does"
+        );
+
+        client
+            .send(ClientMessage::Text(
+                r#"{"type":"custom","event":"app:ping","data":{"n":1}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while server.to_plugins.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the page's custom event reaches the plugins");
+        assert_eq!(
+            *server.to_plugins.lock().unwrap(),
+            vec![("app:ping".to_string(), r#"{"n":1}"#.to_string())]
+        );
     }
 
     #[test]

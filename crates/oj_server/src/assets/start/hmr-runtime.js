@@ -58,7 +58,14 @@ class OjHotContext {
     this.client.pruneMap.set(this.id, cb);
   }
   decline() {}
+  // Bundled dev never sends `vite:invalidate` to the server: no rebuild
+  // happens, the page's runtime re-runs the importers itself.
   invalidate(message) {
+    this.client.notify("vite:invalidate", {
+      path: this.id,
+      message,
+      firstInvalidatedBy: this.client.firstInvalidatedBy ?? this.id,
+    });
     this.client.invalidate(this.id, message);
   }
   on(event, cb) {
@@ -73,16 +80,21 @@ class OjHotContext {
   off(event, cb) {
     const drop = (map) => {
       const list = map.get(event);
-      if (list)
-        map.set(
-          event,
-          list.filter((l) => l !== cb),
-        );
+      if (!list) return;
+      const pruned = list.filter((l) => l !== cb);
+      if (pruned.length) map.set(event, pruned);
+      else map.delete(event);
     };
     drop(this.client.listeners);
     drop(this.own);
   }
-  send() {}
+  // To the dev server's `server.ws.on(event)` listeners; one sent before the
+  // socket (or live-reload.js) is up waits for it, as Vite's transport does.
+  send(event, data) {
+    const msg = { type: "custom", event, data };
+    if (__ojBus.post) __ojBus.post(msg);
+    else (__ojBus.outbox ??= []).push(msg);
+  }
 }
 
 class OjHmrClient {
@@ -170,16 +182,40 @@ class OjHmrClient {
   }
 
   push(frame) {
-    this.queue = this.queue.then(() => this.applyPush(frame)).catch((err) => this.failed(err));
+    this.queue = this.queue.then(() => this.applyPush(frame)).catch((err) => this.failed(err, frame.changedIds));
   }
 
   invalidate(id, message) {
-    this.queue = this.queue.then(() => this.applyInvalidate(id, message)).catch((err) => this.failed(err));
+    console.debug(`[oj] invalidate ${id}${message ? `: ${message}` : ""}`);
+    this.queue = this.queue.then(() => this.applyInvalidate(id)).catch((err) => this.failed(err, id));
   }
 
-  failed(err) {
-    console.error("[oj] hmr update failed", err);
-    this.requestReload("an update threw");
+  // Vite's warnFailedUpdate: the page keeps running, the next edit retries.
+  failed(err, path) {
+    if (!(err instanceof Error) || !err.message.includes("fetch")) console.error("[oj]", err);
+    console.error(
+      `[oj] Failed to reload ${path}. This could be due to syntax errors or importing non-existent modules. (see errors above)`,
+    );
+  }
+
+  // The page opened on a failed build, so its own bundle never ran: only a
+  // reload recovers it. Otherwise the update clears the error overlay.
+  beforeApply() {
+    return __ojBus.beforeApply ? __ojBus.beforeApply() : "continue";
+  }
+
+  payload(boundaries, firstInvalidatedBy) {
+    return {
+      type: "update",
+      updates: boundaries.map((b) => ({
+        type: "js-update",
+        path: b.boundary,
+        acceptedPath: b.acceptedVia,
+        timestamp: Date.now(),
+        isWithinCircularImport: b.circular,
+        firstInvalidatedBy,
+      })),
+    };
   }
 
   async applyPush({ url, seq, changedIds }) {
@@ -190,49 +226,44 @@ class OjHmrClient {
     const update = this.compute(changedIds);
     if (!update) return;
     if (update.reload) return this.requestReload(update.reload);
+    const payload = this.payload(update.boundaries, undefined);
+    await this.notify("vite:beforeUpdate", payload);
+    if (this.beforeApply() === "reload") return;
     try {
       await import(/* @vite-ignore */ url);
     } catch {
       return this.requestReload(`failed to import hmr patch ${url}`);
     }
-    // A fixed build's first update clears the overlay its failure raised.
-    for (const el of document.querySelectorAll("vite-error-overlay")) el.close ? el.close() : el.remove();
     await this.apply(update);
+    await this.notify("vite:afterUpdate", payload);
   }
 
-  async applyInvalidate(id, message) {
+  async applyInvalidate(id) {
     if (this.reloadPending) return;
-    console.debug(`[oj] invalidate ${id}${message ? `: ${message}` : ""}`);
     const firstInvalidatedBy = this.firstInvalidatedBy ?? id;
     const importers = this.runtime.getImporters(id).filter((p) => this.runtime.isExecuted(p));
     if (!importers.length) return this.requestReload(`no importers to handle the invalidation of ${id}`);
     const update = this.compute(importers, firstInvalidatedBy);
     if (!update) return;
     if (update.reload) return this.requestReload(update.reload);
+    const payload = this.payload(update.boundaries, firstInvalidatedBy);
+    await this.notify("vite:beforeUpdate", payload);
+    if (this.beforeApply() === "reload") return;
     await this.apply(update, firstInvalidatedBy);
+    await this.notify("vite:afterUpdate", payload);
   }
 
   async apply(update, firstInvalidatedBy) {
     for (const id of update.updateSet) {
       if (!this.runtime.hasFactory(id)) return this.requestReload(`no factory for module ${id}`);
     }
-    const payload = {
-      type: "update",
-      updates: update.boundaries.map((b) => ({
-        type: "js-update",
-        path: b.boundary,
-        acceptedPath: b.acceptedVia,
-        timestamp: Date.now(),
-      })),
-    };
-    await this.notify("vite:beforeUpdate", payload);
     // Collected before the caches drop: re-execution registers new ones.
     const applies = update.boundaries.map((b) => ({
       ...b,
       callbacks: this.hotModules.get(b.boundary)?.callbacks.filter((c) => c.deps.includes(b.acceptedVia)) ?? [],
     }));
     for (const id of update.updateSet) this.runtime.removeModuleCache(id);
-    for (const { acceptedVia, circular, callbacks } of applies) {
+    for (const { boundary, acceptedVia, circular, callbacks } of applies) {
       let fresh;
       try {
         this.runtime.initModule(acceptedVia);
@@ -247,8 +278,8 @@ class OjHmrClient {
       } finally {
         this.firstInvalidatedBy = undefined;
       }
+      console.debug(`[oj] hot updated: ${boundary === acceptedVia ? boundary : `${acceptedVia} via ${boundary}`}`);
     }
-    await this.notify("vite:afterUpdate", payload);
   }
 
   disposeModule(id) {
