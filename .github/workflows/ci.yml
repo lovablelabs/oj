@@ -473,6 +473,8 @@ jobs:
           lsof -ti:4173 -sTCP:LISTEN | xargs -r kill || true
       - name: build CLI flags (--base, --outDir, --assetsDir, --minify, --sourcemap, --manifest, -m, -c, --watch)
         run: node e2e/build-cli-flags.mjs
+      - name: build --watch rebuilds on edits and ignores outDir
+        run: node e2e/build-watch.mjs
       - name: preview options (cors, allowedHosts, headers, strictPort, appType mpa)
         run: node e2e/preview-options.mjs
       - name: bare Less imports resolve through node_modules

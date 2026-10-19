@@ -3332,15 +3332,6 @@ fn warn_unsupported_build_options(config: &oj_config::OjConfig) {
     if b.write == Some(false) {
         warn("write: false", "oj always writes the bundle to outDir.");
     }
-    if b.watch
-        .as_ref()
-        .is_some_and(|w| !w.is_null() && *w != serde_json::Value::Bool(false))
-    {
-        warn(
-            "watch",
-            "Run `oj build` again after changes, or use `oj dev`.",
-        );
-    }
     if b.license
         .as_ref()
         .is_some_and(|l| *l != serde_json::Value::Bool(false))
@@ -3358,24 +3349,56 @@ fn warn_unsupported_build_options(config: &oj_config::OjConfig) {
     }
 }
 
+/// What one `build_once` produced, so the watch loop can decide whether to
+/// keep running and what it must not react to.
+struct BuildOutcome {
+    out_dir: PathBuf,
+    watch: Option<crate::build_watch::WatchOptions>,
+}
+
 pub async fn build(
     root: PathBuf,
     cli_mode: Option<&str>,
     rolldown: &tokio::runtime::Handle,
     cli: CliOptions,
 ) -> anyhow::Result<()> {
+    let rolldown = rolldown.clone();
     let root = root
         .canonicalize()
         .with_context(|| format!("app root not found: {}", root.display()))?;
-    if cli.watch {
-        bail!("oj build --watch is not supported yet; run `oj build` again after changes, or use `oj dev`");
-    }
+    let cli_mode = cli_mode.map(str::to_string);
+    // The first build fails fast, as Vite's does; the watch loop below logs a
+    // failed rebuild and keeps watching instead of exiting.
+    let outcome = build_once(root.clone(), cli_mode.clone(), &rolldown, cli.clone()).await?;
+    let Some(watch) = outcome.watch else {
+        return Ok(());
+    };
+    let out_dir = outcome.out_dir;
+    crate::build_watch::run(root.clone(), out_dir, watch, move || {
+        let root = root.clone();
+        let cli_mode = cli_mode.clone();
+        let cli = cli.clone();
+        let rolldown = rolldown.clone();
+        async move { build_once(root, cli_mode, &rolldown, cli).await.map(|_| ()) }
+    })
+    .await
+}
+
+async fn build_once(
+    root: PathBuf,
+    cli_mode: Option<String>,
+    rolldown: &tokio::runtime::Handle,
+    cli: CliOptions,
+) -> anyhow::Result<BuildOutcome> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("app root not found: {}", root.display()))?;
     let ssr = cli.ssr.clone();
 
     // Vite: `mode = inlineConfig.mode || config.mode || "production"`; when the
     // config file itself names a mode and the CLI did not, the config is loaded
     // again under that mode (its function form and `.env.<mode>` depend on it).
-    let mut mode_owned = cli_mode.unwrap_or("production").to_string();
+    let mut mode_owned = cli_mode.as_deref().unwrap_or("production").to_string();
     let mut config =
         oj_config::load_with(&root, "build", &mode_owned).map_err(|e| anyhow::anyhow!("{e}"))?;
     if cli_mode.is_none() {
@@ -3412,6 +3435,10 @@ pub async fn build(
     }
     apply_cli_options(&mut config, &cli);
     warn_unsupported_build_options(&config);
+    let watch = crate::build_watch::resolve(
+        cli.watch,
+        config.build.as_ref().and_then(|b| b.watch.as_ref()),
+    );
     let mode: &str = &mode_owned;
     let build_cfg = config.build.clone().unwrap_or_default();
     let ro_opts = oj_config::rolldown_options(&config);
@@ -3435,7 +3462,7 @@ pub async fn build(
     let config_ssr_entry =
         oj_config::build_ssr_entry(&config).map_err(|e| anyhow::anyhow!("{e}"))?;
     if let Some(entry) = ssr.or(config_ssr_entry) {
-        return build_ssr_app(
+        build_ssr_app(
             &root,
             &out_dir,
             &entry,
@@ -3449,14 +3476,16 @@ pub async fn build(
             &cli,
             rolldown,
         )
-        .await;
+        .await?;
+        return Ok(BuildOutcome { out_dir, watch });
     }
 
     if let Some(lib) = build_cfg.lib.clone() {
-        return build_library(
+        build_library(
             &root, &out_dir, &config, lib, &app_env, minify, sourcemap, rolldown,
         )
-        .await;
+        .await?;
+        return Ok(BuildOutcome { out_dir, watch });
     }
 
     let base = normalize_base(config.base.as_deref().unwrap_or("/"));
@@ -4349,7 +4378,7 @@ pub async fn build(
             eprintln!("{}", chunk_size_warning(limit));
         }
     }
-    Ok(())
+    Ok(BuildOutcome { out_dir, watch })
 }
 
 /// The per-file report, largest first, with Vite's gzip column
