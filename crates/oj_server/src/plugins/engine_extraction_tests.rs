@@ -307,3 +307,61 @@ fn engine_job_envelope_round_trips_every_outcome() {
         }
     }
 }
+
+// The dep optimizer starts its job when the scan begins: `prepare` must run
+// (and its module state survive) before the payload, which arrives later.
+#[test]
+fn a_started_engine_job_prepares_before_its_payload_arrives() {
+    let _guard = lock();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"fx","version":"1.0.0","type":"module"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("job.mjs"),
+        r#"import { writeFileSync } from "node:fs";
+let prepared = null;
+export function prepare(input) {
+  prepared = input.tag;
+  writeFileSync(input.marker, "");
+  return null;
+}
+export function run(payload) {
+  return { prepared, payload };
+}
+"#,
+    )
+    .unwrap();
+    let marker = dir.path().join("prepared");
+    let job = start_engine_job(
+        dir.path(),
+        &dir.path().join("job.mjs"),
+        "run",
+        Some(std::time::Duration::from_secs(30)),
+        Some((
+            "prepare",
+            serde_json::json!({ "tag": "early", "marker": marker.to_string_lossy() }),
+        )),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "prepare never ran ahead of the payload"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let out = job.run(serde_json::json!({ "n": 1 })).unwrap();
+    assert_eq!(out["prepared"], "early");
+    assert_eq!(out["payload"]["n"], 1);
+}
+
+#[test]
+fn the_job_wait_ticks_fast_while_the_job_is_young() {
+    let ms = std::time::Duration::from_millis;
+    assert_eq!(poll_interval(ms(0)), ms(1));
+    assert_eq!(poll_interval(ms(300)), ms(3));
+    assert_eq!(poll_interval(std::time::Duration::from_secs(60)), ms(25));
+}

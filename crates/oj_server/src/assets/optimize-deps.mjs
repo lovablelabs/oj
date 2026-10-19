@@ -400,7 +400,18 @@ export function pickRolldown(appRoot, vendoredRolldown) {
 
 const importFile = async (file) => import(pathToFileURL(file).href);
 
-async function loadRolldown(bundler) {
+const loadedRolldowns = new Map();
+function loadRolldown(bundler) {
+  let loaded = loadedRolldowns.get(bundler.entry);
+  if (!loaded) {
+    loaded = importRolldown(bundler);
+    loadedRolldowns.set(bundler.entry, loaded);
+    loaded.catch(() => loadedRolldowns.delete(bundler.entry));
+  }
+  return loaded;
+}
+
+async function importRolldown(bundler) {
   const main = await importFile(bundler.entry);
   const experimental = await importFile(bundler.require.resolve("rolldown/experimental"));
   const utilsPath = tryResolve(bundler.require, "rolldown/utils");
@@ -1354,6 +1365,16 @@ function planEntries(candidates, { warn = true } = {}) {
   }
 
   return { entryPoints, nameOf };
+}
+
+/// Run by the job before its payload exists: oj starts the optimizer job when
+/// the scan begins, so rolldown is loaded by the time the scan result lands.
+/// A failure is left to `optimize()`, which loads again and reports it.
+export async function prepare({ root: appRoot, vendoredRolldown }) {
+  try {
+    await loadRolldown(pickRolldown(appRoot, vendoredRolldown));
+  } catch {}
+  return null;
 }
 
 export async function optimize(input) {

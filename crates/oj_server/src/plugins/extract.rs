@@ -81,9 +81,78 @@ pub(crate) fn run_engine_job(
     payload: serde_json::Value,
     deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
-    match ENGINE_JOB_EXE.get() {
-        Some(exe) => run_engine_job_subprocess(exe, root, module, export, &payload, deadline),
-        None => run_engine_job_in_process(root, module, export, payload, deadline),
+    start_engine_job(root, module, export, deadline, None).run(payload)
+}
+
+/// An engine job started before its payload exists: the engine boots and the
+/// module's `prepare` export runs (the dep optimizer loads rolldown there)
+/// while the caller still computes the payload, which [`EngineJob::run`]
+/// then hands over.
+pub(crate) struct EngineJob {
+    inner: JobInner,
+}
+
+enum JobInner {
+    Subprocess(Box<SubprocessJob>),
+    InProcess {
+        payload: std::sync::mpsc::Sender<serde_json::Value>,
+        done: std::thread::JoinHandle<Result<serde_json::Value, oj_js::EngineError>>,
+    },
+    Failed(oj_js::EngineError),
+}
+
+/// `prepare`: an export to call, with its payload, before the job payload.
+pub(crate) fn start_engine_job(
+    root: &Path,
+    module: &Path,
+    export: &str,
+    deadline: Option<std::time::Duration>,
+    prepare: Option<(&str, serde_json::Value)>,
+) -> EngineJob {
+    let inner = match ENGINE_JOB_EXE.get() {
+        Some(exe) => match SubprocessJob::spawn(exe, root, module, export, deadline, prepare) {
+            Ok(job) => JobInner::Subprocess(Box::new(job)),
+            Err(e) => JobInner::Failed(e),
+        },
+        None => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (root, module, export) =
+                (root.to_path_buf(), module.to_path_buf(), export.to_string());
+            let prepare = prepare.map(|(name, p)| (name.to_string(), p));
+            let done = std::thread::spawn(move || {
+                run_engine_job_in_process_with(
+                    &root,
+                    &module,
+                    &export,
+                    prepare,
+                    deadline,
+                    move || {
+                        rx.recv().map_err(|_| {
+                            oj_js::EngineError::Boot("engine job payload never came".into())
+                        })
+                    },
+                )
+            });
+            JobInner::InProcess { payload: tx, done }
+        }
+    };
+    EngineJob { inner }
+}
+
+impl EngineJob {
+    /// Hands over the payload and blocks until the job's outcome.
+    pub(crate) fn run(
+        self,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, oj_js::EngineError> {
+        match self.inner {
+            JobInner::Subprocess(job) => job.finish(&payload),
+            JobInner::InProcess { payload: tx, done } => {
+                let _ = tx.send(payload);
+                done.join().expect("engine job thread must not panic")
+            }
+            JobInner::Failed(e) => Err(e),
+        }
     }
 }
 
@@ -96,6 +165,19 @@ pub fn run_engine_job_in_process(
     payload: serde_json::Value,
     deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
+    run_engine_job_in_process_with(root, module, export, None, deadline, || Ok(payload))
+}
+
+/// [`run_engine_job_in_process`] with a `prepare` call first and the payload
+/// read only after it. A failed prepare is left to the job itself to report.
+pub fn run_engine_job_in_process_with(
+    root: &Path,
+    module: &Path,
+    export: &str,
+    prepare: Option<(String, serde_json::Value)>,
+    deadline: Option<std::time::Duration>,
+    payload: impl FnOnce() -> Result<serde_json::Value, oj_js::EngineError> + Send,
+) -> Result<serde_json::Value, oj_js::EngineError> {
     let run = move || {
         let mut config = oj_js::EngineConfig::new(root);
         config.default_deadline = deadline;
@@ -105,12 +187,12 @@ pub fn run_engine_job_in_process(
             .enable_all()
             .build()
             .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
-        rt.block_on(engine.call(
-            module.to_string_lossy().into_owned(),
-            export,
-            vec![payload],
-            None,
-        ))
+        let module = module.to_string_lossy().into_owned();
+        if let Some((name, input)) = prepare {
+            let _ = rt.block_on(engine.call(module.clone(), &name, vec![input], None));
+        }
+        let payload = payload()?;
+        rt.block_on(engine.call(module, export, vec![payload], None))
         // Dropping the engine joins its thread; pending JS work dies with the isolate.
     };
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -167,109 +249,178 @@ pub(crate) fn engine_job_outcome(
     })
 }
 
-pub(crate) fn run_engine_job_subprocess(
-    exe: &Path,
-    root: &Path,
-    module: &Path,
-    export: &str,
-    payload: &serde_json::Value,
+/// A spawned `oj engine-job` child: booting, or running `prepare`, until
+/// [`SubprocessJob::finish`] writes its payload.
+struct SubprocessJob {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    result_file: PathBuf,
+    export: String,
     deadline: Option<std::time::Duration>,
-) -> Result<serde_json::Value, oj_js::EngineError> {
-    static JOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = JOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let result_file =
-        std::env::temp_dir().join(format!("oj-engine-job-{}-{seq}.json", std::process::id()));
-    let boot = |m: String| oj_js::EngineError::Boot(m);
-    // Inheriting the parent's cwd fails the spawn with ENOENT when that dir was
-    // deleted (hosts chdir at boot); a missing root falls back to the temp dir.
-    let job_cwd = if root.is_dir() {
-        root.to_path_buf()
-    } else {
-        std::env::temp_dir()
-    };
-    let mut child = std::process::Command::new(exe)
-        .arg("engine-job")
-        .current_dir(&job_cwd)
-        .arg(module)
-        .arg("--root")
-        .arg(root)
-        .arg("--export")
-        .arg(export)
-        .arg("--timeout-secs")
-        // 0 = unbounded; a bounded job's child enforces the deadline itself.
-        .arg(deadline.map_or(0, |t| t.as_secs().max(1)).to_string())
-        .arg("--result")
-        .arg(&result_file)
-        .env(PARENT_PID_ENV, std::process::id().to_string())
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            boot(format!(
-                "could not run the engine job child (cwd {}): {e}",
-                job_cwd.display()
-            ))
-        })?;
-    {
+}
+
+impl SubprocessJob {
+    fn spawn(
+        exe: &Path,
+        root: &Path,
+        module: &Path,
+        export: &str,
+        deadline: Option<std::time::Duration>,
+        prepare: Option<(&str, serde_json::Value)>,
+    ) -> Result<SubprocessJob, oj_js::EngineError> {
+        static JOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = JOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let result_file =
+            std::env::temp_dir().join(format!("oj-engine-job-{}-{seq}.json", std::process::id()));
+        let boot = |m: String| oj_js::EngineError::Boot(m);
+        // Inheriting the parent's cwd fails the spawn with ENOENT when that dir was
+        // deleted (hosts chdir at boot); a missing root falls back to the temp dir.
+        let job_cwd = if root.is_dir() {
+            root.to_path_buf()
+        } else {
+            std::env::temp_dir()
+        };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("engine-job")
+            .current_dir(&job_cwd)
+            .arg(module)
+            .arg("--root")
+            .arg(root)
+            .arg("--export")
+            .arg(export)
+            .arg("--timeout-secs")
+            // 0 = unbounded; a bounded job's child enforces the deadline itself.
+            .arg(deadline.map_or(0, |t| t.as_secs().max(1)).to_string())
+            .arg("--result")
+            .arg(&result_file);
+        if let Some((name, _)) = &prepare {
+            cmd.arg("--prepare").arg(name);
+        }
+        let mut child = cmd
+            .env(PARENT_PID_ENV, std::process::id().to_string())
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                boot(format!(
+                    "could not run the engine job child (cwd {}): {e}",
+                    job_cwd.display()
+                ))
+            })?;
+        let stdin = child.stdin.take().expect("piped stdin");
+        let mut job = SubprocessJob {
+            child,
+            stdin,
+            result_file,
+            export: export.to_string(),
+            deadline,
+        };
+        // The prepare payload is the first line; the job payload follows it.
+        if let Some((_, input)) = prepare {
+            if let Err(e) = job.send(&input, b"\n") {
+                job.abort();
+                return Err(e);
+            }
+        }
+        Ok(job)
+    }
+
+    fn send(&mut self, value: &serde_json::Value, end: &[u8]) -> Result<(), oj_js::EngineError> {
         use std::io::Write;
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        let sent = serde_json::to_string(payload)
-            .map_err(|e| boot(format!("engine job payload: {e}")))
-            .and_then(|json| {
-                stdin
-                    .write_all(json.as_bytes())
-                    .map_err(|e| boot(format!("engine job payload: {e}")))
+        serde_json::to_vec(value)
+            .map_err(|e| e.to_string())
+            .and_then(|mut json| {
+                json.extend_from_slice(end);
+                self.stdin.write_all(&json).map_err(|e| e.to_string())
+            })
+            .map_err(|e| oj_js::EngineError::Boot(format!("engine job payload: {e}")))
+    }
+
+    fn abort(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.result_file);
+    }
+
+    fn finish(
+        mut self,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, oj_js::EngineError> {
+        let boot = |m: String| oj_js::EngineError::Boot(m);
+        if let Err(e) = self.send(payload, b"") {
+            // A child that died while it prepared closed the pipe: its exit
+            // says more than the failed write.
+            let died = self.child.try_wait().ok().flatten();
+            self.abort();
+            return Err(match died {
+                Some(status) => boot(format!("the engine job child died: {status}")),
+                None => e,
             });
-        if let Err(e) = sent {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(e);
         }
-        // Dropping closes the pipe; the child's read_to_string completes.
-    }
-    // A bounded job's child enforces the deadline itself; the grace covers
-    // spawn and result writing, then a wedged child is killed. An unbounded
-    // job waits however long the work takes (Vite's shape for config loading
-    // and the pre-bundle) and logs progress so a hang is visible.
-    let started = std::time::Instant::now();
-    let kill_at = deadline.map(|t| started + t + std::time::Duration::from_secs(15));
-    let mut next_log = started + std::time::Duration::from_secs(30);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if kill_at.is_some_and(|at| std::time::Instant::now() >= at) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = std::fs::remove_file(&result_file);
-                return Err(oj_js::EngineError::Deadline);
-            }
-            Ok(None) => {
-                if kill_at.is_none() && std::time::Instant::now() >= next_log {
-                    eprintln!(
-                        "oj: the {export} engine job is still running ({}s)…",
-                        started.elapsed().as_secs()
-                    );
-                    next_log += std::time::Duration::from_secs(30);
+        // Closing the pipe completes the child's payload read.
+        let SubprocessJob {
+            mut child,
+            stdin,
+            result_file,
+            export,
+            deadline,
+        } = self;
+        drop(stdin);
+        // A bounded job's child enforces the deadline itself; the grace covers
+        // spawn and result writing, then a wedged child is killed. An unbounded
+        // job waits however long the work takes (Vite's shape for config loading
+        // and the pre-bundle) and logs progress so a hang is visible.
+        let started = std::time::Instant::now();
+        let kill_at = deadline.map(|t| started + t + std::time::Duration::from_secs(15));
+        let mut next_log = started + std::time::Duration::from_secs(30);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if kill_at.is_some_and(|at| std::time::Instant::now() >= at) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(&result_file);
+                    return Err(oj_js::EngineError::Deadline);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(25));
+                Ok(None) => {
+                    if kill_at.is_none() && std::time::Instant::now() >= next_log {
+                        eprintln!(
+                            "oj: the {export} engine job is still running ({}s)…",
+                            started.elapsed().as_secs()
+                        );
+                        next_log += std::time::Duration::from_secs(30);
+                    }
+                    std::thread::sleep(poll_interval(started.elapsed()));
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&result_file);
+                    return Err(boot(format!(
+                        "could not wait for the engine job child: {e}"
+                    )));
+                }
             }
-            Err(e) => {
-                let _ = std::fs::remove_file(&result_file);
-                return Err(boot(format!(
-                    "could not wait for the engine job child: {e}"
-                )));
-            }
+        };
+        let envelope = std::fs::read_to_string(&result_file);
+        let _ = std::fs::remove_file(&result_file);
+        if !status.success() {
+            // A crash means an addon or engine took the child down instead of the caller.
+            return Err(boot(format!("the engine job child died: {status}")));
         }
-    };
-    let envelope = std::fs::read_to_string(&result_file);
-    let _ = std::fs::remove_file(&result_file);
-    if !status.success() {
-        // A crash means an addon or engine took the child down instead of the caller.
-        return Err(boot(format!("the engine job child died: {status}")));
+        let envelope = envelope.map_err(|e| boot(format!("engine job result: {e}")))?;
+        let envelope: serde_json::Value =
+            serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
+        engine_job_outcome(envelope)
     }
-    let envelope = envelope.map_err(|e| boot(format!("engine job result: {e}")))?;
-    let envelope: serde_json::Value =
-        serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
-    engine_job_outcome(envelope)
+}
+
+/// How long the wait sleeps between checks on the child: a job is often done
+/// within a few hundred ms (config extraction, a small pre-bundle), which a
+/// fixed 25ms tick would overshoot by half a tick on average, so the tick
+/// starts at 1ms and grows with the job's age.
+pub(crate) fn poll_interval(elapsed: std::time::Duration) -> std::time::Duration {
+    (elapsed / 100).clamp(
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_millis(25),
+    )
 }
 
 /// Evaluate the app's `vite.config` for `command` ("serve" | "build") and `mode`.

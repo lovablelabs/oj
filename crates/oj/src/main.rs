@@ -118,6 +118,11 @@ enum Command {
         timeout_secs: u64,
         #[arg(long)]
         result: PathBuf,
+        /// An export run before the payload is read; its own payload is the
+        /// first line on stdin. The job's spawner starts it early so the
+        /// engine is booted and the export's setup done when the payload lands.
+        #[arg(long)]
+        prepare: Option<String>,
     },
     Build {
         root: Option<PathBuf>,
@@ -190,6 +195,22 @@ enum Command {
         #[arg(long)]
         base: Option<String>,
     },
+}
+
+/// Ends an engine-job child once its result is on disk. The spawner waits for
+/// the exit, and a normal one runs the static teardown of whatever native
+/// addons the job loaded (rolldown's included) first, all of it wasted on a
+/// process whose work is done.
+fn exit_now() -> anyhow::Result<()> {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    #[cfg(unix)]
+    unsafe {
+        libc::_exit(0)
+    }
+    #[cfg(not(unix))]
+    Ok(())
 }
 
 /// Self-reap when the parent dev server dies. The one-shot child subcommands
@@ -574,26 +595,42 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             export,
             timeout_secs,
             result,
+            prepare,
         } => {
-            let mut buf = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
-                .context("engine-job payload on stdin")?;
-            let payload: serde_json::Value =
-                serde_json::from_str(&buf).context("engine-job payload json")?;
+            let prepare = match prepare {
+                Some(name) => {
+                    let mut line = String::new();
+                    std::io::stdin()
+                        .read_line(&mut line)
+                        .context("engine-job prepare payload on stdin")?;
+                    let input: serde_json::Value =
+                        serde_json::from_str(&line).context("engine-job prepare payload json")?;
+                    Some((name, input))
+                }
+                None => None,
+            };
+            let payload = || {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .map_err(|e| e.to_string())
+                    .and_then(|_| serde_json::from_str(&buf).map_err(|e| e.to_string()))
+                    .map_err(|e| oj_js::EngineError::Boot(format!("engine-job payload: {e}")))
+            };
             // A job failure travels inside the envelope; a nonzero exit is
             // reserved for the harness itself (or a native addon crash).
             // 0 = unbounded (the spawner's wait owns patience and logging).
-            let outcome = oj_server::plugins::run_engine_job_in_process(
+            let outcome = oj_server::plugins::run_engine_job_in_process_with(
                 &root,
                 &module,
                 &export,
-                payload,
+                prepare,
                 (timeout_secs > 0).then(|| std::time::Duration::from_secs(timeout_secs)),
+                payload,
             );
             let envelope = oj_server::plugins::engine_job_envelope(&outcome);
             std::fs::write(&result, serde_json::to_string(&envelope)?)
                 .context("engine-job result write")?;
-            Ok(())
+            exit_now()
         }
         Command::Compile { file, prod } => {
             let source = std::fs::read_to_string(&file)

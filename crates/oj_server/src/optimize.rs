@@ -1342,6 +1342,20 @@ async fn run_optimizer(
             "preserveSymlinks": input.preserve_symlinks,
         },
     });
+    // Started ahead of the scan: the job's process and engine boot and it
+    // loads rolldown while the scan runs, so the bundle starts the moment the
+    // scan result lands (Vite's optimizer runs in the dev server's process,
+    // with rolldown already loaded).
+    let job = crate::plugins::start_engine_job(
+        root,
+        &script,
+        "optimize",
+        None,
+        Some((
+            "prepare",
+            serde_json::json!({ "root": cfg["root"], "vendoredRolldown": cfg["vendoredRolldown"] }),
+        )),
+    );
     // Not gated on discovery: with noDiscovery the scan still resolves the
     // include list, and Vite's container resolves manual includes through
     // plugins either way.
@@ -1359,17 +1373,13 @@ async fn run_optimizer(
             .cloned()
             .unwrap_or(serde_json::Value::Null);
     }
-    let job_root = root.to_path_buf();
-    let job_script = script.clone();
     // spawn_blocking: the engine job blocks its thread for the whole
     // pre-bundle (see run_engine_job), which must not park a runtime worker.
     // Unbounded, as Vite's optimizer run is: a large dep set bundles as long
     // as it needs (the job wait logs progress); only job death fails it.
-    let result = tokio::task::spawn_blocking(move || {
-        crate::plugins::run_engine_job(&job_root, &job_script, "optimize", cfg, None)
-    })
-    .await
-    .ok()?;
+    let result = tokio::task::spawn_blocking(move || job.run(cfg))
+        .await
+        .ok()?;
     let v = match result {
         Ok(v) => v,
         Err(e) => {
