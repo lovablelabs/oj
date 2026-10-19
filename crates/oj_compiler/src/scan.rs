@@ -33,7 +33,7 @@ fn with_program<T: Default>(source_text: &str, path: &Path, f: impl FnOnce(&Prog
     };
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, source_type).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return T::default();
     }
     f(&parsed.program)

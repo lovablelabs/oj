@@ -24,7 +24,7 @@ glob = "0.3.4"
 memchr.workspace = true
 serde_json.workspace = true
 oxc_codegen.workspace = true
-oxc_sourcemap = "8.0.2"
+oxc_sourcemap = "9.0.0"
 thiserror.workspace = true
 
 [dev-dependencies]

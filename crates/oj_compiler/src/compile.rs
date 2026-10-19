@@ -241,7 +241,7 @@ fn parse<'a>(
     source_type: SourceType,
 ) -> Result<Program<'a>, CompileError> {
     let parsed = Parser::new(allocator, source_text, source_type).parse();
-    if parsed.panicked || !parsed.diagnostics.is_empty() {
+    if parsed.fatal_error || !parsed.diagnostics.is_empty() {
         return Err(CompileError::Parse {
             path: path.to_path_buf(),
             message: diagnostics_message!(parsed.diagnostics, source_text),
@@ -278,7 +278,7 @@ fn validate_emitted(path: &Path, code: &str, source_type: SourceType) -> Result<
     let parsed = Parser::new(&allocator, code, grammar).parse();
     // Strict-mode early errors (`++eval` in a module) live in the checker,
     // not the grammar, so the parse alone is not the browser's bar.
-    let checked = if parsed.panicked || !parsed.diagnostics.is_empty() {
+    let checked = if parsed.fatal_error || !parsed.diagnostics.is_empty() {
         parsed.diagnostics
     } else {
         SemanticBuilder::new()

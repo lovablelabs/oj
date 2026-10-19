@@ -1344,6 +1344,6 @@ pub async fn run_web_worker(
     internal_handle.terminate();
   }
 
-  debug!("Worker thread shuts down {}", &name);
+  debug!("Worker thread shuts down {}", name);
   Ok(())
 }

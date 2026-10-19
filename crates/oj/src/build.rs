@@ -13,7 +13,7 @@ use oj_server::plugins::PluginHost;
 use rolldown::{
     BundlerBuilder, BundlerOptions, InputItem, OutputFormat, RawMinifyOptions, SourceMapType,
 };
-use rolldown_plugin::__inner::SharedPluginable;
+use rolldown_plugin::__inner::{Pluginable, SharedPluginable};
 use rolldown_plugin::{
     HookLoadArgs, HookLoadOutput, HookLoadReturn, HookRenderChunkArgs, HookRenderChunkOutput,
     HookRenderChunkReturn, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn,
@@ -487,6 +487,7 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
             include_dependencies_recursively: obj
                 .get("includeDependenciesRecursively")
                 .and_then(|v| v.as_bool()),
+            ..Default::default()
         },
     ))
 }
@@ -1020,7 +1021,7 @@ async fn bundle_worker_inline(
     opts: Option<&Arc<WorkerBundleOpts>>,
     nested: OjCssPlugin,
 ) -> anyhow::Result<String> {
-    let plugins: Vec<SharedPluginable> = vec![Arc::new(nested)];
+    let plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(nested)];
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -2705,7 +2706,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
     if let Some(host) = &plugin_host {
-        oj_plugins.push(Arc::new(OjUserPlugin::new(
+        oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
@@ -2722,7 +2723,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         pairs.extend(plugin_defines);
         pairs
     };
-    oj_plugins.push(Arc::new(OjCssPlugin {
+    oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
         has_postcss: oj_server::has_postcss_config(&root),
@@ -3985,13 +3986,13 @@ pub(crate) async fn build_ssr(
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
     if let Some(host) = &plugin_host {
-        oj_plugins.push(Arc::new(OjUserPlugin::new(
+        oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
         )));
     }
-    oj_plugins.push(Arc::new(OjCssPlugin {
+    oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
         has_postcss: oj_server::has_postcss_config(root),
@@ -4168,7 +4169,7 @@ async fn build_server_fns(
     })));
     let result = async {
         let mut bundler = BundlerBuilder::default()
-            .with_plugins(vec![Arc::new(OjCssPlugin {
+            .with_plugins(vec![Pluginable::new_shared(OjCssPlugin {
                 collected: Arc::clone(&collected),
                 root: root.to_path_buf(),
                 has_postcss: oj_server::has_postcss_config(root),
@@ -4564,13 +4565,13 @@ async fn build_client_entry(
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
     if let Some(host) = &plugin_host {
-        oj_plugins.push(Arc::new(OjUserPlugin::new(
+        oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
         )));
     }
-    oj_plugins.push(Arc::new(OjCssPlugin {
+    oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
         has_postcss: oj_server::has_postcss_config(root),
@@ -4820,15 +4821,17 @@ async fn build_library(
         let minify_opts = if minify && matches!(fmt.as_str(), "es" | "esm") {
             RawMinifyOptions::Object(rolldown_common::RawMinifyOptionsDetailed {
                 mangle: Some(rolldown_common::RawMangleOptions::default()),
+                mangle_properties: None,
                 compress: Some(rolldown_common::RawCompressOptions::default()),
                 remove_whitespace: false,
+                ascii_only: false,
             })
         } else {
             rolldown_minify(minify)
         };
 
         let mut bundler = BundlerBuilder::default()
-            .with_plugins(vec![Arc::new(OjCssPlugin {
+            .with_plugins(vec![Pluginable::new_shared(OjCssPlugin {
                 collected: Arc::clone(&collected_css),
                 root: root.to_path_buf(),
                 has_postcss: oj_server::has_postcss_config(root),

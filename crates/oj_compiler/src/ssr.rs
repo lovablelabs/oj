@@ -149,7 +149,7 @@ pub fn ssr_transform(source: &str, path: &Path) -> String {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(&allocator, source, source_type).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return source.to_string();
     }
     let program = parsed.program;

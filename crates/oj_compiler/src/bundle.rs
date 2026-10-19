@@ -77,7 +77,7 @@ pub fn compile_factory(
     // (which allows `with`, top-level `this` and other script-only forms).
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, source_type_for(path)).parse();
-    if parsed.panicked || !has_module_syntax(&parsed.program) {
+    if parsed.fatal_error || !has_module_syntax(&parsed.program) {
         return compile_cjs_factory(path, source_text, resolve);
     }
     if !parsed.diagnostics.is_empty() {
@@ -166,7 +166,7 @@ fn compile_esm_factory(
 ) -> Result<FactoryOutput, CompileError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, source_type_for(path)).parse();
-    if parsed.panicked || !parsed.diagnostics.is_empty() {
+    if parsed.fatal_error || !parsed.diagnostics.is_empty() {
         return Err(parse_error(path, source_text, parsed));
     }
     compile_esm_factory_from_parsed(
@@ -558,7 +558,7 @@ fn parse_snippet<'a>(
 ) -> Result<Vec<Statement<'a>>, CompileError> {
     let source: &'a str = allocator.alloc_str(source);
     let parsed = Parser::new(allocator, source, SourceType::cjs()).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return Err(CompileError::Transform {
             path: path.to_path_buf(),
             message: format!("internal: snippet failed to parse: {source}"),

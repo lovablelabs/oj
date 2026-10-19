@@ -44,9 +44,9 @@ rustls-pemfile = "2.2"
 hyper = "1.11"
 hyper-util = { version = "0.1.20", features = ["server", "server-auto", "http1", "http2", "service", "tokio"] }
 futures-util = "0.3"
-rolldown = "=1.2.5"
-rolldown_common = "=1.2.5"
-rolldown_plugin = "=1.2.5"
+rolldown = "=1.2.14"
+rolldown_common = "=1.2.14"
+rolldown_plugin = "=1.2.14"
 
 [dev-dependencies]
 tempfile.workspace = true

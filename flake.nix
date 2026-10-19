@@ -84,21 +84,21 @@
       # the fallback for oj builds that vendor nothing (resolve-pkg.mjs).
       # On a bump: update the version and re-prefetch the hashes
       # (nix store prefetch-file <registry tarball url>).
-      rolldownVersion = "1.2.1";
+      rolldownVersion = "1.2.14";
       rolldownParts = pkgs:
         let
           binding = {
-            x86_64-linux = { name = "binding-linux-x64-gnu"; hash = "sha256-XGQQ1QeuyO6AYcAdLhSOX7jYV1/vc+1jP9ofijepdjI="; };
-            aarch64-linux = { name = "binding-linux-arm64-gnu"; hash = "sha256-i/r/gxVuu+9sH3Gz9Cs0HgI5oyxheU5DywfXTN2fuYY="; };
-            aarch64-darwin = { name = "binding-darwin-arm64"; hash = "sha256-LmQwkt6QqhNj7zMqPDk21Ow0vmmn9Es0zmdCt5STI1I="; };
+            x86_64-linux = { name = "binding-linux-x64-gnu"; hash = "sha256-NlRy/Z9Sk8drkFshCtZ1arfCxW+ZIxzlW5KjHAIRWU4="; };
+            aarch64-linux = { name = "binding-linux-arm64-gnu"; hash = "sha256-wtdj9xC8FEb9es16nOl5DK1sHbk/Qgxu2P5pj5V/Fog="; };
+            aarch64-darwin = { name = "binding-darwin-arm64"; hash = "sha256-gndqPF7/d/AAGPeV6kyvl+xmjiYinp4ndllXBWjlTRo="; };
             # No x86_64-darwin runner in nix.yml: this entry is the one the
             # CI e2e never exercises — double-check name+hash on bumps.
-            x86_64-darwin = { name = "binding-darwin-x64"; hash = "sha256-/yxkh+aXEDcR54NpQ4NeulZEcn+q+vFzny49OWDe/GE="; };
+            x86_64-darwin = { name = "binding-darwin-x64"; hash = "sha256-u1M4KuF10hZHM4tbj/2SziMitdC3co49dZA8uVPPGZA="; };
           }.${pkgs.stdenv.hostPlatform.system};
         in [
-          { dir = "rolldown"; url = "https://registry.npmjs.org/rolldown/-/rolldown-${rolldownVersion}.tgz"; hash = "sha256-qS004O4rgHfd0zqKVGMLPx1oG0ARKFlO3S/OTPG47D8="; }
-          # rolldown pins "=0.142.0"; pluginutils is "^1.0.0".
-          { dir = "@oxc-project/types"; url = "https://registry.npmjs.org/@oxc-project/types/-/types-0.142.0.tgz"; hash = "sha256-ZvQqgrkZcVBEDv//rkG0COzlPPZK5oh2c7EKEv8YPVk="; }
+          { dir = "rolldown"; url = "https://registry.npmjs.org/rolldown/-/rolldown-${rolldownVersion}.tgz"; hash = "sha256-nBQvyh1b+5yaa1ij2hbbddnTDz5vh3jZSnW5dsgG5T0="; }
+          # rolldown pins "=0.154.0"; pluginutils is "^1.0.0".
+          { dir = "@oxc-project/types"; url = "https://registry.npmjs.org/@oxc-project/types/-/types-0.154.0.tgz"; hash = "sha256-aMjdC+Y6JVOXrc2WSLGuwEz09Mz6BCVBwV5yHIXGVTQ="; }
           { dir = "@rolldown/pluginutils"; url = "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz"; hash = "sha256-E/yzQj03+VqOhhwXLkti/STyJBK+TpQghzZyQkduNAA="; }
           { dir = "@rolldown/${binding.name}"; url = "https://registry.npmjs.org/@rolldown/${binding.name}/-/${binding.name}-${rolldownVersion}.tgz"; hash = binding.hash; }
         ];
@@ -114,9 +114,9 @@
       # (non-fixed-output) derivation: correct, just not exempt from
       # corroboration gates, which only darwin+linux pipelines run today.
       rolldownVendorHashes = {
-        aarch64-darwin = "sha256-NzMJ0hT0fFeF5oF0+gcQtrun0GGbAJ4Ou8TkfxZ3QZ4=";
-        x86_64-linux = "sha256-Lh/fwf36ehl/z/YcoYwij3T+2ApIx1F7gNAL/WfIe/Y=";
-        aarch64-linux = "sha256-bwsJB6r9xQzDtdQ+NB4URtZ+DdQkFLsgP/b4nJ0XCSg=";
+        aarch64-darwin = "sha256-Au+t6Qe3m197m376rOkexDMdhh5M/qlsfOKWdDvRPjU=";
+        x86_64-linux = "sha256-ZWt8quX82jkA8471PicZk2J3+Fb5aoPWSwJ4d6jzWC0=";
+        aarch64-linux = "sha256-DmMsmL1Azb1srMHT4eLfqq7lgu4KmWa3bITdau4J0HM=";
       };
       rolldownVendor = pkgs:
         pkgs.runCommand "oj-rolldown-vendor-${rolldownVersion}" (

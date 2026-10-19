@@ -87,7 +87,7 @@ fn parse_program<'a>(
 ) -> Option<Program<'a>> {
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
     let parsed = Parser::new(allocator, source, source_type).parse();
-    (!parsed.panicked).then_some(parsed.program)
+    (!parsed.fatal_error).then_some(parsed.program)
 }
 
 /// Parses a synthesized expression into the arena.

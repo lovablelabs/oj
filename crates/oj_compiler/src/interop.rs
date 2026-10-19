@@ -105,7 +105,7 @@ pub fn rewrite_cjs_interop_logged(
     let source_type = SourceType::from_path(path).unwrap_or_default();
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, source_type).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return None;
     }
 

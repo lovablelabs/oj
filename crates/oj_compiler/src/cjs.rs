@@ -84,7 +84,7 @@ fn dedup_in_order(items: Vec<String>) -> Vec<String> {
 fn has_module_syntax(_path: &Path, source_text: &str) -> bool {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, SourceType::mjs()).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return false;
     }
     parsed.program.body.iter().any(|stmt| {
@@ -109,7 +109,7 @@ struct LoweredCjs {
 fn lower_and_analyze(path: &Path, source_text: &str) -> Result<LoweredCjs, CompileError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, SourceType::cjs()).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         let message = parsed
             .diagnostics
             .into_iter()
