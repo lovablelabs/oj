@@ -40,8 +40,12 @@ struct Writer {
 /// on this key — entries embed a source hash and V8 rejects foreign
 /// bytecode — it only keeps incompatible generations from piling up as dead
 /// weight.
+///
+/// The `-r1` suffix marks entries created after their module ran (the
+/// vendored deno_core): an older entry still hits and is never recreated,
+/// so the generation moves once and the old one is swept.
 pub fn engine_abi_key() -> String {
-    format!("v8-{}", deno_core::v8::VERSION_STRING)
+    format!("v8-{}-r1", deno_core::v8::VERSION_STRING)
 }
 
 /// Stable across processes: `DefaultHasher::new()` is keyless SipHash, so two
@@ -388,7 +392,7 @@ mod tests {
     #[test]
     fn abi_key_is_the_v8_version_not_the_crate_version() {
         let key = engine_abi_key();
-        assert_eq!(key, format!("v8-{}", deno_core::v8::VERSION_STRING));
+        assert_eq!(key, format!("v8-{}-r1", deno_core::v8::VERSION_STRING));
         // Guard against reintroducing release-version keying. (Skip the
         // assert only in the pathological case where the V8 version string
         // itself embeds the crate version.)

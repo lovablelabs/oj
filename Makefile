@@ -1,7 +1,7 @@
 # The vendored Deno forks (oj_deno_*) keep upstream sources verbatim, so they
 # are formatted with upstream's rustfmt.toml and not linted as targets; the
-# same forks, reference/ and the e2e fixtures are left out of oxfmt too (see
-# .oxfmtrc.json).
+# same forks, vendor/ (the patched deno_core), reference/ and the e2e fixtures
+# are left out of oxfmt too (see .oxfmtrc.json).
 JS_FILES = '**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'
 # The pinned oxfmt release binary (version and checksums in the script),
 # fetched into .tools/ on first use; no Node or npm needed. Run inside the

@@ -1,0 +1,187 @@
+--- a/modules/map.rs	2006-07-24 03:21:28
++++ b/modules/map.rs	2026-10-19 23:07:33
+@@ -95,6 +95,12 @@
+   ready_callback: CodeCacheReadyCallback,
+ }
+ 
++struct DeferredCodeCache {
++  compiled_at: std::time::Instant,
++  module: v8::Global<v8::Module>,
++  info: CodeCacheInfo,
++}
++
+ pub const BOM_CHAR: &[u8] = &[0xef, 0xbb, 0xbf];
+ 
+ /// Strips the byte order mark from the provided text if it exists.
+@@ -126,6 +132,14 @@
+   /// during module evaluation, preventing premature draining of TLA-related microtasks.
+   evaluating_top_level: Cell<bool>,
+   code_cache_ready_futs: TrackedFutures<Pin<Box<CodeCacheReadyFuture>>>,
++  /// Modules compiled without a usable code cache, oldest first, waiting for
++  /// theirs to be created after they ran (see `create_due_code_caches`).
++  deferred_code_caches: RefCell<
++    std::collections::VecDeque<DeferredCodeCache>,
++  >,
++  /// Set while a thread is waiting to wake the event loop for the next due
++  /// deferred code cache.
++  code_cache_wake_scheduled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+   module_waker: AtomicWaker,
+   data: RefCell<ModuleMapData>,
+   will_snapshot: bool,
+@@ -248,6 +262,8 @@
+       pending_mod_evaluation: Default::default(),
+       evaluating_top_level: Default::default(),
+       code_cache_ready_futs: Default::default(),
++      deferred_code_caches: Default::default(),
++      code_cache_wake_scheduled: Default::default(),
+       module_waker: Default::default(),
+       data: Default::default(),
+       loading_internal_modules: Default::default(),
+@@ -901,17 +917,14 @@
+       && !self.will_snapshot
+       && let Some(code_cache_info) = code_cache_info.take()
+     {
+-      let unbound_module_script = module.get_unbound_module_script(tc_scope);
+-      let code_cache =
+-        unbound_module_script.create_code_cache().ok_or_else(|| {
+-          ModuleError::Concrete(
+-            ModuleConcreteError::UnboundModuleScriptCodeCache,
+-          )
+-        })?;
+-      let fut =
+-        async move { (code_cache_info.ready_callback)(&code_cache).await }
+-          .boxed_local();
+-      self.code_cache_ready_futs.push(fut);
++      self
++        .deferred_code_caches
++        .borrow_mut()
++        .push_back(DeferredCodeCache {
++          compiled_at: std::time::Instant::now(),
++          module: v8::Global::new(tc_scope, module),
++          info: code_cache_info,
++        });
+     }
+ 
+     // Extract native source map URL from V8
+@@ -1700,8 +1713,95 @@
+       return None;
+     }
+     ModuleSpecifier::parse(name).ok()
++  }
++
++  /// Creates the code caches deferred at compile time that are due. A cache
++  /// created right after compiling holds only the top-level code (V8
++  /// compiles functions lazily), so every function a module ran missed again
++  /// on the next load. Node creates its compile cache at exit for the same
++  /// reason: here a module's cache is created once it has had
++  /// `CODE_CACHE_DELAY` to run, a few milliseconds of it per event loop
++  /// tick, and whatever is left when the realm is destroyed (a one-shot
++  /// runtime's exit).
++  pub(crate) fn create_due_code_caches(
++    &self,
++    scope: &mut v8::PinScope,
++    waker: &std::task::Waker,
++  ) {
++    const CODE_CACHE_DELAY: std::time::Duration =
++      std::time::Duration::from_secs(2);
++    const TICK_BUDGET: std::time::Duration =
++      std::time::Duration::from_millis(4);
++    let started = std::time::Instant::now();
++    loop {
++      let due_at = match self.deferred_code_caches.borrow().front() {
++        Some(next) => next.compiled_at + CODE_CACHE_DELAY,
++        None => return,
++      };
++      let now = std::time::Instant::now();
++      if now < due_at {
++        self.wake_at(due_at, waker);
++        return;
++      }
++      if now - started >= TICK_BUDGET {
++        waker.wake_by_ref();
++        return;
++      }
++      let next = self.deferred_code_caches.borrow_mut().pop_front();
++      if let Some(next) = next {
++        self.create_code_cache(scope, next);
++      }
++    }
+   }
+ 
++  /// Creates every deferred code cache still pending.
++  pub(crate) fn create_deferred_code_caches(&self, scope: &mut v8::PinScope) {
++    let deferred = std::mem::take(&mut *self.deferred_code_caches.borrow_mut());
++    for next in deferred {
++      self.create_code_cache(scope, next);
++    }
++    // Teardown polls no more: a callback that finishes synchronously lands
++    // now, any other is dropped with the map.
++    let mut cx = Context::from_waker(std::task::Waker::noop());
++    while let Poll::Ready(Some(_)) =
++      self.code_cache_ready_futs.poll_next_unpin(&mut cx)
++    {}
++  }
++
++  fn create_code_cache(&self, scope: &mut v8::PinScope, next: DeferredCodeCache) {
++    let module = v8::Local::new(scope, next.module);
++    if module.get_status() == v8::ModuleStatus::Errored {
++      return;
++    }
++    let Some(code_cache) =
++      module.get_unbound_module_script(scope).create_code_cache()
++    else {
++      return;
++    };
++    let fut = (next.info.ready_callback)(&code_cache);
++    self.code_cache_ready_futs.push(fut);
++  }
++
++  /// Wakes the event loop at `at`, once per pending wait.
++  fn wake_at(&self, at: std::time::Instant, waker: &std::task::Waker) {
++    use std::sync::atomic::Ordering;
++    if self.code_cache_wake_scheduled.swap(true, Ordering::AcqRel) {
++      return;
++    }
++    let scheduled = self.code_cache_wake_scheduled.clone();
++    let waker = waker.clone();
++    let spawned = std::thread::Builder::new()
++      .name("deno_core-code-cache-wake".into())
++      .spawn(move || {
++        std::thread::sleep(at.saturating_duration_since(std::time::Instant::now()));
++        scheduled.store(false, Ordering::Release);
++        waker.wake();
++      });
++    if spawned.is_err() {
++      self.code_cache_wake_scheduled.store(false, Ordering::Release);
++    }
++  }
++
+   /// Drain all ready code-cache futures.
+   fn drain_code_cache_ready(&self, cx: &mut Context) {
+     if !self.code_cache_ready_futs.is_pending() {
+--- a/runtime/jsrealm.rs	2006-07-24 03:21:28
++++ b/runtime/jsrealm.rs	2026-10-19 23:07:33
+@@ -354,6 +354,12 @@
+     std::mem::take(&mut *state.js_handle_rejections_cb.borrow_mut());
+     std::mem::take(&mut *state.run_immediate_callbacks_cb.borrow_mut());
+     std::mem::take(&mut *state.js_wasm_streaming_cb.borrow_mut());
++
++    {
++      let context = v8::Local::new(scope, self.context());
++      let scope = &mut v8::ContextScope::new(scope, context);
++      self.module_map().create_deferred_code_caches(scope);
++    }
+ 
+     {
+       let ctx = self.context().open(scope);
+--- a/runtime/jsruntime.rs	2006-07-24 03:21:28
++++ b/runtime/jsruntime.rs	2026-10-19 23:07:33
+@@ -2627,6 +2627,8 @@
+     // Evaluate pending state
+     let pending_state =
+       EventLoopPendingState::new(scope, context_state, modules);
++
++    modules.create_due_code_caches(scope, cx.waker());
+ 
+     if !pending_state.is_pending() {
+       if has_inspector {

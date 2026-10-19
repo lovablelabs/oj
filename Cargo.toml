@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/deno_core"]
 members = [
     "crates/oj_compiler",
     "crates/oj_deno_process",
@@ -211,3 +212,12 @@ rustc-hash = { opt-level = 3 }
 dashmap = { opt-level = 3 }
 parking_lot = { opt-level = 3 }
 mio = { opt-level = 3 }
+
+# deno_core 0.412.0 with oj's code cache patch (vendor/deno_core.patch): a
+# module's V8 code cache is created after it ran instead of right after it
+# compiled, so it holds the functions the module called, as Node creates its
+# compile cache at exit. Every deno crate depends on deno_core, so this is a
+# patch, not a renamed fork: a published oj builds against the crates.io
+# deno_core and only loses the speedup. Re-apply the patch when bumping.
+[patch.crates-io]
+deno_core = { path = "vendor/deno_core" }

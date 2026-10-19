@@ -854,6 +854,77 @@ async fn code_cache_persists_and_later_engines_still_run() {
     assert_eq!(value, serde_json::json!("hello fresh"));
 }
 
+/// The size of the only `-esm.bin` code cache entry under `dir`.
+fn esm_entry_size(dir: &Path) -> Option<u64> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().ends_with("-esm.bin"))
+        .and_then(|e| e.metadata().ok())
+        .map(|m| m.len())
+}
+
+/// A module's code cache is created after the module ran, so it holds the
+/// functions the run compiled, as Node's compile cache does. Created right
+/// after compiling, it held the top-level code only, and every function
+/// missed again on the next load.
+#[tokio::test]
+async fn code_cache_holds_the_functions_a_module_ran() {
+    let body: String = (0..200)
+        .map(|i| format!("  total += String({i}).length * {i};\n"))
+        .collect();
+    let source = format!(
+        "export function work() {{\n  let total = 0;\n{body}  return total;\n}}\nexport function idle() {{ return 0; }}\n"
+    );
+    let mut sizes = Vec::new();
+    for export in ["idle", "work"] {
+        let root = app_root();
+        std::fs::write(root.path().join("main.mjs"), &source).unwrap();
+        let cache_dir = root.path().join("cc");
+        let mut config = EngineConfig::new(root.path());
+        config.code_cache_dir = Some(cache_dir.clone());
+        let engine = JsEngine::spawn(config, None, None).unwrap();
+        engine.call("main.mjs", export, vec![], None).await.unwrap();
+        drop(engine);
+        sizes.push(esm_entry_size(&cache_dir).expect("the module got an entry"));
+    }
+    assert!(
+        sizes[1] > sizes[0],
+        "running work() must put it in the cache: idle {} bytes, work {} bytes",
+        sizes[0],
+        sizes[1]
+    );
+}
+
+/// A long-lived engine is never dropped mid-session: its modules' code
+/// caches are created a couple of seconds after they loaded, on a later
+/// event loop tick, not only at teardown.
+#[tokio::test]
+async fn a_long_lived_engine_writes_its_code_cache_without_dropping() {
+    let root = app_root();
+    std::fs::write(
+        root.path().join("main.mjs"),
+        "export function run() { return 1; }\n",
+    )
+    .unwrap();
+    let cache_dir = root.path().join("cc");
+    let mut config = EngineConfig::new(root.path());
+    config.code_cache_dir = Some(cache_dir.clone());
+    let engine = JsEngine::spawn(config, None, None).unwrap();
+    engine.call("main.mjs", "run", vec![], None).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while esm_entry_size(&cache_dir).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no code cache entry while the engine stayed alive"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        // A later job, as the next request is for a host.
+        engine.call("main.mjs", "run", vec![], None).await.unwrap();
+    }
+    drop(engine);
+}
+
 /// Regression: an [`oj_js::EngineRegistry`] holds only WEAK job senders.
 /// A strong entry keeps the dropped engine's channel open, its thread never
 /// exits, and drop's join hangs the caller — a one-shot config extraction

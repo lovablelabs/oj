@@ -19,6 +19,7 @@
           ./Cargo.toml
           ./Cargo.lock
           ./crates
+          ./vendor
         ];
       };
       # The v8 crate's build script downloads a prebuilt static lib, which the
