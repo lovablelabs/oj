@@ -48,6 +48,12 @@ rolldown = "=1.2.5"
 rolldown_common = "=1.2.5"
 rolldown_plugin = "=1.2.5"
 
+# The embedded Deno's OTLP pipeline and the versions it pins (OJ_OTEL).
+deno_telemetry = "0.81.0"
+opentelemetry = { version = "0.32.0", default-features = false, features = ["trace", "logs", "metrics"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace", "logs", "metrics"] }
+sys_traits = { version = "0.1.28", features = ["real"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 # test-util: paused time for the debounce test, like crates/oj.

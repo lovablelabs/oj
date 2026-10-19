@@ -480,6 +480,7 @@ fn main() -> anyhow::Result<()> {
     oj_env::init();
     oj_diag::set_json_output(oj_env::get().knobs.log_json);
     oj_diag::install_panic_hook();
+    oj_server::otel::init(env!("CARGO_PKG_VERSION"));
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)

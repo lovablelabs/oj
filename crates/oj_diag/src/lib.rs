@@ -246,9 +246,22 @@ pub fn set_json_output(on: bool) {
     global().set_json_output(on);
 }
 
+/// An exporter's view of every emitted event, folded repeats included.
+pub type Sink = fn(&Event);
+
+static SINK: OnceLock<Sink> = OnceLock::new();
+
+/// Installs the process sink (first call wins), e.g. OpenTelemetry export.
+pub fn set_sink(sink: Sink) {
+    let _ = SINK.set(sink);
+}
+
 /// Record into the process ring; in NDJSON mode a fresh (non-folded) event
 /// also prints one line to stderr.
 pub fn emit(event: Event) {
+    if let Some(sink) = SINK.get() {
+        sink(&event);
+    }
     if let Some(line) = global().record(event) {
         eprintln!("{line}");
     }

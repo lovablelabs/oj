@@ -121,6 +121,8 @@ jobs:
         run: node e2e/debug-gc.mjs
       - name: diagnostics ring + NDJSON stderr (/@oj/diagnostics)
         run: node e2e/diagnostics.mjs
+      - name: OJ_OTEL export to an OTLP collector (logs, spans, metrics)
+        run: node e2e/otel.mjs
       - name: forwardConsole server half over a raw vite-hmr socket
         run: node e2e/forward-console.mjs
       - name: forwardConsole through a real browser (stack remap)

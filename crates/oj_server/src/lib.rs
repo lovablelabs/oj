@@ -51,6 +51,7 @@ use crawl::*;
 mod debug;
 use debug::*;
 mod diagnostics;
+pub mod otel;
 use diagnostics::*;
 mod css_serve;
 pub use css_serve::*;
@@ -1380,6 +1381,10 @@ fn build_router(
             cors_middleware,
         ));
     }
+    // Outermost, so the span covers every other layer.
+    if otel::enabled() {
+        app = app.layer(axum::middleware::from_fn(otel::trace_request));
+    }
     app.with_state(state)
 }
 
@@ -1474,6 +1479,7 @@ impl DevServer {
         // too or a supervisor restart strands every plugin child (workerd) on pid 1.
         deno_process::oj_hook::set_shutdown_sweep(|| {
             child_groups::kill_all();
+            otel::flush();
         });
         let engine_registry = oj_js::EngineRegistry::new();
         let plugin_file = plugin_file(&root, config_file.as_deref());
@@ -1904,6 +1910,7 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // Own-group children no longer sit in the terminal's foreground group, so
     // the signal that ends oj never reaches them; forward it.
     child_groups::kill_all();
+    otel::flush();
     std::process::exit(code);
 }
 
