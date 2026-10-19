@@ -15,6 +15,8 @@ function parseError(text) {
 // Vite's `vite-error-overlay` custom element: framework runtimes look it up
 // with customElements.get() and construct it with an ErrorPayload `err`
 // ({message, stack, id, loc, frame, plugin}) to show their own runtime errors.
+// Vite's overlay.ts: a worker importing the client has no HTMLElement.
+const { HTMLElement = class {} } = globalThis;
 export class ErrorOverlay extends HTMLElement {
   constructor(err, _links = true) {
     super();

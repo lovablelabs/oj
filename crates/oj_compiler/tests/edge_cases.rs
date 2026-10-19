@@ -325,6 +325,28 @@ fn refresh_instrumentation_only_happens_in_dev_and_only_for_components() {
     assert!(!no_refresh.code.contains("$RefreshReg$"));
 }
 
+// Vite's oxc plugin: refresh only for a `.jsx`/`.tsx` path or code naming the
+// JSX runtime, so a capitalized function in a plain `.ts` module (one a module
+// worker imports) is no boundary and gets no window-reading glue.
+#[test]
+fn refresh_skips_plain_ts_modules_like_vite() {
+    let fn_export = "export function M(x: number) { return x * 2; }";
+    let ts = dev("/src/game/scale.ts", fn_export).unwrap();
+    assert!(!ts.is_refresh_boundary, "{}", ts.code);
+    assert!(!ts.code.contains("$RefreshReg$"), "{}", ts.code);
+
+    let tsx = dev("/src/game/Scale.tsx", fn_export).unwrap();
+    assert!(tsx.is_refresh_boundary, "{}", tsx.code);
+
+    let runtime = format!("import {{ jsx }} from \"react/jsx-runtime\";\n{fn_export}");
+    let ts_with_runtime = dev("/src/game/scale.ts", &runtime).unwrap();
+    assert!(
+        ts_with_runtime.is_refresh_boundary,
+        "{}",
+        ts_with_runtime.code
+    );
+}
+
 #[test]
 fn a_source_map_is_omitted_when_a_module_gains_synthesized_nodes() {
     // Glob and dynamic-import-vars expansions splice generated spans, which the

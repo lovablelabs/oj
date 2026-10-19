@@ -322,8 +322,9 @@ fn transform<'a>(
         });
     }
     let scoping = semantic.semantic.into_scoping();
-    let transform_ret = Transformer::new(allocator, path, &transform_options(path, opts))
-        .build_with_scoping(scoping, program);
+    let transform_ret =
+        Transformer::new(allocator, path, &transform_options(path, source_text, opts))
+            .build_with_scoping(scoping, program);
     if !transform_ret.diagnostics.is_empty() {
         return Err(CompileError::Transform {
             path: path.to_path_buf(),
@@ -333,7 +334,7 @@ fn transform<'a>(
     Ok(())
 }
 
-fn transform_options(path: &Path, opts: &CompileOptions) -> TransformOptions {
+fn transform_options(path: &Path, source_text: &str, opts: &CompileOptions) -> TransformOptions {
     let mut options = TransformOptions::default();
     // Vite honors the nearest tsconfig's class-field semantics; oxc's recipe for
     // `useDefineForClassFields: false` is exactly these two flags.
@@ -358,10 +359,21 @@ fn transform_options(path: &Path, opts: &CompileOptions) -> TransformOptions {
     jsx.development = opts.dev;
     jsx.jsx_self_plugin = opts.dev;
     jsx.jsx_source_plugin = opts.dev;
-    if opts.dev && opts.refresh {
+    if opts.dev && opts.refresh && refresh_applies(path, source_text, &opts.jsx) {
         jsx.refresh = Some(ReactRefreshOptions::default());
     }
     options
+}
+
+/// Vite's oxc plugin keeps refresh on only where plugin-react would: a file
+/// whose path ends in `x` (`.jsx`, `.tsx`) or whose code names the JSX
+/// runtime. A plain `.ts` module, such as one a worker imports, gets no
+/// registrations and so no refresh glue.
+fn refresh_applies(path: &Path, source_text: &str, jsx: &JsxConfig) -> bool {
+    let source = jsx.import_source.as_deref().unwrap_or("react");
+    path.to_string_lossy().ends_with('x')
+        || source_text.contains(&format!("{source}/jsx-runtime"))
+        || source_text.contains(&format!("{source}/jsx-dev-runtime"))
 }
 
 /// `import.meta.env` / `define` replacement. Runs after the transform, so

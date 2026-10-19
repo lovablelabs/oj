@@ -344,8 +344,9 @@ pub(crate) fn hot_glue(
     format!(
         r#"
 {ctx}import * as RefreshRuntime from "/@oj/refresh-runtime.js";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
 import * as __oj_currentExports from {self_specifier:?};
-if (import.meta.hot) {{
+if (import.meta.hot && !inWebWorker) {{
   if (!window.__oj_refresh_installed__) {{
     throw new Error("oj: Fast Refresh preamble missing; was index.html served by oj?");
   }}
