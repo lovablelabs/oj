@@ -166,8 +166,8 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &rel.main,
-        r#"m\.f=\["\./lazy-[^"]+\.js","\./lazy-[^"]+\.css","\./util-[^"]+\.js"\]"#,
-        "deps are chunk-relative: lazy chunk, its css, shared util",
+        r#"m\.f=\["\./lazy-[^"]+\.js","\./util-[^"]+\.js","\./lazy-[^"]+\.css"\]"#,
+        "deps are chunk-relative, Vite's addDeps order: lazy chunk, shared util, then its css",
     );
     assert_match(
         &rel.main,
@@ -225,7 +225,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &abs.main,
-        r#"m\.f=\["assets/lazy-[^"]+\.js","assets/lazy-[^"]+\.css","assets/util-[^"]+\.js"\]"#,
+        r#"m\.f=\["assets/lazy-[^"]+\.js","assets/util-[^"]+\.js","assets/lazy-[^"]+\.css"\]"#,
         "deps are outDir-relative with an absolute base",
     );
     assert_match(
