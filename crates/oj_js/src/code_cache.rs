@@ -12,6 +12,7 @@
 
 use std::hash::Hasher;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use deno_core::url::Url;
 use deno_resolver::cjs::analyzer::DenoCjsAnalysis;
@@ -22,6 +23,15 @@ use deno_runtime::code_cache::CodeCacheType;
 
 pub struct FsCodeCache {
     dir: PathBuf,
+    /// Entries go to disk on a background thread, as Node's compile cache
+    /// defers its writes: written inline, a cold `import("vite")` spent a
+    /// third of its time creating 230 files. Dropping the cache drains it.
+    writer: Mutex<Option<Writer>>,
+}
+
+struct Writer {
+    tx: std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 /// The key callers partition persistent engine caches by: the V8 version,
@@ -45,7 +55,10 @@ fn hash64(bytes: &[u8]) -> u64 {
 
 impl FsCodeCache {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            writer: Mutex::new(None),
+        }
     }
 
     /// The engine-side hash for sources it caches itself (the ESM and
@@ -106,21 +119,38 @@ impl FsCodeCache {
 
     fn put_entry(&self, specifier: &Url, suffix: &str, source_hash: u64, data: &[u8]) {
         let path = self.entry_path(specifier, suffix);
-        if std::fs::create_dir_all(&self.dir).is_err() {
-            return;
-        }
-        // Atomic publish: write-then-rename, so a concurrent reader never
-        // sees a torn half-write. The tmp name carries a process-wide
-        // sequence beside the pid: worker threads share this cache, and a
-        // pid-only suffix let two threads rename a torn file into place.
-        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = path.with_extension(format!("tmp{}-{seq}", std::process::id()));
         let mut bytes = Vec::with_capacity(8 + data.len());
         bytes.extend_from_slice(&source_hash.to_le_bytes());
         bytes.extend_from_slice(data);
-        if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, &path).is_err() {
-            let _ = std::fs::remove_file(&tmp);
+        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if writer.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Vec<u8>)>();
+            let dir = self.dir.clone();
+            let thread = std::thread::Builder::new()
+                .name("oj-code-cache".into())
+                .spawn(move || {
+                    for (path, bytes) in rx {
+                        write_entry(&dir, &path, &bytes);
+                    }
+                });
+            let Ok(thread) = thread else {
+                drop(writer);
+                write_entry(&self.dir, &path, &bytes);
+                return;
+            };
+            *writer = Some(Writer { tx, thread });
+        }
+        if let Some(w) = writer.as_ref() {
+            let _ = w.tx.send((path, bytes));
+        }
+    }
+
+    /// Waits until every queued entry is on disk.
+    pub fn flush(&self) {
+        let writer = self.writer.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(Writer { tx, thread }) = writer {
+            drop(tx);
+            let _ = thread.join();
         }
     }
 
@@ -216,6 +246,28 @@ impl FsCodeCache {
 /// entry. With the volatile segment dropped, the next boot overwrites in
 /// place and an unchanged config hits (the embedded source hash guards
 /// staleness, so a collision is only ever a miss).
+impl Drop for FsCodeCache {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+/// Atomic publish: write-then-rename, so a concurrent reader never sees a
+/// torn half-write. The tmp name carries a process-wide sequence beside the
+/// pid: several caches can write the same entry, and a pid-only suffix let
+/// two writers rename a torn file into place.
+fn write_entry(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp{}-{seq}", std::process::id()));
+    if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
 fn stable_specifier(specifier: &str) -> std::borrow::Cow<'_, str> {
     if let Some(at) = specifier.rfind(".timestamp-") {
         let rest = &specifier[at + ".timestamp-".len()..];
@@ -317,6 +369,7 @@ mod tests {
 
         assert_eq!(cache.get(&url, CodeCacheType::EsModule, 7), None);
         cache.put(&url, CodeCacheType::EsModule, 7, b"bytecode");
+        cache.flush();
         assert_eq!(
             cache.get(&url, CodeCacheType::EsModule, 7).as_deref(),
             Some(b"bytecode".as_slice())
@@ -370,6 +423,7 @@ mod hygiene_tests {
                 format!("bytecode-{v}").as_bytes(),
             );
         }
+        cache.flush();
         let entries = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(entries, 1, "five version bumps must reuse one entry");
         // The latest generation is served; a stale source hash misses.
@@ -394,6 +448,7 @@ mod hygiene_tests {
             42,
             b"bytecode",
         );
+        cache.flush();
         assert_eq!(
             cache
                 .get(&url("oj:///src/App.tsx?v=1"), CodeCacheType::EsModule, 42)
@@ -437,6 +492,7 @@ mod hygiene_tests {
             3,
             b"plain",
         );
+        cache.flush();
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
         assert_eq!(
             cache
@@ -474,6 +530,7 @@ mod hygiene_tests {
         for h in handles {
             h.join().unwrap();
         }
+        cache.flush();
         assert_eq!(
             cache.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
             Some(payload.as_slice()),
@@ -509,6 +566,7 @@ mod hygiene_tests {
             ));
             cache.put(&spec, CodeCacheType::EsModule, 42, b"config-bytecode");
         }
+        cache.flush();
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             2,
@@ -541,6 +599,7 @@ mod hygiene_tests {
         for (i, s) in lookalikes.iter().enumerate() {
             cache.put(&url(s), CodeCacheType::EsModule, i as u64, b"x");
         }
+        cache.flush();
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             lookalikes.len(),
@@ -559,6 +618,7 @@ mod hygiene_tests {
         for i in 0..10u64 {
             let spec = url(&format!("file:///m{i}.js"));
             cache.put(&spec, CodeCacheType::EsModule, i, &payload);
+            cache.flush();
             let age = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * (10 - i));
             std::fs::File::options()
                 .append(true)
@@ -593,6 +653,7 @@ mod hygiene_tests {
         std::fs::write(old.join("deadbeef-esm.bin"), b"old bytecode").unwrap();
         let cache = FsCodeCache::new(current.clone());
         cache.put(&url("file:///m.js"), CodeCacheType::EsModule, 1, b"new");
+        cache.flush();
         cache.sweep_stale_generations();
         assert!(!old.exists(), "the dead generation is removed");
         assert!(
@@ -615,6 +676,7 @@ mod hygiene_tests {
             1,
             b"bytecode",
         );
+        cache.flush();
         let stale = dir.path().join("deadbeef-esm.bin.tmp999");
         std::fs::write(&stale, b"torn").unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60);
@@ -644,5 +706,36 @@ mod hygiene_tests {
             1,
             "entry kept: {names:?}"
         );
+    }
+
+    // Writes run on a background thread (Node's compile cache defers its
+    // writes too); dropping the cache, as a one-shot engine does on exit,
+    // must still land every queued entry.
+    #[test]
+    fn dropping_the_cache_lands_every_queued_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        for i in 0..200u64 {
+            cache.put(
+                &url(&format!("file:///m{i}.js")),
+                CodeCacheType::EsModule,
+                i,
+                b"x",
+            );
+        }
+        drop(cache);
+        let reopened = FsCodeCache::new(dir.path().to_path_buf());
+        for i in 0..200u64 {
+            assert!(
+                reopened
+                    .get(
+                        &url(&format!("file:///m{i}.js")),
+                        CodeCacheType::EsModule,
+                        i
+                    )
+                    .is_some(),
+                "entry {i} never reached disk"
+            );
+        }
     }
 }
