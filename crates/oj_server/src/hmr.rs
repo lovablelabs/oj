@@ -871,6 +871,36 @@ async fn plugin_watched_files(state: &ServerState) -> std::collections::HashSet<
         .collect()
 }
 
+/// Vite's resolver stats the disk on every resolve, so a created file resolves
+/// (and a deleted one stops resolving) at once, whatever HMR does. oj's
+/// resolvers cache lookups, misses included: a batch that brought a path into
+/// existence or took one away drops them, from the watcher itself, ahead of
+/// HMR (`server.hmr: false`, a held editor gate and a full-reload flush never
+/// reach [`decide`]). Without it an alias import of a created file
+/// (`@/lib/x`) stays a bare package to the SSR runtime until the importer is
+/// edited again. notify can't tell create from modify, so an existing file
+/// the graph has never seen counts as new, as [`retry_failed_resolves`] does.
+pub(crate) fn drop_resolver_misses(
+    state: &ServerState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) {
+    let appeared_or_gone = !created.is_empty()
+        || paths.iter().any(|p| {
+            !p.exists()
+                || (p.is_file()
+                    && !state
+                        .graph
+                        .lock()
+                        .unwrap()
+                        .contains(Path::new(&url_of(&state.root, p))))
+        });
+    if appeared_or_gone {
+        state.resolver.clear_cache();
+        state.ssr_resolver.clear_cache();
+    }
+}
+
 /// A created file may be one a module failed to import: re-process those importers
 /// (Vite's `_hasResolveFailedErrorModules`); notify can't tell create from modify, so exists-but-not-in-graph counts as new.
 fn retry_failed_resolves(state: &ServerState, paths: &mut Vec<PathBuf>) {
@@ -885,10 +915,6 @@ fn retry_failed_resolves(state: &ServerState, paths: &mut Vec<PathBuf>) {
     if !new_file {
         return;
     }
-    // The resolver caches misses too: without this a created `./dir/index.ts`
-    // or extension-probed file stays "not found" for the importer's retry.
-    state.resolver.clear_cache();
-    state.ssr_resolver.clear_cache();
     let failed: Vec<String> = state.resolve_failed.lock().unwrap().drain().collect();
     for url in failed {
         paths.push(state.root.join(url.trim_start_matches('/')));

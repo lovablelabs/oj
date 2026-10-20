@@ -64,6 +64,7 @@ mod plugin_ws_execute;
 mod postcss_config_discovery;
 mod preprocessors;
 mod query_assets;
+mod resolve_created_files;
 mod svelte;
 mod svgr;
 mod tailwind_js_import;
