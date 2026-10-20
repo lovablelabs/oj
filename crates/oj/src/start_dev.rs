@@ -3167,7 +3167,7 @@ fn engine_request(
         .iter()
         .filter(|(name, _)| {
             let n = name.as_str();
-            n != "host" && n != "x-oj-host"
+            n != "host" && !oj_server::is_loopback_private(n)
         })
         .filter_map(|(name, value)| {
             Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))

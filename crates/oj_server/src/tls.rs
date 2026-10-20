@@ -12,9 +12,34 @@
 //! (its proxy library cannot answer h2 server requests); the axum proxy has
 //! no such limit, so h2 stays on.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use hyper_util::rt::{TokioExecutor, TokioIo};
+
+/// The browser's end of the connection a request arrived on: what Node's
+/// `req.socket` tells a Vite plugin (`remoteAddress`, and whether it is a
+/// TLS socket), and what http-proxy's `xfwd` builds `x-forwarded-*` from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientConn {
+    pub addr: SocketAddr,
+    pub encrypted: bool,
+}
+
+tokio::task_local! {
+    static CLIENT_CONN: ClientConn;
+}
+
+/// The connection of the request being handled, when it came through
+/// [`serve_router`] (None in a test driving the router directly).
+pub fn client_conn() -> Option<ClientConn> {
+    CLIENT_CONN.try_with(|c| *c).ok()
+}
+
+/// Runs `fut` as a request on `conn`, so [`client_conn`] answers inside it.
+pub async fn with_client_conn<F: std::future::Future>(conn: ClientConn, fut: F) -> F::Output {
+    CLIENT_CONN.scope(conn, fut).await
+}
 
 /// Serve the router on the listener: plain HTTP without `server.https`, and
 /// rustls with ALPN h2 + http/1.1 with it. WebSockets ride http/1.1: the h2
@@ -27,7 +52,24 @@ pub async fn serve_router(
     https: Option<&oj_config::HttpsConfig>,
 ) -> anyhow::Result<()> {
     let Some(https) = https else {
-        axum::serve(listener, router).await?;
+        let router = router.layer(axum::middleware::from_fn(
+            |axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+             req: axum::extract::Request,
+             next: axum::middleware::Next| {
+                with_client_conn(
+                    ClientConn {
+                        addr,
+                        encrypted: false,
+                    },
+                    next.run(req),
+                )
+            },
+        ));
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
         return Ok(());
     };
     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config(https)?);
@@ -36,7 +78,7 @@ pub async fn serve_router(
         // ends nothing but its own connection, and anything else (EMFILE
         // under fd pressure) logs and backs off — a failed accept never
         // exits the dev server, exactly as on the plain-http path.
-        let (tcp, _remote) = match listener.accept().await {
+        let (tcp, remote) = match listener.accept().await {
             Ok(conn) => conn,
             Err(e) => {
                 use std::io::ErrorKind;
@@ -53,7 +95,15 @@ pub async fn serve_router(
             }
         };
         let acceptor = acceptor.clone();
-        let router = router.clone();
+        let conn = ClientConn {
+            addr: remote,
+            encrypted: true,
+        };
+        let router = router.clone().layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                with_client_conn(conn, next.run(req))
+            },
+        ));
         tokio::spawn(async move {
             // A failed handshake (a plain-http probe, a cipher mismatch) only
             // ends that connection, as a bad TLS client does on any server.

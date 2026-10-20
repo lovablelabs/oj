@@ -173,21 +173,43 @@ pub async fn proxy_to_loopback(
 /// itself, so the browser's `Host` travels as `x-oj-host` (first value only,
 /// Node semantics). A proxy's `x-forwarded-host` passes through untouched as
 /// under Vite; duplicating it made Node join values into an unparseable URL.
-/// An incoming `x-oj-host` is dropped so a client cannot spoof it.
+/// The browser's connection travels the same way, as `x-oj-remote-address`
+/// and `x-oj-encrypted`: the middleware server puts them back on
+/// `req.socket`, where Vite's plugins (and http-proxy's `xfwd`) read them.
+/// Incoming `x-oj-*` copies are dropped so a client cannot spoof them.
 pub fn loopback_request_headers(
     headers: &HeaderMap,
 ) -> Vec<(header::HeaderName, header::HeaderValue)> {
-    let mut out = Vec::with_capacity(headers.len() + 1);
+    let mut out = Vec::with_capacity(headers.len() + 3);
     if let Some(host) = headers.get(header::HOST) {
         out.push((header::HeaderName::from_static("x-oj-host"), host.clone()));
     }
+    if let Some(conn) = crate::tls::client_conn() {
+        if let Ok(ip) = header::HeaderValue::from_str(&conn.addr.ip().to_string()) {
+            out.push((header::HeaderName::from_static(REMOTE_ADDRESS), ip));
+        }
+        if conn.encrypted {
+            out.push((
+                header::HeaderName::from_static(ENCRYPTED),
+                header::HeaderValue::from_static("1"),
+            ));
+        }
+    }
     for (name, value) in headers.iter() {
-        if name == header::HOST || name.as_str() == "x-oj-host" {
+        if name == header::HOST || is_loopback_private(name.as_str()) {
             continue;
         }
         out.push((name.clone(), value.clone()));
     }
     out
+}
+
+const REMOTE_ADDRESS: &str = "x-oj-remote-address";
+const ENCRYPTED: &str = "x-oj-encrypted";
+
+/// The headers only oj's loopback hop may set.
+pub fn is_loopback_private(name: &str) -> bool {
+    matches!(name, "x-oj-host" | REMOTE_ADDRESS | ENCRYPTED)
 }
 
 /// `proxy_to_loopback` with the request body streamed through as it arrives

@@ -312,3 +312,174 @@ async fn string_proxy_entry_changes_origin() {
         .await;
     assert_eq!(res.body, format!("DESTINATION host=127.0.0.1:{port}"));
 }
+
+/// An upstream that echoes what reached it: the x-forwarded-* headers on
+/// `/xf/*`, and on `/api/replay` the method and body behind a 307.
+async fn echo_backend() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = axum::Router::new()
+        .route(
+            "/api/replay",
+            axum::routing::any(|| async {
+                axum::response::Response::builder()
+                    .status(307)
+                    .header(header::LOCATION, "/api/landed")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/api/landed",
+            axum::routing::any(|method: axum::http::Method, body: String| async move {
+                format!("{method} {body}")
+            }),
+        )
+        .fallback(|headers: axum::http::HeaderMap| async move {
+            let get = |n: &str| {
+                headers
+                    .get(n)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-")
+                    .to_string()
+            };
+            format!(
+                "for={} port={} proto={} host={}",
+                get("x-forwarded-for"),
+                get("x-forwarded-port"),
+                get("x-forwarded-proto"),
+                get("x-forwarded-host")
+            )
+        });
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    port
+}
+
+/// A plugin middleware that reports the socket it sees, as Vite's would.
+const WHOAMI: &str = r#"{
+    name: "whoami",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url !== "/whoami") return next();
+        res.end(`${req.socket.remoteAddress} ${!!req.socket.encrypted}`);
+      });
+    },
+  }"#;
+
+/// http-proxy's `xfwd` and Vite's `req.socket`: the plugin host sees the
+/// browser's connection, not the loopback hop's, and a client cannot claim
+/// another one.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_host_sees_the_browser_connection() {
+    let port = echo_backend().await;
+    let config = format!(
+        r#"export default {{
+  plugins: [{WHOAMI}],
+  server: {{ proxy: {{
+    "/xf": {{ target: "http://127.0.0.1:{port}", xfwd: true }},
+    "/api": {{ target: "http://127.0.0.1:{port}", followRedirects: true }},
+  }} }},
+}};
+"#
+    );
+    let app = App::new(&[
+        ("package.json", r#"{"name":"proxy-xfwd","version":"1.0.0"}"#),
+        ("vite.config.mjs", &config),
+        ("index.html", crate::INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    middleware_ready(&server).await;
+    let browser = oj_server::tls::ClientConn {
+        addr: "203.0.113.7:5555".parse().unwrap(),
+        encrypted: true,
+    };
+    let request = |uri: &str| {
+        Request::builder()
+            .uri(uri.to_string())
+            .header(header::HOST, "localhost:8443")
+            .header("x-forwarded-for", "10.0.0.1")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let res = oj_server::tls::with_client_conn(browser, server.request(request("/xf/a"))).await;
+    assert_eq!(
+        res.body,
+        "for=10.0.0.1,203.0.113.7 port=8443 proto=https host=localhost:8443"
+    );
+    let res = oj_server::tls::with_client_conn(browser, server.request(request("/whoami"))).await;
+    assert_eq!(res.body, "203.0.113.7 true");
+
+    // A client naming its own address is not believed.
+    let mut spoof = request("/whoami");
+    spoof
+        .headers_mut()
+        .insert("x-oj-remote-address", "6.6.6.6".parse().unwrap());
+    spoof
+        .headers_mut()
+        .insert("x-oj-encrypted", "1".parse().unwrap());
+    let res = server.request(spoof).await;
+    assert!(!res.body.contains("6.6.6.6"), "{}", res.body);
+    assert!(res.body.ends_with(" false"), "{}", res.body);
+
+    // followRedirects replays a POST and its body across a 307, as
+    // follow-redirects does.
+    let res = server
+        .request(
+            Request::builder()
+                .method("POST")
+                .uri("/api/replay")
+                .body(Body::from("payload"))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!((res.status, res.body.as_str()), (200, "POST payload"));
+}
+
+/// Over a real connection: `serve_router` records the peer, so a plugin and
+/// `xfwd` see the browser's address. Served on IPv6 loopback so the browser
+/// (`::1`) is told apart from the loopback hop to the plugin host
+/// (`127.0.0.1`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_real_connection_reaches_the_plugin_host() {
+    let Ok(listener) = tokio::net::TcpListener::bind("[::1]:0").await else {
+        eprintln!("skipped: no IPv6 loopback");
+        return;
+    };
+    let port = echo_backend().await;
+    let config = format!(
+        r#"export default {{
+  plugins: [{WHOAMI}],
+  server: {{ proxy: {{ "/xf": {{ target: "http://127.0.0.1:{port}", xfwd: true }} }} }},
+}};
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"proxy-xfwd-tcp","version":"1.0.0"}"#,
+        ),
+        ("vite.config.mjs", &config),
+        ("index.html", crate::INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    middleware_ready(&server).await;
+    let addr = listener.local_addr().unwrap();
+    let router = server.built.router.clone();
+    let task = tokio::spawn(async move {
+        let _ = oj_server::tls::serve_router(listener, router, None).await;
+    });
+    let base = format!("http://[::1]:{}", addr.port());
+    let get = |path: &str| {
+        let url = format!("{base}{path}");
+        async move { reqwest::get(url).await.unwrap().text().await.unwrap() }
+    };
+    assert_eq!(get("/whoami").await, "::1 false");
+    // `port=1` is http-proxy's getPort on an IPv6 Host: the first
+    // `:<digits>` of `[::1]:<port>` is the address's own `:1`.
+    assert_eq!(
+        get("/xf/a").await,
+        format!("for=::1 port=1 proto=http host=[::1]:{}", addr.port())
+    );
+    task.abort();
+}

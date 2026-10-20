@@ -2909,9 +2909,7 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
     // changeOrigin, secure, rewrite, header + body streaming). Be HONEST about
     // the http-proxy-only options it cannot apply without the proxy instance —
     // warn once per entry instead of silently ignoring them.
-    // `xfwd` needs the browser's address, which the loopback hop does not
-    // carry.
-    const PIPE_UNSUPPORTED = ["configure", "xfwd"];
+    const PIPE_UNSUPPORTED = ["configure"];
     for (const [context, opts] of contexts) {
       const present = PIPE_UNSUPPORTED.filter((k) => opts[k] != null && opts[k] !== false);
       if (present.length) {
@@ -2950,6 +2948,24 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
       }
     };
     const headers = { ...req.headers };
+    // http-proxy's XHeaders (web-incoming.js), before changeOrigin swaps the
+    // Host: the browser's address, port and protocol appended to any
+    // x-forwarded-* already there, and x-forwarded-host when none came in.
+    if (opts.xfwd) {
+      const encrypted = !!req.socket?.encrypted;
+      const hostHeader = req.headers[":authority"] || req.headers.host;
+      const port = hostHeader ? hostHeader.match(/:(\d+)/) : "";
+      const values = {
+        for: req.connection?.remoteAddress || req.socket?.remoteAddress,
+        port: port ? port[1] : encrypted ? "443" : "80",
+        proto: encrypted ? "https" : "http",
+      };
+      for (const h of ["for", "port", "proto"]) {
+        const key = "x-forwarded-" + h;
+        headers[key] = (headers[key] || "") + (headers[key] ? "," : "") + values[h];
+      }
+      headers["x-forwarded-host"] = headers["x-forwarded-host"] || headers[":authority"] || headers.host || "";
+    }
     // http-proxy's changeOrigin: send the target's host, not the dev server's
     // (otherwise the browser's Host is forwarded unchanged, as http-proxy does).
     if (opts.changeOrigin) headers.host = target.host;
@@ -3367,6 +3383,29 @@ function ojPushServeInfo() {
 // that only registers them inside a "listening" callback (in-process: fired
 // at oj's bind announce) gets the server created then, with the serve info
 // re-pushed so Rust starts forwarding.
+// The browser's connection, which the loopback hop carries as
+// x-oj-remote-address / x-oj-encrypted: back on req.socket, where Vite's
+// plugins and http-proxy's `xfwd` read it (`remoteAddress`, `encrypted`).
+// A kept-alive loopback socket carries many requests, so each one sets (or
+// clears) its own values.
+function restoreClientSocket(req) {
+  const remote = req.headers["x-oj-remote-address"];
+  const encrypted = req.headers["x-oj-encrypted"] === "1";
+  delete req.headers["x-oj-remote-address"];
+  delete req.headers["x-oj-encrypted"];
+  const socket = req.socket;
+  if (!socket) return;
+  try {
+    if (typeof remote === "string" && remote) {
+      Object.defineProperty(socket, "remoteAddress", { value: remote, configurable: true });
+    } else {
+      delete socket.remoteAddress;
+    }
+    if (encrypted) Object.defineProperty(socket, "encrypted", { value: true, configurable: true });
+    else delete socket.encrypted;
+  } catch {}
+}
+
 let ojMiddlewareServerStarted = false;
 async function ensureConfigureServerMiddleware() {
   if (ojMiddlewareServerStarted || !devServer) return;
@@ -3385,6 +3424,7 @@ async function ensureConfigureServerMiddleware() {
       req.headers.host = req.headers["x-oj-host"].split(",")[0].trim() || req.headers.host;
       delete req.headers["x-oj-host"];
     }
+    restoreClientSocket(req);
     if (req.method === "POST" && req.url === "/__oj_invalidate") {
       let body = "";
       req.on("data", (c) => (body += c));

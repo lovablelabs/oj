@@ -130,8 +130,54 @@ async fn forward_direct(
     target: &str,
 ) -> Response {
     const BUFFER_LIMIT: usize = 1024 * 1024;
+    let opts = entry.options();
+    let follow = opts.is_some_and(|o| o.follow_redirects == Some(true));
     let method = req.method().clone();
-    let req_headers = req.headers().clone();
+    let mut req_headers = req.headers().clone();
+    if opts.is_some_and(|o| o.xfwd == Some(true)) {
+        add_forwarded_headers(&mut req_headers, false);
+    }
+    let client = if entry.secure() {
+        &state.http
+    } else {
+        state
+            .http_insecure
+            .get_or_init(|| plugin_mw::browser_hop_client(true))
+    };
+    let mut outgoing = HeaderMap::new();
+    for (name, value) in req_headers.iter() {
+        if entry.change_origin() && name == header::HOST {
+            continue;
+        }
+        outgoing.append(name, value.clone());
+    }
+    let host = req_headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let finish = |resp: reqwest::Response| {
+        // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
+        let mut resp = stream_reqwest_response(resp);
+        if let Some(opts) = opts {
+            let status = resp.status().as_u16();
+            rewrite_reply_headers(opts, host.as_deref(), status, resp.headers_mut());
+        }
+        resp
+    };
+
+    if follow {
+        // follow-redirects replays the body on each hop, so it holds the
+        // request body, up to its 10 MiB maxBodyLength.
+        let body = match axum::body::to_bytes(req.into_body(), FOLLOW_MAX_BODY).await {
+            Ok(b) => b,
+            Err(e) => return bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
+        };
+        return match follow_redirects(client, method, target, outgoing, body).await {
+            Ok(resp) => finish(resp),
+            Err(e) => bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
+        };
+    }
+
     // Buffer small bodies to preserve Content-Length; stream chunked or large
     // bodies so uploads are not capped.
     let content_length = req_headers
@@ -148,63 +194,144 @@ async fn forward_direct(
             Err(e) => return bad_gateway(format!("oj proxy: body read: {e}")),
         }
     };
-
-    let opts = entry.options();
-    let client = if opts.is_some_and(|o| o.follow_redirects == Some(true)) {
-        following_client(entry.secure())
-    } else if entry.secure() {
-        &state.http
-    } else {
-        state
-            .http_insecure
-            .get_or_init(|| plugin_mw::browser_hop_client(true))
-    };
-    if opts.is_some_and(|o| o.xfwd == Some(true)) {
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| {
-            eprintln!(
-                "oj: warning: server.proxy[{prefix:?}] xfwd is applied by the plugin host's \
-                 http-proxy only; the built-in fallback proxy does not add x-forwarded-* headers"
-            )
-        });
-    }
-    let mut out = client.request(method, target).body(body);
-    for (name, value) in req_headers.iter() {
-        if entry.change_origin() && name == header::HOST {
-            continue;
-        }
-        out = out.header(name, value);
-    }
-
-    match out.send().await {
-        // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
-        Ok(resp) => {
-            let mut resp = stream_reqwest_response(resp);
-            if let Some(opts) = opts {
-                let host = req_headers.get(header::HOST).and_then(|v| v.to_str().ok());
-                let status = resp.status().as_u16();
-                rewrite_reply_headers(opts, host, status, resp.headers_mut());
-            }
-            resp
-        }
+    match client
+        .request(method, target)
+        .headers(outgoing)
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(resp) => finish(resp),
         Err(e) => bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
     }
 }
 
-/// The client for an entry with `followRedirects: true`: http-proxy then
-/// forwards through follow-redirects, which follows up to 21 hops. A streamed
-/// request body cannot be replayed, so a 307/308 answering one reaches the
-/// browser as written.
-fn following_client(secure: bool) -> &'static reqwest::Client {
-    static CLIENTS: [std::sync::OnceLock<reqwest::Client>; 2] =
-        [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
-    CLIENTS[usize::from(secure)].get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(21))
-            .danger_accept_invalid_certs(!secure)
-            .build()
-            .expect("following proxy client")
-    })
+/// follow-redirects' limits, which http-proxy uses for `followRedirects`.
+const FOLLOW_MAX_REDIRECTS: usize = 21;
+const FOLLOW_MAX_BODY: usize = 10 * 1024 * 1024;
+
+/// `followRedirects: true`, with follow-redirects' rules (http-proxy forwards
+/// through it): at most 21 hops; a 301/302 answering a POST, or a 303
+/// answering anything but GET/HEAD, continues as a body-less GET without its
+/// `content-*` headers; every other hop replays the method and the body; the
+/// Host header gives way to the next URL's; credentials and cookies are
+/// dropped when the next hop leaves the host (or its subdomains) or
+/// downgrades from https.
+pub(crate) async fn follow_redirects(
+    client: &reqwest::Client,
+    mut method: Method,
+    target: &str,
+    mut headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<reqwest::Response, String> {
+    let mut url = reqwest::Url::parse(target).map_err(|e| e.to_string())?;
+    let mut body = Some(body);
+    for _ in 0..=FOLLOW_MAX_REDIRECTS {
+        let mut request = client
+            .request(method.clone(), url.clone())
+            .headers(headers.clone());
+        if let Some(b) = &body {
+            request = request.body(b.clone());
+        }
+        let resp = request.send().await.map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let Some(location) = location.filter(|_| (300..400).contains(&status)) else {
+            return Ok(resp);
+        };
+        let next = url.join(&location).map_err(|e| e.to_string())?;
+        if ((status == 301 || status == 302) && method == Method::POST)
+            || (status == 303 && method != Method::GET && method != Method::HEAD)
+        {
+            method = Method::GET;
+            body = None;
+            let content: Vec<_> = headers
+                .keys()
+                .filter(|k| k.as_str().starts_with("content-"))
+                .cloned()
+                .collect();
+            for k in content {
+                headers.remove(k);
+            }
+        }
+        let current_host = headers
+            .remove(header::HOST)
+            .and_then(|v| v.to_str().ok().map(str::to_string))
+            .unwrap_or_else(|| url_host(&url));
+        let next_host = url_host(&next);
+        let subdomain = next_host.ends_with(&format!(".{current_host}"));
+        if (next.scheme() != url.scheme() && next.scheme() != "https")
+            || (next_host != current_host && !subdomain)
+        {
+            for k in [
+                header::AUTHORIZATION,
+                header::PROXY_AUTHORIZATION,
+                header::COOKIE,
+            ] {
+                headers.remove(k);
+            }
+        }
+        url = next;
+    }
+    Err("Maximum number of redirects exceeded".to_string())
+}
+
+/// http-proxy-3's XHeaders (passes/web-incoming.js, ws-incoming.js) for
+/// `xfwd: true`: the browser's address, the Host's port (else the scheme's),
+/// and the protocol, each appended to any value already there; on a plain
+/// request also `x-forwarded-host`, when none came in.
+pub(crate) fn add_forwarded_headers(headers: &mut HeaderMap, websocket: bool) {
+    let conn = crate::tls::client_conn();
+    let encrypted = conn.is_some_and(|c| c.encrypted);
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // common.getPort: the first `:<digits>` of the Host.
+    static PORT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let port = PORT
+        .get_or_init(|| regex::Regex::new(r":(\d+)").expect("port regex"))
+        .captures(&host)
+        .map(|c| c[1].to_string())
+        .unwrap_or_else(|| if encrypted { "443" } else { "80" }.to_string());
+    let proto = match (websocket, encrypted) {
+        (false, false) => "http",
+        (false, true) => "https",
+        (true, false) => "ws",
+        (true, true) => "wss",
+    };
+    let values = [
+        ("x-forwarded-for", conn.map(|c| c.addr.ip().to_string())),
+        ("x-forwarded-port", Some(port)),
+        ("x-forwarded-proto", Some(proto.to_string())),
+    ];
+    for (name, value) in values {
+        let Some(value) = value else { continue };
+        // Node joins repeated headers with ", " before http-proxy appends.
+        let existing: Vec<&str> = headers
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        let joined = if existing.is_empty() {
+            value
+        } else {
+            format!("{},{value}", existing.join(", "))
+        };
+        if let Ok(v) = header::HeaderValue::from_str(&joined) {
+            headers.insert(name, v);
+        }
+    }
+    if !websocket && !headers.contains_key("x-forwarded-host") {
+        if let Ok(v) = header::HeaderValue::from_str(&host) {
+            headers.insert("x-forwarded-host", v);
+        }
+    }
 }
 
 /// http-proxy-3's web-outgoing passes on a reply (setRedirectHostRewrite and
@@ -621,7 +748,14 @@ fn upstream_ws_request(
             ts::handshake::client::generate_key(),
         );
     let rewrite_origin = entry.is_some_and(|e| e.rewrite_ws_origin());
-    for (name, value) in headers.iter() {
+    let mut forwarded = headers.clone();
+    if entry
+        .and_then(|e| e.options())
+        .is_some_and(|o| o.xfwd == Some(true))
+    {
+        add_forwarded_headers(&mut forwarded, true);
+    }
+    for (name, value) in forwarded.iter() {
         if !ws_forwardable_header(name) {
             continue;
         }
