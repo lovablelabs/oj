@@ -5,6 +5,23 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.40] - 2026-10-20
+
+### Changed
+
+- rolldown is updated to 1.2.14 and oxc to 0.154, for both oj's crates and the npm rolldown the nix build vendors for Start bundles. Building oj now needs rustc 1.97.
+- The release build compiles the hot loops of oj's dependencies at opt-level 3: lightningcss's tokenizer and number printing, zlib, simd-json, base64, url, the regex engines, xxhash, rayon and the deno resolver. `oj build` of an app with a 6.7MB stylesheet went from 216ms to 169ms, and that stylesheet's first `oj dev` request from 178ms to 142ms.
+- Strings cross between Rust and the embedded engine without a JSON round trip, so a plugin transform no longer escapes and unescapes its whole payload twice. On an app of 300 modules of about 110KB each, the cold dev crawl went from 935ms to 752ms.
+- An engine job (config extraction, the dep pre-bundle) reports its exit at once instead of being polled every 25ms. A cold `oj dev` reaches its first response about 8% sooner.
+
+### Fixed
+
+- An app whose vite config aliases a dep to its own node_modules path (`resolve.alias: { react: path.resolve("node_modules/react") }`) loads one copy of it. The dep scan skipped every bare import an alias matched, so React was inlined into each pre-bundled dep and then optimized a second time, and a hook from a pre-bundled dep failed with a null dispatcher. As in Vite's scan, an aliased bare import is recorded as a dep when the alias lands in node_modules and crawled when it lands in the app's source.
+- TanStack Start client bundles rewrite `new Worker(new URL("./w.ts", import.meta.url))`, `new SharedWorker(...)` and `new URL(asset, import.meta.url)`, as Vite does, in dev and in a build. They reached the browser unchanged and resolved under `/@oj-start/`, so the worker or asset failed to load.
+- A file under `server.watch.ignored` (or the cache dir) written more often than every 10ms no longer holds the watcher's batch open, so an edit made meanwhile reaches HMR. Excluded paths are now dropped as each event arrives.
+- In TanStack Start, a server function whose handler contains a comment or string with an unbalanced parenthesis no longer breaks the client bundle with a parse error. The client and build rewrites now skip comments, strings, templates and regex literals when finding the handler's end, as the SSR rewrite already did.
+- A string returned from the embedded engine that contains a lone surrogate arrives with U+FFFD instead of as `null`.
+
 ## [0.2.39] - 2026-10-19
 
 ### Fixed
