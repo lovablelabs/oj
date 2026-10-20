@@ -5,6 +5,16 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.41] - 2026-10-20
+
+### Changed
+
+- Dependencies are updated to their latest semver-compatible releases (tokio 1.54, hyper 1.12, rustls 0.23.46, reqwest 0.13.5 among them), and rquickjs goes from 0.12 to 0.14.
+
+### Fixed
+
+- The dev HTML's `<link rel="modulepreload">` hints for pre-bundled deps name each entry's current URL. Every hint carried the session's base version, so after an optimizer rerun, or from boot on a warm session, a dep's hint and its import named different `?v=` URLs, and the hint got the outdated-dep 504 on every page load. Chunks preload bare, as dep files import them.
+
 ## [0.2.40] - 2026-10-20
 
 ### Changed
