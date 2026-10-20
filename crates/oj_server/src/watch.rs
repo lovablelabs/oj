@@ -697,12 +697,15 @@ struct Batch {
 }
 
 impl Batch {
-    fn add(&mut self, changes: &mut ContentChanges, ev: &notify::Event) {
+    /// True when `ev` changed any path.
+    fn add(&mut self, changes: &mut ContentChanges, ev: &notify::Event) -> bool {
         let changed = changes.changed_paths(ev);
         if matches!(ev.kind, notify::EventKind::Create(_)) {
             self.created.extend(changed.iter().cloned());
         }
+        let any = !changed.is_empty();
         self.paths.extend(changed);
+        any
     }
 }
 
@@ -877,16 +880,25 @@ pub(crate) fn spawn_watcher(
             if batch.paths.is_empty() {
                 continue;
             }
+            // Only a change the batch keeps restarts the quiet window: ignored
+            // writes arriving faster than it would otherwise hold it open.
+            let debounce = Duration::from_millis(debounce_ms);
+            let mut quiet_at = std::time::Instant::now() + debounce;
             loop {
-                match rx.recv_timeout(Duration::from_millis(debounce_ms)) {
-                    Ok(WatchMsg::Fs(Ok(ev))) => ingest_event(
-                        &state,
-                        &mut watchers,
-                        &cache_base,
-                        &mut changes,
-                        &mut batch,
-                        &ev,
-                    ),
+                let left = quiet_at.saturating_duration_since(std::time::Instant::now());
+                match rx.recv_timeout(left) {
+                    Ok(WatchMsg::Fs(Ok(ev))) => {
+                        if ingest_event(
+                            &state,
+                            &mut watchers,
+                            &cache_base,
+                            &mut changes,
+                            &mut batch,
+                            &ev,
+                        ) {
+                            quiet_at = std::time::Instant::now() + debounce;
+                        }
+                    }
                     Ok(WatchMsg::Fs(Err(_))) => {}
                     Ok(WatchMsg::Dir(dir)) => {
                         watch_served_dir(&mut watchers, &mut served_dirs, dir)
@@ -901,13 +913,7 @@ pub(crate) fn spawn_watcher(
                 }
             }
             let Batch { paths, mut created } = batch;
-            let paths: Vec<PathBuf> = paths
-                .into_iter()
-                .filter(|p| !watch_excluded(&state.watch_ignored, &state.root, &cache_base, p))
-                .collect();
-            if paths.is_empty() {
-                continue;
-            }
+            let paths: Vec<PathBuf> = paths.into_iter().collect();
             created.retain(|p| !seen_paths.contains(p));
             seen_paths.extend(paths.iter().cloned());
             handle_batch(&state, &paths, &created);
@@ -925,7 +931,8 @@ fn ingest_event(
     changes: &mut ContentChanges,
     batch: &mut Batch,
     ev: &notify::Event,
-) {
+) -> bool {
+    let mut kept = false;
     let adopted = adopt_created_root_dirs(watchers, &state.root, cache_base, ev);
     if !adopted.is_empty() {
         let mut synth =
@@ -934,7 +941,25 @@ fn ingest_event(
         state
             .watch_feed
             .publish(&synth, &state.watch_ignored, &state.root, cache_base);
-        batch.add(changes, &synth);
+        kept |= add_watched(state, cache_base, changes, batch, &synth);
     }
-    batch.add(changes, ev);
+    add_watched(state, cache_base, changes, batch, ev) || kept
+}
+
+/// `ev` into the batch minus its excluded paths; true when it changed a
+/// path the batch keeps.
+fn add_watched(
+    state: &ServerState,
+    cache_base: &Path,
+    changes: &mut ContentChanges,
+    batch: &mut Batch,
+    ev: &notify::Event,
+) -> bool {
+    let excluded = |p: &PathBuf| watch_excluded(&state.watch_ignored, &state.root, cache_base, p);
+    if !ev.paths.iter().any(excluded) {
+        return batch.add(changes, ev);
+    }
+    let mut kept = ev.clone();
+    kept.paths.retain(|p| !excluded(p));
+    !kept.paths.is_empty() && batch.add(changes, &kept)
 }
