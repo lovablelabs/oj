@@ -80,6 +80,9 @@ pub struct CompileOptions {
     pub class_field_set_semantics: Option<bool>,
     /// The dev server's defines; `None` uses the mode-derived fallback.
     pub env: Option<Arc<ImportMetaEnv>>,
+    /// The app root (Vite's `config.root`) that `/`-led `import.meta.glob`
+    /// patterns resolve against; `None` leaves them matching nothing.
+    pub root: Option<PathBuf>,
 }
 
 impl CompileOptions {
@@ -92,6 +95,7 @@ impl CompileOptions {
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
             env: None,
+            root: None,
         }
     }
 
@@ -104,6 +108,7 @@ impl CompileOptions {
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
             env: None,
+            root: None,
         }
     }
 }
@@ -201,7 +206,7 @@ pub fn compile_module_with_maps(
     let mut program = parse(&allocator, path, source_text, source_type)?;
     transform(&allocator, path, source_text, opts, &mut program)?;
     apply_defines(&allocator, source_text, opts, &mut program);
-    let synthesized = expand_synthesized(&allocator, path, source_text, &mut program);
+    let synthesized = expand_synthesized(&allocator, path, opts, source_text, &mut program);
 
     let specifiers = rewrite_module_specifiers(&allocator, &mut program, &mut rewriter);
     let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
@@ -405,13 +410,14 @@ fn apply_defines<'a>(
 fn expand_synthesized<'a>(
     allocator: &'a Allocator,
     path: &Path,
+    opts: &CompileOptions,
     source_text: &str,
     program: &mut Program<'a>,
 ) -> bool {
     let dir = path.parent().unwrap_or(path);
     let mut synthesized = false;
     if scan(&F_IMPORT_META_GLOB, source_text) {
-        glob::expand(allocator, dir, program);
+        glob::expand(allocator, path, opts.root.as_deref(), program);
         synthesized = true;
     }
     if scan(&F_IMPORT_PAREN, source_text) {
@@ -603,6 +609,34 @@ import React from "react";
         );
     }
 
+    // The dev server's root reaches the glob expansion of every compile, SSR
+    // included: Vite's toAbsoluteGlob resolves `/` patterns from
+    // `config.root`, so a server module's root-absolute glob finds its file.
+    #[test]
+    fn a_compile_resolves_root_absolute_globs_from_its_root() {
+        let root =
+            std::env::temp_dir().join(format!("oj-compile-root-glob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/lib")).unwrap();
+        std::fs::write(root.join("src/lib/target.server.ts"), "export const t = 1;").unwrap();
+        let src = "export const load = () => import.meta.glob('/src/lib/target.server.ts')['/src/lib/target.server.ts'];\n";
+        let opts = CompileOptions {
+            ssr: true,
+            root: Some(root.clone()),
+            ..CompileOptions::dev()
+        };
+        let out = compile_module(&root.join("src/routes/page.ts"), src, &opts, None).unwrap();
+        assert!(
+            out.code.contains(
+                r#""/src/lib/target.server.ts": () => import("../lib/target.server.ts")"#
+            ),
+            "{}",
+            out.code
+        );
+        assert!(!out.code.contains("import.meta.glob"), "{}", out.code);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn fast_refresh_only_in_dev_with_refresh_enabled() {
         let prod = compile(Path::new("C.tsx"), APP_TSX, &CompileOptions::prod()).unwrap();
@@ -618,6 +652,7 @@ import React from "react";
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
                 env: None,
+                root: None,
             },
             None,
         )
@@ -706,6 +741,7 @@ import React from "react";
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
                 env: None,
+                root: None,
             },
             None,
         )

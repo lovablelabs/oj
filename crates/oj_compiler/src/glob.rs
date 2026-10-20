@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
@@ -12,22 +12,24 @@ use oxc_ast_visit::{walk, walk_mut, Visit, VisitMut};
 use oxc_parser::Parser;
 use oxc_span::{SourceType, Span};
 
-pub fn expand_source(source: &str, path: &Path) -> String {
+/// `root` is the app root (Vite's `config.root`) that `/` patterns resolve
+/// against; see [`expand`].
+pub fn expand_source(source: &str, path: &Path, root: Option<&Path>) -> String {
     if !source.contains("import.meta.glob") {
         return source.to_string();
     }
-    rewrite_source(source, path, |allocator, dir, program| {
-        expand(allocator, dir, program);
+    rewrite_source(source, path, |allocator, _, program| {
+        expand(allocator, path, root, program);
         true
     })
 }
 
-/// The positive `import.meta.glob` patterns a module uses, resolved against its
-/// directory the way `expand` resolves them (`<dir>/pages/*.tsx`). The dev
+/// The positive `import.meta.glob` patterns a module uses, resolved the way
+/// `expand` resolves them (`<dir>/pages/*.tsx`, `<root>/src/*.ts`). The dev
 /// server's watcher keeps these per importer: a file created or deleted under
 /// one of them changes what the glob expands to, so the importer is updated as
 /// if it had been edited (Vite's importMetaGlob `hotUpdate`).
-pub fn glob_patterns(source: &str, path: &Path) -> Vec<String> {
+pub fn glob_patterns(source: &str, path: &Path, root: Option<&Path>) -> Vec<String> {
     if !source.contains("import.meta.glob") {
         return Vec::new();
     }
@@ -37,6 +39,7 @@ pub fn glob_patterns(source: &str, path: &Path) -> Vec<String> {
     };
     let mut collector = PatternCollector {
         dir: path.parent().unwrap_or(path),
+        root,
         out: Vec::new(),
     };
     collector.visit_program(&program);
@@ -142,6 +145,7 @@ fn span_text(source: &str, span: Span) -> Option<&str> {
 
 struct PatternCollector<'d> {
     dir: &'d Path,
+    root: Option<&'d Path>,
     out: Vec<String>,
 }
 
@@ -151,11 +155,9 @@ impl<'a> Visit<'a> for PatternCollector<'_> {
             if let Some(patterns) = call.arguments.first().and_then(collect_patterns) {
                 for pattern in patterns {
                     if !pattern.starts_with('!') {
-                        // `dir/./pages/*` would not match `dir/pages/x` as a
-                        // glob pattern: drop the current-dir segments.
-                        let rel = pattern.strip_prefix("./").unwrap_or(&pattern);
-                        let abs = self.dir.join(rel).to_string_lossy().replace('\\', "/");
-                        self.out.push(abs.replace("/./", "/"));
+                        if let Some(abs) = absolute_glob(&pattern, self.dir, self.root) {
+                            self.out.push(slash(&abs));
+                        }
                     }
                 }
             }
@@ -164,10 +166,23 @@ impl<'a> Visit<'a> for PatternCollector<'_> {
     }
 }
 
-pub fn expand<'a>(allocator: &'a Allocator, dir: &Path, program: &mut Program<'a>) {
+/// Expands every literal `import.meta.glob` in the module at `importer`, as
+/// Vite's importMetaGlob does: `./` and `../` patterns resolve from the
+/// importer's directory and `/` ones from `root` (`None`: no root is known,
+/// and a `/` pattern matches nothing). Import specifiers are always relative
+/// to the importer; keys are too when every pattern is relative, and
+/// root-absolute (`/src/x.ts`) otherwise.
+pub fn expand<'a>(
+    allocator: &'a Allocator,
+    importer: &Path,
+    root: Option<&Path>,
+    program: &mut Program<'a>,
+) {
     let mut expander = GlobExpander {
         allocator,
-        dir,
+        importer,
+        dir: importer.parent().unwrap_or(importer),
+        root,
         hoisted: Vec::new(),
         uid: 0,
     };
@@ -179,7 +194,9 @@ pub fn expand<'a>(allocator: &'a Allocator, dir: &Path, program: &mut Program<'a
 
 struct GlobExpander<'a, 'd> {
     allocator: &'a Allocator,
+    importer: &'d Path,
     dir: &'d Path,
+    root: Option<&'d Path>,
     hoisted: Vec<String>,
     uid: usize,
 }
@@ -190,8 +207,7 @@ struct GlobOptions {
     import: Option<String>,
     query: String,
     /// Vite's `base`: globs resolve against, and keys are relative to, this
-    /// directory (`./x` / `../x` from the importer; `/x` from the root is not
-    /// resolvable here and is treated as importer-relative).
+    /// directory (`./x` / `../x` from the importer, `/x` from the root).
     base: Option<String>,
     /// Vite's `exhaustive`: also match dotfiles and `node_modules`.
     exhaustive: bool,
@@ -229,19 +245,67 @@ fn relative_spec(from_dir: &Path, to: &Path) -> String {
     out
 }
 
-/// `dir/base` normalized lexically (`.` and `..` folded).
-fn join_normalized(dir: &Path, base: &str) -> std::path::PathBuf {
-    let mut out = dir.to_path_buf();
-    for c in Path::new(base).components() {
+/// `dir/rel` normalized lexically (`.` and `..` folded); `rel` is relative.
+fn join_normalized(dir: &Path, rel: &str) -> PathBuf {
+    let mut out = normalize(dir);
+    for c in Path::new(rel).components() {
         match c {
-            std::path::Component::ParentDir => {
+            Component::ParentDir => {
                 out.pop();
             }
-            std::path::Component::CurDir | std::path::Component::RootDir => {}
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
             other => out.push(other),
         }
     }
     out
+}
+
+/// `path` with `.` and `..` folded lexically.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Vite's toAbsoluteGlob: a `/` pattern joins the root, `./` and `../` ones
+/// the directory they are relative to (the importer's, or `base`'s), and a
+/// `**` one is matched from the root as it stands. `None` for a root-led
+/// pattern without a root, or a form Vite hands to its resolver (an alias, a
+/// bare package path), which this compiler has none of.
+fn absolute_glob(pattern: &str, dir: &Path, root: Option<&Path>) -> Option<PathBuf> {
+    let pattern = pattern.strip_prefix('!').unwrap_or(pattern);
+    if let Some(rest) = pattern.strip_prefix('/') {
+        return Some(join_normalized(root?, rest));
+    }
+    if pattern.starts_with("**") {
+        return Some(join_normalized(root?, pattern));
+    }
+    if pattern.starts_with("./") || pattern.starts_with("../") {
+        return Some(join_normalized(dir, pattern));
+    }
+    None
+}
+
+/// Vite's resolvePaths key for `file` outside `base`: relative to the root,
+/// `/`-led unless it climbs out of it.
+fn root_key(root: &Path, file: &Path) -> String {
+    let rel = relative_spec(root, file);
+    match rel.strip_prefix("./") {
+        Some(inside) => format!("/{inside}"),
+        None => rel,
+    }
 }
 
 impl<'a> GlobExpander<'a, '_> {
@@ -252,16 +316,31 @@ impl<'a> GlobExpander<'a, '_> {
             None => GlobOptions::default(),
         };
 
-        // With `base`, globs resolve against and keys are relative to the base
-        // directory, while the import specifiers stay relative to the importer
-        // (Vite's importMetaGlob resolvePaths).
-        let base_dir = opts.base.as_deref().map(|b| join_normalized(self.dir, b));
+        // Vite's importMetaGlob resolvePaths: with `base`, globs resolve
+        // against and keys are relative to the base directory; without it,
+        // keys are importer-relative when every pattern is relative and
+        // root-absolute otherwise. Import specifiers are importer-relative.
+        let base_dir = match opts.base.as_deref() {
+            Some(b) => Some(match b.strip_prefix('/') {
+                Some(rest) => join_normalized(self.root?, rest),
+                None => join_normalized(self.dir, b),
+            }),
+            None => None,
+        };
         let glob_dir = base_dir.as_deref().unwrap_or(self.dir);
+        let is_relative = patterns
+            .iter()
+            .all(|p| p.starts_with('.') || p.starts_with('!'));
         let mut entries: Vec<String> = Vec::new();
-        for key in glob_matches(glob_dir, &patterns, opts.exhaustive) {
-            let import_path = match &base_dir {
-                Some(b) => relative_spec(self.dir, &join_normalized(b, &key)),
-                None => key.clone(),
+        let files = glob_matches(glob_dir, self.root, &patterns, opts.exhaustive);
+        let importer = normalize(self.importer);
+        for file in files.into_iter().filter(|f| *f != importer) {
+            let import_path = relative_spec(self.dir, &file);
+            let key = match (&base_dir, self.root) {
+                (Some(b), _) => relative_spec(b, &file),
+                (None, _) if is_relative => import_path.clone(),
+                (None, Some(root)) => root_key(root, &file),
+                (None, None) => import_path.clone(),
             };
             let spec = format!("{import_path}{}", opts.query);
             let value = self.entry_value(&spec, &opts);
@@ -456,7 +535,7 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
                 Some(format!("new URL({ident}, import.meta.url)"))
             }
             UrlSpec::Template { pattern, arg } => {
-                let matches = glob_matches(self.dir, &[pattern], true);
+                let matches = template_matches(self.dir, &pattern);
                 if matches.is_empty() {
                     return None;
                 }
@@ -513,7 +592,7 @@ impl<'a> DynImportVars<'a, '_, '_> {
             return None;
         };
         let pattern = template_glob(tpl)?;
-        let matches = glob_matches(self.dir, &[pattern], true);
+        let matches = template_matches(self.dir, &pattern);
         if matches.is_empty() {
             return None;
         }
@@ -621,43 +700,78 @@ fn hidden_by_default(rel: &str, pattern: &str) -> bool {
     })
 }
 
-fn glob_matches(dir: &Path, patterns: &[String], exhaustive: bool) -> Vec<String> {
+/// The files a relative template's glob matches (dynamic-import-vars and a
+/// template `new URL`), as `dir`-relative keys spelled like the template
+/// (`./x`, `../x`), which the runtime value is compared against verbatim.
+fn template_matches(dir: &Path, pattern: &str) -> Vec<String> {
+    let Ok(paths) = glob::glob(&dir.join(pattern).to_string_lossy()) else {
+        return Vec::new();
+    };
+    let mut keys = std::collections::BTreeSet::new();
+    for entry in paths.flatten() {
+        if !entry.is_file() {
+            continue;
+        }
+        let Ok(rel) = entry.strip_prefix(dir) else {
+            continue;
+        };
+        let rel = slash(rel);
+        keys.insert(if rel.starts_with('.') {
+            rel
+        } else {
+            format!("./{rel}")
+        });
+    }
+    keys.into_iter().collect()
+}
+
+/// The files `patterns` match, absolute and lexically normalized, sorted as
+/// Vite sorts them (by path string, so `a-b/x` precedes `a/b`). Relative patterns resolve from `dir`, `/` ones from
+/// `root` ([`absolute_glob`]); negatives exclude what they match.
+fn glob_matches(
+    dir: &Path,
+    root: Option<&Path>,
+    patterns: &[String],
+    exhaustive: bool,
+) -> Vec<PathBuf> {
     let (negatives, positives): (Vec<&String>, Vec<&String>) =
         patterns.iter().partition(|p| p.starts_with('!'));
     let neg_patterns: Vec<glob::Pattern> = negatives
         .iter()
-        .filter_map(|p| glob::Pattern::new(p.trim_start_matches('!').trim_start_matches("./")).ok())
+        .filter_map(|p| absolute_glob(p, dir, root))
+        .filter_map(|abs| glob::Pattern::new(&slash(&abs)).ok())
         .collect();
 
-    let mut keys = std::collections::BTreeSet::new();
+    let mut files = std::collections::BTreeMap::new();
     for pat in positives {
-        let abs = dir.join(pat);
-        let Ok(paths) = glob::glob(&abs.to_string_lossy()) else {
+        let Some(abs) = absolute_glob(pat, dir, root) else {
+            continue;
+        };
+        // The dotfile/node_modules check reads the part of the path the
+        // pattern matched: below the root for `/`, below `dir` otherwise.
+        let anchor = match (pat.starts_with('/') || pat.starts_with("**"), root) {
+            (true, Some(root)) => root,
+            _ => dir,
+        };
+        let Ok(paths) = glob::glob(&slash(&abs)) else {
             continue;
         };
         for entry in paths.flatten() {
             if !entry.is_file() {
                 continue;
             }
-            let Ok(rel) = entry.strip_prefix(dir) else {
-                continue;
-            };
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            if neg_patterns.iter().any(|n| n.matches(&rel)) {
+            let file = normalize(&entry);
+            if neg_patterns.iter().any(|n| n.matches(&slash(&file))) {
                 continue;
             }
+            let rel = relative_spec(anchor, &file);
             if !exhaustive && hidden_by_default(&rel, pat) {
                 continue;
             }
-            let key = if rel.starts_with('.') {
-                rel
-            } else {
-                format!("./{rel}")
-            };
-            keys.insert(key);
+            files.insert(slash(&file), file);
         }
     }
-    keys.into_iter().collect()
+    files.into_values().collect()
 }
 
 #[cfg(test)]
@@ -672,6 +786,170 @@ mod tests {
         d
     }
 
+    /// An app root with `files` written (empty contents).
+    fn app(name: &str, files: &[&str]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("oj-glob-root-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for f in files {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "export {};").unwrap();
+        }
+        root
+    }
+
+    // Vite's toAbsoluteGlob joins a `/` pattern to the root (not the
+    // filesystem root), and resolvePaths keys a non-relative glob
+    // root-absolute: generated server code that looks its one file up by
+    // that key (`m['/src/x.ts']`) finds the loader. The import itself stays
+    // importer-relative.
+    #[test]
+    fn a_root_absolute_glob_resolves_from_the_root_and_keys_root_absolute() {
+        let root = app(
+            "root-abs",
+            &[
+                "src/integrations/auth/factory.server.ts",
+                "src/integrations/auth/middleware.ts",
+            ],
+        );
+        let src = "export async function auth() {\n  \
+                   const m = import.meta.glob('/src/integrations/auth/factory.server.ts');\n  \
+                   return m['/src/integrations/auth/factory.server.ts'];\n}\n";
+        let out = super::expand_source(
+            src,
+            &root.join("src/integrations/auth/middleware.ts"),
+            Some(&root),
+        );
+        assert!(
+            out.contains(
+                r#""/src/integrations/auth/factory.server.ts": () => import("./factory.server.ts")"#
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("import.meta.glob"), "{out}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Vite's resolvePaths: keys are importer-relative only when EVERY pattern
+    // is relative (`isRelative`); one `/` pattern keys them all root-absolute.
+    #[test]
+    fn mixed_relative_and_root_patterns_key_every_file_root_absolute() {
+        let root = app(
+            "root-mixed",
+            &["src/a/one.ts", "src/b/two.ts", "src/index.ts"],
+        );
+        let out = super::expand_source(
+            "const m = import.meta.glob(['./a/*.ts', '/src/b/*.ts']);",
+            &root.join("src/index.ts"),
+            Some(&root),
+        );
+        assert!(
+            out.contains(r#""/src/a/one.ts": () => import("./a/one.ts")"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#""/src/b/two.ts": () => import("./b/two.ts")"#),
+            "{out}"
+        );
+        // All relative: importer-relative keys, as before.
+        let out = super::expand_source(
+            "const m = import.meta.glob('./a/*.ts');",
+            &root.join("src/index.ts"),
+            Some(&root),
+        );
+        assert!(
+            out.contains(r#""./a/one.ts": () => import("./a/one.ts")"#),
+            "{out}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Vite's toAbsoluteGlob: `base: '/x'` is the root's `x`; keys are relative
+    // to the base, imports to the importer.
+    #[test]
+    fn a_root_led_base_resolves_from_the_root() {
+        let root = app("root-base", &["src/pages/home.tsx", "src/app/main.ts"]);
+        let out = super::expand_source(
+            "const m = import.meta.glob('./*.tsx', { base: '/src/pages' });",
+            &root.join("src/app/main.ts"),
+            Some(&root),
+        );
+        assert!(
+            out.contains(r#""./home.tsx": () => import("../pages/home.tsx")"#),
+            "{out}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Vite's importMetaGlob filters `file !== id`: a module is never in its
+    // own glob, relative or root-absolute.
+    #[test]
+    fn the_importer_is_left_out_of_its_own_glob() {
+        let root = app("root-self", &["src/a.ts", "src/b.ts"]);
+        for pattern in ["./*.ts", "/src/*.ts"] {
+            let out = super::expand_source(
+                &format!("const m = import.meta.glob('{pattern}');"),
+                &root.join("src/a.ts"),
+                Some(&root),
+            );
+            assert!(out.contains(r#"import("./b.ts")"#), "{pattern}: {out}");
+            assert!(!out.contains(r#"import("./a.ts")"#), "{pattern}: {out}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Negative `/` patterns resolve like positive ones (toAbsoluteGlob keeps
+    // the `!`), and a root glob still hides node_modules and dot-led paths
+    // unless `exhaustive` (tinyglobby's `dot: false` + node_modules ignore).
+    #[test]
+    fn root_globs_honor_negatives_and_hidden_paths() {
+        let root = app(
+            "root-neg",
+            &[
+                "src/x/keep.ts",
+                "src/x/skip.ts",
+                "src/x/.hidden/h.ts",
+                "src/x/node_modules/n.ts",
+                "src/main.ts",
+            ],
+        );
+        let out = super::expand_source(
+            "const m = import.meta.glob(['/src/x/**/*.ts', '!/src/x/skip.ts']);",
+            &root.join("src/main.ts"),
+            Some(&root),
+        );
+        assert!(out.contains(r#""/src/x/keep.ts""#), "{out}");
+        for hidden in ["skip.ts", "h.ts", "n.ts"] {
+            assert!(!out.contains(hidden), "{hidden}: {out}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // No root known (a compile outside the dev server): a `/` pattern matches
+    // nothing instead of globbing the filesystem root.
+    #[test]
+    fn without_a_root_a_root_pattern_matches_nothing() {
+        let out = super::expand_source(
+            "const m = import.meta.glob('/etc/*');",
+            Path::new("/app/src/main.ts"),
+            None,
+        );
+        assert!(out.contains("const m = {}"), "{out}");
+    }
+
+    // The watcher's patterns (Vite's importMetaGlob hotUpdate) resolve `/`
+    // patterns from the root too, so a file created under one updates the
+    // importer.
+    #[test]
+    fn glob_patterns_resolve_root_patterns_from_the_root() {
+        let pats = glob_patterns(
+            "const m = import.meta.glob(['/src/pages/*.tsx', './local/*.ts', '!/src/pages/x.tsx']);",
+            Path::new("/app/src/main.ts"),
+            Some(Path::new("/app")),
+        );
+        assert_eq!(pats, vec!["/app/src/pages/*.tsx", "/app/src/local/*.ts"]);
+    }
+
     // A `../sibling/*` glob from a nested importer must match: the `..` path
     // step is not a dotfile (the hidden-by-default rule once swallowed it and
     // every parent-relative glob expanded to an empty map).
@@ -682,6 +960,7 @@ mod tests {
         let out = super::expand_source(
             "const m = import.meta.glob(\"../img/*.png\", { eager: true });",
             &d.join("routes/index.tsx"),
+            None,
         );
         assert!(out.contains("../img/a.png"), "{out}");
         assert!(out.contains("../img/b.png"), "{out}");
@@ -693,9 +972,14 @@ mod tests {
         let src = "const a = import.meta.glob('./pages/*.tsx');\n\
                    const b = import.meta.glob(['./img/**/*.png', '!./img/skip.png'], { eager: true });\n\
                    const c = import.meta.glob(dynamic);\n";
-        let pats = glob_patterns(src, std::path::Path::new("/app/src/main.ts"));
+        let pats = glob_patterns(src, std::path::Path::new("/app/src/main.ts"), None);
         assert_eq!(pats, vec!["/app/src/pages/*.tsx", "/app/src/img/**/*.png"]);
-        assert!(glob_patterns("export const x = 1;", std::path::Path::new("/app/x.ts")).is_empty());
+        assert!(glob_patterns(
+            "export const x = 1;",
+            std::path::Path::new("/app/x.ts"),
+            None
+        )
+        .is_empty());
         // The resolved pattern matches the files `expand` would list (with `*`
         // stopping at `/`, as the directory walk in glob_matches does).
         let p = glob::Pattern::new(&pats[0]).unwrap();
@@ -772,7 +1056,7 @@ mod tests {
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, src, SourceType::mjs()).parse();
         let mut program = parsed.program;
-        expand(&allocator, dir, &mut program);
+        expand(&allocator, &dir.join("index.js"), None, &mut program);
         Codegen::new().build(&program).code
     }
 
@@ -966,5 +1250,55 @@ mod tests {
             "top-level match missing: {out}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Vite's toAbsoluteGlob leaves a `**` glob as it stands, matched from
+    // the root, and keys it root-absolute (it is not a relative glob).
+    #[test]
+    fn a_double_star_glob_matches_from_the_root() {
+        let root = app(
+            "double-star",
+            &[
+                "src/main.ts",
+                "src/docs/a.md",
+                "docs/b.md",
+                "node_modules/dep/c.md",
+            ],
+        );
+        let importer = root.join("src/main.ts");
+        let out = super::expand_source(
+            "const m = import.meta.glob('**/*.md');\n",
+            &importer,
+            Some(&root),
+        );
+        assert!(
+            out.contains(r#""/docs/b.md": () => import("../docs/b.md")"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#""/src/docs/a.md": () => import("./docs/a.md")"#),
+            "{out}"
+        );
+        assert!(
+            !out.contains("node_modules"),
+            "hidden unless exhaustive: {out}"
+        );
+        let none =
+            super::expand_source("const m = import.meta.glob('**/*.md');\n", &importer, None);
+        assert!(none.contains("const m = {}"), "no root, no matches: {none}");
+    }
+
+    // Vite sorts the matched paths as strings: `-` (0x2d) sorts before `/`.
+    #[test]
+    fn matches_sort_by_path_string_like_vite() {
+        let root = app("sort", &["src/main.ts", "src/a/b.ts", "src/a-b/x.ts"]);
+        let out = super::expand_source(
+            "const m = import.meta.glob('/src/**/*.ts');\n",
+            &root.join("src/main.ts"),
+            Some(&root),
+        );
+        let dash = out.find("/src/a-b/x.ts").expect("a-b matched");
+        let slash = out.find("/src/a/b.ts").expect("a/b matched");
+        assert!(dash < slash, "a-b/x before a/b: {out}");
     }
 }

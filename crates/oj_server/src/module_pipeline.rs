@@ -340,10 +340,11 @@ fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &st
     if !source.contains("import.meta.glob") {
         return;
     }
-    let patterns: Vec<glob::Pattern> = oj_compiler::glob::glob_patterns(source, file)
-        .iter()
-        .filter_map(|p| glob::Pattern::new(p).ok())
-        .collect();
+    let patterns: Vec<glob::Pattern> =
+        oj_compiler::glob::glob_patterns(source, file, Some(&state.root))
+            .iter()
+            .filter_map(|p| glob::Pattern::new(p).ok())
+            .collect();
     let clean = url.split('?').next().unwrap_or(url).to_string();
     let mut globs = state.glob_importers.lock().unwrap();
     if patterns.is_empty() {
