@@ -209,6 +209,11 @@ pub(crate) fn run_engine_job_subprocess(
                 job_cwd.display()
             ))
         })?;
+    // Vite loads the config and runs the optimizer in-process, so neither
+    // outlives the server. Registered, the child dies in the dev server's
+    // shutdown or restart sweep; unregistered, it ran until its parent poll
+    // noticed, up to 200ms of writes into the app's code cache.
+    let _registered = RegisteredChild::new(child.id());
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -273,6 +278,22 @@ pub(crate) fn run_engine_job_subprocess(
     let envelope: serde_json::Value =
         serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
     engine_job_outcome(envelope)
+}
+
+/// An engine job child in the shutdown sweep's registry until it is reaped.
+struct RegisteredChild(u32);
+
+impl RegisteredChild {
+    fn new(pid: u32) -> Self {
+        crate::register_child(pid);
+        Self(pid)
+    }
+}
+
+impl Drop for RegisteredChild {
+    fn drop(&mut self) {
+        crate::unregister_child(self.0);
+    }
 }
 
 /// Longest sleep between exit checks. Unix wakes on exit itself, so it only
@@ -1167,5 +1188,40 @@ mod exit_signal_tests {
             .unwrap()
             .expect("exited child reaps at once");
         assert_eq!(status.code(), Some(7), "status survives the signal");
+    }
+
+    // A dev server's shutdown sweep kills a running engine job child, so it
+    // cannot keep writing into the app's cache after the server is gone.
+    #[test]
+    fn the_shutdown_sweep_kills_a_running_engine_job_child() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fake-oj");
+        std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (exe2, root) = (exe.clone(), dir.path().to_path_buf());
+        std::thread::spawn(move || {
+            let out = run_engine_job_subprocess(
+                &exe2,
+                &root,
+                Path::new("job.mjs"),
+                "run",
+                &serde_json::Value::Null,
+                None,
+            );
+            let _ = tx.send(out);
+        });
+        let started = std::time::Instant::now();
+        let mut killed = 0;
+        while killed == 0 && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            killed = crate::watch::child_groups::kill_all();
+        }
+        assert!(killed >= 1, "the running job child was not in the sweep");
+        let out = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the job returns once its child is killed");
+        assert!(out.is_err(), "a killed job fails: {out:?}");
     }
 }
