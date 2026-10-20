@@ -163,6 +163,19 @@ export async function importOjRolldownExperimental(root, preferred = []) {
   }
 }
 
+// `rolldown/parseAst`'s `parseAst` of the rolldown importOjRolldown picks.
+export async function importOjRolldownParseAst(root, preferred = []) {
+  const main = resolveOjRolldown(root, preferred);
+  return (await import(pathToFileURL(createRequire(main).resolve("rolldown/parseAst")).href)).parseAst;
+}
+
+// A parser for `id` (rolldown's `parseAst`, the language from its extension).
+export function moduleParser(parseAst, id) {
+  const ext = id.split("?")[0].match(/\.([cm]?[jt]sx?)$/)?.[1] ?? "js";
+  const lang = ext.endsWith("tsx") ? "tsx" : ext.endsWith("jsx") ? "jsx" : ext.includes("ts") ? "ts" : "js";
+  return (code) => parseAst(code, { lang }, id);
+}
+
 // A build's outputs hold their code in rolldown's native memory until the JS
 // wrappers are garbage collected, and a bundler that idles between rebundles
 // allocates nothing, so V8 never collects them (rolldown/rolldown#11189).

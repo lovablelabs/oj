@@ -8,6 +8,8 @@ import {
   importPkg,
   importOjRolldown,
   importOjRolldownExperimental,
+  importOjRolldownParseAst,
+  moduleParser,
   viteEnvDefine,
   environmentDefines,
   jsxTransformOptions,
@@ -276,6 +278,7 @@ async function main() {
   // output is indistinguishable from one that never started.
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundling\n`);
   const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
+  const parseAst = await importOjRolldownParseAst(APP, ["vite", "@tanstack/react-start"]);
   phase("client bundle: rolldown imported");
   const WORKSPACE = workspaceRoot(APP);
   const SERVER_FN_BASE = process.env.TSS_SERVER_FN_BASE ?? "/_serverFn/";
@@ -390,7 +393,7 @@ async function main() {
         }
         out = await transformImportMetaUrl(out, id, bundlerResolve(this));
         out = transformGlob(out, id, undefined, globScopes);
-        const rpc = rewriteClientServerFns(out, relative(APP, id));
+        const rpc = rewriteClientServerFns(out, relative(APP, id), moduleParser(parseAst, id));
         if (rpc != null) return rpc;
         return out === code ? null : out;
       },

@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   importPkg,
   importOjRolldown,
+  importOjRolldownParseAst,
+  moduleParser,
   viteEnvDefine,
   environmentDefines,
   jsxTransformOptions,
@@ -65,6 +67,7 @@ async function main() {
     return ["browser", "module", "import", NODE_ENV === "production" ? "production" : "development"];
   })();
   const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
+  const parseAst = await importOjRolldownParseAst(APP, ["vite", "@tanstack/react-start"]);
   const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
   const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
 
@@ -194,7 +197,9 @@ async function main() {
     async transform(code, id) {
       if (!userTs(id)) return null;
       const glob = transformGlob(await transformImportMetaUrl(code, id, bundlerResolve(this)), id);
-      return rewriteClientServerFns(glob, relative(APP, id)) ?? (glob === code ? null : glob);
+      return (
+        rewriteClientServerFns(glob, relative(APP, id), moduleParser(parseAst, id)) ?? (glob === code ? null : glob)
+      );
     },
   };
 

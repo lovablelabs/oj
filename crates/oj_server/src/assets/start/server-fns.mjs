@@ -2,12 +2,12 @@
 
 // The `createServerFn` rewrites outside the dev SSR loader: the client RPC
 // stub (dev and build bundles), the build's server export, and the build
-// manifest. A port of start_host.rs `rewrite_server_fns`, which the dev SSR
-// loader runs, so every side agrees on which calls are server functions and
-// on their ids. TanStack's compiler (handleCreateServerFn) works on an AST;
-// this scan follows the same `createServerFn(...)...handler(` chain textually
-// with strings, template literals, comments and regex literals skipped, so a
-// `)` in a comment (`// 1) read the key`) cannot end the handler early.
+// manifest. Which calls are server functions, and their ids, come from a
+// port of start_host.rs `rewrite_server_fns`, which the dev SSR loader runs,
+// so every side agrees: it follows the `createServerFn(...)...handler(` chain
+// textually with strings, template literals, comments and regex literals
+// skipped, so a `)` in a comment (`// 1) read the key`) cannot end it early.
+// The client rewrite then edits the AST, as TanStack's compiler does.
 
 const DECL_RE = /(?:^|[\n;])[ \t]*((?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*createServerFn)\b/g;
 const REGEX_AFTER = new Set("([{,;:!&|?=+-*%<>~^");
@@ -31,23 +31,76 @@ export function findServerFns(code) {
   return out;
 }
 
-// The client caller: the handler's first argument becomes
-// `createClientRpc(id)` (handleCreateServerFn's handlerFnPath.replaceWith),
-// keeping the line count so stack traces and source maps stay put. Null when
-// the module has no server function.
-export function rewriteClientServerFns(code, rel) {
+// The client caller, edited on the module's AST as TanStack's
+// handleCreateServerFn edits its Babel AST: the handler's first argument
+// becomes `createClientRpc(id)` (handlerFnPath.replaceWith) and a
+// `.validator()` / `.inputValidator()` call is dropped (stripMethodCall), so
+// neither the handler nor the validator ships to the browser. A text scan
+// cannot delimit a handler body (`return /\)/`, a `(` in JSX text), and a
+// handler it gave up on would have shipped whole. `parse(code)` is
+// rolldown's `parseAst` for `rel`: an ESTree program with UTF-16 offsets.
+// Line counts are kept so stack traces and source maps stay put. Null when
+// the module has no server function; throws when one cannot be rewritten.
+export function rewriteClientServerFns(code, rel, parse) {
+  const fns = findServerFns(code);
+  if (!fns.length) return null;
+  const ast = parse(code);
+  const handlers = [];
+  walk(ast, (node) => {
+    if (isMethodCall(node, "handler") && createServerFnChain(node)) handlers.push(node);
+  });
   const edits = [];
-  for (const fn of findServerFns(code)) {
-    const end = firstArgumentEnd(code, fn.argsAt);
-    if (end == null) continue;
-    const lines = code.slice(fn.argsAt, end).split("\n").length - 1;
-    edits.push([fn.argsAt, end, `createClientRpc(${JSON.stringify(serverFnId(rel, fn.name))})` + "\n".repeat(lines)]);
+  for (const fn of fns) {
+    const call = handlers.find((c) => c.callee.property.end < fn.argsAt && fn.argsAt <= firstArgStart(c));
+    const arg = call?.arguments[0];
+    if (!arg) throw new Error(`oj: could not rewrite server function ${fn.name} in ${rel} for the client`);
+    edits.push([arg.start, arg.end, `createClientRpc(${JSON.stringify(serverFnId(rel, fn.name))})`]);
+    for (let link = call.callee.object; isMethodCall(link); link = link.callee.object) {
+      const method = link.callee.property.name;
+      if (method === "validator" || method === "inputValidator") edits.push([link.callee.object.end, link.end, ""]);
+    }
   }
-  if (!edits.length) return null;
+  edits.sort((a, b) => b[0] - a[0]);
   let out = code;
-  for (const [s, e, text] of edits.reverse()) out = out.slice(0, s) + text + out.slice(e);
-  // On the first line, not above it: the rewrite must not shift source lines.
-  return `import { createClientRpc } from "@tanstack/react-start/client-rpc"; ${out}`;
+  for (const [s, e, text] of edits) {
+    const lines = code.slice(s, e).split("\n").length - 1;
+    out = out.slice(0, s) + text + "\n".repeat(lines) + out.slice(e);
+  }
+  // After the directive prologue, on its line: the rewrite must not shift
+  // source lines, nor turn a `"use client"` into a plain expression.
+  const at =
+    ast.body.filter((s) => s.directive != null).at(-1)?.end ?? (code.startsWith("#!") ? code.indexOf("\n") + 1 : 0);
+  const sep = at > 0 && code[at - 1] !== "\n" ? " " : "";
+  return `${out.slice(0, at)}${sep}import { createClientRpc } from "@tanstack/react-start/client-rpc"; ${out.slice(at)}`;
+}
+
+const isMethodCall = (node, name) =>
+  node?.type === "CallExpression" &&
+  node.callee?.type === "MemberExpression" &&
+  !node.callee.computed &&
+  node.callee.property?.type === "Identifier" &&
+  (name == null || node.callee.property.name === name);
+
+// Whether the method chain under `call` starts at a `createServerFn(...)` call.
+function createServerFnChain(call) {
+  let node = call.callee.object;
+  while (isMethodCall(node)) node = node.callee.object;
+  return node?.type === "CallExpression" && node.callee?.type === "Identifier" && node.callee.name === "createServerFn";
+}
+
+const firstArgStart = (call) => call.arguments[0]?.start ?? call.end;
+
+function walk(node, visit) {
+  if (Array.isArray(node)) {
+    for (const child of node) walk(child, visit);
+    return;
+  }
+  if (node == null || typeof node !== "object" || typeof node.type !== "string") return;
+  visit(node);
+  for (const key in node) {
+    const value = node[key];
+    if (value != null && typeof value === "object") walk(value, visit);
+  }
 }
 
 // The server provider, exactly as the dev SSR loader writes it: a sibling
@@ -115,24 +168,18 @@ function skipWsAndComments(code, i) {
   }
 }
 
-// The end of the first argument of the call whose `(` ends just before
-// `argsAt`: the offset of the `,` or `)` that closes it.
-function firstArgumentEnd(code, argsAt) {
-  return scan(code, argsAt, ["("], true);
-}
-
 // From `(` at `open`, the offset just past its matching `)`.
 function skipBalanced(code, open) {
-  const close = scan(code, open + 1, ["("], false);
+  const close = scan(code, open + 1, ["("]);
   return close == null ? null : close + 1;
 }
 
 // Bracket-depth scan from `i` with `stack` open (start_host.rs
 // skip_balanced_parens): strings, template literals with their `${}` code,
 // comments and regex literals (the `/`-after-operator call) skipped. Returns
-// the offset of the `)` that empties the stack, or with `atComma` of a `,`
-// at the outermost level first; null on EOF or a mismatched bracket.
-function scan(code, i, stack, atComma) {
+// the offset of the `)` that empties the stack; null on EOF or a mismatched
+// bracket.
+function scan(code, i, stack) {
   stack = [...stack];
   let prev = "(";
   while (i < code.length) {
@@ -183,7 +230,6 @@ function scan(code, i, stack, atComma) {
       prev = c;
       i++;
     } else {
-      if (atComma && c === "," && stack.length === 1) return i;
       if (!/\s/.test(c)) prev = c;
       i++;
     }
