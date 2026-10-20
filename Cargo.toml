@@ -211,3 +211,52 @@ rustc-hash = { opt-level = 3 }
 dashmap = { opt-level = 3 }
 parking_lot = { opt-level = 3 }
 mio = { opt-level = 3 }
+# Fat LTO keeps a z crate's size attributes, so a non-generic hot loop stays
+# size-optimized even when an opt-level 3 crate calls it. These are those
+# loops: lightningcss's tokenizer and number printing, the gzip size report
+# and Start chunk compression, oxc_resolver's package.json parse, inline
+# sourcemap base64, module-specifier URLs, rolldown's hook filters and chunk
+# hashes, its rayon pool, and the deno resolver and permission checks every
+# engine import and fs op passes.
+cssparser = { opt-level = 3 }
+cssparser-color = { opt-level = 3 }
+dtoa = { opt-level = 3 }
+dtoa-short = { opt-level = 3 }
+parcel_sourcemap = { opt-level = 3 }
+flate2 = { opt-level = 3 }
+zlib-rs = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+adler2 = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+simd-json = { opt-level = 3 }
+value-trait = { opt-level = 3 }
+halfbrown = { opt-level = 3 }
+base64 = { opt-level = 3 }
+base64-simd = { opt-level = 3 }
+vsimd = { opt-level = 3 }
+url = { opt-level = 3 }
+percent-encoding = { opt-level = 3 }
+idna = { opt-level = 3 }
+regex = { opt-level = 3 }
+regex-automata = { opt-level = 3 }
+regex-syntax = { opt-level = 3 }
+aho-corasick = { opt-level = 3 }
+regress = { opt-level = 3 }
+xxhash-rust = { opt-level = 3 }
+rayon = { opt-level = 3 }
+rayon-core = { opt-level = 3 }
+crossbeam-deque = { opt-level = 3 }
+crossbeam-epoch = { opt-level = 3 }
+crossbeam-utils = { opt-level = 3 }
+parking_lot_core = { opt-level = 3 }
+compact_str = { opt-level = 3 }
+ryu-js = { opt-level = 3 }
+foldhash = { opt-level = 3 }
+sourcemap = { opt-level = 3 }
+deno_permissions = { opt-level = 3 }
+node_resolver = { opt-level = 3 }
+deno_resolver = { opt-level = 3 }
+deno_package_json = { opt-level = 3 }
+deno_path_util = { opt-level = 3 }
+sys_traits = { opt-level = 3 }
