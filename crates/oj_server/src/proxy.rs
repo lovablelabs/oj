@@ -1,5 +1,9 @@
 use super::*;
 use futures_util::{SinkExt, StreamExt};
+
+#[cfg(test)]
+#[path = "proxy_tests.rs"]
+mod tests;
 use tokio_tungstenite::tungstenite as ts;
 
 /// Delegate a matched request to the Vite-shaped proxy in the plugin host. On
@@ -145,13 +149,25 @@ async fn forward_direct(
         }
     };
 
-    let client = if entry.secure() {
+    let opts = entry.options();
+    let client = if opts.is_some_and(|o| o.follow_redirects == Some(true)) {
+        following_client(entry.secure())
+    } else if entry.secure() {
         &state.http
     } else {
         state
             .http_insecure
             .get_or_init(|| plugin_mw::browser_hop_client(true))
     };
+    if opts.is_some_and(|o| o.xfwd == Some(true)) {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "oj: warning: server.proxy[{prefix:?}] xfwd is applied by the plugin host's \
+                 http-proxy only; the built-in fallback proxy does not add x-forwarded-* headers"
+            )
+        });
+    }
     let mut out = client.request(method, target).body(body);
     for (name, value) in req_headers.iter() {
         if entry.change_origin() && name == header::HOST {
@@ -162,9 +178,166 @@ async fn forward_direct(
 
     match out.send().await {
         // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
-        Ok(resp) => stream_reqwest_response(resp),
+        Ok(resp) => {
+            let mut resp = stream_reqwest_response(resp);
+            if let Some(opts) = opts {
+                let host = req_headers.get(header::HOST).and_then(|v| v.to_str().ok());
+                let status = resp.status().as_u16();
+                rewrite_reply_headers(opts, host, status, resp.headers_mut());
+            }
+            resp
+        }
         Err(e) => bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
     }
+}
+
+/// The client for an entry with `followRedirects: true`: http-proxy then
+/// forwards through follow-redirects, which follows up to 21 hops. A streamed
+/// request body cannot be replayed, so a 307/308 answering one reaches the
+/// browser as written.
+fn following_client(secure: bool) -> &'static reqwest::Client {
+    static CLIENTS: [std::sync::OnceLock<reqwest::Client>; 2] =
+        [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+    CLIENTS[usize::from(secure)].get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(21))
+            .danger_accept_invalid_certs(!secure)
+            .build()
+            .expect("following proxy client")
+    })
+}
+
+/// http-proxy-3's web-outgoing passes on a reply (setRedirectHostRewrite and
+/// writeHeaders' cookie rewrites), applied only when the entry asks: a
+/// redirect's `Location` on the target's host moves to `hostRewrite`, or the
+/// browser's Host with `autoRewrite`, and `protocolRewrite` swaps its scheme;
+/// every `Set-Cookie` gets its `domain` / `path` rewritten.
+pub(crate) fn rewrite_reply_headers(
+    opts: &oj_config::ProxyOptions,
+    request_host: Option<&str>,
+    status: u16,
+    headers: &mut HeaderMap,
+) {
+    let rewrites_location = opts.host_rewrite.is_some()
+        || opts.auto_rewrite == Some(true)
+        || opts.protocol_rewrite.is_some();
+    // http-proxy's redirectRegex, /^201|30(1|2|7|8)$/.
+    let redirect = matches!(status, 201 | 301 | 302 | 307 | 308);
+    if rewrites_location && redirect {
+        if let Some(location) = headers.get(header::LOCATION).and_then(|v| v.to_str().ok()) {
+            let target = proxy_url(&opts.target);
+            let mut u = proxy_url(location);
+            if url_host(&target) == url_host(&u) {
+                if let Some(host) = &opts.host_rewrite {
+                    set_url_host(&mut u, host);
+                } else if opts.auto_rewrite == Some(true) {
+                    set_url_host(&mut u, request_host.unwrap_or(""));
+                }
+                if let Some(protocol) = &opts.protocol_rewrite {
+                    let _ = u.set_scheme(protocol.trim_end_matches(':'));
+                }
+                if let Ok(v) = header::HeaderValue::from_str(u.as_str()) {
+                    headers.insert(header::LOCATION, v);
+                }
+            }
+        }
+    }
+    let domain = opts.cookie_domain_rewrite.as_ref().and_then(|c| c.config());
+    let path = opts.cookie_path_rewrite.as_ref().and_then(|c| c.config());
+    if domain.is_none() && path.is_none() {
+        return;
+    }
+    let cookies: Vec<String> = headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    if cookies.is_empty() {
+        return;
+    }
+    headers.remove(header::SET_COOKIE);
+    for mut cookie in cookies {
+        if let Some(config) = &domain {
+            cookie = rewrite_cookie_property(&cookie, config, "domain");
+        }
+        if let Some(config) = &path {
+            cookie = rewrite_cookie_property(&cookie, config, "path");
+        }
+        if let Ok(v) = header::HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
+}
+
+/// http-proxy-3's common.toURL: relative to `http://base.invalid`, a
+/// protocol-relative url kept under that base.
+fn proxy_url(url: &str) -> reqwest::Url {
+    let base = reqwest::Url::parse("http://base.invalid").expect("base url");
+    let url = if url.starts_with("//") {
+        format!("http://base.invalid{url}")
+    } else {
+        url.to_string()
+    };
+    base.join(&url).unwrap_or(base)
+}
+
+/// A URL's `host` as the WHATWG URL reports it: the port only when it is not
+/// the scheme's default.
+fn url_host(u: &reqwest::Url) -> String {
+    match (u.host_str(), u.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The WHATWG `url.host = value` setter: the host, and the port when given.
+fn set_url_host(u: &mut reqwest::Url, value: &str) {
+    let Ok(parsed) = reqwest::Url::parse(&format!("http://{value}")) else {
+        return;
+    };
+    let Some(host) = parsed.host_str() else {
+        return;
+    };
+    if u.set_host(Some(host)).is_err() {
+        return;
+    }
+    let explicit = value
+        .rsplit_once(':')
+        .filter(|(h, p)| !h.is_empty() && !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(_, p)| p.parse::<u16>().ok());
+    if let Some(port) = explicit {
+        let _ = u.set_port(Some(port));
+    }
+}
+
+/// http-proxy-3's rewriteCookieProperty: the first `; <property>=<value>`
+/// becomes the configured value for `<value>` (or for `"*"`), and is removed
+/// when that is empty; an unlisted value stays.
+fn rewrite_cookie_property(
+    cookie: &str,
+    config: &std::collections::BTreeMap<String, String>,
+    property: &str,
+) -> String {
+    let re = regex::Regex::new(&format!(r"(?i)(;\s*{property}=)([^;]+)")).expect("cookie regex");
+    let Some(caps) = re.captures(cookie) else {
+        return cookie.to_string();
+    };
+    let previous = &caps[2];
+    let Some(next) = config.get(previous).or_else(|| config.get("*")) else {
+        return cookie.to_string();
+    };
+    let whole = caps.get(0).expect("match");
+    let replacement = if next.is_empty() {
+        String::new()
+    } else {
+        format!("{}{next}", &caps[1])
+    };
+    format!(
+        "{}{replacement}{}",
+        &cookie[..whole.start()],
+        &cookie[whole.end()..]
+    )
 }
 
 /// Compiled `^` proxy context (Vite: `new RegExp(context)`); `None` for prefixes.

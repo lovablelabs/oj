@@ -899,6 +899,21 @@ function extractProxy(proxy) {
       if (typeof v.ws === "boolean") entry.ws = v.ws;
       if (typeof v.secure === "boolean") entry.secure = v.secure;
       if (typeof v.rewriteWsOrigin === "boolean") entry.rewriteWsOrigin = v.rewriteWsOrigin;
+      // http-proxy's opt-in redirect and cookie handling, which the built-in
+      // proxy applies too.
+      for (const key of ["followRedirects", "autoRewrite", "xfwd"]) {
+        if (typeof v[key] === "boolean") entry[key] = v[key];
+      }
+      for (const key of ["hostRewrite", "protocolRewrite"]) {
+        if (typeof v[key] === "string") entry[key] = v[key];
+      }
+      for (const key of ["cookieDomainRewrite", "cookiePathRewrite"]) {
+        if (typeof v[key] === "string" || v[key] === false) entry[key] = v[key];
+        else if (v[key] && typeof v[key] === "object") {
+          const map = stringMap(v[key]);
+          if (map) entry[key] = map;
+        }
+      }
       // A FUNCTION `rewrite` cannot cross this JSON config bridge, but it is no
       // longer dropped: when a plugin host runs it hosts the single
       // `server.proxy` from the app's real (un-serialized) config, where the

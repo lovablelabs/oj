@@ -2669,6 +2669,84 @@ function doesProxyContextMatchUrl(context, url) {
 // port, protocol, pathname/path/href} (what http-proxy's setupOutgoing reads,
 // dist common.js:18190-18234). Normalize any of them to a URL the node pipe can
 // dial; returns null for an unusable target.
+// http-proxy-3's web-outgoing passes for the options the node pipe applies
+// itself (passes/web-outgoing.js setRedirectHostRewrite + writeHeaders, and
+// common.js toURL / rewriteCookieProperty), so `autoRewrite`, `hostRewrite`,
+// `protocolRewrite`, `cookieDomainRewrite` and `cookiePathRewrite` behave as
+// under Vite. Without any of them every header passes through untouched.
+const PROXY_REDIRECT_RE = /^201|30(1|2|7|8)$/;
+function proxyURL(url) {
+  if (url instanceof URL) return url;
+  if (url && typeof url === "object" && typeof url.href === "string") url = url.href;
+  if (!url) url = "";
+  if (typeof url != "string") url = `${url}`;
+  if (url.startsWith("//")) url = `http://base.invalid${url}`;
+  return new URL(url, "http://base.invalid");
+}
+function rewriteCookieProperty(header, config, property) {
+  if (Array.isArray(header)) return header.map((h) => rewriteCookieProperty(h, config, property));
+  return header.replace(new RegExp("(;\\s*" + property + "=)([^;]+)", "i"), (match, prefix, previous) => {
+    let next;
+    if (previous in config) next = config[previous];
+    else if ("*" in config) next = config["*"];
+    else return match;
+    return next ? prefix + next : "";
+  });
+}
+function proxyResponseHeaders(opts, req, statusCode, headers) {
+  if (
+    (opts.hostRewrite || opts.autoRewrite || opts.protocolRewrite) &&
+    typeof headers.location === "string" &&
+    PROXY_REDIRECT_RE.test(`${statusCode}`)
+  ) {
+    const target = proxyURL(opts.target);
+    const u = proxyURL(headers.location);
+    if (target.host == u.host) {
+      if (opts.hostRewrite) u.host = opts.hostRewrite;
+      else if (opts.autoRewrite) u.host = req.headers[":authority"] ?? req.headers["host"] ?? "";
+      if (opts.protocolRewrite) u.protocol = opts.protocolRewrite;
+      headers.location = u.toString();
+    }
+  }
+  const cookieConfig = (v) => (typeof v === "string" ? { "*": v } : v && typeof v === "object" ? v : null);
+  const domain = cookieConfig(opts.cookieDomainRewrite);
+  const path = cookieConfig(opts.cookiePathRewrite);
+  if (headers["set-cookie"] != null) {
+    if (domain) headers["set-cookie"] = rewriteCookieProperty(headers["set-cookie"], domain, "domain");
+    if (path) headers["set-cookie"] = rewriteCookieProperty(headers["set-cookie"], path, "path");
+  }
+  return headers;
+}
+
+// follow-redirects' rules, which http-proxy-3 uses for `followRedirects: true`:
+// at most 21 hops; a 301/302 answering a POST, or a 303 answering anything
+// but GET/HEAD, continues as a body-less GET; credentials and cookies are
+// dropped when the next hop leaves the host (or its subdomains) or downgrades
+// from https.
+const FOLLOW_MAX_REDIRECTS = 21;
+const FOLLOW_MAX_BODY = 10485760;
+const FOLLOW_HEADER_FILTER = /^(?:(?:proxy-)?authorization|cookie)$/i;
+function followRedirectStep(method, headers, statusCode, current, location) {
+  const next = new URL(location, current);
+  headers = { ...headers };
+  let dropBody = false;
+  if (
+    ((statusCode === 301 || statusCode === 302) && method === "POST") ||
+    (statusCode === 303 && !/^(?:GET|HEAD)$/.test(method))
+  ) {
+    method = "GET";
+    dropBody = true;
+    for (const k of Object.keys(headers)) if (/^content-/i.test(k)) delete headers[k];
+  }
+  const currentHost = headers.host || current.host;
+  for (const k of Object.keys(headers)) if (/^host$/i.test(k)) delete headers[k];
+  const sub = next.host.endsWith("." + currentHost);
+  if ((next.protocol !== current.protocol && next.protocol !== "https:") || (next.host !== currentHost && !sub)) {
+    for (const k of Object.keys(headers)) if (FOLLOW_HEADER_FILTER.test(k)) delete headers[k];
+  }
+  return { method, headers, url: next, dropBody };
+}
+
 function pipeTarget(target) {
   if (target instanceof URL) return target;
   if (typeof target === "string") {
@@ -2831,16 +2909,9 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
     // changeOrigin, secure, rewrite, header + body streaming). Be HONEST about
     // the http-proxy-only options it cannot apply without the proxy instance —
     // warn once per entry instead of silently ignoring them.
-    const PIPE_UNSUPPORTED = [
-      "configure",
-      "xfwd",
-      "cookieDomainRewrite",
-      "cookiePathRewrite",
-      "followRedirects",
-      "autoRewrite",
-      "protocolRewrite",
-      "hostRewrite",
-    ];
+    // `xfwd` needs the browser's address, which the loopback hop does not
+    // carry.
+    const PIPE_UNSUPPORTED = ["configure", "xfwd"];
     for (const [context, opts] of contexts) {
       const present = PIPE_UNSUPPORTED.filter((k) => opts[k] != null && opts[k] !== false);
       if (present.length) {
@@ -2853,7 +2924,7 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
   }
 
   // Faithful node http/https pipe (used when http-proxy is not resolvable).
-  const pipeForward = (opts, req, res) => {
+  const pipeForward = async (opts, req, res) => {
     const target = pipeTarget(opts.target);
     if (!target) {
       res.statusCode = 502;
@@ -2862,42 +2933,11 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
       );
       return;
     }
-    const isHttps = target.protocol === "https:";
-    const lib = isHttps ? https : http;
-    const headers = { ...req.headers };
-    // http-proxy's changeOrigin: send the target's host, not the dev server's
-    // (otherwise the browser's Host is forwarded unchanged, as http-proxy does).
-    if (opts.changeOrigin) headers.host = target.host;
-    // Prepend a target base path (http-proxy prependPath) to the (already
-    // rewritten) request url.
-    const base = target.pathname && target.pathname !== "/" ? target.pathname.replace(/\/$/, "") : "";
-    const options = {
-      protocol: target.protocol,
-      hostname: target.hostname,
-      port: target.port || (isHttps ? 443 : 80),
-      method: req.method,
-      path: base + req.url,
-      headers,
-    };
-    // http-proxy's secure:false accepts self-signed dev certificates.
-    if (isHttps && opts.secure === false) options.rejectUnauthorized = false;
-    const upstream = lib.request(options, (r) => {
-      // Pass the upstream status and ALL headers straight through (Set-Cookie,
-      // Location, content-type … untouched), as http-proxy does by default —
-      // but STRIP oj's internal signal headers so a real upstream that happens
-      // to emit them cannot be misread as the host stack's fallthrough (only
-      // the host's runStack may set these).
-      const headers = { ...r.headers };
-      delete headers["x-oj-fallthrough"];
-      delete headers["x-oj-rewritten-url"];
-      res.writeHead(r.statusCode || 502, headers);
-      r.pipe(res);
-    });
-    upstream.on("error", (e) => {
-      // Mirror http-proxy's error handling: once the response has started the
-      // stream is committed, so DESTROY the socket rather than appending an
-      // error string onto the partial body (which would corrupt the response).
-      // Only synthesize a 502 when nothing has been sent yet.
+    // Mirror http-proxy's error handling: once the response has started the
+    // stream is committed, so DESTROY the socket rather than appending an
+    // error string onto the partial body (which would corrupt the response).
+    // Only synthesize a 502 when nothing has been sent yet.
+    const fail = (e) => {
       if (res.headersSent || res.writableEnded) {
         res.destroy();
       } else {
@@ -2908,20 +2948,111 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
           res.end(`oj proxy: ${targetLabel(opts.target)} unreachable: ${e.message}`);
         } catch {}
       }
-    });
+    };
+    const headers = { ...req.headers };
+    // http-proxy's changeOrigin: send the target's host, not the dev server's
+    // (otherwise the browser's Host is forwarded unchanged, as http-proxy does).
+    if (opts.changeOrigin) headers.host = target.host;
+    // Prepend a target base path (http-proxy prependPath) to the (already
+    // rewritten) request url.
+    const base = target.pathname && target.pathname !== "/" ? target.pathname.replace(/\/$/, "") : "";
+    // `followRedirects` replays the request on each hop, so its body is held
+    // (as follow-redirects does, up to its 10 MiB maxBodyLength); otherwise
+    // it streams through and is never buffered whole.
+    const follow = !!opts.followRedirects;
+    let body = null;
+    if (follow) {
+      const chunks = [];
+      let size = 0;
+      try {
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > FOLLOW_MAX_BODY) throw new Error("Request body larger than maxBodyLength limit");
+          chunks.push(chunk);
+        }
+      } catch (e) {
+        return fail(e);
+      }
+      body = Buffer.concat(chunks);
+    }
+    let hop = {
+      method: req.method,
+      headers,
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: base + req.url,
+      url: (() => {
+        try {
+          return new URL(`${target.protocol}//${target.host}${base}${req.url}`);
+        } catch {
+          return target;
+        }
+      })(),
+    };
+    let redirects = 0;
+    let upstream = null;
     // Client disconnect / response error: abort the upstream so its socket is
     // not leaked, and swallow res errors (EPIPE/ECONNRESET) so they do not
     // surface as an unhandled error on the host.
     const abortUpstream = () => {
-      if (!upstream.destroyed) upstream.destroy();
+      if (upstream && !upstream.destroyed) upstream.destroy();
     };
     res.on("close", () => {
       if (!res.writableFinished) abortUpstream();
     });
     res.on("error", abortUpstream);
     req.on("error", abortUpstream);
-    // Stream the request body through (uploads are never buffered whole).
-    req.pipe(upstream);
+    const send = () => {
+      const isHttps = hop.protocol === "https:";
+      const options = {
+        protocol: hop.protocol,
+        hostname: hop.hostname,
+        port: hop.port || (isHttps ? 443 : 80),
+        method: hop.method,
+        path: hop.path,
+        headers: hop.headers,
+      };
+      // http-proxy's secure:false accepts self-signed dev certificates.
+      if (isHttps && opts.secure === false) options.rejectUnauthorized = false;
+      upstream = (isHttps ? https : http).request(options, (r) => {
+        const status = r.statusCode || 502;
+        if (follow && r.headers.location && status >= 300 && status < 400) {
+          r.resume();
+          if (++redirects > FOLLOW_MAX_REDIRECTS) return fail(new Error("Maximum number of redirects exceeded"));
+          const step = followRedirectStep(hop.method, hop.headers, status, hop.url, r.headers.location);
+          if (step.dropBody) body = null;
+          hop = {
+            method: step.method,
+            headers: step.headers,
+            protocol: step.url.protocol,
+            hostname: step.url.hostname,
+            port: step.url.port,
+            path: step.url.pathname + step.url.search,
+            url: step.url,
+          };
+          return send();
+        }
+        // Pass the upstream status and every header through (Set-Cookie,
+        // Location, content-type ...) as http-proxy does, with only the
+        // rewrites the entry asks for, but STRIP oj's internal signal headers
+        // so a real upstream that happens to emit them cannot be misread as
+        // the host stack's fallthrough (only the host's runStack may set these).
+        const out = proxyResponseHeaders(opts, req, status, { ...r.headers });
+        delete out["x-oj-fallthrough"];
+        delete out["x-oj-rewritten-url"];
+        res.writeHead(status, out);
+        r.pipe(res);
+      });
+      upstream.on("error", fail);
+      if (follow) upstream.end(body ?? undefined);
+      else req.pipe(upstream);
+    };
+    try {
+      send();
+    } catch (e) {
+      fail(e);
+    }
   };
 
   const forward = (opts, context, req, res) => {

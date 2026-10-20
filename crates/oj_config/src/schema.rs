@@ -316,8 +316,19 @@ impl ProxyEntry {
             ProxyEntry::Options(o) => &o.target,
         }
     }
+    /// Vite: a string entry is shorthand for `{ target, changeOrigin: true }`.
     pub fn change_origin(&self) -> bool {
-        matches!(self, ProxyEntry::Options(o) if o.change_origin.unwrap_or(false))
+        match self {
+            ProxyEntry::Target(_) => true,
+            ProxyEntry::Options(o) => o.change_origin.unwrap_or(false),
+        }
+    }
+    /// The entry's options, `None` for the string shorthand.
+    pub fn options(&self) -> Option<&ProxyOptions> {
+        match self {
+            ProxyEntry::Options(o) => Some(o),
+            ProxyEntry::Target(_) => None,
+        }
     }
     pub fn ws(&self) -> bool {
         matches!(self, ProxyEntry::Options(o) if o.ws.unwrap_or(false))
@@ -357,6 +368,44 @@ pub struct ProxyOptions {
     pub rewrite_ws_origin: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rewrite: Option<ProxyRewrite>,
+    /// http-proxy's opt-in redirect and cookie handling (off by default, so a
+    /// redirect and its `Set-Cookie` headers reach the browser as written).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_redirects: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_rewrite: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_rewrite: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_rewrite: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookie_domain_rewrite: Option<CookieRewrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookie_path_rewrite: Option<CookieRewrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xfwd: Option<bool>,
+}
+
+/// http-proxy's `cookieDomainRewrite` / `cookiePathRewrite`: `false` (off), a
+/// string (every value becomes it), or a map from old value to new, `"*"`
+/// matching any; an empty new value removes the attribute.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CookieRewrite {
+    Off(bool),
+    All(String),
+    Map(std::collections::BTreeMap<String, String>),
+}
+
+impl CookieRewrite {
+    /// The map form http-proxy reads (`{ "*": s }` for a string), `None` off.
+    pub fn config(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        match self {
+            CookieRewrite::Off(_) => None,
+            CookieRewrite::All(s) => Some([("*".to_string(), s.clone())].into()),
+            CookieRewrite::Map(m) => Some(m.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
