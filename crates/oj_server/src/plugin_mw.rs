@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "plugin_mw_tests.rs"]
+mod tests;
+
 pub(crate) async fn forward_to_plugin_middleware(
     state: &ServerState,
     method: &Method,
@@ -193,7 +197,12 @@ pub async fn proxy_to_loopback_streaming(
     body: Option<Body>,
 ) -> Result<Response, String> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let client = CLIENT.get_or_init(reqwest::Client::new);
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("loopback proxy client")
+    });
     let target = format!("http://127.0.0.1:{port}{path_and_query}");
     let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
     let mut out = client.request(m, &target);
