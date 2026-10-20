@@ -3,6 +3,7 @@
 import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { findServerFns, serverFnId } from "./server-fns.mjs";
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
 // spawn env arrive as `env`; `node <script>` still works for tests.
@@ -23,7 +24,6 @@ async function main() {
   const APP = process.env.OJ_APP_ROOT ?? process.cwd();
   const SRC = join(APP, "src");
 
-  const re = /(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*createServerFn\b[\s\S]*?\.handler\s*\(/g;
   const entries = [];
 
   function walk(dir) {
@@ -42,12 +42,9 @@ async function main() {
       if (!/\.(ts|tsx)$/.test(name)) continue;
       const code = readFileSync(p, "utf8");
       if (!code.includes("createServerFn")) continue;
-      re.lastIndex = 0;
-      let m;
-      while ((m = re.exec(code))) {
-        const fn = m[1];
+      for (const { name: fn } of findServerFns(code)) {
         entries.push({
-          id: Buffer.from(`${relative(APP, p)}#${fn}`).toString("base64url"),
+          id: serverFnId(relative(APP, p), fn),
           functionName: `${fn}_createServerFn_handler`,
           path: p,
         });

@@ -134,6 +134,10 @@ const START_ASSETS: &[(&str, &str)] = &[
         "glob-transform.mjs",
         include_str!("assets/start/glob-transform.mjs"),
     ),
+    (
+        "server-fns.mjs",
+        include_str!("assets/start/server-fns.mjs"),
+    ),
     ("cf-server.mjs", include_str!("assets/start/cf-server.mjs")),
     (
         "cf-workers.mjs",

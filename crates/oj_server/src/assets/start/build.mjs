@@ -24,6 +24,7 @@ import {
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob, transformImportMetaUrl, depImportMetaUrlPlugin, bundlerResolve } from "./glob-transform.mjs";
+import { rewriteClientServerFns, rewriteServerServerFns } from "./server-fns.mjs";
 import { cloudflareEnvironment, cloudflareWorkerPlugin, workerOutDir, CLOUDFLARE_WORKER_ENTRY } from "./cf-build.mjs";
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
@@ -80,7 +81,6 @@ async function main() {
   const MINIFY = process.env.OJ_MINIFY !== "false";
   const CLIENT = join(DIST, "client");
   const WORKSPACE = workspaceRoot(APP);
-  const sfid = (rel, name) => Buffer.from(`${rel}#${name}`).toString("base64url");
 
   const WORKER = [
     'import handler from "./server-bundle.mjs";',
@@ -187,22 +187,6 @@ async function main() {
     return join(HERE, "start-entry.ts");
   }
 
-  function serverFns(code) {
-    const re = /(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*createServerFn\b[\s\S]*?\.handler\s*\(/g;
-    const out = [];
-    let m;
-    while ((m = re.exec(code))) {
-      let depth = 1,
-        i = m.index + m[0].length;
-      for (; i < code.length && depth > 0; i++) {
-        if (code[i] === "(") depth++;
-        else if (code[i] === ")") depth--;
-      }
-      out.push({ name: m[1], open: m.index + m[0].length, close: i - 1 });
-    }
-    return out;
-  }
-
   const userTs = (id) => !id.includes("/node_modules/") && !id.startsWith("\0") && /\.(tsx?|jsx?|mjs)$/.test(id);
 
   const clientFnPlugin = {
@@ -210,15 +194,7 @@ async function main() {
     async transform(code, id) {
       if (!userTs(id)) return null;
       const glob = transformGlob(await transformImportMetaUrl(code, id, bundlerResolve(this)), id);
-      if (!glob.includes("createServerFn")) return glob === code ? null : glob;
-      const rel = relative(APP, id);
-      const fns = serverFns(glob);
-      if (!fns.length) return glob === code ? null : glob;
-      let out = glob;
-      for (const f of fns.reverse()) {
-        out = out.slice(0, f.open) + `createClientRpc(${JSON.stringify(sfid(rel, f.name))})` + out.slice(f.close);
-      }
-      return `import { createClientRpc } from "@tanstack/react-start/client-rpc";\n${out}`;
+      return rewriteClientServerFns(glob, relative(APP, id)) ?? (glob === code ? null : glob);
     },
   };
 
@@ -227,18 +203,7 @@ async function main() {
     transform(code, id) {
       if (!userTs(id)) return null;
       const glob = transformGlob(code, id);
-      if (!glob.includes("createServerFn")) return glob === code ? null : glob;
-      const rel = relative(APP, id);
-      const re =
-        /(^|[\n;])([ \t]*)((?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*createServerFn\b[\s\S]*?\.handler\s*\()/g;
-      let changed = false;
-      const out = glob.replace(re, (_m, pre, indent, decl, name) => {
-        changed = true;
-        const meta = `{ id: ${JSON.stringify(sfid(rel, name))}, name: ${JSON.stringify(name)}, filename: ${JSON.stringify(rel)} }`;
-        return `${pre}${indent}export const ${name}_createServerFn_handler = createServerRpc(${meta}, (opts) => ${name}.__executeServer(opts));\n${indent}${decl}${name}_createServerFn_handler, `;
-      });
-      if (!changed) return glob === code ? null : glob;
-      return `import { createServerRpc } from "@tanstack/react-start/server-rpc";\n${out}`;
+      return rewriteServerServerFns(glob, relative(APP, id)) ?? (glob === code ? null : glob);
     },
   };
 

@@ -30,6 +30,7 @@ import {
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob, transformImportMetaUrl, depImportMetaUrlPlugin, bundlerResolve } from "./glob-transform.mjs";
+import { rewriteClientServerFns } from "./server-fns.mjs";
 import { pathToFileURL } from "node:url";
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
@@ -305,32 +306,6 @@ async function main() {
     return ["browser", "module", "import", "development"];
   })();
 
-  function rewriteServerFns(code, id) {
-    if (!code.includes("createServerFn")) return null;
-    const rel = relative(APP, id);
-    const re = /(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*createServerFn\b[\s\S]*?\.handler\s*\(/g;
-    const edits = [];
-    let m;
-    while ((m = re.exec(code))) {
-      const open = m.index + m[0].length;
-      let depth = 1;
-      let i = open;
-      for (; i < code.length && depth > 0; i++) {
-        if (code[i] === "(") depth++;
-        else if (code[i] === ")") depth--;
-      }
-      edits.push({ name: m[1], open, close: i - 1 });
-    }
-    if (!edits.length) return null;
-    let out = code;
-    for (const e of edits.reverse()) {
-      const id2 = Buffer.from(`${rel}#${e.name}`).toString("base64url");
-      out = out.slice(0, e.open) + `createClientRpc(${JSON.stringify(id2)})` + out.slice(e.close);
-    }
-    // On the first line, not above it: the rewrite must not shift source lines.
-    return `import { createClientRpc } from "@tanstack/react-start/client-rpc"; ${out}`;
-  }
-
   // The app's package.json "imports" wins over the src/router convention, the
   // way it does in the SSR loader: the framework makes this path configurable
   // (`router.entry`), and an app that moved it has to be able to say so.
@@ -415,7 +390,7 @@ async function main() {
         }
         out = await transformImportMetaUrl(out, id, bundlerResolve(this));
         out = transformGlob(out, id, undefined, globScopes);
-        const rpc = rewriteServerFns(out, id);
+        const rpc = rewriteClientServerFns(out, relative(APP, id));
         if (rpc != null) return rpc;
         return out === code ? null : out;
       },
