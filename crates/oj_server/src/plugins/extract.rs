@@ -233,6 +233,7 @@ pub(crate) fn run_engine_job_subprocess(
     let started = std::time::Instant::now();
     let kill_at = deadline.map(|t| started + t + std::time::Duration::from_secs(15));
     let mut next_log = started + std::time::Duration::from_secs(30);
+    let exited = child_exit_signal(&child);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -243,14 +244,16 @@ pub(crate) fn run_engine_job_subprocess(
                 return Err(oj_js::EngineError::Deadline);
             }
             Ok(None) => {
-                if kill_at.is_none() && std::time::Instant::now() >= next_log {
+                let now = std::time::Instant::now();
+                if kill_at.is_none() && now >= next_log {
                     eprintln!(
                         "oj: the {export} engine job is still running ({}s)…",
                         started.elapsed().as_secs()
                     );
                     next_log += std::time::Duration::from_secs(30);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(25));
+                let wake = kill_at.map_or(next_log, |at| at.min(next_log));
+                let _ = exited.recv_timeout(wake.saturating_duration_since(now).min(EXIT_NAP));
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&result_file);
@@ -270,6 +273,50 @@ pub(crate) fn run_engine_job_subprocess(
     let envelope: serde_json::Value =
         serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
     engine_job_outcome(envelope)
+}
+
+/// Longest sleep between exit checks. Unix wakes on exit itself, so it only
+/// bounds how late the deadline and progress checks run.
+#[cfg(unix)]
+const EXIT_NAP: std::time::Duration = std::time::Duration::MAX;
+#[cfg(not(unix))]
+const EXIT_NAP: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Fires once `child` has exited, without reaping it: the zombie keeps the pid,
+/// so the caller can still kill and `wait` the `Child` it owns.
+fn child_exit_signal(child: &std::process::Child) -> std::sync::mpsc::Receiver<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        let _ = std::thread::Builder::new()
+            .name("oj-job-wait".into())
+            .spawn(move || {
+                loop {
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    let rc = unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            pid as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOWAIT,
+                        )
+                    };
+                    if rc == 0
+                        || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        break;
+                    }
+                }
+                let _ = tx.send(());
+            });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+        std::mem::forget(tx);
+    }
+    rx
 }
 
 /// Evaluate the app's `vite.config` for `command` ("serve" | "build") and `mode`.
@@ -1092,5 +1139,33 @@ fn merge_css(config: &mut oj_config::OjConfig, css: &serde_json::Value) {
         if entry.additional_data.is_none() {
             entry.additional_data = Some(data.to_string());
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod exit_signal_tests {
+    use super::*;
+
+    #[test]
+    fn exit_signal_fires_on_exit_and_leaves_the_child_to_reap() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2; exit 7"])
+            .spawn()
+            .unwrap();
+        let exited = child_exit_signal(&child);
+        assert!(
+            exited
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "fires only once the child exits"
+        );
+        exited
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("fires when the child exits");
+        let status = child
+            .try_wait()
+            .unwrap()
+            .expect("exited child reaps at once");
+        assert_eq!(status.code(), Some(7), "status survives the signal");
     }
 }
