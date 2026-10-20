@@ -23,7 +23,7 @@ import {
   viteOnLog,
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
-import { transformGlob } from "./glob-transform.mjs";
+import { transformGlob, transformImportMetaUrl, depImportMetaUrlPlugin, bundlerResolve } from "./glob-transform.mjs";
 import { cloudflareEnvironment, cloudflareWorkerPlugin, workerOutDir, CLOUDFLARE_WORKER_ENTRY } from "./cf-build.mjs";
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
@@ -207,9 +207,9 @@ async function main() {
 
   const clientFnPlugin = {
     name: "server-fn-client",
-    transform(code, id) {
+    async transform(code, id) {
       if (!userTs(id)) return null;
-      const glob = transformGlob(code, id);
+      const glob = transformGlob(await transformImportMetaUrl(code, id, bundlerResolve(this)), id);
       if (!glob.includes("createServerFn")) return glob === code ? null : glob;
       const rel = relative(APP, id);
       const fns = serverFns(glob);
@@ -351,6 +351,7 @@ async function main() {
         renderChunk: (code, chunk) => clientContainer?.renderChunk(code, chunk) ?? null,
       },
       clientFnPlugin,
+      depImportMetaUrlPlugin(),
       assetsPlugin({ mode: "prod", server: false, emit }),
       nodeBuiltinShims({ production: true }),
     ],

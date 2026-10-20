@@ -29,7 +29,7 @@ import {
   workspaceRoot,
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
-import { transformGlob } from "./glob-transform.mjs";
+import { transformGlob, transformImportMetaUrl, depImportMetaUrlPlugin, bundlerResolve } from "./glob-transform.mjs";
 import { pathToFileURL } from "node:url";
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
@@ -413,6 +413,7 @@ async function main() {
           const t = await container.transformUserCode(out, id);
           if (t != null) out = t;
         }
+        out = await transformImportMetaUrl(out, id, bundlerResolve(this));
         out = transformGlob(out, id, undefined, globScopes);
         const rpc = rewriteServerFns(out, id);
         if (rpc != null) return rpc;
@@ -590,6 +591,7 @@ async function main() {
             },
           }),
           serverFnClient,
+          depImportMetaUrlPlugin(),
           nodeBuiltinShims({ production: false }),
         ],
         output: {

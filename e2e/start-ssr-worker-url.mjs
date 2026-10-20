@@ -132,7 +132,11 @@ about = about.replace(
     "function WorkerRun() {\n" +
     "  const [out, setOut] = useState<string[]>([]);\n" +
     "  useEffect(() => {\n" +
-    '    const ws = [new WorkerCtor(), new InlineCtor(), new Worker(wurl, { type: "module" })];\n' +
+    '    const ws = [new WorkerCtor(), new InlineCtor(), new Worker(wurl, { type: "module" }),\n' +
+    // Vite's worker-import-meta-url and asset-import-meta-url: relative to
+    // the module, not to the bundled chunk it lands in.
+    '      new Worker(new URL("../lib/wk/worker.ts", import.meta.url), { type: "module" })];\n' +
+    '    fetch(new URL("../lib/hero.png", import.meta.url)).then((r) => setOut((o) => [...o, "asset-" + r.status].sort()));\n' +
     "    for (const w of ws) {\n" +
     "      w.onmessage = (e) => setOut((o) => [...o, String(e.data)].sort());\n" +
     "      w.postMessage(0);\n" +
@@ -226,9 +230,10 @@ async function served(cmd, args, opts, check) {
   }
 }
 
-// Load /about in Chromium and wait for all three workers to answer: the
-// ?worker constructor, the ?worker&inline one (a Blob URL in a build) and
-// `new Worker(?worker&url)`.
+// Load /about in Chromium and wait for all four workers to answer: the
+// ?worker constructor, the ?worker&inline one (a Blob URL in a build),
+// `new Worker(?worker&url)` and `new Worker(new URL(..., import.meta.url))`;
+// and for the `new URL(..., import.meta.url)` asset to fetch.
 async function workersRunInBrowser(label) {
   let pw = null;
   try {
@@ -249,7 +254,7 @@ async function workersRunInBrowser(label) {
       hydrated === RESOLVED,
       `${label}: the hydrated page resolved differently: ${JSON.stringify(hydrated)} (errors: ${errors.join(" | ")})`,
     );
-    const want = "42,42,inline-41";
+    const want = "42,42,42,asset-200,inline-41";
     const got = await page
       .waitForFunction((w) => document.querySelector("#wkrun")?.textContent === w, want, { timeout: 20000 })
       .then(() => want)
@@ -263,7 +268,9 @@ async function workersRunInBrowser(label) {
       got === want,
       `${label}: workers answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}`,
     );
-    console.log(`${label}: ?worker, ?worker&inline and ?worker&url all run in the browser`);
+    console.log(
+      `${label}: ?worker, ?worker&inline, ?worker&url and new URL(..., import.meta.url) all run in the browser`,
+    );
   } finally {
     await browser.close();
   }

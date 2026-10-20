@@ -278,3 +278,225 @@ export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? 
   out += code.slice(last);
   return prelude.length ? prelude.join(" ") + " " + out : out;
 }
+
+// Vite's workerImportMetaUrlRE and assetImportMetaUrlRE, matched on the code
+// with comments and string contents blanked (stripLiteral), so a commented-out
+// call or one spelled inside a string never matches.
+const WORKER_META_URL_RE =
+  /\bnew\s+(?:Worker|SharedWorker)\s*\(\s*(new\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\))/dg;
+const ASSET_META_URL_RE = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\)/dg;
+const VITE_IGNORE_RE = /\/\*\s*@vite-ignore\s*\*\//;
+
+// The code with every comment and every string or template literal's contents
+// replaced by spaces, offsets and line breaks kept (strip-literal's contract).
+// A template's `${...}` is blanked along with its text.
+export function stripLiterals(code) {
+  const out = code.split("");
+  const blank = (from, to) => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === "/" && code[i + 1] === "/") {
+      const end = code.indexOf("\n", i);
+      const stop = end === -1 ? code.length : end;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "/" && code[i + 1] === "*") {
+      const end = code.indexOf("*/", i + 2);
+      const stop = end === -1 ? code.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < code.length && code[j] !== c && code[j] !== "\n") j += code[j] === "\\" ? 2 : 1;
+      blank(i + 1, Math.min(j, code.length));
+      i = j + 1;
+    } else if (c === "`") {
+      const j = templateEnd(code, i);
+      blank(i + 1, j);
+      i = j + 1;
+    } else i++;
+  }
+  return out.join("");
+}
+
+// The index of the backtick closing the template literal opened at `start`,
+// stepping over nested `${...}` expressions and the templates inside them.
+function templateEnd(code, start) {
+  let i = start + 1;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === "\\") i += 2;
+    else if (c === "`") return i;
+    else if (c === "$" && code[i + 1] === "{") {
+      let depth = 1;
+      i += 2;
+      while (i < code.length && depth > 0) {
+        const d = code[i];
+        if (d === "`") i = templateEnd(code, i) + 1;
+        else if (d === '"' || d === "'") {
+          let j = i + 1;
+          while (j < code.length && code[j] !== d) j += code[j] === "\\" ? 2 : 1;
+          i = j + 1;
+        } else {
+          if (d === "{") depth++;
+          else if (d === "}") depth--;
+          i++;
+        }
+      }
+    } else i++;
+  }
+  return code.length;
+}
+
+// Vite's buildGlobPattern: a template's text with each `${...}` run as one `*`.
+function templateGlob(raw) {
+  const body = raw.slice(1, -1);
+  let pattern = "",
+    i = 0;
+  while (i < body.length) {
+    if (body[i] === "$" && body[i + 1] === "{") {
+      let depth = 1;
+      i += 2;
+      for (; i < body.length && depth > 0; i++) {
+        if (body[i] === "{") depth++;
+        else if (body[i] === "}") depth--;
+      }
+      if (!pattern.endsWith("*")) pattern += "*";
+    } else pattern += body[i++];
+  }
+  return pattern;
+}
+
+// Vite's getQueryDelimiterIndex: the first `?` outside a `${...}`.
+function queryDelimiter(raw) {
+  let depth = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === "{") depth++;
+    else if (raw[i] === "}") depth--;
+    else if (raw[i] === "?" && depth === 0) return i;
+  }
+  return -1;
+}
+
+const splitPostfix = (url) => {
+  const i = url.search(/[?#]/);
+  return i === -1 ? { file: url, postfix: "" } : { file: url.slice(0, i), postfix: url.slice(i) };
+};
+
+// Vite's vite:worker-import-meta-url then vite:asset-import-meta-url, for a
+// client bundle. `new Worker(new URL("./w.ts", import.meta.url))` (or
+// SharedWorker) points at the worker's `?worker&url` import, the URL oj's
+// asset plugin gives a worker (the dev pipeline's in dev, the bundled worker
+// entry in a build); `new URL("./a.png", import.meta.url)` at the asset's
+// `?url` import. Without this the URL stays relative to the bundled chunk
+// (`/@oj-start/w.ts` in dev), which serves nothing. A template URL with
+// substitutions becomes the eager `import.meta.glob` lookup Vite writes, which
+// transformGlob expands after this. `resolve(spec, importer)` is the bundler's
+// resolver (an absolute path, or null); an asset it cannot resolve stays as
+// written, resolved at runtime, as in Vite.
+export async function transformImportMetaUrl(code, id, resolve) {
+  if (!code.includes("import.meta.url")) return code;
+  const clean = stripLiterals(code);
+  const edits = [];
+  const hoisted = [];
+  const hoist = (prefix, spec) => {
+    const ident = `__oj_${prefix}${hoisted.length}`;
+    hoisted.push(`import ${ident} from ${JSON.stringify(spec)};`);
+    return ident;
+  };
+  const resolveFile = async (file) => {
+    const r = await resolve(file, id);
+    return r && !r.startsWith("\0") ? r.replace(/[?#].*$/, "") : null;
+  };
+
+  const workers = new RegExp(WORKER_META_URL_RE);
+  let m;
+  while ((m = workers.exec(clean))) {
+    const [[expStart, expEnd], [urlStart, urlEnd]] = m.indices.slice(1);
+    const rawUrl = code.slice(urlStart, urlEnd);
+    if (rawUrl[0] === "`" && rawUrl.includes("${")) {
+      throw new Error(`\`new URL(url, import.meta.url)\` is not supported in dynamic template string. (${id})`);
+    }
+    const { file, postfix } = splitPostfix(rawUrl.slice(1, -1));
+    const kind = /\bnew\s+SharedWorker/.test(clean.slice(m.index, expStart)) ? "sharedworker" : "worker";
+    const abs = await resolveFile(file);
+    if (!abs) continue;
+    const query = postfix[0] === "?" ? `${postfix}&${kind}&url` : `?${kind}&url`;
+    const ident = hoist("worker_url", abs + query);
+    edits.push([expStart, expEnd, `new URL(/* @vite-ignore */ ${ident}, '' + import.meta.url)`]);
+  }
+
+  const assets = new RegExp(ASSET_META_URL_RE);
+  while ((m = assets.exec(clean))) {
+    const [[start, end], [urlStart, urlEnd]] = m.indices;
+    // A worker's URL, rewritten above.
+    if (edits.some(([s, e]) => start >= s && end <= e)) continue;
+    if (VITE_IGNORE_RE.test(code.slice(start, urlStart))) continue;
+    const rawUrl = code.slice(urlStart, urlEnd);
+    if (rawUrl[0] === "`" && rawUrl.includes("${")) {
+      const q = queryDelimiter(rawUrl);
+      const pureUrl = q === -1 ? rawUrl : rawUrl.slice(0, q) + "`";
+      const queryString = q === -1 ? "" : rawUrl.slice(q, -1);
+      const pattern = templateGlob(pureUrl);
+      // Vite leaves a pattern that starts with a wildcard alone.
+      if (pattern[0] === "*") continue;
+      const query = queryString ? `?url&${queryString.slice(1)}` : "?url";
+      const opts = JSON.stringify({ eager: true, import: "default", query });
+      edits.push([
+        start,
+        end,
+        `new URL((import.meta.glob(${JSON.stringify(pattern)}, ${opts}))[${pureUrl}], import.meta.url)`,
+      ]);
+      continue;
+    }
+    const url = rawUrl.slice(1, -1);
+    if (/^\s*data:/i.test(url)) continue;
+    const { file, postfix } = splitPostfix(url);
+    // A root-absolute URL is a public file, already served at that path.
+    if (file[0] === "/") continue;
+    const abs = await resolveFile(file);
+    if (!abs) continue;
+    const ident = hoist("asset_url", abs + "?url");
+    const href = postfix ? `${ident} + ${JSON.stringify(postfix)}` : ident;
+    edits.push([start, end, `new URL(${href}, '' + import.meta.url)`]);
+  }
+
+  if (!edits.length) return code;
+  edits.sort((a, b) => a[0] - b[0]);
+  let out = "",
+    last = 0;
+  for (const [s, e, text] of edits) {
+    // Line-preserving, like transformGlob: the hoisted imports share line one.
+    const spanned = code.slice(s, e).split("\n").length - 1;
+    out += code.slice(last, s) + text + "\n".repeat(spanned);
+    last = e;
+  }
+  out += code.slice(last);
+  return hoisted.length ? hoisted.join(" ") + " " + out : out;
+}
+
+// The rewrite for dependency modules, which the app-code transform skips:
+// Vite runs both plugins on every client module, and a bundled dependency's
+// relative URL breaks the same way. A template URL's glob is expanded here,
+// as the app-code transform does after it.
+export function depImportMetaUrlPlugin() {
+  return {
+    name: "oj:dep-import-meta-url",
+    transform: {
+      filter: { id: { include: /\/node_modules\/.*\.[cm]?[jt]sx?$/ }, code: { include: /import\.meta\.url/ } },
+      async handler(code, id) {
+        const out = await transformImportMetaUrl(code, id, bundlerResolve(this));
+        return out === code ? null : transformGlob(out, id);
+      },
+    },
+  };
+}
+
+// A plugin context's resolver as transformImportMetaUrl takes it.
+export const bundlerResolve = (ctx) => async (spec, importer) => {
+  const r = await ctx.resolve(spec, importer);
+  return r && !r.external ? r.id : null;
+};
