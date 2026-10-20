@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, join, relative, sep } from "node:path";
 
 const GLOB_HEAD = /import\.meta\.glob\b/g;
@@ -287,13 +287,62 @@ const WORKER_META_URL_RE =
 const ASSET_META_URL_RE = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\)/dg;
 const VITE_IGNORE_RE = /\/\*\s*@vite-ignore\s*\*\//;
 
-// The code with every comment and every string or template literal's contents
-// replaced by spaces, offsets and line breaks kept (strip-literal's contract).
-// A template's `${...}` is blanked along with its text.
+// strip-literal's contract on the code (Vite's stripLiteral): every comment,
+// string body, template text and regex literal body replaced by spaces,
+// offsets and line breaks kept. A template's `${...}` code stays, as does
+// everything else that is code.
+const REGEX_AFTER_WORD = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "throw",
+  "case",
+  "do",
+  "else",
+  "yield",
+  "await",
+]);
 export function stripLiterals(code) {
   const out = code.split("");
   const blank = (from, to) => {
     for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  // Open `${` expressions, each with the `{` depth inside it.
+  const templates = [];
+  // A template's text from `from` to its closing backtick or next `${`.
+  const quasi = (from) => {
+    let j = from;
+    while (j < code.length) {
+      if (code[j] === "\\") j += 2;
+      else if (code[j] === "`") {
+        blank(from, j);
+        return j + 1;
+      } else if (code[j] === "$" && code[j + 1] === "{") {
+        blank(from, j);
+        templates.push(0);
+        return j + 2;
+      } else j++;
+    }
+    blank(from, code.length);
+    return code.length;
+  };
+  // js-tokens' regex-or-division call, from the last significant token.
+  const regexAllowed = (at) => {
+    let k = at - 1;
+    while (k >= 0 && /\s/.test(out[k])) k--;
+    if (k < 0) return true;
+    const ch = out[k];
+    if (/[\w$]/.test(ch)) {
+      let w = k;
+      while (w > 0 && /[\w$]/.test(out[w - 1])) w--;
+      return REGEX_AFTER_WORD.has(out.slice(w, k + 1).join(""));
+    }
+    return !")]}".includes(ch) && !/["'`]/.test(ch);
   };
   let i = 0;
   while (i < code.length) {
@@ -311,44 +360,32 @@ export function stripLiterals(code) {
     } else if (c === '"' || c === "'") {
       let j = i + 1;
       while (j < code.length && code[j] !== c && code[j] !== "\n") j += code[j] === "\\" ? 2 : 1;
-      blank(i + 1, Math.min(j, code.length));
+      // strip-literal keeps an unclosed string as written.
+      if (code[j] === c) blank(i + 1, j);
       i = j + 1;
     } else if (c === "`") {
-      const j = templateEnd(code, i);
-      blank(i + 1, j);
+      i = quasi(i + 1);
+    } else if (c === "}" && templates.length && templates[templates.length - 1] === 0) {
+      templates.pop();
+      i = quasi(i + 1);
+    } else if (c === "/" && regexAllowed(i)) {
+      let j = i + 1,
+        cls = false;
+      while (j < code.length && code[j] !== "\n" && (cls || code[j] !== "/")) {
+        if (code[j] === "\\") j++;
+        else if (code[j] === "[") cls = true;
+        else if (code[j] === "]") cls = false;
+        j++;
+      }
+      if (code[j] === "/") blank(i + 1, j);
       i = j + 1;
-    } else i++;
+    } else {
+      if (templates.length && c === "{") templates[templates.length - 1]++;
+      else if (templates.length && c === "}") templates[templates.length - 1]--;
+      i++;
+    }
   }
   return out.join("");
-}
-
-// The index of the backtick closing the template literal opened at `start`,
-// stepping over nested `${...}` expressions and the templates inside them.
-function templateEnd(code, start) {
-  let i = start + 1;
-  while (i < code.length) {
-    const c = code[i];
-    if (c === "\\") i += 2;
-    else if (c === "`") return i;
-    else if (c === "$" && code[i + 1] === "{") {
-      let depth = 1;
-      i += 2;
-      while (i < code.length && depth > 0) {
-        const d = code[i];
-        if (d === "`") i = templateEnd(code, i) + 1;
-        else if (d === '"' || d === "'") {
-          let j = i + 1;
-          while (j < code.length && code[j] !== d) j += code[j] === "\\" ? 2 : 1;
-          i = j + 1;
-        } else {
-          if (d === "{") depth++;
-          else if (d === "}") depth--;
-          i++;
-        }
-      }
-    } else i++;
-  }
-  return code.length;
 }
 
 // Vite's buildGlobPattern: a template's text with each `${...}` run as one `*`.
@@ -381,6 +418,10 @@ function queryDelimiter(raw) {
   return -1;
 }
 
+// Vite's injectQuery: the new query first, then the URL's own.
+const injectQuery = (file, postfix, query) =>
+  `${file}?${query}${postfix[0] === "?" ? `&${postfix.slice(1)}` : postfix}`;
+
 const splitPostfix = (url) => {
   const i = url.search(/[?#]/);
   return i === -1 ? { file: url, postfix: "" } : { file: url.slice(0, i), postfix: url.slice(i) };
@@ -397,7 +438,7 @@ const splitPostfix = (url) => {
 // transformGlob expands after this. `resolve(spec, importer)` is the bundler's
 // resolver (an absolute path, or null); an asset it cannot resolve stays as
 // written, resolved at runtime, as in Vite.
-export async function transformImportMetaUrl(code, id, resolve) {
+export async function transformImportMetaUrl(code, id, resolve, root = process.env.OJ_APP_ROOT ?? process.cwd()) {
   if (!code.includes("import.meta.url")) return code;
   const clean = stripLiterals(code);
   const edits = [];
@@ -407,9 +448,23 @@ export async function transformImportMetaUrl(code, id, resolve) {
     hoisted.push(`import ${ident} from ${JSON.stringify(spec)};`);
     return ident;
   };
-  const resolveFile = async (file) => {
-    const r = await resolve(file, id);
+  const resolved = async (spec) => {
+    const r = await resolve(spec, id);
     return r && !r.startsWith("\0") ? r.replace(/[?#].*$/, "") : null;
+  };
+  // Vite's resolution for these URLs: a relative one from the importer; a
+  // `/` one from the project root, else a public file served at that path
+  // (left as written); any other with preferRelative, the importer's
+  // directory before a package.
+  const resolveFile = async (file) => {
+    // A URL with a scheme (`https:`, `blob:`) is no file.
+    if (/^[a-z][a-z\d+.-]*:/i.test(file)) return null;
+    if (file[0] === ".") return resolved(file);
+    if (file[0] === "/") {
+      const abs = join(root, file);
+      return existsSync(abs) && statSync(abs).isFile() ? abs : null;
+    }
+    return (await resolved("./" + file)) ?? (await resolved(file));
   };
 
   const workers = new RegExp(WORKER_META_URL_RE);
@@ -424,8 +479,7 @@ export async function transformImportMetaUrl(code, id, resolve) {
     const kind = /\bnew\s+SharedWorker/.test(clean.slice(m.index, expStart)) ? "sharedworker" : "worker";
     const abs = await resolveFile(file);
     if (!abs) continue;
-    const query = postfix[0] === "?" ? `${postfix}&${kind}&url` : `?${kind}&url`;
-    const ident = hoist("worker_url", abs + query);
+    const ident = hoist("worker_url", injectQuery(abs, postfix, `${kind}&url`));
     edits.push([expStart, expEnd, `new URL(/* @vite-ignore */ ${ident}, '' + import.meta.url)`]);
   }
 
@@ -455,12 +509,13 @@ export async function transformImportMetaUrl(code, id, resolve) {
     const url = rawUrl.slice(1, -1);
     if (/^\s*data:/i.test(url)) continue;
     const { file, postfix } = splitPostfix(url);
-    // A root-absolute URL is a public file, already served at that path.
-    if (file[0] === "/") continue;
     const abs = await resolveFile(file);
     if (!abs) continue;
-    const ident = hoist("asset_url", abs + "?url");
-    const href = postfix ? `${ident} + ${JSON.stringify(postfix)}` : ident;
+    // The query reaches oj's asset plugin as part of the id, as Vite's
+    // fileToUrl sees it (`?inline` inlines); a hash stays on the URL.
+    const hash = postfix[0] === "#" ? postfix : "";
+    const ident = hoist("asset_url", injectQuery(abs, hash ? "" : postfix, "url"));
+    const href = hash ? `${ident} + ${JSON.stringify(hash)}` : ident;
     edits.push([start, end, `new URL(${href}, '' + import.meta.url)`]);
   }
 
