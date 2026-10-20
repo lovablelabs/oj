@@ -5,6 +5,16 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.42] - 2026-10-21
+
+### Fixed
+
+- A root-absolute `import.meta.glob` in dev server code (`import.meta.glob("/src/x.ts")` in a TanStack Start server function, middleware or loader, or an SPA module) resolves from the app root and is keyed `/src/x.ts`, as in Vite. It globbed the filesystem root instead and came back empty, so code that looked a module up by key silently took its fallback. A `base: "/x"` option resolves from the root too, and a module is left out of its own glob.
+- A file created after an import of it failed to resolve now resolves without its importer being edited, and a deleted file stops resolving, with `server.hmr: false` or an editor gate holding updates too. oj's resolvers kept their misses until HMR retried them; as in Vite, a created or deleted file now clears the resolver caches whatever HMR does. In TanStack Start this was a 500 on a server function call (`Could not find package '@app/lib'`). A file created again after its delete now reaches plugins' `watchChange` as `create`, not `update`.
+- A redirect answered behind the dev server reaches the browser as written, with every `Set-Cookie`, through plugin middleware and `server.proxy`. oj followed it on the server, so the browser got the destination's page under the original URL without the redirect's cookies, and a sign-in or sign-out relying on browser redirects never completed. Plugin middleware in a non-Start app now also sees the browser's `Host`, so an absolute redirect it builds points at the dev server and not the loopback port.
+- `server.proxy` applies http-proxy's opt-in options, as Vite does: `autoRewrite`, `hostRewrite`, `protocolRewrite`, `cookieDomainRewrite`, `cookiePathRewrite`, `followRedirects` (with follow-redirects' rules, a 307 or 308 replaying the method and body) and `xfwd`. oj's built-in proxy warned about them and ignored them. A string entry means `changeOrigin: true` in every proxy path.
+- Plugin middleware and `server.proxy` see the browser's connection, as under Vite: `req.socket.remoteAddress` is the browser's address and `req.socket.encrypted` is set over HTTPS, instead of oj's loopback hop. So `xfwd` reports the browser's address and `https`, including through an app's own `http-proxy` or `http-proxy-3`.
+
 ## [0.2.41] - 2026-10-20
 
 ### Changed
