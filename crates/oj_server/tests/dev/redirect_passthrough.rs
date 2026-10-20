@@ -344,11 +344,12 @@ async fn echo_backend() -> u16 {
                     .to_string()
             };
             format!(
-                "for={} port={} proto={} host={}",
+                "for={} port={} proto={} host={} via={}",
                 get("x-forwarded-for"),
                 get("x-forwarded-port"),
                 get("x-forwarded-proto"),
-                get("x-forwarded-host")
+                get("x-forwarded-host"),
+                get("x-via")
             )
         });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -405,7 +406,7 @@ async fn plugin_host_sees_the_browser_connection() {
     let res = oj_server::tls::with_client_conn(browser, server.request(request("/xf/a"))).await;
     assert_eq!(
         res.body,
-        "for=10.0.0.1,203.0.113.7 port=8443 proto=https host=localhost:8443"
+        "for=10.0.0.1,203.0.113.7 port=8443 proto=https host=localhost:8443 via=-"
     );
     let res = oj_server::tls::with_client_conn(browser, server.request(request("/whoami"))).await;
     assert_eq!(res.body, "203.0.113.7 true");
@@ -479,7 +480,124 @@ async fn a_real_connection_reaches_the_plugin_host() {
     // `:<digits>` of `[::1]:<port>` is the address's own `:1`.
     assert_eq!(
         get("/xf/a").await,
-        format!("for=::1 port=1 proto=http host=[::1]:{}", addr.port())
+        format!("for=::1 port=1 proto=http host=[::1]:{} via=-", addr.port())
+    );
+    task.abort();
+}
+
+/// A self-signed certificate for localhost, 127.0.0.1 and ::1 (test only).
+const TEST_CERT: &str = "-----BEGIN CERTIFICATE-----
+MIIBrjCCAVSgAwIBAgIUYyJPYjyjo9/yCbSx0PcTA382SNMwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAyMDIxMDMyOVoYDzIxMjYwOTI2
+MjEwMzI5WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAATxt7qeWXT7ENpOS6PfsUSa4CKA3pXEeL9HdsivgY/WuplPn3K+Z6Ve
+Ap5soKQzBmnwSpSv03o/ahGFkjnrNzOfo4GBMH8wHQYDVR0OBBYEFHOPK8N/zgR1
+6TtY12Jh4PKuEFqhMB8GA1UdIwQYMBaAFHOPK8N/zgR16TtY12Jh4PKuEFqhMA8G
+A1UdEwEB/wQFMAMBAf8wLAYDVR0RBCUwI4IJbG9jYWxob3N0hwR/AAABhxAAAAAA
+AAAAAAAAAAAAAAABMAoGCCqGSM49BAMCA0gAMEUCIQC2+dJk9w/7diFtuLjAZ4Dh
+5pYCsH7CUXeo8dr0T7wZ2QIgBqKPwIfmlNDjzgxyP79Wc8fwVUt236JjLzRzsn/c
+0CE=
+-----END CERTIFICATE-----";
+const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgc13hX/6lh+OiDDdc
+hH3KBqWHl/9QKd5uEKuebmpI1sKhRANCAATxt7qeWXT7ENpOS6PfsUSa4CKA3pXE
+eL9HdsivgY/WuplPn3K+Z6VeAp5soKQzBmnwSpSv03o/ahGFkjnrNzOf
+-----END PRIVATE KEY-----";
+
+/// The echo backend's `/xf` route behind `xfwd`, plus the WHOAMI plugin, and
+/// with `via_lib` a `configure` hook only http-proxy runs (the built-in pipe
+/// cannot), which stamps `x-via` on what reaches the backend.
+fn xfwd_app(port: u16, via_lib: bool) -> App {
+    let configure = if via_lib {
+        r#", configure(proxy) { proxy.on("proxyReq", (req) => req.setHeader("x-via", "http-proxy-3")); }"#
+    } else {
+        ""
+    };
+    let config = format!(
+        r#"export default {{
+  plugins: [{WHOAMI}],
+  server: {{ proxy: {{ "/xf": {{ target: "http://127.0.0.1:{port}", xfwd: true{configure} }} }} }},
+}};
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"proxy-xfwd-tls","version":"1.0.0"}"#,
+        ),
+        ("vite.config.mjs", &config),
+        ("index.html", crate::INDEX_HTML),
+    ]);
+    if via_lib {
+        app.link_fixture("http-proxy-3");
+    }
+    app
+}
+
+/// Serves the server's router over TLS through `serve_router`, as `oj dev`
+/// with `server.https` does, and returns its base URL.
+async fn serve_tls(server: &crate::Server) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = server.built.router.clone();
+    let https = oj_config::HttpsConfig {
+        key: TEST_KEY.to_string(),
+        cert: TEST_CERT.to_string(),
+    };
+    let task = tokio::spawn(async move {
+        let _ = oj_server::tls::serve_router(listener, router, Some(&https)).await;
+    });
+    (format!("https://127.0.0.1:{}", addr.port()), task)
+}
+
+async fn get_tls(base: &str, path: &str) -> String {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap()
+        .get(format!("{base}{path}"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap()
+}
+
+/// Over HTTPS the plugin host sees a TLS socket, and `xfwd` says https, on
+/// the built-in pipe.
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_connection_reaches_the_plugin_host() {
+    let port = echo_backend().await;
+    let app = xfwd_app(port, false);
+    let server = app.serve().await;
+    middleware_ready(&server).await;
+    let (base, task) = serve_tls(&server).await;
+    let tls_port = base.rsplit(':').next().unwrap().to_string();
+    assert_eq!(get_tls(&base, "/whoami").await, "127.0.0.1 true");
+    assert_eq!(
+        get_tls(&base, "/xf/a").await,
+        format!("for=127.0.0.1 port={tls_port} proto=https host=127.0.0.1:{tls_port} via=-")
+    );
+    task.abort();
+}
+
+/// The same through the app's own http-proxy-3, which tells TLS from
+/// `instanceof TLSSocket` or the legacy `pair` mark.
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_connection_reaches_the_apps_http_proxy() {
+    crate::require_fixture!("http-proxy-3");
+    let port = echo_backend().await;
+    let app = xfwd_app(port, true);
+    let server = app.serve().await;
+    middleware_ready(&server).await;
+    let (base, task) = serve_tls(&server).await;
+    let tls_port = base.rsplit(':').next().unwrap().to_string();
+    assert_eq!(
+        get_tls(&base, "/xf/a").await,
+        format!(
+            "for=127.0.0.1 port={tls_port} proto=https host=127.0.0.1:{tls_port} via=http-proxy-3"
+        )
     );
     task.abort();
 }

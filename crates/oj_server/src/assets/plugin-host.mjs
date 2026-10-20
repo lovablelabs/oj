@@ -3385,7 +3385,8 @@ function ojPushServeInfo() {
 // re-pushed so Rust starts forwarding.
 // The browser's connection, which the loopback hop carries as
 // x-oj-remote-address / x-oj-encrypted: back on req.socket, where Vite's
-// plugins and http-proxy's `xfwd` read it (`remoteAddress`, `encrypted`).
+// plugins and http-proxy's `xfwd` read it (`remoteAddress`, `encrypted`,
+// `pair`).
 // A kept-alive loopback socket carries many requests, so each one sets (or
 // clears) its own values.
 function restoreClientSocket(req) {
@@ -3401,8 +3402,14 @@ function restoreClientSocket(req) {
     } else {
       delete socket.remoteAddress;
     }
-    if (encrypted) Object.defineProperty(socket, "encrypted", { value: true, configurable: true });
-    else delete socket.encrypted;
+    // A TLS socket under Vite. http-proxy reads `encrypted || pair`;
+    // http-proxy-3 (what Vite bundles) `instanceof TLSSocket && encrypted`,
+    // else `pair`, the legacy SecurePair mark no current Node sets. So both
+    // see the browser's TLS for `xfwd` (x-forwarded-proto, the default port).
+    for (const key of ["encrypted", "pair"]) {
+      if (encrypted) Object.defineProperty(socket, key, { value: true, configurable: true });
+      else delete socket[key];
+    }
   } catch {}
 }
 
