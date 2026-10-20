@@ -148,12 +148,9 @@ async fn forward_direct(
     let client = if entry.secure() {
         &state.http
     } else {
-        state.http_insecure.get_or_init(|| {
-            reqwest::Client::builder()
-                .danger_accept_invalid_certs(true)
-                .build()
-                .expect("reqwest client")
-        })
+        state
+            .http_insecure
+            .get_or_init(|| plugin_mw::browser_hop_client(true))
     };
     let mut out = client.request(method, target).body(body);
     for (name, value) in req_headers.iter() {

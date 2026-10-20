@@ -1,5 +1,13 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "plugin_mw_tests.rs"]
+mod tests;
+
+/// An unclaimed request to the plugin middleware server, through the same
+/// loopback hop as every other: the browser's Host as `x-oj-host` (the
+/// middleware server restores `req.headers.host` from it), and the reply,
+/// redirects included, back as written.
 pub(crate) async fn forward_to_plugin_middleware(
     state: &ServerState,
     method: &Method,
@@ -12,23 +20,22 @@ pub(crate) async fn forward_to_plugin_middleware(
         .path_and_query()
         .map(|p| p.as_str())
         .unwrap_or(uri.path());
-    let target = format!("http://127.0.0.1:{port}{pq}");
-    let rmethod = reqwest::Method::from_bytes(method.as_str().as_bytes()).ok()?;
-    let mut out = state.http.request(rmethod, &target);
-    for (name, value) in headers.iter() {
-        if name == header::HOST {
-            continue;
-        }
-        out = out.header(name, value);
-    }
-    if !body.is_empty() {
-        out = out.body(body);
-    }
-    let resp = out.send().await.ok()?;
-    if resp.headers().contains_key("x-oj-fallthrough") {
-        return None;
-    }
-    Some(stream_reqwest_response(resp))
+    let body = (!body.is_empty()).then_some(body);
+    forward_to_plugin_mw(port, method.as_str(), pq, headers, body).await
+}
+
+/// A client for a hop that forwards the browser's request (the loopback
+/// services, `server.proxy`). Vite has no such hop for plugin middleware
+/// (connect writes the reply itself) and its proxy keeps http-proxy's
+/// `followRedirects: false`, so a redirect and its `Set-Cookie` headers reach
+/// the browser, which follows it with its own cookies. Following it here
+/// would serve the destination under the requested URL.
+pub(crate) fn browser_hop_client(accept_invalid_certs: bool) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .danger_accept_invalid_certs(accept_invalid_certs)
+        .build()
+        .expect("browser hop client")
 }
 
 /// A reqwest reply as a streamed axum Response, minus TE/CL (Vite pipes it):
@@ -193,7 +200,7 @@ pub async fn proxy_to_loopback_streaming(
     body: Option<Body>,
 ) -> Result<Response, String> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let client = CLIENT.get_or_init(reqwest::Client::new);
+    let client = CLIENT.get_or_init(|| browser_hop_client(false));
     let target = format!("http://127.0.0.1:{port}{path_and_query}");
     let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
     let mut out = client.request(m, &target);

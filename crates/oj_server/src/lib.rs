@@ -1685,7 +1685,7 @@ impl DevServer {
             preload_snapshot: load_graph_snapshot(&root),
             proxy,
             proxy_regex,
-            http: reqwest::Client::new(),
+            http: plugin_mw::browser_hop_client(false),
             http_insecure: std::sync::OnceLock::new(),
             proxy_tls: [std::sync::OnceLock::new(), std::sync::OnceLock::new()],
             virtual_ids: Arc::new(

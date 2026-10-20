@@ -207,6 +207,8 @@ jobs:
         run: node e2e/start-server-root-glob.mjs
       - name: start dev alias import of a created file resolves without HMR (Vite resolves from disk)
         run: node e2e/start-new-file-alias.mjs
+      - name: plugin middleware redirects and cookies reach the browser (spa + start)
+        run: node e2e/redirect-passthrough.mjs
       - name: ssr runner module cache + selective invalidation (hmr-ssr core)
         run: node e2e/ssr-hmr.mjs
       - name: ssr externalized-dep export-shape interop (Vite ssr-deps matrix)
