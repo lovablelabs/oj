@@ -676,7 +676,11 @@ async function rolldownScan(rd, discover, host) {
         if (importer.startsWith(HTML_SCRIPT_ID)) importer = cleanUrl(importer.slice(HTML_SCRIPT_ID.length));
         if (EXTERNAL_URL_RE.test(id) || id.startsWith("data:")) return externalize(id);
         if (SPECIAL_QUERY_RE.test(id)) return externalize(id);
-        if (BARE_RE.test(id) && !aliasResolve(id)) {
+        // Aliased or not, as in Vite's scan: `resolve` applies the alias, so
+        // an alias into node_modules (`react: path.resolve("node_modules/
+        // react")`) records the dep under its bare name, and one into the
+        // app's source (`@/x`) is crawled like any source file.
+        if (BARE_RE.test(id)) {
           if (id.includes("?") || moduleListContains(exclude, id) || found.has(id)) return externalize(id);
           // resolve.dedupe from the root here too: the recorded file becomes
           // the bundle ENTRY, so a deduped dep first seen from a linked

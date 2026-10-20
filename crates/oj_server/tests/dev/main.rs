@@ -47,6 +47,7 @@ mod lazy_flag;
 mod lingui_macro_shim;
 mod listen;
 mod new_url_asset;
+mod optimize_alias;
 mod optimize_linked;
 mod optimize_plan;
 mod plugin_close_hooks;
