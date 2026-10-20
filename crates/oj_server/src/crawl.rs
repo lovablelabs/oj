@@ -4,11 +4,18 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
     tokio::spawn(async move {
         let started = Instant::now();
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut queue: Vec<String> = html_entries(&state.root);
+        let mut queue: std::collections::VecDeque<String> = html_entries(&state.root).into();
         let mut tasks = tokio::task::JoinSet::new();
+        // Each crawl compile is CPU work on the blocking pool: past the core
+        // count, more in flight only queues behind itself and delays the
+        // modules the browser is asking for right now.
+        let limit = std::thread::available_parallelism().map_or(4, |n| n.get());
 
         loop {
-            for url in queue.drain(..) {
+            while tasks.len() < limit {
+                let Some(url) = queue.pop_front() else {
+                    break;
+                };
                 if !visited.insert(url.clone()) {
                     continue;
                 }
@@ -35,7 +42,7 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
                             && !import.starts_with("/@oj/")
                             && !visited.contains(&import)
                         {
-                            queue.push(import);
+                            queue.push_back(import);
                         }
                     }
                 }
