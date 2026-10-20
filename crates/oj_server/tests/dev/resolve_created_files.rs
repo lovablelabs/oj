@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! Vite's resolver stats the disk on every resolve (`tryFsResolve`) and keeps
-//! no cache of misses, so a created file resolves at once and a deleted one
-//! stops resolving, whatever HMR does. oj's resolvers cache lookups, misses
-//! included; dropping them must not depend on HMR, which `server.hmr: false`
-//! skips (as do a held editor gate and its full-reload flush). Checked
+//! Vite resolves through rolldown's native `vite_resolve` plugin, whose
+//! `watchChange` clears its resolver cache on a create or delete, so a created
+//! file resolves at once and a deleted one stops resolving, whatever HMR does.
+//! oj's resolvers cache lookups, misses included; dropping them must not
+//! depend on HMR, which `server.hmr: false` skips (as do a held editor gate
+//! and its full-reload flush). Checked
 //! through the SSR resolver, where a missed alias (`@/lib/x`, tsconfig
 //! `paths`) falls back to a bare package the runtime then cannot find.
 
@@ -113,5 +114,35 @@ async fn a_deleted_file_stops_resolving_with_hmr_off() {
     assert!(
         !resolved_to(&after, "src/lib/gone.ts"),
         "the deleted file still resolved: {after}"
+    );
+}
+
+/// Created, deleted, then created again: each step is a create or delete to
+/// Vite's resolver cache, so the second create resolves again. A path the
+/// watcher had seen before counted as an edit and left the miss cached.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recreated_file_resolves_again_with_hmr_off() {
+    let app = app();
+    let server = app.serve().await;
+    let spec = "@/lib/again";
+    app.write(&[("src/lib/again.ts", "export const a = 1;\n")]);
+    let first = resolution_until(&server, &app, spec, |r| resolved_to(r, "src/lib/again.ts")).await;
+    assert!(
+        resolved_to(&first, "src/lib/again.ts"),
+        "never resolved: {first}"
+    );
+
+    std::fs::remove_file(app.root.join("src/lib/again.ts")).unwrap();
+    let gone = resolution_until(&server, &app, spec, |r| !resolved_to(r, "src/lib/again.ts")).await;
+    assert!(
+        !resolved_to(&gone, "src/lib/again.ts"),
+        "still resolved: {gone}"
+    );
+
+    app.write(&[("src/lib/again.ts", "export const a = 2;\n")]);
+    let again = resolution_until(&server, &app, spec, |r| resolved_to(r, "src/lib/again.ts")).await;
+    assert!(
+        resolved_to(&again, "src/lib/again.ts"),
+        "the recreated file never resolved: {again}"
     );
 }

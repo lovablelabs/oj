@@ -871,31 +871,23 @@ async fn plugin_watched_files(state: &ServerState) -> std::collections::HashSet<
         .collect()
 }
 
-/// Vite's resolver stats the disk on every resolve, so a created file resolves
-/// (and a deleted one stops resolving) at once, whatever HMR does. oj's
-/// resolvers cache lookups, misses included: a batch that brought a path into
-/// existence or took one away drops them, from the watcher itself, ahead of
-/// HMR (`server.hmr: false`, a held editor gate and a full-reload flush never
+/// Vite resolves through rolldown's native `vite_resolve` plugin, whose
+/// `watchChange` clears its resolver cache on a create or delete and keeps it
+/// on an update. oj's resolvers cache lookups too, misses included, and drop
+/// them on the same events, from the watcher itself, ahead of HMR
+/// (`server.hmr: false`, a held editor gate and a full-reload flush never
 /// reach [`decide`]). Without it an alias import of a created file
 /// (`@/lib/x`) stays a bare package to the SSR runtime until the importer is
-/// edited again. notify can't tell create from modify, so an existing file
-/// the graph has never seen counts as new, as [`retry_failed_resolves`] does.
+/// edited again. The events are the ones plugins' `watchChange` gets.
 pub(crate) fn drop_resolver_misses(
     state: &ServerState,
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
-    let appeared_or_gone = !created.is_empty()
-        || paths.iter().any(|p| {
-            !p.exists()
-                || (p.is_file()
-                    && !state
-                        .graph
-                        .lock()
-                        .unwrap()
-                        .contains(Path::new(&url_of(&state.root, p))))
-        });
-    if appeared_or_gone {
+    if paths
+        .iter()
+        .any(|p| change_type(state, p, created) != "update")
+    {
         state.resolver.clear_cache();
         state.ssr_resolver.clear_cache();
     }
