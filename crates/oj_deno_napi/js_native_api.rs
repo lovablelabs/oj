@@ -7,7 +7,7 @@ const NAPI_VERSION: u32 = 10;
 
 use std::ptr::NonNull;
 
-use libc::INT_MAX;
+const INT_MAX: libc::c_int = libc::c_int::MAX;
 use napi_sym::napi_sym;
 
 use super::util::SendPtr;
