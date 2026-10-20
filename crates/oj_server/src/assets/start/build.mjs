@@ -322,6 +322,7 @@ async function main() {
       plugins: [
         appAliasPlugin(clientContainer?.config),
         makeVitePlugins({ container: clientContainer, appRoot: APP, mode: "prod", emit, lifecycle: false }),
+        depImportMetaUrlPlugin({ include: /\.[cm]?[jt]sx?$/, self: file }),
         assetsPlugin({ mode: "prod", server: false, emit }),
         nodeBuiltinShims({ production: true }),
       ],

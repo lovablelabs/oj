@@ -436,9 +436,17 @@ const splitPostfix = (url) => {
 // (`/@oj-start/w.ts` in dev), which serves nothing. A template URL with
 // substitutions becomes the eager `import.meta.glob` lookup Vite writes, which
 // transformGlob expands after this. `resolve(spec, importer)` is the bundler's
-// resolver (an absolute path, or null); an asset it cannot resolve stays as
-// written, resolved at runtime, as in Vite.
-export async function transformImportMetaUrl(code, id, resolve, root = process.env.OJ_APP_ROOT ?? process.cwd()) {
+// resolver (an absolute path, or null); a file it cannot resolve stays as
+// written, resolved at runtime, with Vite's warning. Inside a worker bundle,
+// `self` is the worker entry: a worker starting itself gets
+// `self.location.href`, as in Vite.
+export async function transformImportMetaUrl(
+  code,
+  id,
+  resolve,
+  root = process.env.OJ_APP_ROOT ?? process.cwd(),
+  self = null,
+) {
   if (!code.includes("import.meta.url")) return code;
   const clean = stripLiterals(code);
   const edits = [];
@@ -458,13 +466,22 @@ export async function transformImportMetaUrl(code, id, resolve, root = process.e
   // directory before a package.
   const resolveFile = async (file) => {
     // A URL with a scheme (`https:`, `blob:`) is no file.
-    if (/^[a-z][a-z\d+.-]*:/i.test(file)) return null;
+    if (SCHEME_RE.test(file)) return null;
     if (file[0] === ".") return resolved(file);
     if (file[0] === "/") {
       const abs = join(root, file);
       return existsSync(abs) && statSync(abs).isFile() ? abs : null;
     }
     return (await resolved("./" + file)) ?? (await resolved(file));
+  };
+  // Vite's warning for a file that is not there; a `/` URL left as written is
+  // a public file, and a scheme URL no file at all.
+  const missed = (file, s, e) => {
+    if (file[0] === "/" || SCHEME_RE.test(file)) return;
+    warnOnce(
+      `${code.slice(s, e)} doesn't exist at build time, it will remain unchanged to be resolved at runtime. ` +
+        `If this is intended, you can use the /* @vite-ignore */ comment to suppress this warning.`,
+    );
   };
 
   const workers = new RegExp(WORKER_META_URL_RE);
@@ -478,7 +495,14 @@ export async function transformImportMetaUrl(code, id, resolve, root = process.e
     const { file, postfix } = splitPostfix(rawUrl.slice(1, -1));
     const kind = /\bnew\s+SharedWorker/.test(clean.slice(m.index, expStart)) ? "sharedworker" : "worker";
     const abs = await resolveFile(file);
-    if (!abs) continue;
+    if (!abs) {
+      missed(file, expStart, expEnd);
+      continue;
+    }
+    if (abs === self) {
+      edits.push([expStart, expEnd, "self.location.href"]);
+      continue;
+    }
     const ident = hoist("worker_url", injectQuery(abs, postfix, `${kind}&url`));
     edits.push([expStart, expEnd, `new URL(/* @vite-ignore */ ${ident}, '' + import.meta.url)`]);
   }
@@ -510,7 +534,10 @@ export async function transformImportMetaUrl(code, id, resolve, root = process.e
     if (/^\s*data:/i.test(url)) continue;
     const { file, postfix } = splitPostfix(url);
     const abs = await resolveFile(file);
-    if (!abs) continue;
+    if (!abs) {
+      missed(file, start, end);
+      continue;
+    }
     // The query reaches oj's asset plugin as part of the id, as Vite's
     // fileToUrl sees it (`?inline` inlines); a hash stays on the URL.
     const hash = postfix[0] === "#" ? postfix : "";
@@ -533,17 +560,29 @@ export async function transformImportMetaUrl(code, id, resolve, root = process.e
   return hoisted.length ? hoisted.join(" ") + " " + out : out;
 }
 
+const SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
+
+// Vite's logger.warnOnce.
+const warned = new Set();
+function warnOnce(message) {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn(message);
+}
+
 // The rewrite for dependency modules, which the app-code transform skips:
 // Vite runs both plugins on every client module, and a bundled dependency's
 // relative URL breaks the same way. A template URL's glob is expanded here,
-// as the app-code transform does after it.
-export function depImportMetaUrlPlugin() {
+// as the app-code transform does after it. A worker bundle takes it for every
+// module (`include`), with `self` its entry: Vite runs both plugins there too,
+// and the emitted worker sits under `assets/`, away from its sources.
+export function depImportMetaUrlPlugin({ include = /\/node_modules\/.*\.[cm]?[jt]sx?$/, self = null } = {}) {
   return {
     name: "oj:dep-import-meta-url",
     transform: {
-      filter: { id: { include: /\/node_modules\/.*\.[cm]?[jt]sx?$/ }, code: { include: /import\.meta\.url/ } },
+      filter: { id: { include, exclude: /^\0/ }, code: { include: /import\.meta\.url/ } },
       async handler(code, id) {
-        const out = await transformImportMetaUrl(code, id, bundlerResolve(this));
+        const out = await transformImportMetaUrl(code, id, bundlerResolve(this), undefined, self);
         return out === code ? null : transformGlob(out, id);
       },
     },

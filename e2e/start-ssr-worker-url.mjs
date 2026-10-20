@@ -107,6 +107,12 @@ write(
     "",
   ].join("\n"),
 );
+// A worker's own `new URL(..., import.meta.url)`: in a build the worker is
+// emitted under assets/, away from the file it names.
+write(
+  "src/lib/wk/asset-worker.ts",
+  'self.onmessage = () => fetch(new URL("../hero.png", import.meta.url)).then((r) => self.postMessage("wasset-" + r.status));\n',
+);
 write(
   "src/lib/wk/inline-worker.ts",
   'import { n } from "./helper";\nself.onmessage = () => self.postMessage(`inline-${n}`);\n',
@@ -135,7 +141,8 @@ about = about.replace(
     '    const ws = [new WorkerCtor(), new InlineCtor(), new Worker(wurl, { type: "module" }),\n' +
     // Vite's worker-import-meta-url and asset-import-meta-url: relative to
     // the module, not to the bundled chunk it lands in.
-    '      new Worker(new URL("../lib/wk/worker.ts", import.meta.url), { type: "module" })];\n' +
+    '      new Worker(new URL("../lib/wk/worker.ts", import.meta.url), { type: "module" }),\n' +
+    '      new Worker(new URL("../lib/wk/asset-worker.ts", import.meta.url), { type: "module" })];\n' +
     '    fetch(new URL("../lib/hero.png", import.meta.url)).then((r) => setOut((o) => [...o, "asset-" + r.status].sort()));\n' +
     "    for (const w of ws) {\n" +
     "      w.onmessage = (e) => setOut((o) => [...o, String(e.data)].sort());\n" +
@@ -230,10 +237,11 @@ async function served(cmd, args, opts, check) {
   }
 }
 
-// Load /about in Chromium and wait for all four workers to answer: the
+// Load /about in Chromium and wait for all five workers to answer: the
 // ?worker constructor, the ?worker&inline one (a Blob URL in a build),
-// `new Worker(?worker&url)` and `new Worker(new URL(..., import.meta.url))`;
-// and for the `new URL(..., import.meta.url)` asset to fetch.
+// `new Worker(?worker&url)` and two `new Worker(new URL(..., import.meta.url))`,
+// one fetching its own `new URL(...)` asset; and for the page's
+// `new URL(..., import.meta.url)` asset to fetch.
 async function workersRunInBrowser(label) {
   let pw = null;
   try {
@@ -254,7 +262,7 @@ async function workersRunInBrowser(label) {
       hydrated === RESOLVED,
       `${label}: the hydrated page resolved differently: ${JSON.stringify(hydrated)} (errors: ${errors.join(" | ")})`,
     );
-    const want = "42,42,42,asset-200,inline-41";
+    const want = "42,42,42,asset-200,inline-41,wasset-200";
     const got = await page
       .waitForFunction((w) => document.querySelector("#wkrun")?.textContent === w, want, { timeout: 20000 })
       .then(() => want)

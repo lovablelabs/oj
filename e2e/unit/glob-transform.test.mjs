@@ -384,6 +384,17 @@ const fsResolve = async (spec, importer) => {
   const abs = res(dirname(importer), spec);
   return existsSync(abs) ? abs : null;
 };
+// Runs `fn` with console.warn captured.
+async function warnings(fn) {
+  const seen = [];
+  const warn = console.warn;
+  console.warn = (m) => seen.push(String(m));
+  try {
+    return { out: await fn(), seen };
+  } finally {
+    console.warn = warn;
+  }
+}
 
 test("new Worker(new URL(...)) imports the worker's ?worker&url", async () => {
   const dir = urlFixture();
@@ -461,7 +472,12 @@ test("comments, strings, data: URLs, @vite-ignore and missing files stay as writ
       'const w = new Worker(new URL("./missing-worker.ts", import.meta.url));',
       "",
     ].join("\n");
-    assert.equal(await transformImportMetaUrl(code, join(dir, "game.ts"), fsResolve), code);
+    const { out, seen } = await warnings(() => transformImportMetaUrl(code, join(dir, "game.ts"), fsResolve));
+    assert.equal(out, code);
+    // Vite's warning, once for each missing file.
+    assert.equal(seen.length, 2, seen.join("\n"));
+    assert.match(seen[0], /missing-worker\.ts.*doesn't exist at build time/);
+    assert.match(seen[1], /missing\.png.*@vite-ignore/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -545,6 +561,33 @@ test("literals strip like strip-literal: template code stays, regex bodies blank
     const out = await transformImportMetaUrl(code, join(dir, "game.ts"), fsResolve);
     assert.ok(out.includes("${new URL(__oj_asset_url1, '' + import.meta.url)}"), out);
     assert.ok(out.includes("new Worker(new URL(/* @vite-ignore */ __oj_worker_url0"), out);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("public and scheme URLs left as written raise no warning", async () => {
+  const dir = urlFixture();
+  try {
+    const code = [
+      'const p = new URL("/only-in-public.png", import.meta.url);',
+      'const h = new URL("https://example.com/a.png", import.meta.url);',
+    ].join("\n");
+    const { out, seen } = await warnings(() => transformImportMetaUrl(code, join(dir, "game.ts"), fsResolve, dir));
+    assert.equal(out, code);
+    assert.deepEqual(seen, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a worker starting itself gets self.location.href, as in Vite", async () => {
+  const dir = urlFixture();
+  try {
+    const id = join(dir, "draw-worker.ts");
+    const code = 'new Worker(new URL("./draw-worker.ts", import.meta.url), { type: "module" });';
+    const out = await transformImportMetaUrl(code, id, fsResolve, dir, id);
+    assert.equal(out, 'new Worker(self.location.href, { type: "module" });');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
