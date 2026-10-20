@@ -280,13 +280,17 @@ fn slash(path: &Path) -> String {
 }
 
 /// Vite's toAbsoluteGlob: a `/` pattern joins the root, `./` and `../` ones
-/// the directory they are relative to (the importer's, or `base`'s). `None`
-/// for a `/` pattern without a root, or a form Vite hands to its resolver
-/// (an alias, a bare package path), which this compiler has none of.
+/// the directory they are relative to (the importer's, or `base`'s), and a
+/// `**` one is matched from the root as it stands. `None` for a root-led
+/// pattern without a root, or a form Vite hands to its resolver (an alias, a
+/// bare package path), which this compiler has none of.
 fn absolute_glob(pattern: &str, dir: &Path, root: Option<&Path>) -> Option<PathBuf> {
     let pattern = pattern.strip_prefix('!').unwrap_or(pattern);
     if let Some(rest) = pattern.strip_prefix('/') {
         return Some(join_normalized(root?, rest));
+    }
+    if pattern.starts_with("**") {
+        return Some(join_normalized(root?, pattern));
     }
     if pattern.starts_with("./") || pattern.starts_with("../") {
         return Some(join_normalized(dir, pattern));
@@ -722,7 +726,7 @@ fn template_matches(dir: &Path, pattern: &str) -> Vec<String> {
 }
 
 /// The files `patterns` match, absolute and lexically normalized, sorted as
-/// Vite sorts them. Relative patterns resolve from `dir`, `/` ones from
+/// Vite sorts them (by path string, so `a-b/x` precedes `a/b`). Relative patterns resolve from `dir`, `/` ones from
 /// `root` ([`absolute_glob`]); negatives exclude what they match.
 fn glob_matches(
     dir: &Path,
@@ -738,14 +742,14 @@ fn glob_matches(
         .filter_map(|abs| glob::Pattern::new(&slash(&abs)).ok())
         .collect();
 
-    let mut files = std::collections::BTreeSet::new();
+    let mut files = std::collections::BTreeMap::new();
     for pat in positives {
         let Some(abs) = absolute_glob(pat, dir, root) else {
             continue;
         };
         // The dotfile/node_modules check reads the part of the path the
         // pattern matched: below the root for `/`, below `dir` otherwise.
-        let anchor = match (pat.starts_with('/'), root) {
+        let anchor = match (pat.starts_with('/') || pat.starts_with("**"), root) {
             (true, Some(root)) => root,
             _ => dir,
         };
@@ -764,10 +768,10 @@ fn glob_matches(
             if !exhaustive && hidden_by_default(&rel, pat) {
                 continue;
             }
-            files.insert(file);
+            files.insert(slash(&file), file);
         }
     }
-    files.into_iter().collect()
+    files.into_values().collect()
 }
 
 #[cfg(test)]
@@ -1246,5 +1250,55 @@ mod tests {
             "top-level match missing: {out}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Vite's toAbsoluteGlob leaves a `**` glob as it stands, matched from
+    // the root, and keys it root-absolute (it is not a relative glob).
+    #[test]
+    fn a_double_star_glob_matches_from_the_root() {
+        let root = app(
+            "double-star",
+            &[
+                "src/main.ts",
+                "src/docs/a.md",
+                "docs/b.md",
+                "node_modules/dep/c.md",
+            ],
+        );
+        let importer = root.join("src/main.ts");
+        let out = super::expand_source(
+            "const m = import.meta.glob('**/*.md');\n",
+            &importer,
+            Some(&root),
+        );
+        assert!(
+            out.contains(r#""/docs/b.md": () => import("../docs/b.md")"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#""/src/docs/a.md": () => import("./docs/a.md")"#),
+            "{out}"
+        );
+        assert!(
+            !out.contains("node_modules"),
+            "hidden unless exhaustive: {out}"
+        );
+        let none =
+            super::expand_source("const m = import.meta.glob('**/*.md');\n", &importer, None);
+        assert!(none.contains("const m = {}"), "no root, no matches: {none}");
+    }
+
+    // Vite sorts the matched paths as strings: `-` (0x2d) sorts before `/`.
+    #[test]
+    fn matches_sort_by_path_string_like_vite() {
+        let root = app("sort", &["src/main.ts", "src/a/b.ts", "src/a-b/x.ts"]);
+        let out = super::expand_source(
+            "const m = import.meta.glob('/src/**/*.ts');\n",
+            &root.join("src/main.ts"),
+            Some(&root),
+        );
+        let dash = out.find("/src/a-b/x.ts").expect("a-b matched");
+        let slash = out.find("/src/a/b.ts").expect("a/b matched");
+        assert!(dash < slash, "a-b/x before a/b: {out}");
     }
 }
