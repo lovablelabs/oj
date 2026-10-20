@@ -1423,21 +1423,32 @@ fn unresolved_import_error_points_at_the_specifier() {
 
 #[test]
 fn preload_hints_name_the_exact_import_url() {
-    assert_eq!(preload_href("/src/main.tsx", "abcd1234"), "/src/main.tsx");
-    assert_eq!(preload_href("/src/a.css", "abcd1234"), "/src/a.css?import");
-    // Optimized deps and package bundles preload under their versioned URL,
-    // so the preload and the later import hit one immutable cache entry.
+    let entries: HashMap<String, String> = [(
+        "react.mjs".to_string(),
+        "/@oj-deps/react.mjs?v=1d335a14".to_string(),
+    )]
+    .into();
+    assert_eq!(preload_href("/src/main.tsx", &entries), "/src/main.tsx");
+    assert_eq!(preload_href("/src/a.css", &entries), "/src/a.css?import");
+    // A pre-bundled entry preloads under the URL importers name it by now,
+    // not the session's base version, so the preload and the later import
+    // hit one immutable cache entry and a rerun leaves no stale hint.
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", "abcd1234"),
-        "/@oj-deps/react.mjs?v=abcd1234"
+        preload_href("/@oj-deps/react.mjs", &entries),
+        "/@oj-deps/react.mjs?v=1d335a14"
     );
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", ""),
+        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries),
+        "/@oj-deps/chunk-AB12CD.mjs",
+        "dep files import chunks bare"
+    );
+    assert_eq!(
+        preload_href("/@oj-deps/react.mjs", &HashMap::new()),
         "/@oj-deps/react.mjs",
-        "no version, no query"
+        "no entry, no query"
     );
     assert_eq!(
-        preload_href("/@id/6e6f6465", "abcd1234"),
+        preload_href("/@id/6e6f6465", &entries),
         "/@id/6e6f6465",
         "stubs are unversioned"
     );

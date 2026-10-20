@@ -412,6 +412,21 @@ impl OptimizedDeps {
         })
     }
 
+    /// Each pre-bundled entry's file name with the URL importers name it by
+    /// right now (its version moves with every rerun); chunks are absent.
+    pub fn entry_urls(&self) -> HashMap<String, String> {
+        self.rx
+            .borrow()
+            .as_ref()
+            .map(|map| {
+                map.values()
+                    .filter(|meta| !url_version(&meta.url).is_empty())
+                    .map(|meta| (meta.file.clone(), meta.url.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The live map's entry for `dep`, including a provisional one registered
     /// mid-compile, which a per-compile snapshot cannot see.
     pub fn meta_now(&self, dep: &str) -> Option<DepMeta> {
@@ -1823,6 +1838,33 @@ mod tests {
         assert_eq!(live.url, meta.url);
         let again = deps.register_missing("@scope/pkg", true).unwrap();
         assert_eq!(again.url, meta.url, "re-registration is idempotent");
+    }
+
+    #[test]
+    fn entry_urls_name_each_entry_by_its_own_version() {
+        // Vite's resolve versions an optimized file with that dep's own
+        // browserHash (optimizedDepInfoFromFile), not one global version: a
+        // dep discovered after boot carries its discovered set's version.
+        let deps = test_deps(true, vec![]);
+        let meta = deps.register_missing("date-fns/locale", false).unwrap();
+        let urls = deps.entry_urls();
+        assert_eq!(urls.get(&meta.file), Some(&meta.url));
+        assert_ne!(url_version(&meta.url), deps.version(), "{}", meta.url);
+
+        // An entry without a version query (an unversioned meta) is no
+        // preload target: importers name it bare, as the href already is.
+        let mut map = DepMap::new();
+        map.insert(
+            "bare".into(),
+            DepMeta {
+                file: "bare.mjs".into(),
+                needs_interop: false,
+                url: "/@oj-deps/bare.mjs".into(),
+                file_hash: String::new(),
+            },
+        );
+        let _ = deps.rerun.as_ref().unwrap().tx.send(Some(Arc::new(map)));
+        assert!(deps.entry_urls().is_empty());
     }
 
     #[test]

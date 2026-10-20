@@ -202,13 +202,19 @@ pub(crate) async fn serve_fallback(
         .unwrap_or_else(|| (StatusCode::NOT_FOUND, "oj: not found").into_response())
 }
 
-/// The preload href: the exact URL the importer names (`?import` for styles,
-/// `?v=<version>` for deps) so preload and import share one cache entry.
-pub(crate) fn preload_href(path: &str, version: &str) -> String {
+/// The preload href: the exact URL the importer names, so preload and import
+/// share one cache entry. `?import` for styles; a pre-bundled entry's current
+/// URL from `entries` (file name to URL), whose version moves with every
+/// rerun; anything else under `/@oj-deps/` bare, as dep files import their
+/// chunks.
+pub(crate) fn preload_href(path: &str, entries: &HashMap<String, String>) -> String {
     if is_style_url(path) {
         format!("{path}?import")
-    } else if !version.is_empty() && path.starts_with("/@oj-deps/") {
-        format!("{path}?v={version}")
+    } else if let Some(url) = path
+        .strip_prefix("/@oj-deps/")
+        .and_then(|file| entries.get(file))
+    {
+        url.clone()
     } else {
         path.to_string()
     }
@@ -230,13 +236,13 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState) -> Strin
     if paths.is_empty() {
         return html;
     }
-    let version = state.optimized.version();
+    let entries = state.optimized.entry_urls();
     let links: String = paths
         .iter()
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\" />\n",
-                preload_href(p, version)
+                preload_href(p, &entries)
             )
         })
         .collect();
