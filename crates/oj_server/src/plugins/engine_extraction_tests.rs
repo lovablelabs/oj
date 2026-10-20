@@ -260,8 +260,10 @@ fn engine_jobs_can_spawn_child_processes() {
         dir.path().join("spawn-job.mjs"),
         r#"import { execFileSync, spawn } from "node:child_process";
 export async function run() {
-  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8" }).trim();
-  const child = spawn("/bin/echo", ["piped-child"]);
+  // An explicit cwd: tests share one process, whose cwd a parallel test's
+  // plugin host may have moved into a temp dir it then deleted.
+  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8", cwd: "/" }).trim();
+  const child = spawn("/bin/echo", ["piped-child"], { cwd: "/" });
   let piped = "";
   child.stdout.on("data", (d) => { piped += d.toString(); });
   const code = await new Promise((resolve) => child.on("close", resolve));
