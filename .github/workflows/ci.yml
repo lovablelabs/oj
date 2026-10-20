@@ -203,6 +203,8 @@ jobs:
         run: node e2e/start-ssr-worker-url.mjs
       - name: start server fn called from the browser (handler comments with parens)
         run: node e2e/start-server-fn-client.mjs
+      - name: start server code root-absolute import.meta.glob (Vite toAbsoluteGlob + root keys)
+        run: node e2e/start-server-root-glob.mjs
       - name: ssr runner module cache + selective invalidation (hmr-ssr core)
         run: node e2e/ssr-hmr.mjs
       - name: ssr externalized-dep export-shape interop (Vite ssr-deps matrix)

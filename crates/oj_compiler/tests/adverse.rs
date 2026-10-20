@@ -509,7 +509,7 @@ fn glob_expansion_of_hostile_patterns_stays_inside_the_grammar() {
         "./*.json?raw",
     ] {
         let source = format!("export const m = import.meta.glob({pattern:?});");
-        let out = glob::expand_source(&source, &entry);
+        let out = glob::expand_source(&source, &entry, None);
         assert!(
             compile(Path::new("/verify.mjs"), &out, &CompileOptions::prod()).is_ok(),
             "pattern {pattern:?} produced invalid code: {out}"
@@ -541,7 +541,7 @@ fn glob_options_that_make_no_sense_are_ignored_safely() {
         "42",
     ] {
         let source = format!("export const m = import.meta.glob(\"./locales/*.json\", {options});");
-        let out = glob::expand_source(&source, &entry);
+        let out = glob::expand_source(&source, &entry, None);
         assert!(
             compile(Path::new("/verify.mjs"), &out, &CompileOptions::prod()).is_ok(),
             "options {options} produced invalid code: {out}"
@@ -603,7 +603,7 @@ fn new_url_asset_expansion_stays_inside_the_grammar() {
 fn source_expanders_are_the_identity_on_unparsable_input() {
     let broken = "const a = ( // import.meta.glob import( import.meta.url";
     let path = Path::new("/src/broken.js");
-    assert_eq!(glob::expand_source(broken, path), broken);
+    assert_eq!(glob::expand_source(broken, path, None), broken);
     assert_eq!(
         glob::expand_dynamic_import_vars_source(broken, path),
         broken

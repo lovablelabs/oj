@@ -206,7 +206,7 @@ fn compile_esm_factory_from_parsed<'a>(
     }
     replace_defines(allocator, &mut program, env, source_text);
     if crate::scan(&crate::F_IMPORT_META_GLOB, source_text) {
-        crate::glob::expand(allocator, path.parent().unwrap_or(path), &mut program);
+        crate::glob::expand(allocator, path, None, &mut program);
     }
 
     let (_, dynamic_imports) =

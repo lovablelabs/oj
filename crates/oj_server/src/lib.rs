@@ -1975,6 +1975,7 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     let mut opts = oj_compiler::CompileOptions::dev();
     opts.jsx = state.jsx.clone();
     opts.env = Some(Arc::clone(&state.import_meta_env));
+    opts.root = Some(state.root.clone());
     opts
 }
 
