@@ -296,3 +296,28 @@ async fn a_cold_session_never_reuses_an_earlier_sessions_dep_urls() {
         server.text(b).await;
     }
 }
+
+// Vite's cached _metadata.json: a warm session reuses the persisted versions,
+// so every URL the first session served (and the browser cached immutable)
+// still serves the same bundle.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_warm_session_keeps_every_dep_url() {
+    crate::require_fixture!("vite");
+    let app = plain_esm_app();
+    let first = {
+        let server = app.serve().await;
+        let urls = dep_urls(&server.text("/main.js").await);
+        for url in &urls {
+            server.text(url).await;
+        }
+        first_manifest(&app.root).await;
+        urls
+    };
+    assert!(!first.is_empty());
+    let server = app.serve().await;
+    let second = dep_urls(&server.text("/main.js").await);
+    assert_eq!(first, second, "a warm session moved the dep URLs");
+    for url in &second {
+        assert_eq!(server.get(url).await.status, 200, "{url}");
+    }
+}
