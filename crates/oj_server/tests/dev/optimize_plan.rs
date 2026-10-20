@@ -26,6 +26,10 @@ fn dep_urls(code: &str) -> Vec<String> {
         .collect()
 }
 
+fn url_version(url: &str) -> &str {
+    url.rsplit_once("?v=").map(|(_, v)| v).unwrap_or("")
+}
+
 /// The first deps manifest the commit writes.
 async fn first_manifest(root: &Path) -> serde_json::Value {
     let path = oj_cache::cache_root(root).join("deps/manifest.json");
@@ -104,10 +108,9 @@ async fn cold_boot_plan_matches_the_committed_pre_bundle() {
         server.text(url).await;
     }
     let manifest = first_manifest(&app.root).await;
-    let hash = manifest["hash"].as_str().unwrap();
     assert_eq!(
         manifest["browserHash"].as_str().unwrap(),
-        &hash[..8],
+        url_version(&first[0]),
         "the commit kept the planned version (a contradicted plan bumps it): {manifest:#}"
     );
     assert_eq!(
@@ -187,10 +190,10 @@ async fn a_dep_the_scan_missed_joins_the_first_pre_bundle() {
             .is_some_and(|h| !h.is_empty()),
         "and was bundled by it: {manifest:#}"
     );
-    let hash = manifest["hash"].as_str().unwrap();
+    let planned = first.iter().find(|u| u.contains("plain-esm")).unwrap();
     assert_eq!(
         manifest["browserHash"].as_str().unwrap(),
-        &hash[..8],
+        url_version(planned),
         "no reload: {manifest:#}"
     );
     assert_eq!(
@@ -221,4 +224,75 @@ async fn without_the_hold_the_first_commit_leaves_the_missed_dep_to_a_rerun() {
         .find(|u| u.contains("late-esm"))
         .unwrap();
     assert_eq!(server.get(&late).await.status, 200);
+}
+
+fn plain_esm_app() -> App {
+    let mut files = vec![
+        (
+            "package.json".to_string(),
+            r#"{"name":"session-app","private":true,"type":"module"}"#.to_string(),
+        ),
+        ("vite.config.js".into(), "export default {};\n".into()),
+        ("index.html".into(), INDEX.into()),
+        (
+            "main.js".into(),
+            "import { hi } from \"plain-esm\";\nwindow.__R = hi();\n".into(),
+        ),
+    ];
+    files.extend(plain_dep("plain-esm", false));
+    let app = app_with(&files);
+    app.link_fixture("vite");
+    app
+}
+
+// Vite's optimizedDeps load: a versioned dep file gone from disk (a rerun or
+// another session replaced the bundle) is the outdated 504 a reload gets
+// past; only an unversioned miss is a 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vanished_versioned_dep_file_is_outdated_not_missing() {
+    crate::require_fixture!("vite");
+    let app = plain_esm_app();
+    let server = app.serve().await;
+    let url = dep_urls(&server.text("/main.js").await)
+        .into_iter()
+        .find(|u| u.contains("plain-esm"))
+        .unwrap();
+    server.text(&url).await;
+    let file = url
+        .trim_start_matches("/@oj-deps/")
+        .split('?')
+        .next()
+        .unwrap();
+    std::fs::remove_file(oj_cache::cache_root(&app.root).join("deps").join(file)).unwrap();
+    assert_eq!(server.get(&url).await.status, 504, "versioned: {url}");
+    assert_eq!(
+        server.get(&format!("/@oj-deps/{file}")).await.status,
+        404,
+        "unversioned"
+    );
+}
+
+// Vite's sessionTimestamp: dep URLs are cached immutable, so a cold session
+// (a restart after the deps cache was cleared) must not serve its bundle
+// under a URL an earlier session already handed out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cold_session_never_reuses_an_earlier_sessions_dep_urls() {
+    crate::require_fixture!("vite");
+    let app = plain_esm_app();
+    let first = {
+        let server = app.serve().await;
+        let urls = dep_urls(&server.text("/main.js").await);
+        for url in &urls {
+            server.text(url).await;
+        }
+        urls
+    };
+    std::fs::remove_dir_all(oj_cache::cache_root(&app.root).join("deps")).unwrap();
+    let server = app.serve().await;
+    let second = dep_urls(&server.text("/main.js").await);
+    assert_eq!(first.len(), second.len(), "{first:?} vs {second:?}");
+    for (a, b) in first.iter().zip(&second) {
+        assert_ne!(a, b, "a cold session minted a URL an earlier one served");
+        server.text(b).await;
+    }
 }

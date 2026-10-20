@@ -65,6 +65,15 @@ async fn serve_internal_route(
                     has_version_query(uri.query()),
                     state.optimized.link_entries(name, bytes),
                 ),
+                // Vite's optimizedDeps load: a versioned file that is gone
+                // (a rerun or another session replaced the bundle) is an
+                // outdated request the page reloads past; only an unversioned
+                // miss is a dep the optimizer never wrote.
+                Err(_) if req_version.is_some() => (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    format!("oj: outdated optimized dep {name}"),
+                )
+                    .into_response(),
                 Err(_) => (
                     StatusCode::NOT_FOUND,
                     format!("oj: no optimized dep {name}"),

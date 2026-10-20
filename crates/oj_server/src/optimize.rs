@@ -92,8 +92,9 @@ pub type DepMap = HashMap<String, DepMeta>;
 pub struct OptimizedDeps {
     rx: watch::Receiver<Option<Arc<DepMap>>>,
     dir: PathBuf,
-    /// Short prebundle hash: changes with the lockfile or optimizer config so
-    /// stale immutable entries never share a URL. Empty when disabled.
+    /// The session's base version: the persisted one on a warm boot, else
+    /// the prebundle hash salted with the session, so stale immutable entries
+    /// never share a URL. Empty when disabled.
     version: String,
     rerun: Option<Arc<RerunState>>,
     link_memo: LinkMemo,
@@ -112,6 +113,9 @@ type OnCommit = Box<dyn Fn(&[String]) + Send + Sync>;
 struct RerunState {
     /// Base prebundle hash, the seed of every browser version.
     hash: String,
+    /// Vite's sessionTimestamp: salts every version this optimizer mints, so
+    /// no two sessions serve one immutable URL.
+    session: String,
     tx: watch::Sender<Option<Arc<DepMap>>>,
     /// Every serve-time-discovered dep with its provisional meta (the version
     /// its URLs were first served under); persists across reruns.
@@ -147,17 +151,33 @@ pub enum DepServe {
     Outdated,
 }
 
-/// A discovery's URL version: the base key plus the (sorted) discovered set,
-/// so chunks that change can never be served under a URL a page already holds
-/// (Vite's getDiscoveredBrowserHash).
-fn browser_hash<'a>(hash: &str, discovered: impl Iterator<Item = &'a String>) -> String {
+/// A discovery's URL version: the base key, this optimizer's session, and the
+/// (sorted) discovered set, so chunks that change can never be served under a
+/// URL a page already holds (Vite's getDiscoveredBrowserHash). The session is
+/// Vite's sessionTimestamp: URLs are `immutable`, and a later session (a
+/// restart, a cleared cache) may bundle other bytes under the same set.
+fn browser_hash<'a>(
+    hash: &str,
+    session: &str,
+    discovered: impl Iterator<Item = &'a String>,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(hash.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(session.as_bytes());
     for dep in discovered {
         hasher.update(b"\0");
         hasher.update(dep.as_bytes());
     }
     hasher.finalize().to_hex()[..8].to_string()
+}
+
+/// Vite's sessionTimestamp, taken once per optimizer.
+fn session_timestamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().to_string())
+        .unwrap_or_default()
 }
 
 /// Vite's `moduleListContains`: an exclude entry names the dep or a parent path.
@@ -431,7 +451,7 @@ impl OptimizedDeps {
             );
             // Hashing the set it joins (sorted, so registration order is
             // moot): Vite's getDiscoveredBrowserHash over known + missing.
-            let version = browser_hash(&r.hash, discovered.keys());
+            let version = browser_hash(&r.hash, &r.session, discovered.keys());
             let meta = DepMeta {
                 url: dep_url(&file, &version),
                 file,
@@ -519,7 +539,7 @@ impl OptimizedDeps {
     ) -> Self {
         let dir = oj_cache::cache_root(root).join("deps");
         let hash = lockfile_hash(root, version, &input);
-        let short = hash[..8].to_string();
+        let session = session_timestamp();
         let (tx, rx) = watch::channel(None);
 
         // optimizeDeps.force: ignore any cached pre-bundle and always rebuild.
@@ -535,11 +555,19 @@ impl OptimizedDeps {
                     .collect();
                 (seeded, m.browser_hash.clone())
             }
-            None => (std::collections::BTreeMap::new(), short.clone()),
+            // Vite's initDepsOptimizerMetadata: a cold session's base
+            // version is salted too, since a source edit can change the dep
+            // set (and the bytes) without changing the hash.
+            None => (
+                std::collections::BTreeMap::new(),
+                browser_hash(&hash, &session, std::iter::empty()),
+            ),
         };
+        let base_version = initial_version.clone();
         let (wake, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: hash.clone(),
+            session,
             tx,
             discovered: std::sync::Mutex::new(initial_discovered),
             pending: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -556,6 +584,7 @@ impl OptimizedDeps {
             let rerun = Arc::clone(&rerun);
             let root = root.to_path_buf();
             let dir = dir.clone();
+            let base_version = base_version.clone();
             let cached_map = cached.map(|m| m.map);
             tokio::spawn(async move {
                 match cached_map {
@@ -578,7 +607,7 @@ impl OptimizedDeps {
                             &input,
                             host.as_deref(),
                             &Default::default(),
-                            &hash[..8],
+                            &base_version,
                             false,
                             Some(&publish),
                         )
@@ -599,7 +628,7 @@ impl OptimizedDeps {
                                         &input,
                                         host.as_deref(),
                                         &names,
-                                        &hash[..8],
+                                        &base_version,
                                         true,
                                         None,
                                     )
@@ -651,7 +680,7 @@ impl OptimizedDeps {
         OptimizedDeps {
             rx,
             dir,
-            version: short,
+            version: base_version,
             rerun: Some(rerun),
             link_memo: LinkMemo::default(),
         }
@@ -676,7 +705,11 @@ fn commit_initial(
 ) {
     let changed = planned.as_ref().is_some_and(|plan| !same_plan(plan, &map));
     let version = if changed {
-        let version = browser_hash(&format!("{}+committed", rerun.hash), map.keys());
+        let version = browser_hash(
+            &format!("{}+committed", rerun.hash),
+            &rerun.session,
+            map.keys(),
+        );
         for meta in map.values_mut() {
             meta.url = dep_url(&meta.file, &version);
         }
@@ -799,7 +832,7 @@ async fn rerun_once(
         return;
     }
     let names: std::collections::BTreeSet<String> = provisional.keys().cloned().collect();
-    let candidate = browser_hash(hash, names.iter());
+    let candidate = browser_hash(hash, &rerun.session, names.iter());
     let Some(new_map) = run_optimizer(root, dir, input, host, &names, &candidate, true, None).await
     else {
         // Park the batch as failed (importers recompile onto the per-file
@@ -1734,6 +1767,7 @@ mod tests {
         let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: "testhash".into(),
+            session: session_timestamp(),
             tx,
             discovered: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             pending: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -1788,6 +1822,23 @@ mod tests {
         assert_eq!(live.url, meta.url);
         let again = deps.register_missing("@scope/pkg", true).unwrap();
         assert_eq!(again.url, meta.url, "re-registration is idempotent");
+    }
+
+    #[test]
+    fn a_later_session_never_reuses_a_discovered_url() {
+        // Same hash, same discovered set, a new optimizer (a restart, or a
+        // boot after the cache was cleared): its bundle may differ, and the
+        // first session's URL is cached immutable, so the URL must differ.
+        let first = test_deps(true, vec![]);
+        let url = first
+            .register_missing("date-fns/locale", false)
+            .unwrap()
+            .url;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let second = test_deps(true, vec![]);
+        let again = second.register_missing("date-fns/locale", false).unwrap();
+        assert!(again.url.starts_with("/@oj-deps/date-fns_locale.mjs?v="));
+        assert_ne!(again.url, url);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1855,14 +1906,23 @@ mod tests {
         let set = |deps: &[&str]| -> std::collections::BTreeSet<String> {
             deps.iter().map(|d| d.to_string()).collect()
         };
-        let base = browser_hash("hash", set(&[]).iter());
-        let one = browser_hash("hash", set(&["lodash"]).iter());
-        let two = browser_hash("hash", set(&["lodash", "dayjs"]).iter());
+        let base = browser_hash("hash", "s1", set(&[]).iter());
+        let one = browser_hash("hash", "s1", set(&["lodash"]).iter());
+        let two = browser_hash("hash", "s1", set(&["lodash", "dayjs"]).iter());
         assert_eq!(base.len(), 8);
         assert_ne!(base, one, "a discovered dep bumps the version");
         assert_ne!(one, two);
         // The set is sorted: registration order cannot change the hash.
-        assert_eq!(two, browser_hash("hash", set(&["dayjs", "lodash"]).iter()));
+        assert_eq!(
+            two,
+            browser_hash("hash", "s1", set(&["dayjs", "lodash"]).iter())
+        );
+        // Vite's sessionTimestamp: another session never mints the same URL.
+        assert_ne!(base, browser_hash("hash", "s2", set(&[]).iter()));
+        assert_ne!(
+            two,
+            browser_hash("hash", "s2", set(&["lodash", "dayjs"]).iter())
+        );
     }
 
     #[test]
@@ -2358,6 +2418,7 @@ mod tests {
         let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: "testhash".into(),
+            session: session_timestamp(),
             tx,
             discovered: Default::default(),
             pending: Default::default(),
