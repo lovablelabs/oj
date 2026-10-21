@@ -718,6 +718,32 @@ pub(crate) fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Every file the root watch covers, as chokidar's initial scan records
+/// them: the root's own files and each watched top-level dir's (not the
+/// unwatched dirs, the cache dir, or what `scan_files` skips), spelled under
+/// the root's real path. Vite's chokidar calls a later event for one of
+/// these a change, never an add.
+pub fn watched_files(root: &Path) -> std::collections::HashSet<PathBuf> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let cache_base = {
+        let base = oj_cache::cache_base(&root);
+        std::fs::canonicalize(&base).unwrap_or(base)
+    };
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if is_unwatched_dir(&entry.file_name()) || path == cache_base {
+            continue;
+        }
+        if path.is_dir() {
+            scan_files(&path, &mut found);
+        } else {
+            found.push(path);
+        }
+    }
+    found.into_iter().collect()
+}
+
 /// One debounced set of changes.
 #[derive(Default)]
 struct Batch {

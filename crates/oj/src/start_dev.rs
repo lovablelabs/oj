@@ -217,7 +217,7 @@ fn start_entry_candidate(p: &Path) -> bool {
 
 // Vite's watcher distinguishes add/change/unlink; notify's batched events are
 // classified at send time: gone from disk is a delete, an add this batch saw
-// (`event_adds`) is a create, anything else an update.
+// (`KnownFiles::adds`) is a create, anything else an update.
 fn change_type(p: &Path, created: &std::collections::HashSet<PathBuf>) -> &'static str {
     if !p.exists() {
         "delete"
@@ -979,20 +979,68 @@ fn added_to_glob(
     matched(p) || real.is_some_and(|r| matched(&r))
 }
 
-/// The paths an event adds, as chokidar calls them: a create, and a path a
-/// rename brought into place (an atomic write's rename lands on its target).
-/// The files inside a directory that appeared come as the shared watcher's
-/// synthesized creates. A rename onto a module a worker graph already holds
-/// is an atomic save, which chokidar reports as a change: the plugin host
-/// reclassifies a create for a file its graphs know as an update.
-fn event_adds(ev: &notify::Event) -> Vec<PathBuf> {
-    match ev.kind {
-        notify::EventKind::Create(_) => ev.paths.clone(),
-        notify::EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
-            ev.paths.iter().filter(|p| p.is_file()).cloned().collect()
-        }
-        _ => Vec::new(),
+/// The files the watcher knows, as chokidar's watched set: the boot scan
+/// (`oj_server::watched_files`) plus every file an event has named since,
+/// keyed by real path. Chokidar calls an event for a path it knows a change,
+/// whatever the OS reported (an atomic save's rename onto a live file, an
+/// unlink and recreate inside its atomic window, FSEvents' sticky created
+/// flag), and an add for one it did not: a file renamed into place, or one
+/// inside a directory that appeared (the shared watcher's synthesized
+/// creates).
+struct KnownFiles(std::collections::HashSet<PathBuf>);
+
+impl KnownFiles {
+    fn key(p: &Path) -> PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
     }
+
+    /// The paths `ev` adds: a create or a rename's target the watcher did
+    /// not know. Every file `ev` names is known from here on.
+    fn adds(&mut self, ev: &notify::Event) -> Vec<PathBuf> {
+        let adding = matches!(
+            ev.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+        );
+        ev.paths
+            .iter()
+            .filter(|p| p.is_file() && self.0.insert(Self::key(p)) && adding)
+            .cloned()
+            .collect()
+    }
+
+    /// A settled batch's paths gone from disk are unknown again, as chokidar
+    /// drops a path on unlink: recreating one later is an add.
+    fn forget_gone(&mut self, paths: &std::collections::HashSet<PathBuf>) {
+        for p in paths.iter().filter(|p| !p.exists()) {
+            self.0.remove(p);
+            if let Some(real) = p.parent().and_then(|d| std::fs::canonicalize(d).ok()) {
+                if let Some(name) = p.file_name() {
+                    self.0.remove(&real.join(name));
+                }
+            }
+        }
+    }
+}
+
+/// The files a stored generation's globs expand to today that its closure
+/// could hold: bundle-client.mjs leaves the generated route tree and its own
+/// directory (`cache`) out of closure.json, so a glob reaching them has not
+/// grown, or every restore of such an app would miss.
+fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
+    load_glob_calls(scopes)
+        .iter()
+        .flat_map(oj_compiler::glob::GlobCall::files)
+        .filter(|f| !f.starts_with(cache) && !is_route_tree_gen(f))
+        .collect()
+}
+
+/// bundle-client.mjs's `routeTree.gen.[jt]sx?` closure filter.
+fn is_route_tree_gen(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("routeTree.gen."))
+        .is_some_and(|ext| matches!(ext, "js" | "jsx" | "ts" | "tsx"))
 }
 
 /// Whether a batch can change the client bundle: a path in the closure (the
@@ -1168,11 +1216,15 @@ fn spawn_start_watcher(
         // not changes: the client rebundle reads every source file, which
         // otherwise looked like an edit of every source file and rebuilt again.
         let mut changes = oj_server::ContentChanges::new();
+        // Scanned on this thread, so boot never waits on it: events queue on
+        // the feed meanwhile. A file created while it runs can read as known,
+        // a race chokidar's own initial scan has too.
+        let mut known = KnownFiles(oj_server::watched_files(&watch_root));
         loop {
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
             let mut paths: std::collections::HashSet<PathBuf> = match rx.recv() {
                 Ok(ev) => {
-                    created.extend(event_adds(&ev));
+                    created.extend(known.adds(&ev));
                     changes.changed_paths(&ev).into_iter().collect()
                 }
                 Err(_) => break,
@@ -1192,13 +1244,14 @@ fn spawn_start_watcher(
             loop {
                 match rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(ev) => {
-                        created.extend(event_adds(&ev));
+                        created.extend(known.adds(&ev));
                         paths.extend(changes.changed_paths(&ev));
                     }
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
+            known.forget_gone(&paths);
             if paths.is_empty() {
                 continue;
             }
@@ -2598,13 +2651,7 @@ fn bundle_client_entry_cached(
     let root = bundler.root.as_path();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
-    let glob_members = |scopes: &Path| {
-        load_glob_calls(scopes)
-            .iter()
-            .flat_map(oj_compiler::glob::GlobCall::files)
-            .collect()
-    };
-    match store.restore(cache, glob_members) {
+    match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
         Ok((stats, pinned)) => {
             let rehashed = match stats.rehashed {
                 0 => String::new(),
@@ -4370,6 +4417,7 @@ mod tests {
 
         // A directory moved into place is one event, no add itself; the
         // shared watcher follows it with a create for each file inside.
+        let mut known = KnownFiles(Default::default());
         let staged = dir.join("staged");
         std::fs::create_dir_all(staged.join("messages")).unwrap();
         std::fs::write(staged.join("messages/en.json"), "{}").unwrap();
@@ -4380,13 +4428,13 @@ mod tests {
         ))
         .add_path(moved.clone());
         assert!(
-            event_adds(&renamed).is_empty(),
+            known.adds(&renamed).is_empty(),
             "a directory is no add itself"
         );
         let inside = moved.join("messages/en.json");
         let synth = notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Any))
             .add_path(inside.clone());
-        assert_eq!(event_adds(&synth), std::slice::from_ref(&inside));
+        assert_eq!(known.adds(&synth), std::slice::from_ref(&inside));
         assert!(added_to_glob(&scopes, &closure, &inside));
         // A file renamed into place is an add; its vanished source is not.
         let target = file("src/modules/renamed/messages/it.json");
@@ -4395,11 +4443,9 @@ mod tests {
         ))
         .add_path(app.join("src/.it.json.tmp"))
         .add_path(target.clone());
-        assert_eq!(event_adds(&rename), std::slice::from_ref(&target));
-        assert_eq!(
-            change_type(&target, &event_adds(&rename).into_iter().collect()),
-            "create"
-        );
+        let adds = known.adds(&rename);
+        assert_eq!(adds, std::slice::from_ref(&target));
+        assert_eq!(change_type(&target, &adds.into_iter().collect()), "create");
 
         // A cache an older oj wrote: scan bases, matched as before.
         std::fs::write(
@@ -4414,6 +4460,124 @@ mod tests {
             &file("src/content/a/b.txt")
         ));
         assert!(!added_to_glob(&legacy, &closure, &file("src/other.json")));
+    }
+
+    // Chokidar calls an event for a path in its watched set a change, and one
+    // for a path it did not know an add, whatever the OS reported: an atomic
+    // save renamed onto a live file is an update (a lazy glob member no
+    // worker loaded must not re-expand its importer), a file renamed into
+    // place is a create, and so is one recreated after its delete settled.
+    #[test]
+    fn renames_onto_known_files_are_changes_as_in_chokidar() {
+        use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
+        use notify::{Event, EventKind};
+        let app = tmp("known-files");
+        let file = |rel: &str| {
+            let p = app.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            p
+        };
+        let live = file("src/pages/live.tsx");
+        file("node_modules/dep/index.js");
+        let mut known = KnownFiles(oj_server::watched_files(&app));
+        assert!(known.0.contains(&std::fs::canonicalize(&live).unwrap()));
+        assert!(
+            !known
+                .0
+                .iter()
+                .any(|p| p.components().any(|c| c.as_os_str() == "node_modules")),
+            "node_modules is never watched"
+        );
+        let ev = |kind, paths: &[&PathBuf]| {
+            let mut ev = Event::new(kind);
+            ev.paths = paths.iter().map(|p| (*p).clone()).collect();
+            ev
+        };
+        let rename = EventKind::Modify(ModifyKind::Name(RenameMode::Both));
+        let create = EventKind::Create(CreateKind::File);
+
+        // An editor's atomic save onto a file the scan saw.
+        let staged = file("src/pages/.live.tsx.tmp");
+        std::fs::rename(&staged, &live).unwrap();
+        let adds = known.adds(&ev(rename, &[&staged, &live]));
+        assert!(adds.is_empty(), "{adds:?}");
+        assert_eq!(change_type(&live, &adds.into_iter().collect()), "update");
+        // FSEvents' sticky created flag on a later write of the same file.
+        assert!(known.adds(&ev(create, &[&live])).is_empty());
+        // Unlinked and recreated inside one batch: chokidar's atomic change.
+        std::fs::remove_file(&live).unwrap();
+        assert!(known
+            .adds(&ev(EventKind::Remove(RemoveKind::File), &[&live]))
+            .is_empty());
+        file("src/pages/live.tsx");
+        assert!(known.adds(&ev(create, &[&live])).is_empty());
+        known.forget_gone(&[live.clone()].into());
+        assert!(
+            known.adds(&ev(create, &[&live])).is_empty(),
+            "still on disk"
+        );
+
+        // A new file renamed into place is an add, once.
+        let fresh = app.join("src/pages/fresh.tsx");
+        let staged = file("src/pages/.fresh.tsx.tmp");
+        std::fs::rename(&staged, &fresh).unwrap();
+        assert_eq!(
+            known.adds(&ev(rename, &[&staged, &fresh])),
+            std::slice::from_ref(&fresh)
+        );
+        let write = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        assert!(known.adds(&ev(write, &[&fresh])).is_empty());
+        // Deleted in a settled batch, then created again: an add.
+        std::fs::remove_file(&fresh).unwrap();
+        known.forget_gone(&[fresh.clone()].into());
+        file("src/pages/fresh.tsx");
+        assert_eq!(
+            known.adds(&ev(create, &[&fresh])),
+            std::slice::from_ref(&fresh)
+        );
+        // A file a write event named first is known: its later rename is a change.
+        let edited = file("src/pages/edited.tsx");
+        assert!(known.adds(&ev(write, &[&edited])).is_empty());
+        assert!(known.adds(&ev(rename, &[&edited])).is_empty());
+    }
+
+    // bundle-client.mjs leaves the generated route tree and its own dir out
+    // of closure.json: a glob reaching either has not grown, or a restore of
+    // such an app would miss on every boot.
+    #[test]
+    fn restore_glob_members_skip_what_the_closure_leaves_out() {
+        let app = tmp("restore-glob-members");
+        let file = |rel: &str| {
+            let p = app.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            p
+        };
+        let member = file("src/lib/a.ts");
+        file("src/routeTree.gen.ts");
+        file("src/.oj/start/manifest.ts");
+        let kept = file("src/routeTree.generated.ts");
+        let cache = app.join("src/.oj/start");
+        let scopes = app.join("glob-scopes.json");
+        let a = app.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            &scopes,
+            serde_json::json!([{"patterns": [format!("{a}/src/**/*.ts")], "exhaustive": true, "caseSensitive": true}])
+                .to_string(),
+        )
+        .unwrap();
+        let mut got = restorable_glob_members(&scopes, &cache);
+        got.sort();
+        assert_eq!(got, [member, kept]);
+        for (name, generated) in [
+            ("routeTree.gen.ts", true),
+            ("routeTree.gen.jsx", true),
+            ("routeTree.gen.d.ts", false),
+            ("routeTree.ts", false),
+        ] {
+            assert_eq!(is_route_tree_gen(Path::new(name)), generated, "{name}");
+        }
     }
 
     // The rebundle worker tracks the regen outputs' content against what the

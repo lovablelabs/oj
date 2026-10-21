@@ -2140,3 +2140,37 @@ fn created_dirs_skip_what_vite_never_watches() {
     assert_eq!(found, [top]);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// The boot scan is chokidar's initial watched set: every file the root watch
+// covers, under the root's real path, never one inside an unwatched dir.
+#[test]
+fn watched_files_cover_what_the_root_watch_covers() {
+    let root = std::env::temp_dir().join(format!("oj-watched-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let file = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        p
+    };
+    let real = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+    let want: std::collections::HashSet<PathBuf> = [
+        real(file("index.html")),
+        real(file("src/main.ts")),
+        real(file("src/dist/kept.ts")),
+        real(file(".wrangler/state/a.sqlite")),
+    ]
+    .into();
+    for rel in [
+        "node_modules/react/index.js",
+        ".git/HEAD",
+        "dist/a.js",
+        ".oj-cache/a",
+        "src/vendor/node_modules/x/index.js",
+        "src/vendor/.git/HEAD",
+    ] {
+        file(rel);
+    }
+    assert_eq!(watched_files(&root), want);
+    let _ = std::fs::remove_dir_all(&root);
+}
