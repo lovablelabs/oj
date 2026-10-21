@@ -2174,3 +2174,137 @@ fn watched_files_cover_what_the_root_watch_covers() {
     assert_eq!(watched_files(&root), want);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// Zed's reading of a rescan: an inotify overflow has no path (the whole
+// root), FSEvents' MustScanSubDirs names a subtree or an ancestor of the root
+// (the whole root), and a subtree the root watch leaves out is no rescan.
+#[test]
+fn rescan_roots_read_overflow_and_must_scan_subdirs() {
+    use notify::event::Flag;
+    use notify::{Event, EventKind};
+    let root = Path::new("/app");
+    let cache = Path::new("/app/.oj-cache");
+    let ignored = watch_ignored_patterns(root, &["generated".to_string()]);
+    let rescan = |paths: &[&str]| {
+        let mut ev = Event::new(EventKind::Other).set_flag(Flag::Rescan);
+        ev.paths = paths.iter().map(PathBuf::from).collect();
+        crate::watch::rescan_roots(&ignored, root, cache, &ev)
+    };
+    assert_eq!(rescan(&[]), [PathBuf::from("/app")], "inotify overflow");
+    assert_eq!(rescan(&["/"]), [PathBuf::from("/app")], "an ancestor");
+    assert_eq!(
+        rescan(&["/app/src/routes"]),
+        [PathBuf::from("/app/src/routes")]
+    );
+    for skipped in [
+        "/app/node_modules/react",
+        "/app/src/pkg/node_modules",
+        "/app/.git",
+        "/app/dist",
+        "/app/.oj-cache/start",
+        "/app/generated",
+        "/elsewhere",
+    ] {
+        assert!(rescan(&[skipped]).is_empty(), "{skipped}");
+    }
+    let mut plain = Event::new(EventKind::Other);
+    plain.paths = vec![PathBuf::from("/app/src")];
+    assert!(crate::watch::rescan_roots(&ignored, root, cache, &plain).is_empty());
+
+    let collapsed = crate::watch::collapse_rescans(
+        [
+            "/app/src/a",
+            "/app/src",
+            "/app/src-b",
+            "/app/lib/x",
+            "/app/lib/x",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect(),
+    );
+    assert_eq!(
+        collapsed,
+        ["/app/lib/x", "/app/src", "/app/src-b"].map(PathBuf::from)
+    );
+}
+
+// A rescan diffs the subtree against the watcher's snapshot, as Zed's does:
+// unknown files are adds (a moved-in tree keeps its old mtimes), known files
+// gone are removals, and known files whose stamp moved are edits, a rename
+// onto one included (it keeps the old mtime, the rename moves the ctime).
+// Untouched files, written moments before the snapshot, and ignored dirs
+// stay silent.
+#[test]
+fn rescan_changes_diff_against_the_known_files() {
+    let base = std::env::temp_dir().join(format!("oj-rescan-diff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("app")).unwrap();
+    let base = std::fs::canonicalize(&base).unwrap();
+    let root = base.join("app");
+    let write = |p: &Path, body: &str| {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    let old = SystemTime::now() - Duration::from_secs(3600);
+    let age = |p: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(old)
+            .unwrap()
+    };
+    for rel in [
+        "src/edited.ts",
+        "src/gone.ts",
+        "src/replaced.ts",
+        "src/untouched.ts",
+        "index.html",
+    ] {
+        write(&root.join(rel), "x");
+    }
+    let staged = base.join("staged/tree/inner.ts");
+    write(&staged, "x");
+    age(&staged);
+    let cache = root.join(".oj-cache");
+    let known: std::collections::HashMap<PathBuf, SystemTime> = crate::watch::watched_files(&root)
+        .into_iter()
+        .map(|p| {
+            let at = crate::watch::stamp(&p).unwrap();
+            (p, at)
+        })
+        .collect();
+    assert_eq!(known.len(), 5);
+
+    std::thread::sleep(Duration::from_millis(20));
+    write(&root.join("src/edited.ts"), "y");
+    std::fs::remove_file(root.join("src/gone.ts")).unwrap();
+    let tmp = root.join("src/.replaced.ts.tmp");
+    write(&tmp, "z");
+    age(&tmp);
+    std::fs::rename(&tmp, root.join("src/replaced.ts")).unwrap();
+    let added = root.join("src/added.ts");
+    write(&added, "n");
+    age(&added);
+    std::fs::rename(staged.parent().unwrap(), root.join("src/moved")).unwrap();
+    write(&root.join("node_modules/dep/index.js"), "x");
+    write(&root.join("src/pkg/node_modules/a.js"), "x");
+
+    let found = crate::watch::rescan_changes(std::slice::from_ref(&root), &root, &cache, &known);
+    assert_eq!(
+        found.added,
+        [root.join("src/added.ts"), root.join("src/moved/inner.ts")]
+    );
+    assert_eq!(
+        found.changed,
+        [root.join("src/edited.ts"), root.join("src/replaced.ts")]
+    );
+    assert_eq!(found.removed, [root.join("src/gone.ts")]);
+
+    // A subtree rescan reports only under it.
+    let sub = crate::watch::rescan_changes(&[root.join("src/moved")], &root, &cache, &known);
+    assert_eq!(sub.added, [root.join("src/moved/inner.ts")]);
+    assert!(sub.changed.is_empty() && sub.removed.is_empty());
+    let _ = std::fs::remove_dir_all(&base);
+}
