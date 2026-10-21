@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { settles, sleep, waitUp } from "./util.mjs";
+import { rmrf, settles, sleep, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
@@ -39,16 +39,19 @@ const format = path.join(app, "src", "lib", "format.ts");
 const sheet = path.join(app, "src", "widgets", "hot-sheet.css");
 const draft = path.join(app, "src", "content", "draft.txt");
 const miniflare = path.join(app, ".wrangler", "state", "v3", "trace-store", "a.sqlite");
+const stray = path.join(app, "stray-notes.txt");
 const originals = new Map([widget, format].map((f) => [f, fs.readFileSync(f, "utf8")]));
 const restore = () => {
   for (const [f, src] of originals) fs.writeFileSync(f, src);
   fs.rmSync(sheet, { force: true });
   fs.rmSync(draft, { force: true });
+  fs.rmSync(stray, { force: true });
   fs.rmSync(path.join(app, ".wrangler"), { recursive: true, force: true });
 };
 process.on("exit", restore);
 
-fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+// The async rm: a previous run's server can still be landing cache writes.
+await rmrf(path.join(app, ".oj-cache"));
 let log = "";
 // Its own process group: the bundler and plugin host children go with it.
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -192,6 +195,21 @@ try {
   // the bundle imports: that update applies in place too.
   await sleep(5000);
   must((await page.evaluate(() => window.__hotProbe)) === "kept", "the manifest rewrite reloaded the page");
+  // That rewrite changed files the server render had imported, behind the
+  // watcher's back. An unrelated file event next (an editor's or Finder's
+  // stray write) names nothing any module graph knows, so it reloads
+  // nothing: Vite acts on an event through that event's own file alone.
+  const strayMark = log.length;
+  fs.writeFileSync(stray, "notes");
+  must(
+    await settles(() => log.slice(strayMark).includes("stray-notes.txt"), { timeoutMs: 30000, pollMs: 50 }),
+    "the watcher never reported the stray file",
+  );
+  await sleep(3000);
+  must(
+    (await page.evaluate(() => window.__hotProbe)) === "kept",
+    `an unrelated file event reloaded the page:\n${log.slice(strayMark)}`,
+  );
 
   // An edit no module accepts (a plain function the route imports): the page
   // reloads into the fresh bundle.

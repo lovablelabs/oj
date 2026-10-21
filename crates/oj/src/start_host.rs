@@ -1495,6 +1495,20 @@ impl StartEngine {
         dropped > 0
     }
 
+    /// A watch batch's revalidation: drops every stale record, as
+    /// [`revalidate`](Self::revalidate) does, but reports only whether a
+    /// changed file of the batch was one the engine served (the caller
+    /// reloads the browser then). A record that went stale behind the
+    /// watcher's back is still re-imported.
+    pub async fn revalidate_for(&self, changed: &[PathBuf]) -> bool {
+        let (dropped, hit) = self.host.graph().invalidate_for(changed);
+        if dropped > 0 {
+            self.host.graph().bump(&self.entry_id);
+        }
+        self.maybe_respawn().await;
+        hit
+    }
+
     async fn maybe_respawn(&self) {
         if !self.host.graph().should_respawn() {
             return;

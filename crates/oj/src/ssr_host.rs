@@ -131,6 +131,33 @@ impl VersionGraph {
     /// re-imports fresh instances along the chain. Removing a record as it is
     /// visited IS the visited set: a re-pushed id finds no record and stops.
     pub(crate) fn invalidate(&self) -> usize {
+        self.invalidate_seeded().0
+    }
+
+    /// [`invalidate`](Self::invalidate), answering also whether a changed
+    /// file the walk started from is one of `changed` (a watch batch's paths,
+    /// either spelling). Vite acts on a watcher event through the modules of
+    /// that event's file alone (`getModulesByFile`): a recorded file that
+    /// changed without the watcher reporting it (an output oj itself rewrote,
+    /// an ignored path) is re-imported, but is no hit for the batch.
+    pub(crate) fn invalidate_for(&self, changed: &[PathBuf]) -> (usize, bool) {
+        let (dropped, seeds) = self.invalidate_seeded();
+        let spelled: HashSet<PathBuf> = changed
+            .iter()
+            .flat_map(|p| [Some(p.clone()), std::fs::canonicalize(p).ok()])
+            .flatten()
+            .collect();
+        let hit = seeds.iter().any(|id| {
+            let file = Path::new(id.split('?').next().unwrap_or(id));
+            spelled.contains(file)
+                || std::fs::canonicalize(file).is_ok_and(|real| spelled.contains(&real))
+        });
+        (dropped, hit)
+    }
+
+    /// The walk behind both: how many records it dropped, and the ids of the
+    /// changed files it started from.
+    fn invalidate_seeded(&self) -> (usize, Vec<String>) {
         // The seed scan stats every recorded file; do that OUTSIDE the lock,
         // so resolves never queue behind hundreds of filesystem calls. A
         // module that loads between snapshot and walk is caught by the next
@@ -143,11 +170,12 @@ impl VersionGraph {
                 .map(|(id, rec)| (id.clone(), rec.mtime))
                 .collect()
         };
-        let mut stack: Vec<String> = recorded
+        let seeds: Vec<String> = recorded
             .into_iter()
             .filter(|(id, mtime)| mtime_of(id) != *mtime)
             .map(|(id, _)| id)
             .collect();
+        let mut stack = seeds.clone();
         let mut graph = self.graph.lock().unwrap();
         let mut dropped = 0;
         while let Some(id) = stack.pop() {
@@ -159,7 +187,7 @@ impl VersionGraph {
             stack.extend(rec.importers);
         }
         graph.stale += dropped;
-        dropped
+        (dropped, seeds)
     }
 
     pub(crate) fn should_respawn(&self) -> bool {
@@ -599,6 +627,48 @@ mod tests {
     // bumps itself and every transitive importer (their next specifiers are
     // new), an explicit bump forces one id fresh, and untouched subtrees keep
     // their versions (cached instances).
+    // Vite acts on a watcher event through that event's file's modules: a
+    // recorded file rewritten behind the watcher's back (an output oj wrote
+    // itself, like the client manifest after a hot update catches up) is
+    // re-imported on the next batch, but is no hit for a batch that never
+    // named it, so an unrelated event cannot reload the page.
+    #[test]
+    fn a_batch_hits_only_through_its_own_paths() {
+        let dir = std::env::temp_dir().join(format!("oj-vgraph-for-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (manifest, page) = (dir.join("manifest.json"), dir.join("page.ts"));
+        let stray = dir.join(".DS_Store");
+        for f in [&manifest, &page] {
+            std::fs::write(f, "1").unwrap();
+        }
+        let graph = VersionGraph::default();
+        for f in [&manifest, &page] {
+            let id = f.to_string_lossy().into_owned();
+            let _ = graph.edge_specifier(&id, "entry".into());
+            graph.record_loaded(&id);
+        }
+        let touch = |f: &Path| {
+            let t = std::fs::metadata(f).unwrap().modified().unwrap()
+                + std::time::Duration::from_secs(5);
+            std::fs::File::options()
+                .write(true)
+                .open(f)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+
+        touch(&manifest);
+        let (dropped, hit) = graph.invalidate_for(&[stray]);
+        assert_eq!(dropped, 1, "the rewritten output is still re-imported");
+        assert!(!hit, "an unrelated batch hit through a file it never named");
+
+        touch(&page);
+        assert_eq!(graph.invalidate_for(std::slice::from_ref(&page)), (1, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn version_graph_invalidates_changed_files_and_their_importers() {
         let dir = std::env::temp_dir().join(format!("oj-vgraph-{}", std::process::id()));

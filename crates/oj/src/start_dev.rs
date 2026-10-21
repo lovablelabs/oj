@@ -1472,12 +1472,12 @@ async fn rebundle_worker(
                 state.engine.reload().await;
                 true
             } else {
-                state.engine.revalidate().await
+                state.engine.revalidate_for(&paths).await
             }
         } else if no_invalidates_sent {
             // Lazy with the middleware down: the fallback runner is serving,
             // so its graph is the only reload signal left.
-            state.engine.revalidate().await
+            state.engine.revalidate_for(&paths).await
         } else {
             false
         };
