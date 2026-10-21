@@ -5,6 +5,13 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.43] - 2026-10-21
+
+### Fixed
+
+- A TanStack Start app whose documents are rendered in workerd (`cloudflare({ viteEnvironment: { name: "ssr" } })`) keeps client edits in place. Those pages load TanStack's unbundled dev client entry and take each edit as an HMR update, as under Vite, but oj rebuilt its own Start client bundle on every edit, which no such page loads, and then reloaded the page, throwing the update away. oj no longer builds that bundle, at boot or on edits, unless a page rendered by oj's own runner loads it. In that case it builds once the plugin host shows that no worker environment renders the documents, before the first document asks for it. A route-tree change still reloads, as in Vite.
+- In TanStack Start dev, a created file triggers a client rebundle only when an `import.meta.glob` the bundle expanded actually matches it, with the glob's own case, dotfile and `node_modules` rules, as Vite's glob `hotUpdate` matches added files. Any file created under a glob's base directory used to rebundle, including an editor's or `sed`'s temp file and miniflare's state writes. A file created and removed within one batch no longer counts.
+
 ## [0.2.42] - 2026-10-21
 
 ### Fixed
