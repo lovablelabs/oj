@@ -217,7 +217,7 @@ version = "0.97.0"
 features = ["sync"]
 
 [dependencies.notify]
-version = "8.2.0"
+version = "=9.0.0-rc.6"
 
 [dependencies.once_cell]
 version = "1.17.1"
