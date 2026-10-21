@@ -2024,3 +2024,23 @@ fn start_assets_sibling_imports_are_written() {
     }
     assert!(names.contains("vite-config-node.mjs"));
 }
+
+// @cloudflare/vite-plugin (1.55+) adds `**/.wrangler/**` to the resolved
+// `server.watch.ignored` (wrangler-watch-ignore.ts), so miniflare's state
+// writes on every SSR request never reach the watcher's consumers.
+#[test]
+fn the_cloudflare_plugin_ignore_covers_miniflare_state() {
+    let root = Path::new("/repo/web");
+    let pats = watch_ignored_patterns(root, &["**/.wrangler/**".to_string()]);
+    for p in [
+        "/repo/web/.wrangler/state/v3/observability/miniflare-wobs-trace-store/abc.sqlite",
+        "/repo/web/.wrangler/state/v3/d1/x.sqlite-wal",
+    ] {
+        assert!(is_watch_ignored(&pats, root, Path::new(p)), "{p}");
+    }
+    assert!(!is_watch_ignored(
+        &pats,
+        root,
+        Path::new("/repo/web/src/routes/index.tsx")
+    ));
+}

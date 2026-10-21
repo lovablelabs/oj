@@ -357,9 +357,9 @@ async function main() {
   phase("client bundle: plugin container loaded");
 
   const cssUrls = [];
-  // Every import.meta.glob scan base this bundle expanded; the dev rebundle
-  // gate rebundles for a file CREATED under one (the glob's expansion grows),
-  // and for no other create, mirroring Vite's add handling.
+  // Every import.meta.glob this bundle expanded, as match specs; the dev
+  // rebundle gate rebundles for a CREATED file one matches (the glob's
+  // expansion grows), and for no other create, mirroring Vite's add handling.
   const globScopes = new Set();
 
   const visitedIds = new Set();
@@ -644,7 +644,7 @@ async function main() {
     })
     .sort();
   writeFileSync(join(HERE, "closure.json"), JSON.stringify(closureFiles));
-  writeFileSync(join(HERE, "glob-scopes.json"), JSON.stringify([...liveGlobScopes].sort()));
+  writeFileSync(join(HERE, "glob-scopes.json"), JSON.stringify([...liveGlobScopes].sort().map((s) => JSON.parse(s))));
   if (live) live.closure = new Set(closureFiles);
 
   phase("client bundle: closure written");

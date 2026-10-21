@@ -37,10 +37,14 @@ const must = (cond, msg) => {
 const widget = path.join(app, "src", "widgets", "glob-widget.jsx");
 const format = path.join(app, "src", "lib", "format.ts");
 const sheet = path.join(app, "src", "widgets", "hot-sheet.css");
+const draft = path.join(app, "src", "content", "draft.txt");
+const miniflare = path.join(app, ".wrangler", "state", "v3", "trace-store", "a.sqlite");
 const originals = new Map([widget, format].map((f) => [f, fs.readFileSync(f, "utf8")]));
 const restore = () => {
   for (const [f, src] of originals) fs.writeFileSync(f, src);
   fs.rmSync(sheet, { force: true });
+  fs.rmSync(draft, { force: true });
+  fs.rmSync(path.join(app, ".wrangler"), { recursive: true, force: true });
 };
 process.on("exit", restore);
 
@@ -88,26 +92,49 @@ try {
     "the dev server did not report a hot update",
   );
 
-  // An edit batched with a file that came and went under a glob's scan base
-  // (GNU sed's temp, an editor's safe-write): gone before the batch settles,
-  // it is in no glob's expansion, so the edit still patches in place.
+  // Vite re-expands a glob only for an added file its patterns match. An
+  // edit batched with a create the fixture's `../content/*.json` globs never
+  // expand to still patches in place: a file under their scan base they do
+  // not match, and a matching one that came and went before the batch
+  // settled (GNU sed's temp, an editor's safe-write).
   const hotCount = () => log.split("oj start: hot updated").length - 1;
-  const before = hotCount();
-  const mark = log.length;
-  const temp = path.join(app, "src", "content", "sedf1aa6r");
-  fs.writeFileSync(temp, "{}");
-  fs.writeFileSync(widget, originals.get(widget).replace('"jsxglob:"', '"jsxtemp:"'));
-  fs.rmSync(temp);
-  await page.waitForSelector('[data-testid="glob-jsx"]:has-text("jsxtemp:")', { timeout: 30000 });
-  must(
-    await settles(() => hotCount() > before || /oj start: (rebuilt|updated)/.test(log.slice(mark)), {
-      timeoutMs: 30000,
-      pollMs: 50,
-    }),
-    "the dev server did not report the batch",
-  );
-  must(hotCount() > before, `a vanished temp file turned the edit into a rebuild:\n${log.slice(mark)}`);
-  must((await page.evaluate(() => window.__hotProbe)) === "kept", "the edit with a temp file reloaded the page");
+  for (const [label, create] of [
+    ["a create no glob pattern matches", () => fs.writeFileSync(draft, "draft")],
+    [
+      // Miniflare writes its state on SSR requests; @cloudflare/vite-plugin
+      // ignores it from 1.55 on, and before that Vite's graphs never knew it.
+      "a write outside every module graph and glob (miniflare state)",
+      () => {
+        fs.mkdirSync(path.dirname(miniflare), { recursive: true });
+        fs.writeFileSync(miniflare, String(Date.now()));
+      },
+    ],
+    [
+      "a matching temp gone before the batch settled",
+      () => {
+        const temp = path.join(app, "src", "content", "sedf1aa6r.json");
+        fs.writeFileSync(temp, "{}");
+        return () => fs.rmSync(temp);
+      },
+    ],
+  ]) {
+    const before = hotCount();
+    const mark = log.length;
+    const text = `jsx${before}:`;
+    const after = create();
+    fs.writeFileSync(widget, originals.get(widget).replace('"jsxglob:"', JSON.stringify(text)));
+    after?.();
+    await page.waitForSelector(`[data-testid="glob-jsx"]:has-text("${text}")`, { timeout: 30000 });
+    must(
+      await settles(() => hotCount() > before || /oj start: (rebuilt|updated)/.test(log.slice(mark)), {
+        timeoutMs: 30000,
+        pollMs: 50,
+      }),
+      `${label}: the dev server did not report the batch`,
+    );
+    must(hotCount() > before, `${label} turned the edit into a rebuild:\n${log.slice(mark)}`);
+    must((await page.evaluate(() => window.__hotProbe)) === "kept", `${label} reloaded the page`);
+  }
 
   // import.meta.hot.send reaches a plugin's server.ws.on, and its
   // server.ws.send reply reaches the page's import.meta.hot.on.

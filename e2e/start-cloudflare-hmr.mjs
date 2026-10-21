@@ -14,7 +14,10 @@
 // module graph, so it changes none of that.
 //
 // oj rebuilt its own Start client bundle on every edit, which no page loads
-// here, and then reloaded the page, throwing the hot update away.
+// here, and then reloaded the page, throwing the hot update away; it also
+// built that bundle at boot. It is now built only for a page that loads it:
+// one oj's own runner renders, as when the config names the plugin but no
+// worker environment serves the documents.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -164,9 +167,9 @@ function makeApp() {
 // The Start watcher's verdict on a batch: its last line per run.
 const VERDICT = /oj start: (hot updated|change outside[^\n]*|rebuilt[^\n]*|updated[^\n]*|client updates[^\n]*)/g;
 
-async function main() {
-  installCloudflareDeps();
-  makeApp();
+// Boots `oj dev` on the app, waits for `/` to answer with `marker`, runs
+// `phase(base, log, browser)`, and tears the server down.
+async function served(label, marker, phase) {
   let log = "";
   const srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
     cwd: app,
@@ -174,99 +177,46 @@ async function main() {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" },
   });
+  ojGroup = srv.pid;
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
   const exited = new Promise((r) => srv.once("exit", r));
-  let browser;
+  const browser = await chromium.launch();
   const pageErrors = [];
   try {
+    let port = null;
     await settles(
       () => {
-        const bound = parseBoundPort(log);
-        if (bound) PORT = bound;
-        return srv.exitCode != null || Boolean(bound);
+        port = parseBoundPort(log);
+        return srv.exitCode != null || Boolean(port);
       },
       { timeoutMs: 60000, pollMs: 250 },
     );
-    const base = `http://127.0.0.1:${PORT}`;
+    must(port, `${label}: oj never bound a port:\n${log.slice(-4000)}`);
+    const base = `http://127.0.0.1:${port}`;
     let up = false;
     await settles(
       async () => {
         if (srv.exitCode != null) return true;
         try {
           const res = await fetch(`${base}/`);
-          up = res.status === 200 && (await res.text()).includes("fixture-edition");
+          up = res.status === 200 && (await res.text()).includes(marker);
         } catch {}
         return up;
       },
       { timeoutMs: 120000, pollMs: 500 },
     );
-    must(up, `the worker never rendered /:\n${log.slice(-4000)}`);
-
-    browser = await chromium.launch();
+    must(up, `${label}: / never rendered:\n${log.slice(-4000)}`);
     const page = await browser.newPage();
     page.on("pageerror", (e) => pageErrors.push(e.message));
     page.on("console", (m) => m.type() === "error" && pageErrors.push(m.text()));
-    await page.goto(`${base}/`);
-    const scripts = await page.$$eval("script[src]", (s) => s.map((x) => x.getAttribute("src")));
-    must(
-      scripts.some((s) => s.includes("virtual:tanstack-start-dev-client-entry")),
-      `the worker document should load TanStack's dev client entry: ${scripts.join(" ")}`,
-    );
-    await page.waitForSelector('[data-testid="mounted"]', { timeout: 60000 });
-    await page.locator('[data-testid="counter"]').click();
-    await page.waitForFunction(
-      () => document.querySelector('[data-testid="counter"]')?.textContent === "count: 1",
-      null,
-      {
-        timeout: 30000,
-      },
-    );
-    must((await page.textContent('[data-testid="catalogs"]')) === "catalog-ok", "the glob catalogs did not render");
-    const origin = await page.evaluate(() => performance.timeOrigin);
-
-    // One edit, then one edit batched with a sed temp under the glob's scan
-    // base that is gone again before the batch settles.
-    const banner = path.join(app, BANNER);
-    const edits = [
-      ["banner-before", "banner-first", false],
-      ["banner-first", "banner-second", true],
-    ];
-    for (const [from, to, withTemp] of edits) {
-      const mark = log.length;
-      const verdicts = () => [...log.slice(mark).matchAll(VERDICT)].map((m) => m[0]);
-      if (withTemp) {
-        const temp = path.join(path.dirname(banner), "sedf1aa6r");
-        fs.writeFileSync(temp, fs.readFileSync(banner, "utf8").replaceAll(from, to));
-        fs.renameSync(temp, banner);
-      } else {
-        fs.writeFileSync(banner, fs.readFileSync(banner, "utf8").replaceAll(from, to));
-      }
-      await page.waitForFunction((t) => document.querySelector('[data-testid="banner"]')?.textContent === t, to, {
-        timeout: 30000,
-      });
-      // The edit is on screen; let the Start watcher finish its run.
-      const done = await settles(() => verdicts().length > 0, { timeoutMs: 60000, pollMs: 200 });
-      must(done !== false && verdicts().length > 0, `no Start watcher verdict after ${to}:\n${log.slice(mark)}`);
-      await sleep(1500);
-      const after = log.slice(mark);
-      must(!after.includes("client bundling"), `${to}: the edit rebundled the Start client no page loads:\n${after}`);
-      must(!/reloading/.test(after), `${to}: the edit reloaded the page:\n${after}`);
-      must(
-        (await page.evaluate(() => performance.timeOrigin)) === origin,
-        `${to}: the page reloaded (verdicts: ${verdicts().join(" | ")})`,
-      );
-      must((await page.textContent('[data-testid="counter"]')) === "count: 1", `${to}: the page lost its state`);
-      console.log(`start-cloudflare-hmr: ${to} hot-updated in place (${verdicts().join(" | ")})`);
-    }
-    console.log("\nSTART CLOUDFLARE HMR PASSED");
+    await phase(base, () => log, page);
   } catch (e) {
-    console.error(
-      `\nSTART CLOUDFLARE HMR FAILED: ${e.message}\n--- browser errors ---\n${pageErrors.join("\n")}\n--- oj log (tail) ---\n${log.slice(-3000)}`,
+    throw new Error(
+      `${label}: ${e.message}\n--- browser errors ---\n${pageErrors.join("\n")}\n--- oj log (tail) ---\n${log.slice(-3000)}`,
     );
-    process.exitCode = 1;
   } finally {
-    await browser?.close();
+    await browser.close();
     try {
       process.kill(-srv.pid, "SIGTERM");
     } catch {}
@@ -276,8 +226,130 @@ async function main() {
       } catch {}
     }, 2000).unref();
     await exited;
-    if (!process.env.OJ_E2E_KEEP) fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 
-await main();
+// Whether a Start client bundler runs under this test's oj (its process
+// group, `detached` above).
+let ojGroup = null;
+function bundlerRunning() {
+  const rows = execSync("ps -A -o pgid=,command=", { encoding: "utf8" }).split("\n");
+  return rows.some((r) => {
+    const [pgid, ...cmd] = r.trim().split(/\s+/);
+    return Number(pgid) === ojGroup && cmd.join(" ").includes("bundle-client");
+  });
+}
+
+async function hydrate(page, base) {
+  await page.goto(`${base}/`);
+  await page.waitForSelector('[data-testid="mounted"]', { timeout: 60000 });
+  await page.locator('[data-testid="counter"]').click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="counter"]')?.textContent === "count: 1",
+    null,
+    {
+      timeout: 30000,
+    },
+  );
+}
+
+// The worker serves every document: the page runs the client module graph,
+// edits apply in place, and the Start client is never bundled.
+async function workerDocuments(base, log, page) {
+  await hydrate(page, base);
+  const scripts = await page.$$eval("script[src]", (s) => s.map((x) => x.getAttribute("src")));
+  must(
+    scripts.some((s) => s.includes("virtual:tanstack-start-dev-client-entry")),
+    `the worker document should load TanStack's dev client entry: ${scripts.join(" ")}`,
+  );
+  must((await page.textContent('[data-testid="catalogs"]')) === "catalog-ok", "the glob catalogs did not render");
+  const origin = await page.evaluate(() => performance.timeOrigin);
+
+  // One edit, then one written through a sed temp under the glob's scan base.
+  const banner = path.join(app, BANNER);
+  for (const [from, to, withTemp] of [
+    ["banner-before", "banner-first", false],
+    ["banner-first", "banner-second", true],
+  ]) {
+    const mark = log().length;
+    const verdicts = () => [...log().slice(mark).matchAll(VERDICT)].map((m) => m[0]);
+    if (withTemp) {
+      const temp = path.join(path.dirname(banner), "sedf1aa6r");
+      fs.writeFileSync(temp, fs.readFileSync(banner, "utf8").replaceAll(from, to));
+      fs.renameSync(temp, banner);
+    } else {
+      fs.writeFileSync(banner, fs.readFileSync(banner, "utf8").replaceAll(from, to));
+    }
+    await page.waitForFunction((t) => document.querySelector('[data-testid="banner"]')?.textContent === t, to, {
+      timeout: 30000,
+    });
+    // The edit is on screen; let the Start watcher finish its run.
+    await settles(() => verdicts().length > 0, { timeoutMs: 60000, pollMs: 200 });
+    must(verdicts().length > 0, `no Start watcher verdict after ${to}:\n${log().slice(mark)}`);
+    await sleep(1500);
+    const after = log().slice(mark);
+    must(!/reloading/.test(after), `${to}: the edit reloaded the page:\n${after}`);
+    must(
+      (await page.evaluate(() => performance.timeOrigin)) === origin,
+      `${to}: the page reloaded (verdicts: ${verdicts().join(" | ")})`,
+    );
+    must((await page.textContent('[data-testid="counter"]')) === "count: 1", `${to}: the page lost its state`);
+    console.log(`start-cloudflare-hmr: ${to} hot-updated in place (${verdicts().join(" | ")})`);
+  }
+  must(!/client bundl(ing|ed)/.test(log()), `the Start client was bundled though no page loads it:\n${log()}`);
+  // Nor is the bundler process started, which holds the bundle's memory.
+  must(!bundlerRunning(), "a Start client bundler process is running though no page loads its bundle");
+  console.log("start-cloudflare-hmr: worker documents, the Start client never bundled");
+}
+
+// The config names the plugin but no worker environment renders: oj's runner
+// serves the document, whose page loads the Start bundle, built for it on
+// that first request.
+async function runnerDocuments(base, log, page) {
+  await hydrate(page, base);
+  const scripts = await page.$$eval("script[src]", (s) => s.map((x) => x.getAttribute("src")));
+  must(
+    scripts.some((s) => s.includes("/@oj-start/client-entry.js")),
+    `the runner document should load the Start bundle: ${scripts.join(" ")}`,
+  );
+  // Not at boot: on the first document, once the server listens.
+  const listening = log().indexOf("oj dev (");
+  const bundling = log().search(/client bundl(ing|ed)/);
+  must(
+    listening !== -1 && bundling > listening,
+    `the Start bundle should be built for the first runner document, not at boot (listening@${listening}, bundling@${bundling})`,
+  );
+  must(
+    (await page.textContent('[data-testid="banner"]')) === "banner-second",
+    "the runner page's bundle missed edits made while it was deferred",
+  );
+  console.log("start-cloudflare-hmr: runner documents, the Start bundle built for the first one and hydrates");
+}
+
+try {
+  installCloudflareDeps();
+  makeApp();
+  await served("worker documents", "fixture-edition", workerDocuments);
+  const cfg = path.join(app, "vite.config.ts");
+  fs.writeFileSync(
+    cfg,
+    "// Deployed with @cloudflare/vite-plugin; dev renders in Node.\n" +
+      fs.readFileSync(path.join(fixture, "vite.config.ts"), "utf8"),
+  );
+  fs.writeFileSync(
+    path.join(app, "src", "server", "data.ts"),
+    [
+      'import { createServerFn } from "@tanstack/react-start";',
+      "",
+      'export const getEdition = createServerFn({ method: "GET" }).handler(async () => "node-edition");',
+      "",
+    ].join("\n"),
+  );
+  await served("runner documents", "node-edition", runnerDocuments);
+  console.log("\nSTART CLOUDFLARE HMR PASSED");
+} catch (e) {
+  console.error(`\nSTART CLOUDFLARE HMR FAILED: ${e.message}`);
+  process.exitCode = 1;
+} finally {
+  if (!process.env.OJ_E2E_KEEP) fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+}

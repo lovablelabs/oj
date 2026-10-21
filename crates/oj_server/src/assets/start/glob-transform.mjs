@@ -108,29 +108,40 @@ export function globBase(absGlob) {
   return starIdx === -1 ? dirname(absGlob) : absGlob.slice(0, absGlob.lastIndexOf("/", starIdx));
 }
 
-function matchPattern(absGlob, exhaustive = false, caseSensitive = true) {
+// What a file must satisfy to be in a glob's expansion, as data: the dev
+// rebundle gate (start_dev.rs `GlobScope`) applies the same spec to created
+// files that the expansion below applies to the files it walks. Vite matches
+// added files against each glob with the picomatch options it expanded with
+// (`dot: !!exhaustive`, `**/node_modules/**` ignored unless exhaustive).
+export function globSpec(absGlob, exhaustive = false, caseSensitive = true) {
   absGlob = absGlob.split(sep).join("/");
   const base = globBase(absGlob);
   // Vite: `caseSensitive: false` matches with nocase (an `Icon.svg` pattern
   // finds `icon.svg`).
-  const re = globToRegExp(absGlob, caseSensitive ? "" : "i");
-  const explicitHidden = absGlob
+  const re = globToRegExp(absGlob);
+  // A literal dot segment in the pattern still matches a hidden part.
+  const hidden = absGlob
     .slice(base.length + 1)
     .split("/")
     .filter((part) => part.startsWith("."))
-    .map((part) => globToRegExp(part));
+    .map((part) => globToRegExp(part).source);
+  return { re: re.source, nocase: !caseSensitive, base, exhaustive, hidden };
+}
+
+export function specMatches(spec, file) {
+  const normalized = file.split(sep).join("/");
+  if (!new RegExp(spec.re, spec.nocase ? "i" : "").test(normalized)) return false;
+  if (spec.exhaustive) return true;
+  const parts = normalized.slice(spec.base.length + 1).split("/");
+  if (parts.includes("node_modules")) return false;
+  return parts.every((part) => !part.startsWith(".") || spec.hidden.some((h) => new RegExp(h).test(part)));
+}
+
+function matchPattern(absGlob, exhaustive = false, caseSensitive = true) {
+  const spec = globSpec(absGlob, exhaustive, caseSensitive);
   const all = [];
-  walk(base.split("/").join(sep), all);
-  return all.filter((f) => {
-    const normalized = f.split(sep).join("/");
-    if (!re.test(normalized)) return false;
-    // Vite globs with `dot: !!exhaustive` and ignores node_modules unless
-    // `exhaustive: true`; a literal dot segment in the pattern still matches.
-    if (exhaustive) return true;
-    const parts = normalized.slice(base.length + 1).split("/");
-    if (parts.includes("node_modules")) return false;
-    return parts.every((part) => !part.startsWith(".") || explicitHidden.some((pattern) => pattern.test(part)));
-  });
+  walk(spec.base.split("/").join(sep), all);
+  return all.filter((f) => specMatches(spec, f));
 }
 
 const toRel = (fileDir, abs) => {
@@ -179,11 +190,11 @@ function normalizeOptions(opts) {
   return out;
 }
 
-// `scopes` (a Set, optional): collects every include pattern's scan base, the
-// directories where a CREATED file can change a glob's expansion. The dev
-// rebundle gate consumes them: Vite re-expands glob importers when a file is
-// added under a globbed scope, and nothing else about a new file changes a
-// bundle whose inputs all resolved.
+// `scopes` (a Set, optional): collects each glob's match specs (JSON of
+// `{ include, exclude }`, see `globSpec`), what a CREATED file must match to
+// change the glob's expansion. The dev rebundle gate consumes them: Vite
+// re-expands a glob's importer when an added file matches its patterns, and
+// nothing else about a new file changes a bundle whose inputs all resolved.
 export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? process.cwd(), scopes = null) {
   if (!code.includes("import.meta.glob")) return code;
   const fileDir = dirname(filePath);
@@ -231,7 +242,10 @@ export function transformGlob(code, filePath, root = process.env.OJ_APP_ROOT ?? 
     const caseSensitive = opts.caseSensitive !== false;
     const base = typeof opts.base === "string" ? opts.base : null;
     const isRelative = patterns.every((p) => ".!".includes(p[0]));
-    if (scopes) for (const p of includes) scopes.add(globBase(absGlobOf(p, fileDir, root, base)));
+    if (scopes) {
+      const spec = (p) => globSpec(absGlobOf(p, fileDir, root, base), exhaustive, caseSensitive);
+      scopes.add(JSON.stringify({ include: includes.map(spec), exclude: excludes.map(spec) }));
+    }
     const match = (p) => matchPattern(absGlobOf(p, fileDir, root, base), exhaustive, caseSensitive);
     const exclude = new Set(excludes.flatMap(match));
     const files = [...new Set(includes.flatMap(match))].filter((f) => !exclude.has(f) && f !== filePath).sort();
