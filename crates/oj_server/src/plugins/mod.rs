@@ -18,8 +18,18 @@ pub const VITE_HTML_JS: &str = include_str!("../assets/vite-html.mjs");
 /// Vite's own picomatch and tinyglobby, loaded from the app's vite: a Start
 /// asset, which the plugin host imports as `./start/vite-globs.mjs`.
 pub const VITE_GLOBS_JS: &str = include_str!("../assets/start/vite-globs.mjs");
-/// The picomatch release `vite-globs.mjs` falls back to, bundled into one module.
-pub const PICOMATCH_JS: &str = include_str!("../assets/start/picomatch.mjs");
+/// The picomatch and tinyglobby releases `vite-globs.mjs` falls back to,
+/// bundled into one module.
+pub const GLOB_LIBS_JS: &str = include_str!("../assets/start/glob-libs.mjs");
+
+/// Writes `start/vite-globs.mjs` and its fallback under the cache root, where
+/// the plugin host and the dep optimizer (both at the root) import them, and
+/// where the Start scripts are written beside them.
+pub(crate) fn ensure_glob_assets(cache_root: &Path) -> std::io::Result<()> {
+    let dir = cache_root.join("start");
+    ensure_asset(&dir, "vite-globs.mjs", VITE_GLOBS_JS)?;
+    ensure_asset(&dir, "glob-libs.mjs", GLOB_LIBS_JS)
+}
 /// Sibling module (`./plugin-host-boot.mjs`) of the plugin host: what its
 /// engine runs before the host module is imported.
 pub const PLUGIN_HOST_BOOT_JS: &str = include_str!("../assets/plugin-host-boot.mjs");

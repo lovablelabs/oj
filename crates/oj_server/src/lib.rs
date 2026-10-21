@@ -138,7 +138,7 @@ const START_ASSETS: &[(&str, &str)] = &[
         "vite-globs.mjs",
         include_str!("assets/start/vite-globs.mjs"),
     ),
-    ("picomatch.mjs", include_str!("assets/start/picomatch.mjs")),
+    ("glob-libs.mjs", include_str!("assets/start/glob-libs.mjs")),
     (
         "server-fns.mjs",
         include_str!("assets/start/server-fns.mjs"),

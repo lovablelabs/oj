@@ -1352,6 +1352,7 @@ async fn run_optimizer(
     // Atomic rename: an engine could import the script while a concurrent oj
     // process rewrites it.
     crate::plugins::ensure_asset(&cache, "optimize-deps.mjs", OPTIMIZE_JS).ok()?;
+    crate::plugins::ensure_glob_assets(&cache).ok()?;
     let script = cache.join("optimize-deps.mjs");
     // react/jsx-dev-runtime is always prebundled (oj injects the dev JSX
     // runtime), but as oj's own implicit include: unlike the user's list it

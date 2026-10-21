@@ -3,7 +3,7 @@
   "printWidth": 120,
   "ignorePatterns": [
     "reference/**",
-    "crates/oj_server/src/assets/start/picomatch.mjs",
+    "crates/oj_server/src/assets/start/glob-libs.mjs",
     "crates/oj_deno_*/**",
     "e2e/fixtures/**",
     "**/node_modules/**",

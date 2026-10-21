@@ -760,3 +760,26 @@ only("rolldown", "import.meta.glob targets are crawled by the scan, as in Vite",
   );
   cleanup(root);
 });
+
+// The scan expands globs as Vite's transformGlobImport does, with Vite's own
+// tinyglobby: the importer's directory is a literal prefix (globSafePath), so
+// a glob from inside `routes/[id]/` finds its siblings, and picomatch's
+// classes and braces work in the pattern itself.
+only("rolldown", "the scan's globs are Vite's: a [id] importer directory, classes and braces", () => {
+  const root = makeRoot("rolldown", "oj-optdeps-glob-dialect-");
+  esmPkg("fromsibling", root, { "index.js": `export const s = 1;\n` });
+  esmPkg("fromclass", root, { "index.js": `export const c = 1;\n` });
+  esmPkg("fromother", root, { "index.js": `export const o = 1;\n` });
+  write(root, "index.html", `<script type="module" src="/routes/[id]/page.ts"></script>\n`);
+  write(
+    root,
+    "routes/[id]/page.ts",
+    `const near = import.meta.glob("./*.js");\nconst picked = import.meta.glob("/parts/[ab]/{x,y}.js");\nexport default [near, picked];\n`,
+  );
+  write(root, "routes/[id]/sibling.js", `import { s } from "fromsibling";\nconsole.log(s);\n`);
+  write(root, "parts/a/x.js", `import { c } from "fromclass";\nconsole.log(c);\n`);
+  write(root, "parts/c/x.js", `import { o } from "fromother";\nconsole.log(o);\n`);
+  const { metadata } = runOptimize({ root, outDir: outDirOf(root) });
+  assert.deepEqual(Object.keys(metadata).sort(), ["fromclass", "fromsibling"]);
+  cleanup(root);
+});

@@ -4,10 +4,10 @@
 // Vite's own glob libraries, picomatch and tinyglobby (runtime dependencies
 // of Vite), loaded from the app's `vite` so oj expands and matches globs with
 // the code Vite runs: import.meta.glob expansion and its added-file matchers,
-// and plugin hook `filter` ids. An app without them (a plugin config run with
-// no Vite installed) matches filter ids with the picomatch release oj ships
-// (./picomatch.mjs); only glob expansion needs tinyglobby, and Start apps
-// always have Vite.
+// and plugin hook `filter` ids, and the dep optimizer's scan globs. An app
+// without them (no Vite installed: a plugin config run directly, a plain
+// app's dep optimizer) uses the same releases, which oj ships
+// (./glob-libs.mjs).
 
 import { createRequire } from "node:module";
 import { join, posix } from "node:path";
@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 let loaded = null;
 
 // Loads both libraries once per process: from the app's `vite` first, then the
-// app root, then (picomatch only) oj's copy.
+// app root, then oj's copy.
 export async function loadViteGlobs(root) {
   if (loaded) return loaded;
   const requirers = [];
@@ -38,8 +38,8 @@ export async function loadViteGlobs(root) {
     return null;
   };
   const [pm, tg] = await Promise.all([load("picomatch"), load("tinyglobby")]);
-  const mod = pm ?? (await import("./picomatch.mjs"));
-  loaded = { picomatch: mod.default ?? mod, tinyglobby: tg, root };
+  const shipped = pm && tg ? null : await import("./glob-libs.mjs");
+  loaded = { picomatch: pm ? (pm.default ?? pm) : shipped.picomatch, tinyglobby: tg ?? shipped.tinyglobby };
   return loaded;
 }
 
@@ -48,11 +48,7 @@ export function viteGlobs() {
   return loaded;
 }
 
-function tinyglobby() {
-  const { tinyglobby, root } = viteGlobs();
-  if (!tinyglobby) throw new Error(`oj: tinyglobby (a dependency of vite) is not resolvable from ${root}`);
-  return tinyglobby;
-}
+const tinyglobby = () => viteGlobs().tinyglobby;
 
 // Vite's pluginFilter `getMatcherString` + `pm(glob, { dot: true })`, as a
 // RegExp (rolldown takes hook filters as RegExps): a string id filter is a
@@ -111,4 +107,29 @@ export function globFiles(globsResolved, { exhaustive = false, caseSensitive = t
 // Vite's globSafePath: a path prefix of a glob, with glob syntax escaped.
 export function globSafePath(path) {
   return tinyglobby().escapePath(slash(path));
+}
+
+// Vite's toAbsoluteGlob: `/x` is project-root relative, `./x` and `../x`
+// resolve against the importer's directory or, with the `base` option,
+// against that base (itself root-relative when it starts with `/`), a `!**`
+// negation stays as written, and anything else (an alias, a bare id, which
+// Vite hands its resolver) resolves against the importer's directory. The
+// path prefixes are glob-escaped (Vite's globSafePath), so a `(group)` or
+// `[id]` directory is matched literally. One departure: Vite leaves a
+// positive `**` pattern as written too, which walks from `/`; oj walks it
+// from the root, as its dev server does.
+export function toAbsoluteGlob(glob, fileDir, root, base) {
+  let pre = "";
+  if (glob[0] === "!") {
+    pre = "!";
+    glob = glob.slice(1);
+  }
+  const safeRoot = globSafePath(root);
+  const safeDir = globSafePath(fileDir);
+  const dir = base ? (base[0] === "/" ? posix.join(safeRoot, base) : posix.resolve(safeDir, base)) : safeDir;
+  if (glob[0] === "/") return pre + posix.join(safeRoot, glob.slice(1));
+  if (glob.startsWith("./")) return pre + posix.join(dir, glob.slice(2));
+  if (glob.startsWith("../")) return pre + posix.join(dir, glob);
+  if (glob.startsWith("**")) return pre + (pre ? glob : posix.join(safeRoot, glob));
+  return pre + posix.join(safeDir, glob);
 }

@@ -4,9 +4,10 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, realpathSync, globSync } from "node:fs";
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import builtinModules from "node:module";
+import { globFiles, loadViteGlobs, toAbsoluteGlob, viteGlobs } from "./start/vite-globs.mjs";
 
 // Pre-bundle inputs, assigned by `optimize()` below. The optimizer engine is
 // short-lived (one isolate per run), so per-run state lives safely at module
@@ -85,13 +86,31 @@ function detectEntries() {
   if (buildInputs.length) {
     return buildInputs.map((e) => (path.isAbsolute(e) ? e : path.join(root, e)));
   }
-  const ignored = new Set(["node_modules", "__tests__", "coverage"]);
-  // Vite ignores `**/${outDir}/**`: the outDir may be nested ("dist/app"),
-  // so it is matched as a path run, not a single segment.
-  const outRun = "/" + buildOutDir.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") + "/";
-  return globFiles("**/*.html", root)
-    .filter((f) => !f.split("/").some((seg) => ignored.has(seg)) && !("/" + f + "/").includes(outRun))
-    .map((f) => path.join(root, f));
+  return globEntries("**/*.html");
+}
+
+// Vite's globEntries: tinyglobby from the root, absolute, ignoring the build
+// outDir (and tests and coverage unless `optimizeDeps.entries` is set), and
+// `node_modules` for any pattern that does not name it.
+function globEntries(patterns) {
+  const { globSync } = viteGlobs().tinyglobby;
+  const nodeModulesPatterns = [];
+  const regularPatterns = [];
+  for (const pattern of [].concat(patterns)) {
+    if (pattern.includes("node_modules")) nodeModulesPatterns.push(pattern);
+    else regularPatterns.push(pattern);
+  }
+  const sharedOptions = {
+    absolute: true,
+    cwd: root,
+    ignore: [`**/${buildOutDir}/**`, ...(entries && entries.length ? [] : ["**/__tests__/**", "**/coverage/**"])],
+  };
+  return [
+    ...(nodeModulesPatterns.length ? globSync(nodeModulesPatterns, sharedOptions) : []),
+    ...(regularPatterns.length
+      ? globSync(regularPatterns, { ...sharedOptions, ignore: [...sharedOptions.ignore, "**/node_modules/**"] })
+      : []),
+  ];
 }
 
 // Vite's expandGlobIds (optimizer/resolve.ts): an include entry with a glob in
@@ -121,22 +140,11 @@ const firstExportString = (v) => {
   if (v && typeof v === "object") for (const k in v) return firstExportString(v[k]);
   return undefined;
 };
-const globFiles = (pattern, cwd) => {
-  try {
-    return globSync(pattern, { cwd, exclude: (name) => name === "node_modules" }).map((p) =>
-      p.split(path.sep).join("/"),
-    );
-  } catch {
-    return [];
-  }
-};
-const matchesGlob = (subject, pattern) => {
-  try {
-    return path.posix.matchesGlob(subject, pattern.replace(/^\.\//, ""));
-  } catch {
-    return false;
-  }
-};
+// Vite's expandGlobIds listing: tinyglobby under the package directory.
+const packageFiles = (pattern, cwd) =>
+  viteGlobs()
+    .tinyglobby.globSync(pattern, { cwd, expandDirectories: false, ignore: ["node_modules"] })
+    .map((p) => p.split(path.sep).join("/"));
 function expandGlobIds(id) {
   const pkgName = npmPackageName(id);
   if (!pkgName) return [];
@@ -164,7 +172,7 @@ function expandGlobIds(id) {
             .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
             .join("(.*)"),
         );
-        for (let file of globFiles(value.replace(/\*/g, "**/*"), pkgDir)) {
+        for (let file of packageFiles(value.replace(/\*/g, "**/*"), pkgDir)) {
           if (value.startsWith("./")) file = "./" + file;
           const m = valueRe.exec(file);
           if (!m) continue;
@@ -180,9 +188,10 @@ function expandGlobIds(id) {
         possible.push(key.slice(2));
       }
     }
-    return [pkgName, ...possible.filter((p) => matchesGlob(p, pattern)).map((p) => path.posix.join(pkgName, p))];
+    const isMatch = viteGlobs().picomatch(pattern);
+    return [pkgName, ...possible.filter((p) => isMatch(p)).map((p) => path.posix.join(pkgName, p))];
   }
-  return [pkgName, ...globFiles(pattern, pkgDir).map((m) => path.posix.join(pkgName, m))];
+  return [pkgName, ...packageFiles(pattern, pkgDir).map((m) => path.posix.join(pkgName, m))];
 }
 let includeIds;
 let warnIncludes;
@@ -519,33 +528,21 @@ function parseGlobPatterns(code, from) {
 }
 
 /// The files every `import.meta.glob` in `code` matches, absolute and sorted,
-/// the importer itself excluded (Vite filters it too).
+/// the importer itself excluded: per call, Vite's transformGlobImport file
+/// list (vite-globs.mjs), with the call's default options.
 function globImportTargets(code, importer) {
-  const toPosix = (p) => p.split(path.sep).join("/");
   const masked = maskLiterals(code);
-  const dir = toPosix(path.dirname(importer));
-  const positive = [];
-  const negative = [];
+  const dir = path.dirname(importer);
+  const self = importer.split(path.sep).join("/");
+  const files = new Set();
   GLOB_CALL_RE.lastIndex = 0;
   for (let m; (m = GLOB_CALL_RE.exec(masked));) {
-    for (const raw of parseGlobPatterns(code, m.indices[0][1])) {
-      const neg = raw[0] === "!";
-      const p = neg ? raw.slice(1) : raw;
-      let abs;
-      if (p.startsWith("/")) abs = path.posix.join(toPosix(root), p.slice(1));
-      else if (p.startsWith("./") || p.startsWith("../")) abs = path.posix.join(dir, p);
-      else if (p.startsWith("**")) abs = path.posix.join(toPosix(root), p);
-      else continue;
-      (neg ? negative : positive).push(abs);
-    }
+    const patterns = parseGlobPatterns(code, m.indices[0][1]).filter((raw) => /^!?(\/|\.\/|\.\.\/|\*\*)/.test(raw));
+    if (!patterns.some((p) => p[0] !== "!")) continue;
+    const globsResolved = patterns.map((p) => toAbsoluteGlob(p, dir, root));
+    for (const f of globFiles(globsResolved, { cwd: root })) if (f !== self) files.add(f);
   }
-  if (!positive.length) return [];
-  const files = new Set();
-  for (const p of positive) for (const f of globFiles(p, root)) files.add(f);
-  const self = toPosix(importer);
-  // matchesGlob (not path.posix.matchesGlob raw): a throwing `!pattern`
-  // must drop that negation, never abort the whole scan transform.
-  return [...files].filter((f) => f !== self && !negative.some((n) => matchesGlob(f, n))).sort();
+  return [...files].sort();
 }
 
 /// The in-host scan shares the plugin host's isolate with every other hook,
@@ -1197,18 +1194,12 @@ function configure(input) {
   for (const inc of input.implicitInclude ?? []) {
     if (!includeIds.includes(inc)) includeIds.push(inc);
   }
-  // optimizeDeps.entries are glob patterns relative to root (Vite scans them with
-  // tinyglobby); a literal path is used as given. Like Vite's isScannable +
-  // exists filter, only JS and html files feed the scan.
+  // optimizeDeps.entries are glob patterns relative to root, which Vite
+  // scans with globEntries; a literal path is used as given. Like Vite's
+  // isScannable + exists filter, only JS and html files feed the scan.
   entryList = (
     entries && entries.length
-      ? entries.flatMap((e) =>
-          isDynamicPattern(e)
-            ? globFiles(e, root)
-                .filter((f) => !f.split("/").includes("node_modules"))
-                .map((f) => path.join(root, f))
-            : [path.isAbsolute(e) ? e : path.join(root, e)],
-        )
+      ? entries.flatMap((e) => (isDynamicPattern(e) ? globEntries(e) : [path.isAbsolute(e) ? e : path.join(root, e)]))
       : detectEntries()
   ).filter((f) => (JS_TYPES_RE.test(f) || f.endsWith(".html")) && existsSync(f));
   DEDUPE_PKGS = new Set(dedupe.map(npmPackageName).filter(Boolean));
@@ -1233,6 +1224,8 @@ function configure(input) {
 /// wait for the scan, not the whole pre-bundle; a commit that disagrees with
 /// a guess reloads the page.
 export async function scanPlan(input, host) {
+  // Before configure: it expands the include and entry globs.
+  await loadViteGlobs(input.root);
   configure(input);
   const rd = await loadRolldown(pickRolldown(root, input.vendoredRolldown));
   const candidates = await rolldownScan(rd, autoDiscover, host);
@@ -1361,6 +1354,8 @@ function planEntries(candidates, { warn = true } = {}) {
 }
 
 export async function optimize(input) {
+  // Before configure: it expands the include and entry globs.
+  await loadViteGlobs(input.root);
   configure(input);
   const rd = await loadRolldown(pickRolldown(root, input.vendoredRolldown));
   const candidates = input.scanned ? new Map(Object.entries(input.scanned)) : await rolldownScan(rd, autoDiscover);

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 import { existsSync, statSync } from "node:fs";
-import { resolve, dirname, join, posix, relative, sep } from "node:path";
-import { globFiles, globSafePath } from "./vite-globs.mjs";
+import { resolve, dirname, join, relative, sep } from "node:path";
+import { globFiles, toAbsoluteGlob } from "./vite-globs.mjs";
 
 const GLOB_HEAD = /import\.meta\.glob\b/g;
 
@@ -35,31 +35,6 @@ function callArgsStart(code, from) {
     while (i < code.length && /\s/.test(code[i])) i++;
   }
   return code[i] === "(" ? i + 1 : -1;
-}
-
-// Vite's toAbsoluteGlob: `/x` is project-root relative, `./x` and `../x`
-// resolve against the importer's directory or, with the `base` option,
-// against that base (itself root-relative when it starts with `/`), a `!**`
-// negation stays as written, and anything else (an alias, a bare id, which
-// Vite hands its resolver) resolves against the importer's directory. The
-// path prefixes are glob-escaped (Vite's globSafePath), so a `(group)` or
-// `[id]` directory is matched literally. One departure: Vite leaves a
-// positive `**` pattern as written too, which walks from `/`; oj walks it
-// from the root, as its dev server does.
-function toAbsoluteGlob(glob, fileDir, root, base) {
-  let pre = "";
-  if (glob[0] === "!") {
-    pre = "!";
-    glob = glob.slice(1);
-  }
-  const safeRoot = globSafePath(root);
-  const safeDir = globSafePath(fileDir);
-  const dir = base ? (base[0] === "/" ? posix.join(safeRoot, base) : posix.resolve(safeDir, base)) : safeDir;
-  if (glob[0] === "/") return pre + posix.join(safeRoot, glob.slice(1));
-  if (glob.startsWith("./")) return pre + posix.join(dir, glob.slice(2));
-  if (glob.startsWith("../")) return pre + posix.join(dir, glob);
-  if (glob.startsWith("**")) return pre + (pre ? glob : posix.join(safeRoot, glob));
-  return pre + posix.join(safeDir, glob);
 }
 
 const toRel = (fileDir, abs) => {

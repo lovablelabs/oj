@@ -1,6 +1,8 @@
-/*! picomatch 4.0.5, bundled unmodified into one module for oj
- * (vite-globs.mjs uses it when the app has no picomatch of its own).
+/*! picomatch 4.0.5, tinyglobby 0.2.17 and fdir 6.5.0 (Vite 8's glob libraries),
+ * bundled unmodified into one module for oj: vite-globs.mjs uses it when the
+ * app has no Vite of its own.
  *
+ * --- picomatch ---
  * The MIT License (MIT)
  *
  * Copyright (c) 2017-present, Jon Schlinkert.
@@ -22,10 +24,85 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
+ *
+ * --- tinyglobby ---
+ * MIT License
+ *
+ * Copyright (c) 2024 Madeline Gurriarán
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * --- fdir ---
+ * Copyright 2023 Abdullah Atta
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+import * as nativeFs from "fs";
+import { readdir, readdirSync, realpath, realpathSync, stat, statSync } from "fs";
+import { basename, dirname, isAbsolute, normalize, posix, relative, resolve, sep } from "path";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
+
 //#region \0rolldown/runtime.js
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod), cb = null), mod.exports);
+var __exportAll = (all, no_symbols) => {
+	let target = {};
+	for (var name in all) {
+		__defProp(target, name, {
+			get: all[name],
+			enumerable: true
+		});
+	}
+	if (!no_symbols) {
+		__defProp(target, Symbol.toStringTag, { value: "Module" });
+	}
+	return target;
+};
+var __copyProps = (to, from, except, desc) => {
+	if (from && typeof from === "object" || typeof from === "function") {
+		for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+			key = keys[i];
+			if (!__hasOwnProp.call(to, key) && key !== except) {
+				__defProp(to, key, {
+					get: ((k) => from[k]).bind(null, key),
+					enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable
+				});
+			}
+		}
+	}
+	return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule || !__hasOwnProp.call(mod, "default") ? __defProp(target, "default", {
+	value: mod,
+	enumerable: true
+}) : target, mod));
 
 //#endregion
 //#region node_modules/picomatch/lib/constants.js
@@ -1947,4 +2024,818 @@ var require_picomatch = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 }));
 
 //#endregion
-export default require_picomatch();
+//#region node_modules/fdir/dist/index.mjs
+var import_picomatch = /* @__PURE__ */ __toESM(require_picomatch(), 1);
+var __require = /* @__PURE__ */ createRequire(import.meta.url);
+function cleanPath(path) {
+	let normalized = normalize(path);
+	if (normalized.length > 1 && normalized[normalized.length - 1] === sep) normalized = normalized.substring(0, normalized.length - 1);
+	return normalized;
+}
+const SLASHES_REGEX = /[\\/]/g;
+function convertSlashes(path, separator) {
+	return path.replace(SLASHES_REGEX, separator);
+}
+const WINDOWS_ROOT_DIR_REGEX = /^[a-z]:[\\/]$/i;
+function isRootDirectory(path) {
+	return path === "/" || WINDOWS_ROOT_DIR_REGEX.test(path);
+}
+function normalizePath(path, options) {
+	const { resolvePaths, normalizePath: normalizePath$1, pathSeparator } = options;
+	const pathNeedsCleaning = process.platform === "win32" && path.includes("/") || path.startsWith(".");
+	if (resolvePaths) path = resolve(path);
+	if (normalizePath$1 || pathNeedsCleaning) path = cleanPath(path);
+	if (path === ".") return "";
+	return convertSlashes(path[path.length - 1] !== pathSeparator ? path + pathSeparator : path, pathSeparator);
+}
+function joinPathWithBasePath(filename, directoryPath) {
+	return directoryPath + filename;
+}
+function joinPathWithRelativePath(root, options) {
+	return function(filename, directoryPath) {
+		if (directoryPath.startsWith(root)) return directoryPath.slice(root.length) + filename;
+		else return convertSlashes(relative(root, directoryPath), options.pathSeparator) + options.pathSeparator + filename;
+	};
+}
+function joinPath(filename) {
+	return filename;
+}
+function joinDirectoryPath(filename, directoryPath, separator) {
+	return directoryPath + filename + separator;
+}
+function build$7(root, options) {
+	const { relativePaths, includeBasePath } = options;
+	return relativePaths && root ? joinPathWithRelativePath(root, options) : includeBasePath ? joinPathWithBasePath : joinPath;
+}
+function pushDirectoryWithRelativePath(root) {
+	return function(directoryPath, paths) {
+		paths.push(directoryPath.substring(root.length) || ".");
+	};
+}
+function pushDirectoryFilterWithRelativePath(root) {
+	return function(directoryPath, paths, filters) {
+		const relativePath = directoryPath.substring(root.length) || ".";
+		if (filters.every((filter) => filter(relativePath, true))) paths.push(relativePath);
+	};
+}
+const pushDirectory = (directoryPath, paths) => {
+	paths.push(directoryPath || ".");
+};
+const pushDirectoryFilter = (directoryPath, paths, filters) => {
+	const path = directoryPath || ".";
+	if (filters.every((filter) => filter(path, true))) paths.push(path);
+};
+const empty$2 = () => {};
+function build$6(root, options) {
+	const { includeDirs, filters, relativePaths } = options;
+	if (!includeDirs) return empty$2;
+	if (relativePaths) return filters && filters.length ? pushDirectoryFilterWithRelativePath(root) : pushDirectoryWithRelativePath(root);
+	return filters && filters.length ? pushDirectoryFilter : pushDirectory;
+}
+const pushFileFilterAndCount = (filename, _paths, counts, filters) => {
+	if (filters.every((filter) => filter(filename, false))) counts.files++;
+};
+const pushFileFilter = (filename, paths, _counts, filters) => {
+	if (filters.every((filter) => filter(filename, false))) paths.push(filename);
+};
+const pushFileCount = (_filename, _paths, counts, _filters) => {
+	counts.files++;
+};
+const pushFile = (filename, paths) => {
+	paths.push(filename);
+};
+const empty$1 = () => {};
+function build$5(options) {
+	const { excludeFiles, filters, onlyCounts } = options;
+	if (excludeFiles) return empty$1;
+	if (filters && filters.length) return onlyCounts ? pushFileFilterAndCount : pushFileFilter;
+	else if (onlyCounts) return pushFileCount;
+	else return pushFile;
+}
+const getArray = (paths) => {
+	return paths;
+};
+const getArrayGroup = () => {
+	return [""].slice(0, 0);
+};
+function build$4(options) {
+	return options.group ? getArrayGroup : getArray;
+}
+const groupFiles = (groups, directory, files) => {
+	groups.push({
+		directory,
+		files,
+		dir: directory
+	});
+};
+const empty = () => {};
+function build$3(options) {
+	return options.group ? groupFiles : empty;
+}
+const resolveSymlinksAsync = function(path, state, callback$1) {
+	const { queue, fs, options: { suppressErrors } } = state;
+	queue.enqueue();
+	fs.realpath(path, (error, resolvedPath) => {
+		if (error) return queue.dequeue(suppressErrors ? null : error, state);
+		fs.stat(resolvedPath, (error$1, stat) => {
+			if (error$1) return queue.dequeue(suppressErrors ? null : error$1, state);
+			if (stat.isDirectory() && isRecursive(path, resolvedPath, state)) return queue.dequeue(null, state);
+			callback$1(stat, resolvedPath);
+			queue.dequeue(null, state);
+		});
+	});
+};
+const resolveSymlinks = function(path, state, callback$1) {
+	const { queue, fs, options: { suppressErrors } } = state;
+	queue.enqueue();
+	try {
+		const resolvedPath = fs.realpathSync(path);
+		const stat = fs.statSync(resolvedPath);
+		if (stat.isDirectory() && isRecursive(path, resolvedPath, state)) return;
+		callback$1(stat, resolvedPath);
+	} catch (e) {
+		if (!suppressErrors) throw e;
+	}
+};
+function build$2(options, isSynchronous) {
+	if (!options.resolveSymlinks || options.excludeSymlinks) return null;
+	return isSynchronous ? resolveSymlinks : resolveSymlinksAsync;
+}
+function isRecursive(path, resolved, state) {
+	if (state.options.useRealPaths) return isRecursiveUsingRealPaths(resolved, state);
+	let parent = dirname(path);
+	let depth = 1;
+	while (parent !== state.root && depth < 2) {
+		const resolvedPath = state.symlinks.get(parent);
+		if (!!resolvedPath && (resolvedPath === resolved || resolvedPath.startsWith(resolved) || resolved.startsWith(resolvedPath))) depth++;
+		else parent = dirname(parent);
+	}
+	state.symlinks.set(path, resolved);
+	return depth > 1;
+}
+function isRecursiveUsingRealPaths(resolved, state) {
+	return state.visited.includes(resolved + state.options.pathSeparator);
+}
+const onlyCountsSync = (state) => {
+	return state.counts;
+};
+const groupsSync = (state) => {
+	return state.groups;
+};
+const defaultSync = (state) => {
+	return state.paths;
+};
+const limitFilesSync = (state) => {
+	return state.paths.slice(0, state.options.maxFiles);
+};
+const onlyCountsAsync = (state, error, callback$1) => {
+	report(error, callback$1, state.counts, state.options.suppressErrors);
+	return null;
+};
+const defaultAsync = (state, error, callback$1) => {
+	report(error, callback$1, state.paths, state.options.suppressErrors);
+	return null;
+};
+const limitFilesAsync = (state, error, callback$1) => {
+	report(error, callback$1, state.paths.slice(0, state.options.maxFiles), state.options.suppressErrors);
+	return null;
+};
+const groupsAsync = (state, error, callback$1) => {
+	report(error, callback$1, state.groups, state.options.suppressErrors);
+	return null;
+};
+function report(error, callback$1, output, suppressErrors) {
+	if (error && !suppressErrors) callback$1(error, output);
+	else callback$1(null, output);
+}
+function build$1(options, isSynchronous) {
+	const { onlyCounts, group, maxFiles } = options;
+	if (onlyCounts) return isSynchronous ? onlyCountsSync : onlyCountsAsync;
+	else if (group) return isSynchronous ? groupsSync : groupsAsync;
+	else if (maxFiles) return isSynchronous ? limitFilesSync : limitFilesAsync;
+	else return isSynchronous ? defaultSync : defaultAsync;
+}
+const readdirOpts = { withFileTypes: true };
+const walkAsync = (state, crawlPath, directoryPath, currentDepth, callback$1) => {
+	state.queue.enqueue();
+	if (currentDepth < 0) return state.queue.dequeue(null, state);
+	const { fs } = state;
+	state.visited.push(crawlPath);
+	state.counts.directories++;
+	fs.readdir(crawlPath || ".", readdirOpts, (error, entries = []) => {
+		callback$1(entries, directoryPath, currentDepth);
+		state.queue.dequeue(state.options.suppressErrors ? null : error, state);
+	});
+};
+const walkSync = (state, crawlPath, directoryPath, currentDepth, callback$1) => {
+	const { fs } = state;
+	if (currentDepth < 0) return;
+	state.visited.push(crawlPath);
+	state.counts.directories++;
+	let entries = [];
+	try {
+		entries = fs.readdirSync(crawlPath || ".", readdirOpts);
+	} catch (e) {
+		if (!state.options.suppressErrors) throw e;
+	}
+	callback$1(entries, directoryPath, currentDepth);
+};
+function build(isSynchronous) {
+	return isSynchronous ? walkSync : walkAsync;
+}
+/**
+* This is a custom stateless queue to track concurrent async fs calls.
+* It increments a counter whenever a call is queued and decrements it
+* as soon as it completes. When the counter hits 0, it calls onQueueEmpty.
+*/
+var Queue = class {
+	count = 0;
+	constructor(onQueueEmpty) {
+		this.onQueueEmpty = onQueueEmpty;
+	}
+	enqueue() {
+		this.count++;
+		return this.count;
+	}
+	dequeue(error, output) {
+		if (this.onQueueEmpty && (--this.count <= 0 || error)) {
+			this.onQueueEmpty(error, output);
+			if (error) {
+				output.controller.abort();
+				this.onQueueEmpty = void 0;
+			}
+		}
+	}
+};
+var Counter = class {
+	_files = 0;
+	_directories = 0;
+	set files(num) {
+		this._files = num;
+	}
+	get files() {
+		return this._files;
+	}
+	set directories(num) {
+		this._directories = num;
+	}
+	get directories() {
+		return this._directories;
+	}
+	/**
+	* @deprecated use `directories` instead
+	*/
+	/* c8 ignore next 3 */
+	get dirs() {
+		return this._directories;
+	}
+};
+/**
+* AbortController is not supported on Node 14 so we use this until we can drop
+* support for Node 14.
+*/
+var Aborter = class {
+	aborted = false;
+	abort() {
+		this.aborted = true;
+	}
+};
+var Walker = class {
+	root;
+	isSynchronous;
+	state;
+	joinPath;
+	pushDirectory;
+	pushFile;
+	getArray;
+	groupFiles;
+	resolveSymlink;
+	walkDirectory;
+	callbackInvoker;
+	constructor(root, options, callback$1) {
+		this.isSynchronous = !callback$1;
+		this.callbackInvoker = build$1(options, this.isSynchronous);
+		this.root = normalizePath(root, options);
+		this.state = {
+			root: isRootDirectory(this.root) ? this.root : this.root.slice(0, -1),
+			paths: [""].slice(0, 0),
+			groups: [],
+			counts: new Counter(),
+			options,
+			queue: new Queue((error, state) => this.callbackInvoker(state, error, callback$1)),
+			symlinks: /* @__PURE__ */ new Map(),
+			visited: [""].slice(0, 0),
+			controller: new Aborter(),
+			fs: options.fs || nativeFs
+		};
+		this.joinPath = build$7(this.root, options);
+		this.pushDirectory = build$6(this.root, options);
+		this.pushFile = build$5(options);
+		this.getArray = build$4(options);
+		this.groupFiles = build$3(options);
+		this.resolveSymlink = build$2(options, this.isSynchronous);
+		this.walkDirectory = build(this.isSynchronous);
+	}
+	start() {
+		this.pushDirectory(this.root, this.state.paths, this.state.options.filters);
+		this.walkDirectory(this.state, this.root, this.root, this.state.options.maxDepth, this.walk);
+		return this.isSynchronous ? this.callbackInvoker(this.state, null) : null;
+	}
+	walk = (entries, directoryPath, depth) => {
+		const { paths, options: { filters, resolveSymlinks: resolveSymlinks$1, excludeSymlinks, exclude, maxFiles, signal, useRealPaths, pathSeparator }, controller } = this.state;
+		if (controller.aborted || signal && signal.aborted || maxFiles && paths.length > maxFiles) return;
+		const files = this.getArray(this.state.paths);
+		for (let i = 0; i < entries.length; ++i) {
+			const entry = entries[i];
+			if (entry.isFile() || entry.isSymbolicLink() && !resolveSymlinks$1 && !excludeSymlinks) {
+				const filename = this.joinPath(entry.name, directoryPath);
+				this.pushFile(filename, files, this.state.counts, filters);
+			} else if (entry.isDirectory()) {
+				let path = joinDirectoryPath(entry.name, directoryPath, this.state.options.pathSeparator);
+				if (exclude && exclude(entry.name, path)) continue;
+				this.pushDirectory(path, paths, filters);
+				this.walkDirectory(this.state, path, path, depth - 1, this.walk);
+			} else if (this.resolveSymlink && entry.isSymbolicLink()) {
+				let path = joinPathWithBasePath(entry.name, directoryPath);
+				this.resolveSymlink(path, this.state, (stat, resolvedPath) => {
+					if (stat.isDirectory()) {
+						resolvedPath = normalizePath(resolvedPath, this.state.options);
+						if (exclude && exclude(entry.name, useRealPaths ? resolvedPath : path + pathSeparator)) return;
+						this.walkDirectory(this.state, resolvedPath, useRealPaths ? resolvedPath : path + pathSeparator, depth - 1, this.walk);
+					} else {
+						resolvedPath = useRealPaths ? resolvedPath : path;
+						const filename = basename(resolvedPath);
+						const directoryPath$1 = normalizePath(dirname(resolvedPath), this.state.options);
+						resolvedPath = this.joinPath(filename, directoryPath$1);
+						this.pushFile(resolvedPath, files, this.state.counts, filters);
+					}
+				});
+			}
+		}
+		this.groupFiles(this.state.groups, directoryPath, files);
+	};
+};
+function promise(root, options) {
+	return new Promise((resolve$1, reject) => {
+		callback(root, options, (err, output) => {
+			if (err) return reject(err);
+			resolve$1(output);
+		});
+	});
+}
+function callback(root, options, callback$1) {
+	new Walker(root, options, callback$1).start();
+}
+function sync(root, options) {
+	return new Walker(root, options).start();
+}
+var APIBuilder = class {
+	constructor(root, options) {
+		this.root = root;
+		this.options = options;
+	}
+	withPromise() {
+		return promise(this.root, this.options);
+	}
+	withCallback(cb) {
+		callback(this.root, this.options, cb);
+	}
+	sync() {
+		return sync(this.root, this.options);
+	}
+};
+let pm = null;
+/* c8 ignore next 6 */
+try {
+	__require.resolve("picomatch");
+	pm = __require("picomatch");
+} catch {}
+var Builder = class {
+	globCache = {};
+	options = {
+		maxDepth: Infinity,
+		suppressErrors: true,
+		pathSeparator: sep,
+		filters: []
+	};
+	globFunction;
+	constructor(options) {
+		this.options = {
+			...this.options,
+			...options
+		};
+		this.globFunction = this.options.globFunction;
+	}
+	group() {
+		this.options.group = true;
+		return this;
+	}
+	withPathSeparator(separator) {
+		this.options.pathSeparator = separator;
+		return this;
+	}
+	withBasePath() {
+		this.options.includeBasePath = true;
+		return this;
+	}
+	withRelativePaths() {
+		this.options.relativePaths = true;
+		return this;
+	}
+	withDirs() {
+		this.options.includeDirs = true;
+		return this;
+	}
+	withMaxDepth(depth) {
+		this.options.maxDepth = depth;
+		return this;
+	}
+	withMaxFiles(limit) {
+		this.options.maxFiles = limit;
+		return this;
+	}
+	withFullPaths() {
+		this.options.resolvePaths = true;
+		this.options.includeBasePath = true;
+		return this;
+	}
+	withErrors() {
+		this.options.suppressErrors = false;
+		return this;
+	}
+	withSymlinks({ resolvePaths = true } = {}) {
+		this.options.resolveSymlinks = true;
+		this.options.useRealPaths = resolvePaths;
+		return this.withFullPaths();
+	}
+	withAbortSignal(signal) {
+		this.options.signal = signal;
+		return this;
+	}
+	normalize() {
+		this.options.normalizePath = true;
+		return this;
+	}
+	filter(predicate) {
+		this.options.filters.push(predicate);
+		return this;
+	}
+	onlyDirs() {
+		this.options.excludeFiles = true;
+		this.options.includeDirs = true;
+		return this;
+	}
+	exclude(predicate) {
+		this.options.exclude = predicate;
+		return this;
+	}
+	onlyCounts() {
+		this.options.onlyCounts = true;
+		return this;
+	}
+	crawl(root) {
+		return new APIBuilder(root || ".", this.options);
+	}
+	withGlobFunction(fn) {
+		this.globFunction = fn;
+		return this;
+	}
+	/**
+	* @deprecated Pass options using the constructor instead:
+	* ```ts
+	* new fdir(options).crawl("/path/to/root");
+	* ```
+	* This method will be removed in v7.0
+	*/
+	/* c8 ignore next 4 */
+	crawlWithOptions(root, options) {
+		this.options = {
+			...this.options,
+			...options
+		};
+		return new APIBuilder(root || ".", this.options);
+	}
+	glob(...patterns) {
+		if (this.globFunction) return this.globWithOptions(patterns);
+		return this.globWithOptions(patterns, ...[{ dot: true }]);
+	}
+	globWithOptions(patterns, ...options) {
+		const globFn = this.globFunction || pm;
+		/* c8 ignore next 5 */
+		if (!globFn) throw new Error("Please specify a glob function to use glob matching.");
+		var isMatch = this.globCache[patterns.join("\0")];
+		if (!isMatch) {
+			isMatch = globFn(patterns, ...options);
+			this.globCache[patterns.join("\0")] = isMatch;
+		}
+		this.options.filters.push((path) => isMatch(path));
+		return this;
+	}
+};
+
+//#endregion
+//#region node_modules/tinyglobby/dist/index.mjs
+var dist_exports = /* @__PURE__ */ __exportAll({
+	convertPathToPattern: () => convertPathToPattern,
+	escapePath: () => escapePath,
+	glob: () => glob,
+	globSync: () => globSync,
+	isDynamicPattern: () => isDynamicPattern
+});
+const isReadonlyArray = Array.isArray;
+const BACKSLASHES = /\\/g;
+const DRIVE_RELATIVE_PATH = /^[A-Za-z]:$/;
+const isWin = process.platform === "win32";
+const ONLY_PARENT_DIRECTORIES = /^(\/?\.\.)+$/;
+function getPartialMatcher(patterns, options = {}) {
+	const patternsCount = patterns.length;
+	const patternsParts = Array(patternsCount);
+	const matchers = Array(patternsCount);
+	let i, j;
+	for (i = 0; i < patternsCount; i++) {
+		const parts = splitPattern(patterns[i]);
+		patternsParts[i] = parts;
+		const partsCount = parts.length;
+		const partMatchers = Array(partsCount);
+		for (j = 0; j < partsCount; j++) partMatchers[j] = (0, import_picomatch.default)(parts[j], options);
+		matchers[i] = partMatchers;
+	}
+	return (input) => {
+		const inputParts = input.split("/");
+		if (inputParts[0] === ".." && ONLY_PARENT_DIRECTORIES.test(input)) return true;
+		for (i = 0; i < patternsCount; i++) {
+			const patternParts = patternsParts[i];
+			const matcher = matchers[i];
+			const inputPatternCount = inputParts.length;
+			const minParts = Math.min(inputPatternCount, patternParts.length);
+			j = 0;
+			while (j < minParts) {
+				const part = patternParts[j];
+				if (part.includes("/")) return true;
+				if (!matcher[j](inputParts[j])) break;
+				if (!options.noglobstar && part === "**") return true;
+				j++;
+			}
+			if (j === inputPatternCount) return true;
+		}
+		return false;
+	};
+}
+/* node:coverage ignore next 2 */
+const WIN32_ROOT_DIR = /^[A-Z]:\/$/i;
+const isRoot = isWin ? (p) => WIN32_ROOT_DIR.test(p) : (p) => p === "/";
+function buildFormat(cwd, root, absolute) {
+	if (cwd === root || root.startsWith(`${cwd}/`)) {
+		if (absolute) {
+			const start = cwd.length + +!isRoot(cwd);
+			return (p, isDir) => p.slice(start, isDir ? -1 : void 0) || ".";
+		}
+		const prefix = root.slice(cwd.length + 1);
+		if (prefix) return (p, isDir) => {
+			if (p === ".") return prefix;
+			const result = `${prefix}/${p}`;
+			return isDir ? result.slice(0, -1) : result;
+		};
+		return (p, isDir) => isDir && p !== "." ? p.slice(0, -1) : p;
+	}
+	if (absolute) return (p) => posix.relative(cwd, p) || ".";
+	return (p) => posix.relative(cwd, `${root}/${p}`) || ".";
+}
+function buildRelative(cwd, root) {
+	if (root.startsWith(`${cwd}/`)) {
+		const prefix = root.slice(cwd.length + 1);
+		return (p) => `${prefix}/${p}`;
+	}
+	return (p) => {
+		const result = posix.relative(cwd, `${root}/${p}`);
+		return p[p.length - 1] === "/" && result !== "" ? `${result}/` : result || ".";
+	};
+}
+function ensureNonDriveRelativePath(path) {
+	return path.replace(DRIVE_RELATIVE_PATH, (match) => `${match}/`);
+}
+const splitPatternOptions = { parts: true };
+function splitPattern(path) {
+	var _result$parts;
+	const result = import_picomatch.default.scan(path, splitPatternOptions);
+	return ((_result$parts = result.parts) === null || _result$parts === void 0 ? void 0 : _result$parts.length) ? result.parts : [path];
+}
+const ESCAPED_WIN32_BACKSLASHES = /\\(?![()[\]{}!+@])/g;
+function convertPosixPathToPattern(path) {
+	return escapePosixPath(path);
+}
+function convertWin32PathToPattern(path) {
+	return escapeWin32Path(path).replace(ESCAPED_WIN32_BACKSLASHES, "/");
+}
+/**
+* Converts a path to a pattern depending on the platform.
+* Identical to {@link escapePath} on POSIX systems.
+* @see {@link https://superchupu.dev/tinyglobby/documentation#convertPathToPattern}
+*/
+/* node:coverage ignore next 3 */
+const convertPathToPattern = isWin ? convertWin32PathToPattern : convertPosixPathToPattern;
+const POSIX_UNESCAPED_GLOB_SYMBOLS = /(?<!\\)([()[\]{}*?|]|^!|[!+@](?=\()|\\(?![()[\]{}!*+?@|]))/g;
+const WIN32_UNESCAPED_GLOB_SYMBOLS = /(?<!\\)([()[\]{}]|^!|[!+@](?=\())/g;
+const escapePosixPath = (path) => path.replace(POSIX_UNESCAPED_GLOB_SYMBOLS, "\\$&");
+const escapeWin32Path = (path) => path.replace(WIN32_UNESCAPED_GLOB_SYMBOLS, "\\$&");
+/**
+* Escapes a path's special characters depending on the platform.
+* @see {@link https://superchupu.dev/tinyglobby/documentation#escapePath}
+*/
+/* node:coverage ignore next */
+const escapePath = isWin ? escapeWin32Path : escapePosixPath;
+/**
+* Checks if a pattern has dynamic parts.
+*
+* Has a few minor differences with [`fast-glob`](https://github.com/mrmlnc/fast-glob) for better accuracy:
+*
+* - Doesn't necessarily return `false` on patterns that include `\`.
+* - Returns `true` if the pattern includes parentheses, regardless of them representing one single pattern or not.
+* - Returns `true` for unfinished glob extensions i.e. `(h`, `+(h`.
+* - Returns `true` for unfinished brace expansions as long as they include `,` or `..`.
+*
+* @see {@link https://superchupu.dev/tinyglobby/documentation#isDynamicPattern}
+*/
+function isDynamicPattern(pattern, options) {
+	if ((options === null || options === void 0 ? void 0 : options.caseSensitiveMatch) === false) return true;
+	const scan = import_picomatch.default.scan(pattern);
+	return scan.isGlob || scan.negated;
+}
+function log(...tasks) {
+	console.log(`[tinyglobby ${(/* @__PURE__ */ new Date()).toLocaleTimeString("es")}]`, ...tasks);
+}
+function ensureStringArray(value) {
+	return typeof value === "string" ? [value] : value !== null && value !== void 0 ? value : [];
+}
+const PARENT_DIRECTORY = /^(\/?\.\.)+/;
+const ESCAPING_BACKSLASHES = /\\(?=[()[\]{}!*+?@|])/g;
+function normalizePattern(pattern, opts, props, isIgnore) {
+	var _PARENT_DIRECTORY$exe;
+	const cwd = opts.cwd;
+	let result = pattern;
+	if (pattern[pattern.length - 1] === "/") result = pattern.slice(0, -1);
+	if (result[result.length - 1] !== "*" && opts.expandDirectories) result += "/**";
+	const escapedCwd = escapePath(cwd);
+	result = isAbsolute(result.replace(ESCAPING_BACKSLASHES, "")) ? posix.relative(escapedCwd, result) : posix.normalize(result);
+	const parentDir = (_PARENT_DIRECTORY$exe = PARENT_DIRECTORY.exec(result)) === null || _PARENT_DIRECTORY$exe === void 0 ? void 0 : _PARENT_DIRECTORY$exe[0];
+	const parts = splitPattern(result);
+	if (parentDir) {
+		const n = (parentDir.length + 1) / 3;
+		let i = 0;
+		const cwdParts = escapedCwd.split("/");
+		while (i < n && parts[i + n] === cwdParts[cwdParts.length + i - n]) {
+			result = result.slice(0, (n - i - 1) * 3) + result.slice((n - i) * 3 + parts[i + n].length + 1) || ".";
+			i++;
+		}
+		const potentialRoot = posix.join(cwd, parentDir.slice(i * 3));
+		if (potentialRoot[0] !== "." && props.root.length > potentialRoot.length) {
+			props.root = ensureNonDriveRelativePath(potentialRoot);
+			props.depthOffset = -n + i;
+		}
+	}
+	if (!isIgnore && props.depthOffset >= 0) {
+		var _props$commonPath;
+		(_props$commonPath = props.commonPath) !== null && _props$commonPath !== void 0 || (props.commonPath = parts);
+		const newCommonPath = [];
+		const length = Math.min(props.commonPath.length, parts.length);
+		for (let i = 0; i < length; i++) {
+			const part = parts[i];
+			if (part === "**" && !parts[i + 1]) {
+				newCommonPath.pop();
+				break;
+			}
+			if (i === parts.length - 1 || part !== props.commonPath[i] || isDynamicPattern(part)) break;
+			newCommonPath.push(part);
+		}
+		props.depthOffset = newCommonPath.length;
+		props.commonPath = newCommonPath;
+		props.root = ensureNonDriveRelativePath(newCommonPath.length > 0 ? posix.join(cwd, ...newCommonPath) : cwd);
+	}
+	return result;
+}
+function processPatterns(options, patterns, props) {
+	const matchPatterns = [];
+	const ignorePatterns = [];
+	for (const pattern of options.ignore) {
+		if (!pattern) continue;
+		if (pattern[0] !== "!" || pattern[1] === "(") ignorePatterns.push(normalizePattern(pattern, options, props, true));
+	}
+	for (const pattern of patterns) {
+		if (!pattern) continue;
+		if (pattern[0] !== "!" || pattern[1] === "(") matchPatterns.push(normalizePattern(pattern, options, props, false));
+		else if (pattern[1] !== "!" || pattern[2] === "(") ignorePatterns.push(normalizePattern(pattern.slice(1), options, props, true));
+	}
+	return {
+		match: matchPatterns,
+		ignore: ignorePatterns
+	};
+}
+function buildCrawler(options, patterns) {
+	const cwd = options.cwd;
+	const props = {
+		root: cwd,
+		depthOffset: 0
+	};
+	const processed = processPatterns(options, patterns, props);
+	if (options.debug) log("internal processing patterns:", processed);
+	const { absolute, caseSensitiveMatch, debug, dot, followSymbolicLinks, onlyDirectories } = options;
+	const root = props.root.replace(BACKSLASHES, "");
+	const matchOptions = {
+		dot,
+		nobrace: options.braceExpansion === false,
+		nocase: !caseSensitiveMatch,
+		noextglob: options.extglob === false,
+		noglobstar: options.globstar === false,
+		posix: true
+	};
+	const matcher = (0, import_picomatch.default)(processed.match, matchOptions);
+	const ignore = (0, import_picomatch.default)(processed.ignore, matchOptions);
+	const partialMatcher = getPartialMatcher(processed.match, matchOptions);
+	const format = buildFormat(cwd, root, absolute);
+	const excludeFormatter = absolute ? format : buildFormat(cwd, root, true);
+	const excludePredicate = (_, p) => {
+		const relativePath = excludeFormatter(p, true);
+		return relativePath !== "." && !partialMatcher(relativePath) || ignore(relativePath);
+	};
+	let maxDepth;
+	if (options.deep !== void 0) maxDepth = Math.round(options.deep - props.depthOffset);
+	const crawler = new Builder({
+		filters: [debug ? (p, isDirectory) => {
+			const path = format(p, isDirectory);
+			const matches = matcher(path) && !ignore(path);
+			if (matches) log(`matched ${path}`);
+			return matches;
+		} : (p, isDirectory) => {
+			const path = format(p, isDirectory);
+			return matcher(path) && !ignore(path);
+		}],
+		exclude: debug ? (_, p) => {
+			const skipped = excludePredicate(_, p);
+			log(`${skipped ? "skipped" : "crawling"} ${p}`);
+			return skipped;
+		} : excludePredicate,
+		fs: options.fs,
+		pathSeparator: "/",
+		relativePaths: !absolute,
+		resolvePaths: absolute,
+		includeBasePath: absolute,
+		resolveSymlinks: followSymbolicLinks,
+		excludeSymlinks: !followSymbolicLinks,
+		excludeFiles: onlyDirectories,
+		includeDirs: onlyDirectories || !options.onlyFiles,
+		maxDepth,
+		signal: options.signal
+	}).crawl(root);
+	if (options.debug) log("internal properties:", {
+		...props,
+		root
+	});
+	return [crawler, cwd !== root && !absolute && buildRelative(cwd, root)];
+}
+function formatPaths(paths, mapper) {
+	if (mapper) for (let i = paths.length - 1; i >= 0; i--) paths[i] = mapper(paths[i]);
+	return paths;
+}
+const defaultOptions = {
+	caseSensitiveMatch: true,
+	debug: !!process.env.TINYGLOBBY_DEBUG,
+	expandDirectories: true,
+	followSymbolicLinks: true,
+	onlyFiles: true
+};
+function getOptions(options) {
+	const opts = Object.assign({}, options);
+	for (const key in defaultOptions) if (opts[key] === void 0) Object.assign(opts, { [key]: defaultOptions[key] });
+	opts.cwd = (opts.cwd instanceof URL ? fileURLToPath(opts.cwd) : resolve(opts.cwd || process.cwd())).replace(BACKSLASHES, "/");
+	opts.ignore = ensureStringArray(opts.ignore);
+	opts.fs && (opts.fs = {
+		readdir: opts.fs.readdir || readdir,
+		readdirSync: opts.fs.readdirSync || readdirSync,
+		realpath: opts.fs.realpath || realpath,
+		realpathSync: opts.fs.realpathSync || realpathSync,
+		stat: opts.fs.stat || stat,
+		statSync: opts.fs.statSync || statSync
+	});
+	if (opts.debug) log("globbing with options:", opts);
+	return opts;
+}
+function getCrawler(globInput, inputOptions = {}) {
+	var _ref;
+	if (globInput && (inputOptions === null || inputOptions === void 0 ? void 0 : inputOptions.patterns)) throw new Error("Cannot pass patterns as both an argument and an option");
+	const isModern = isReadonlyArray(globInput) || typeof globInput === "string";
+	const patterns = ensureStringArray((_ref = isModern ? globInput : globInput.patterns) !== null && _ref !== void 0 ? _ref : "**/*");
+	const options = getOptions(isModern ? inputOptions : globInput);
+	return patterns.length > 0 ? buildCrawler(options, patterns) : [];
+}
+async function glob(globInput, options) {
+	const [crawler, relative] = getCrawler(globInput, options);
+	return crawler ? formatPaths(await crawler.withPromise(), relative) : [];
+}
+function globSync(globInput, options) {
+	const [crawler, relative] = getCrawler(globInput, options);
+	return crawler ? formatPaths(crawler.sync(), relative) : [];
+}
+
+//#endregion
+var picomatch = import_picomatch.default;
+export { picomatch, dist_exports as tinyglobby };

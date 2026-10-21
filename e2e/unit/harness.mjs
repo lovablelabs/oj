@@ -350,7 +350,7 @@ export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
   fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
   fs.copyFileSync(asset("vite-html.mjs"), path.join(runDir, "vite-html.mjs"));
   fs.mkdirSync(path.join(runDir, "start"));
-  for (const name of ["vite-globs.mjs", "picomatch.mjs"]) {
+  for (const name of ["vite-globs.mjs", "glob-libs.mjs"]) {
     fs.copyFileSync(asset(`start/${name}`), path.join(runDir, "start", name));
   }
   const host = rpcSidecar(hostScript, {
