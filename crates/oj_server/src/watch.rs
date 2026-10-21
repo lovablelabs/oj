@@ -704,6 +704,11 @@ fn adopt_created_dirs(
 /// any depth (`node_modules`, `.git`). Symlinked directories are not entered:
 /// one pointing back up the tree would never end.
 pub(crate) fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    scan_tree(dir, out, &mut Vec::new());
+}
+
+/// `scan_files`, also collecting the directories it entered.
+fn scan_tree(dir: &Path, out: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -712,7 +717,8 @@ pub(crate) fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
         match entry.file_type() {
             Ok(t) if t.is_dir() => {
                 if !matches!(entry.file_name().to_str(), Some("node_modules" | ".git")) {
-                    scan_files(&path, out);
+                    dirs.push(path.clone());
+                    scan_tree(&path, out, dirs);
                 }
             }
             Ok(t) if t.is_symlink() && path.is_dir() => {}
@@ -733,24 +739,46 @@ pub fn watched_files(root: &Path) -> std::collections::HashSet<PathBuf> {
         let base = oj_cache::cache_base(&root);
         std::fs::canonicalize(&base).unwrap_or(base)
     };
-    scan_watched(&root, &cache_base).into_iter().collect()
+    let mut files = Vec::new();
+    scan_watched(&root, &cache_base, &mut files, &mut Vec::new());
+    files.into_iter().collect()
 }
 
-/// `watched_files`, spelled under `root` as given.
-fn scan_watched(root: &Path, cache_base: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
+/// `watched_files` and the directories holding them, spelled under `root`
+/// as given.
+fn scan_watched(root: &Path, cache_base: &Path, files: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let path = entry.path();
         if is_unwatched_dir(&entry.file_name()) || path == cache_base {
             continue;
         }
         if path.is_dir() {
-            scan_files(&path, &mut found);
+            dirs.push(path.clone());
+            scan_tree(&path, files, dirs);
         } else {
-            found.push(path);
+            files.push(path);
         }
     }
-    found
+}
+
+/// The watcher's snapshot: each file and directory the root watch covers,
+/// with its stamp when last seen.
+pub(crate) type Snapshot = std::collections::HashMap<PathBuf, Stamp>;
+
+/// The boot snapshot, minus excluded paths, and minus anything stamped after
+/// the scan began: a file created while it ran has a Create queued that must
+/// still read as an add.
+pub(crate) fn boot_snapshot(ignored: &[glob::Pattern], root: &Path, cache_base: &Path) -> Snapshot {
+    let began = SystemTime::now();
+    let (mut files, mut dirs) = (Vec::new(), Vec::new());
+    scan_watched(root, cache_base, &mut files, &mut dirs);
+    files
+        .into_iter()
+        .chain(dirs)
+        .filter(|p| !watch_excluded(ignored, root, cache_base, p))
+        .filter_map(|p| Some((p.clone(), stamp(&p)?)))
+        .filter(|(_, s)| s.mtime < began)
+        .collect()
 }
 
 /// The subtrees a rescan event says the watcher lost track of, as Zed reads
@@ -798,34 +826,44 @@ pub(crate) fn collapse_rescans(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
     kept
 }
 
-/// What a rescan of `roots` finds against the watcher's snapshot (`known`,
-/// each file's `stamp` when last seen), as Zed's rescan diffs its entries:
-/// files on disk it never knew are adds, known files gone from disk are
-/// removals, and known files whose stamp moved are edits. Untouched files
-/// stay silent, or oj would push an HMR update for every module.
+/// What a rescan of `roots` finds against the watcher's snapshot (`known`),
+/// as Zed's rescan diffs its entries: files on disk it never knew are adds,
+/// known paths gone from disk are removals, known files whose stamp moved
+/// are edits, and directories it never knew (or knew as another inode or
+/// birth) are new. Untouched files stay silent, or oj would push an HMR update for every
+/// module.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Rescanned {
     pub(crate) added: Vec<PathBuf>,
     pub(crate) changed: Vec<PathBuf>,
     pub(crate) removed: Vec<PathBuf>,
+    pub(crate) new_dirs: Vec<PathBuf>,
 }
 
 pub(crate) fn rescan_changes(
     roots: &[PathBuf],
+    ignored: &[glob::Pattern],
     root: &Path,
     cache_base: &Path,
-    known: &std::collections::HashMap<PathBuf, SystemTime>,
+    known: &Snapshot,
 ) -> Rescanned {
     let mut out = Rescanned::default();
+    let excluded = |p: &Path| watch_excluded(ignored, root, cache_base, p);
     for r in roots {
-        let files = if r == root {
-            scan_watched(root, cache_base)
+        let (mut files, mut dirs) = (Vec::new(), Vec::new());
+        if r == root {
+            scan_watched(root, cache_base, &mut files, &mut dirs);
         } else {
-            let mut found = Vec::new();
-            scan_files(r, &mut found);
-            found
-        };
-        for f in files {
+            dirs.push(r.clone());
+            scan_tree(r, &mut files, &mut dirs);
+        }
+        for d in dirs.into_iter().filter(|d| !excluded(d)) {
+            let Some(now) = stamp(&d) else { continue };
+            if !known.get(&d).is_some_and(|seen| seen.same_dir(&now)) {
+                out.new_dirs.push(d);
+            }
+        }
+        for f in files.into_iter().filter(|f| !excluded(f)) {
             match known.get(&f) {
                 None => out.added.push(f),
                 Some(seen) if stamp(&f) != Some(*seen) => out.changed.push(f),
@@ -838,29 +876,46 @@ pub(crate) fn rescan_changes(
         .filter(|p| roots.iter().any(|r| p.starts_with(r)) && !p.exists())
         .cloned()
         .collect();
+    out.new_dirs = collapse_rescans(out.new_dirs);
     for list in [&mut out.added, &mut out.changed, &mut out.removed] {
         list.sort();
     }
     out
 }
 
-/// A file's change stamp: the later of its mtime and ctime, since a file
-/// renamed onto a path keeps its old mtime but the rename moves its ctime.
-pub(crate) fn stamp(path: &Path) -> Option<SystemTime> {
-    let meta = std::fs::metadata(path).ok()?;
-    let modified = meta.modified().unwrap_or(UNIX_EPOCH);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let ctime = UNIX_EPOCH
-            + Duration::new(
-                meta.ctime().max(0) as u64,
-                meta.ctime_nsec().clamp(0, 999_999_999) as u32,
-            );
-        Some(modified.max(ctime))
+/// What a snapshot entry compares, as Zed's entries do: mtime, inode, and
+/// size, plus birth time where the filesystem keeps one, since a path
+/// deleted and recreated can get the freed inode back. A file renamed onto
+/// a path keeps its old mtime but brings its own inode; a metadata-only
+/// change (chmod, xattrs, a new hard link) moves none of them, as the live
+/// path ignores it too. A directory compares by inode and birth alone
+/// (`same_dir`): its mtime moves with every child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stamp {
+    pub(crate) mtime: SystemTime,
+    pub(crate) ino: u64,
+    pub(crate) len: u64,
+    pub(crate) born: Option<SystemTime>,
+}
+
+impl Stamp {
+    fn same_dir(&self, other: &Stamp) -> bool {
+        self.ino == other.ino && self.born == other.born
     }
+}
+
+pub(crate) fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(&meta);
     #[cfg(not(unix))]
-    Some(modified)
+    let ino = 0;
+    Some(Stamp {
+        mtime: meta.modified().unwrap_or(UNIX_EPOCH),
+        ino,
+        len: if meta.is_dir() { 0 } else { meta.len() },
+        born: meta.created().ok(),
+    })
 }
 
 /// One debounced set of changes.
@@ -870,8 +925,9 @@ struct Batch {
     /// Paths the watcher saw come into existence: plugins get "create" for
     /// those, "update" for edits, "delete" for removals.
     created: std::collections::HashSet<PathBuf>,
-    /// Subtrees the watcher lost events under (`rescan_roots`).
+    /// Subtrees the watcher lost events under (`rescan_roots`), and why.
     rescans: Vec<PathBuf>,
+    rescan_reason: Option<String>,
 }
 
 impl Batch {
@@ -1029,17 +1085,13 @@ pub(crate) fn spawn_watcher(
         let _ = ready.send(true);
 
         let debounce_ms: u64 = oj_env::get().knobs.hmr_debounce_ms.unwrap_or(10);
-        // The files the watcher knows, chokidar's watched set, with each
+        // The paths the watcher knows, chokidar's watched set, with each
         // one's stamp when last seen: the boot scan plus every path a batch
         // named. A Create for a known path is an edit (chokidar: add once,
         // change after; FSEvents keeps a file's "created" flag on later
         // events for a while), and a rescan diffs against it, as Zed's does
         // against its entries. Scanned after `ready`: events queue meanwhile.
-        let mut seen_paths: std::collections::HashMap<PathBuf, SystemTime> =
-            scan_watched(&state.root, &cache_base)
-                .into_iter()
-                .filter_map(|p| Some((p.clone(), stamp(&p)?)))
-                .collect();
+        let mut seen_paths = boot_snapshot(&state.watch_ignored, &state.root, &cache_base);
         let mut changes = ContentChanges::new();
         loop {
             let first = match rx.recv() {
@@ -1142,6 +1194,9 @@ fn ingest_event(
     let rescans = rescan_roots(&state.watch_ignored, &state.root, cache_base, ev);
     if !rescans.is_empty() {
         batch.rescans.extend(rescans);
+        if let Some(info) = ev.info() {
+            batch.rescan_reason.get_or_insert_with(|| info.to_string());
+        }
         return true;
     }
     let mut kept = false;
@@ -1159,33 +1214,49 @@ fn ingest_event(
 }
 
 /// The watcher lost events (an inotify queue overflow, FSEvents'
-/// MustScanSubDirs): as Zed does, re-arm the watches first, so nothing
-/// landing during the scan is lost, then scan the subtrees and hand what
-/// changed to the batch and the feed as synthesized events. Only inotify
-/// needs the re-arm: a directory created while its events were dropped
-/// never got a watch (FSEvents streams cover their whole tree).
+/// MustScanSubDirs): as Zed does, scan the subtrees against the snapshot,
+/// re-arm the watches a directory born meanwhile never got, and hand what
+/// changed to the batch and the feed as synthesized events.
+///
+/// Only new directories are re-armed, never the whole tree: notify's inotify
+/// mask includes IN_OPEN and its `watch` walks on the thread that drains the
+/// queue, so re-walking a large tree overflowed the queue it was recovering,
+/// and every rescan raised the next. Files a new directory gained between the
+/// scan and its watch are picked up by scanning it again after.
 fn rescan(
     state: &ServerState,
     watchers: &mut Watchers,
     cache_base: &Path,
     changes: &mut ContentChanges,
     batch: &mut Batch,
-    known: &std::collections::HashMap<PathBuf, SystemTime>,
+    known: &Snapshot,
 ) {
     let roots = collapse_rescans(std::mem::take(&mut batch.rescans));
+    let reason = batch.rescan_reason.take();
     for r in &roots {
-        eprintln!("oj: file watcher lost events, rescanning {}", r.display());
-    }
-    if cfg!(target_os = "linux") {
-        for r in &roots {
-            if r == &state.root {
-                let _ = watch_root(&mut watchers.root, &state.root, cache_base);
-            } else {
-                let _ = watchers.watch(r, notify::RecursiveMode::Recursive);
-            }
+        match &reason {
+            Some(why) => eprintln!(
+                "oj: file watcher lost events ({why}), rescanning {}",
+                r.display()
+            ),
+            None => eprintln!("oj: file watcher lost events, rescanning {}", r.display()),
         }
     }
-    let found = rescan_changes(&roots, &state.root, cache_base, known);
+    let mut found = rescan_changes(&roots, &state.watch_ignored, &state.root, cache_base, known);
+    if cfg!(target_os = "linux") {
+        for d in &found.new_dirs {
+            if let Err(err) = watchers.watch(d, notify::RecursiveMode::Recursive) {
+                eprintln!("oj: cannot watch {}: {err}", d.display());
+            }
+            let mut late = Vec::new();
+            scan_files(d, &mut late);
+            found
+                .added
+                .extend(late.into_iter().filter(|f| !known.contains_key(f)));
+        }
+        found.added.sort();
+        found.added.dedup();
+    }
     for (kind, paths) in [
         (
             notify::EventKind::Create(notify::event::CreateKind::Any),
