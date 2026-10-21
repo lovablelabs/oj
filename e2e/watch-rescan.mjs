@@ -6,7 +6,7 @@
 // knew, so a module edited while its event was dropped still hot-updates, and
 // a directory created meanwhile is watched again. Linux only, and only with
 // a small queue, which makes a burst of writes overflow it:
-//   sudo sysctl -w fs.inotify.max_queued_events=16
+//   sudo sysctl -w fs.inotify.max_queued_events=1
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -28,7 +28,7 @@ const queue = (() => {
 })();
 if (process.platform !== "linux" || queue > 256) {
   console.log("SKIP watch rescan: needs Linux with a small inotify queue");
-  console.log("  enable with: sudo sysctl -w fs.inotify.max_queued_events=16");
+  console.log("  enable with: sudo sysctl -w fs.inotify.max_queued_events=1");
   process.exit(0);
 }
 
@@ -71,11 +71,13 @@ try {
       return msg.type === "update" && msg.updates.some((u) => u.path === file);
     });
 
-  // The edit lands inside a burst far past the queue, in a directory born
-  // inside it, so its events are dropped with the rest.
+  // The edit lands inside a burst far past the queue, and so does a new
+  // directory: their events are dropped with the rest.
   const burst = path.join(src, "burst");
   fs.mkdirSync(burst);
   for (let i = 0; i < 3000; i++) fs.writeFileSync(path.join(burst, `f${i}.txt`), String(i));
+  const born = path.join(src, "born");
+  fs.mkdirSync(born);
   fs.writeFileSync(path.join(src, "a.ts"), `export const v = "v2";\n${accept}`);
   for (let i = 3000; i < 6000; i++) fs.writeFileSync(path.join(burst, `f${i}.txt`), String(i));
 
@@ -91,13 +93,14 @@ try {
   }
   console.log("watch rescan: an edit made during a queue overflow hot-updated");
 
-  // The overflow dropped the burst dir's own Create, so its watch came from
-  // the rescan: a quiet edit there is seen.
-  fs.writeFileSync(path.join(burst, "late.ts"), `export const late = 1;\n${accept}`);
-  await (await fetch(`http://localhost:${PORT}/src/burst/late.ts`)).text();
-  fs.writeFileSync(path.join(burst, "late.ts"), `export const late = 2;\n${accept}`);
-  await settles(async () => updated("/src/burst/late.ts"), { timeoutMs: 20000 });
-  if (!updated("/src/burst/late.ts")) {
+  // The directory born mid-burst lost its Create, so its watch came from
+  // the rescan's re-arm: an edit there is seen.
+  fs.writeFileSync(path.join(born, "late.ts"), `export const late = 1;\n${accept}`);
+  await settles(async () => (await fetch(`http://localhost:${PORT}/src/born/late.ts`)).ok, { timeoutMs: 10000 });
+  await (await fetch(`http://localhost:${PORT}/src/born/late.ts`)).text();
+  fs.writeFileSync(path.join(born, "late.ts"), `export const late = 2;\n${accept}`);
+  await settles(async () => updated("/src/born/late.ts"), { timeoutMs: 20000 });
+  if (!updated("/src/born/late.ts")) {
     throw new Error(`a directory created during the overflow is not watched; log:\n${log.slice(-3000)}`);
   }
   console.log("watch rescan: a directory created during the overflow is watched");

@@ -136,6 +136,13 @@ jobs:
           node e2e/memory-cache.mjs
           node e2e/mtime-fastpath.mjs
           node e2e/hmr-hook-skip.mjs
+      - name: watcher rescans after an inotify queue overflow (small queues)
+        run: |
+          trap 'sudo sysctl -w fs.inotify.max_queued_events=16384' EXIT
+          sudo sysctl -w fs.inotify.max_queued_events=1
+          node e2e/watch-rescan.mjs
+          sudo sysctl -w fs.inotify.max_queued_events=1024
+          node e2e/watch-rescan-quiet.mjs
       - name: startup compile error overlay + recovery by reload
         run: node e2e/hmr-overlay-recovery.mjs
       - name: plugin-owned websocket upgrades (tunnel plugins)
