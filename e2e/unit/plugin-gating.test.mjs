@@ -8,6 +8,7 @@ import {
   findConfig,
   loadPluginContainer,
 } from "../../crates/oj_server/src/assets/start/vite-plugin-bridge.mjs";
+import { loadViteGlobs } from "../../crates/oj_server/src/assets/start/vite-globs.mjs";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,9 @@ const {
   ojReimplemented,
   envAllows,
 } = __test;
+
+// String id filters match with Vite's own picomatch (e2e's devDeps).
+await loadViteGlobs(join(import.meta.dirname, ".."));
 
 test("matchOne: RegExp tests, string is a picomatch-style glob (Vite pluginFilter)", () => {
   assert.ok(matchOne(/\.mdx$/, "/a/b.mdx"));

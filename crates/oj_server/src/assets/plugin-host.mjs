@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import { asNode } from "./vite-config-node.mjs";
+import { idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
   createHtmlProxy,
@@ -1175,6 +1176,8 @@ let allPlugins = [];
 // plugin), so compat probes for vite:react-babel / vite:react-swc find them.
 let nativePlugins = [];
 const enforceRank = (p) => (p.enforce === "pre" ? -1 : p.enforce === "post" ? 1 : 0);
+// Vite's picomatch, for plugin `filter` ids.
+await loadViteGlobs(initial.config?.root ?? process.cwd());
 try {
   let list;
   let userConfig = null;
@@ -3701,70 +3704,11 @@ function pluginsWithHook(name) {
 // Vite's pluginFilter: a string *id* filter is a picomatch glob (dot:true) joined
 // to cwd unless it starts with `**` or is absolute, a RegExp is tested against the
 // slash-normalized id (lastIndex reset), and a string *code* filter is a substring.
-// The glob dialect covered is what plugins use: `*`, `**`, `?`, `{a,b}`, `[...]`.
+// The glob is matched with Vite's own picomatch (vite-globs.mjs).
 const slash = (p) => p.replace(/\\/g, "/");
-function globToRegExpSource(glob) {
-  let re = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      if (glob[i + 1] === "*") {
-        i++;
-        if (glob[i + 1] === "/") {
-          i++;
-          re += "(?:.*/)?";
-        } else {
-          re += ".*";
-        }
-      } else {
-        re += "[^/]*";
-      }
-    } else if (c === "?") {
-      re += "[^/]";
-    } else if (c === "{") {
-      const j = glob.indexOf("}", i);
-      if (j > i) {
-        re +=
-          "(?:" +
-          glob
-            .slice(i + 1, j)
-            .split(",")
-            .map(globToRegExpSource)
-            .join("|") +
-          ")";
-        i = j;
-      } else {
-        re += "\\{";
-      }
-    } else if (c === "[") {
-      const j = glob.indexOf("]", i);
-      if (j > i) {
-        let cls = glob.slice(i + 1, j);
-        if (cls[0] === "!") cls = "^" + cls.slice(1);
-        re += "[" + cls + "]";
-        i = j;
-      } else {
-        re += "\\[";
-      }
-    } else if (c === "\\" && i + 1 < glob.length) {
-      re += "\\" + glob[++i];
-    } else {
-      re += c.replace(/[.+^$()|]/g, "\\$&");
-    }
-  }
-  return re;
-}
-const idGlobCache = new Map();
 function idPatternToRegExp(pattern) {
   if (pattern instanceof RegExp) return pattern;
-  let re = idGlobCache.get(pattern);
-  if (!re) {
-    const cwd = initial.config?.root ?? process.cwd();
-    const glob = pattern.startsWith("**") || isAbsolute(pattern) ? slash(pattern) : slash(join(cwd, pattern));
-    re = new RegExp("^" + globToRegExpSource(glob) + "$");
-    idGlobCache.set(pattern, re);
-  }
-  return re;
+  return idFilterRegExp(pattern, initial.config?.root ?? process.cwd());
 }
 function matchId(pattern, id) {
   if (!(pattern instanceof RegExp) && typeof pattern !== "string") return false;

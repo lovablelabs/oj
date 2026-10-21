@@ -24,12 +24,12 @@ pub fn expand_source(source: &str, path: &Path, root: Option<&Path>) -> String {
     })
 }
 
-/// The positive `import.meta.glob` patterns a module uses, resolved the way
-/// `expand` resolves them (`<dir>/pages/*.tsx`, `<root>/src/*.ts`). The dev
-/// server's watcher keeps these per importer: a file created or deleted under
-/// one of them changes what the glob expands to, so the importer is updated as
+/// The `import.meta.glob` calls a module makes, resolved the way `expand`
+/// resolves them (`<dir>/pages/*.tsx`, `<root>/src/*.ts`). The dev server's
+/// watcher keeps their matchers per importer: a file created or deleted that
+/// one matches changes what the glob expands to, so the importer is updated as
 /// if it had been edited (Vite's importMetaGlob `hotUpdate`).
-pub fn glob_patterns(source: &str, path: &Path, root: Option<&Path>) -> Vec<String> {
+pub fn glob_patterns(source: &str, path: &Path, root: Option<&Path>) -> Vec<GlobCall> {
     if !source.contains("import.meta.glob") {
         return Vec::new();
     }
@@ -146,23 +146,307 @@ fn span_text(source: &str, span: Span) -> Option<&str> {
 struct PatternCollector<'d> {
     dir: &'d Path,
     root: Option<&'d Path>,
-    out: Vec<String>,
+    out: Vec<GlobCall>,
 }
 
 impl<'a> Visit<'a> for PatternCollector<'_> {
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
         if is_import_meta_glob(call) {
-            if let Some(patterns) = call.arguments.first().and_then(collect_patterns) {
-                for pattern in patterns {
-                    if !pattern.starts_with('!') {
-                        if let Some(abs) = absolute_glob(&pattern, self.dir, self.root) {
-                            self.out.push(slash(&abs));
-                        }
+            let patterns = call.arguments.first().and_then(collect_patterns);
+            let opts = match call.arguments.get(1) {
+                Some(arg) => collect_options(arg),
+                None => Some(GlobOptions::default()),
+            };
+            if let Some(found) = patterns
+                .zip(opts)
+                .and_then(|(p, o)| GlobCall::resolve(&p, &o, self.dir, self.root))
+            {
+                self.out.push(found);
+            }
+        }
+        walk::walk_call_expression(self, call);
+    }
+}
+
+/// One `import.meta.glob` call as Vite matches files against it: its patterns
+/// resolved to absolute globs (`!`-led for negatives, path prefixes
+/// glob-escaped, Vite's globsResolved) and the options its matchers and walk
+/// take. The Start client bundler writes the same shape (glob-scopes.json).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobCall {
+    pub patterns: Vec<String>,
+    pub exhaustive: bool,
+    pub case_sensitive: bool,
+}
+
+impl GlobCall {
+    /// Vite's toAbsoluteGlob over a call's patterns, with `base` applied.
+    /// `None` when `base` is root-led and no root is known.
+    fn resolve(
+        patterns: &[String],
+        opts: &GlobOptions,
+        dir: &Path,
+        root: Option<&Path>,
+    ) -> Option<GlobCall> {
+        let base_dir = match opts.base.as_deref() {
+            Some(b) => Some(match b.strip_prefix('/') {
+                Some(rest) => join_normalized(&escaped(root?), rest),
+                None => join_normalized(&escaped(dir), b),
+            }),
+            None => None,
+        };
+        let dir = base_dir.unwrap_or_else(|| escaped(dir));
+        let root = root.map(escaped);
+        Some(GlobCall {
+            patterns: patterns
+                .iter()
+                .filter_map(|p| absolute_glob(p, &dir, root.as_deref()))
+                .collect(),
+            exhaustive: opts.exhaustive,
+            case_sensitive: opts.case_sensitive,
+        })
+    }
+
+    /// The shape glob-scopes.json holds (`{ patterns, exhaustive,
+    /// caseSensitive }`); `None` when it is not one.
+    pub fn from_json(v: &serde_json::Value) -> Option<GlobCall> {
+        Some(GlobCall {
+            patterns: v["patterns"]
+                .as_array()?
+                .iter()
+                .map(|p| p.as_str().map(str::to_string))
+                .collect::<Option<_>>()?,
+            exhaustive: v["exhaustive"].as_bool().unwrap_or(false),
+            case_sensitive: v["caseSensitive"].as_bool().unwrap_or(true),
+        })
+    }
+
+    pub fn matcher(&self) -> GlobMatcher {
+        GlobMatcher::new(self)
+    }
+
+    /// The files the call expands to, absolute and lexically normalized,
+    /// sorted by path string as Vite sorts them: a walk from the patterns'
+    /// common scan base (Vite's getCommonBase), kept where the matcher
+    /// matches. Like tinyglobby with Vite's options, the walk enters neither
+    /// `node_modules` nor a dot-led directory unless the call is exhaustive
+    /// or a pattern spells a dot-led part.
+    fn files(&self) -> Vec<PathBuf> {
+        let matcher = self.matcher();
+        let bases: Vec<String> = matcher.affirmed.iter().map(|a| a.base.clone()).collect();
+        let Some(start) = common_base(&bases) else {
+            return Vec::new();
+        };
+        let enter_hidden = self.exhaustive
+            || matcher.affirmed.iter().any(|a| {
+                a.pattern
+                    .split('/')
+                    .any(|seg| seg.starts_with('.') && seg != "." && seg != "..")
+            });
+        let mut found = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        walk_files(
+            Path::new(&start),
+            self.exhaustive,
+            enter_hidden,
+            &mut seen,
+            &mut found,
+        );
+        let mut files = std::collections::BTreeMap::new();
+        for file in found {
+            let key = slash(&file);
+            if matcher.is_match(&key) {
+                files.insert(key, file);
+            }
+        }
+        files.into_values().collect()
+    }
+}
+
+/// A [`GlobCall`]'s matcher, as Vite's importMetaGlob builds one per call
+/// (picomatch with `dot: !!exhaustive`, `nocase: !caseSensitive`,
+/// `ignore: ['**/node_modules/**']` unless exhaustive, no extglobs): a file
+/// matches when an affirmed pattern does and no negated one does. `*` and
+/// `**` stop at a dot-led part the pattern does not spell, and a
+/// `node_modules` part below the pattern's scan base is ignored.
+pub struct GlobMatcher {
+    affirmed: Vec<Affirmed>,
+    negated: globset::GlobSet,
+    exhaustive: bool,
+}
+
+struct Affirmed {
+    glob: globset::GlobMatcher,
+    /// pm.scan's base, unescaped: the literal directory the pattern starts in.
+    base: String,
+    pattern: String,
+}
+
+impl GlobMatcher {
+    fn new(call: &GlobCall) -> GlobMatcher {
+        let build = |p: &str| {
+            globset::GlobBuilder::new(&picomatch_class_negation(p))
+                .literal_separator(true)
+                .backslash_escape(true)
+                .empty_alternates(true)
+                .case_insensitive(!call.case_sensitive)
+                .build()
+                .ok()
+        };
+        let mut affirmed = Vec::new();
+        let mut negated = globset::GlobSetBuilder::new();
+        for p in &call.patterns {
+            match p.strip_prefix('!') {
+                Some(neg) => {
+                    if let Some(g) = build(neg) {
+                        negated.add(g);
+                    }
+                }
+                None => {
+                    if let Some(g) = build(p) {
+                        affirmed.push(Affirmed {
+                            glob: g.compile_matcher(),
+                            base: scan_base(p),
+                            pattern: p.clone(),
+                        });
                     }
                 }
             }
         }
-        walk::walk_call_expression(self, call);
+        GlobMatcher {
+            affirmed,
+            negated: negated
+                .build()
+                .unwrap_or_else(|_| globset::GlobSet::empty()),
+            exhaustive: call.exhaustive,
+        }
+    }
+
+    /// Whether `file` (absolute, `/`-separated) is in the call's expansion.
+    pub fn is_match(&self, file: &str) -> bool {
+        let affirmed = self.affirmed.is_empty()
+            || self.affirmed.iter().any(|a| {
+                a.glob.is_match(file)
+                    && (self.exhaustive || {
+                        let rel = file
+                            .strip_prefix(a.base.as_str())
+                            .and_then(|r| r.strip_prefix('/'))
+                            .unwrap_or(file);
+                        !hidden_by_default(rel, &a.pattern)
+                    })
+            });
+        affirmed && !self.negated.is_match(file)
+    }
+}
+
+/// picomatch reads `[^...]` as a negated class, globset only `[!...]`.
+fn picomatch_class_negation(pattern: &str) -> std::borrow::Cow<'_, str> {
+    if pattern.contains("[^") {
+        std::borrow::Cow::Owned(pattern.replace("[^", "[!"))
+    } else {
+        std::borrow::Cow::Borrowed(pattern)
+    }
+}
+
+/// pm.scan's base: the pattern up to the last `/` before its first unescaped
+/// glob character, unescaped. A pattern with none names a file, and its
+/// directory is the base (Vite's getCommonBase reads a dotted last part so).
+fn scan_base(pattern: &str) -> String {
+    let mut last_slash = None;
+    let mut chars = pattern.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '*' | '?' | '[' | '{' => break,
+            '/' => last_slash = Some(i),
+            _ => {}
+        }
+    }
+    unescape(last_slash.map_or("", |i| &pattern[..i]))
+}
+
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A literal path as a glob prefix: Vite's globSafePath (tinyglobby
+/// escapePath), so a `[id]` or `(group)` directory matches itself.
+fn escaped(path: &Path) -> PathBuf {
+    let mut out = String::new();
+    for c in slash(path).chars() {
+        if matches!(
+            c,
+            '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '!' | '\\'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    PathBuf::from(out)
+}
+
+/// Vite's getCommonBase over the affirmed patterns' scan bases.
+fn common_base(bases: &[String]) -> Option<String> {
+    let first = bases.first()?;
+    let parts: Vec<&str> = first.split('/').collect();
+    let mut common = String::new();
+    for i in 0..parts.len() {
+        let candidate = parts[..=i].join("/");
+        if bases
+            .iter()
+            .all(|b| *b == candidate || b.starts_with(&format!("{candidate}/")))
+        {
+            common = candidate;
+        } else {
+            break;
+        }
+    }
+    Some(if common.is_empty() {
+        "/".into()
+    } else {
+        common
+    })
+}
+
+fn walk_files(
+    dir: &Path,
+    exhaustive: bool,
+    enter_hidden: bool,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) {
+    // A symlinked directory is followed once (tinyglobby follows links).
+    if !seen.insert(std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !exhaustive && (name == "node_modules" || (name.starts_with('.') && !enter_hidden)) {
+                continue;
+            }
+            walk_files(&path, exhaustive, enter_hidden, seen, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
     }
 }
 
@@ -201,7 +485,6 @@ struct GlobExpander<'a, 'd> {
     uid: usize,
 }
 
-#[derive(Default)]
 struct GlobOptions {
     eager: bool,
     import: Option<String>,
@@ -211,6 +494,21 @@ struct GlobOptions {
     base: Option<String>,
     /// Vite's `exhaustive`: also match dotfiles and `node_modules`.
     exhaustive: bool,
+    /// Vite's `caseSensitive` (default true): false matches with nocase.
+    case_sensitive: bool,
+}
+
+impl Default for GlobOptions {
+    fn default() -> Self {
+        GlobOptions {
+            eager: false,
+            import: None,
+            query: String::new(),
+            base: None,
+            exhaustive: false,
+            case_sensitive: true,
+        }
+    }
 }
 
 impl GlobOptions {
@@ -284,18 +582,23 @@ fn slash(path: &Path) -> String {
 /// `**` one is matched from the root as it stands. `None` for a root-led
 /// pattern without a root, or a form Vite hands to its resolver (an alias, a
 /// bare package path), which this compiler has none of.
-fn absolute_glob(pattern: &str, dir: &Path, root: Option<&Path>) -> Option<PathBuf> {
-    let pattern = pattern.strip_prefix('!').unwrap_or(pattern);
-    if let Some(rest) = pattern.strip_prefix('/') {
-        return Some(join_normalized(root?, rest));
-    }
-    if pattern.starts_with("**") {
-        return Some(join_normalized(root?, pattern));
-    }
-    if pattern.starts_with("./") || pattern.starts_with("../") {
-        return Some(join_normalized(dir, pattern));
-    }
-    None
+fn absolute_glob(pattern: &str, dir: &Path, root: Option<&Path>) -> Option<String> {
+    let (pre, pattern) = match pattern.strip_prefix('!') {
+        Some(p) => ("!", p),
+        None => ("", pattern),
+    };
+    let abs = if let Some(rest) = pattern.strip_prefix('/') {
+        join_normalized(root?, rest)
+    } else if pattern.starts_with("**") {
+        join_normalized(root?, pattern)
+    } else if pattern.starts_with("./") || pattern.starts_with("../") {
+        join_normalized(dir, pattern)
+    } else {
+        return None;
+    };
+    // Not `slash`: the prefix is already `/`-separated, and its backslashes
+    // are glob escapes.
+    Some(format!("{pre}{}", abs.to_string_lossy()))
 }
 
 /// Vite's resolvePaths key for `file` outside `base`: relative to the root,
@@ -327,12 +630,11 @@ impl<'a> GlobExpander<'a, '_> {
             }),
             None => None,
         };
-        let glob_dir = base_dir.as_deref().unwrap_or(self.dir);
         let is_relative = patterns
             .iter()
             .all(|p| p.starts_with('.') || p.starts_with('!'));
         let mut entries: Vec<String> = Vec::new();
-        let files = glob_matches(glob_dir, self.root, &patterns, opts.exhaustive);
+        let files = GlobCall::resolve(&patterns, &opts, self.dir, self.root)?.files();
         let importer = normalize(self.importer);
         for file in files.into_iter().filter(|f| *f != importer) {
             let import_path = relative_spec(self.dir, &file);
@@ -668,6 +970,7 @@ fn collect_options(arg: &Argument) -> Option<GlobOptions> {
         match (key, string, boolean) {
             ("eager", _, Some(b)) => opts.eager = b,
             ("exhaustive", _, Some(b)) => opts.exhaustive = b,
+            ("caseSensitive", _, Some(b)) => opts.case_sensitive = b,
             ("import", Some(s), _) => opts.import = Some(s.to_string()),
             ("base", Some(s), _) => opts.base = Some(s.to_string()),
             ("query", Some(q), _) if q.starts_with('?') => opts.query = q.to_string(),
@@ -694,9 +997,9 @@ fn hidden_by_default(rel: &str, pattern: &str) -> bool {
             || (seg.starts_with('.')
                 && seg != "."
                 && seg != ".."
-                && !pattern_dots
-                    .iter()
-                    .any(|p| glob::Pattern::new(p).is_ok_and(|g| g.matches(seg))))
+                && !pattern_dots.iter().any(|p| {
+                    globset::Glob::new(p).is_ok_and(|g| g.compile_matcher().is_match(seg))
+                }))
     })
 }
 
@@ -723,55 +1026,6 @@ fn template_matches(dir: &Path, pattern: &str) -> Vec<String> {
         });
     }
     keys.into_iter().collect()
-}
-
-/// The files `patterns` match, absolute and lexically normalized, sorted as
-/// Vite sorts them (by path string, so `a-b/x` precedes `a/b`). Relative patterns resolve from `dir`, `/` ones from
-/// `root` ([`absolute_glob`]); negatives exclude what they match.
-fn glob_matches(
-    dir: &Path,
-    root: Option<&Path>,
-    patterns: &[String],
-    exhaustive: bool,
-) -> Vec<PathBuf> {
-    let (negatives, positives): (Vec<&String>, Vec<&String>) =
-        patterns.iter().partition(|p| p.starts_with('!'));
-    let neg_patterns: Vec<glob::Pattern> = negatives
-        .iter()
-        .filter_map(|p| absolute_glob(p, dir, root))
-        .filter_map(|abs| glob::Pattern::new(&slash(&abs)).ok())
-        .collect();
-
-    let mut files = std::collections::BTreeMap::new();
-    for pat in positives {
-        let Some(abs) = absolute_glob(pat, dir, root) else {
-            continue;
-        };
-        // The dotfile/node_modules check reads the part of the path the
-        // pattern matched: below the root for `/`, below `dir` otherwise.
-        let anchor = match (pat.starts_with('/') || pat.starts_with("**"), root) {
-            (true, Some(root)) => root,
-            _ => dir,
-        };
-        let Ok(paths) = glob::glob(&slash(&abs)) else {
-            continue;
-        };
-        for entry in paths.flatten() {
-            if !entry.is_file() {
-                continue;
-            }
-            let file = normalize(&entry);
-            if neg_patterns.iter().any(|n| n.matches(&slash(&file))) {
-                continue;
-            }
-            let rel = relative_spec(anchor, &file);
-            if !exhaustive && hidden_by_default(&rel, pat) {
-                continue;
-            }
-            files.insert(slash(&file), file);
-        }
-    }
-    files.into_values().collect()
 }
 
 #[cfg(test)]
@@ -947,7 +1201,106 @@ mod tests {
             Path::new("/app/src/main.ts"),
             Some(Path::new("/app")),
         );
-        assert_eq!(pats, vec!["/app/src/pages/*.tsx", "/app/src/local/*.ts"]);
+        assert_eq!(
+            pats,
+            vec![GlobCall {
+                patterns: vec![
+                    "/app/src/pages/*.tsx".into(),
+                    "/app/src/local/*.ts".into(),
+                    "!/app/src/pages/x.tsx".into()
+                ],
+                exhaustive: false,
+                case_sensitive: true,
+            }]
+        );
+    }
+
+    // What picomatch 4.0.5 answers for each case, with the matcher built the
+    // way Vite 8.2.1's importMetaGlob builds one per call (noextglob,
+    // `dot: !!exhaustive`, `nocase: !caseSensitive`, `**/node_modules/**`
+    // ignored unless exhaustive, negatives subtracted).
+    #[test]
+    fn the_matcher_answers_what_vites_picomatch_matcher_answers() {
+        let cases: &[(&[&str], &str, bool, bool, bool)] = &[
+            (&["/a/src/*.json"], "/a/src/x.json", false, true, true),
+            (&["/a/src/*.json"], "/a/src/d/x.json", false, true, false),
+            (&["/a/c/**/x.json"], "/a/c/foox.json", false, true, false),
+            (&["/a/c/**/x.json"], "/a/c/x.json", false, true, true),
+            (&["/a/c/**/x.json"], "/a/c/d/e/x.json", false, true, true),
+            (&["/a/x/[ab]/*.json"], "/a/x/a/m.json", false, true, true),
+            (&["/a/x/[ab]/*.json"], "/a/x/c/m.json", false, true, false),
+            (&["/a/x/[^a]/*.json"], "/a/x/b/m.json", false, true, true),
+            (&["/a/x/[^a]/*.json"], "/a/x/a/m.json", false, true, false),
+            (&["/a/x/{a,b}/*.json"], "/a/x/b/m.json", false, true, true),
+            (&["/a/src/*.json"], "/a/src/.h.json", false, true, false),
+            (&["/a/src/*.json"], "/a/src/.h.json", true, true, true),
+            (
+                &["/a/src/**/*.json"],
+                "/a/src/.d/x.json",
+                false,
+                true,
+                false,
+            ),
+            (&["/a/src/.d/*.json"], "/a/src/.d/x.json", false, true, true),
+            (
+                &["/a/src/**/*.js"],
+                "/a/src/node_modules/p/i.js",
+                false,
+                true,
+                false,
+            ),
+            (
+                &["/a/src/**/*.js"],
+                "/a/src/node_modules/p/i.js",
+                true,
+                true,
+                true,
+            ),
+            (&["/a/src/Icon.svg"], "/a/src/icon.svg", false, false, true),
+            (&["/a/src/Icon.svg"], "/a/src/icon.svg", false, true, false),
+            (
+                &["/a/src/*.ts", "!/a/src/skip.ts"],
+                "/a/src/skip.ts",
+                false,
+                true,
+                false,
+            ),
+            (
+                &["/a/src/*.ts", "!/a/src/skip.ts"],
+                "/a/src/keep.ts",
+                false,
+                true,
+                true,
+            ),
+            (
+                &["/a/src/*.ts", "!**/skip.ts"],
+                "/a/src/skip.ts",
+                false,
+                true,
+                false,
+            ),
+            (&[r"/a/\[id\]/*.ts"], "/a/[id]/x.ts", false, true, true),
+            (&[r"/a/\(g\)/*.ts"], "/a/(g)/x.ts", false, true, true),
+            (
+                &["/a/.cfg/app/src/*.ts"],
+                "/a/.cfg/app/src/x.ts",
+                false,
+                true,
+                true,
+            ),
+        ];
+        for (patterns, file, exhaustive, case_sensitive, want) in cases {
+            let call = GlobCall {
+                patterns: patterns.iter().map(|p| p.to_string()).collect(),
+                exhaustive: *exhaustive,
+                case_sensitive: *case_sensitive,
+            };
+            assert_eq!(
+                call.matcher().is_match(file),
+                *want,
+                "{patterns:?} on {file}"
+            );
+        }
     }
 
     // A `../sibling/*` glob from a nested importer must match: the `..` path
@@ -973,22 +1326,29 @@ mod tests {
                    const b = import.meta.glob(['./img/**/*.png', '!./img/skip.png'], { eager: true });\n\
                    const c = import.meta.glob(dynamic);\n";
         let pats = glob_patterns(src, std::path::Path::new("/app/src/main.ts"), None);
-        assert_eq!(pats, vec!["/app/src/pages/*.tsx", "/app/src/img/**/*.png"]);
+        let patterns: Vec<&[String]> = pats.iter().map(|c| c.patterns.as_slice()).collect();
+        assert_eq!(
+            patterns,
+            vec![
+                &["/app/src/pages/*.tsx".to_string()][..],
+                &[
+                    "/app/src/img/**/*.png".to_string(),
+                    "!/app/src/img/skip.png".to_string()
+                ][..],
+            ]
+        );
         assert!(glob_patterns(
             "export const x = 1;",
             std::path::Path::new("/app/x.ts"),
             None
         )
         .is_empty());
-        // The resolved pattern matches the files `expand` would list (with `*`
-        // stopping at `/`, as the directory walk in glob_matches does).
-        let p = glob::Pattern::new(&pats[0]).unwrap();
-        let opts = glob::MatchOptions {
-            require_literal_separator: true,
-            ..Default::default()
-        };
-        assert!(p.matches_path_with(std::path::Path::new("/app/src/pages/About.tsx"), opts));
-        assert!(!p.matches_path_with(std::path::Path::new("/app/src/pages/nested/Deep.tsx"), opts));
+        // The call's matcher matches the files `expand` would list (`*`
+        // stops at `/`), and its negatives subtract.
+        assert!(pats[0].matcher().is_match("/app/src/pages/About.tsx"));
+        assert!(!pats[0].matcher().is_match("/app/src/pages/nested/Deep.tsx"));
+        assert!(pats[1].matcher().is_match("/app/src/img/a/b.png"));
+        assert!(!pats[1].matcher().is_match("/app/src/img/skip.png"));
     }
 
     #[test]
@@ -1153,6 +1513,56 @@ mod tests {
         );
         assert!(out.contains(".hidden.json"), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The dialect is picomatch's, as Vite expands it: braces and classes
+    // expand, `**` spans whole parts only, `caseSensitive: false` folds
+    // case, and the importer's own `[id]` directory is matched literally.
+    #[test]
+    fn globs_expand_in_picomatchs_dialect() {
+        let root = app(
+            "dialect",
+            &[
+                "x/a/m.json",
+                "x/b/m.json",
+                "x/c/m.json",
+                "c/foox.json",
+                "c/d/x.json",
+                "img/Icon.svg",
+                "routes/[id]/one.ts",
+                "routes/[id]/two.ts",
+            ],
+        );
+        let expand = |importer: &str, src: &str| {
+            super::expand_source(src, &root.join(importer), Some(&root))
+        };
+        for pattern in ["./x/{a,b}/*.json", "./x/[ab]/*.json", "./x/[!c]/*.json"] {
+            let out = expand(
+                "main.ts",
+                &format!("const m = import.meta.glob('{pattern}');"),
+            );
+            assert!(
+                out.contains("./x/a/m.json") && out.contains("./x/b/m.json"),
+                "{pattern}: {out}"
+            );
+            assert!(!out.contains("./x/c/m.json"), "{pattern}: {out}");
+        }
+        let out = expand("main.ts", "const m = import.meta.glob('./c/**/x.json');");
+        assert!(
+            out.contains("./c/d/x.json") && !out.contains("foox"),
+            "{out}"
+        );
+        let out = expand(
+            "main.ts",
+            "const m = import.meta.glob('./img/icon.svg', { caseSensitive: false });",
+        );
+        assert!(out.contains("./img/Icon.svg"), "{out}");
+        let out = expand(
+            "routes/[id]/one.ts",
+            "const m = import.meta.glob('./*.ts');",
+        );
+        assert!(out.contains("./two.ts"), "{out}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

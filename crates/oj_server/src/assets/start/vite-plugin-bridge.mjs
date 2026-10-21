@@ -2,6 +2,7 @@
 
 import { importPkg, makeResolver, phase } from "./resolve-pkg.mjs";
 import { asNode } from "./vite-config-node.mjs";
+import { idFilterRegExp, loadViteGlobs } from "./vite-globs.mjs";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,58 +84,7 @@ function envAllows(plugin, environment, memo = true) {
 // Vite's pluginFilter: a string id filter is a picomatch glob joined to cwd (unless
 // it starts with `**` or is absolute); a RegExp is tested on the slash-normalized id.
 const slash = (p) => p.replace(/\\/g, "/");
-function globToRegExpSource(glob) {
-  let re = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      if (glob[i + 1] === "*") {
-        i++;
-        if (glob[i + 1] === "/") {
-          i++;
-          re += "(?:.*/)?";
-        } else re += ".*";
-      } else re += "[^/]*";
-    } else if (c === "?") re += "[^/]";
-    else if (c === "{") {
-      const j = glob.indexOf("}", i);
-      if (j > i) {
-        re +=
-          "(?:" +
-          glob
-            .slice(i + 1, j)
-            .split(",")
-            .map(globToRegExpSource)
-            .join("|") +
-          ")";
-        i = j;
-      } else re += "\\{";
-    } else if (c === "[") {
-      const j = glob.indexOf("]", i);
-      if (j > i) {
-        let cls = glob.slice(i + 1, j);
-        if (cls[0] === "!") cls = "^" + cls.slice(1);
-        re += "[" + cls + "]";
-        i = j;
-      } else re += "\\[";
-    } else if (c === "\\" && i + 1 < glob.length) re += "\\" + glob[++i];
-    else re += c.replace(/[.+^$()|]/g, "\\$&");
-  }
-  return re;
-}
-const idGlobCache = new Map();
-function globRegExp(pat) {
-  let re = idGlobCache.get(pat);
-  if (!re) {
-    const glob =
-      pat.startsWith("**") || pat.startsWith("/")
-        ? slash(pat)
-        : slash(join(process.env.OJ_APP_ROOT ?? process.cwd(), pat));
-    re = new RegExp("^" + globToRegExpSource(glob) + "$");
-    idGlobCache.set(pat, re);
-  }
-  return re;
-}
+const globRegExp = (pat) => idFilterRegExp(pat, process.env.OJ_APP_ROOT ?? process.cwd());
 function matchOne(pat, id) {
   if (pat instanceof RegExp) {
     const r = pat.test(slash(id));
@@ -1100,6 +1050,7 @@ export async function loadPluginContainer(app, opts = {}) {
   }
   if (typeof vite?.loadConfigFromFile !== "function") return null;
   phase(`plugins: vite imported (${opts.environment ?? "client"})`);
+  await loadViteGlobs(app);
   let loaded;
   try {
     // Vite's configEnv (resolveConfig): isSsrBuild comes from the inline

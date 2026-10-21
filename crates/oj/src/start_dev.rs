@@ -92,7 +92,7 @@ struct StartState {
     /// and is ignored -- Vite's add handling, which only re-expands the
     /// importers of the globs an added file matches (resolution shifts land
     /// when an importer changes or the bundle failed, there as here).
-    client_glob_scopes: std::sync::RwLock<Vec<GlobScope>>,
+    client_glob_scopes: std::sync::RwLock<Vec<oj_compiler::glob::GlobMatcher>>,
     /// False after a failed rebundle: the closure may be a torso (the build
     /// stopped early), so every next batch rebundles until one succeeds.
     bundle_ok: std::sync::atomic::AtomicBool,
@@ -924,104 +924,31 @@ fn load_client_closure(cache: &Path) -> std::collections::HashSet<PathBuf> {
         .unwrap_or_default()
 }
 
-/// One pattern of a bundled glob, as glob-transform.mjs `globSpec` writes it
-/// and its expansion applies it: an anchored regex over the slash-joined
-/// absolute path, plus the picomatch options Vite expands and matches adds
-/// with (`dot: !!exhaustive`, `**/node_modules/**` ignored unless
-/// exhaustive; a literal dot segment in the pattern still matches).
-struct GlobSpec {
-    re: regex::Regex,
-    base: String,
-    exhaustive: bool,
-    hidden: Vec<regex::Regex>,
-}
-
-impl GlobSpec {
-    fn parse(v: &serde_json::Value) -> Option<Self> {
-        let nocase = v["nocase"].as_bool().unwrap_or(false);
-        let re = regex::RegexBuilder::new(v["re"].as_str()?)
-            .case_insensitive(nocase)
-            .build()
-            .ok()?;
-        let hidden = v["hidden"]
-            .as_array()
-            .map(|h| {
-                h.iter()
-                    .filter_map(|r| regex::Regex::new(r.as_str()?).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        Some(Self {
-            re,
-            base: v["base"].as_str()?.to_string(),
-            exhaustive: v["exhaustive"].as_bool().unwrap_or(false),
-            hidden,
-        })
-    }
-
-    fn matches(&self, file: &str) -> bool {
-        if !self.re.is_match(file) {
-            return false;
-        }
-        if self.exhaustive {
-            return true;
-        }
-        let rest = file.get(self.base.len() + 1..).unwrap_or("");
-        rest.split('/').all(|part| {
-            part != "node_modules"
-                && (!part.starts_with('.') || self.hidden.iter().any(|h| h.is_match(part)))
-        })
-    }
-}
-
-/// A glob the last bundle expanded: a file is in its expansion when an
-/// include pattern matches it and no `!` pattern does.
-struct GlobScope {
-    include: Vec<GlobSpec>,
-    exclude: Vec<GlobSpec>,
-}
-
-impl GlobScope {
-    fn matches(&self, file: &Path) -> bool {
-        let file = file.to_string_lossy().replace('\\', "/");
-        self.include.iter().any(|s| s.matches(&file))
-            && !self.exclude.iter().any(|s| s.matches(&file))
-    }
-}
-
-/// Every glob the last bundle expanded, written by bundle-client.mjs beside
-/// the closure. Missing or unreadable is an empty list: the closure check
-/// still rebundles for every known input, and the bundle-ok flag for every
-/// failed one. A spec that does not compile drops its glob the same way.
-fn load_client_glob_scopes(cache: &Path) -> Vec<GlobScope> {
+/// Every glob call the last bundle expanded, as bundle-client.mjs writes them
+/// beside the closure (Vite's resolved patterns and options, see
+/// `oj_compiler::glob::GlobCall`), with Vite's matcher for each. Missing or
+/// unreadable is an empty list: the closure check still rebundles for every
+/// known input, and the bundle-ok flag for every failed one.
+fn load_client_glob_scopes(cache: &Path) -> Vec<oj_compiler::glob::GlobMatcher> {
     let Some(entries) = std::fs::read_to_string(cache.join("glob-scopes.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
     else {
         return Vec::new();
     };
-    let specs = |v: &serde_json::Value| -> Option<Vec<GlobSpec>> {
-        v.as_array()?.iter().map(GlobSpec::parse).collect()
-    };
     entries
         .iter()
         .filter_map(|e| {
             // A cache an older oj wrote holds scan bases: anything under one.
-            if let Some(base) = e.as_str() {
-                return Some(GlobScope {
-                    include: vec![GlobSpec {
-                        re: regex::Regex::new(&format!("^{}/", regex::escape(base))).ok()?,
-                        base: base.to_string(),
-                        exhaustive: true,
-                        hidden: Vec::new(),
-                    }],
-                    exclude: Vec::new(),
-                });
-            }
-            Some(GlobScope {
-                include: specs(&e["include"])?,
-                exclude: specs(&e["exclude"]).unwrap_or_default(),
-            })
+            let call = match e.as_str() {
+                Some(base) => oj_compiler::glob::GlobCall {
+                    patterns: vec![format!("{base}/**")],
+                    exhaustive: true,
+                    case_sensitive: true,
+                },
+                None => oj_compiler::glob::GlobCall::from_json(e)?,
+            };
+            Some(call.matcher())
         })
         .collect()
 }
@@ -1030,16 +957,19 @@ fn load_client_glob_scopes(cache: &Path) -> Vec<GlobScope> {
 /// one way a NEW file changes a bundle whose inputs all resolved). The
 /// watcher spelling or its real path, like the closure check.
 fn created_in_glob_scope(
-    scopes: &[GlobScope],
+    scopes: &[oj_compiler::glob::GlobMatcher],
     created: &std::collections::HashSet<PathBuf>,
 ) -> bool {
     if scopes.is_empty() || created.is_empty() {
         return false;
     }
-    created.iter().any(|p| {
-        scopes.iter().any(|g| g.matches(p))
-            || std::fs::canonicalize(p).is_ok_and(|real| scopes.iter().any(|g| g.matches(&real)))
-    })
+    let matched = |p: &Path| {
+        let file = p.to_string_lossy().replace('\\', "/");
+        scopes.iter().any(|g| g.is_match(&file))
+    };
+    created
+        .iter()
+        .any(|p| matched(p) || std::fs::canonicalize(p).is_ok_and(|real| matched(&real)))
 }
 
 /// Whether a batch can change the client bundle: a path in the closure (the
@@ -4356,7 +4286,7 @@ mod tests {
     // each glob whose patterns match it (picomatch with `dot: !!exhaustive`,
     // node_modules ignored unless exhaustive) and changes nothing else. That
     // is the one way a NEW file changes a bundle whose inputs all resolved.
-    // The specs are glob-transform.mjs `globSpec` output, verbatim.
+    // The calls are glob-transform.mjs output, verbatim.
     #[test]
     fn created_files_rebundle_only_when_a_glob_matches_them() {
         let dir = tmp("glob-scopes-load");
@@ -4371,23 +4301,25 @@ mod tests {
         );
         std::fs::write(
             dir.join("glob-scopes.json"),
-            r#"[{"include":[{"re":"^\\/app\\/src\\/modules\\/[^/]*\\/messages\\/[^/]*\\.json$","nocase":false,"base":"/app/src/modules","exhaustive":false,"hidden":[]}],"exclude":[]},{"include":[{"re":"^\\/app\\/src\\/icons\\/(?:.*)[^/]*\\.(?:svg|png)$","nocase":true,"base":"/app/src/icons","exhaustive":false,"hidden":[]}],"exclude":[{"re":"^\\/app\\/src\\/icons\\/skip\\/(?:.*)$","nocase":false,"base":"/app/src/icons/skip","exhaustive":false,"hidden":[]}]}]"#,
+            r#"[{"patterns":["/app/src/icons/**/*.{svg,png}","!/app/src/icons/skip/**"],"exhaustive":false,"caseSensitive":false},{"patterns":["/app/src/modules/*/messages/*.json"],"exhaustive":false,"caseSensitive":true},{"patterns":["/app/src/routes/\\[id\\]/*.ts"],"exhaustive":false,"caseSensitive":true}]"#,
         )
         .unwrap();
         let scopes = load_client_glob_scopes(&dir);
-        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes.len(), 3);
 
         let created = |p: &str| std::collections::HashSet::from([PathBuf::from(p)]);
         for (file, rebundles) in [
             ("/app/src/modules/new/messages/fr.json", true),
             ("/app/src/icons/deep/new.svg", true),
             ("/app/src/icons/Deep/Logo.SVG", true),
+            ("/app/src/routes/[id]/edit.ts", true),
             // Under a glob's scan base, matched by none of its patterns.
             ("/app/src/modules/dashboard/components/sedf1aa6r", false),
             ("/app/src/modules/x/New.tsx", false),
             ("/app/src/icons/skip/a.svg", false),
             ("/app/src/icons/.cache/a.svg", false),
             ("/app/src/icons/node_modules/a.svg", false),
+            ("/app/src/routes/i/edit.ts", false),
             ("/app/.wrangler/state/v3/trace-store/a.sqlite-wal", false),
         ] {
             assert_eq!(

@@ -135,6 +135,11 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/glob-transform.mjs"),
     ),
     (
+        "vite-globs.mjs",
+        include_str!("assets/start/vite-globs.mjs"),
+    ),
+    ("picomatch.mjs", include_str!("assets/start/picomatch.mjs")),
+    (
         "server-fns.mjs",
         include_str!("assets/start/server-fns.mjs"),
     ),
@@ -426,7 +431,7 @@ struct ServerState {
     client_js_etag: String,
     /// Per module url, the `import.meta.glob` patterns it expands (absolute): a file
     /// created or deleted under one recompiles + hot-updates the module (Vite parity).
-    glob_importers: Mutex<HashMap<String, Vec<glob::Pattern>>>,
+    glob_importers: Mutex<HashMap<String, Vec<oj_compiler::glob::GlobMatcher>>>,
     /// Vite's `appType` (`spa` | `mpa` | `custom`): whether an unmatched
     /// navigation falls back to `index.html`, and whether html is served at all.
     app_type: String,

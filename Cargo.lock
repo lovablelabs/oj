@@ -6211,6 +6211,7 @@ version = "0.2.42"
 dependencies = [
  "base64 0.22.1",
  "glob",
+ "globset",
  "memchr",
  "oj_env",
  "oxc_allocator",

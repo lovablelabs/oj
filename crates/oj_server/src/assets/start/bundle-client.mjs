@@ -32,6 +32,7 @@ import {
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob, transformImportMetaUrl, depImportMetaUrlPlugin, bundlerResolve } from "./glob-transform.mjs";
+import { loadViteGlobs } from "./vite-globs.mjs";
 import { rewriteClientServerFns } from "./server-fns.mjs";
 import { pathToFileURL } from "node:url";
 
@@ -278,6 +279,7 @@ async function main() {
   // output is indistinguishable from one that never started.
   process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} client bundling\n`);
   const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
+  await loadViteGlobs(APP);
   const parseAst = await importOjRolldownParseAst(APP, ["vite", "@tanstack/react-start"]);
   phase("client bundle: rolldown imported");
   const WORKSPACE = workspaceRoot(APP);

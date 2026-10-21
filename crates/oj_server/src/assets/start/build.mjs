@@ -26,6 +26,7 @@ import {
 } from "./rolldown-assets.mjs";
 import { loadPluginContainer } from "./vite-plugin-bridge.mjs";
 import { transformGlob, transformImportMetaUrl, depImportMetaUrlPlugin, bundlerResolve } from "./glob-transform.mjs";
+import { loadViteGlobs } from "./vite-globs.mjs";
 import { rewriteClientServerFns, rewriteServerServerFns } from "./server-fns.mjs";
 import { cloudflareEnvironment, cloudflareWorkerPlugin, workerOutDir, CLOUDFLARE_WORKER_ENTRY } from "./cf-build.mjs";
 
@@ -67,6 +68,7 @@ async function main() {
     return ["browser", "module", "import", NODE_ENV === "production" ? "production" : "development"];
   })();
   const { build } = await importOjRolldown(APP, ["vite", "@tanstack/react-start"]);
+  await loadViteGlobs(APP);
   const parseAst = await importOjRolldownParseAst(APP, ["vite", "@tanstack/react-start"]);
   const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
   const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";

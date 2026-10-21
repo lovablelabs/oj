@@ -15,6 +15,11 @@ pub const DISCOVERED_DEPS_JS: &str = include_str!("../assets/discovered-deps.mjs
 pub const VITE_CONFIG_NODE_JS: &str = include_str!("../assets/vite-config-node.mjs");
 /// Sibling module (`./vite-html.mjs`) of the plugin host: Vite's dev HTML transform.
 pub const VITE_HTML_JS: &str = include_str!("../assets/vite-html.mjs");
+/// Vite's own picomatch and tinyglobby, loaded from the app's vite: a Start
+/// asset, which the plugin host imports as `./start/vite-globs.mjs`.
+pub const VITE_GLOBS_JS: &str = include_str!("../assets/start/vite-globs.mjs");
+/// The picomatch release `vite-globs.mjs` falls back to, bundled into one module.
+pub const PICOMATCH_JS: &str = include_str!("../assets/start/picomatch.mjs");
 /// Sibling module (`./plugin-host-boot.mjs`) of the plugin host: what its
 /// engine runs before the host module is imported.
 pub const PLUGIN_HOST_BOOT_JS: &str = include_str!("../assets/plugin-host-boot.mjs");

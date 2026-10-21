@@ -921,11 +921,6 @@ fn glob_importers_hit(state: &ServerState, paths: &[PathBuf]) -> Vec<String> {
         return Vec::new();
     }
     let graph = state.graph.lock().unwrap();
-    // `*` stops at `/`, as the directory walk expanding the glob does.
-    let opts = glob::MatchOptions {
-        require_literal_separator: true,
-        ..Default::default()
-    };
     let mut hit: Vec<String> = Vec::new();
     for p in paths {
         let known = graph.contains(Path::new(&url_of(&state.root, p)));
@@ -933,8 +928,8 @@ fn glob_importers_hit(state: &ServerState, paths: &[PathBuf]) -> Vec<String> {
             continue;
         }
         for (importer, patterns) in globs.iter() {
-            if patterns.iter().any(|pat| pat.matches_path_with(p, opts)) && !hit.contains(importer)
-            {
+            let file = p.to_string_lossy().replace('\\', "/");
+            if patterns.iter().any(|m| m.is_match(&file)) && !hit.contains(importer) {
                 hit.push(importer.clone());
             }
         }

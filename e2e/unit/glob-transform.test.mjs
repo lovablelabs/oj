@@ -10,6 +10,10 @@ import {
   transformImportMetaUrl,
   stripLiterals,
 } from "../../crates/oj_server/src/assets/start/glob-transform.mjs";
+import { loadViteGlobs } from "../../crates/oj_server/src/assets/start/vite-globs.mjs";
+
+// The expansion runs on Vite's own picomatch and tinyglobby (e2e's devDeps).
+await loadViteGlobs(join(import.meta.dirname, ".."));
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "oj-glob-"));
@@ -221,6 +225,58 @@ test("negated patterns exclude matches", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// Vite's dialect (picomatch via tinyglobby): `**` spans whole parts only,
+// classes and braces expand, and the importer's `[id]` directory is matched
+// literally (Vite's globSafePath).
+test("globs expand in picomatch's dialect", () => {
+  const dir = mkdtempSync(join(tmpdir(), "oj-glob-"));
+  const files = [
+    "x/a/m.json",
+    "x/b/m.json",
+    "x/c/m.json",
+    "c/foox.json",
+    "c/d/x.json",
+    "r/[id]/one.ts",
+    "r/[id]/two.ts",
+  ];
+  for (const f of files) {
+    mkdirSync(join(dir, f, ".."), { recursive: true });
+    writeFileSync(join(dir, f), "{}");
+  }
+  const expand = (pattern, importer = "index.ts") =>
+    transformGlob(`const m = import.meta.glob(${JSON.stringify(pattern)});`, join(dir, importer), dir);
+  try {
+    for (const pattern of ["./x/[ab]/*.json", "./x/{a,b}/*.json", "./x/[!c]/*.json"]) {
+      const out = expand(pattern);
+      assert.match(out, /"\.\/x\/a\/m\.json"/, pattern);
+      assert.match(out, /"\.\/x\/b\/m\.json"/, pattern);
+      assert.doesNotMatch(out, /\/c\/m\.json/, pattern);
+    }
+    const deep = expand("./c/**/x.json");
+    assert.match(deep, /"\.\/c\/d\/x\.json"/);
+    assert.doesNotMatch(deep, /foox/);
+    assert.match(expand("./*.ts", "r/[id]/one.ts"), /"\.\/two\.ts"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// What the dev rebundle gate reads: each call's patterns as Vite resolves
+// them (prefixes glob-escaped, negatives kept) and its options.
+test("scopes collect each call's resolved patterns and options", () => {
+  const scopes = new Set();
+  transformGlob(
+    "const m = import.meta.glob(['./*.ts', '!./skip.ts'], { caseSensitive: false, exhaustive: true });",
+    "/app/r/[id]/one.ts",
+    "/app",
+    scopes,
+  );
+  assert.deepEqual(
+    [...scopes].map((s) => JSON.parse(s)),
+    [{ patterns: ["/app/r/\\[id\\]/*.ts", "!/app/r/\\[id\\]/skip.ts"], exhaustive: true, caseSensitive: false }],
+  );
 });
 
 test("an empty glob yields an empty map, not a crash", () => {
