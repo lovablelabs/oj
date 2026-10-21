@@ -114,14 +114,24 @@ function makeApp() {
       "",
     ].join("\n"),
   );
+  fs.mkdirSync(path.join(app, "src", "server", "notes"), { recursive: true });
+  fs.writeFileSync(path.join(app, "src", "server", "notes", "a.txt"), "note-a");
+  // A glob only the worker reads: the handler is its one importer, and the
+  // client build drops the handler, so no client module re-expands it.
+  fs.writeFileSync(
+    path.join(app, "src", "server", "notes.ts"),
+    'export const notes = import.meta.glob<string>("./notes/*.txt", { eager: true, query: "?raw", import: "default" });\n',
+  );
   fs.writeFileSync(
     path.join(app, "src", "server", "data.ts"),
     [
       'import { createServerFn } from "@tanstack/react-start";',
       'import { env } from "cloudflare:workers";',
       "",
+      'import { notes } from "./notes";',
+      "",
       'export const getEdition = createServerFn({ method: "GET" }).handler(async () => {',
-      "  return String((env as unknown as Record<string, unknown>).EDITION);",
+      '  return [String((env as unknown as Record<string, unknown>).EDITION), ...Object.values(notes)].join(" ");',
       "});",
       "",
     ].join("\n"),
@@ -303,6 +313,18 @@ async function workerDocuments(base, log, page) {
     must((await page.textContent('[data-testid="counter"]')) === "count: 1", `${to}: the page lost its state`);
     console.log(`start-cloudflare-hmr: ${to} hot-updated in place (${verdicts().join(" | ")})`);
   }
+  // A note renamed into place under the worker's glob (an atomic write) is
+  // an add, as chokidar calls a path it did not know: the worker's
+  // import-glob hotUpdate re-expands the module, and its next document
+  // renders the note. Only the worker reads this glob, so nothing else
+  // re-expands it.
+  const staged = path.join(app, "src", ".b.txt.tmp");
+  fs.writeFileSync(staged, "note-renamed");
+  fs.renameSync(staged, path.join(app, "src", "server", "notes", "b.txt"));
+  const rendered = async () => (await (await fetch(`${base}/`)).text()).includes("note-renamed");
+  await settles(rendered, { timeoutMs: 30000, pollMs: 300 });
+  must(await rendered(), `the worker's document lacks a note renamed into its glob:\n${log().slice(-3000)}`);
+  console.log("start-cloudflare-hmr: a note renamed into the worker's glob reached its document");
   must(!/client bundl(ing|ed)/.test(log()), `the Start client was bundled though no page loads it:\n${log()}`);
   // Nor is the bundler process started, which holds the bundle's memory.
   must(!bundlerRunning(), "a Start client bundler process is running though no page loads its bundle");

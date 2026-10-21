@@ -216,8 +216,8 @@ fn start_entry_candidate(p: &Path) -> bool {
 }
 
 // Vite's watcher distinguishes add/change/unlink; notify's batched events are
-// classified at send time: gone from disk is a delete, seen as a Create in this
-// batch is a create, anything else an update.
+// classified at send time: gone from disk is a delete, an add this batch saw
+// (`event_adds`) is a create, anything else an update.
 fn change_type(p: &Path, created: &std::collections::HashSet<PathBuf>) -> &'static str {
     if !p.exists() {
         "delete"
@@ -979,6 +979,24 @@ fn added_to_glob(
     matched(p) || real.is_some_and(|r| matched(&r))
 }
 
+/// The paths an event adds, as chokidar calls them: a create, a path a rename
+/// brought into place (an atomic write's rename lands on its target), and the
+/// files inside a directory that appeared (`inside`). A rename onto a module
+/// a worker graph already holds is an atomic save, which chokidar reports as
+/// a change: the plugin host reclassifies a create for a file its graphs know
+/// as an update.
+fn event_adds(ev: &notify::Event, inside: &[PathBuf]) -> Vec<PathBuf> {
+    let mut adds: Vec<PathBuf> = match ev.kind {
+        notify::EventKind::Create(_) => ev.paths.clone(),
+        notify::EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+            ev.paths.iter().filter(|p| p.is_file()).cloned().collect()
+        }
+        _ => Vec::new(),
+    };
+    adds.extend_from_slice(inside);
+    adds
+}
+
 /// The files inside a directory an event brought into existence (created, or
 /// moved into place), not `node_modules` or `.git`, which Vite's watcher
 /// ignores. The watcher reports one event for the directory, and chokidar
@@ -1191,12 +1209,11 @@ fn spawn_start_watcher(
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
             let mut paths: std::collections::HashSet<PathBuf> = match rx.recv() {
                 Ok(ev) => {
-                    if matches!(ev.kind, notify::EventKind::Create(_)) {
-                        created.extend(ev.paths.iter().cloned());
-                    }
                     let mut paths: std::collections::HashSet<PathBuf> =
                         changes.changed_paths(&ev).into_iter().collect();
-                    paths.extend(files_in_new_dirs(&ev));
+                    let inside = files_in_new_dirs(&ev);
+                    created.extend(event_adds(&ev, &inside));
+                    paths.extend(inside);
                     paths
                 }
                 Err(_) => break,
@@ -1216,11 +1233,10 @@ fn spawn_start_watcher(
             loop {
                 match rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(ev) => {
-                        if matches!(ev.kind, notify::EventKind::Create(_)) {
-                            created.extend(ev.paths.iter().cloned());
-                        }
                         paths.extend(changes.changed_paths(&ev));
-                        paths.extend(files_in_new_dirs(&ev));
+                        let inside = files_in_new_dirs(&ev);
+                        created.extend(event_adds(&ev, &inside));
+                        paths.extend(inside);
                     }
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -4410,6 +4426,24 @@ mod tests {
         assert_eq!(
             files_in_new_dirs(&renamed),
             [moved.join("messages/en.json")]
+        );
+        let inside = files_in_new_dirs(&renamed);
+        assert_eq!(
+            event_adds(&renamed, &inside),
+            inside,
+            "a directory is no add itself"
+        );
+        // A file renamed into place is an add; its vanished source is not.
+        let target = file("src/modules/renamed/messages/it.json");
+        let rename = notify::Event::new(notify::EventKind::Modify(
+            notify::event::ModifyKind::Name(notify::event::RenameMode::Both),
+        ))
+        .add_path(app.join("src/.it.json.tmp"))
+        .add_path(target.clone());
+        assert_eq!(event_adds(&rename, &[]), std::slice::from_ref(&target));
+        assert_eq!(
+            change_type(&target, &event_adds(&rename, &[]).into_iter().collect()),
+            "create"
         );
         assert!(added_to_glob(
             &scopes,
