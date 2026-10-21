@@ -86,6 +86,7 @@ impl Fixture {
         .unwrap();
         fs::write(self.start.join("client-entry.modules"), "2").unwrap();
         fs::write(self.start.join("manifest.ts"), format!("// {marker}")).unwrap();
+        fs::write(self.start.join(GLOB_SCOPES_FILE), "[]").unwrap();
     }
 
     fn clear_start_dir(&self) {
@@ -122,11 +123,51 @@ fn set_mtime(path: &Path, t: SystemTime) {
     f.set_times(fs::FileTimes::new().set_modified(t)).unwrap();
 }
 
+fn no_globs(_: &Path) -> Vec<PathBuf> {
+    Vec::new()
+}
+
+// Vite expands every import.meta.glob anew on each start: a file a stored
+// generation's glob expands to today but its bundle never read (added while
+// no server watched) misses, and the glob's members it did read restore.
+#[test]
+fn a_file_new_to_a_bundled_glob_misses_the_restore() {
+    let fx = Fixture::new("globgrew");
+    fs::write(
+        fx.start.join(GLOB_SCOPES_FILE),
+        r#"[{"patterns":["src/*.tsx"]}]"#,
+    )
+    .unwrap();
+    fx.store().persist(&fx.start).unwrap();
+    fx.clear_start_dir();
+    let src = fx.root.join("src");
+    let members = |scopes: &Path| {
+        assert!(fs::read_to_string(scopes).unwrap().contains("src/*.tsx"));
+        let mut files: Vec<PathBuf> = fs::read_dir(&src)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        files.sort();
+        files
+    };
+    assert!(fx.store().restore(&fx.start, members).is_ok());
+    assert_eq!(
+        fs::read_to_string(fx.start.join(GLOB_SCOPES_FILE)).unwrap(),
+        r#"[{"patterns":["src/*.tsx"]}]"#,
+        "the restore brings the calls back for the dev gate"
+    );
+    fx.write_module("c.tsx", "export const c = 3;");
+    assert_eq!(
+        fx.store().restore(&fx.start, members).map(|_| ()),
+        Err(Miss::GlobGrew(fx.module("c.tsx")))
+    );
+}
+
 #[test]
 fn restore_misses_without_previous_build() {
     let fx = Fixture::new("nolatest");
     assert!(matches!(
-        fx.store().restore(&fx.start),
+        fx.store().restore(&fx.start, no_globs),
         Err(Miss::NoPreviousBuild)
     ));
 }
@@ -136,7 +177,7 @@ fn persist_then_restore_roundtrips_artifacts() {
     let fx = Fixture::new("roundtrip");
     let (key, _) = fx.store().persist(&fx.start).unwrap();
     fx.clear_start_dir();
-    let (stats, pinned) = fx.store().restore(&fx.start).unwrap();
+    let (stats, pinned) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key);
     assert_eq!(stats.files, 2);
     assert_eq!(stats.chunks, 2);
@@ -199,7 +240,7 @@ fn source_edit_changes_key_and_misses_until_repersisted() {
     fx.settle_modules();
     let (key, _) = fx.store().persist(&fx.start).unwrap();
     fx.write_module("a.tsx", "export const a = 99;");
-    match fx.store().restore(&fx.start) {
+    match fx.store().restore(&fx.start, no_globs) {
         Err(Miss::NoEntryForKey(k)) => assert_ne!(k, key),
         other => panic!("expected key miss, got {other:?}"),
     }
@@ -207,7 +248,7 @@ fn source_edit_changes_key_and_misses_until_repersisted() {
     let (key2, _) = fx.store().persist(&fx.start).unwrap();
     assert_ne!(key2, key);
     fx.clear_start_dir();
-    assert_eq!(fx.store().restore(&fx.start).unwrap().0.key, key2);
+    assert_eq!(fx.store().restore(&fx.start, no_globs).unwrap().0.key, key2);
 }
 
 #[test]
@@ -221,7 +262,7 @@ fn reverting_an_edit_pins_the_older_generation() {
     // current points at v2, whose closure lists the same files; the
     // recomputed key lands back on the v1 generation, and the pointer
     // swings back to it.
-    let (stats, pinned) = fx.store().restore(&fx.start).unwrap();
+    let (stats, pinned) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key);
     assert_eq!(fx.entry_bytes(&pinned), "bundle-v1");
     let current = fs::read_to_string(
@@ -255,7 +296,7 @@ fn deleted_closure_file_is_a_miss_not_a_panic() {
     fx.store().persist(&fx.start).unwrap();
     fs::remove_file(fx.module("b.tsx")).unwrap();
     assert!(matches!(
-        fx.store().restore(&fx.start),
+        fx.store().restore(&fx.start, no_globs),
         Err(Miss::ClosureFileUnreadable(_))
     ));
 }
@@ -265,7 +306,7 @@ fn epoch_input_changes_the_key() {
     let fx = Fixture::new("epoch");
     let (key, _) = fx.store().persist(&fx.start).unwrap();
     fs::write(fx.root.join("package.json"), b"{\"name\":\"x\"}").unwrap();
-    match fx.store().restore(&fx.start) {
+    match fx.store().restore(&fx.start, no_globs) {
         Err(Miss::NoEntryForKey(k)) => assert_ne!(k, key),
         other => panic!("expected key miss, got {other:?}"),
     }
@@ -317,12 +358,12 @@ fn dev_mode_and_its_env_file_change_the_key() {
     let (staging_key, _) = staging(&fx.root).persist(&fx.start).unwrap();
     assert_ne!(staging_key, dev_key, "the mode salts the key");
     fs::write(fx.root.join(".env.staging"), b"VITE_FLAVOR=staging\n").unwrap();
-    match staging(&fx.root).restore(&fx.start) {
+    match staging(&fx.root).restore(&fx.start, no_globs) {
         Err(Miss::NoEntryForKey(k)) => assert_ne!(k, staging_key, ".env.<mode> is a key input"),
         other => panic!("expected key miss, got {other:?}"),
     }
     fs::write(fx.root.join(".env.development"), b"VITE_FLAVOR=dev\n").unwrap();
-    match fx.store().restore(&fx.start) {
+    match fx.store().restore(&fx.start, no_globs) {
         Err(Miss::NoEntryForKey(k)) => assert_ne!(k, dev_key),
         other => panic!("expected key miss, got {other:?}"),
     }
@@ -333,7 +374,7 @@ fn missing_blob_fails_verification_and_removes_the_entry() {
     let fx = Fixture::new("missing-blob");
     let (key, pinned) = fx.store().persist(&fx.start).unwrap();
     fs::remove_file(&pinned.chunk("shared-x.js").unwrap().path).unwrap();
-    match fx.store().restore(&fx.start) {
+    match fx.store().restore(&fx.start, no_globs) {
         Err(Miss::ChunkCorrupt { key: k, name, .. }) => {
             assert_eq!(k, key);
             assert_eq!(name, "shared-x.js");
@@ -353,7 +394,7 @@ fn wrong_size_blob_is_caught_in_standard_mode() {
     let blob = &pinned.chunk("client-entry.js").unwrap().path;
     fs::write(blob, b"bundle").unwrap();
     assert!(matches!(
-        fx.store().restore(&fx.start),
+        fx.store().restore(&fx.start, no_globs),
         Err(Miss::ChunkCorrupt { .. })
     ));
     assert!(!fx.entry_dir(&key).exists());
@@ -367,9 +408,9 @@ fn same_size_bitflip_is_caught_only_in_full_mode() {
     let blob = pinned.chunk("client-entry.js").unwrap().path.clone();
     fs::write(&blob, b"bundle-vX").unwrap();
     // Standard mode trusts existence + size: the flip passes restore.
-    assert!(fx.store().restore(&fx.start).is_ok());
+    assert!(fx.store().restore(&fx.start, no_globs).is_ok());
     // Full mode re-hashes, detects, removes blob + entry, and misses.
-    match fx.full_store().restore(&fx.start) {
+    match fx.full_store().restore(&fx.start, no_globs) {
         Err(Miss::ChunkCorrupt { name, detail, .. }) => {
             assert_eq!(name, "client-entry.js");
             assert!(detail.contains("hash mismatch"), "{detail}");
@@ -383,7 +424,7 @@ fn same_size_bitflip_is_caught_only_in_full_mode() {
     let (key2, pinned2) = fx.full_store().persist(&fx.start).unwrap();
     assert_eq!(key2, key);
     assert_eq!(fx.entry_bytes(&pinned2), "bundle-v1");
-    assert!(fx.full_store().restore(&fx.start).is_ok());
+    assert!(fx.full_store().restore(&fx.start, no_globs).is_ok());
 }
 
 #[test]
@@ -396,7 +437,7 @@ fn foreign_format_manifest_is_invalid_by_version() {
     v["format"] = serde_json::json!(START_BUNDLE_FORMAT - 1);
     fs::write(&manifest_path, v.to_string()).unwrap();
     assert!(matches!(
-        fx.store().restore(&fx.start),
+        fx.store().restore(&fx.start, no_globs),
         Err(Miss::EntryCorrupt(_))
     ));
     assert!(!fx.entry_dir(&key).exists());
@@ -408,7 +449,7 @@ fn legacy_entry_without_manifest_is_a_miss() {
     let (key, _) = fx.store().persist(&fx.start).unwrap();
     fs::remove_file(fx.entry_dir(&key).join(MANIFEST_FILE)).unwrap();
     assert!(matches!(
-        fx.store().restore(&fx.start),
+        fx.store().restore(&fx.start, no_globs),
         Err(Miss::EntryCorrupt(_))
     ));
     assert!(!fx.entry_dir(&key).exists(), "legacy entry removed");
@@ -446,7 +487,7 @@ fn prune_evicts_lru_generations_and_sweeps_unreferenced_blobs() {
         "evicted generations' unshared blobs swept; shared blob kept"
     );
     assert!(
-        fx.store().restore(&fx.start).is_ok(),
+        fx.store().restore(&fx.start, no_globs).is_ok(),
         "survivor still restores"
     );
 }
@@ -503,7 +544,7 @@ fn persist_enforces_the_generation_window() {
         "the oldest generation was evicted at write time"
     );
     assert!(
-        fx.store().restore(&fx.start).is_ok(),
+        fx.store().restore(&fx.start, no_globs).is_ok(),
         "current still restores after the window prune"
     );
 }
@@ -518,7 +559,7 @@ fn memo_verifies_settled_files_without_reading_them() {
     for name in ["a.tsx", "b.tsx"] {
         fs::set_permissions(fx.module(name), fs::Permissions::from_mode(0o000)).unwrap();
     }
-    let (stats, _) = fx.store().restore(&fx.start).unwrap();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key);
     assert_eq!(stats.rehashed, 0, "memo hit must not read file contents");
     for name in ["a.tsx", "b.tsx"] {
@@ -532,7 +573,7 @@ fn touched_but_unchanged_file_rehashes_to_the_same_key() {
     fx.settle_modules();
     let (key, _) = fx.store().persist(&fx.start).unwrap();
     fx.write_module("a.tsx", "export const a = 1;");
-    let (stats, _) = fx.store().restore(&fx.start).unwrap();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key, "same content must reach the same key");
     assert!(stats.rehashed >= 1, "stat mismatch must force a re-hash");
 }
@@ -551,7 +592,10 @@ fn racy_fresh_files_are_not_memoized() {
     fx.write_module("a.tsx", "export const a = 9;");
     set_mtime(&fx.module("a.tsx"), orig_mtime);
     assert!(
-        matches!(fx.store().restore(&fx.start), Err(Miss::NoEntryForKey(_))),
+        matches!(
+            fx.store().restore(&fx.start, no_globs),
+            Err(Miss::NoEntryForKey(_))
+        ),
         "stat-identical edit within the racy window must still miss"
     );
 }
@@ -563,11 +607,11 @@ fn missing_memo_falls_back_to_full_hash_and_heals() {
     let (key, _) = fx.store().persist(&fx.start).unwrap();
     let memo_path = fx.entry_dir(&key).join(MEMO_FILE);
     fs::remove_file(&memo_path).unwrap();
-    let (stats, _) = fx.store().restore(&fx.start).unwrap();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key);
     assert_eq!(stats.rehashed, 2, "no memo: every file is hashed");
     assert!(memo_path.is_file(), "successful restore rewrites the memo");
-    let (again, _) = fx.store().restore(&fx.start).unwrap();
+    let (again, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(again.rehashed, 0, "healed memo verifies by stat alone");
 }
 
@@ -578,7 +622,7 @@ fn corrupt_memo_is_dropped_and_falls_back() {
     let (key, _) = fx.store().persist(&fx.start).unwrap();
     let memo_path = fx.entry_dir(&key).join(MEMO_FILE);
     fs::write(&memo_path, b"{ not json").unwrap();
-    let (stats, _) = fx.store().restore(&fx.start).unwrap();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key);
     assert_eq!(stats.rehashed, 2);
 }

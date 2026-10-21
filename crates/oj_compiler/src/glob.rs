@@ -231,7 +231,7 @@ impl GlobCall {
     /// matches. Like tinyglobby with Vite's options, the walk enters neither
     /// `node_modules` nor a dot-led directory unless the call is exhaustive
     /// or a pattern spells a dot-led part.
-    fn files(&self) -> Vec<PathBuf> {
+    pub fn files(&self) -> Vec<PathBuf> {
         let matcher = self.matcher();
         let bases: Vec<String> = matcher.affirmed.iter().map(|a| a.base.clone()).collect();
         let Some(start) = common_base(&bases) else {

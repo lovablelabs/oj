@@ -22,7 +22,7 @@ use memo::{build_memo, read_memo, verified_digests, write_memo};
 use vendor::epoch;
 pub use vendor::{vendored_rolldown, VendoredRolldown};
 
-pub const START_BUNDLE_FORMAT: u32 = 3;
+pub const START_BUNDLE_FORMAT: u32 = 4;
 pub const DEFAULT_PRUNE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 /// Generations kept per store, enforced on every persist. Vite's dep cache
 /// keeps exactly one generation; this store keeps `current` plus a small
@@ -30,7 +30,10 @@ pub const DEFAULT_PRUNE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 /// long editing session cannot accumulate one generation per save.
 pub const KEEP_GENERATIONS: usize = 8;
 
-const ARTIFACTS: [&str; 2] = ["client-entry.modules", "manifest.ts"];
+/// glob-scopes.json is the generation's `import.meta.glob` calls, which a
+/// restore re-expands (see [`StartBundleStore::restore`]).
+const ARTIFACTS: [&str; 3] = ["client-entry.modules", "manifest.ts", GLOB_SCOPES_FILE];
+const GLOB_SCOPES_FILE: &str = "glob-scopes.json";
 const CLOSURE_FILE: &str = "closure.json";
 const MEMO_FILE: &str = "memo.json";
 const MANIFEST_FILE: &str = "manifest.json";
@@ -174,6 +177,7 @@ pub enum Miss {
         detail: String,
     },
     ArtifactWriteFailed(String),
+    GlobGrew(PathBuf),
 }
 
 impl std::fmt::Display for Miss {
@@ -196,6 +200,9 @@ impl std::fmt::Display for Miss {
             ),
             Miss::ArtifactWriteFailed(name) => {
                 write!(f, "could not write restored artifact {name}")
+            }
+            Miss::GlobGrew(p) => {
+                write!(f, "{} is new to a bundled glob", p.display())
             }
         }
     }
@@ -221,7 +228,18 @@ impl StartBundleStore {
         }
     }
 
-    pub fn restore(&self, start_dir: &Path) -> Result<(RestoreStats, PinnedBundle), Miss> {
+    /// The generation `current` names, when its closure still hashes to a
+    /// stored key. The key covers every file the bundle read, but a file an
+    /// `import.meta.glob` would expand to now and the bundle never read (one
+    /// added while no server watched) is in no closure: `glob_members` maps
+    /// the generation's glob-scopes.json to the files its calls expand to
+    /// today, and any one outside the closure is a miss, as Vite expands
+    /// every glob anew on each start.
+    pub fn restore(
+        &self,
+        start_dir: &Path,
+        glob_members: impl Fn(&Path) -> Vec<PathBuf>,
+    ) -> Result<(RestoreStats, PinnedBundle), Miss> {
         let started = Instant::now();
         let current = read_current(&self.dir).ok_or(Miss::NoPreviousBuild)?;
         let current_dir = self.dir.join(&current);
@@ -229,6 +247,16 @@ impl StartBundleStore {
             let _ = fs::remove_dir_all(&current_dir);
             return Err(Miss::ClosureUnreadable);
         };
+        let read: std::collections::HashSet<&Path> = files.iter().map(PathBuf::as_path).collect();
+        if let Some(added) = glob_members(&current_dir.join(GLOB_SCOPES_FILE))
+            .into_iter()
+            .find(|f| {
+                !read.contains(f.as_path())
+                    && fs::canonicalize(f).map_or(true, |real| !read.contains(real.as_path()))
+            })
+        {
+            return Err(Miss::GlobGrew(added));
+        }
         let memo = read_memo(&current_dir);
         let (digests, rehashed) = verified_digests(&files, memo.as_ref());
         let key = self.key_from(&files, &digests)?;

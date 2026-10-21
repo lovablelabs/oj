@@ -43,11 +43,24 @@ fs.symlinkSync(path.join(fixture, "node_modules"), path.join(app, "node_modules"
 // scenario pins the update path of the gate (the create path has its own
 // scenarios below).
 fs.writeFileSync(path.join(app, "README.md"), "# fixture\n");
+// The index route's glob reaches into subdirectories, so a directory moved
+// under it adds members too.
+const indexRoute = path.join(app, "src", "routes", "index.tsx");
+fs.writeFileSync(
+  indexRoute,
+  fs
+    .readFileSync(indexRoute, "utf8")
+    .replace('import.meta.glob("../content/*.json"', 'import.meta.glob("../content/**/*.json"'),
+);
 
 let log = "";
-const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
-srv.stdout.on("data", (c) => (log += c));
-srv.stderr.on("data", (c) => (log += c));
+const boot = () => {
+  const proc = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
+  proc.stdout.on("data", (c) => (log += c));
+  proc.stderr.on("data", (c) => (log += c));
+  return proc;
+};
+let srv = boot();
 
 const get = async (route) => {
   const res = await fetch(`http://localhost:${PORT}${route}`);
@@ -131,6 +144,28 @@ try {
   }
   console.log("gate: create under a glob scope rebundled with the new entry");
 
+  // A file renamed into place (an atomic write) is a rename event, not a
+  // create, and a directory moved into place is one event for the directory.
+  // Chokidar calls both adds (a path it did not know), so Vite re-expands the
+  // glob for them as for any create.
+  const staged = path.join(app, "src", ".gate-renamed.json.tmp");
+  fs.writeFileSync(staged, JSON.stringify({ title: "gate-renamed-title" }));
+  fs.renameSync(staged, path.join(app, "src", "content", "gate-renamed.json"));
+  await settles(async () => chunksHold("gate-renamed-title"), { timeoutMs: 20000 });
+  if (!chunksHold("gate-renamed-title")) {
+    throw new Error(`a file renamed under a glob scope did not rebundle; log tail:\n${log.slice(-3000)}`);
+  }
+  console.log("gate: a file renamed under a glob scope rebundled with the new entry");
+  const stagedDir = path.join(tmp, "staged-dir");
+  fs.mkdirSync(path.join(stagedDir, "nested"), { recursive: true });
+  fs.writeFileSync(path.join(stagedDir, "nested", "deep.json"), JSON.stringify({ title: "gate-moved-dir-title" }));
+  fs.renameSync(stagedDir, path.join(app, "src", "content", "gate-moved"));
+  await settles(async () => chunksHold("gate-moved-dir-title"), { timeoutMs: 20000 });
+  if (!chunksHold("gate-moved-dir-title")) {
+    throw new Error(`a directory moved under a glob scope did not rebundle; log tail:\n${log.slice(-3000)}`);
+  }
+  console.log("gate: a directory moved under a glob scope rebundled with its members");
+
   // A bundled module still rebundles and reloads. (The served document's
   // freshness is the engine's own path and not asserted here: the base
   // behavior predates the gate and is unchanged by it.)
@@ -147,6 +182,34 @@ try {
     throw new Error(`route edit did not reload; log tail:\n${log.slice(-3000)}`);
   }
   console.log("gate: bundled-module edit rebundled and reloaded");
+
+  // A glob member added while no server ran is in no stored closure, so the
+  // client bundle cache must not restore the bundle that lacks it: Vite
+  // expands every glob anew on each start.
+  srv.kill("SIGTERM");
+  await new Promise((r) => srv.once("exit", r));
+  fs.writeFileSync(
+    path.join(app, "src", "content", "gate-offline.json"),
+    JSON.stringify({ title: "gate-offline-title" }),
+  );
+  srv = boot();
+  await waitUp(`http://localhost:${PORT}/`, { proc: srv });
+  const served = async () => {
+    const html = (await get("/")).body;
+    let code = "";
+    for (const [, src] of html.matchAll(/src="([^"]+\.js[^"]*)"/g)) code += (await get(src)).body;
+    for (const [, src] of code.matchAll(/["'](\/[^"']+\.js)["']/g)) code += (await get(src)).body;
+    return code;
+  };
+  if (!(await served()).includes("gate-offline-title")) {
+    throw new Error(
+      `a glob member added between runs is missing from the served bundle; log tail:\n${log.slice(-3000)}`,
+    );
+  }
+  if (!log.includes("is new to a bundled glob")) {
+    throw new Error(`the restart did not miss the client bundle cache; log tail:\n${log.slice(-3000)}`);
+  }
+  console.log("gate: a glob member added between runs missed the cache and is served");
   console.log("START-REBUNDLE-GATE E2E PASSED");
 } catch (err) {
   failed = true;

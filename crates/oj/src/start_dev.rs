@@ -87,8 +87,8 @@ struct StartState {
     /// means unknown, which always rebundles.
     client_closure: std::sync::RwLock<std::collections::HashSet<PathBuf>>,
     /// Every `import.meta.glob` the bundle expanded (glob-scopes.json). A
-    /// file CREATED that one matches grows its expansion, so it rebundles; a
-    /// create anywhere else cannot change a bundle whose inputs all resolved,
+    /// new file one matches grows its expansion, so it rebundles; a new file
+    /// anywhere else cannot change a bundle whose inputs all resolved,
     /// and is ignored -- Vite's add handling, which only re-expands the
     /// importers of the globs an added file matches (resolution shifts land
     /// when an importer changes or the bundle failed, there as here).
@@ -878,10 +878,6 @@ struct PendingRebundle {
     /// and their replies say whether any worker graph actually served a
     /// changed module.
     invalidates: Vec<tokio::task::JoinHandle<bool>>,
-    /// The relevant files the merged batches saw come into existence: a create
-    /// under a bundled glob's scan base re-expands that glob, so it rebundles;
-    /// the gate ignores every other create, as Vite's add handling does.
-    created: std::collections::HashSet<PathBuf>,
     /// The newest merged batch number: its done-frame clears the editor pill.
     batch: u64,
     /// A runner document is about to hand pages the bundle that edits left
@@ -924,13 +920,21 @@ fn load_client_closure(cache: &Path) -> std::collections::HashSet<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Every glob call the last bundle expanded, as bundle-client.mjs writes them
-/// beside the closure (Vite's resolved patterns and options, see
-/// `oj_compiler::glob::GlobCall`), with Vite's matcher for each. Missing or
-/// unreadable is an empty list: the closure check still rebundles for every
-/// known input, and the bundle-ok flag for every failed one.
+/// Every glob call the last bundle expanded, with Vite's matcher for each.
 fn load_client_glob_scopes(cache: &Path) -> Vec<oj_compiler::glob::GlobMatcher> {
-    let Some(entries) = std::fs::read_to_string(cache.join("glob-scopes.json"))
+    load_glob_calls(&cache.join("glob-scopes.json"))
+        .iter()
+        .map(oj_compiler::glob::GlobCall::matcher)
+        .collect()
+}
+
+/// The glob calls a bundle expanded, as bundle-client.mjs writes them beside
+/// the closure (Vite's resolved patterns and options, see
+/// `oj_compiler::glob::GlobCall`). Missing or unreadable is an empty list:
+/// the closure check still rebundles for every known input, and the
+/// bundle-ok flag for every failed one.
+fn load_glob_calls(file: &Path) -> Vec<oj_compiler::glob::GlobCall> {
+    let Some(entries) = std::fs::read_to_string(file)
         .ok()
         .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
     else {
@@ -938,52 +942,86 @@ fn load_client_glob_scopes(cache: &Path) -> Vec<oj_compiler::glob::GlobMatcher> 
     };
     entries
         .iter()
-        .filter_map(|e| {
+        .filter_map(|e| match e.as_str() {
             // A cache an older oj wrote holds scan bases: anything under one.
-            let call = match e.as_str() {
-                Some(base) => oj_compiler::glob::GlobCall {
-                    patterns: vec![format!("{base}/**")],
-                    exhaustive: true,
-                    case_sensitive: true,
-                },
-                None => oj_compiler::glob::GlobCall::from_json(e)?,
-            };
-            Some(call.matcher())
+            Some(base) => Some(oj_compiler::glob::GlobCall {
+                patterns: vec![format!("{base}/**")],
+                exhaustive: true,
+                case_sensitive: true,
+            }),
+            None => oj_compiler::glob::GlobCall::from_json(e),
         })
         .collect()
 }
 
-/// A created file a bundled glob matches grows that glob's expansion (the
-/// one way a NEW file changes a bundle whose inputs all resolved). The
-/// watcher spelling or its real path, like the closure check.
-fn created_in_glob_scope(
+/// A file a bundled glob matches but the bundle never read is one the glob's
+/// expansion grows by (the one way a NEW file changes a bundle whose inputs
+/// all resolved), however the watcher reported it: a file renamed into place
+/// arrives as a rename, and chokidar calls any path it did not know an add.
+/// Plain dev's glob importers use the same rule. The watcher spelling or its
+/// real path, like the closure check.
+fn added_to_glob(
     scopes: &[oj_compiler::glob::GlobMatcher],
-    created: &std::collections::HashSet<PathBuf>,
+    closure: &std::collections::HashSet<PathBuf>,
+    p: &Path,
 ) -> bool {
-    if scopes.is_empty() || created.is_empty() {
+    if scopes.is_empty() || !p.is_file() {
+        return false;
+    }
+    let real = std::fs::canonicalize(p).ok();
+    if closure.contains(p) || real.as_ref().is_some_and(|r| closure.contains(r)) {
         return false;
     }
     let matched = |p: &Path| {
         let file = p.to_string_lossy().replace('\\', "/");
         scopes.iter().any(|g| g.is_match(&file))
     };
-    created
-        .iter()
-        .any(|p| matched(p) || std::fs::canonicalize(p).is_ok_and(|real| matched(&real)))
+    matched(p) || real.is_some_and(|r| matched(&r))
+}
+
+/// The files inside a directory an event brought into existence (created, or
+/// moved into place), not `node_modules` or `.git`, which Vite's watcher
+/// ignores. The watcher reports one event for the directory, and chokidar
+/// raises an add for each file it then finds inside; directory events are
+/// otherwise dropped (`watch_relevant`). Linux's parent-directory events
+/// beside every write are modifies, never walked.
+fn files_in_new_dirs(ev: &notify::Event) -> Vec<PathBuf> {
+    if !matches!(
+        ev.kind,
+        notify::EventKind::Create(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut dirs: Vec<PathBuf> = ev.paths.iter().filter(|p| p.is_dir()).cloned().collect();
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => {
+                    if !matches!(entry.file_name().to_str(), Some("node_modules" | ".git")) {
+                        dirs.push(entry.path());
+                    }
+                }
+                Ok(_) => found.push(entry.path()),
+                Err(_) => {}
+            }
+        }
+    }
+    found
 }
 
 /// Whether a batch can change the client bundle: a path in the closure (the
 /// watcher spelling, or its real path, since the bundler records resolved
-/// paths), a create under a bundled glob's scan base, a failed previous
-/// bundle, or no closure to consult. A create anywhere else is ignored, as
-/// Vite ignores adds its module graphs and glob importers never reach: a
-/// new file that would shadow an existing import's resolution lands when
-/// that importer changes or a bundle fails, there as here.
-fn client_bundle_affected(
-    state: &StartState,
-    paths: &[PathBuf],
-    created: &std::collections::HashSet<PathBuf>,
-) -> bool {
+/// paths), a new file a bundled glob matches, a failed previous bundle, or
+/// no closure to consult. A new file anywhere else is ignored, as Vite
+/// ignores adds its module graphs and glob importers never reach: a new
+/// file that would shadow an existing import's resolution lands when that
+/// importer changes or a bundle fails, there as here.
+fn client_bundle_affected(state: &StartState, paths: &[PathBuf]) -> bool {
     if !state.bundle_ok.load(std::sync::atomic::Ordering::SeqCst) {
         return true;
     }
@@ -1003,18 +1041,14 @@ fn client_bundle_affected(
         .client_glob_scopes
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    created_in_glob_scope(&scopes, created)
+    paths.iter().any(|p| added_to_glob(&scopes, &closure, p))
 }
 
 /// A batch's paths the client bundle reads: those in the closure (as it
-/// spells them) and creates under a glob scan base. Everything, when there is
-/// no closure to consult. The bundler's engine rebuilds in full for one it
+/// spells them) and new files a bundled glob matches. Everything, when there
+/// is no closure to consult. The bundler's engine rebuilds in full for one it
 /// does not know as a module.
-fn client_inputs(
-    state: &StartState,
-    paths: &[PathBuf],
-    created: &std::collections::HashSet<PathBuf>,
-) -> Vec<PathBuf> {
+fn client_inputs(state: &StartState, paths: &[PathBuf]) -> Vec<PathBuf> {
     let closure = state
         .client_closure
         .read()
@@ -1035,9 +1069,7 @@ fn client_inputs(
             .filter(|r| closure.contains(r))
         {
             inputs.push(real);
-        } else if created.contains(p)
-            && created_in_glob_scope(&scopes, &std::iter::once(p.clone()).collect())
-        {
+        } else if added_to_glob(&scopes, &closure, p) {
             inputs.push(p.clone());
         }
     }
@@ -1162,7 +1194,10 @@ fn spawn_start_watcher(
                     if matches!(ev.kind, notify::EventKind::Create(_)) {
                         created.extend(ev.paths.iter().cloned());
                     }
-                    changes.changed_paths(&ev).into_iter().collect()
+                    let mut paths: std::collections::HashSet<PathBuf> =
+                        changes.changed_paths(&ev).into_iter().collect();
+                    paths.extend(files_in_new_dirs(&ev));
+                    paths
                 }
                 Err(_) => break,
             };
@@ -1185,6 +1220,7 @@ fn spawn_start_watcher(
                             created.extend(ev.paths.iter().cloned());
                         }
                         paths.extend(changes.changed_paths(&ev));
+                        paths.extend(files_in_new_dirs(&ev));
                     }
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -1241,8 +1277,6 @@ fn spawn_start_watcher(
                 run.paths.extend(paths.iter().cloned());
                 run.invalidates.extend(early_invalidate);
                 run.invalidates.extend(invalidate);
-                run.created
-                    .extend(created.iter().filter(|p| watch_relevant(p)).cloned());
                 run.batch = batch;
             }
             wake.notify_one();
@@ -1285,12 +1319,8 @@ async fn rebundle_worker(
         // acts on files its module graphs know). Regen checks still run below
         // either way: a server fn can live in a file the client never
         // imports, since gen-resolver scans all of src.
-        // A file that came and went inside the batch (GNU sed's temp, an
-        // editor's safe-write) was never anything a glob could expand to.
-        let created: std::collections::HashSet<PathBuf> =
-            run.created.into_iter().filter(|p| p.exists()).collect();
-        let needs_bundle = run.force || client_bundle_affected(&state, &paths, &created);
-        let inputs = client_inputs(&state, &paths, &created);
+        let needs_bundle = run.force || client_bundle_affected(&state, &paths);
+        let inputs = client_inputs(&state, &paths);
         let pages_run_bundle = state.pages_run_bundle();
         let no_invalidates_sent = run.invalidates.is_empty();
         let client = {
@@ -2595,7 +2625,13 @@ fn bundle_client_entry_cached(
     let root = bundler.root.as_path();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
-    match store.restore(cache) {
+    let glob_members = |scopes: &Path| {
+        load_glob_calls(scopes)
+            .iter()
+            .flat_map(oj_compiler::glob::GlobCall::files)
+            .collect()
+    };
+    match store.restore(cache, glob_members) {
         Ok((stats, pinned)) => {
             let rehashed = match stats.rehashed {
                 0 => String::new(),
@@ -4286,9 +4322,11 @@ mod tests {
     // each glob whose patterns match it (picomatch with `dot: !!exhaustive`,
     // node_modules ignored unless exhaustive) and changes nothing else. That
     // is the one way a NEW file changes a bundle whose inputs all resolved.
-    // The calls are glob-transform.mjs output, verbatim.
+    // New is what the bundle never read, however the watcher reported it (a
+    // file renamed into place is a rename event). The calls are
+    // glob-transform.mjs output, verbatim.
     #[test]
-    fn created_files_rebundle_only_when_a_glob_matches_them() {
+    fn new_files_rebundle_only_when_a_glob_matches_them() {
         let dir = tmp("glob-scopes-load");
         assert!(
             load_client_glob_scopes(&dir).is_empty(),
@@ -4299,52 +4337,102 @@ mod tests {
             load_client_glob_scopes(&dir).is_empty(),
             "torn file is empty"
         );
+        // The app as the watcher spells it; the closure holds real paths.
+        let app = dir.join("app");
+        let a = app.to_string_lossy().replace('\\', "/");
         std::fs::write(
             dir.join("glob-scopes.json"),
-            r#"[{"patterns":["/app/src/icons/**/*.{svg,png}","!/app/src/icons/skip/**"],"exhaustive":false,"caseSensitive":false},{"patterns":["/app/src/modules/*/messages/*.json"],"exhaustive":false,"caseSensitive":true},{"patterns":["/app/src/routes/\\[id\\]/*.ts"],"exhaustive":false,"caseSensitive":true}]"#,
+            serde_json::json!([
+                {"patterns": [format!("{a}/src/icons/**/*.{{svg,png}}"), format!("!{a}/src/icons/skip/**")], "exhaustive": false, "caseSensitive": false},
+                {"patterns": [format!("{a}/src/modules/*/messages/*.json")], "exhaustive": false, "caseSensitive": true},
+                {"patterns": [format!("{a}/src/routes/\\[id\\]/*.ts")], "exhaustive": false, "caseSensitive": true},
+            ])
+            .to_string(),
         )
         .unwrap();
         let scopes = load_client_glob_scopes(&dir);
         assert_eq!(scopes.len(), 3);
 
-        let created = |p: &str| std::collections::HashSet::from([PathBuf::from(p)]);
-        for (file, rebundles) in [
-            ("/app/src/modules/new/messages/fr.json", true),
-            ("/app/src/icons/deep/new.svg", true),
-            ("/app/src/icons/Deep/Logo.SVG", true),
-            ("/app/src/routes/[id]/edit.ts", true),
+        let file = |rel: &str| {
+            let p = app.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            p
+        };
+        let bundled = file("src/modules/home/messages/en.json");
+        let closure: std::collections::HashSet<PathBuf> =
+            [std::fs::canonicalize(&bundled).unwrap()].into();
+        for (rel, rebundles) in [
+            ("src/modules/new/messages/fr.json", true),
+            ("src/icons/deep/new.svg", true),
+            ("src/icons/Deep/Logo.SVG", true),
+            ("src/routes/[id]/edit.ts", true),
+            // A member the bundle already read: an edit, not an add.
+            ("src/modules/home/messages/en.json", false),
             // Under a glob's scan base, matched by none of its patterns.
-            ("/app/src/modules/dashboard/components/sedf1aa6r", false),
-            ("/app/src/modules/x/New.tsx", false),
-            ("/app/src/icons/skip/a.svg", false),
-            ("/app/src/icons/.cache/a.svg", false),
-            ("/app/src/icons/node_modules/a.svg", false),
-            ("/app/src/routes/i/edit.ts", false),
-            ("/app/.wrangler/state/v3/trace-store/a.sqlite-wal", false),
+            ("src/modules/dashboard/components/sedf1aa6r", false),
+            ("src/modules/x/New.tsx", false),
+            ("src/icons/skip/a.svg", false),
+            ("src/icons/.cache/a.svg", false),
+            ("src/icons/node_modules/a.svg", false),
+            ("src/routes/i/edit.ts", false),
+            (".wrangler/state/v3/trace-store/a.sqlite-wal", false),
         ] {
             assert_eq!(
-                created_in_glob_scope(&scopes, &created(file)),
+                added_to_glob(&scopes, &closure, &file(rel)),
                 rebundles,
-                "{file}"
+                "{rel}"
             );
         }
-        assert!(!created_in_glob_scope(
+        let gone = app.join("src/modules/gone/messages/de.json");
+        assert!(
+            !added_to_glob(&scopes, &closure, &gone),
+            "a path no longer on disk was nothing a glob expands to"
+        );
+        assert!(!added_to_glob(
             &[],
-            &created("/app/src/modules/new/messages/fr.json")
+            &closure,
+            &file("src/modules/new/messages/fr.json")
         ));
-        assert!(!created_in_glob_scope(&scopes, &Default::default()));
+
+        // A directory moved into place is one event: its files are the adds.
+        let staged = dir.join("staged");
+        std::fs::create_dir_all(staged.join("messages")).unwrap();
+        std::fs::create_dir_all(staged.join("node_modules/x")).unwrap();
+        std::fs::write(staged.join("messages/en.json"), "{}").unwrap();
+        std::fs::write(staged.join("node_modules/x/a.json"), "{}").unwrap();
+        let moved = app.join("src/modules/moved");
+        std::fs::rename(&staged, &moved).unwrap();
+        let event = |kind| notify::Event::new(kind).add_path(moved.clone());
+        let renamed = event(notify::EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Any,
+        )));
+        assert_eq!(
+            files_in_new_dirs(&renamed),
+            [moved.join("messages/en.json")]
+        );
+        assert!(added_to_glob(
+            &scopes,
+            &closure,
+            &moved.join("messages/en.json")
+        ));
+        // A write's parent-directory event is no new directory.
+        let touched = event(notify::EventKind::Modify(notify::event::ModifyKind::Any));
+        assert!(files_in_new_dirs(&touched).is_empty());
 
         // A cache an older oj wrote: scan bases, matched as before.
-        std::fs::write(dir.join("glob-scopes.json"), r#"["/app/src/content"]"#).unwrap();
+        std::fs::write(
+            dir.join("glob-scopes.json"),
+            format!(r#"["{a}/src/content"]"#),
+        )
+        .unwrap();
         let legacy = load_client_glob_scopes(&dir);
-        assert!(created_in_glob_scope(
+        assert!(added_to_glob(
             &legacy,
-            &created("/app/src/content/a/b.txt")
+            &closure,
+            &file("src/content/a/b.txt")
         ));
-        assert!(!created_in_glob_scope(
-            &legacy,
-            &created("/app/src/other.json")
-        ));
+        assert!(!added_to_glob(&legacy, &closure, &file("src/other.json")));
     }
 
     // The rebundle worker tracks the regen outputs' content against what the
