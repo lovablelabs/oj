@@ -88,6 +88,27 @@ try {
     "the dev server did not report a hot update",
   );
 
+  // An edit batched with a file that came and went under a glob's scan base
+  // (GNU sed's temp, an editor's safe-write): gone before the batch settles,
+  // it is in no glob's expansion, so the edit still patches in place.
+  const hotCount = () => log.split("oj start: hot updated").length - 1;
+  const before = hotCount();
+  const mark = log.length;
+  const temp = path.join(app, "src", "content", "sedf1aa6r");
+  fs.writeFileSync(temp, "{}");
+  fs.writeFileSync(widget, originals.get(widget).replace('"jsxglob:"', '"jsxtemp:"'));
+  fs.rmSync(temp);
+  await page.waitForSelector('[data-testid="glob-jsx"]:has-text("jsxtemp:")', { timeout: 30000 });
+  must(
+    await settles(() => hotCount() > before || /oj start: (rebuilt|updated)/.test(log.slice(mark)), {
+      timeoutMs: 30000,
+      pollMs: 50,
+    }),
+    "the dev server did not report the batch",
+  );
+  must(hotCount() > before, `a vanished temp file turned the edit into a rebuild:\n${log.slice(mark)}`);
+  must((await page.evaluate(() => window.__hotProbe)) === "kept", "the edit with a temp file reloaded the page");
+
   // import.meta.hot.send reaches a plugin's server.ws.on, and its
   // server.ws.send reply reaches the page's import.meta.hot.on.
   fs.writeFileSync(

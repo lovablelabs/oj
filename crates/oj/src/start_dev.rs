@@ -96,6 +96,18 @@ struct StartState {
     /// False after a failed rebundle: the closure may be a torso (the build
     /// stopped early), so every next batch rebundles until one succeeds.
     bundle_ok: std::sync::atomic::AtomicBool,
+    /// A runner-rendered document handed a page the Start client bundle. The
+    /// worker environments' documents never do: TanStack's own manifest
+    /// answers there, and its script is the unbundled dev client entry, so
+    /// those pages run the client module graph, as under Vite.
+    bundle_loaded: std::sync::atomic::AtomicBool,
+    /// Edits changed the bundle's inputs while no page loaded it, and no
+    /// rebundle ran for them; the next runner document brings it current.
+    bundle_deferred: std::sync::atomic::AtomicBool,
+    /// The coalescing rebundle worker's queue (at most one pending run) and
+    /// its wake.
+    rebundles: Arc<std::sync::Mutex<Option<PendingRebundle>>>,
+    rebundle_wake: Arc<tokio::sync::Notify>,
     /// The dev server's SSR bridge, here for its module-graph lookup: files
     /// the generic pipeline serves (a dev worker script fetched by URL) are
     /// in no other graph the reload decision consults.
@@ -150,6 +162,13 @@ impl StartState {
     /// eagerly on every edit. Live: a slow plugin host flips this after boot.
     fn lazy_runner(&self) -> bool {
         self.plugin_serve.runner_environments()
+    }
+
+    /// Whether any page can be running the Start client bundle: with the
+    /// worker environments serving the documents, only one the fallback
+    /// runner rendered.
+    fn pages_run_bundle(&self) -> bool {
+        !self.lazy_runner() || self.bundle_loaded.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -528,6 +547,10 @@ pub async fn start_dev(
         client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
         // A failed boot bundle rebundles on every next batch until one succeeds.
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
+        bundle_loaded: std::sync::atomic::AtomicBool::new(false),
+        bundle_deferred: std::sync::atomic::AtomicBool::new(false),
+        rebundles: Arc::new(std::sync::Mutex::new(None)),
+        rebundle_wake: Arc::new(tokio::sync::Notify::new()),
         ssr: built.ssr.clone(),
         refresh_wake: tokio::sync::Notify::new(),
         urgent: std::sync::atomic::AtomicBool::new(false),
@@ -605,6 +628,34 @@ pub async fn start_dev(
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
     oj_server::tls::serve_router(listener, app, built.https.as_ref()).await?;
     Ok(())
+}
+
+/// A runner document loads the Start client bundle. While no page did, edits
+/// left it as it was (see `StartState::pages_run_bundle`); the first such
+/// document waits for a rebundle (bounded, like `client_output_fresh`), and
+/// edits from then on rebundle it as they come.
+async fn ensure_bundle_current(state: &StartState) {
+    state
+        .bundle_loaded
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    if !state
+        .bundle_deferred
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut slot = state
+            .rebundles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let run = slot.get_or_insert_with(PendingRebundle::default);
+        run.force = true;
+        run.done.push(tx);
+    }
+    state.rebundle_wake.notify_one();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), rx).await;
 }
 
 /// On the Cloudflare path the runner is only a fallback: edits mark it dirty
@@ -782,6 +833,11 @@ struct PendingRebundle {
     created: std::collections::HashSet<PathBuf>,
     /// The newest merged batch number: its done-frame clears the editor pill.
     batch: u64,
+    /// A runner document is about to hand pages the bundle that edits left
+    /// stale (`bundle_deferred`): rebundle whatever the paths say.
+    force: bool,
+    /// Signalled once this run completes.
+    done: Vec<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Spawn one worker-environment invalidate for a batch's relevant paths, off
@@ -974,9 +1030,8 @@ fn spawn_start_watcher(
     rx: std::sync::mpsc::Receiver<notify::Event>,
 ) {
     let rt = tokio::runtime::Handle::current();
-    let pending: Arc<std::sync::Mutex<Option<PendingRebundle>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let wake = Arc::new(tokio::sync::Notify::new());
+    let pending = Arc::clone(&state.rebundles);
+    let wake = Arc::clone(&state.rebundle_wake);
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // The start entry's presence is a config-time input: upstream resolves
     // `#tanstack-start-entry` once in its plugin's `config` hook, and oj
@@ -1155,8 +1210,13 @@ async fn rebundle_worker(
         // acts on files its module graphs know). Regen checks still run below
         // either way: a server fn can live in a file the client never
         // imports, since gen-resolver scans all of src.
-        let needs_bundle = client_bundle_affected(&state, &paths, &run.created);
-        let inputs = client_inputs(&state, &paths, &run.created);
+        // A file that came and went inside the batch (GNU sed's temp, an
+        // editor's safe-write) was never anything a glob could expand to.
+        let created: std::collections::HashSet<PathBuf> =
+            run.created.into_iter().filter(|p| p.exists()).collect();
+        let needs_bundle = run.force || client_bundle_affected(&state, &paths, &created);
+        let inputs = client_inputs(&state, &paths, &created);
+        let pages_run_bundle = state.pages_run_bundle();
         let no_invalidates_sent = run.invalidates.is_empty();
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
@@ -1165,6 +1225,7 @@ async fn rebundle_worker(
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
             let generation = state.bundler.hot.generation();
+            let deferral = Arc::clone(&state);
             // Every batch, bundled or not: a style edit the gate passes over
             // must still recompile at the next bundle.
             bundler.note_changes(&changed);
@@ -1186,7 +1247,19 @@ async fn rebundle_worker(
                 }
                 // A route-set change rewrites the generated tree, a bundled
                 // input, even when the triggering paths missed the closure.
-                let bundling = needs_bundle || routes_changed;
+                // Nothing to bring current while no page runs the bundle; a
+                // runner document that loaded it since (it marks the bundle
+                // loaded before it looks for a deferral) still gets it.
+                let wants = needs_bundle || routes_changed;
+                let bundling = wants
+                    && (pages_run_bundle || {
+                        deferral
+                            .bundle_deferred
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        deferral
+                            .bundle_loaded
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                    });
                 // Name what trips an actual rebundle: a feedback loop (a build
                 // output echoing into the watcher) is invisible without the
                 // paths, and only the first few are needed to see it. A batch
@@ -1338,25 +1411,19 @@ async fn rebundle_worker(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
                 .is_some();
-        // Reload the browser only when something it can observe changed: the
-        // bundle, a regen output, a worker-served module, an engine-served
-        // one, or a module the generic pipeline served (a dev worker script).
-        // A change outside every graph (a README, a config of some other
-        // tool) reloads nothing, as in Vite.
-        // A failed bundle reloads nothing: the page keeps what it runs under
-        // the overlay (Vite's bundled dev), and the fixed bundle reloads it.
-        // A bundle whose changes all went out as hot updates reloads only
-        // for what the pages cannot take in place (a server-fn or route-set
-        // change). The server render of the same modules is fresh for the
-        // next document, as Vite leaves SSR to the next request once client
-        // HMR applied the edit.
         let server_signals =
             worker_hit || engine_hit || paths.iter().any(|p| state.ssr.graph_knows_file(p));
-        let reload = forced
-            || !bundle_failed
-                && (server_fn_changed
-                    || !regen_changed.is_empty()
-                    || !hot && (bundled || server_signals));
+        let unbundled = !pages_run_bundle && !bundled;
+        let reload = reloads_browser(RunSignals {
+            unbundled,
+            forced,
+            bundle_failed,
+            server_fn_changed,
+            regen_changed: !regen_changed.is_empty(),
+            hot,
+            bundled,
+            server_signals,
+        });
         // Tailwind generates rules from the sources it scans: an update
         // applied in place re-links the sheets instead of reloading. A sheet
         // the update imported for the first time is linked in the pages.
@@ -1387,8 +1454,13 @@ async fn rebundle_worker(
             Some(0),
             true,
         ));
+        for done in run.done {
+            let _ = done.send(());
+        }
         if hot && !reload {
             println!("  oj start: hot updated");
+        } else if unbundled && !reload {
+            println!("  oj start: client updates left to the page's module graph, no rebundle");
         } else if !reload {
             println!("  oj start: change outside every served graph, no rebundle, no reload");
         } else if held {
@@ -1403,6 +1475,49 @@ async fn rebundle_worker(
             );
         }
     }
+}
+
+/// What a rebundle run saw, for the browser reload decision.
+#[derive(Clone, Copy, Default)]
+struct RunSignals {
+    /// No page runs the Start bundle: they run the client module graph.
+    unbundled: bool,
+    /// A page asked for a reload, and the run has fresh output for it.
+    forced: bool,
+    bundle_failed: bool,
+    server_fn_changed: bool,
+    regen_changed: bool,
+    /// Every change went out to the pages as a hot update.
+    hot: bool,
+    bundled: bool,
+    /// A worker environment, the engine or the generic pipeline served a
+    /// changed module.
+    server_signals: bool,
+}
+
+/// Reload the browser only when something it can observe changed: the
+/// bundle, a regen output, a worker-served module, an engine-served one, or a
+/// module the generic pipeline served (a dev worker script). A change outside
+/// every graph (a README, a config of some other tool) reloads nothing, as in
+/// Vite.
+/// A failed bundle reloads nothing: the page keeps what it runs under the
+/// overlay (Vite's bundled dev), and the fixed bundle reloads it. A bundle
+/// whose changes all went out as hot updates reloads only for what the pages
+/// cannot take in place (a server-fn or route-set change). The server render
+/// of the same modules is fresh for the next document, as Vite leaves SSR to
+/// the next request once client HMR applied the edit.
+/// With no page on the bundle (worker-rendered documents), the pages run the
+/// client module graph, whose own HMR takes each edit in place or reloads, as
+/// in Vite; a worker environment's update never reaches the page there
+/// either. Only the regen outputs, which the watcher never forwards to that
+/// HMR, still reload.
+fn reloads_browser(s: RunSignals) -> bool {
+    if s.unbundled {
+        return s.forced || s.regen_changed;
+    }
+    s.forced
+        || !s.bundle_failed
+            && (s.server_fn_changed || s.regen_changed || !s.hot && (s.bundled || s.server_signals))
 }
 
 /// What a rebundle did with the client.
@@ -2815,6 +2930,7 @@ async fn forward_document(
             return inject_reload_client(resp);
         }
     }
+    ensure_bundle_current(state).await;
     ensure_runner_fresh(state).await;
     forward(
         &state.engine,
@@ -4842,6 +4958,73 @@ mod tests {
         assert!(
             configured_start_server_entry(&env_scoped, &root).is_some(),
             "environments.ssr.resolve.alias counts"
+        );
+    }
+
+    // Vite: with the worker rendering the documents from TanStack's own
+    // manifest, the page runs the client module graph, and an edit reaches it
+    // as that graph's HMR update; the worker environment's own update never
+    // reloads the page.
+    #[test]
+    fn worker_documents_leave_client_edits_to_the_page_hmr() {
+        let unbundled = RunSignals {
+            unbundled: true,
+            ..Default::default()
+        };
+        for edit in [
+            RunSignals {
+                server_signals: true,
+                ..unbundled
+            },
+            RunSignals {
+                server_fn_changed: true,
+                server_signals: true,
+                ..unbundled
+            },
+        ] {
+            assert!(
+                !reloads_browser(edit),
+                "an edit the page's own HMR applies reloaded it"
+            );
+        }
+        // The generated route tree never reaches that HMR (the watcher drops
+        // its writes), so a route-set change still reloads.
+        assert!(reloads_browser(RunSignals {
+            regen_changed: true,
+            ..unbundled
+        }));
+    }
+
+    #[test]
+    fn bundle_pages_reload_for_what_no_hot_update_carried() {
+        let base = RunSignals::default();
+        assert!(!reloads_browser(RunSignals {
+            hot: true,
+            bundled: true,
+            server_signals: true,
+            ..base
+        }));
+        assert!(reloads_browser(RunSignals {
+            bundled: true,
+            ..base
+        }));
+        assert!(reloads_browser(RunSignals {
+            server_signals: true,
+            ..base
+        }));
+        assert!(reloads_browser(RunSignals {
+            hot: true,
+            server_fn_changed: true,
+            ..base
+        }));
+        assert!(!reloads_browser(RunSignals {
+            bundled: true,
+            bundle_failed: true,
+            ..base
+        }));
+        assert!(
+            !reloads_browser(base),
+            "a change outside every graph reloads nothing"
         );
     }
 }
