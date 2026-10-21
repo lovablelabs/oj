@@ -15,7 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { settles } from "./util.mjs";
+import { CLOUDFLARE_DEPS, settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -55,7 +55,7 @@ function installCloudflareDeps() {
     path.join(tmp, "package.json"),
     JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }),
   );
-  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", {
+  execSync(`npm install --no-audit --no-fund --no-package-lock ${CLOUDFLARE_DEPS}`, {
     cwd: tmp,
     stdio: "inherit",
   });

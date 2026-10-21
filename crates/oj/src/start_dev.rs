@@ -104,6 +104,9 @@ struct StartState {
     /// Edits changed the bundle's inputs while no page loaded it, and no
     /// rebundle ran for them; the next runner document brings it current.
     bundle_deferred: std::sync::atomic::AtomicBool,
+    /// True while the deferred bundle is building: a runner document waits
+    /// for it rather than handing out the empty one.
+    deferred_build: tokio::sync::watch::Sender<bool>,
     /// The coalescing rebundle worker's queue (at most one pending run) and
     /// its wake.
     rebundles: Arc<std::sync::Mutex<Option<PendingRebundle>>>,
@@ -426,6 +429,9 @@ pub async fn start_dev(
     // also sidesteps the bound-interface question a TCP self-request had
     // (::1 vs 127.0.0.1 vs a specific host): there is no socket to dial.
     let (app_tx, app_rx) = tokio::sync::oneshot::channel::<axum::Router>();
+    // Sent once the prewarm knows oj's runner renders the documents: their
+    // pages load the Start bundle, so a deferred one starts building then.
+    let (runner_documents_tx, runner_documents_rx) = tokio::sync::oneshot::channel::<()>();
     {
         let engine = Arc::clone(&engine);
         let reload_tx = reload_tx.clone();
@@ -491,6 +497,7 @@ pub async fn start_dev(
                     }
                 }
             }
+            let _ = runner_documents_tx.send(());
             let _ = engine
                 .handle(engine_request(
                     "GET".into(),
@@ -563,6 +570,7 @@ pub async fn start_dev(
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         bundle_loaded: std::sync::atomic::AtomicBool::new(false),
         bundle_deferred: std::sync::atomic::AtomicBool::new(defer_bundle),
+        deferred_build: tokio::sync::watch::channel(false).0,
         rebundles: Arc::new(std::sync::Mutex::new(None)),
         rebundle_wake: Arc::new(tokio::sync::Notify::new()),
         ssr: built.ssr.clone(),
@@ -611,6 +619,18 @@ pub async fn start_dev(
         });
     }
     spawn_start_watcher(root.clone(), cache.clone(), Arc::clone(&state), watch_rx);
+    // Once the serve info says oj's runner renders the documents (no worker
+    // environment does, or the host never announced), their pages load the
+    // Start bundle: build a deferred one then, as Vite's bundled dev builds
+    // at startup, instead of making the first document wait for it.
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if runner_documents_rx.await.is_ok() {
+                start_deferred_bundle(&state);
+            }
+        });
+    }
     {
         let (root, mode) = (root.clone(), mode.clone());
         tokio::task::spawn_blocking(move || {
@@ -644,15 +664,10 @@ pub async fn start_dev(
     Ok(())
 }
 
-/// A runner document loads the Start client bundle. While no page did, it
-/// was left unbuilt (a Cloudflare boot) or stale (edits, see
-/// `StartState::pages_run_bundle`); the first such document waits for a
-/// bundle (bounded, like `client_output_fresh`), and edits from then on
-/// rebundle it as they come.
-async fn ensure_bundle_current(state: &StartState) {
-    state
-        .bundle_loaded
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+/// Queues the bundle left unbuilt (a Cloudflare boot) or stale (edits while
+/// no page loaded it, see `StartState::pages_run_bundle`), once: whoever
+/// needs it first starts it, and `deferred_build` stays raised until it ran.
+fn start_deferred_bundle(state: &Arc<StartState>) {
     if !state
         .bundle_deferred
         .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -660,6 +675,7 @@ async fn ensure_bundle_current(state: &StartState) {
         return;
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
+    state.deferred_build.send_replace(true);
     {
         let mut slot = state
             .rebundles
@@ -670,7 +686,27 @@ async fn ensure_bundle_current(state: &StartState) {
         run.done.push(tx);
     }
     state.rebundle_wake.notify_one();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), rx).await;
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        let _ = rx.await;
+        state.deferred_build.send_replace(false);
+    });
+}
+
+/// A runner document loads the Start client bundle: it waits for a deferred
+/// one, its own or one boot already started (bounded, like
+/// `client_output_fresh`), and edits from then on rebundle it as they come.
+async fn ensure_bundle_current(state: &Arc<StartState>) {
+    state
+        .bundle_loaded
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    start_deferred_bundle(state);
+    let mut building = state.deferred_build.subscribe();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        building.wait_for(|b| !*b),
+    )
+    .await;
 }
 
 /// On the Cloudflare path the runner is only a fallback: edits mark it dirty

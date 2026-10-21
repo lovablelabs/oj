@@ -25,7 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseBoundPort } from "./lib/hydration.mjs";
-import { settles, sleep } from "./util.mjs";
+import { CLOUDFLARE_DEPS, settles, sleep } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -63,7 +63,7 @@ function installCloudflareDeps() {
     path.join(tmp, "package.json"),
     JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }),
   );
-  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", {
+  execSync(`npm install --no-audit --no-fund --no-package-lock ${CLOUDFLARE_DEPS}`, {
     cwd: tmp,
     stdio: "inherit",
   });
@@ -168,8 +168,9 @@ function makeApp() {
 const VERDICT = /oj start: (hot updated|change outside[^\n]*|rebuilt[^\n]*|updated[^\n]*|client updates[^\n]*)/g;
 
 // Boots `oj dev` on the app, waits for `/` to answer with `marker`, runs
-// `phase(base, log, browser)`, and tears the server down.
-async function served(label, marker, phase) {
+// `phase(base, log, browser)`, and tears the server down. With
+// `beforeFirstDocument`, the log must match it before any document is asked.
+async function served(label, marker, phase, { beforeFirstDocument } = {}) {
   let log = "";
   const srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
     cwd: app,
@@ -193,6 +194,12 @@ async function served(label, marker, phase) {
       { timeoutMs: 60000, pollMs: 250 },
     );
     must(port, `${label}: oj never bound a port:\n${log.slice(-4000)}`);
+    if (beforeFirstDocument) {
+      must(
+        await settles(() => beforeFirstDocument.test(log), { timeoutMs: 120000, pollMs: 200 }),
+        `${label}: no ${beforeFirstDocument} before the first document:\n${log.slice(-4000)}`,
+      );
+    }
     const base = `http://127.0.0.1:${port}`;
     let up = false;
     await settles(
@@ -303,8 +310,10 @@ async function workerDocuments(base, log, page) {
 }
 
 // The config names the plugin but no worker environment renders: oj's runner
-// serves the document, whose page loads the Start bundle, built for it on
-// that first request.
+// serves the document, whose page loads the Start bundle. It is built once
+// the serve info says so, after boot and before any document asks for it, as
+// Vite's bundled dev builds at startup (`served` waits for that with no
+// document requested).
 async function runnerDocuments(base, log, page) {
   await hydrate(page, base);
   const scripts = await page.$$eval("script[src]", (s) => s.map((x) => x.getAttribute("src")));
@@ -312,18 +321,13 @@ async function runnerDocuments(base, log, page) {
     scripts.some((s) => s.includes("/@oj-start/client-entry.js")),
     `the runner document should load the Start bundle: ${scripts.join(" ")}`,
   );
-  // Not at boot: on the first document, once the server listens.
-  const listening = log().indexOf("oj dev (");
-  const bundling = log().search(/client bundl(ing|ed)/);
-  must(
-    listening !== -1 && bundling > listening,
-    `the Start bundle should be built for the first runner document, not at boot (listening@${listening}, bundling@${bundling})`,
-  );
   must(
     (await page.textContent('[data-testid="banner"]')) === "banner-second",
     "the runner page's bundle missed edits made while it was deferred",
   );
-  console.log("start-cloudflare-hmr: runner documents, the Start bundle built for the first one and hydrates");
+  console.log(
+    "start-cloudflare-hmr: runner documents, the Start bundle built after boot, before any document, and hydrates",
+  );
 }
 
 try {
@@ -345,7 +349,7 @@ try {
       "",
     ].join("\n"),
   );
-  await served("runner documents", "node-edition", runnerDocuments);
+  await served("runner documents", "node-edition", runnerDocuments, { beforeFirstDocument: /client bundl(ing|ed)/ });
   console.log("\nSTART CLOUDFLARE HMR PASSED");
 } catch (e) {
   console.error(`\nSTART CLOUDFLARE HMR FAILED: ${e.message}`);
