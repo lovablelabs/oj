@@ -2044,3 +2044,99 @@ fn the_cloudflare_plugin_ignore_covers_miniflare_state() {
         Path::new("/repo/web/src/routes/index.tsx")
     ));
 }
+
+// A directory that appears reports its files as creates, as chokidar's
+// addDir walk does, except where Vite's chokidar never looks: a fresh
+// install's top-level node_modules is one Create event and must not report
+// every package file. Nested dirs are walked too (a staged tree moved under
+// a glob), and a symlink back up the tree does not loop.
+#[test]
+fn created_dirs_skip_what_vite_never_watches() {
+    use notify::event::{CreateKind, ModifyKind, RenameMode};
+    use notify::{Event, EventKind};
+    let root = std::env::temp_dir().join(format!("oj-created-dirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let file = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        p
+    };
+    file("node_modules/react/index.js");
+    file(".git/HEAD");
+    file("dist/a.js");
+    file("generated/a.ts");
+    file(".oj-cache/a");
+    file("cache/a");
+    file("src/pkg/node_modules/x/index.js");
+    file("src/vendor/.git/HEAD");
+    file("src/file.ts");
+    let top = file("content/a.md");
+    let moved_a = file("src/content/moved/a.json");
+    let moved_dist = file("src/content/moved/dist/b.json");
+    file("src/content/moved/node_modules/x/y.json");
+    file("src/content/moved/.git/z");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("src"), root.join("src/content/moved/up")).unwrap();
+    let moved = root.join("src/content/moved");
+    let outside = std::env::temp_dir();
+
+    let ignored = watch_ignored_patterns(&root, &["generated".to_string()]);
+    let cache = root.join("cache");
+    let ev = |kind| {
+        let mut ev = Event::new(kind);
+        ev.paths = [
+            "node_modules",
+            ".git",
+            "dist",
+            "generated",
+            ".oj-cache",
+            "cache",
+            "src/pkg/node_modules",
+            "src/vendor/.git",
+            "src/file.ts",
+            "content",
+            "src/content/moved",
+        ]
+        .iter()
+        .map(|r| root.join(r))
+        .chain([outside.clone()])
+        .collect();
+        ev
+    };
+    let want = vec![root.join("content"), moved.clone()];
+    for kind in [
+        EventKind::Create(CreateKind::Folder),
+        EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+    ] {
+        assert_eq!(
+            crate::watch::created_dirs(&ignored, &root, &cache, &ev(kind)),
+            want,
+            "{kind:?}"
+        );
+    }
+    assert!(
+        crate::watch::created_dirs(
+            &ignored,
+            &root,
+            &cache,
+            &ev(EventKind::Modify(ModifyKind::Any))
+        )
+        .is_empty(),
+        "a write's parent-directory event is no new directory"
+    );
+
+    let mut found = Vec::new();
+    crate::watch::scan_files(&moved, &mut found);
+    found.sort();
+    let mut expected = vec![moved_a, moved_dist];
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "a nested dist is watched; node_modules, .git, the symlink are not"
+    );
+    let mut found = Vec::new();
+    crate::watch::scan_files(&root.join("content"), &mut found);
+    assert_eq!(found, [top]);
+    let _ = std::fs::remove_dir_all(&root);
+}

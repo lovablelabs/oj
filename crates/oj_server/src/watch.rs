@@ -630,17 +630,17 @@ fn watch_root(
     }
 }
 
-/// A directory created at the top level after boot, caught by the root's
-/// non-recursive watch: watch it recursively and report the files it already
-/// holds as creates (chokidar emits `add` per existing file when a new dir
-/// appears), since writes landing between the mkdir and this watch were
-/// never seen. Returns those files. A dir RENAMED into the root (a staged
-/// tree moved into place) arrives as `Modify(Name)`, not `Create` -- chokidar
-/// raises `addDir` for both -- so renames are adopted too; rename-From paths
-/// and plain file renames fall through the `is_dir` check, and re-watching an
-/// already-watched dir is idempotent (notify keys watches by path).
-fn adopt_created_root_dirs(
-    watchers: &mut Watchers,
+/// The directories an event brought into existence (created, or moved into
+/// place) under the root, as chokidar raises `addDir` for both: a dir RENAMED
+/// in (a staged tree moved into place) arrives as `Modify(Name)`, not
+/// `Create`. Rename-From paths and plain file renames fall through the
+/// `is_dir` check. Never one Vite's chokidar ignores (`**/node_modules/**`,
+/// `**/.git/**`, the cache dir, `server.watch.ignored`), nor a top-level dir
+/// the root watch leaves out (`dist`, `.oj-cache`): a fresh install's
+/// `node_modules` is one event, and walking it would report every package
+/// file as a create.
+pub(crate) fn created_dirs(
+    ignored: &[glob::Pattern],
     root: &Path,
     cache_base: &Path,
     ev: &notify::Event,
@@ -652,37 +652,68 @@ fn adopt_created_root_dirs(
     ) {
         return Vec::new();
     }
+    ev.paths
+        .iter()
+        .filter(|path| {
+            let Ok(rel) = path.strip_prefix(root) else {
+                return false;
+            };
+            let mut parts = rel.components().map(|c| c.as_os_str());
+            !parts.clone().any(|c| c == "node_modules" || c == ".git")
+                && !parts.next().is_some_and(is_unwatched_dir)
+                && !watch_excluded(ignored, root, cache_base, path)
+                && path.is_dir()
+        })
+        .cloned()
+        .collect()
+}
+
+/// A directory created after boot: a top-level one, caught by the root's
+/// non-recursive watch, is watched recursively (re-watching is idempotent,
+/// notify keys watches by path); a deeper one is already under a recursive
+/// watch. Either way the files it already holds are reported as creates
+/// (chokidar emits `add` per file it finds in a new dir), since writes
+/// landing before the watch, or moved in with the dir, were never seen.
+/// Returns those files.
+fn adopt_created_dirs(
+    watchers: &mut Watchers,
+    ignored: &[glob::Pattern],
+    root: &Path,
+    cache_base: &Path,
+    ev: &notify::Event,
+) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for path in &ev.paths {
-        if path.parent() != Some(root)
-            || path == cache_base
-            || path.file_name().is_none_or(is_unwatched_dir)
-            || !path.is_dir()
+    for path in created_dirs(ignored, root, cache_base, ev) {
+        if path.parent() == Some(root)
+            && watchers
+                .watch(&path, notify::RecursiveMode::Recursive)
+                .is_err()
         {
             continue;
         }
-        if watchers
-            .watch(path, notify::RecursiveMode::Recursive)
-            .is_ok()
-        {
-            scan_files(path, &mut found);
-        }
+        scan_files(&path, &mut found);
     }
     found
 }
 
-fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// The files under a new directory, minus what Vite's chokidar ignores at
+/// any depth (`node_modules`, `.git`). Symlinked directories are not entered:
+/// one pointing back up the tree would never end.
+pub(crate) fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            if !is_unwatched_dir(&entry.file_name()) {
-                scan_files(&path, out);
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => {
+                if !matches!(entry.file_name().to_str(), Some("node_modules" | ".git")) {
+                    scan_files(&path, out);
+                }
             }
-        } else {
-            out.push(path);
+            Ok(t) if t.is_symlink() && path.is_dir() => {}
+            Ok(_) => out.push(path),
+            Err(_) => {}
         }
     }
 }
@@ -930,8 +961,8 @@ pub(crate) fn spawn_watcher(
     });
 }
 
-/// One raw watcher event into the current batch: a created top-level dir is
-/// adopted first, and its existing files enter this same batch (and the feed,
+/// One raw watcher event into the current batch: a created dir is adopted
+/// first, and its existing files enter this same batch (and the feed,
 /// which only hears the notify callback) as a synthesized create.
 fn ingest_event(
     state: &ServerState,
@@ -942,7 +973,7 @@ fn ingest_event(
     ev: &notify::Event,
 ) -> bool {
     let mut kept = false;
-    let adopted = adopt_created_root_dirs(watchers, &state.root, cache_base, ev);
+    let adopted = adopt_created_dirs(watchers, &state.watch_ignored, &state.root, cache_base, ev);
     if !adopted.is_empty() {
         let mut synth =
             notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Any));

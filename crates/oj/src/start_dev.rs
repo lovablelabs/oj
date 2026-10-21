@@ -979,57 +979,20 @@ fn added_to_glob(
     matched(p) || real.is_some_and(|r| matched(&r))
 }
 
-/// The paths an event adds, as chokidar calls them: a create, a path a rename
-/// brought into place (an atomic write's rename lands on its target), and the
-/// files inside a directory that appeared (`inside`). A rename onto a module
-/// a worker graph already holds is an atomic save, which chokidar reports as
-/// a change: the plugin host reclassifies a create for a file its graphs know
-/// as an update.
-fn event_adds(ev: &notify::Event, inside: &[PathBuf]) -> Vec<PathBuf> {
-    let mut adds: Vec<PathBuf> = match ev.kind {
+/// The paths an event adds, as chokidar calls them: a create, and a path a
+/// rename brought into place (an atomic write's rename lands on its target).
+/// The files inside a directory that appeared come as the shared watcher's
+/// synthesized creates. A rename onto a module a worker graph already holds
+/// is an atomic save, which chokidar reports as a change: the plugin host
+/// reclassifies a create for a file its graphs know as an update.
+fn event_adds(ev: &notify::Event) -> Vec<PathBuf> {
+    match ev.kind {
         notify::EventKind::Create(_) => ev.paths.clone(),
         notify::EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
             ev.paths.iter().filter(|p| p.is_file()).cloned().collect()
         }
         _ => Vec::new(),
-    };
-    adds.extend_from_slice(inside);
-    adds
-}
-
-/// The files inside a directory an event brought into existence (created, or
-/// moved into place), not `node_modules` or `.git`, which Vite's watcher
-/// ignores. The watcher reports one event for the directory, and chokidar
-/// raises an add for each file it then finds inside; directory events are
-/// otherwise dropped (`watch_relevant`). Linux's parent-directory events
-/// beside every write are modifies, never walked.
-fn files_in_new_dirs(ev: &notify::Event) -> Vec<PathBuf> {
-    if !matches!(
-        ev.kind,
-        notify::EventKind::Create(_)
-            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-    ) {
-        return Vec::new();
     }
-    let mut found = Vec::new();
-    let mut dirs: Vec<PathBuf> = ev.paths.iter().filter(|p| p.is_dir()).cloned().collect();
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            match entry.file_type() {
-                Ok(t) if t.is_dir() => {
-                    if !matches!(entry.file_name().to_str(), Some("node_modules" | ".git")) {
-                        dirs.push(entry.path());
-                    }
-                }
-                Ok(_) => found.push(entry.path()),
-                Err(_) => {}
-            }
-        }
-    }
-    found
 }
 
 /// Whether a batch can change the client bundle: a path in the closure (the
@@ -1209,12 +1172,8 @@ fn spawn_start_watcher(
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
             let mut paths: std::collections::HashSet<PathBuf> = match rx.recv() {
                 Ok(ev) => {
-                    let mut paths: std::collections::HashSet<PathBuf> =
-                        changes.changed_paths(&ev).into_iter().collect();
-                    let inside = files_in_new_dirs(&ev);
-                    created.extend(event_adds(&ev, &inside));
-                    paths.extend(inside);
-                    paths
+                    created.extend(event_adds(&ev));
+                    changes.changed_paths(&ev).into_iter().collect()
                 }
                 Err(_) => break,
             };
@@ -1233,10 +1192,8 @@ fn spawn_start_watcher(
             loop {
                 match rx.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(ev) => {
+                        created.extend(event_adds(&ev));
                         paths.extend(changes.changed_paths(&ev));
-                        let inside = files_in_new_dirs(&ev);
-                        created.extend(event_adds(&ev, &inside));
-                        paths.extend(inside);
                     }
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -4411,28 +4368,26 @@ mod tests {
             &file("src/modules/new/messages/fr.json")
         ));
 
-        // A directory moved into place is one event: its files are the adds.
+        // A directory moved into place is one event, no add itself; the
+        // shared watcher follows it with a create for each file inside.
         let staged = dir.join("staged");
         std::fs::create_dir_all(staged.join("messages")).unwrap();
-        std::fs::create_dir_all(staged.join("node_modules/x")).unwrap();
         std::fs::write(staged.join("messages/en.json"), "{}").unwrap();
-        std::fs::write(staged.join("node_modules/x/a.json"), "{}").unwrap();
         let moved = app.join("src/modules/moved");
         std::fs::rename(&staged, &moved).unwrap();
-        let event = |kind| notify::Event::new(kind).add_path(moved.clone());
-        let renamed = event(notify::EventKind::Modify(notify::event::ModifyKind::Name(
-            notify::event::RenameMode::Any,
-        )));
-        assert_eq!(
-            files_in_new_dirs(&renamed),
-            [moved.join("messages/en.json")]
-        );
-        let inside = files_in_new_dirs(&renamed);
-        assert_eq!(
-            event_adds(&renamed, &inside),
-            inside,
+        let renamed = notify::Event::new(notify::EventKind::Modify(
+            notify::event::ModifyKind::Name(notify::event::RenameMode::Any),
+        ))
+        .add_path(moved.clone());
+        assert!(
+            event_adds(&renamed).is_empty(),
             "a directory is no add itself"
         );
+        let inside = moved.join("messages/en.json");
+        let synth = notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Any))
+            .add_path(inside.clone());
+        assert_eq!(event_adds(&synth), std::slice::from_ref(&inside));
+        assert!(added_to_glob(&scopes, &closure, &inside));
         // A file renamed into place is an add; its vanished source is not.
         let target = file("src/modules/renamed/messages/it.json");
         let rename = notify::Event::new(notify::EventKind::Modify(
@@ -4440,19 +4395,11 @@ mod tests {
         ))
         .add_path(app.join("src/.it.json.tmp"))
         .add_path(target.clone());
-        assert_eq!(event_adds(&rename, &[]), std::slice::from_ref(&target));
+        assert_eq!(event_adds(&rename), std::slice::from_ref(&target));
         assert_eq!(
-            change_type(&target, &event_adds(&rename, &[]).into_iter().collect()),
+            change_type(&target, &event_adds(&rename).into_iter().collect()),
             "create"
         );
-        assert!(added_to_glob(
-            &scopes,
-            &closure,
-            &moved.join("messages/en.json")
-        ));
-        // A write's parent-directory event is no new directory.
-        let touched = event(notify::EventKind::Modify(notify::event::ModifyKind::Any));
-        assert!(files_in_new_dirs(&touched).is_empty());
 
         // A cache an older oj wrote: scan bases, matched as before.
         std::fs::write(
