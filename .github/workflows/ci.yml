@@ -318,6 +318,8 @@ jobs:
         run: node e2e/start-app-alias.mjs
       - name: start dev shows a failed client bundle in the error overlay, never a blank page
         run: node e2e/start-error-overlay.mjs
+      - name: start dev names a rebundle that fails before the build in the overlay and the log
+        run: node e2e/start-rebundle-failure.mjs
       - name: start dev ssr renders route, module and css module edits
         run: node e2e/start-ssr-hmr.mjs
       - name: start dev applies a component edit in place and reloads what no module accepts

@@ -1421,9 +1421,9 @@ async fn rebundle_worker(
                     Some(Ok(true)) => ClientRun::Hot,
                     Some(Ok(false)) => match pinned_output(&r, &c, &m) {
                         Some(pinned) => ClientRun::Fresh(pinned),
-                        None => ClientRun::Failed,
+                        None => ClientRun::Failed("the bundle left no output to serve".into()),
                     },
-                    Some(Err(_)) => ClientRun::Failed,
+                    Some(Err(e)) => ClientRun::Failed(format!("{e:#}")),
                 };
                 (routes_now, server_fn_changed, bundling, outcome, generation)
             })
@@ -1440,7 +1440,8 @@ async fn rebundle_worker(
             hit
         };
         let (client, worker_hit) = tokio::join!(client, side);
-        let (mut bundled, mut server_fn_changed, mut bundle_failed) = (false, false, false);
+        let (mut bundled, mut server_fn_changed) = (false, false);
+        let mut failure: Option<String> = None;
         let mut hot = false;
         let mut fresh = false;
         if let Ok((routes_now, fn_changed, bundling, outcome, generation)) = client {
@@ -1448,19 +1449,14 @@ async fn rebundle_worker(
             server_fn_changed = fn_changed;
             bundled = bundling;
             if bundling {
-                let failed = matches!(outcome, ClientRun::Failed);
+                if let ClientRun::Failed(reason) = &outcome {
+                    failure = Some(reason.clone());
+                }
                 state
                     .bundle_ok
-                    .store(!failed, std::sync::atomic::Ordering::SeqCst);
-                bundle_failed = failed;
-                let frame = bundle_failed.then(|| {
-                    client_error_frame(&cache).unwrap_or_else(|| {
-                        serde_json::json!({
-                            "type": "error",
-                            "err": { "message": "client bundle failed (see the dev server log)" },
-                        })
-                        .to_string()
-                    })
+                    .store(failure.is_none(), std::sync::atomic::Ordering::SeqCst);
+                let frame = failure.as_deref().map(|reason| {
+                    client_error_frame(&cache).unwrap_or_else(|| bundler_failure_frame(reason))
                 });
                 if let Some(frame) = &frame {
                     let _ = state.error_tx.send(frame.clone());
@@ -1482,7 +1478,7 @@ async fn rebundle_worker(
                         hot = true;
                         state.refresh_wake.notify_one();
                     }
-                    ClientRun::Skipped | ClientRun::Failed => {}
+                    ClientRun::Skipped | ClientRun::Failed(_) => {}
                 }
             }
         }
@@ -1551,7 +1547,7 @@ async fn rebundle_worker(
         let reload = reloads_browser(RunSignals {
             unbundled,
             forced,
-            bundle_failed,
+            bundle_failed: failure.is_some(),
             server_fn_changed,
             regen_changed: !regen_changed.is_empty(),
             hot,
@@ -1591,7 +1587,9 @@ async fn rebundle_worker(
         for done in run.done {
             let _ = done.send(());
         }
-        if hot && !reload {
+        if let Some(reason) = &failure {
+            eprintln!("  oj start: client bundle failed, the pages keep the last bundle: {reason}");
+        } else if hot && !reload {
             println!("  oj start: hot updated");
         } else if unbundled && !reload {
             println!("  oj start: client updates left to the page's module graph, no rebundle");
@@ -1658,7 +1656,8 @@ fn reloads_browser(s: RunSignals) -> bool {
 enum ClientRun {
     /// The batch missed the client's inputs.
     Skipped,
-    Failed,
+    /// With the bundler's error.
+    Failed(String),
     /// Every change went out as a hot update; the output is the refresher's.
     Hot,
     Fresh(oj_cache::start_bundle::PinnedBundle),
@@ -1725,19 +1724,28 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         .await
         .map_err(anyhow::Error::from)
         .and_then(|r| r);
-        match pinned {
-            Ok(pinned) => install_bundle(&state, &cache, pinned),
+        let refreshed = match pinned {
+            Ok(pinned) => {
+                install_bundle(&state, &cache, pinned);
+                true
+            }
             // The rebundle that fixes it reports the error to the pages;
             // documents stop waiting either way.
-            Err(e) => println!("  oj start: client output refresh failed: {e}"),
-        }
+            Err(e) => {
+                println!("  oj start: client output refresh failed: {e}");
+                false
+            }
+        };
         state.bundler.hot.served_output_of(generation);
-        let wanted = state
-            .reload_wanted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take_if(|mark| *mark < started)
-            .is_some();
+        // A wanted reload onto the stale output waits for the bundle that
+        // fixes it.
+        let wanted = refreshed
+            && state
+                .reload_wanted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take_if(|mark| *mark < started)
+                .is_some();
         if wanted {
             let _ = state.reload_tx.send(());
         }
@@ -2338,6 +2346,19 @@ fn client_error_frame(cache: &Path) -> Option<String> {
     let bytes = std::fs::read(cache.join(CLIENT_ERROR_FILE)).ok()?;
     let err: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     Some(serde_json::json!({ "type": "error", "err": err }).to_string())
+}
+
+/// The error frame for a client bundle that failed before the app's build
+/// ran (rolldown failing to resolve or load, the bundler exiting), which
+/// leaves no client-error.json: the overlay names the bundler's error.
+fn bundler_failure_frame(reason: &str) -> String {
+    // The bundler's reply is one line, its stack frames joined by spaces.
+    let message = reason
+        .find("    at ")
+        .map_or(reason, |at| &reason[..at])
+        .trim_end();
+    serde_json::json!({ "type": "error", "err": { "message": message, "stack": reason } })
+        .to_string()
 }
 
 /// A file a compiled stylesheet can read: a sheet in any language oj
@@ -4041,6 +4062,19 @@ mod tests {
         assert_eq!(frame["err"]["loc"]["line"], 1);
         std::fs::write(dir.join(CLIENT_ERROR_FILE), "not json").unwrap();
         assert_eq!(client_error_frame(&dir), None, "a torn record is no frame");
+    }
+
+    #[test]
+    fn a_bundler_that_fails_before_the_build_names_its_error_in_the_overlay() {
+        let reason = "client entry bundling failed: Error: oj: cannot resolve 'rolldown' from /app     at resolveOjRolldown (file:///app/resolve-pkg.mjs:127:11)";
+        let frame: serde_json::Value =
+            serde_json::from_str(&bundler_failure_frame(reason)).unwrap();
+        assert_eq!(frame["type"], "error");
+        assert_eq!(
+            frame["err"]["message"],
+            "client entry bundling failed: Error: oj: cannot resolve 'rolldown' from /app"
+        );
+        assert_eq!(frame["err"]["stack"], reason);
     }
 
     #[tokio::test]
