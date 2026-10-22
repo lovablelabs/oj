@@ -872,10 +872,9 @@ impl Plugin for StartAssetsPlugin {
         if !path.is_absolute() {
             return Ok(None);
         }
-        let code = self
-            .module(id, path)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let code = self.module(id, path).await.map_err(|e| {
+            oj_server::plugins::load_failed("oj:start-assets", anyhow::anyhow!("{e}"))
+        })?;
         Ok(code.map(|code| HookLoadOutput {
             code: arcstr::ArcStr::from(code),
             module_type: Some(ModuleType::Js),

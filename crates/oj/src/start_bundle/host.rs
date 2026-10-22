@@ -473,7 +473,12 @@ impl Plugin for StartHostPlugin {
             if on_disk && super::assets::asset_tag(&id, false).is_some() {
                 return Ok(None);
             }
-            let fail = |e: String| anyhow::anyhow!("plugin load failed for {id}:\n{e}");
+            let fail = |e: String| {
+                oj_server::plugins::load_failed(
+                    "oj:start-plugins",
+                    anyhow::anyhow!("plugin load failed for {id}:\n{e}"),
+                )
+            };
             let mut code = None;
             if wants {
                 // The FULL id first: a plugin's load keys on its own query

@@ -589,7 +589,9 @@ impl Plugin for HostScanPlugins {
             .host
             .scan_plugin_hook("load", &serde_json::json!([args.id]))
             .await
-            .map_err(anyhow::Error::msg)?;
+            .map_err(|e| {
+                crate::plugins::load_failed("oj:dep-scan-config-plugins", anyhow::Error::msg(e))
+            })?;
         let Some(code) = r
             .as_ref()
             .and_then(|r| r.get("code"))

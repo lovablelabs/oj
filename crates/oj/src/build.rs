@@ -1180,7 +1180,7 @@ impl Plugin for OjCssPlugin {
         let css_resolve = self.resolve.clone();
         let html_inline = Arc::clone(&self.html_inline);
         let worker = self.worker.clone();
-        async move {
+        let load = async move {
             if id.contains("?html-proxy&index=") {
                 if let Some(body) = html_inline.lock().unwrap().get(&id).cloned() {
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1498,6 +1498,10 @@ impl Plugin for OjCssPlugin {
                 side_effects,
                 ..Default::default()
             }))
+        };
+        async move {
+            load.await
+                .map_err(|e| oj_server::plugins::load_failed("oj:build", e))
         }
     }
 }
@@ -2008,7 +2012,12 @@ impl Plugin for OjUserPlugin {
             // bundling the raw source instead would ship wrong output silently.
             host.load(&id)
                 .await
-                .map_err(|e| anyhow::anyhow!("plugin load failed for {id}:\n{e}"))
+                .map_err(|e| {
+                    oj_server::plugins::load_failed(
+                        "oj:user-plugins",
+                        anyhow::anyhow!("plugin load failed for {id}:\n{e}"),
+                    )
+                })
                 .map(|loaded| {
                     loaded.map(|code| {
                         let path = id.split(['?', '#']).next().unwrap_or(&id);
