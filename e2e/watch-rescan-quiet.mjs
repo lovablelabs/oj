@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-// A rescan must not raise the next one. notify's inotify mask includes
-// IN_OPEN and its `watch` walks on the thread that drains the queue, so
-// re-arming a large tree after an overflow queued an open event per
+// A rescan must not raise the next one. With notify 8, the inotify watch
+// subscribed to opens and `watch` walks on the thread that drains the queue,
+// so re-arming a large tree after an overflow queued an open event per
 // directory with nothing reading them: the queue overflowed again, the next
 // rescan re-armed again, and the server rescanned forever with no file
-// changing. Many directories, one overflow, then quiet: the rescans stop.
-// Linux only, with a queue the burst overflows but one rescan does not:
-//   sudo sysctl -w fs.inotify.max_queued_events=1024
+// changing. Now the watch subscribes to changes only and only new
+// directories are re-armed; at a queue of one, any open the rescan's own
+// walk queued would overflow it again. Many directories, one overflow, then
+// quiet: the rescans stop. Linux only, with a small queue:
+//   sudo sysctl -w fs.inotify.max_queued_events=1
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -28,9 +30,9 @@ const queue = (() => {
     return Infinity;
   }
 })();
-if (process.platform !== "linux" || queue < 256 || queue > 4096) {
-  console.log("SKIP watch rescan quiet: needs Linux with a mid-sized inotify queue");
-  console.log("  enable with: sudo sysctl -w fs.inotify.max_queued_events=1024");
+if (process.platform !== "linux" || queue > 256) {
+  console.log("SKIP watch rescan quiet: needs Linux with a small inotify queue");
+  console.log("  enable with: sudo sysctl -w fs.inotify.max_queued_events=1");
   process.exit(0);
 }
 

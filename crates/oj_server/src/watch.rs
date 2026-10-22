@@ -422,13 +422,19 @@ pub fn capture_startup_cwd() {
     }
 }
 
-/// inotify reports every open, read and close as an Access event; none is a
-/// change, and chokidar's fs.watch never sees them. Dropped at the source:
-/// a file someone keeps reading (an editor, an indexer, a poller) otherwise
-/// floods the batch loops, whose settle window restarts on every event, so
-/// an edit landing in that stream is never handed off.
-pub(crate) fn is_access(ev: &notify::Event) -> bool {
-    matches!(ev.kind, notify::EventKind::Access(_))
+/// A watcher subscribed to changes only, as Zed's is. inotify reports every
+/// open and close of a watched path; none is a change, and chokidar's
+/// fs.watch never sees them. With the mask they never reach the queue (on the
+/// other backends notify filters them): a file someone keeps reading (an
+/// editor, an indexer, a poller) otherwise flooded the batch loops, whose
+/// settle window restarts on every event, so an edit landing in that stream
+/// was never handed off, and reads alone could overflow the queue.
+fn new_watcher<F: notify::EventHandler>(handler: F) -> notify::Result<notify::RecommendedWatcher> {
+    use notify::Watcher;
+    notify::RecommendedWatcher::new(
+        handler,
+        notify::Config::default().with_event_kinds(notify::EventKindMask::CORE),
+    )
 }
 
 /// The watcher thread's inbox: filesystem notifications, and directories to
@@ -571,7 +577,7 @@ impl Watchers {
             return Ok(());
         }
         let sink = Arc::clone(&self.sink);
-        let mut watcher = notify::recommended_watcher(move |ev| sink(ev))?;
+        let mut watcher = new_watcher(move |ev| sink(ev))?;
         watcher.watch(path, mode)?;
         self.own.insert(path.to_path_buf(), watcher);
         Ok(())
@@ -1058,15 +1064,12 @@ pub(crate) fn spawn_watcher(
         );
         let sink: EventSink = Arc::new(move |ev: notify::Result<notify::Event>| {
             if let Ok(ev) = &ev {
-                if is_access(ev) {
-                    return;
-                }
                 feed.publish(ev, &ignored, &root, &cache);
             }
             let _ = tx.send(WatchMsg::Fs(ev));
         });
         let root_sink = Arc::clone(&sink);
-        let mut watchers = match notify::recommended_watcher(move |ev| root_sink(ev)) {
+        let mut watchers = match new_watcher(move |ev| root_sink(ev)) {
             Ok(root) => Watchers {
                 root,
                 sink,
@@ -1218,11 +1221,12 @@ fn ingest_event(
 /// re-arm the watches a directory born meanwhile never got, and hand what
 /// changed to the batch and the feed as synthesized events.
 ///
-/// Only new directories are re-armed, never the whole tree: notify's inotify
-/// mask includes IN_OPEN and its `watch` walks on the thread that drains the
-/// queue, so re-walking a large tree overflowed the queue it was recovering,
-/// and every rescan raised the next. Files a new directory gained between the
-/// scan and its watch are picked up by scanning it again after.
+/// Only new directories are re-armed, never the whole tree: notify's `watch`
+/// walks on the thread that drains the queue, so re-walking a large tree
+/// holds the queue undrained for the whole walk, which is how an overflow
+/// raised the next one while the watch also subscribed to opens. Files a new
+/// directory gained between the scan and its watch are picked up by scanning
+/// it again after.
 fn rescan(
     state: &ServerState,
     watchers: &mut Watchers,

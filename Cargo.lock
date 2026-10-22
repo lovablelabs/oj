@@ -2912,7 +2912,7 @@ dependencies = [
  "log",
  "nix 0.30.1",
  "node_resolver",
- "notify",
+ "notify 8.2.0",
  "once_cell",
  "qbsdiff",
  "raw-window-handle",
@@ -5931,6 +5931,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "notify"
+version = "9.0.0-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb94cf3583e1483c23ceb47a5f7d56b3e8d7309b3e3727698a8c52a96993355e"
+dependencies = [
+ "bitflags 2.13.2",
+ "inotify",
+ "kqueue",
+ "libc",
+ "log",
+ "mio",
+ "notify-types",
+ "objc2-core-foundation",
+ "objc2-core-services",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "notify-types"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6053,6 +6073,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b"
+dependencies = [
+ "libc",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-encode"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6147,7 +6177,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "libc",
- "notify",
+ "notify 9.0.0-rc.6",
  "oj_cache",
  "oj_compiler",
  "oj_config",
@@ -6367,7 +6397,7 @@ dependencies = [
  "log",
  "nix 0.30.1",
  "node_resolver",
- "notify",
+ "notify 9.0.0-rc.6",
  "oj_deno_napi",
  "oj_deno_process",
  "once_cell",
@@ -6466,7 +6496,7 @@ dependencies = [
  "hyper-util",
  "json-strip-comments",
  "libc",
- "notify",
+ "notify 9.0.0-rc.6",
  "oj_cache",
  "oj_compiler",
  "oj_config",
