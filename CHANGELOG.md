@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dependency pre-bundling works in apps that install no rolldown (no Vite 8 in the tree). They used to serve every dependency file by file.
 - With `build.sourcemap` on, `oj build` keeps the maps plugins return from `transform` and `renderChunk`, in plain and TanStack Start apps. A module a plugin transformed used to lose every mapping, and a `renderChunk` edit shifted the chunk's map. A plugin that changes code without returning a map, or returns one oj cannot read, now gets Vite's "Sourcemap is likely to be incorrect" warning, naming it, once per build. As in rolldown, such a `transform` leaves the module unmapped, while such a `renderChunk` step only drops its own edit from the chunk's map.
-- A module that fails to load now says why. `oj build`, the TanStack Start bundles and the dependency scan printed only "Could not load x - plugin threw an error" when a stylesheet failed to compile or a plugin's `load` threw; the error now carries the plugin and its message, as in Vite.
+- A module that fails to load now says why. `oj build`, the TanStack Start bundles and the dependency scan printed only "Could not load x - plugin threw an error" when a stylesheet failed to compile or a plugin's `load` threw; the error now reads `[plugin] Could not load <module>` followed by the cause, and the Start dev overlay names the plugin and the module, as in Vite.
 
 ## [0.2.44] - 2026-10-22
 

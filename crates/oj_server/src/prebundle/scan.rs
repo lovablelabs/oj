@@ -212,17 +212,19 @@ impl Prebundle {
     }
 }
 
+/// The first error's first line; for a failed load (whose first line only
+/// names the module) its cause's too.
 fn first_message(errs: &[rolldown_error::BuildDiagnostic]) -> String {
-    errs.first()
-        .map(|e| {
-            e.to_diagnostic()
-                .to_string()
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .to_string()
-        })
-        .unwrap_or_default()
+    let Some(first) = errs.first() else {
+        return String::new();
+    };
+    let text = first.to_diagnostic().to_string();
+    let keep = if crate::load_error::failed_load(first).is_some() {
+        2
+    } else {
+        1
+    };
+    text.lines().take(keep).collect::<Vec<_>>().join(": ")
 }
 
 struct ScanState {
@@ -590,7 +592,7 @@ impl Plugin for HostScanPlugins {
             .scan_plugin_hook("load", &serde_json::json!([args.id]))
             .await
             .map_err(|e| {
-                crate::plugins::load_failed("oj:dep-scan-config-plugins", anyhow::Error::msg(e))
+                crate::load_error::load_failed(self.name(), args.id, anyhow::Error::msg(e))
             })?;
         let Some(code) = r
             .as_ref()
@@ -631,5 +633,24 @@ impl Plugin for HostScanPlugins {
                 code: Some(code.to_string()),
                 ..Default::default()
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_message;
+
+    #[test]
+    fn a_failed_load_stops_the_scan_naming_module_and_cause() {
+        let e = crate::load_error::load_failed(
+            "oj:dep-scan-config-plugins".into(),
+            "/app/src/a.ts",
+            anyhow::anyhow!("[plugin:x] load exploded"),
+        );
+        let d = e.downcast::<rolldown_error::BuildDiagnostic>().unwrap();
+        assert_eq!(
+            first_message(&[d]),
+            "[oj:dep-scan-config-plugins] Could not load /app/src/a.ts: [plugin:x] load exploded"
+        );
     }
 }

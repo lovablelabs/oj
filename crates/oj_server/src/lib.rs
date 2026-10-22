@@ -20,6 +20,7 @@ use oj_cache::{CachedModule, PersistentCache};
 
 pub mod css_engine;
 pub mod etag;
+pub mod load_error;
 pub mod optimize;
 pub mod plugins;
 mod prebundle;

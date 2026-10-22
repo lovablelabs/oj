@@ -304,8 +304,8 @@ pub(crate) struct Emitter {
     worker_module: std::sync::atomic::AtomicBool,
     worker_codes: Mutex<HashMap<PathBuf, Arc<tokio::sync::OnceCell<WorkerBundle>>>>,
     worker_urls: Mutex<HashMap<PathBuf, Arc<tokio::sync::OnceCell<String>>>>,
-    /// The first worker bundle that failed: rolldown reports a failed load as
-    /// "plugin threw an error", and the worker's own error is what Vite shows.
+    /// The first worker bundle that failed: the parent bundle reports it as a
+    /// failed load of the worker, and the worker's own error is what Vite shows.
     worker_error: Mutex<Option<String>>,
 }
 
@@ -872,9 +872,10 @@ impl Plugin for StartAssetsPlugin {
         if !path.is_absolute() {
             return Ok(None);
         }
-        let code = self.module(id, path).await.map_err(|e| {
-            oj_server::plugins::load_failed("oj:start-assets", anyhow::anyhow!("{e}"))
-        })?;
+        let code = self
+            .module(id, path)
+            .await
+            .map_err(|e| oj_server::load_error::load_failed(self.name(), id, anyhow::anyhow!(e)))?;
         Ok(code.map(|code| HookLoadOutput {
             code: arcstr::ArcStr::from(code),
             module_type: Some(ModuleType::Js),

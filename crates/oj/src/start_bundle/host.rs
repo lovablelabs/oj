@@ -452,6 +452,7 @@ impl Plugin for StartHostPlugin {
         args: &HookLoadArgs<'_>,
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
         let id = args.id.to_string();
+        let plugin = self.name();
         let host = Arc::clone(&self.host);
         let wants = !id.starts_with("\0oj-") && self.host.hook_wants_load(&id);
         let dev = self.command == Command::Serve;
@@ -474,10 +475,7 @@ impl Plugin for StartHostPlugin {
                 return Ok(None);
             }
             let fail = |e: String| {
-                oj_server::plugins::load_failed(
-                    "oj:start-plugins",
-                    anyhow::anyhow!("plugin load failed for {id}:\n{e}"),
-                )
+                oj_server::load_error::load_failed(plugin.clone(), &id, anyhow::anyhow!(e))
             };
             let mut code = None;
             if wants {
@@ -515,8 +513,7 @@ impl Plugin for StartHostPlugin {
             // Rollup's contract: a resolved id no load claims is read from
             // disk, the file behind its query (`/abs/route.ts?tsr-split=x`).
             if on_disk && id != clean && is_script(&clean) {
-                let source =
-                    std::fs::read_to_string(&clean).map_err(|e| anyhow::anyhow!("{clean}: {e}"))?;
+                let source = std::fs::read_to_string(&clean).map_err(|e| fail(e.to_string()))?;
                 return Ok(Some(HookLoadOutput {
                     code: arcstr::ArcStr::from(source),
                     module_type: Some(file_module_type(&clean)),

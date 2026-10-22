@@ -258,6 +258,14 @@ async fn a_failed_asset_load_says_why() {
         err.message
     );
     assert!(err.message.contains("[oj:start-assets]"), "{}", err.message);
+    // The overlay names the plugin and the module, as Vite's does.
+    assert_eq!(err.plugin.as_deref(), Some("oj:start-assets"));
+    let id = err.id.clone().unwrap_or_default();
+    assert!(id.ends_with("src/b.styl"), "{id:?}");
+    assert!(
+        err.loc.is_none() && err.frame.is_empty(),
+        "a load has no spot"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

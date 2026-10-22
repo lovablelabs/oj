@@ -74,6 +74,15 @@ impl BundleError {
             .map(|e| e.to_diagnostic().to_string())
             .collect::<Vec<_>>()
             .join("\n");
+        // A plugin's failed load names the plugin and the module, never a spot.
+        if let Some((plugin, id)) = oj_server::load_error::failed_load(first) {
+            return BundleError {
+                message,
+                id: Some(id),
+                plugin: Some(plugin),
+                ..Default::default()
+            };
+        }
         // Where it failed (a syntax error's file:line:column), and that spot
         // of the file, for the overlay's link and frame.
         let loc = first
