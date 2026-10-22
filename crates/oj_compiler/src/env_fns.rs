@@ -12,16 +12,20 @@
 //!
 //! A call counts when its factory is imported from a `@tanstack/*` module
 //! (the framework packages re-export `@tanstack/start-fn-stubs`), by name or
-//! through a namespace import. Edits keep the module's line count.
+//! through a namespace import. Edits keep the module's line count. As
+//! TanStack's compiler does after it, the bindings only the dropped side used
+//! go too, so the other side's imports are not bundled.
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, CallExpression, Expression, ImportDeclarationSpecifier, ModuleExportName, Program,
-    Statement,
+    Argument, BindingIdentifier, BindingPattern, CallExpression, Expression,
+    ImportDeclarationSpecifier, ModuleExportName, Program, Statement,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
+use oxc_semantic::{Scoping, SemanticBuilder};
 use oxc_span::{GetSpan, SourceType};
+use std::collections::HashSet;
 
 /// The environment a module is compiled for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,13 +64,12 @@ pub fn rewrite_env_fns(code: &str, path: &str, env: Env) -> Option<String> {
         out = next;
         changed = true;
     }
-    changed.then_some(out)
+    changed.then(|| drop_dead_bindings(code, out, path))
 }
 
 fn rewrite_outermost(code: &str, path: &str, env: Env) -> Option<String> {
     let allocator = Allocator::default();
-    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::tsx());
-    let parsed = Parser::new(&allocator, code, source_type).parse();
+    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
     if parsed.fatal_error {
         return None;
     }
@@ -95,9 +98,15 @@ fn rewrite_outermost(code: &str, path: &str, env: Env) -> Option<String> {
     if outermost.is_empty() {
         return None;
     }
+    Some(apply(code, outermost))
+}
+
+/// `code` with `edits` (sorted, disjoint) applied, each padded with the
+/// newlines it removed.
+fn apply(code: &str, edits: Vec<Edit>) -> String {
     let mut out = String::with_capacity(code.len());
     let mut last = 0;
-    for Edit { start, end, text } in outermost {
+    for Edit { start, end, text } in edits {
         out.push_str(&code[last..start]);
         let lost = code[start..end].matches('\n').count();
         let kept = text.matches('\n').count();
@@ -106,7 +115,152 @@ fn rewrite_outermost(code: &str, path: &str, env: Env) -> Option<String> {
         last = end;
     }
     out.push_str(&code[last..]);
-    Some(out)
+    out
+}
+
+/// TanStack's dead-code pass (babel-dead-code-elimination, with the bindings
+/// referenced before the rewrite as its candidates): a module-level import,
+/// variable or function that was used and no longer is goes, repeatedly, so
+/// whatever only it used goes with it. Exported declarations stay.
+fn drop_dead_bindings(before: &str, mut after: String, path: &str) -> String {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, before, source_type(path)).parse();
+    if parsed.fatal_error {
+        return after;
+    }
+    let scoping = SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic
+        .into_scoping();
+    let mut candidates = HashSet::new();
+    for_each_binding(&parsed.program, &mut |id| {
+        if references(&scoping, id) > 0 {
+            candidates.insert(id.name.to_string());
+        }
+    });
+    if candidates.is_empty() {
+        return after;
+    }
+    while let Some(next) = drop_unreferenced(&after, path, &candidates) {
+        after = next;
+    }
+    after
+}
+
+/// One pass of [`drop_dead_bindings`]: `None` when nothing is dead.
+fn drop_unreferenced(code: &str, path: &str, candidates: &HashSet<String>) -> Option<String> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
+    if parsed.fatal_error {
+        return None;
+    }
+    let scoping = SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic
+        .into_scoping();
+    let dead = |id: &BindingIdentifier| {
+        candidates.contains(id.name.as_str()) && references(&scoping, id) == 0
+    };
+    let text = |span: oxc_span::Span| &code[span.start as usize..span.end as usize];
+    let mut edits = Vec::new();
+    for statement in &parsed.program.body {
+        let span = statement.span();
+        let (start, end) = (span.start as usize, span.end as usize);
+        match statement {
+            Statement::ImportDeclaration(import) if !import.import_kind.is_type() => {
+                let Some(specifiers) = &import.specifiers else {
+                    continue;
+                };
+                let kept: Vec<_> = specifiers.iter().filter(|s| !dead(s.local())).collect();
+                if kept.len() == specifiers.len() {
+                    continue;
+                }
+                let text = if kept.is_empty() {
+                    String::new()
+                } else {
+                    let mut clauses = Vec::new();
+                    let mut named = Vec::new();
+                    for specifier in kept {
+                        match specifier {
+                            ImportDeclarationSpecifier::ImportSpecifier(_) => {
+                                named.push(text(specifier.span()))
+                            }
+                            _ => clauses.push(text(specifier.span()).to_string()),
+                        }
+                    }
+                    if !named.is_empty() {
+                        clauses.push(format!("{{ {} }}", named.join(", ")));
+                    }
+                    let tail = &code[import.source.span.start as usize..end];
+                    format!("import {} from {tail}", clauses.join(", "))
+                };
+                edits.push(Edit { start, end, text });
+            }
+            Statement::VariableDeclaration(var) => {
+                let is_dead = |d: &&oxc_ast::ast::VariableDeclarator| matches!(&d.id, BindingPattern::BindingIdentifier(id) if dead(id));
+                let kept: Vec<_> = var.declarations.iter().filter(|d| !is_dead(d)).collect();
+                if kept.len() == var.declarations.len() {
+                    continue;
+                }
+                let text = if kept.is_empty() {
+                    String::new()
+                } else {
+                    let kind = &code[start..var.declarations[0].span.start as usize];
+                    let list: Vec<_> = kept.iter().map(|d| text(d.span)).collect();
+                    let semi = if text(span).ends_with(';') { ";" } else { "" };
+                    format!("{kind}{}{semi}", list.join(", "))
+                };
+                edits.push(Edit { start, end, text });
+            }
+            Statement::FunctionDeclaration(f) if f.id.as_ref().is_some_and(dead) => {
+                edits.push(Edit {
+                    start,
+                    end,
+                    text: String::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+    let out = apply(code, edits);
+    (out != code).then_some(out)
+}
+
+/// The module-level bindings the dead-code pass may drop: imports, variables
+/// bound to a plain name, and function declarations, not exported ones.
+fn for_each_binding(program: &Program, f: &mut impl FnMut(&BindingIdentifier)) {
+    for statement in &program.body {
+        match statement {
+            Statement::ImportDeclaration(import) => {
+                for specifier in import.specifiers.iter().flatten() {
+                    f(specifier.local());
+                }
+            }
+            Statement::VariableDeclaration(var) => {
+                for declarator in &var.declarations {
+                    if let BindingPattern::BindingIdentifier(id) = &declarator.id {
+                        f(id);
+                    }
+                }
+            }
+            Statement::FunctionDeclaration(func) => {
+                if let Some(id) = &func.id {
+                    f(id);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn references(scoping: &Scoping, id: &BindingIdentifier) -> usize {
+    id.symbol_id
+        .get()
+        .map_or(1, |symbol| scoping.get_resolved_reference_ids(symbol).len())
+}
+
+fn source_type(path: &str) -> SourceType {
+    SourceType::from_path(path).unwrap_or_else(|_| SourceType::tsx())
 }
 
 /// The module's local names for the factories: imported names and namespace
@@ -365,5 +519,37 @@ mod tests {
     fn a_replacement_keeps_precedence() {
         let out = rewrite("createServerOnlyFn(() => 1).call(null);\n", Env::Server);
         assert!(out.contains("(() => 1).call(null);"), "{out}");
+    }
+
+    #[test]
+    fn imports_only_the_dropped_side_used_go() {
+        let code = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nimport { db, other } from \"./db\";\nimport { unused } from \"./kept-as-it-was\";\nimport \"./side-effect\";\nconst query = () => db.q();\nfunction load() { return query(); }\nexport const who = createIsomorphicFn().server(() => load()).client(() => other);\n";
+        let client = rewrite_env_fns(code, "a.js", Env::Client).unwrap();
+        for gone in ["db,", "db.q", "createIsomorphicFn", "query", "load"] {
+            assert!(!client.contains(gone), "{gone}:\n{client}");
+        }
+        for kept in [
+            "import { other } from \"./db\";",
+            "import { unused } from \"./kept-as-it-was\";",
+            "import \"./side-effect\";",
+            "export const who = (() => other);",
+        ] {
+            assert!(client.contains(kept), "{kept}:\n{client}");
+        }
+        assert_eq!(client.lines().count(), code.lines().count(), "{client}");
+        let server = rewrite_env_fns(code, "a.js", Env::Server).unwrap();
+        assert!(server.contains("import { db } from \"./db\";"), "{server}");
+        assert!(server.contains("function load()"), "{server}");
+    }
+
+    #[test]
+    fn exported_and_still_used_bindings_stay() {
+        let code = "import { createServerOnlyFn } from \"@tanstack/react-start\";\nimport def, * as ns from \"./x\";\nconst a = () => ns.a, b = 1;\nconst c = () => def;\nexport { c };\nexport function helper() { return b; }\nexport const s = createServerOnlyFn(() => [a(), c(), helper()]);\n";
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap();
+        assert!(client.contains("const b = 1;"), "{client}");
+        assert!(!client.contains("ns.a"), "{client}");
+        assert!(client.contains("import def from \"./x\";"), "{client}");
+        assert!(client.contains("const c = () => def;"), "{client}");
+        assert!(client.contains("export function helper()"), "{client}");
     }
 }

@@ -521,3 +521,43 @@ async fn environment_functions_compile_per_bundle_in_app_and_dep_code() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_sides_imports_leave_the_bundle() {
+    // Plain JS has no TypeScript import elision: the unused import stays
+    // unless the env-fn compile drops it, as TanStack's dead-code pass does.
+    let app = App::new(&[
+        ("src/entry.ts", "import { who } from \"./env\";\nconsole.log(who());\n"),
+        (
+            "src/env.js",
+            "import { createIsomorphicFn } from \"@tanstack/start-fn-stubs\";\nimport { db } from \"./db\";\nexport const who = createIsomorphicFn().server(() => db.q()).client(() => \"client-side\");\n",
+        ),
+        (
+            "src/db.ts",
+            "import net from \"node:net\";\nconsole.log(\"db-module\", net);\nexport const db = { q: () => 1 };\n",
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/package.json",
+            r#"{"name":"@tanstack/start-fn-stubs","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/index.js",
+            "export const createIsomorphicFn = () => ({});\n",
+        ),
+    ]);
+    let client = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(StartCodePlugin::new(
+            &app.dir,
+            CodeTarget::Client,
+        ))],
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the client bundle: {}", e.message));
+    assert!(client.contains("client-side"), "{client}");
+    assert!(
+        !client.contains("db-module"),
+        "the server side's import in the client bundle:\n{client}"
+    );
+}
