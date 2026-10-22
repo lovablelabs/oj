@@ -180,6 +180,7 @@ impl Plugin for StartCodePlugin {
         let reexported = self.reexported_factories(&ctx, &code, &path, id).await?;
         if let Some(out) =
             oj_compiler::env_fns::rewrite_env_fns_with(&code, &path, env, &reexported)
+                .map_err(|e| anyhow::anyhow!("{id}: {e}"))?
         {
             code = Cow::Owned(out);
         }

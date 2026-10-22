@@ -50,8 +50,10 @@ const FACTORIES: [(&str, Factory); 3] = [
 ];
 
 /// `code` with its environment functions compiled for `env`; `None` when it
-/// has none. `path` picks the parser's language.
-pub fn rewrite_env_fns(code: &str, path: &str, env: Env) -> Option<String> {
+/// has none. `path` picks the parser's language. Like TanStack's compiler, it
+/// fails when this side's implementation is not a plain expression
+/// (`createIsomorphicFn().client(func) must be called with a function!`).
+pub fn rewrite_env_fns(code: &str, path: &str, env: Env) -> Result<Option<String>, String> {
     rewrite_env_fns_with(code, path, env, &[])
 }
 
@@ -62,22 +64,22 @@ pub fn rewrite_env_fns_with(
     path: &str,
     env: Env,
     reexported: &[(String, String)],
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     if !has_factory_name(code) {
-        return None;
+        return Ok(None);
     }
     let mut out = code.to_string();
     let mut changed = false;
     // A factory call inside a kept function is compiled on the next pass,
     // once the call around it is gone.
     for _ in 0..16 {
-        let Some(next) = rewrite_outermost(&out, path, env, reexported) else {
+        let Some(next) = rewrite_outermost(&out, path, env, reexported)? else {
             break;
         };
         out = next;
         changed = true;
     }
-    changed.then(|| drop_dead_bindings(code, out, path))
+    Ok(changed.then(|| drop_dead_bindings(code, out, path)))
 }
 
 fn has_factory_name(code: &str) -> bool {
@@ -201,23 +203,27 @@ fn rewrite_outermost(
     path: &str,
     env: Env,
     reexported: &[(String, String)],
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(path)).parse();
     if parsed.fatal_error {
-        return None;
+        return Ok(None);
     }
     let bindings = Bindings::of(&parsed.program, reexported);
     if bindings.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut finder = Finder {
         bindings: &bindings,
         env,
         code,
         edits: Vec::new(),
+        error: None,
     };
     finder.visit_program(&parsed.program);
+    if let Some(error) = finder.error {
+        return Err(error);
+    }
     // Only the outermost: a chain's own prefix (`createIsomorphicFn().server(s)`
     // inside `.client(c)`) and calls inside its arguments are covered by it.
     let mut edits = finder.edits;
@@ -230,9 +236,9 @@ fn rewrite_outermost(
         outermost.push(edit);
     }
     if outermost.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(apply(code, outermost))
+    Ok(Some(apply(code, outermost)))
 }
 
 /// `code` with `edits` (sorted, disjoint) applied, each padded with the
@@ -477,13 +483,24 @@ struct Finder<'b> {
     env: Env,
     code: &'b str,
     edits: Vec<Edit>,
+    /// The first call TanStack's compiler rejects.
+    error: Option<String>,
 }
 
-/// An isomorphic chain's implementations, as source spans.
+/// An isomorphic chain's implementations.
 #[derive(Default)]
 struct Chain {
-    server: Option<(usize, usize)>,
-    client: Option<(usize, usize)>,
+    server: Option<Arg>,
+    client: Option<Arg>,
+}
+
+/// A factory call's implementation argument.
+#[derive(Clone, Copy)]
+enum Arg {
+    /// A plain expression, as a source span.
+    Expr(usize, usize),
+    /// Missing or spread: TanStack's "must be called with a function!".
+    NotAFunction,
 }
 
 impl Finder<'_> {
@@ -504,7 +521,7 @@ impl Finder<'_> {
             return None;
         };
         let mut chain = self.chain(inner)?;
-        let arg = first_arg(call)?;
+        let arg = first_arg(call);
         if side == "server" {
             chain.server = Some(arg);
         } else {
@@ -513,18 +530,24 @@ impl Finder<'_> {
         Some(chain)
     }
 
-    fn arg_text(&self, (start, end): (usize, usize)) -> String {
-        format!("({})", &self.code[start..end])
+    /// `arg` as replacement text, or `error` recorded when it is not one.
+    fn arg_text(&mut self, arg: Arg, error: impl FnOnce() -> String) -> Option<String> {
+        match arg {
+            Arg::Expr(start, end) => Some(format!("({})", &self.code[start..end])),
+            Arg::NotAFunction => {
+                self.error.get_or_insert_with(error);
+                None
+            }
+        }
     }
 }
 
-/// The first argument's span, when it is a plain expression.
-fn first_arg(call: &CallExpression) -> Option<(usize, usize)> {
-    match call.arguments.first()? {
-        Argument::SpreadElement(_) => None,
-        arg => {
+fn first_arg(call: &CallExpression) -> Arg {
+    match call.arguments.first() {
+        None | Some(Argument::SpreadElement(_)) => Arg::NotAFunction,
+        Some(arg) => {
             let span = arg.span();
-            Some((span.start as usize, span.end as usize))
+            Arg::Expr(span.start as usize, span.end as usize)
         }
     }
 }
@@ -534,12 +557,19 @@ impl<'a> Visit<'a> for Finder<'_> {
         let span = call.span;
         let (start, end) = (span.start as usize, span.end as usize);
         if let Some(chain) = self.chain(call) {
-            let side = match self.env {
-                Env::Server => chain.server,
-                Env::Client => chain.client,
+            let (side, name) = match self.env {
+                Env::Server => (chain.server, "server"),
+                Env::Client => (chain.client, "client"),
             };
-            let text = side.map_or_else(|| "(() => {})".to_string(), |s| self.arg_text(s));
-            self.edits.push(Edit { start, end, text });
+            let text = match side {
+                None => Some("(() => {})".to_string()),
+                Some(arg) => self.arg_text(arg, || {
+                    format!("createIsomorphicFn().{name}(func) must be called with a function!")
+                }),
+            };
+            if let Some(text) = text {
+                self.edits.push(Edit { start, end, text });
+            }
         } else if let Some(factory @ (Factory::ServerOnly | Factory::ClientOnly)) =
             self.bindings.factory(&call.callee)
         {
@@ -547,16 +577,18 @@ impl<'a> Visit<'a> for Finder<'_> {
                 Factory::ServerOnly => (Env::Server, "Server"),
                 _ => (Env::Client, "Client"),
             };
-            if let Some(arg) = first_arg(call) {
-                let text = if self.env == target {
-                    self.arg_text(arg)
-                } else {
-                    let side = name.to_lowercase();
-                    format!(
-                        "(() => {{ throw new Error({:?}); }})",
-                        format!("create{name}OnlyFn() functions can only be called on the {side}!")
-                    )
-                };
+            let text = if self.env == target {
+                self.arg_text(first_arg(call), || {
+                    format!("create{name}OnlyFn() must be called with a function!")
+                })
+            } else {
+                let side = name.to_lowercase();
+                Some(format!(
+                    "(() => {{ throw new Error({:?}); }})",
+                    format!("create{name}OnlyFn() functions can only be called on the {side}!")
+                ))
+            };
+            if let Some(text) = text {
                 self.edits.push(Edit { start, end, text });
             }
         }
@@ -572,6 +604,7 @@ mod tests {
 
     fn rewrite(body: &str, env: Env) -> String {
         rewrite_env_fns(&format!("{IMPORT}{body}"), "a.ts", env)
+            .unwrap()
             .unwrap_or_else(|| panic!("rewritten: {body}"))
     }
 
@@ -633,7 +666,7 @@ mod tests {
     #[test]
     fn aliases_namespaces_and_nested_calls_compile() {
         let code = "import { createIsomorphicFn as iso } from \"@tanstack/start-fn-stubs\";\nimport * as S from \"@tanstack/react-start\";\nexport const a = iso().client(() => S.createServerOnlyFn(() => inner())).server(() => 1);\nexport const b = S.createClientOnlyFn(() => 2);\n";
-        let client = rewrite_env_fns(code, "a.js", Env::Client).unwrap();
+        let client = rewrite_env_fns(code, "a.js", Env::Client).unwrap().unwrap();
         assert!(
             client.contains("export const a = (() => (() => { throw new Error("),
             "{client}"
@@ -645,8 +678,11 @@ mod tests {
     #[test]
     fn calls_off_other_modules_and_shadow_free_code_stay() {
         let code = "import { createIsomorphicFn } from \"./mine\";\nconst f = createIsomorphicFn().server(() => 1);\n";
-        assert_eq!(rewrite_env_fns(code, "a.ts", Env::Client), None);
-        assert_eq!(rewrite_env_fns("const x = 1;\n", "a.ts", Env::Client), None);
+        assert_eq!(rewrite_env_fns(code, "a.ts", Env::Client), Ok(None));
+        assert_eq!(
+            rewrite_env_fns("const x = 1;\n", "a.ts", Env::Client),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -658,7 +694,7 @@ mod tests {
     #[test]
     fn imports_only_the_dropped_side_used_go() {
         let code = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nimport { db, other } from \"./db\";\nimport { unused } from \"./kept-as-it-was\";\nimport \"./side-effect\";\nconst query = () => db.q();\nfunction load() { return query(); }\nexport const who = createIsomorphicFn().server(() => load()).client(() => other);\n";
-        let client = rewrite_env_fns(code, "a.js", Env::Client).unwrap();
+        let client = rewrite_env_fns(code, "a.js", Env::Client).unwrap().unwrap();
         for gone in ["db,", "db.q", "createIsomorphicFn", "query", "load"] {
             assert!(!client.contains(gone), "{gone}:\n{client}");
         }
@@ -671,7 +707,7 @@ mod tests {
             assert!(client.contains(kept), "{kept}:\n{client}");
         }
         assert_eq!(client.lines().count(), code.lines().count(), "{client}");
-        let server = rewrite_env_fns(code, "a.js", Env::Server).unwrap();
+        let server = rewrite_env_fns(code, "a.js", Env::Server).unwrap().unwrap();
         assert!(server.contains("import { db } from \"./db\";"), "{server}");
         assert!(server.contains("function load()"), "{server}");
     }
@@ -679,7 +715,7 @@ mod tests {
     #[test]
     fn exported_and_still_used_bindings_stay() {
         let code = "import { createServerOnlyFn } from \"@tanstack/react-start\";\nimport def, * as ns from \"./x\";\nconst a = () => ns.a, b = 1;\nconst c = () => def;\nexport { c };\nexport function helper() { return b; }\nexport const s = createServerOnlyFn(() => [a(), c(), helper()]);\n";
-        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap();
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
         assert!(client.contains("const b = 1;"), "{client}");
         assert!(!client.contains("ns.a"), "{client}");
         assert!(client.contains("import def from \"./x\";"), "{client}");
@@ -694,9 +730,11 @@ mod tests {
             foreign_factory_imports(code, "a.ts"),
             vec![("~/lib/start".to_string(), "createIsomorphicFn".to_string())]
         );
-        assert_eq!(rewrite_env_fns(code, "a.ts", Env::Client), None);
+        assert_eq!(rewrite_env_fns(code, "a.ts", Env::Client), Ok(None));
         let reexported = foreign_factory_imports(code, "a.ts");
-        let out = rewrite_env_fns_with(code, "a.ts", Env::Client, &reexported).unwrap();
+        let out = rewrite_env_fns_with(code, "a.ts", Env::Client, &reexported)
+            .unwrap()
+            .unwrap();
         assert!(out.contains("export const f = (() => 2);"), "{out}");
     }
 
@@ -731,6 +769,30 @@ mod tests {
         assert_eq!(
             of("export { createIsomorphicFn as other } from \"@tanstack/react-start\";"),
             None
+        );
+    }
+
+    #[test]
+    fn this_sides_implementation_must_be_a_function_expression() {
+        let err = |body: &str, env| rewrite_env_fns(&format!("{IMPORT}{body}"), "a.ts", env);
+        let spread = "const f = createIsomorphicFn().server(() => 1).client(...impls);\n";
+        assert_eq!(
+            err(spread, Env::Client),
+            Err("createIsomorphicFn().client(func) must be called with a function!".to_string())
+        );
+        // The other side's argument is never looked at.
+        let server = err(spread, Env::Server).unwrap().unwrap();
+        assert!(server.contains("const f = (() => 1);"), "{server}");
+        assert_eq!(
+            err("const s = createServerOnlyFn();\n", Env::Server),
+            Err("createServerOnlyFn() must be called with a function!".to_string())
+        );
+        let client = err("const s = createServerOnlyFn();\n", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert!(
+            client.contains("can only be called on the server!"),
+            "{client}"
         );
     }
 }
