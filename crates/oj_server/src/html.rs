@@ -222,11 +222,7 @@ pub(crate) fn preload_href(path: &str, entries: &HashMap<String, String>) -> Str
 
 pub(crate) fn inject_module_preloads(html: String, state: &ServerState) -> String {
     let paths: Vec<String> = if *state.crawl_done.borrow() {
-        state
-            .graph
-            .lock()
-            .unwrap()
-            .module_paths()
+        served_module_paths(state)
             .iter()
             .map(|p| p.display().to_string())
             .collect()

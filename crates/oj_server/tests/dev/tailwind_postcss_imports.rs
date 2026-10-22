@@ -151,3 +151,51 @@ async fn tailwind_postcss_keeps_layer_order_and_partial_plugin_paths() {
         "a partial's relative @plugin resolved from its own file:\n{css}"
     );
 }
+
+/// The inlined files are graph edges for HMR, Vite's file-only entries: the
+/// page modulepreloads the crawled modules but never a partial, which on
+/// its own would compile without its importer.
+#[tokio::test(flavor = "multi_thread")]
+async fn inlined_files_get_no_modulepreload() {
+    crate::require_fixture!("postcss");
+    let app = App::new(&[
+        ("package.json", r#"{"name":"tw-preload","version":"1.0.0"}"#),
+        (
+            "postcss.config.mjs",
+            "export default { plugins: [{ postcssPlugin: \"oj-marker\", Once() {} }] };\n",
+        ),
+        ("src/styles/a.css", ".from-a { color: red; }\n"),
+        (
+            "src/index.css",
+            "@import \"./styles/a.css\";\n@tailwind utilities;\n",
+        ),
+        ("src/main.js", "import \"./index.css\";\n"),
+        ("index.html", crate::INDEX_HTML),
+    ]);
+    link_fixture_node_modules(&app);
+    let server = app.serve().await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let html = loop {
+        let html = server.text("/").await;
+        if html.contains(r#"<link rel="modulepreload" href="/src/main.js""#) {
+            break html;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the crawled entry was never preloaded:\n{html}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert!(
+        html.contains(r#"<link rel="modulepreload" href="/src/index.css?import""#),
+        "{html}"
+    );
+    assert!(
+        !html.contains("/src/styles/a.css"),
+        "an inlined file was preloaded:\n{html}"
+    );
+    assert!(server
+        .text("/src/index.css?direct")
+        .await
+        .contains(".from-a"));
+}
