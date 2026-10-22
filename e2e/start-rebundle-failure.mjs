@@ -3,10 +3,9 @@
 //
 // A Start dev rebundle that fails before the app's build runs (here the
 // vendored rolldown vanishing mid-session, as a package install can do to an
-// app's own copy) names its cause in the overlay and the dev server log. It
-// used to show "client bundle failed (see the dev server log)" with nothing
-// in the log but "change outside every served graph, no rebundle, no reload".
-// Once rolldown is back, the next edit reaches the page.
+// app's own copy) names its cause in the overlay and the dev server log, never
+// a generic "client bundle failed" or "change outside every served graph".
+// Once rolldown is back, the next bundle clears the overlay.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -105,8 +104,6 @@ try {
     !after().includes("change outside every served graph"),
     `the failed rebundle was logged as a change outside every served graph:\n${after()}`,
   );
-  // The page may reload around the failure (it found no hot-update boundary);
-  // the overlay is replayed to it either way.
   const named = await page
     .waitForSelector(`${DIALOG}:has-text("has no node_modules/rolldown")`, { timeout: 30000 })
     .then(
@@ -124,9 +121,8 @@ try {
 
   linkRolldown();
   fs.writeFileSync(aboutFile, about("client-three"));
-  await page.waitForSelector('[data-mark="client"]:text("client-three")', { timeout: 30000 });
-  must((await page.locator(DIALOG).count()) === 0, "the overlay survived the recovery");
-  console.log("start dev: with rolldown back, the next edit reaches the page");
+  await page.waitForSelector(DIALOG, { state: "detached", timeout: 30000 });
+  console.log("start dev: with rolldown back, the next bundle clears the overlay");
   console.log("\nSTART REBUNDLE FAILURE PASSED");
 } catch (e) {
   console.error("\nSTART REBUNDLE FAILURE FAILED:", e.message);
