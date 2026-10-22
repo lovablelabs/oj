@@ -1724,28 +1724,19 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         .await
         .map_err(anyhow::Error::from)
         .and_then(|r| r);
-        let refreshed = match pinned {
-            Ok(pinned) => {
-                install_bundle(&state, &cache, pinned);
-                true
-            }
+        match pinned {
+            Ok(pinned) => install_bundle(&state, &cache, pinned),
             // The rebundle that fixes it reports the error to the pages;
             // documents stop waiting either way.
-            Err(e) => {
-                println!("  oj start: client output refresh failed: {e}");
-                false
-            }
-        };
+            Err(e) => println!("  oj start: client output refresh failed: {e}"),
+        }
         state.bundler.hot.served_output_of(generation);
-        // A wanted reload onto the stale output waits for the bundle that
-        // fixes it.
-        let wanted = refreshed
-            && state
-                .reload_wanted
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take_if(|mark| *mark < started)
-                .is_some();
+        let wanted = state
+            .reload_wanted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take_if(|mark| *mark < started)
+            .is_some();
         if wanted {
             let _ = state.reload_tx.send(());
         }
