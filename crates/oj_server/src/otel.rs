@@ -4,14 +4,19 @@
 //! `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`
 //! variables configure it.
 
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
 
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::Request;
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
 use deno_telemetry::{OtelConfig, OtelRuntimeConfig, OTEL_GLOBALS};
+use http_body::{Frame, SizeHint};
 use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _, Severity};
 use opentelemetry::metrics::{Counter, Histogram, MeterProvider as _};
 use opentelemetry::trace::{
@@ -30,6 +35,57 @@ struct Instruments {
     scope: InstrumentationScope,
     diag_events: Counter<u64>,
     request_duration: Histogram<f64>,
+    sampler: Sampler,
+}
+
+/// Head sampler from `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`. Deno
+/// parses the same pair but keeps its decision private, so oj reads them too.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Sampler {
+    parent_based: bool,
+    /// Probability for a root span: 1.0 is always_on, 0.0 always_off.
+    ratio: f64,
+}
+
+impl Sampler {
+    /// Unset or empty is the spec default, parentbased_always_on. Deno's init
+    /// already refuses an unsupported name, so one never reaches here.
+    fn from_vars(name: Option<&str>, arg: Option<&str>) -> Sampler {
+        let ratio = || {
+            arg.and_then(|s| s.trim().parse::<f64>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0)
+        };
+        let (parent_based, ratio) = match name.map(str::trim).unwrap_or("") {
+            "always_on" => (false, 1.0),
+            "always_off" => (false, 0.0),
+            "traceidratio" => (false, ratio()),
+            "parentbased_always_off" => (true, 0.0),
+            "parentbased_traceidratio" => (true, ratio()),
+            _ => (true, 1.0),
+        };
+        Sampler {
+            parent_based,
+            ratio,
+        }
+    }
+
+    fn should_sample(&self, parent: Option<&SpanContext>, trace_id: TraceId) -> bool {
+        if let Some(parent) = parent.filter(|_| self.parent_based) {
+            return parent.is_sampled();
+        }
+        if self.ratio >= 1.0 {
+            return true;
+        }
+        if self.ratio <= 0.0 {
+            return false;
+        }
+        // The opentelemetry-rust TraceIdRatioBased rule (Deno's too): the low
+        // 64 bits of the trace id, halved, against the probability bound.
+        let bytes = trace_id.to_bytes();
+        let low = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+        (low >> 1) < (self.ratio * (1u64 << 63) as f64) as u64
+    }
 }
 
 static INSTRUMENTS: OnceLock<Instruments> = OnceLock::new();
@@ -49,6 +105,10 @@ pub fn init(version: &'static str) {
         runtime_name: "oj".into(),
         runtime_version: version.into(),
     };
+    // Ahead of deno_telemetry's own exit hook, which shuts the pipeline down
+    // with no bound: plugin children die and pending exports get a bounded
+    // flush before an unreachable collector can stall the exit.
+    deno_signals::before_exit(before_exit);
     if let Err(e) = deno_telemetry::init(&sys_traits::impls::RealSys, runtime, config) {
         eprintln!("oj: OpenTelemetry export disabled: {e}");
         return;
@@ -73,6 +133,10 @@ pub fn init(version: &'static str) {
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
             ])
             .build(),
+        sampler: Sampler::from_vars(
+            oj_env::get().var("OTEL_TRACES_SAMPLER"),
+            oj_env::get().var("OTEL_TRACES_SAMPLER_ARG"),
+        ),
     };
     if INSTRUMENTS.set(instruments).is_ok() {
         oj_diag::set_sink(export_diag);
@@ -89,6 +153,11 @@ pub fn flush() {
     let Some(globals) = OTEL_GLOBALS.get() else {
         return;
     };
+    // Past deno_telemetry's shutdown the metrics reader's channel is closed
+    // and its force_flush panics on the dropped reply.
+    if SHUT_DOWN.load(Ordering::SeqCst) {
+        return;
+    }
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = globals.span_processor.force_flush();
@@ -97,6 +166,16 @@ pub fn flush() {
         let _ = done_tx.send(());
     });
     let _ = done_rx.recv_timeout(FLUSH_TIMEOUT);
+}
+
+/// Set once the engine's exit path is past oj's flush; deno_telemetry shuts
+/// the pipeline down right after.
+static SHUT_DOWN: AtomicBool = AtomicBool::new(false);
+
+fn before_exit() {
+    crate::child_groups::kill_all();
+    flush();
+    SHUT_DOWN.store(true, Ordering::SeqCst);
 }
 
 fn export_diag(event: &oj_diag::Event) {
@@ -155,66 +234,170 @@ fn new_log_record() -> SdkLogRecord {
 }
 
 /// Router layer: one server span (a child of an incoming W3C `traceparent`)
-/// and one duration sample per request.
-pub async fn trace_request(req: Request, next: Next) -> Response {
+/// and one duration sample per request, both ending when the body has been
+/// sent (as Vite's request timer does on `res.end`), not at the headers.
+/// Attribute names follow the OTel HTTP server semantic conventions; there
+/// is no route template, so `oj.route.class` stands in for `http.route` and
+/// the span is named by the method alone.
+pub async fn trace_request(scheme: &'static str, req: Request, next: Next) -> Response {
     let (Some(globals), Some(instruments)) = (OTEL_GLOBALS.get(), INSTRUMENTS.get()) else {
         return next.run(req).await;
     };
     let start_time = SystemTime::now();
     let started = Instant::now();
-    let method = req.method().as_str().to_owned();
+    let method_original = req.method().as_str().to_owned();
+    let protocol = protocol_version(req.version());
     let path = req.uri().path().to_owned();
     let parent = parse_traceparent(req.headers());
     let response = next.run(req).await;
     let status = response.status();
-    let class = route_class(&path);
-    let attributes = vec![
-        KeyValue::new("http.request.method", method.clone()),
-        KeyValue::new("http.response.status_code", i64::from(status.as_u16())),
-        KeyValue::new("oj.route.class", class),
-    ];
-    instruments
-        .request_duration
-        .record(started.elapsed().as_secs_f64(), &attributes);
-    // parentbased_always_on, the OTel default: a root request is sampled and
-    // a child follows its parent's decision.
-    if parent.as_ref().is_some_and(|p| !p.is_sampled()) {
-        return response;
+    on_body_end(response, move || {
+        let class = route_class(&path);
+        let method = known_method(&method_original);
+        let mut attributes = vec![
+            KeyValue::new("http.request.method", method),
+            KeyValue::new("http.response.status_code", i64::from(status.as_u16())),
+            KeyValue::new("url.scheme", scheme),
+            KeyValue::new("oj.route.class", class),
+        ];
+        if let Some(protocol) = protocol {
+            attributes.push(KeyValue::new("network.protocol.version", protocol));
+        }
+        if status.is_server_error() {
+            attributes.push(KeyValue::new("error.type", status.as_str().to_owned()));
+        }
+        instruments
+            .request_duration
+            .record(started.elapsed().as_secs_f64(), &attributes);
+        let trace_id = parent.as_ref().map_or_else(
+            || globals.id_generator.new_trace_id(),
+            SpanContext::trace_id,
+        );
+        if !instruments.sampler.should_sample(parent.as_ref(), trace_id) {
+            return;
+        }
+        let mut span_attributes = attributes;
+        span_attributes.push(KeyValue::new("url.path", path));
+        if method == "_OTHER" {
+            span_attributes.push(KeyValue::new(
+                "http.request.method_original",
+                method_original,
+            ));
+        }
+        globals.span_processor.on_end(SpanData {
+            span_context: SpanContext::new(
+                trace_id,
+                globals.id_generator.new_span_id(),
+                TraceFlags::SAMPLED,
+                false,
+                TraceState::default(),
+            ),
+            parent_span_id: parent
+                .as_ref()
+                .map_or(SpanId::INVALID, SpanContext::span_id),
+            parent_span_is_remote: parent.is_some(),
+            span_kind: SpanKind::Server,
+            name: if method == "_OTHER" { "HTTP" } else { method }.into(),
+            start_time,
+            end_time: SystemTime::now(),
+            attributes: span_attributes,
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: if status.is_server_error() {
+                Status::error("")
+            } else {
+                Status::Unset
+            },
+            instrumentation_scope: instruments.scope.clone(),
+        });
+    })
+}
+
+/// `http.request.method`: the known methods as-is, anything else `_OTHER`
+/// so a scanner's junk verbs cannot blow up metric cardinality.
+fn known_method(method: &str) -> &'static str {
+    match method {
+        "GET" => "GET",
+        "HEAD" => "HEAD",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        "CONNECT" => "CONNECT",
+        "OPTIONS" => "OPTIONS",
+        "TRACE" => "TRACE",
+        "PATCH" => "PATCH",
+        _ => "_OTHER",
     }
-    let trace_id = parent.as_ref().map_or_else(
-        || globals.id_generator.new_trace_id(),
-        SpanContext::trace_id,
-    );
-    let mut span_attributes = attributes;
-    span_attributes.push(KeyValue::new("url.path", path));
-    globals.span_processor.on_end(SpanData {
-        span_context: SpanContext::new(
-            trace_id,
-            globals.id_generator.new_span_id(),
-            TraceFlags::SAMPLED,
-            false,
-            TraceState::default(),
-        ),
-        parent_span_id: parent
-            .as_ref()
-            .map_or(SpanId::INVALID, SpanContext::span_id),
-        parent_span_is_remote: parent.is_some(),
-        span_kind: SpanKind::Server,
-        name: format!("{method} {class}").into(),
-        start_time,
-        end_time: SystemTime::now(),
-        attributes: span_attributes,
-        dropped_attributes_count: 0,
-        events: SpanEvents::default(),
-        links: SpanLinks::default(),
-        status: if status.is_server_error() {
-            Status::error("")
-        } else {
-            Status::Unset
-        },
-        instrumentation_scope: instruments.scope.clone(),
-    });
-    response
+}
+
+fn protocol_version(version: axum::http::Version) -> Option<&'static str> {
+    use axum::http::Version;
+    match version {
+        Version::HTTP_09 => Some("0.9"),
+        Version::HTTP_10 => Some("1.0"),
+        Version::HTTP_11 => Some("1.1"),
+        Version::HTTP_2 => Some("2"),
+        Version::HTTP_3 => Some("3"),
+        _ => None,
+    }
+}
+
+type OnEnd = Box<dyn FnOnce() + Send>;
+
+/// Runs `end` once the response body is done: its last frame was read, or
+/// it was dropped (fully sent, an aborted connection, or a body never polled).
+fn on_body_end(response: Response, end: impl FnOnce() + Send + 'static) -> Response {
+    response.map(|inner| {
+        Body::new(EndBody {
+            inner,
+            end: Some(Box::new(end)),
+        })
+    })
+}
+
+struct EndBody {
+    inner: Body,
+    end: Option<OnEnd>,
+}
+
+impl EndBody {
+    fn finish(&mut self) {
+        if let Some(end) = self.end.take() {
+            end();
+        }
+    }
+}
+
+impl HttpBody for EndBody {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        let this = self.get_mut();
+        let frame = Pin::new(&mut this.inner).poll_frame(cx);
+        if let Poll::Ready(None) = frame {
+            this.finish();
+        }
+        frame
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl Drop for EndBody {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 /// `00-<trace id>-<parent id>-<flags>`; anything malformed starts a new trace.
@@ -256,7 +439,13 @@ fn route_class(path: &str) -> &'static str {
         return "module";
     }
     let file = path.rsplit('/').next().unwrap_or("");
-    match file.rsplit_once('.').map(|(_, ext)| ext) {
+    let ext = file.rsplit_once('.').map(|(_, ext)| ext);
+    // Other `/@` paths are dev-server modules (`/@react-refresh`,
+    // `/@virtual/..`, `/@oj-empty`); without an extension they are no page.
+    if path.starts_with("/@") && matches!(ext, None | Some("html")) {
+        return "module";
+    }
+    match ext {
         None | Some("html") => "document",
         Some(
             "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "mts" | "cts" | "vue" | "svelte" | "json",
@@ -271,12 +460,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn methods_and_protocols_map_to_semconv_values() {
+        assert_eq!(known_method("GET"), "GET");
+        assert_eq!(known_method("PATCH"), "PATCH");
+        assert_eq!(known_method("get"), "_OTHER");
+        assert_eq!(known_method("PROPFIND"), "_OTHER");
+        assert_eq!(protocol_version(axum::http::Version::HTTP_11), Some("1.1"));
+        assert_eq!(protocol_version(axum::http::Version::HTTP_2), Some("2"));
+    }
+
+    #[test]
     fn routes_classify_by_prefix_then_extension() {
         assert_eq!(route_class("/@oj/client.js"), "internal");
         assert_eq!(route_class("/__ws"), "internal");
         assert_eq!(route_class("/@oj-deps/react.js"), "dep");
         assert_eq!(route_class("/@fs/app/src/x.ts"), "module");
         assert_eq!(route_class("/src/App.tsx"), "module");
+        assert_eq!(route_class("/@react-refresh"), "module");
+        assert_eq!(route_class("/@virtual/routes"), "module");
+        assert_eq!(route_class("/@oj-empty"), "module");
+        assert_eq!(route_class("/@ssr-module"), "module");
+        assert_eq!(route_class("/@oj-start/client.css"), "style");
         assert_eq!(route_class("/src/index.css"), "style");
         assert_eq!(route_class("/logo.svg"), "asset");
         assert_eq!(route_class("/"), "document");
@@ -322,5 +526,97 @@ mod tests {
             assert!(parse_traceparent(&headers(bad)).is_none(), "{bad}");
         }
         assert!(parse_traceparent(&HeaderMap::new()).is_none());
+    }
+
+    #[tokio::test]
+    async fn body_end_waits_for_the_last_frame() {
+        use futures_util::StreamExt as _;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
+        let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        let ended = Arc::new(AtomicUsize::new(0));
+        let seen = ended.clone();
+        let response = on_body_end(Response::new(Body::from_stream(stream)), move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut body = response.into_body().into_data_stream();
+        tx.send(Ok(Bytes::from_static(b"head"))).unwrap();
+        assert_eq!(body.next().await.unwrap().unwrap(), "head");
+        assert_eq!(
+            ended.load(Ordering::SeqCst),
+            0,
+            "headers and a first chunk are not the end"
+        );
+        tx.send(Ok(Bytes::from_static(b"tail"))).unwrap();
+        drop(tx);
+        assert_eq!(body.next().await.unwrap().unwrap(), "tail");
+        assert!(body.next().await.is_none());
+        assert_eq!(ended.load(Ordering::SeqCst), 1, "the last frame ends it");
+        drop(body);
+        assert_eq!(ended.load(Ordering::SeqCst), 1, "ends once");
+
+        let ended = Arc::new(AtomicUsize::new(0));
+        let seen = ended.clone();
+        let unread = on_body_end(Response::new(Body::from("x")), move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        drop(unread);
+        assert_eq!(ended.load(Ordering::SeqCst), 1, "a dropped body still ends");
+    }
+
+    #[test]
+    fn sampler_follows_the_otel_traces_sampler_vars() {
+        let sampled = SpanContext::new(
+            TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4736").unwrap(),
+            SpanId::from_hex("00f067aa0ba902b7").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let unsampled = SpanContext::new(
+            sampled.trace_id(),
+            sampled.span_id(),
+            TraceFlags::default(),
+            true,
+            TraceState::default(),
+        );
+        let root = TraceId::from_hex("00000000000000000000000000000001").unwrap();
+        let high = TraceId::from_hex("0000000000000000ffffffffffffffff").unwrap();
+
+        let default = Sampler::from_vars(None, None);
+        assert_eq!(default, Sampler::from_vars(Some(""), None));
+        assert!(default.should_sample(None, root));
+        assert!(default.should_sample(Some(&sampled), root));
+        assert!(!default.should_sample(Some(&unsampled), root));
+
+        let off = Sampler::from_vars(Some("always_off"), None);
+        assert!(!off.should_sample(None, root));
+        assert!(!off.should_sample(Some(&sampled), root));
+
+        let on = Sampler::from_vars(Some("always_on"), None);
+        assert!(on.should_sample(Some(&unsampled), root));
+
+        let ratio = Sampler::from_vars(Some("traceidratio"), Some("0.5"));
+        assert!(ratio.should_sample(None, root));
+        assert!(!ratio.should_sample(None, high));
+        assert!(!ratio.should_sample(Some(&sampled), high));
+
+        let parent_ratio = Sampler::from_vars(Some("parentbased_traceidratio"), Some("0.5"));
+        assert!(parent_ratio.should_sample(Some(&sampled), high));
+        assert!(!parent_ratio.should_sample(None, high));
+
+        let parent_off = Sampler::from_vars(Some("parentbased_always_off"), None);
+        assert!(!parent_off.should_sample(None, root));
+        assert!(parent_off.should_sample(Some(&sampled), root));
+
+        assert_eq!(
+            Sampler::from_vars(Some("traceidratio"), Some("7")).ratio,
+            1.0
+        );
+        assert_eq!(Sampler::from_vars(Some("traceidratio"), None).ratio, 1.0);
     }
 }

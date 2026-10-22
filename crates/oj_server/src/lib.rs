@@ -1383,7 +1383,12 @@ fn build_router(
     }
     // Outermost, so the span covers every other layer.
     if otel::enabled() {
-        app = app.layer(axum::middleware::from_fn(otel::trace_request));
+        let scheme = tls::url_scheme(server_cfg.https.as_ref());
+        app = app.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                otel::trace_request(scheme, req, next)
+            },
+        ));
     }
     app.with_state(state)
 }

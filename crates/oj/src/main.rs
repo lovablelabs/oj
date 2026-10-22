@@ -480,12 +480,23 @@ fn main() -> anyhow::Result<()> {
     oj_env::init();
     oj_diag::set_json_output(oj_env::get().knobs.log_json);
     oj_diag::install_panic_hook();
-    oj_server::otel::init(env!("CARGO_PKG_VERSION"));
-    tokio::runtime::Builder::new_multi_thread()
+    // One-shot children inherit OJ_OTEL; the process that spawned them owns
+    // the export.
+    if !matches!(
+        cli.command,
+        Command::EngineJob { .. } | Command::StartScript { .. }
+    ) {
+        oj_server::otel::init(env!("CARGO_PKG_VERSION"));
+    }
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
-        .block_on(run(cli))
+        .block_on(run(cli));
+    // Commands that return (build, preview, a failed boot) leave their last
+    // batch queued; the dev server's exits flush on their own paths.
+    oj_server::otel::flush();
+    result
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {

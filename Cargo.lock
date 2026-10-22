@@ -6328,6 +6328,7 @@ dependencies = [
  "futures-util",
  "glob",
  "globset",
+ "http-body",
  "hyper",
  "hyper-util",
  "json-strip-comments",

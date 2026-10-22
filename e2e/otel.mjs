@@ -106,12 +106,17 @@ try {
   const child = await settles(() => spans().some((s) => s.traceId === traceId && s.parentSpanId === parentId));
   assert.ok(child, `a span joins the incoming trace, got: ${JSON.stringify(spans())}`);
   const span = spans().find((s) => s.traceId === traceId);
-  assert.equal(span.name, "GET module");
+  assert.equal(span.name, "GET");
   assert.equal(attr(span, "url.path"), "/ok.tsx");
+  assert.equal(attr(span, "url.scheme"), "http");
+  assert.equal(attr(span, "network.protocol.version"), "1.1");
+  assert.equal(attr(span, "oj.route.class"), "module");
   assert.equal(Number(attr(span, "http.response.status_code")), 200);
+  assert.ok(Number(span.endTimeUnixNano) >= Number(span.startTimeUnixNano), "the span ends after it starts");
   const failedSpan = spans().find((s) => attr(s, "url.path") === "/main.tsx");
   assert.ok(failedSpan, "requests without a traceparent start their own trace");
   assert.equal(failedSpan.status?.code, 2, "a 500 marks the span as an error");
+  assert.equal(attr(failedSpan, "error.type"), "500");
 
   const counted = await settles(() => {
     const sums = metrics()
