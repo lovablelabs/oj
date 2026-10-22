@@ -87,7 +87,6 @@ async fn a_plugin_transform_map_traces_the_bundle_to_the_original_source() {
     let (source, line) = mark_origin(&root).expect("MARK is mapped");
     assert!(source.ends_with("src/main.js"), "{source}");
     assert_eq!(line, 2, "MARK is on main.js line 3");
-    fs::remove_dir_all(&root).unwrap();
 }
 
 /// A renderChunk map joins the chunk's chain too; dropped, every position
@@ -100,7 +99,6 @@ async fn a_plugin_render_chunk_map_keeps_the_chunk_map_aligned() {
     let (source, line) = mark_origin(&root).expect("MARK is mapped");
     assert!(source.ends_with("src/main.js"), "{source}");
     assert_eq!(line, 2, "MARK is on main.js line 3");
-    fs::remove_dir_all(&root).unwrap();
 }
 
 /// Two plugins that each push the code down a line collapse into one map
@@ -202,7 +200,6 @@ async fn a_render_chunk_step_without_a_map_keeps_the_others() {
     let (source, line) = mark_origin(&root).expect("MARK is mapped");
     assert!(source.ends_with("src/main.js"), "{source}");
     assert_eq!(line, 2, "MARK is on main.js line 3");
-    fs::remove_dir_all(&root).unwrap();
 }
 
 /// In a renderChunk chain, a step without a map or with one oj cannot read
