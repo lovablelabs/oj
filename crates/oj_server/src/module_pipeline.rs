@@ -70,18 +70,14 @@ pub(crate) async fn ensure_module_as(
     record_glob_importer(state, file, url, &source);
     if ext == Some("css") && is_tailwind_css(&source) {
         let (css, imported) = compile_tailwind(state, file, url, &source).await?;
-        // Inlined files are the sheet's imports, so an edit to one updates it.
-        let mut imports: Vec<String> = imported
-            .iter()
-            .filter(|p| p.starts_with(&state.root) && p.as_path() != file)
-            .map(|p| url_of(&state.root, p))
-            .collect();
-        imports.sort();
-        imports.dedup();
+        // Vite's dev css rewrites a sheet's urls to served paths, so the
+        // `<style>` the JS wrapper injects resolves them from any page.
+        let dir = file.parent().unwrap_or(Path::new("/"));
+        let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
         let module = CachedModule {
             is_boundary: true,
             kind: "css".into(),
-            imports,
+            imports: css_dep_imports(state, file, &imported),
             ..code_module(css)
         };
         return Ok(register_uncached(state, url, module));
@@ -602,6 +598,26 @@ async fn css_prepass(
     })
 }
 
+/// A sheet's pulled-in files as its graph imports, so a dep edit hot-updates
+/// it, `/@fs/` ones outside the root watched as Vite's ensureWatchedFile
+/// does; the sheet itself is filtered (a self-edge is a bogus cycle).
+/// Normalized first: an `@import "../../x.css"` target keeps its `..`s,
+/// under the root by spelling only.
+fn css_dep_imports(state: &ServerState, sheet: &Path, deps: &[PathBuf]) -> Vec<String> {
+    let mut imports: Vec<String> = deps
+        .iter()
+        .map(|p| normalize(p))
+        .filter(|p| p != sheet)
+        .map(|p| {
+            ensure_watched_file(state, &p);
+            url_of(&state.root, &p)
+        })
+        .collect();
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
 #[derive(Clone, Copy)]
 enum CompileKind {
     Json,
@@ -675,23 +691,7 @@ impl CompileJob {
             .and_then(|c| c.dev_sourcemap)
             .unwrap_or(false);
         let output = oj_css::compile_css_dev(&self.url, &css_src, dev_sourcemap, &resolve)?;
-        // Pulled-in files enter the graph as this sheet's imports so a dep edit
-        // hot-updates it, `/@fs/` ones outside the root watched as Vite's
-        // ensureWatchedFile does; filter the sheet itself (a self-edge is a
-        // bogus cycle). Normalized first: an `@import "../../x.css"` target
-        // keeps its `..`s, under the root by spelling only.
-        let root = &state.root;
-        let mut dep_imports: Vec<String> = css_deps
-            .iter()
-            .map(|p| normalize(p))
-            .filter(|p| *p != self.file)
-            .map(|p| {
-                ensure_watched_file(state, &p);
-                url_of(root, &p)
-            })
-            .collect();
-        dep_imports.sort();
-        dep_imports.dedup();
+        let dep_imports = css_dep_imports(state, &self.file, &css_deps);
         // A CSS module's class map changes on edit, so it cannot self-accept
         // (Vite's css-analysis): the update climbs to the importing component.
         let is_css_module = output.exports.is_some();

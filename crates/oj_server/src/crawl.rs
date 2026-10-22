@@ -18,6 +18,9 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
                 let state = Arc::clone(&state);
                 tasks.spawn(async move {
                     match ensure_module(&state, &file, &url).await {
+                        // A sheet's imports are the files it inlined, Vite's
+                        // file-only entries: never compiled on their own.
+                        Ok((_, module)) if module.kind == "css" => Vec::new(),
                         Ok((_, module)) => module.imports.clone(),
                         Err(err) => {
                             eprintln!("oj: crawl: {err}");

@@ -42,7 +42,43 @@ pub(crate) fn rebase_to_dir(
     if out.contains("image-set(") {
         out = rewrite_image_set_strings(&out, &rebase);
     }
+    if out.contains("@source") || out.contains("@plugin") || out.contains("@config") {
+        out = rebase_tailwind_paths(&out, &base);
+    }
     out
+}
+
+/// Tailwind's `@source` / `@plugin` / `@config "./x"` name a path relative to
+/// the file they are written in, which `@tailwindcss/postcss` rebases from
+/// each node's source file (its fix-relative-paths step). An inlined file
+/// loses that origin, so its paths are rebased here: a quoted `./` / `../`
+/// param, after an optional `!`, made relative to the inlining sheet.
+fn rebase_tailwind_paths(css: &str, base: &str) -> String {
+    static TAILWIND_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"@[\w-]*(?:source|plugin|config)[\w-]*\s+("[^"]*"|'[^']*')\s*;"#).unwrap()
+    });
+    TAILWIND_PATH_RE
+        .replace_all(css, |caps: &regex::Captures<'_>| {
+            let param = caps.get(1).unwrap();
+            let quote = &param.as_str()[..1];
+            let inner = &param.as_str()[1..param.as_str().len() - 1];
+            let (bang, path) = match inner.strip_prefix('!') {
+                Some(path) => ("!", path),
+                None => ("", inner),
+            };
+            if !path.starts_with("./") && !path.starts_with("../") {
+                return caps[0].to_string();
+            }
+            let whole = caps.get(0).unwrap();
+            let at = param.start() - whole.start();
+            format!(
+                "{}{quote}{bang}{}{quote}{}",
+                &whole.as_str()[..at],
+                join_relative(base, path),
+                &whole.as_str()[at + param.len()..]
+            )
+        })
+        .into_owned()
 }
 
 type Rebase<'a> = dyn Fn(&str) -> Option<String> + 'a;

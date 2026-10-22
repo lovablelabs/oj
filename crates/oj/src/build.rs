@@ -281,6 +281,7 @@ fn css_resolve_of(
     root: &Path,
     config: &oj_config::OjConfig,
     env: &str,
+    production: bool,
 ) -> oj_css::CssResolveConfig {
     oj_css::CssResolveConfig {
         root: root.to_path_buf(),
@@ -288,6 +289,7 @@ fn css_resolve_of(
         alias: oj_config::resolve_alias(config, env),
         targets: oj_config::build_css_targets(config),
         minify: oj_config::build_css_minify(config, env == "ssr"),
+        production,
         modules: oj_server::css_modules_options(config),
         lightning: oj_server::css_lightning_options(config),
     }
@@ -914,11 +916,11 @@ async fn compile_stylesheet(
     // Plain `@import`s are inlined (postcss-import parity) so the concatenated
     // chunk stylesheet does not carry imports that 404 from `assets/`. It runs
     // before PostCSS, as postcss-import is the first plugin of Vite's chain, so
-    // imported rules go through the user's plugins too. A Tailwind stylesheet
-    // resolves its own imports in the tailwind engine (as the Tailwind Vite
-    // plugin does).
+    // imported rules go through the user's plugins too, Tailwind included.
+    // Without a PostCSS config a Tailwind stylesheet resolves its own imports
+    // in the tailwind engine (as the Tailwind Vite plugin does).
     let tailwind = oj_server::sidecar::is_tailwind_css(&source);
-    if !tailwind {
+    if !tailwind || has_postcss {
         source =
             oj_css::inline_imports_with(&source, std::path::Path::new(path), &resolve.as_ref())
                 .map_err(|e| anyhow::anyhow!(e))?;
@@ -2730,7 +2732,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         inline_limit: assets_inline_limit_of(&config),
         client: true,
         css_code_split: css_split,
-        resolve: css_resolve_of(&root, &config, "client"),
+        resolve: css_resolve_of(&root, &config, "client", is_production),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -2893,7 +2895,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let has_postcss = oj_server::has_postcss_config(&root);
     let public_dir = oj_config::public_dir(&config, &root);
     let link_css_transform_enabled: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::new();
-    let link_css_resolve = css_resolve_of(&root, &config, "client");
+    let link_css_resolve = css_resolve_of(&root, &config, "client", is_production);
     let css_asset_opts = CssAssetOpts {
         inline_limit: assets_inline_limit_of(&config),
         asset_names: Some(asset_names_pattern.as_str()),
@@ -3999,7 +4001,7 @@ pub(crate) async fn build_ssr(
         inline_limit: assets_inline_limit_of(config),
         client: false,
         css_code_split: false,
-        resolve: css_resolve_of(root, config, "ssr"),
+        resolve: css_resolve_of(root, config, "ssr", is_production),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4175,7 +4177,7 @@ async fn build_server_fns(
                 has_postcss: oj_server::has_postcss_config(root),
                 inline_limit: 4096,
                 client: false,
-                resolve: css_resolve_of(root, config, "ssr"),
+                resolve: css_resolve_of(root, config, "ssr", is_production),
                 css_code_split: false,
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
@@ -4578,7 +4580,7 @@ async fn build_client_entry(
         inline_limit: assets_inline_limit_of(config),
         client: true,
         css_code_split: false,
-        resolve: css_resolve_of(root, config, "client"),
+        resolve: css_resolve_of(root, config, "client", is_production),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4838,7 +4840,7 @@ async fn build_library(
                 // Vite inlines every asset of a library build.
                 inline_limit: u64::MAX,
                 client: true,
-                resolve: css_resolve_of(root, config, "client"),
+                resolve: css_resolve_of(root, config, "client", is_production),
                 css_code_split: false,
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),

@@ -96,3 +96,65 @@ async fn imports_inline_limit_and_asset_file_names_in_build() {
         "media import inlined as @media in build:\n{built}"
     );
 }
+
+/// A Tailwind sheet under a PostCSS config has its relative imports inlined
+/// before PostCSS in build too (Vite's postcss-import runs first in the
+/// chain; Tailwind v3 resolves none), and a Google Fonts import, `;`s in its
+/// url, stays whole.
+#[tokio::test]
+async fn tailwind_sheet_under_postcss_inlines_imports_in_build() {
+    let node_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../e2e/fixtures/start-app/node_modules");
+    if super::fixture("postcss").is_none() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but postcss is not installed"
+        );
+        eprintln!("skipping: fixture postcss not installed");
+        return;
+    }
+    let root = scratch("tailwind-postcss-imports");
+    write_files(
+        &root,
+        &[
+            ("package.json", r#"{"name":"tw-imports","version":"1.0.0"}"#),
+            (
+                "postcss.config.mjs",
+                "export default { plugins: [{ postcssPlugin: \"oj-marker\", Once(root) { root.append(\".from-postcss { color: green; }\"); } }] };\n",
+            ),
+            ("src/styles/a.css", ".from-a { color: red; }\n"),
+            (
+                "src/index.css",
+                "@import url('https://fonts.test/css2?family=X:wght@400;700&display=swap');\n@import \"./styles/a.css\";\n@tailwind utilities;\n.app { margin: 0; }\n",
+            ),
+            ("src/main.js", "import \"./index.css\";\n"),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+            ),
+        ],
+    );
+    std::os::unix::fs::symlink(
+        node_modules.canonicalize().unwrap(),
+        root.join("node_modules"),
+    )
+    .unwrap();
+    build_app(&root).await.expect("the app builds");
+
+    let built = files_under(&root.join("dist/assets"))
+        .into_iter()
+        .filter(|(p, _)| p.ends_with(".css"))
+        .map(|(_, c)| c)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        built.contains(".from-a"),
+        "relative import inlined in build:\n{built}"
+    );
+    assert!(built.contains(".from-postcss"), "postcss ran:\n{built}");
+    assert!(!built.contains("styles/a.css"), "no import left:\n{built}");
+    assert!(
+        built.contains("wght@400;700&display=swap"),
+        "font import kept whole:\n{built}"
+    );
+}

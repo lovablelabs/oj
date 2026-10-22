@@ -69,6 +69,7 @@ mod resolve_created_files;
 mod svelte;
 mod svgr;
 mod tailwind_js_import;
+mod tailwind_postcss_imports;
 mod tailwind_sheet_stale;
 mod unresolved_bare;
 mod vite_hmr_socket;
