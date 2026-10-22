@@ -1421,9 +1421,11 @@ async fn rebundle_worker(
                     Some(Ok(true)) => ClientRun::Hot,
                     Some(Ok(false)) => match pinned_output(&r, &c, &m) {
                         Some(pinned) => ClientRun::Fresh(pinned),
-                        None => ClientRun::Failed,
+                        None => {
+                            ClientRun::Failed("client chunk index missing after the bundle".into())
+                        }
                     },
-                    Some(Err(_)) => ClientRun::Failed,
+                    Some(Err(e)) => ClientRun::Failed(format!("{e:#}")),
                 };
                 (routes_now, server_fn_changed, bundling, outcome, generation)
             })
@@ -1448,18 +1450,22 @@ async fn rebundle_worker(
             server_fn_changed = fn_changed;
             bundled = bundling;
             if bundling {
-                let failed = matches!(outcome, ClientRun::Failed);
+                let failure = match &outcome {
+                    ClientRun::Failed(e) => Some(e.as_str()),
+                    _ => None,
+                };
                 state
                     .bundle_ok
-                    .store(!failed, std::sync::atomic::Ordering::SeqCst);
-                bundle_failed = failed;
-                let frame = bundle_failed.then(|| {
+                    .store(failure.is_none(), std::sync::atomic::Ordering::SeqCst);
+                bundle_failed = failure.is_some();
+                // Vite's bundled dev logs every failed build as it sends the
+                // pages its error.
+                if let Some(e) = failure {
+                    eprintln!("  oj start: client bundle failed: {e}");
+                }
+                let frame = failure.map(|e| {
                     client_error_frame(&cache).unwrap_or_else(|| {
-                        serde_json::json!({
-                            "type": "error",
-                            "err": { "message": "client bundle failed (see the dev server log)" },
-                        })
-                        .to_string()
+                        serde_json::json!({ "type": "error", "err": { "message": e } }).to_string()
                     })
                 });
                 if let Some(frame) = &frame {
@@ -1482,7 +1488,7 @@ async fn rebundle_worker(
                         hot = true;
                         state.refresh_wake.notify_one();
                     }
-                    ClientRun::Skipped | ClientRun::Failed => {}
+                    ClientRun::Skipped | ClientRun::Failed(_) => {}
                 }
             }
         }
@@ -1591,7 +1597,9 @@ async fn rebundle_worker(
         for done in run.done {
             let _ = done.send(());
         }
-        if hot && !reload {
+        if bundle_failed {
+            println!("  oj start: serving the error overlay until a bundle succeeds");
+        } else if hot && !reload {
             println!("  oj start: hot updated");
         } else if unbundled && !reload {
             println!("  oj start: client updates left to the page's module graph, no rebundle");
@@ -1658,7 +1666,8 @@ fn reloads_browser(s: RunSignals) -> bool {
 enum ClientRun {
     /// The batch missed the client's inputs.
     Skipped,
-    Failed,
+    /// The bundle failed, with why.
+    Failed(String),
     /// Every change went out as a hot update; the output is the refresher's.
     Hot,
     Fresh(oj_cache::start_bundle::PinnedBundle),

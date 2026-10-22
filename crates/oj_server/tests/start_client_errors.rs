@@ -129,3 +129,46 @@ async fn start_client_bundles_fail_on_unresolved_imports_like_vite() {
     assert_eq!(out["envExternal"], serde_json::json!(["b"]));
     assert_eq!(out["none"], serde_json::json!({}));
 }
+
+/// A bundle that fails before its build call (here: no rolldown to load)
+/// still records why for the overlay and the dev server's log, as Vite's
+/// bundled dev keeps lastBuildError for any failed build. It used to leave
+/// no record: the pages got a bare "client bundle failed" and the log nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bundle_failing_before_the_build_records_its_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"name":"fx","type":"module"}"#,
+    )
+    .unwrap();
+    let start = root.join("start");
+    oj_server::write_start_assets(&start).unwrap();
+    let engine = oj_js::JsEngine::spawn(oj_js::EngineConfig::new(&root), None, None).unwrap();
+    let env = serde_json::json!({
+        "OJ_APP_ROOT": root.to_string_lossy(),
+        "OJ_VENDORED_ROLLDOWN": "",
+    });
+    let err = engine
+        .call(
+            start.join("bundle-client.mjs").to_string_lossy(),
+            "run",
+            vec![env],
+            None,
+        )
+        .await
+        .expect_err("no rolldown fails the bundle");
+    assert!(
+        err.to_string().contains("cannot resolve 'rolldown'"),
+        "the bundle fails on the rolldown import: {err}"
+    );
+    let record = std::fs::read(start.join("client-error.json")).expect("the failure is recorded");
+    let payload: serde_json::Value = serde_json::from_slice(&record).unwrap();
+    assert!(
+        payload["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("cannot resolve 'rolldown'")),
+        "the record says why: {payload}"
+    );
+}

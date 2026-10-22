@@ -50,6 +50,21 @@ export async function run(env = null) {
   return main();
 }
 
+// Every failed bundle leaves its error for the dev server's overlay and log,
+// as Vite's bundled dev keeps lastBuildError for any failure: one before the
+// build call (rolldown or the plugin container not loading) included.
+async function main() {
+  try {
+    await bundle();
+  } catch (error) {
+    writeFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "client-error.json"),
+      JSON.stringify(buildErrorPayload(error)),
+    );
+    throw error;
+  }
+}
+
 // One plugin container per dev server, as Vite has: `oj dev` keeps this
 // script's engine alive across rebundles (`start-script --serve`), so every
 // rebundle reuses the same plugin instances and buildStart runs once. A
@@ -270,7 +285,7 @@ function linkNewStyles(dir, cssUrls) {
   return added;
 }
 
-async function main() {
+async function bundle() {
   const HERE = dirname(fileURLToPath(import.meta.url));
   const APP = process.env.OJ_APP_ROOT ?? process.cwd();
   const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
@@ -503,95 +518,90 @@ async function main() {
   state.epoch = epoch;
   let result;
   let hmrHandled = false;
-  try {
-    if (live) {
-      if (process.env.OJ_START_REFRESH !== "1") {
-        hmrHandled = await settle(live, JSON.parse(process.env.OJ_START_CHANGED || "[]"));
-      }
-      // The pages run the edit already: the full output waits for the dev
-      // server's refresh once edits pause, off the next edit's path.
-      if (hmrHandled) {
-        rmSync(errorFile, { force: true });
-        writeFileSync(hmrFile, JSON.stringify({ handled: true, css: linkNewStyles(HERE, state.cssUrls) }));
-        return;
-      }
+  if (live) {
+    if (process.env.OJ_START_REFRESH !== "1") {
+      hmrHandled = await settle(live, JSON.parse(process.env.OJ_START_CHANGED || "[]"));
+    }
+    // The pages run the edit already: the full output waits for the dev
+    // server's refresh once edits pause, off the next edit's path.
+    if (hmrHandled) {
+      rmSync(errorFile, { force: true });
+      writeFileSync(hmrFile, JSON.stringify({ handled: true, css: linkNewStyles(HERE, state.cssUrls) }));
+      return;
+    }
+    result = { output: await latestOutput(live) };
+  } else {
+    const options = {
+      input: join(HERE, "client-entry.tsx"),
+      platform: "browser",
+      ...chunkPolicy.input,
+      ...clientExternal(container?.config),
+      onLog: viteOnLog,
+      transform: {
+        jsx: jsxTransformOptions(NODE_ENV !== "production"),
+        define: {
+          "process.env": JSON.stringify({ NODE_ENV, TSS_SERVER_FN_BASE: SERVER_FN_BASE }),
+          // Explicit, like Vite's define plugin. It also guards a regression if
+          // minify is ever enabled: rolldown's minifier folds the key to
+          // "production" and React picks its prod jsx runtime (no jsxDEV).
+          "process.env.NODE_ENV": JSON.stringify(NODE_ENV),
+          global: "globalThis",
+          ...viteEnvDefine({ ssr: false, mode: MODE }),
+          ...USER_DEFINE,
+          ...environmentDefines("client"),
+          ...(container?.defines?.() ?? {}),
+        },
+      },
+      resolve: {
+        conditionNames: CLIENT_CONDITIONS,
+        alias: {
+          "#tanstack-router-entry": routerEntry(),
+          "#tanstack-start-entry": startEntry(),
+          "#tanstack-start-plugin-adapters": join(HERE, "plugin-adapters.ts"),
+          "tanstack-start-manifest:v": join(HERE, "manifest.ts"),
+          "tanstack-start-injected-head-scripts:v": join(HERE, "injected-head-scripts.ts"),
+          "@tanstack/start-fn-stubs": join(HERE, "fn-stubs.mjs"),
+        },
+      },
+      plugins: [
+        closureRecorder,
+        appAliasPlugin(container?.config),
+        makeVitePlugins({ container, appRoot: APP, mode: "dev", buildEnd: false }),
+        assetsPlugin({
+          mode: "dev",
+          cssUrls,
+          root: APP,
+          // Read per load: an engine outlives the rebundle that created it.
+          styleKey: {
+            // Read only for a sheet oj compiles (a CSS module or a
+            // preprocessor file).
+            get css() {
+              state.compiledSheets = true;
+              return { epoch: state.epoch };
+            },
+            get inline() {
+              return { bundle: String(bundles) };
+            },
+          },
+        }),
+        serverFnClient,
+        depImportMetaUrlPlugin(),
+        nodeBuiltinShims({ production: false }),
+      ],
+      output: {
+        format: "esm",
+        banner:
+          `globalThis.process=globalThis.process||{env:{NODE_ENV:${JSON.stringify(NODE_ENV)},TSS_SERVER_FN_BASE:${JSON.stringify(SERVER_FN_BASE)}}};` +
+          "globalThis.global=globalThis.global||globalThis;",
+        ...chunkPolicy.output,
+      },
+    };
+    if (hot) {
+      live = await startEngine(experimental, withFastRefresh(experimental, options), state, epoch, container?.config);
       result = { output: await latestOutput(live) };
     } else {
-      const options = {
-        input: join(HERE, "client-entry.tsx"),
-        platform: "browser",
-        ...chunkPolicy.input,
-        ...clientExternal(container?.config),
-        onLog: viteOnLog,
-        transform: {
-          jsx: jsxTransformOptions(NODE_ENV !== "production"),
-          define: {
-            "process.env": JSON.stringify({ NODE_ENV, TSS_SERVER_FN_BASE: SERVER_FN_BASE }),
-            // Explicit, like Vite's define plugin. It also guards a regression if
-            // minify is ever enabled: rolldown's minifier folds the key to
-            // "production" and React picks its prod jsx runtime (no jsxDEV).
-            "process.env.NODE_ENV": JSON.stringify(NODE_ENV),
-            global: "globalThis",
-            ...viteEnvDefine({ ssr: false, mode: MODE }),
-            ...USER_DEFINE,
-            ...environmentDefines("client"),
-            ...(container?.defines?.() ?? {}),
-          },
-        },
-        resolve: {
-          conditionNames: CLIENT_CONDITIONS,
-          alias: {
-            "#tanstack-router-entry": routerEntry(),
-            "#tanstack-start-entry": startEntry(),
-            "#tanstack-start-plugin-adapters": join(HERE, "plugin-adapters.ts"),
-            "tanstack-start-manifest:v": join(HERE, "manifest.ts"),
-            "tanstack-start-injected-head-scripts:v": join(HERE, "injected-head-scripts.ts"),
-            "@tanstack/start-fn-stubs": join(HERE, "fn-stubs.mjs"),
-          },
-        },
-        plugins: [
-          closureRecorder,
-          appAliasPlugin(container?.config),
-          makeVitePlugins({ container, appRoot: APP, mode: "dev", buildEnd: false }),
-          assetsPlugin({
-            mode: "dev",
-            cssUrls,
-            root: APP,
-            // Read per load: an engine outlives the rebundle that created it.
-            styleKey: {
-              // Read only for a sheet oj compiles (a CSS module or a
-              // preprocessor file).
-              get css() {
-                state.compiledSheets = true;
-                return { epoch: state.epoch };
-              },
-              get inline() {
-                return { bundle: String(bundles) };
-              },
-            },
-          }),
-          serverFnClient,
-          depImportMetaUrlPlugin(),
-          nodeBuiltinShims({ production: false }),
-        ],
-        output: {
-          format: "esm",
-          banner:
-            `globalThis.process=globalThis.process||{env:{NODE_ENV:${JSON.stringify(NODE_ENV)},TSS_SERVER_FN_BASE:${JSON.stringify(SERVER_FN_BASE)}}};` +
-            "globalThis.global=globalThis.global||globalThis;",
-          ...chunkPolicy.output,
-        },
-      };
-      if (hot) {
-        live = await startEngine(experimental, withFastRefresh(experimental, options), state, epoch, container?.config);
-        result = { output: await latestOutput(live) };
-      } else {
-        result = await build({ ...options, write: false });
-      }
+      result = await build({ ...options, write: false });
     }
-  } catch (error) {
-    writeFileSync(errorFile, JSON.stringify(buildErrorPayload(error)));
-    throw error;
   }
   rmSync(errorFile, { force: true });
   writeFileSync(hmrFile, JSON.stringify({ handled: hmrHandled }));

@@ -14,6 +14,7 @@
 
 import { spawn, spawnSync, execSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -33,6 +34,9 @@ if (!fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"))) 
 const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
 if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
+// A killed server's bundler child can still be writing the cache for a moment.
+const rmCache = () =>
+  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };
@@ -70,10 +74,11 @@ const FIXED = about("../lib/format");
 
 let srv;
 let browser;
+let vendor;
 let log = "";
 try {
   fs.writeFileSync(aboutFile, BROKEN);
-  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+  rmCache();
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: ["ignore", "pipe", "pipe"] });
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
@@ -118,7 +123,7 @@ try {
     'import base from "./vite.config";\n' +
       "export default { ...base, server: { ...base.server, hmr: { overlay: false } } };\n",
   );
-  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+  rmCache();
   srv = spawn(oj, ["dev", app, "--port", String(PORT), "--config", overlayOffConfig], {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -134,12 +139,58 @@ try {
   must(message?.includes('failed to resolve import "no-such-dep-typo"'), `no build error was logged: ${message}`);
   must((await quiet.locator(DIALOG).count()) === 0, "the overlay mounted with server.hmr.overlay false");
   console.log("start dev: server.hmr.overlay false logs the build error without the overlay");
+  srv.kill("SIGKILL");
+  srv = null;
+
+  // A rebundle that fails before its build call (here the rolldown it loads
+  // went missing mid-session) shows and logs why, like any failed build. It
+  // used to show a bare "client bundle failed", log nothing, and claim the
+  // edit was "outside every served graph".
+  fs.writeFileSync(aboutFile, FIXED);
+  vendor = fs.mkdtempSync(path.join(os.tmpdir(), "oj-overlay-vendor-"));
+  const vendored = path.join(vendor, "node_modules", "rolldown");
+  fs.mkdirSync(path.dirname(vendored), { recursive: true });
+  fs.writeFileSync(path.join(vendor, "package.json"), "{}");
+  const linkRolldown = () => fs.symlinkSync(fs.realpathSync(path.join(app, "node_modules", "rolldown")), vendored);
+  linkRolldown();
+  rmCache();
+  log = "";
+  srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, OJ_VENDORED_ROLLDOWN: vendor },
+  });
+  srv.stdout.on("data", (d) => (log += d));
+  srv.stderr.on("data", (d) => (log += d));
+  await waitUp(`http://localhost:${PORT}/`);
+  const early = await browser.newPage();
+  await early.goto(`http://localhost:${PORT}/about`, { waitUntil: "load", timeout: 30000 });
+  await early.waitForSelector('[data-mark="client"]:text("client-import-ok")', { timeout: 30000 });
+  fs.rmSync(vendored);
+  const mark = log.length;
+  fs.writeFileSync(aboutFile, FIXED.replace("about-page-marker", "about-page-marker-2"));
+  await early.waitForSelector(DIALOG, { timeout: 30000 });
+  const earlyText = await early.locator(DIALOG).innerText();
+  must(earlyText.includes("OJ_VENDORED_ROLLDOWN"), `the overlay does not say why the bundle failed:\n${earlyText}`);
+  const after = log.slice(mark);
+  must(
+    /client bundle failed: .*OJ_VENDORED_ROLLDOWN/.test(after),
+    `the dev server log does not say why the bundle failed:\n${after.slice(-2000)}`,
+  );
+  must(!after.includes("outside every served graph"), "a failed rebundle was logged as a change outside every graph");
+  console.log("start dev: a rebundle failing before its build shows and logs why");
+
+  // Rolldown back: the next edit bundles and clears the overlay.
+  linkRolldown();
+  fs.writeFileSync(aboutFile, FIXED);
+  await early.waitForFunction((sel) => !document.querySelector(sel), DIALOG, { timeout: 30000 });
+  console.log("start dev: the next edit after the fix clears the overlay");
   await browser.close();
   browser = null;
   srv.kill("SIGKILL");
   srv = null;
 
   // `vite build` fails on the same import (onRollupLog), never shipping it bare.
+  fs.writeFileSync(aboutFile, BROKEN);
   const dist = path.join(app, "dist");
   fs.rmSync(dist, { recursive: true, force: true });
   const built = spawnSync(oj, ["build", app], { encoding: "utf8" });
@@ -161,4 +212,5 @@ try {
   srv?.kill("SIGKILL");
   fs.writeFileSync(aboutFile, originalAbout);
   fs.rmSync(overlayOffConfig, { force: true });
+  if (vendor) fs.rmSync(vendor, { recursive: true, force: true });
 }
