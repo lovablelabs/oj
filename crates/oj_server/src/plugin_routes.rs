@@ -28,6 +28,7 @@ fn js_response(body: String) -> Response {
 }
 
 /// Loads a resolved plugin id, falling back to the file on disk.
+#[allow(clippy::result_large_err, reason = "the Err is the handler's response")]
 async fn load_plugin_id(state: &Arc<ServerState>, id: &str) -> Result<String, Response> {
     let Some(host) = &state.plugins else {
         return Err((StatusCode::NOT_FOUND, "oj: no plugin host").into_response());

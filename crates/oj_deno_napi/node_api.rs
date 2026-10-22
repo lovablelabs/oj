@@ -810,7 +810,7 @@ pub(crate) fn napi_queue_async_work(
   let result =
     work
       .state
-      .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+      .try_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
         // allow queue if idle or if running, but not if already queued.
         if state == AsyncWork::IDLE || state == AsyncWork::RUNNING {
           Some(AsyncWork::QUEUED)
@@ -974,13 +974,12 @@ impl TsFn {
     // `Ok(1)` and each spawn a drop of the same box — a double free (the assert
     // in TsFn::drop). A CAS that fails from zero closes that window: zero is a
     // one-way state, so exactly one release ever sees the 1->0 transition.
-    let result = self.thread_count.fetch_update(
-      Ordering::Relaxed,
-      Ordering::Relaxed,
-      |x| {
-        if x == 0 { None } else { Some(x + 1) }
-      },
-    );
+    let result =
+      self
+        .thread_count
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+          if x == 0 { None } else { Some(x + 1) }
+        });
     if result.is_err() {
       return napi_closing;
     }
@@ -993,13 +992,12 @@ impl TsFn {
   ) -> napi_status {
     let tsfn = unsafe { &mut *tsfn };
 
-    let result = tsfn.thread_count.fetch_update(
-      Ordering::Relaxed,
-      Ordering::Relaxed,
-      |x| {
-        if x == 0 { None } else { Some(x - 1) }
-      },
-    );
+    let result =
+      tsfn
+        .thread_count
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+          if x == 0 { None } else { Some(x - 1) }
+        });
 
     if result.is_err() {
       return napi_invalid_arg;

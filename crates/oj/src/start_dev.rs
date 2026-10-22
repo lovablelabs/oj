@@ -1881,7 +1881,7 @@ fn start_script_vars(
     let resolve_conditions = if runner_backed {
         Some(oj_config::node_server_conditions(config, dev))
     } else {
-        oj_config::user_resolve_conditions(config, "ssr").map(&map_dev)
+        oj_config::user_resolve_conditions(config, "ssr").map(map_dev)
     };
     if let Some(conditions) = resolve_conditions.filter(|c| !c.is_empty()) {
         vars.push((
@@ -1892,7 +1892,7 @@ fn start_script_vars(
     let external_conditions = if runner_backed {
         Some(oj_config::node_server_external_conditions(config, dev))
     } else {
-        oj_config::user_external_conditions(config, "ssr").map(&map_dev)
+        oj_config::user_external_conditions(config, "ssr").map(map_dev)
     };
     if let Some(conditions) = external_conditions.filter(|c| !c.is_empty()) {
         vars.push((
@@ -3096,6 +3096,7 @@ fn start_max_body_bytes() -> usize {
 /// the call sites). A body past the cap is a 413 naming the knob; a read
 /// failure (a client aborting mid-upload) is a 400 — never an empty body
 /// reaching the handler as if the client had sent one.
+#[allow(clippy::result_large_err, reason = "the Err is the handler's response")]
 async fn read_body_capped(body: axum::body::Body, cap: usize) -> Result<Option<Vec<u8>>, Response> {
     use tokio_stream::StreamExt;
     let mut stream = body.into_data_stream();
