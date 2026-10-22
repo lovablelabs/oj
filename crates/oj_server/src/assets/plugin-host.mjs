@@ -205,11 +205,14 @@ if (ojEngineBoot) {
 
 process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
 // Vite's ConfigEnv (config.ts): `{ mode, command, isSsrBuild, isPreview }`.
-// oj builds the ssr environment in its own host, so that host's build is the
-// ssr build (Vite: `command === "build" && !!config.build.ssr`).
+// Vite computes it once, before any environment exists, from the inline
+// config alone (`command === "build" && !!config.build?.ssr`); oj passes no
+// inline build.ssr, and a builder (Start, every environment build) resolves
+// one config for all environments, so isSsrBuild is false in every host,
+// the ssr one included.
 const hostEnvName = initial.environment?.name ?? "client";
 const env = { command: "serve", mode: "development", ...(initial.env ?? {}) };
-env.isSsrBuild = env.isSsrBuild ?? (env.command === "build" && hostEnvName !== "client");
+env.isSsrBuild = env.isSsrBuild ?? false;
 env.isPreview = env.isPreview ?? false;
 
 // The twin NODE_ENV block below reads the command through this alias (the
@@ -1644,6 +1647,8 @@ async function runConfigHooks() {
   }
   // Vite runs `configEnvironment(name, options, env)` for every environment after
   // the config hooks and merges what it returns into that environment's options.
+  // `env` is the one ConfigEnv plus isSsrTargetWebworker (config.ts
+  // runConfigEnvironmentHook), the same for every environment.
   const envNames = Object.keys(config.environments ?? {});
   for (const n of ["client", "ssr"]) if (!envNames.includes(n)) envNames.push(n);
   const configEnvHooks = pluginsWithHook("configEnvironment");
@@ -1651,12 +1656,7 @@ async function runConfigHooks() {
     config.environments = { ...(config.environments ?? {}) };
     for (const name of envNames) {
       config.environments[name] = config.environments[name] ?? {};
-      const opts = {
-        ...env,
-        isSsrBuild: name !== "client" && env.command === "build",
-        isPreview: false,
-        isSsrTargetWebworker: false,
-      };
+      const opts = { ...env, isSsrTargetWebworker: false };
       for (const { p, fn } of configEnvHooks) {
         initStage(`configEnvironment:${p.name ?? "?"}`);
         try {
