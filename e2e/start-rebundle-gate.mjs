@@ -125,8 +125,15 @@ try {
   // The SSR document's freshness is the engine's own path, as above.
   const chunksHold = (needle) => {
     const dir = path.join(app, ".oj-cache");
-    return fs
-      .readdirSync(dir, { recursive: true })
+    let files;
+    try {
+      files = fs.readdirSync(dir, { recursive: true });
+    } catch {
+      // The bundle store renames its temp dir into place mid-walk; the
+      // next probe sees the settled tree.
+      return false;
+    }
+    return files
       .filter((f) => String(f).endsWith(".js"))
       .some((f) => {
         try {
