@@ -405,7 +405,7 @@ fn scan_entries(root: &Path, input: &OptimizeInput) -> Vec<PathBuf> {
 /// build outDir (and tests and coverage unless the entries were listed), and
 /// `node_modules` for any pattern that does not name it.
 fn glob_entries(root: &Path, patterns: &[&str], out_dir: &str, listed: bool) -> Vec<PathBuf> {
-    let base = slash(root);
+    let base = oj_compiler::glob::escape_glob_path(root);
     let out_dir = if out_dir.is_empty() { "dist" } else { out_dir };
     let mut ignore = vec![format!("!{base}/**/{out_dir}/**")];
     if !listed {
@@ -457,9 +457,10 @@ fn expand_glob_ids(root: &Path, id: &str) -> Vec<String> {
     };
     let pattern = id[pkg_name.len()..].trim_start_matches('/');
     let dir = slash(&pkg_dir);
+    let dir_glob = oj_compiler::glob::escape_glob_path(&pkg_dir);
     let files_under = |pattern: &str| -> Vec<String> {
         GlobCall {
-            patterns: vec![format!("{dir}/{pattern}")],
+            patterns: vec![format!("{dir_glob}/{pattern}")],
             exhaustive: false,
             case_sensitive: true,
         }
@@ -513,7 +514,7 @@ fn expand_glob_ids(root: &Path, id: &str) -> Vec<String> {
                 }
             }
             let matcher = GlobCall {
-                patterns: vec![format!("{dir}/{pattern}")],
+                patterns: vec![format!("{dir_glob}/{pattern}")],
                 exhaustive: false,
                 case_sensitive: true,
             }

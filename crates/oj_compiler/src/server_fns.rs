@@ -341,6 +341,8 @@ fn skip_balanced_parens(bytes: &[u8], open: usize) -> Option<usize> {
                 b'\\' => i += 2,
                 b'`' => {
                     stack.pop();
+                    // A closed template is a value: a `/` after it divides.
+                    prev = Some(b'"');
                     i += 1;
                 }
                 b'$' if bytes.get(i + 1) == Some(&b'{') => {
@@ -576,6 +578,26 @@ mod tests {
         );
         assert!(!out.contains("return a") && !out.contains(")(("), "{out}");
         parses(&out, "src/run.ts");
+    }
+
+    // A `/` right after a template literal divides. Read as a regex start, it
+    // lost the chain: the function went unregistered on the server and in
+    // the resolver.
+    #[test]
+    fn a_division_after_a_template_literal_keeps_the_chain() {
+        let code = [
+            "export const half = createServerFn({ method: `GET` })",
+            "  .inputValidator((n: number) => `${n}`.length / 2)",
+            "  .handler(async ({ data }) => data);",
+            "",
+        ]
+        .join("\n");
+        let found: Vec<String> = find_server_fns(&code).into_iter().map(|f| f.name).collect();
+        assert_eq!(found, ["half"]);
+        // Right after an opener, the template's own `prev` is the `(`.
+        let code = code.replace("`${n}`.length / 2", "(`4`/2) * n");
+        let found: Vec<String> = find_server_fns(&code).into_iter().map(|f| f.name).collect();
+        assert_eq!(found, ["half"], "a division right after the template");
     }
 
     // handleCreateServerFn replaces only handlerFnPath, the first argument.

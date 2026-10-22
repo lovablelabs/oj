@@ -16,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Dependency pre-bundling works in apps that install no rolldown (no Vite 8 in the tree). They used to serve every dependency file by file.
-- A change to `optimizeDeps.rolldownOptions` invalidates the cached pre-bundle.
 
 ## [0.2.44] - 2026-10-22
 

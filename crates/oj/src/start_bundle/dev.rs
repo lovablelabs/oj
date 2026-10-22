@@ -58,6 +58,9 @@ pub(crate) struct DevBundler {
     style_epoch: std::sync::atomic::AtomicU64,
     /// Pages that announced their runtime id.
     clients: Mutex<HashSet<String>>,
+    /// Specifiers the app's `external` function kept external, so the dev
+    /// bundle's unresolved-import check takes the function's own answers.
+    fn_externals: Arc<Mutex<HashSet<String>>>,
 }
 
 impl DevBundler {
@@ -74,6 +77,7 @@ impl DevBundler {
             hot_enabled: std::sync::atomic::AtomicBool::new(!oj_env::get().knobs.hmr_gate),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(HashSet::new()),
+            fn_externals: Arc::default(),
         }
     }
 
@@ -251,7 +255,7 @@ impl DevBundler {
             let parts = self.parts(host, true)?;
             let runtime = std::fs::read_to_string(start.cache.join("hmr-runtime.js"))
                 .map_err(|e| BundleError::from_message(format!("hmr-runtime.js: {e}")))?;
-            let declared = declared_externals(host);
+            let declared = declared_externals(host, &self.fn_externals);
             let live = HotSession::start(
                 parts,
                 &start.root,
@@ -263,7 +267,7 @@ impl DevBundler {
                 Arc::clone(&self.hot),
                 declared,
                 &self.engine,
-                self.pages(),
+                || self.pages(),
             )
             .await?;
             *session = Some(live);
@@ -387,10 +391,18 @@ impl DevBundler {
             platform: Some(Platform::Browser),
             transform: Some(start.transform_options()),
             define: Some(defines.into_iter().collect()),
-            resolve: Some(
-                start.resolve_options(&start.client_aliases(), Some(start.client_conditions())),
-            ),
-            external: host.and_then(|h| super::prod::client_external(&h.facts, Some(&h.host))),
+            resolve: Some(start.resolve_options(
+                &start.client_aliases(),
+                start.client_main_fields(),
+                Some(start.client_conditions()),
+            )),
+            external: host.and_then(|h| {
+                super::prod::client_external(
+                    &h.facts,
+                    Some(&h.host),
+                    Some(Arc::clone(&self.fn_externals)),
+                )
+            }),
             format: Some(OutputFormat::Esm),
             banner: Some(AddonOutputOption::String(Some(start.client_banner()))),
             code_splitting: policy.as_ref().and_then(|p| p.code_splitting.clone()),
@@ -468,10 +480,13 @@ enum Run {
     Output { files: usize },
 }
 
-/// The app's client externals as a predicate over specifiers (strings and
-/// RegExps; a function external is the bundler's to call, so a specifier it
-/// keeps external is assumed declared).
-fn declared_externals(host: Option<&BundleHost>) -> super::hot::Declared {
+/// The app's client externals as a predicate over specifiers: strings,
+/// RegExps, and the specifiers a function external answered true for when
+/// the bundle resolved them (`kept`).
+fn declared_externals(
+    host: Option<&BundleHost>,
+    kept: &Arc<Mutex<HashSet<String>>>,
+) -> super::hot::Declared {
     let items: Vec<serde_json::Value> = match host.and_then(|h| h.facts.external.clone()) {
         Some(serde_json::Value::Array(items)) => items,
         Some(one) => vec![one],
@@ -482,9 +497,14 @@ fn declared_externals(host: Option<&BundleHost>) -> super::hot::Declared {
         .filter_map(|v| v.as_str().map(str::to_string))
         .collect();
     let regexes: Vec<_> = items.iter().filter_map(super::facts::js_regex).collect();
-    let any_fn = items.iter().any(|v| super::facts::fn_handle(v).is_some());
+    let kept = Arc::clone(kept);
     Arc::new(move |spec: &str| {
-        any_fn || names.iter().any(|n| n == spec) || regexes.iter().any(|r| r.matches(spec))
+        names.iter().any(|n| n == spec)
+            || regexes.iter().any(|r| r.matches(spec))
+            || kept
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(spec)
     })
 }
 
@@ -662,6 +682,18 @@ pub(crate) mod tests {
             ),
             base: "/".into(),
         }
+    }
+
+    // A function `external` declares only what it answered external for: a
+    // typo'd bare import it never claimed still fails the dev bundle.
+    #[test]
+    fn a_function_external_declares_only_what_it_kept() {
+        let kept: Arc<Mutex<HashSet<String>>> = Arc::default();
+        let declared = declared_externals(None, &kept);
+        assert!(!declared("cdn:lib"));
+        kept.lock().unwrap().insert("cdn:lib".into());
+        assert!(declared("cdn:lib"));
+        assert!(!declared("reactt"), "a specifier the function never kept");
     }
 
     #[test]

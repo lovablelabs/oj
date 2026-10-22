@@ -100,7 +100,7 @@ impl HotSession {
         hot: Arc<HotUpdates>,
         declared: Declared,
         slot: &EngineSlot,
-        clients: Vec<String>,
+        clients: impl Fn() -> Vec<String>,
     ) -> Result<HotSession, BundleError> {
         let experimental = parts
             .options
@@ -161,12 +161,16 @@ impl HotSession {
         )
         .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()))?;
         let engine = Arc::new(engine);
-        // The initial full build; its result lands in `on_output`.
+        // The initial full build; its result lands in `on_output`. A page
+        // registers after it, as a session's evaluated modules start from it.
         let _ = engine.run().await;
-        for id in clients {
+        // Published before the pages are read: a page connecting from here on
+        // registers itself, one connected before is in the live set
+        // (registering twice keeps the first session).
+        slot.set(Some(Arc::clone(&engine)));
+        for id in clients() {
             engine.register_client(id).await;
         }
-        slot.set(Some(Arc::clone(&engine)));
         Ok(HotSession {
             engine,
             epoch,
@@ -251,8 +255,15 @@ impl HotSession {
             // The output callback lands right after the build it reports;
             // none at all means the engine had nothing newer.
             let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-            while self.events.outputs.load(Ordering::SeqCst) == before {
+            loop {
+                // Registered before the check: an output landing between the
+                // check and the wait still wakes it.
                 let notified = self.events.changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.events.outputs.load(Ordering::SeqCst) != before {
+                    break;
+                }
                 if tokio::time::timeout_at(deadline, notified).await.is_err() {
                     break;
                 }

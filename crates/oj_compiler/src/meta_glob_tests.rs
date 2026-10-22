@@ -732,3 +732,41 @@ fn schemes_are_no_files() {
     assert!(!has_scheme("/a.png"));
     assert!(!has_scheme("img/a.png"));
 }
+
+// Vite finds the calls in the AST: one spelled inside a string or a comment
+// is text, never expanded (a string's quotes would break, a comment's eager
+// glob would hoist real imports).
+#[test]
+fn a_glob_inside_a_string_or_comment_is_left_alone() {
+    let dir = fixture();
+    let r = root(&dir);
+    let code = concat!(
+        "const doc = \"use import.meta.glob('./content/*.md') here\";\n",
+        "// const old = import.meta.glob('./content/*.md', { eager: true });\n",
+        "/* import.meta.glob('./pages/**/page.tsx') */\n",
+        "const real = import.meta.glob('./content/*.md');\n",
+    );
+    let out = glob(code, &r.join("main.ts"), &r);
+    assert!(
+        out.starts_with("const doc = \"use import.meta.glob('./content/*.md') here\";\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("// const old = import.meta.glob('./content/*.md', { eager: true });"),
+        "{out}"
+    );
+    assert!(
+        out.contains("/* import.meta.glob('./pages/**/page.tsx') */"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("import __oj_glob"),
+        "a comment's eager glob hoists nothing:\n{out}"
+    );
+    assert!(
+        out.contains("\"./content/a.md\": () => import("),
+        "the real call expands:\n{out}"
+    );
+    assert!(!out.contains("page.tsx\": "), "{out}");
+    assert_eq!(out.split('\n').count(), code.split('\n').count(), "{out}");
+}

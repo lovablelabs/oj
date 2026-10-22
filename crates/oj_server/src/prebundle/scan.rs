@@ -566,7 +566,11 @@ impl Plugin for HostScanPlugins {
             .host
             .scan_plugin_hook(
                 "resolveId",
-                &serde_json::json!([args.specifier, args.importer]),
+                &serde_json::json!([
+                    args.specifier,
+                    args.importer,
+                    { "isEntry": args.is_entry, "kind": args.kind.to_string() }
+                ]),
             )
             .await
             .map_err(anyhow::Error::msg)?;

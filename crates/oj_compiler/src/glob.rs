@@ -384,6 +384,12 @@ fn unescape(s: &str) -> String {
 
 /// A literal path as a glob prefix: Vite's globSafePath (tinyglobby
 /// escapePath), so a `[id]` or `(group)` directory matches itself.
+/// `path` as a glob's literal prefix: its glob syntax escaped, so a
+/// directory named `app [v2]` or `{work}` matches itself.
+pub fn escape_glob_path(path: &Path) -> String {
+    escaped(path).to_string_lossy().into_owned()
+}
+
 fn escaped(path: &Path) -> PathBuf {
     let mut out = String::new();
     for c in slash(path).chars() {

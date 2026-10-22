@@ -48,6 +48,9 @@ pub fn transform_glob(
     if !code.contains(HEAD) {
         return Ok(code.to_string());
     }
+    // Call sites are found on the literal-stripped code, so a call spelled
+    // inside a string or a comment is none (Vite finds them in the AST).
+    let clean = strip_literals(code);
     let file_dir = file.parent().unwrap_or(file);
     let mut prelude: Vec<String> = Vec::new();
     let mut out = String::with_capacity(code.len());
@@ -58,6 +61,9 @@ pub fn transform_glob(
         let head = from + found;
         let after = head + HEAD.len();
         from = after;
+        if clean.as_bytes()[head..after] != *HEAD.as_bytes() {
+            continue;
+        }
         // `\b`: `import.meta.globEager` is no call of this.
         if code[after..]
             .chars()

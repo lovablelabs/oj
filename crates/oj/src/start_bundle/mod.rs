@@ -232,13 +232,29 @@ impl StartConfig {
         }
     }
 
+    /// The client bundle's main fields: the top-level `resolve.mainFields`
+    /// (Vite's client environment takes them; the default is browser-first).
+    pub fn client_main_fields(&self) -> Option<Vec<String>> {
+        oj_config::resolve_main_fields(&self.config)
+    }
+
+    /// A server bundle's main fields: the ssr environment's own list, else
+    /// Vite's server default. The top-level list is the client's and never
+    /// applies (Vite drops it from what other environments inherit), or a
+    /// package's `browser` build would land in the server bundle.
+    pub fn server_main_fields(&self) -> Vec<String> {
+        oj_config::ssr_resolve_main_fields(&self.config)
+            .unwrap_or_else(oj_resolver::default_server_main_fields)
+    }
+
     /// rolldown's resolver for a Start bundle: the framework seam as aliases
     /// (the app's own `resolve.alias` runs as a plugin ahead of the app's
-    /// plugins, as Vite's alias plugin does), the config's extensions and
-    /// main fields, and the given export conditions.
+    /// plugins, as Vite's alias plugin does), the config's extensions, and the
+    /// environment's main fields and export conditions.
     pub fn resolve_options(
         &self,
         aliases: &[(String, PathBuf)],
+        main_fields: Option<Vec<String>>,
         conditions: Option<Vec<String>>,
     ) -> rolldown_common::ResolveOptions {
         let alias: Vec<(String, Vec<Option<String>>)> = aliases
@@ -259,8 +275,7 @@ impl StartConfig {
         rolldown_common::ResolveOptions {
             alias: Some(alias),
             extensions: oj_config::resolve_extensions(&self.config),
-            main_fields: oj_config::resolve_main_fields(&self.config)
-                .map(oj_resolver::with_main_fallback),
+            main_fields: main_fields.map(oj_resolver::with_main_fallback),
             condition_names: conditions,
             symlinks,
             extension_alias: Some(oj_resolver::default_extension_alias()),

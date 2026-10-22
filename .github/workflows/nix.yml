@@ -11,6 +11,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/**"
+      - "e2e/fixtures/start-app/**"
       - ".github/workflows/nix.yml"
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/**"
+      - "e2e/fixtures/start-app/**"
       - ".github/workflows/nix.yml"
   workflow_dispatch:
 

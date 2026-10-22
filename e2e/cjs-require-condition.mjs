@@ -3,9 +3,10 @@
 //
 // Vite resolves a `require()` with the `require` export condition and an
 // `import` with `import` (resolve.ts getConditions, isRequire). A CommonJS dep
-// served per file that requires a dual package must therefore get its CJS build
+// that requires a dual package must therefore get its CJS build
 // (`module.exports = fn` -> `fn`), while the app's own ESM import of the same
-// package still gets the ESM build.
+// package still gets the ESM build: served per file (`optimizeDeps.noDiscovery`)
+// and pre-bundled alike.
 
 import { spawn, execSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -60,13 +61,40 @@ write(
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
 );
 
+// The page's result, the same served per file and pre-bundled.
+async function pageResult(browser) {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`http://localhost:${PORT}/`, { timeout: 30000 });
+  let result = null;
+  await settles(async () => (result = await page.evaluate(() => window.__R || null)));
+  await page.close();
+  assert.deepEqual(errors, [], `page errors: ${errors.join("; ")}`);
+  assert.deepEqual(result, { kind: "function", value: "CJS_BUILD", esm: "ESM_BUILD" });
+}
+
+async function serve() {
+  const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
+  await waitUp(`http://localhost:${PORT}/`);
+  return srv;
+}
+
+async function stop(srv) {
+  const exited = new Promise((r) => srv.once("exit", r));
+  srv.kill("SIGKILL");
+  await exited;
+}
+
 let failed = false;
 let srv = null;
 let browser = null;
 try {
-  srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
-  await waitUp(`http://localhost:${PORT}/`);
+  browser = await chromium.launch();
 
+  // Served per file: the dev server rewrites each import itself.
+  write("oj.config.json", JSON.stringify({ optimizeDeps: { noDiscovery: true } }));
+  srv = await serve();
   // The ESM importer keeps the `import` condition.
   const main = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
   assert.match(
@@ -76,7 +104,6 @@ try {
   );
   const userUrl = main.match(/from\s+"(\/node_modules\/cjs-user\/index\.js[^"]*)"/)?.[1];
   assert.ok(userUrl, `cjs-user not rewritten to its served URL:\n${main}`);
-
   // The CJS requirer resolves with the `require` condition.
   const user = await (await fetch(`http://localhost:${PORT}${userUrl}`)).text();
   assert.match(
@@ -85,17 +112,20 @@ try {
     `require("dual-fn") should pick the CJS build:\n${user}`,
   );
   assert.doesNotMatch(user, /dual-fn\/esm\.js/, `require("dual-fn") picked the ESM build:\n${user}`);
-
   // And at runtime the requirer sees `module.exports` itself, not a namespace.
-  browser = await chromium.launch();
-  const page = await browser.newPage();
-  const errors = [];
-  page.on("pageerror", (e) => errors.push(String(e)));
-  await page.goto(`http://localhost:${PORT}/`, { timeout: 30000 });
-  let result = null;
-  await settles(async () => (result = await page.evaluate(() => window.__R || null)));
-  assert.deepEqual(errors, [], `page errors: ${errors.join("; ")}`);
-  assert.deepEqual(result, { kind: "function", value: "CJS_BUILD", esm: "ESM_BUILD" });
+  await pageResult(browser);
+  console.log("cjs-require-condition: per-file serving keeps each condition");
+  await stop(srv);
+  srv = null;
+
+  // Pre-bundled: the same split inside the dependency bundles.
+  fs.rmSync(path.join(app, "oj.config.json"));
+  fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+  srv = await serve();
+  const bundled = await (await fetch(`http://localhost:${PORT}/src/main.js`)).text();
+  assert.match(bundled, /\/@oj-deps\/cjs-user\.mjs/, `cjs-user should be pre-bundled:\n${bundled}`);
+  await pageResult(browser);
+  console.log("cjs-require-condition: the pre-bundle keeps each condition");
   console.log("CJS-REQUIRE-CONDITION E2E PASSED");
 } catch (err) {
   failed = true;

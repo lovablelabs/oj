@@ -6,10 +6,11 @@
 // callbacks once held one event-loop pass for the whole crawl, so queued
 // hooks got no reply inside the watchdog window and the host was declared
 // gone (SSR answered 500 until restart). The scan now runs on oj's rolldown
-// and asks the host one resolution at a time, so other hooks keep getting
-// answered mid-scan. The plugin spins only for `options.scan` calls, so
-// request-path resolution stays cheap and any probe slowness is starvation,
-// not the fixture's own cost.
+// and sends each resolution to the host as a call of its own, so queued
+// hooks interleave with the scan's instead of waiting out the whole crawl.
+// The plugin spins only for `options.scan` calls, so request-path resolution
+// stays cheap and any probe slowness is starvation, not the fixture's own
+// cost.
 
 import { spawn } from "node:child_process";
 import { execSync } from "node:child_process";

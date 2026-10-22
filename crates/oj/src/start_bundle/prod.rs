@@ -58,10 +58,12 @@ fn input(name: &str, path: &Path) -> InputItem {
 }
 
 /// The app's `external` for a client bundle (strings, RegExps, a function),
-/// as Vite passes `build.rolldownOptions.external` to the build.
+/// as Vite passes `build.rolldownOptions.external` to the build. `kept`, when
+/// given, collects the specifiers the function answered external for.
 pub(crate) fn client_external(
     facts: &Facts,
     host: Option<&Arc<oj_server::plugins::PluginHost>>,
+    kept: Option<Arc<std::sync::Mutex<std::collections::HashSet<String>>>>,
 ) -> Option<IsExternal> {
     let spec = facts.external.clone()?;
     let items: Vec<serde_json::Value> = match spec {
@@ -87,6 +89,7 @@ pub(crate) fn client_external(
         move |spec: &str, importer: Option<&str>, is_resolved: bool| {
             let matchers = Arc::clone(&matchers);
             let host = host.clone();
+            let kept = kept.clone();
             let spec = spec.to_string();
             let importer = importer.map(str::to_string);
             Box::pin(async move {
@@ -95,8 +98,8 @@ pub(crate) fn client_external(
                         External::Name(name) => *name == spec,
                         External::Regex(re) => re.matches(&spec),
                         External::Fn(handle) => match &host {
-                            Some(host) => host
-                                .call_start_fn(
+                            Some(host) => {
+                                host.call_start_fn(
                                     *handle,
                                     &serde_json::json!([spec, importer, is_resolved]),
                                 )
@@ -105,7 +108,16 @@ pub(crate) fn client_external(
                                     anyhow::anyhow!("build.rolldownOptions.external: {e}")
                                 })?
                                 .as_bool()
-                                .unwrap_or(false),
+                                .unwrap_or(false)
+                                    && {
+                                        if let Some(kept) = &kept {
+                                            kept.lock()
+                                                .unwrap_or_else(|p| p.into_inner())
+                                                .insert(spec.clone());
+                                        }
+                                        true
+                                    }
+                            }
                             None => false,
                         },
                     };
@@ -283,7 +295,11 @@ pub(crate) async fn build(
         client_host.as_ref().map_or(&[][..], |h| &h.defines),
     );
     let client_aliases = start.client_aliases();
-    let resolve_client = start.resolve_options(&client_aliases, Some(start.client_conditions()));
+    let resolve_client = start.resolve_options(
+        &client_aliases,
+        start.client_main_fields(),
+        Some(start.client_conditions()),
+    );
     let minify = crate::build::rolldown_minify(out.minify);
 
     // `?worker` / `?worker&url` in a build: Vite's bundleWorkerEntry bundles
@@ -296,7 +312,7 @@ pub(crate) async fn build(
         let host = client_host.clone();
         let defines = client_defines.clone();
         let resolve = resolve_client.clone();
-        let external = client_external(client_facts, client_host.as_ref().map(|h| &h.host));
+        let external = client_external(client_facts, client_host.as_ref().map(|h| &h.host), None);
         let minify = minify.clone();
         let bundler: WorkerBundler = Arc::new(move |file: PathBuf| {
             let start = Arc::clone(&start);
@@ -381,7 +397,7 @@ pub(crate) async fn build(
             transform: Some(start.transform_options()),
             define: Some(client_defines.iter().cloned().collect()),
             resolve: Some(resolve_client.clone()),
-            external: client_external(client_facts, client_host.as_ref().map(|h| &h.host)),
+            external: client_external(client_facts, client_host.as_ref().map(|h| &h.host), None),
             dir: Some(client_dir.to_string_lossy().into_owned()),
             format: Some(OutputFormat::Esm),
             minify: Some(minify.clone()),
@@ -545,7 +561,17 @@ pub(crate) async fn build(
                     platform: Some(Platform::Neutral),
                     transform: Some(transform),
                     define: Some(server_defines.iter().cloned().collect()),
-                    resolve: Some(start.resolve_options(&server_aliases, Some(conditions))),
+                    resolve: Some(
+                        start.resolve_options(
+                            &server_aliases,
+                            Some(
+                                env.main_fields
+                                    .clone()
+                                    .unwrap_or_else(oj_resolver::default_server_main_fields),
+                            ),
+                            Some(conditions),
+                        ),
+                    ),
                     dir: Some(dir.to_string_lossy().into_owned()),
                     format: Some(OutputFormat::Esm),
                     minify: Some(minify.clone()),
@@ -585,7 +611,11 @@ pub(crate) async fn build(
                     external: ssr_external(&start),
                     transform: Some(start.transform_options()),
                     define: Some(server_defines.iter().cloned().collect()),
-                    resolve: Some(start.resolve_options(&server_aliases, None)),
+                    resolve: Some(start.resolve_options(
+                        &server_aliases,
+                        Some(start.server_main_fields()),
+                        None,
+                    )),
                     dir: Some(dist.to_string_lossy().into_owned()),
                     format: Some(OutputFormat::Esm),
                     minify: Some(minify.clone()),

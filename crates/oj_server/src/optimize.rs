@@ -1186,10 +1186,6 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         hasher.update(b"\0o");
         hasher.update(opts.to_string().as_bytes());
     }
-    if let Some(opts) = &input.rolldown_options {
-        hasher.update(b"\0r");
-        hasher.update(opts.to_string().as_bytes());
-    }
     hash_tagged_lists(
         &mut hasher,
         &[

@@ -100,11 +100,91 @@ impl AliasEntry {
                 (rest.is_empty() || rest.starts_with('/'))
                     .then(|| format!("{}{rest}", self.replacement))
             }
-            AliasFind::Regex(re) => re
-                .matches(id)
-                .then(|| re.replace(id, &self.replacement).into_owned()),
+            AliasFind::Regex(re) => js_replace(re, id, &self.replacement),
         }
     }
+}
+
+/// `id.replace(re, replacement)` with JavaScript's replacement patterns
+/// (`$1`, `$&`, `` $` ``, `$'`, `$$`), as Vite's alias plugin applies a
+/// RegExp `find`: `$1_web` is group 1 followed by `_web`, where the regex
+/// crate would read a group named `1_web`. `None` when `re` does not match.
+pub(crate) fn js_replace(
+    re: &rolldown_utils::js_regex::HybridRegex,
+    id: &str,
+    replacement: &str,
+) -> Option<String> {
+    let groups: Vec<Option<std::ops::Range<usize>>> = match re.as_optimized() {
+        Some(re) => {
+            let caps = re.captures(id)?;
+            (0..caps.len())
+                .map(|i| caps.get(i).map(|m| m.range()))
+                .collect()
+        }
+        None => {
+            let m = re.find_from(id, 0)?.next()?;
+            (0..m.group_count()).map(|i| m.group(i)).collect()
+        }
+    };
+    let whole = groups.first()?.clone()?;
+    let bytes = replacement.as_bytes();
+    let mut out = String::with_capacity(id.len() + replacement.len());
+    out.push_str(&id[..whole.start]);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' || i + 1 >= bytes.len() {
+            let next = replacement[i..].chars().next().expect("a char");
+            out.push(next);
+            i += next.len_utf8();
+            continue;
+        }
+        match bytes[i + 1] {
+            b'$' => {
+                out.push('$');
+                i += 2;
+            }
+            b'&' => {
+                out.push_str(&id[whole.clone()]);
+                i += 2;
+            }
+            b'`' => {
+                out.push_str(&id[..whole.start]);
+                i += 2;
+            }
+            b'\'' => {
+                out.push_str(&id[whole.end..]);
+                i += 2;
+            }
+            d if d.is_ascii_digit() => {
+                // Two digits when they name a group, else one (JS's rule).
+                let one = (d - b'0') as usize;
+                let two = bytes
+                    .get(i + 2)
+                    .filter(|c| c.is_ascii_digit())
+                    .map(|c| one * 10 + (c - b'0') as usize)
+                    .filter(|n| *n > 0 && *n < groups.len());
+                let (n, len) = match two {
+                    Some(n) => (n, 3),
+                    None => (one, 2),
+                };
+                if n > 0 && n < groups.len() {
+                    if let Some(range) = &groups[n] {
+                        out.push_str(&id[range.clone()]);
+                    }
+                    i += len;
+                } else {
+                    out.push('$');
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push('$');
+                i += 1;
+            }
+        }
+    }
+    out.push_str(&id[whole.end..]);
+    Some(out)
 }
 
 /// Vite's normalizeAlias: an object or array `resolve.alias` as an ordered
@@ -158,6 +238,8 @@ pub(crate) struct CloudflareEnv {
     /// `resolve.builtins`: the runtime's own modules, left external.
     pub builtins: Vec<Builtin>,
     pub conditions: Vec<String>,
+    /// The environment's `resolve.mainFields`, when it sets them.
+    pub main_fields: Option<Vec<String>>,
     pub target: Option<String>,
     /// Rolldown builtin plugins the environment attached, by name, with
     /// their options (Vite's esmExternalRequirePlugin).
@@ -200,6 +282,11 @@ impl CloudflareEnv {
                 })
                 .unwrap_or_default(),
             conditions: strings("conditions"),
+            main_fields: v.get("mainFields").and_then(Value::as_array).map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_string))
+                    .collect()
+            }),
             target: v.get("target").and_then(Value::as_str).map(str::to_string),
             rolldown_plugins: v
                 .get("rolldownPlugins")
@@ -234,6 +321,38 @@ impl CloudflareEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_regex_alias_replaces_with_javascripts_patterns() {
+        let entries = normalize_alias(&serde_json::json!([
+            { "find": { "$regex": "^(.*)\\.native$", "flags": "" }, "replacement": "$1_web" },
+        ]));
+        assert_eq!(
+            entries[0].apply("button.native").as_deref(),
+            Some("button_web")
+        );
+        let re = rolldown_utils::js_regex::HybridRegex::new("^@app/(.*)$").unwrap();
+        assert_eq!(
+            js_replace(&re, "@app/x", "/src/$1").as_deref(),
+            Some("/src/x")
+        );
+        assert_eq!(
+            js_replace(&re, "@app/x", "$$1-$&").as_deref(),
+            Some("$1-@app/x")
+        );
+        assert_eq!(
+            js_replace(&re, "@app/x", "$9").as_deref(),
+            Some("$9"),
+            "no such group"
+        );
+        assert_eq!(js_replace(&re, "other", "$1"), None);
+        // regress (lookarounds) takes the same patterns.
+        let re = rolldown_utils::js_regex::HybridRegex::new(r"^@app(?!/excluded)(/.*)?$").unwrap();
+        assert_eq!(
+            js_replace(&re, "@app/utils", "/abs$1_x").as_deref(),
+            Some("/abs/utils_x")
+        );
+    }
     use serde_json::json;
 
     #[test]

@@ -3951,6 +3951,11 @@ function cloudflareEnvironmentFacts(c) {
     conditions: Array.isArray(options.resolve?.conditions)
       ? options.resolve.conditions.filter((x) => typeof x === "string" && !x.includes("|"))
       : ["workerd", "worker", "module", "browser"],
+    // The environment's own main fields (Vite never lets the top-level list,
+    // the client's, reach another environment).
+    mainFields: Array.isArray(options.resolve?.mainFields)
+      ? options.resolve.mainFields.filter((x) => typeof x === "string")
+      : null,
     target: typeof options.build?.target === "string" ? options.build.target : null,
     // Rolldown builtin plugins the environment attached (Vite's
     // esmExternalRequirePlugin): their names and options.
@@ -4035,7 +4040,13 @@ async function scanPluginHook(hook, argsJson) {
     if (!fn) continue;
     if (hook === "resolveId") {
       if (!hookIdMatches(p.resolveId, args[0])) continue;
-      const r = await fn.call(ctxFor(p), args[0], args[1] ?? undefined, { scan: true, isEntry: false });
+      const r = await fn.call(ctxFor(p), args[0], args[1] ?? undefined, {
+        attributes: {},
+        custom: {},
+        isEntry: !!args[2]?.isEntry,
+        kind: args[2]?.kind,
+        scan: true,
+      });
       if (r == null || r === false) continue;
       if (typeof r === "string") return JSON.stringify({ id: r });
       if (r.id != null) return JSON.stringify({ id: r.id, external: r.external ?? false });

@@ -213,6 +213,7 @@ mod tests {
             name: "my_worker".into(),
             builtins: Vec::new(),
             conditions: Vec::new(),
+            main_fields: None,
             target: None,
             rolldown_plugins: Vec::new(),
             out_dir: out_dir.map(str::to_string),

@@ -51,6 +51,7 @@ struct Output {
     footer: Option<String>,
     minify: Option<bool>,
     legal_comments: Option<LegalComments>,
+    keep_names: Option<bool>,
 }
 
 fn strings(v: &Value) -> Option<Vec<String>> {
@@ -282,7 +283,9 @@ impl DepOptions {
                 .treeshake
                 .map(TreeshakeOptions::Boolean)
                 .unwrap_or_default(),
-            keep_names: self.keep_names,
+            // rolldown's own spelling is the output option; the top-level
+            // key is accepted too.
+            keep_names: self.output.keep_names.or(self.keep_names),
             banner: self
                 .output
                 .banner
@@ -336,6 +339,7 @@ impl From<&Value> for Output {
                 "banner" => v.as_str().map(|b| out.banner = Some(b.into())).is_some(),
                 "footer" => v.as_str().map(|f| out.footer = Some(f.into())).is_some(),
                 "minify" => v.as_bool().map(|m| out.minify = Some(m)).is_some(),
+                "keepNames" => v.as_bool().map(|k| out.keep_names = Some(k)).is_some(),
                 "legalComments" => match v.as_str() {
                     Some("none") => {
                         out.legal_comments = Some(LegalComments::None);

@@ -384,3 +384,70 @@ fn the_test_app_root_is_canonical() {
     assert_eq!(app.dir, app.dir.canonicalize().unwrap());
     assert!(Path::new(&app.dir).is_absolute());
 }
+
+// The top-level `resolve.mainFields` is the client's (a resolved Vite config
+// always fills it browser-first); a server bundle takes its own environment's
+// list, so a package's `browser` build never reaches the server render.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_bundle_never_takes_a_packages_browser_build() {
+    let app = App::new(&[
+        (
+            "src/entry.js",
+            "import { side } from \"dual\";\nconsole.log(side);\n",
+        ),
+        (
+            "node_modules/dual/package.json",
+            r#"{"name":"dual","main":"node.js","browser":"browser.js"}"#,
+        ),
+        (
+            "node_modules/dual/node.js",
+            "exports.side = \"node-build\";",
+        ),
+        (
+            "node_modules/dual/browser.js",
+            "exports.side = \"browser-build\";",
+        ),
+    ]);
+    let mut start = app.start();
+    start.config = serde_json::from_value(serde_json::json!({
+        "resolve": { "mainFields": ["browser", "module", "jsnext:main", "jsnext"] }
+    }))
+    .unwrap();
+    let run = |main_fields: Option<Vec<String>>, platform| {
+        let options = BundlerOptions {
+            input: Some(vec![InputItem {
+                name: Some("entry".into()),
+                import: app.dir.join("src/entry.js").to_string_lossy().into_owned(),
+            }]),
+            cwd: Some(app.dir.clone()),
+            platform: Some(platform),
+            format: Some(OutputFormat::Esm),
+            resolve: Some(start.resolve_options(&[], main_fields, None)),
+            ..Default::default()
+        };
+        async move {
+            let mut bundler = BundlerBuilder::default()
+                .with_options(options)
+                .build()
+                .unwrap();
+            let out = bundler.generate().await.unwrap();
+            out.assets
+                .iter()
+                .filter_map(|o| match o {
+                    rolldown_common::Output::Chunk(c) => Some(c.code.clone()),
+                    _ => None,
+                })
+                .collect::<String>()
+        }
+    };
+    let server = run(Some(start.server_main_fields()), Platform::Node).await;
+    assert!(
+        server.contains("node-build") && !server.contains("browser-build"),
+        "{server}"
+    );
+    let client = run(start.client_main_fields(), Platform::Browser).await;
+    assert!(
+        client.contains("browser-build"),
+        "the client keeps its browser build:\n{client}"
+    );
+}

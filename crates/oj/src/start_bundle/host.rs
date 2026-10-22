@@ -164,6 +164,26 @@ impl StartHostPlugin {
         self
     }
 
+    /// A plugin's buildStart threw. `oj build` fails, as `vite build` does.
+    /// The dev server logs it once per host and bundles on: the host settles
+    /// buildStart once per session, so failing here would fail every later
+    /// rebundle too, with nothing the user could fix short of a restart.
+    fn build_start_failed(&self, host: &Arc<PluginHost>, e: &str) -> anyhow::Result<()> {
+        if self.command == Command::Build {
+            anyhow::bail!("plugin buildStart failed:\n{e}");
+        }
+        static LOGGED: std::sync::LazyLock<Mutex<HashSet<usize>>> =
+            std::sync::LazyLock::new(Default::default);
+        let key = Arc::as_ptr(host) as usize;
+        if LOGGED.lock().unwrap_or_else(|p| p.into_inner()).insert(key) {
+            eprintln!(
+                "{}: plugin buildStart failed (skipped): {e}",
+                oj_server::oj_brand()
+            );
+        }
+        Ok(())
+    }
+
     pub fn nested(mut self) -> Self {
         self.lifecycle = false;
         self
@@ -265,17 +285,14 @@ impl Plugin for StartHostPlugin {
         // Before any module loads: a plugin compiling on startup (i18n
         // catalogs) has its state ready for the loads it serves. The host runs
         // buildStart once per session, as Vite's container does.
-        let chunks = self
-            .host
-            .build_start()
-            .await
-            .map_err(|e| anyhow::anyhow!("plugin buildStart failed:\n{e}"))?;
-        crate::build::forward_emitted_chunks(ctx, &chunks, &self.emit);
+        match self.host.build_start().await {
+            Ok(chunks) => crate::build::forward_emitted_chunks(ctx, &chunks, &self.emit),
+            Err(e) => self.build_start_failed(&self.host, &e)?,
+        }
         if let Some(fallback) = &self.fallback {
-            fallback
-                .build_start()
-                .await
-                .map_err(|e| anyhow::anyhow!("plugin buildStart failed:\n{e}"))?;
+            if let Err(e) = fallback.build_start().await {
+                self.build_start_failed(fallback, &e)?;
+            }
         }
         Ok(())
     }

@@ -74,11 +74,22 @@ impl BundleError {
             .map(|e| e.to_diagnostic().to_string())
             .collect::<Vec<_>>()
             .join("\n");
+        // Where it failed (a syntax error's file:line:column), and that spot
+        // of the file, for the overlay's link and frame.
+        let loc = first
+            .to_diagnostic()
+            .get_primary_location()
+            .map(|(file, line, column, _)| (file, line, column));
+        let frame = loc
+            .as_ref()
+            .and_then(|(file, line, column)| source_frame(Path::new(file), *line, *column))
+            .unwrap_or_default();
         BundleError {
             message,
-            id: first.id(),
+            id: first.id().or_else(|| loc.as_ref().map(|l| l.0.clone())),
             plugin: first.plugin(),
-            ..Default::default()
+            frame,
+            loc: loc.map(Box::new),
         }
     }
 }
@@ -178,6 +189,38 @@ fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A syntax error carries its location and the frame around it, as
+    // rolldown's own errors do under Vite.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_syntax_error_carries_its_location_and_frame() {
+        let dir = std::env::temp_dir().join(format!("oj-bundle-error-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        let file = root.join("broken.js");
+        std::fs::write(&file, "const ok = 1;\nconst = ;\n").unwrap();
+        let mut bundler = rolldown::BundlerBuilder::default()
+            .with_options(rolldown::BundlerOptions {
+                input: Some(vec![rolldown::InputItem {
+                    name: None,
+                    import: file.to_string_lossy().into_owned(),
+                }]),
+                cwd: Some(root.clone()),
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let Err(errs) = bundler.generate().await else {
+            panic!("a syntax error fails the bundle");
+        };
+        let errs = errs.into_vec();
+        let err = BundleError::from_diagnostics(&errs);
+        let (at, line, _) = *err.loc.clone().expect("a location");
+        assert!(at.ends_with("broken.js"), "{at}");
+        assert_eq!(line, 2);
+        assert!(err.frame.contains("2|  const = ;"), "{}", err.frame);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn an_unresolved_import_is_framed_from_the_source() {

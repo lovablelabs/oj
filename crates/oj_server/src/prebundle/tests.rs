@@ -15,17 +15,27 @@ use serde_json::json;
 use super::{Prebuilt, Prebundle};
 use crate::optimize::OptimizeInput;
 
-struct App(tempfile::TempDir);
+struct App {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+}
 
 impl App {
     fn new() -> App {
+        App::in_dir("app")
+    }
+
+    /// An app in a directory of this name (glob syntax in a path is literal).
+    fn in_dir(name: &str) -> App {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"), r#"{"name":"fx"}"#).unwrap();
-        App(dir)
+        let root = dir.path().canonicalize().unwrap().join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"fx"}"#).unwrap();
+        App { _dir: dir, root }
     }
 
     fn root(&self) -> PathBuf {
-        self.0.path().canonicalize().unwrap()
+        self.root.clone()
     }
 
     fn write(&self, rel: &str, content: &str) -> &App {
@@ -885,6 +895,40 @@ async fn legacy_esbuild_options_reach_the_bundle() {
     );
 }
 
+// A root or package path with glob syntax in it (`[v2]`, `{work}`) is a
+// literal prefix, as tinyglobby's `cwd` is: the html entries and an include
+// glob still find their files.
+#[tokio::test(flavor = "multi_thread")]
+async fn glob_syntax_in_the_root_path_is_literal() {
+    let app = App::in_dir("app [v2] {work}");
+    app.esm("fromhtml", &[("index.js", "export const h = 1;\n")])
+        .cjs(
+            "parts",
+            &[
+                ("index.js", "exports.a = 1;\n"),
+                ("extra.js", "exports.b = 2;\n"),
+            ],
+        )
+        .write(
+            "index.html",
+            "<script type=\"module\" src=\"/main.js\"></script>",
+        )
+        .write(
+            "main.js",
+            "import { h } from \"fromhtml\";\nconsole.log(h);\n",
+        );
+    let found = app.scan(OptimizeInput::default()).await;
+    assert_eq!(found, ["fromhtml"], "the html glob found the entry");
+    let meta = app
+        .optimize(OptimizeInput {
+            include: strings(&["parts/*.js"]),
+            no_discovery: Some(true),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(keys(&meta), ["parts", "parts/extra.js", "parts/index.js"]);
+}
+
 #[test]
 fn rolldown_options_map_onto_the_run() {
     let input = OptimizeInput {
@@ -900,6 +944,18 @@ fn rolldown_options_map_onto_the_run() {
     assert_eq!(resolve.condition_names, Some(vec!["custom".to_string()]));
     assert!(options.module_types.unwrap().contains_key(".svg"));
     assert!(options.define.unwrap().contains_key("process.env.NODE_ENV"));
+
+    // `keepNames` is an output option in rolldown (and Vite's docs).
+    let input = OptimizeInput {
+        rolldown_options: Some(json!({ "output": { "keepNames": true } })),
+        ..Default::default()
+    };
+    assert_eq!(
+        super::DepOptions::new(&input)
+            .bundler_options(false)
+            .keep_names,
+        Some(true)
+    );
 }
 
 fn symlink(target: &Path, link: &Path) {
