@@ -18,9 +18,7 @@ const app = path.join(here, "fixtures", "start-app");
 const oj = path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 3096);
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start ssr.external: fixture deps not installed");
   process.exit(0);

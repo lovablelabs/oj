@@ -1123,8 +1123,8 @@ const declaresRunnerEnvironment = (cfg) =>
   Object.values(cfg.environments ?? {}).some((e) => e && e.dev && typeof e.dev.createEnvironment === "function");
 
 // Plugins whose `config` hooks this out-of-band re-run must not execute: the
-// exact rule the Start loader applies when IT re-runs config hooks on fresh
-// instances (start/vite-plugin-bridge.mjs `ojReimplemented`) — the framework
+// exact rule a Start plugin host applies when IT re-runs config hooks on
+// fresh instances (plugin-host.mjs `isReimplemented`) — the framework
 // plugins oj reimplements natively never ran hooks under oj, and their config
 // hooks have side effects that fight oj's own lifecycle (the TanStack router
 // plugin's config hook starts its route generator) — plus the dev-tooling

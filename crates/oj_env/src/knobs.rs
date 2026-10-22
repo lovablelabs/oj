@@ -23,8 +23,6 @@ pub struct Knobs {
     pub cache_dir: Option<PathBuf>,
     /// `OJ_CACHE_VERIFY=full` (any case).
     pub cache_verify_full: bool,
-    /// `OJ_VENDORED_ROLLDOWN`, raw (empty and non-UTF-8 are the consumer's call).
-    pub vendored_rolldown: Option<OsString>,
     /// `OJ_ENABLE_CACHE` / `OJ_NO_CACHE` truthy (non-empty and not `0`).
     pub enable_cache: bool,
     pub no_cache: bool,
@@ -85,7 +83,6 @@ impl Knobs {
                 .map(PathBuf::from),
             cache_verify_full: var("OJ_CACHE_VERIFY")
                 .is_some_and(|v| v.eq_ignore_ascii_case("full")),
-            vendored_rolldown: os("OJ_VENDORED_ROLLDOWN"),
             enable_cache: truthy("OJ_ENABLE_CACHE"),
             no_cache: truthy("OJ_NO_CACHE"),
             node_compile_cache: os("NODE_COMPILE_CACHE"),

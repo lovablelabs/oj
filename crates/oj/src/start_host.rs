@@ -10,8 +10,8 @@
 //! module. Compared to the node loader:
 //! - TS/JSX stripping, `define`/`import.meta.env`, `import.meta.glob` and the
 //!   plugin transform chain come from the same Rust pipeline the SSR runner
-//!   uses (`SsrBridge::transform_module`), replacing rolldown `transformSync`
-//!   + `glob-transform.mjs` + the FIFO plugin bridge.
+//!   uses (`SsrBridge::transform_module`), replacing the node loader's
+//!   rolldown `transformSync`, glob transform and FIFO plugin bridge.
 //! - CSS-module class names come from the Rust side (`oj_css`), replacing the
 //!   loader's SipHash mirror.
 //! - CJS facades, directory-entry recovery and extension probing inside
@@ -137,9 +137,6 @@ fn pkg_name_of_path(path: &str) -> Option<String> {
     Some(first.to_string())
 }
 
-/// Base64url without padding (Node's `Buffer.toString("base64url")`), the
-/// server-function id encoding shared with gen-resolver.mjs and the client
-/// bundle.
 /// Decodes the bootstrap's standard base64 (Node `Buffer.toString("base64")`,
 /// padded); oj owns both ends, so malformed input decodes to empty.
 fn base64_decode(s: &str) -> Vec<u8> {
@@ -147,305 +144,6 @@ fn base64_decode(s: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .unwrap_or_default()
-}
-
-fn base64url(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// The server-side `createServerFn` rewrite the node loader applied
-/// (loader-util.mjs `rewriteServerFns`): every
-/// `const NAME = createServerFn(...).handler(` grows a sibling
-/// `NAME_createServerFn_handler = createServerRpc(meta, ...)` export and the
-/// handler's first argument, without adding lines (stack traces keep their
-/// positions).
-///
-/// The `.handler(` must belong to the SAME expression as the
-/// `createServerFn` call: the chain is followed with a bracket-depth scan
-/// (strings, template literals, comments and regex literals skipped) instead
-/// of a lazy `.*?`, which used to span across statements and anchor a
-/// split-statement factory (`const factory = createServerFn(...); export
-/// const doIt = factory.handler(...)`) to the WRONG variable. That split
-/// shape is left untouched: TanStack's own compiler resolves it by following
-/// variable bindings in the AST, which a textual rewrite cannot do safely.
-pub(crate) fn rewrite_server_fns(code: &str, rel: &str) -> String {
-    if !code.contains("createServerFn") {
-        return code.to_string();
-    }
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| {
-        regex::Regex::new(
-            r"(?:^|[\n;])[ \t]*((?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*createServerFn)\b",
-        )
-        .expect("server-fn rewrite regex")
-    });
-    // (byte offset, text to insert there), collected per anchored chain.
-    let mut edits: Vec<(usize, String)> = Vec::new();
-    for caps in re.captures_iter(code) {
-        let decl = caps.get(1).expect("decl group");
-        let name = &caps[2];
-        let Some(handler_args_at) = scan_chain_to_handler(code, decl.end()) else {
-            continue; // no same-expression .handler( — leave the statement alone
-        };
-        let id = base64url(format!("{rel}#{name}").as_bytes());
-        let meta = format!("{{ id: {id:?}, name: {name:?}, filename: {rel:?} }}");
-        edits.push((
-            decl.start(),
-            format!(
-                "export const {name}_createServerFn_handler = createServerRpc({meta}, (opts) => {name}.__executeServer(opts)); "
-            ),
-        ));
-        edits.push((handler_args_at, format!("{name}_createServerFn_handler, ")));
-    }
-    if edits.is_empty() {
-        return code.to_string();
-    }
-    edits.sort_by_key(|(at, _)| *at);
-    let mut out =
-        String::from("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; ");
-    let mut last = 0;
-    for (at, text) in edits {
-        out.push_str(&code[last..at]);
-        out.push_str(&text);
-        last = at;
-    }
-    out.push_str(&code[last..]);
-    out
-}
-
-/// Follows a `createServerFn` method chain from `from` (the byte right after
-/// the identifier) to the `.handler(` of the same expression, returning the
-/// offset just past its opening paren. The chain grammar is strict — a call's
-/// balanced arguments, then `.name` and the next call — so the scan ends
-/// (returning `None`) at anything else: a `;`, a new statement on the next
-/// line, an unexpected token. Bracket depth is tracked with strings, template
-/// literals, comments and regex literals skipped, so a `)` inside a validator
-/// string can not end the argument list early.
-fn scan_chain_to_handler(code: &str, from: usize) -> Option<usize> {
-    let bytes = code.as_bytes();
-    let mut i = from;
-    loop {
-        // The chain's next call: balanced `( ... )`.
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'(' {
-            return None;
-        }
-        i = skip_balanced_parens(bytes, i)?;
-        // After the call only `.name` continues the chain.
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'.' {
-            return None;
-        }
-        i = skip_ws_and_comments(bytes, i + 1)?;
-        let name_start = i;
-        while i < bytes.len()
-            && (bytes[i] == b'$' || bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric())
-        {
-            i += 1;
-        }
-        if i == name_start {
-            return None;
-        }
-        let method = &code[name_start..i];
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'(' {
-            return None;
-        }
-        if method == "handler" {
-            return Some(i + 1);
-        }
-        // A non-handler link (.validator, .middleware, …): consume its call
-        // on the next loop turn.
-    }
-}
-
-fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> Option<usize> {
-    loop {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            if i + 1 >= bytes.len() {
-                return None;
-            }
-            i += 2;
-            continue;
-        }
-        return if i < bytes.len() { Some(i) } else { None };
-    }
-}
-
-/// From an opening `(` at `open`, returns the index just past its matching
-/// `)`. Tracks every bracket kind, skips strings, template literals (with
-/// nested `${}` code), comments and regex literals (the `/`-after-operator
-/// heuristic), and gives up (`None`) on EOF or mismatched brackets.
-fn skip_balanced_parens(bytes: &[u8], open: usize) -> Option<usize> {
-    debug_assert_eq!(bytes[open], b'(');
-    // Bracket stack; b'T' marks a template-literal `${` substitution, b'`'
-    // template text itself.
-    let mut stack: Vec<u8> = vec![b'('];
-    // The previous significant code byte, for the regex-vs-division call.
-    let mut prev: Option<u8> = Some(b'(');
-    let mut i = open + 1;
-    while i < bytes.len() {
-        if stack.last() == Some(&b'`') {
-            match bytes[i] {
-                b'\\' => i += 2,
-                b'`' => {
-                    stack.pop();
-                    i += 1;
-                }
-                b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                    stack.push(b'T');
-                    prev = Some(b'{');
-                    i += 2;
-                }
-                _ => i += 1,
-            }
-            continue;
-        }
-        let c = bytes[i];
-        match c {
-            b'\'' | b'"' => {
-                i = skip_string(bytes, i)?;
-                prev = Some(b'"');
-            }
-            b'`' => {
-                stack.push(b'`');
-                i += 1;
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                if i + 1 >= bytes.len() {
-                    return None;
-                }
-                i += 2;
-            }
-            b'/' if regex_can_follow(prev) => {
-                i = skip_regex_literal(bytes, i)?;
-                prev = Some(b'/');
-            }
-            b'(' | b'[' | b'{' => {
-                stack.push(c);
-                prev = Some(c);
-                i += 1;
-            }
-            b')' | b']' => {
-                let want = if c == b')' { b'(' } else { b'[' };
-                if stack.pop() != Some(want) {
-                    return None;
-                }
-                if stack.is_empty() {
-                    return Some(i + 1);
-                }
-                prev = Some(c);
-                i += 1;
-            }
-            b'}' => {
-                match stack.pop() {
-                    Some(b'{') | Some(b'T') => {}
-                    _ => return None,
-                }
-                prev = Some(c);
-                i += 1;
-            }
-            _ => {
-                if !c.is_ascii_whitespace() {
-                    prev = Some(c);
-                }
-                i += 1;
-            }
-        }
-    }
-    None
-}
-
-/// Whether a `/` after this significant byte starts a regex literal rather
-/// than a division: after an operator, an opener or a separator it can only
-/// be a regex (`.validator((s) => /x\(/.test(s))`), after a value it is a
-/// division. Keyword-preceded regexes (`return /x/`) read as
-/// identifier-preceded here and mis-classify as division — acceptable inside
-/// call arguments, where a bare `return` at bracket depth is already rare.
-fn regex_can_follow(prev: Option<u8>) -> bool {
-    match prev {
-        None => true,
-        Some(c) => matches!(
-            c,
-            b'(' | b'['
-                | b'{'
-                | b','
-                | b';'
-                | b':'
-                | b'!'
-                | b'&'
-                | b'|'
-                | b'?'
-                | b'='
-                | b'+'
-                | b'-'
-                | b'*'
-                | b'%'
-                | b'<'
-                | b'>'
-                | b'~'
-                | b'^'
-        ),
-    }
-}
-
-fn skip_string(bytes: &[u8], start: usize) -> Option<usize> {
-    let quote = bytes[start];
-    let mut i = start + 1;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            c if c == quote => return Some(i + 1),
-            b'\n' => return Some(i + 1), // unterminated: fail soft at the line end
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-fn skip_regex_literal(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start + 1;
-    let mut in_class = false;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'[' => {
-                in_class = true;
-                i += 1;
-            }
-            b']' if in_class => {
-                in_class = false;
-                i += 1;
-            }
-            b'/' if !in_class => return Some(i + 1),
-            b'\n' => return None, // not a regex after all
-            _ => i += 1,
-        }
-    }
-    None
 }
 
 fn ext_of(path: &str) -> &str {
@@ -1214,7 +912,7 @@ impl StartHost {
                 .strip_prefix(&format!("{}/", self.root.to_string_lossy()))
                 .unwrap_or(&clean)
                 .to_string();
-            rewrite_server_fns(&raw, &rel)
+            oj_compiler::server_fns::rewrite_server(&raw, &rel).unwrap_or(raw)
         } else {
             raw
         };
@@ -1528,166 +1226,14 @@ impl StartEngine {
     }
 }
 
-/// The engine the Start one-shot scripts (route-tree generation, the
-/// server-fn resolver, the client bundle, the production build) run on. The
-/// scripts import rolldown's napi binding and the app's plugins with plain
-/// byonm semantics, exactly as they did under node; the module host answers
-/// only [`STYLE_SCHEME`] ids. Each script exports `run(env)`; the env
-/// values that used to be spawn env travel as the argument.
-///
-/// Hosted only in processes that EXIT after their scripts (`oj build`, the
-/// `oj start-script` children of the dev server): rolldown's
-/// binding retains native memory per `build()` invocation that neither
-/// closing the bundler nor tearing the isolate down releases, so a long-lived
-/// process must never run these scripts on its own engine (measured ~650MB
-/// retained per client rebundle on an ~18k-module app).
+/// The engine Start's codegen scripts (route-tree generation) and the build's
+/// prerender run on: the app's packages load with plain byonm semantics, as
+/// under node. Each script exports `run(env)`; the env values that used to be
+/// spawn env travel as the argument.
 pub struct ScriptEngine {
     engine: JsEngine,
     /// The env shadow ran on the isolate (once, before the first script).
     env_shadowed: tokio::sync::OnceCell<()>,
-    /// The app's `css` config from the running script's env (`OJ_START_CSS`).
-    css: Arc<Mutex<Option<oj_config::CssConfig>>>,
-}
-
-/// `import("oj-style:///?file=/abs/x.module.scss")` from a Start script: the
-/// style file compiled by oj's CSS pipeline (preprocessor, then CSS-module
-/// scoping), as `{ code, css }`, the module's JS and its sheet. The bundles
-/// take stylesheets and class names from here so they match what the dev
-/// server's SSR renders and serves.
-pub const STYLE_SCHEME: &str = "oj-style:";
-/// Prefixes a `start-script --serve` reply on stdout (`ok` or `err <msg>`);
-/// every other stdout line is the script's own output.
-pub const SCRIPT_REPLY: &str = "\u{1e}oj-start-script:";
-const CSS_ENV: &str = "OJ_START_CSS";
-
-fn serve_script_host(
-    root: PathBuf,
-    css: Arc<Mutex<Option<oj_config::CssConfig>>>,
-    mut requests: oj_js::HostRequests,
-) {
-    let engines = Arc::new(ScriptEngines::default());
-    tokio::spawn(async move {
-        while let Some(request) = requests.recv().await {
-            match request {
-                // Everything else keeps byonm resolution; a STYLE_SCHEME id is
-                // an absolute URL the loader passes to load as is.
-                oj_js::HostRequest::Resolve { reply, .. } => {
-                    let _ = reply.send(Ok(None));
-                }
-                oj_js::HostRequest::Load { specifier, reply } => {
-                    if !specifier.starts_with(STYLE_SCHEME) {
-                        let _ = reply.send(Ok(None));
-                        continue;
-                    }
-                    let (root, engines) = (root.clone(), Arc::clone(&engines));
-                    let css = css.lock().unwrap().clone();
-                    tokio::spawn(async move {
-                        let module = script_style_module(&root, &specifier, css, &engines).await;
-                        let _ = reply.send(module.map(Some));
-                    });
-                }
-            }
-        }
-    });
-}
-
-/// The CSS engines a script's style files need, booted on first use.
-#[derive(Default)]
-struct ScriptEngines {
-    preprocess: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>>,
-    tailwind: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>>,
-}
-
-async fn script_style_module(
-    root: &Path,
-    specifier: &str,
-    css: Option<oj_config::CssConfig>,
-    engines: &ScriptEngines,
-) -> Result<HostModule, String> {
-    let (preprocess, tailwind) = (&engines.preprocess, &engines.tailwind);
-    let url = url::Url::parse(specifier).map_err(|e| format!("{specifier}: {e}"))?;
-    let file = url
-        .query_pairs()
-        .find(|(k, _)| k == "file")
-        .map(|(_, v)| PathBuf::from(v.as_ref()))
-        .ok_or_else(|| format!("{specifier}: no file"))?;
-    let param = |key: &str| {
-        url.query_pairs()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.into_owned())
-    };
-    // `minify=<css>&targets=<json>`: a finished sheet the build minifies
-    // (Vite's minifyCSS under `build.cssMinify` and `css.lightningcss`),
-    // named by `file`.
-    if let Some(minified_source) = param("minify") {
-        let targets: Vec<String> = param("targets")
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        let lightning = css
-            .as_ref()
-            .and_then(|c| c.lightningcss.as_ref())
-            .map(oj_css::LightningOptions::from_json)
-            .unwrap_or_default();
-        let css = oj_css::minify_css(
-            &file.to_string_lossy(),
-            &minified_source,
-            &targets,
-            &lightning,
-        )?;
-        return Ok(HostModule {
-            code: format!("export const css = {};\n", json_str(&css)),
-            module_type: HostModuleType::JavaScript,
-        });
-    }
-    let dev_inline = param("inline").as_deref() == Some("dev");
-    let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let engine = if oj_server::needs_preprocess_engine(&file) {
-        let engine = preprocess
-            .get_or_try_init(|| oj_server::css_engine::CssEngine::preprocess(root, None))
-            .await
-            .map_err(|e| e.to_string())?;
-        Some(Arc::clone(engine))
-    } else {
-        None
-    };
-    let modules = oj_server::css_modules_options(&oj_config::OjConfig {
-        css: css.clone(),
-        ..Default::default()
-    });
-    let inputs = oj_server::StyleInputs {
-        root,
-        css: css.as_ref(),
-        resolve: oj_css::CssResolve {
-            root: Some(root),
-            modules: &modules,
-            ..oj_css::CssResolve::default()
-        },
-    };
-    if dev_inline {
-        let tailwind = async || {
-            tailwind
-                .get_or_try_init(|| oj_server::css_engine::CssEngine::tailwind(root, None))
-                .await
-                .cloned()
-                .map_err(|e| e.to_string())
-        };
-        let code =
-            oj_server::start_dev_inline_style(&inputs, &file, source, engine.as_deref(), tailwind)
-                .await?;
-        return Ok(HostModule {
-            code: format!("export const code = {};\n", json_str(&code)),
-            module_type: HostModuleType::JavaScript,
-        });
-    }
-    let module = oj_server::compile_style_file(&inputs, &file, source, engine.as_deref()).await?;
-    Ok(HostModule {
-        code: format!(
-            "export const code = {};\nexport const css = {};\n",
-            json_str(&module.code),
-            json_str(&module.css)
-        ),
-        module_type: HostModuleType::JavaScript,
-    })
 }
 
 /// Shadows `process.env` with a private copy on the script isolate before any
@@ -1709,14 +1255,9 @@ impl ScriptEngine {
     pub fn new(root: &Path) -> anyhow::Result<ScriptEngine> {
         let mut config = EngineConfig::new(root);
         config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-        let css = Arc::new(Mutex::new(None));
-        let (link, requests) = ModuleHost::channel();
-        serve_script_host(root.to_path_buf(), Arc::clone(&css), requests);
         Ok(ScriptEngine {
-            engine: JsEngine::spawn(config, Some(link), None)
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            engine: JsEngine::spawn(config, None, None).map_err(|e| anyhow::anyhow!("{e}"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
-            css,
         })
     }
 
@@ -1731,53 +1272,6 @@ impl ScriptEngine {
             .await
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("{what} failed: {e}"))
-    }
-
-    /// `start-script --serve`: one run per stdin line (its env JSON), each
-    /// answered on stdout by a [`SCRIPT_REPLY`] line, on this one engine. A
-    /// JSON object line is an event for the script's `op` export instead,
-    /// answered by nothing. Stdin closing (the dev server exiting or exec'ing
-    /// a restart) ends the session: the script's `close()` runs, then the
-    /// process exits.
-    pub async fn serve(&self, script: &Path) -> anyhow::Result<()> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        let module = script.to_string_lossy().into_owned();
-        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-        let mut stdout = tokio::io::stdout();
-        while let Some(line) = lines.next_line().await? {
-            if let Ok(msg @ serde_json::Value::Object(_)) = serde_json::from_str(&line) {
-                let _ = self
-                    .engine
-                    .call(module.clone(), "op", vec![msg], None)
-                    .await;
-                continue;
-            }
-            let reply = match serde_json::from_str::<Vec<(String, String)>>(&line) {
-                Ok(env) => match self.call(script, &env).await {
-                    Ok(_) => "ok".to_string(),
-                    Err(e) => format!("err {}", e.to_string().replace('\n', " ")),
-                },
-                Err(e) => format!("err bad request: {e}"),
-            };
-            let reply = format!("{SCRIPT_REPLY}{reply}\n");
-            // A script that writes its own lines to stdout (bundle-client's
-            // hot updates) also writes the reply, through the same stream:
-            // two writers on the pipe could interleave a long line with it.
-            let written = self
-                .engine
-                .call(module.clone(), "reply", vec![reply.clone().into()], None)
-                .await
-                .is_ok();
-            if !written {
-                stdout.write_all(reply.as_bytes()).await?;
-                stdout.flush().await?;
-            }
-        }
-        let _ = self
-            .engine
-            .call(script.to_string_lossy().into_owned(), "close", vec![], None)
-            .await;
-        Ok(())
     }
 
     async fn call(
@@ -1796,9 +1290,6 @@ impl ScriptEngine {
                     .map(|_| ())
             })
             .await?;
-        if let Some((_, raw)) = env.iter().find(|(k, _)| k == CSS_ENV) {
-            *self.css.lock().unwrap() = serde_json::from_str(raw).ok();
-        }
         let env_obj: serde_json::Map<String, serde_json::Value> = env
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
@@ -1826,115 +1317,6 @@ fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::E
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn server_fn_rewrite_matches_the_node_loader() {
-        let code = "import { createServerFn } from \"@tanstack/react-start\";\nexport const getGreeting = createServerFn({ method: \"GET\" }).handler(async () => \"hi\");\n";
-        let out = rewrite_server_fns(code, "src/server/data.ts");
-        assert!(out
-            .starts_with("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; "));
-        let id = base64url(b"src/server/data.ts#getGreeting");
-        assert!(
-            out.contains(&format!(
-                "export const getGreeting_createServerFn_handler = createServerRpc({{ id: \"{id}\", name: \"getGreeting\", filename: \"src/server/data.ts\" }}, (opts) => getGreeting.__executeServer(opts)); "
-            )),
-            "{out}"
-        );
-        assert!(out.contains(".handler(getGreeting_createServerFn_handler, async () => \"hi\")"));
-        // Line-preserving: the rewrite adds no lines.
-        assert_eq!(code.lines().count(), out.lines().count());
-
-        // Untouched code passes through byte-identical.
-        let plain = "export const x = 1;\n";
-        assert_eq!(rewrite_server_fns(plain, "src/x.ts"), plain);
-    }
-
-    // The mis-rewrite the lazy regex allowed: a factory assigned in one
-    // statement and consumed by `.handler(...)` in another must not anchor
-    // the rewrite to the factory. TanStack's compiler resolves this shape by
-    // following variable bindings in the AST; the textual rewrite leaves it
-    // byte-identical instead of guessing.
-    #[test]
-    fn split_statement_factories_are_left_untouched() {
-        let split = "import { createServerFn } from \"@tanstack/react-start\";\nconst factory = createServerFn({ method: \"POST\" });\nexport const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_server_fns(split, "src/split.ts"), split);
-
-        // Same, single line with a `;` between the statements.
-        let inline = "const factory = createServerFn({ method: \"POST\" }); export const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_server_fns(inline, "src/split.ts"), inline);
-
-        // A factory NEXT TO a chained server fn: the factory stays untouched,
-        // the chained one still rewrites under its own name.
-        let mixed = "const factory = createServerFn({ method: \"POST\" });\nexport const real = createServerFn({ method: \"GET\" }).handler(async () => 2);\nexport const viaFactory = factory.handler(async () => 3);\n";
-        let out = rewrite_server_fns(mixed, "src/mixed.ts");
-        assert!(out.contains("export const real_createServerFn_handler = createServerRpc("));
-        assert!(out.contains(".handler(real_createServerFn_handler, async () => 2)"));
-        assert!(!out.contains("factory_createServerFn_handler"), "{out}");
-        assert!(
-            out.contains(".handler(async () => 3)"),
-            "the factory's handler call keeps its own arguments: {out}"
-        );
-    }
-
-    // Two adjacent server fns each anchor to their own declaration.
-    #[test]
-    fn adjacent_server_fns_rewrite_independently() {
-        let code = "export const a = createServerFn({ method: \"GET\" }).handler(async () => 1);\nexport const b = createServerFn({ method: \"POST\" }).handler(async () => 2);\n";
-        let out = rewrite_server_fns(code, "src/two.ts");
-        for name in ["a", "b"] {
-            let id = base64url(format!("src/two.ts#{name}").as_bytes());
-            assert!(
-                out.contains(&format!(
-                    "export const {name}_createServerFn_handler = createServerRpc({{ id: \"{id}\""
-                )),
-                "{out}"
-            );
-        }
-        assert!(out.contains(".handler(a_createServerFn_handler, async () => 1)"));
-        assert!(out.contains(".handler(b_createServerFn_handler, async () => 2)"));
-        assert_eq!(code.lines().count(), out.lines().count());
-    }
-
-    // A multi-line .validator()/.middleware() chain is one expression: the
-    // scan follows it across lines, comments and tricky argument content
-    // (strings and regex literals holding unbalanced brackets).
-    #[test]
-    fn multiline_chains_keep_rewriting() {
-        let code = r#"export const getUser = createServerFn({
-  method: "GET",
-})
-  .middleware([authMiddleware]) // trailing comment
-  .validator((s) => {
-    if (!/^[(]/.test(s.name) && s.label !== ")((") return s;
-    throw new Error(`bad ${s.name}; (unbalanced`);
-  })
-  .handler(async ({ data }) => data);
-"#;
-        let out = rewrite_server_fns(code, "src/user.ts");
-        assert!(
-            out.contains("export const getUser_createServerFn_handler = createServerRpc("),
-            "{out}"
-        );
-        assert!(
-            out.contains(".handler(getUser_createServerFn_handler, async ({ data }) => data)"),
-            "{out}"
-        );
-        assert_eq!(code.lines().count(), out.lines().count());
-    }
-
-    // ASI variant of the split factory: no semicolon, the next statement
-    // starts on its own line. The chain scan must not walk into it.
-    #[test]
-    fn asi_split_factories_are_left_untouched() {
-        let code = "const factory = createServerFn({ method: \"POST\" })\nexport const doIt = factory.handler(async () => 1)\n";
-        assert_eq!(rewrite_server_fns(code, "src/asi.ts"), code);
-    }
-
-    #[test]
-    fn base64url_matches_node_buffer() {
-        assert_eq!(base64url(b"src/a.ts#fn"), "c3JjL2EudHMjZm4");
-        assert_eq!(base64url(&[0xff, 0xef, 0x01]), "_-8B");
-    }
 
     #[test]
     fn intent_queries_split_like_the_loader() {
@@ -2361,100 +1743,6 @@ mod tests {
             fn_base_before,
             "the TSS defaults must not alter oj's real env"
         );
-    }
-
-    /// The Start bundles' style files come from oj's CSS pipeline: the
-    /// preprocessor, then the scoped names SSR renders, under the app's
-    /// `css` config from the script env.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn script_engine_serves_style_files_from_the_css_pipeline() {
-        let dir = std::env::temp_dir().join(format!("oj-scriptcss-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let dir = dir.canonicalize().unwrap();
-        let card = dir.join("src/card.module.css");
-        std::fs::write(&card, ".card { color: red; }\n").unwrap();
-        let panel = dir.join("src/panel.module.scss");
-        std::fs::write(&panel, "$c: red;\n.panel { &-title { color: $c; } }\n").unwrap();
-        let script = dir.join("probe.mjs");
-        std::fs::write(
-            &script,
-            r#"export async function run(env) {
-  const load = (file) => import("oj-style:///?" + new URLSearchParams({ file }));
-  const card = await load(env.CARD);
-  if (card.code !== env.CARD_CODE) throw new Error("class map: " + card.code);
-  if (!card.css.includes("." + env.CARD_CLASS)) throw new Error("sheet: " + card.css);
-  const panel = await load(env.PANEL);
-  if (!panel.code.includes('"panel-title"')) throw new Error("scss class map: " + panel.code);
-  if (panel.css.includes("$c") || panel.css.includes("&")) throw new Error("scss sheet: " + panel.css);
-  const min = await import("oj-style:///?" + new URLSearchParams({ file: env.CARD, minify: ".a {\n  color: #ff0000;\n}\n.gone { color: blue }\n", targets: "[]" }));
-  if (min.css !== env.MINIFIED) throw new Error("minify: " + min.css);
-  return null;
-}
-"#,
-        )
-        .unwrap();
-        // What SSR renders for the card under the default config.
-        let modules = oj_css::CssModulesOptions::default();
-        let inputs = oj_server::StyleInputs {
-            root: &dir,
-            css: None,
-            resolve: oj_css::CssResolve {
-                root: Some(&dir),
-                modules: &modules,
-                ..oj_css::CssResolve::default()
-            },
-        };
-        let ssr =
-            oj_server::compile_style_file(&inputs, &card, ".card { color: red; }\n".into(), None)
-                .await
-                .unwrap();
-        let start = ssr.code.find("export const card = \"").unwrap() + 21;
-        let ssr_class = ssr.code[start..].split('"').next().unwrap().to_string();
-        let var = |k: &str, v: &str| (k.to_string(), v.to_string());
-        let files = [
-            var("CARD", &card.to_string_lossy()),
-            var("PANEL", &panel.to_string_lossy()),
-        ];
-        ScriptEngine::new(&dir)
-            .unwrap()
-            .run_async(
-                &script,
-                &[
-                    files.to_vec(),
-                    vec![
-                        var("CARD_CODE", &ssr.code),
-                        var("CARD_CLASS", &ssr_class),
-                        var("MINIFIED", ".a{color:red}.gone{color:#00f}"),
-                    ],
-                ]
-                .concat(),
-                "default css",
-            )
-            .await
-            .expect("default options compile as SSR does");
-        // css.lightningcss reaches the build minify (unusedSymbols drops .gone).
-        let configured = r#"{"modules":{"generateScopedName":"[local]-scoped"},"lightningcss":{"unusedSymbols":["gone"]}}"#;
-        let code =
-            "export const card = \"card-scoped\";\nexport default {\"card\":\"card-scoped\"};\n";
-        ScriptEngine::new(&dir)
-            .unwrap()
-            .run_async(
-                &script,
-                &[
-                    files.to_vec(),
-                    vec![
-                        var("CARD_CODE", code),
-                        var("CARD_CLASS", "card-scoped"),
-                        var("MINIFIED", ".a{color:red}"),
-                        var(CSS_ENV, configured),
-                    ],
-                ]
-                .concat(),
-                "configured css",
-            )
-            .await
-            .expect("css config from the script env applies");
     }
 
     #[test]

@@ -52,7 +52,7 @@ impl Fixture {
         }
     }
 
-    /// Simulate what bundle-client.mjs leaves in .oj-cache/start:
+    /// Simulate what the client bundle leaves in .oj-cache/start:
     /// the chunk dir, its index, and the small artifacts. The
     /// `shared.js` chunk keeps the same bytes across builds so blob
     /// dedupe is observable; the entry chunk carries the marker.
@@ -313,39 +313,6 @@ fn epoch_input_changes_the_key() {
     let other_version =
         StartBundleStore::new(&fx.root, "9.9.9", VerifyMode::Standard).persist(&fx.start);
     assert_ne!(other_version.unwrap().0, key, "tool version salts the key");
-}
-
-#[test]
-fn vendored_rolldown_identity_is_an_epoch_input() {
-    let fx = Fixture::new("vendor-epoch");
-    let path = "/opt/vendor".to_string();
-    let identity = |version: &str| {
-        VendoredRolldown::Resolved {
-            path: path.clone(),
-            version: version.into(),
-        }
-        .epoch_input()
-        .unwrap()
-    };
-    let v1 = epoch(&fx.root, "development", Some(&identity("1.2.1")));
-    assert_ne!(v1, epoch(&fx.root, "development", None));
-    assert_ne!(
-        v1,
-        epoch(&fx.root, "development", Some(&identity("1.3.0"))),
-        "an in-place upgrade at the same path is a different epoch"
-    );
-    let broken = VendoredRolldown::Broken {
-        path: path.clone(),
-        reason: "x".into(),
-    }
-    .epoch_input()
-    .unwrap();
-    assert_ne!(
-        v1,
-        epoch(&fx.root, "development", Some(&broken)),
-        "a broken vendor window never aliases a resolved one"
-    );
-    assert_eq!(VendoredRolldown::None.epoch_input(), None);
 }
 
 #[test]

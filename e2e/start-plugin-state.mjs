@@ -22,9 +22,7 @@ const fixture = path.join(here, "fixtures", "start-app");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 const PORT = 6873;
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start plugin state: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");

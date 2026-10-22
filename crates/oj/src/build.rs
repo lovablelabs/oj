@@ -558,7 +558,7 @@ fn process_env_defines(node_env: &str) -> Vec<(String, String)> {
 /// Vite maps `build.minify: false` to rolldown's `'dce-only'`: no mangling or
 /// whitespace removal, but dead code is still dropped (rolldown's `false` would
 /// keep it).
-fn rolldown_minify(on: bool) -> RawMinifyOptions {
+pub(crate) fn rolldown_minify(on: bool) -> RawMinifyOptions {
     if on {
         RawMinifyOptions::Bool(true)
     } else {
@@ -1649,7 +1649,7 @@ fn server_fn_prod_stub(exports: &[String], url: &str) -> String {
     out
 }
 
-fn copy_public_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
+pub(crate) fn copy_public_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
@@ -1674,10 +1674,10 @@ fn copy_public_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
 // OjUserPlugin (which fills it inside hooks) and build() (which reads the
 // collected HTML pages afterward to render them).
 #[derive(Debug)]
-struct EmitState {
+pub(crate) struct EmitState {
     root: PathBuf,
     // oj chunk ref id -> rolldown ref id, resolved to the hashed name later.
-    chunk_refs: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    pub(crate) chunk_refs: std::sync::Mutex<std::collections::HashMap<String, String>>,
     // oj ref id -> an already-resolved output name (emitted `.html` pages, whose
     // output path is known at emit time rather than via rolldown).
     direct_names: std::sync::Mutex<std::collections::HashMap<String, String>>,
@@ -1686,7 +1686,7 @@ struct EmitState {
 }
 
 impl EmitState {
-    fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         Self {
             root,
             chunk_refs: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1741,7 +1741,7 @@ impl OjUserPlugin {
 // The rolldown module type a plugin-loaded id should parse as, from its
 // extension (query stripped). Defaults to Js, matching Rollup/Vite treating an
 // extensionless virtual id as JavaScript.
-fn module_type_for_id(id: &str) -> rolldown_common::ModuleType {
+pub(crate) fn module_type_for_id(id: &str) -> rolldown_common::ModuleType {
     use rolldown_common::ModuleType;
     let path = id.split(['?', '#']).next().unwrap_or(id);
     match Path::new(path).extension().and_then(|e| e.to_str()) {
@@ -1757,7 +1757,7 @@ fn module_type_for_id(id: &str) -> rolldown_common::ModuleType {
 // build roots. A `.html` id is not a JS module: its `<script type=module>` are
 // emitted as JS entries instead and the page is queued for rendering, with the
 // ref id resolving to the page's output path.
-fn forward_emitted_chunks(
+pub(crate) fn forward_emitted_chunks(
     ctx: &PluginContext,
     chunks: &[oj_server::plugins::ChunkEmit],
     emit: &EmitState,
@@ -2137,7 +2137,7 @@ impl Plugin for OjUserPlugin {
     }
 }
 
-fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
+pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
     // `chunk.modules` (keyed by module id) is read by renderChunk hooks such as
     // UnoCSS's `unocss:global:build:generate` to find their virtual layer module.
     let mut modules = serde_json::Map::new();
@@ -2169,7 +2169,7 @@ fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> Str
     .to_string()
 }
 
-fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
+pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
     use rolldown_common::{Output, StrOrBytes};
     let mut map = serde_json::Map::new();
     for out in bundle {
@@ -2231,7 +2231,7 @@ fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
     serde_json::Value::Object(map).to_string()
 }
 
-fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, json: &str) {
+pub(crate) fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, json: &str) {
     use rolldown_common::{Output, StrOrBytes};
     let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json) else {
         return;
@@ -5847,7 +5847,10 @@ fn manifest_entries_from_bundle(
 // serialize_bundle plus a synthetic `.vite/manifest.json` asset, so a plugin's
 // generateBundle can read the Vite build manifest from the bundle the way it
 // would under Vite (with build.manifest enabled).
-fn serialize_bundle_with_vite_manifest(bundle: &[rolldown_common::Output], root: &Path) -> String {
+pub(crate) fn serialize_bundle_with_vite_manifest(
+    bundle: &[rolldown_common::Output],
+    root: &Path,
+) -> String {
     let base = serialize_bundle(bundle);
     let mut entries = manifest_entries_from_bundle(bundle, root);
     let mut assets = Vec::new();

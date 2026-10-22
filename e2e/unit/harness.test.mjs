@@ -3,30 +3,21 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import path from "node:path";
-import { runSidecar, rpcSidecar, tmpProject, testWithRolldown, linkRolldown } from "./harness.mjs";
+import { runSidecar, rpcSidecar, tmpProject } from "./harness.mjs";
 
-const itRolldown = testWithRolldown(test);
-
-// Shape A: the one-shot helper drives the real optimize-deps sidecar and returns
-// its parsed stdout. An explicit `include` is pre-bundled to an emitted file.
-// rolldown is the only optimizer engine, so the fixture's rolldown links in.
-itRolldown("harness.runSidecar pre-bundles an included dep via optimize-deps", () => {
+// Shape A: the one-shot helper drives a real oj-owned module's export and
+// returns its parsed result: dep-names reads a CJS dep's runtime names.
+test("harness.runSidecar runs a one-shot module's export", () => {
   const fx = tmpProject({ prefix: "oj-harness-a-" });
   try {
-    linkRolldown(fx.root);
-    fx.pkg("plaincjs", "index.js", { "index.js": "exports.a = 1;\n" });
-    fx.write("entry.js", `import { a } from "plaincjs";\nexport const out = a;\n`);
-    const outDir = path.join(fx.root, ".oj-cache", "deps");
-    const { metadata } = runSidecar("optimize-deps.mjs", {
-      root: fx.root,
-      outDir,
-      entries: [path.join(fx.root, "entry.js")],
-      include: ["plaincjs"],
-    });
-    assert.deepEqual(Object.keys(metadata), ["plaincjs"]);
-    assert.ok(fs.existsSync(path.join(outDir, metadata.plaincjs.file)), "emitted bundle file exists");
+    fx.pkg("plaincjs", "index.js", { "index.js": "exports.a = 1;\nexports.b = 2;\n" });
+    const names = runSidecar(
+      "dep-names.mjs",
+      { root: fx.root, deps: ["plaincjs", "missing"] },
+      { exportName: "namedExports" },
+    );
+    assert.deepEqual(names, { plaincjs: ["a", "b"], missing: [] });
   } finally {
     fx.cleanup();
   }

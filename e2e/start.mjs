@@ -17,9 +17,7 @@ const onlyProd = process.argv.includes("--prod");
 const runDev = !onlyProd;
 const runProd = !onlyDev;
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start integration: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");

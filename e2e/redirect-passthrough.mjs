@@ -34,9 +34,7 @@ if (!pw) {
   console.log("SKIP redirect passthrough: playwright not installed");
   process.exit(0);
 }
-const startInstalled =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const startInstalled = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 const must = (cond, msg) => {

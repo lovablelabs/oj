@@ -4251,6 +4251,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "globstar"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb403f8548b623d8a2e74c1a6003b2c251f9dfcc357ab6bedbd144d5f272595"
+
+[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6188,10 +6194,15 @@ dependencies = [
  "oj_js",
  "oj_resolver",
  "oj_server",
+ "oxc_allocator",
+ "oxc_parser",
+ "oxc_sourcemap",
+ "oxc_span",
  "regex",
  "rolldown",
  "rolldown-ariadne",
  "rolldown_common",
+ "rolldown_dev",
  "rolldown_dev_common",
  "rolldown_devtools",
  "rolldown_devtools_action",
@@ -6199,11 +6210,13 @@ dependencies = [
  "rolldown_ecmascript_utils",
  "rolldown_error",
  "rolldown_fs",
+ "rolldown_fs_watcher",
  "rolldown_plugin",
  "rolldown_plugin_asset_module",
  "rolldown_plugin_chunk_import_map",
  "rolldown_plugin_copy_module",
  "rolldown_plugin_data_url",
+ "rolldown_plugin_esm_external_require",
  "rolldown_plugin_hmr",
  "rolldown_plugin_lazy_compilation",
  "rolldown_plugin_oxc_runtime",
@@ -6259,9 +6272,11 @@ dependencies = [
  "oxc_transformer",
  "oxc_transformer_plugins",
  "proptest",
+ "regex",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]
@@ -6486,6 +6501,7 @@ name = "oj_server"
 version = "0.2.44"
 dependencies = [
  "anyhow",
+ "arcstr",
  "axum",
  "blake3",
  "deno_signals",
@@ -6507,13 +6523,20 @@ dependencies = [
  "oj_graph",
  "oj_js",
  "oj_resolver",
+ "oxc_allocator",
+ "oxc_parser",
  "oxc_sourcemap",
+ "oxc_span",
+ "oxc_syntax",
  "pathdiff",
  "regex",
  "reqwest",
  "rolldown",
  "rolldown_common",
+ "rolldown_error",
  "rolldown_plugin",
+ "rolldown_utils",
+ "rustc-hash 2.1.3",
  "rustls",
  "rustls-pemfile",
  "rustls-platform-verifier",
@@ -8415,6 +8438,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "rolldown-file-id"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76c1d1beeaaa4dc5da10a197d4826f83adec1f40ee6e79d90ccdcfd5bcfb41c3"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rolldown-notify"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43c65ad424b3737dcd3f32b96820fb77fea1a942fc6c7c54a788c68d7ace872e"
+dependencies = [
+ "bitflags 2.13.2",
+ "inotify",
+ "kqueue",
+ "libc",
+ "mio",
+ "objc2-core-foundation",
+ "objc2-core-services",
+ "rolldown-notify-types",
+ "rustc-hash 2.1.3",
+ "tracing",
+ "walkdir",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rolldown-notify-debouncer-full"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32cc46781e5070fc3285f4a82d4a915afb27fb5f75ec53939739d7a04e03fc3f"
+dependencies = [
+ "rolldown-file-id",
+ "rolldown-notify",
+ "rolldown-notify-types",
+ "rustc-hash 2.1.3",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
+name = "rolldown-notify-types"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca46043afcb01d8dbb414ed52e863c62ebfecbefe370fdfe030983225c5ef7a"
+
+[[package]]
 name = "rolldown_common"
 version = "1.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8449,6 +8521,26 @@ dependencies = [
  "string_wizard",
  "sugar_path",
  "tokio",
+]
+
+[[package]]
+name = "rolldown_dev"
+version = "1.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "198bebc133e930ffade6f25c5388a47f0a681c1acf95321ba769513d6f190380"
+dependencies = [
+ "anyhow",
+ "arcstr",
+ "futures",
+ "rolldown",
+ "rolldown_common",
+ "rolldown_dev_common",
+ "rolldown_error",
+ "rolldown_fs_watcher",
+ "rolldown_utils",
+ "rustc-hash 2.1.3",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -8543,6 +8635,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rolldown_fs_watcher"
+version = "1.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "927ce233591df426dde7d8bc7a780016d8d7a74cc65656a86e6fbaad5ddb61b1"
+dependencies = [
+ "globstar",
+ "rolldown-notify",
+ "rolldown-notify-debouncer-full",
+ "rolldown_common",
+ "rolldown_error",
+ "rolldown_utils",
+ "rustc-hash 2.1.3",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "rolldown_plugin"
 version = "1.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8630,6 +8739,19 @@ dependencies = [
  "rolldown_plugin",
  "rolldown_utils",
  "simdutf8",
+]
+
+[[package]]
+name = "rolldown_plugin_esm_external_require"
+version = "1.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "358d7a72bb1ff3f2c13e889b66d4c6b05ae0cc7df9c84b53f54e5d75269bf0ab"
+dependencies = [
+ "nodejs-built-in-modules",
+ "rolldown_common",
+ "rolldown_plugin",
+ "rolldown_utils",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]

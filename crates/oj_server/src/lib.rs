@@ -22,6 +22,7 @@ pub mod css_engine;
 pub mod etag;
 pub mod optimize;
 pub mod plugins;
+mod prebundle;
 mod preseed;
 pub use preseed::PACKAGE_MANAGER_LOCKFILES;
 pub mod sidecar;
@@ -119,30 +120,10 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/resolve-pkg.mjs"),
     ),
     (
-        "rolldown-assets.mjs",
-        include_str!("assets/start/rolldown-assets.mjs"),
-    ),
-    (
-        "vite-plugin-bridge.mjs",
-        include_str!("assets/start/vite-plugin-bridge.mjs"),
-    ),
-    (
-        "vite-config-node.mjs",
-        include_str!("assets/start/vite-config-node.mjs"),
-    ),
-    (
-        "glob-transform.mjs",
-        include_str!("assets/start/glob-transform.mjs"),
-    ),
-    (
         "vite-globs.mjs",
         include_str!("assets/start/vite-globs.mjs"),
     ),
     ("glob-libs.mjs", include_str!("assets/start/glob-libs.mjs")),
-    (
-        "server-fns.mjs",
-        include_str!("assets/start/server-fns.mjs"),
-    ),
     ("cf-server.mjs", include_str!("assets/start/cf-server.mjs")),
     (
         "cf-workers.mjs",
@@ -152,18 +133,9 @@ const START_ASSETS: &[(&str, &str)] = &[
         "cf-server-worker.mjs",
         include_str!("assets/start/cf-server-worker.mjs"),
     ),
-    ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
     ("generate.mjs", include_str!("assets/start/generate.mjs")),
-    (
-        "gen-resolver.mjs",
-        include_str!("assets/start/gen-resolver.mjs"),
-    ),
     ("fn-stubs.mjs", include_str!("assets/start/fn-stubs.mjs")),
-    (
-        "bundle-client.mjs",
-        include_str!("assets/start/bundle-client.mjs"),
-    ),
-    ("build.mjs", include_str!("assets/start/build.mjs")),
+    ("prerender.mjs", include_str!("assets/start/prerender.mjs")),
     ("error-overlay.js", include_str!("assets/error-overlay.js")),
     (
         "live-reload.js",

@@ -26,21 +26,25 @@ regex = "1.11"
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
-rolldown = "=1.2.14"
+# `experimental`: the incremental build and HMR entry points rolldown_dev drives.
+rolldown = { version = "=1.2.14", features = ["experimental"] }
 rolldown-ariadne = "=0.6.0"
 rolldown_common = "=1.2.14"
 rolldown_dev_common = "=1.2.14"
+rolldown_dev = "=1.2.14"
 rolldown_devtools = "=1.2.14"
 rolldown_devtools_action = "=1.2.14"
 rolldown_ecmascript = "=1.2.14"
 rolldown_ecmascript_utils = "=1.2.14"
 rolldown_error = "=1.2.14"
 rolldown_fs = "=1.2.14"
+rolldown_fs_watcher = "=1.2.14"
 rolldown_plugin = "=1.2.14"
 rolldown_plugin_asset_module = "=1.2.14"
 rolldown_plugin_chunk_import_map = "=1.2.14"
 rolldown_plugin_copy_module = "=1.2.14"
 rolldown_plugin_data_url = "=1.2.14"
+rolldown_plugin_esm_external_require = "=1.2.14"
 rolldown_plugin_hmr = "=1.2.14"
 rolldown_plugin_lazy_compilation = "=1.2.14"
 rolldown_plugin_oxc_runtime = "=1.2.14"
@@ -51,6 +55,10 @@ rolldown_std_utils = "=1.2.14"
 rolldown_tracing = "=1.2.14"
 rolldown_utils = "=1.2.14"
 string_wizard = "=1.2.14"
+oxc_sourcemap.workspace = true
+oxc_allocator.workspace = true
+oxc_parser.workspace = true
+oxc_span.workspace = true
 arcstr = "1.2.0"
 serde_json.workspace = true
 blake3.workspace = true

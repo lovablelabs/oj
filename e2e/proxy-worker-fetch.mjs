@@ -41,9 +41,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const PORT = 6890; // oj dev server
 const UPSTREAM = 6891; // proxy upstream (only answers the STRIPPED /data)
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP proxy worker fetch: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");

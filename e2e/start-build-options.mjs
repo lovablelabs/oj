@@ -19,9 +19,7 @@ const repo = path.join(here, "..");
 const app = path.join(here, "fixtures", "start-app");
 const oj = path.join(repo, "target", "debug", "oj");
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start-build-options: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");

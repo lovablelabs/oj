@@ -5,6 +5,19 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- TanStack Start apps are bundled by the rolldown built into oj. The client, server and Cloudflare Worker bundles of `oj build`, the dev client bundle and its hot updates now run on the rolldown crates linked into the binary, the bundler `oj build` already used for every other app, with the app's Vite plugins bridged through the plugin host. The app's own `rolldown` package no longer decides how oj bundles: an install that lacks it, or pins another version, builds the same. The Start client bundle cache format moves to 5, so existing entries are rebuilt once.
+- The dependency optimizer's scan and pre-bundle run on the same built-in rolldown, in process. The scan still resolves every import through the app's plugins with `scan: true`, and `optimizeDeps.rolldownOptions.plugins` still join it. `optimizeDeps.rolldownOptions` applies `platform`, `resolve`, `transform` (`define`, `target`, `jsx`), `moduleTypes`, `external` names, `treeshake`, `keepNames` and `output` (`banner`, `footer`, `minify`, `legalComments`); any other key is reported once and ignored. Existing pre-bundles are rebuilt once.
+- `OJ_VENDORED_ROLLDOWN` is gone, and the nix package no longer carries a rolldown of its own.
+
+### Fixed
+
+- Dependency pre-bundling works in apps that install no rolldown (no Vite 8 in the tree). They used to serve every dependency file by file.
+- A change to `optimizeDeps.rolldownOptions` invalidates the cached pre-bundle.
+
 ## [0.2.44] - 2026-10-22
 
 ### Fixed

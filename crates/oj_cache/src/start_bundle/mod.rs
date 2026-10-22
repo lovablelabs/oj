@@ -13,16 +13,15 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::integrity::{self, ExpectedFile, VerifyMode};
 
+mod epoch;
 mod memo;
 mod persist;
 mod prune;
-mod vendor;
 
+use epoch::epoch;
 use memo::{build_memo, read_memo, verified_digests, write_memo};
-use vendor::epoch;
-pub use vendor::{vendored_rolldown, VendoredRolldown};
 
-pub const START_BUNDLE_FORMAT: u32 = 4;
+pub const START_BUNDLE_FORMAT: u32 = 5;
 pub const DEFAULT_PRUNE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 /// Generations kept per store, enforced on every persist. Vite's dep cache
 /// keeps exactly one generation; this store keeps `current` plus a small
@@ -221,7 +220,7 @@ impl StartBundleStore {
             dir: crate::cache_root(root).join("start-bundle"),
             salt: format!(
                 "{tool_version}:{START_BUNDLE_FORMAT}:start-bundle:{mode}:{}",
-                epoch(root, mode, vendored_rolldown().epoch_input().as_deref())
+                epoch(root, mode)
             ),
             verify,
             sweeper: std::sync::Mutex::new(None),

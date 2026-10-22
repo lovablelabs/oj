@@ -28,9 +28,7 @@ const fixture = path.join(here, "fixtures", "start-app");
 const oj = path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 3112);
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start server root glob: fixture deps not installed");
   process.exit(0);

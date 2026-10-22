@@ -4,9 +4,8 @@
 // Vite's own glob libraries, picomatch and tinyglobby (runtime dependencies
 // of Vite), loaded from the app's `vite` so oj expands and matches globs with
 // the code Vite runs: import.meta.glob expansion and its added-file matchers,
-// and plugin hook `filter` ids, and the dep optimizer's scan globs. An app
-// without them (no Vite installed: a plugin config run directly, a plain
-// app's dep optimizer) uses the same releases, which oj ships
+// and plugin hook `filter` ids. An app without them (no Vite installed: a
+// plugin config run directly) uses the same releases, which oj ships
 // (./glob-libs.mjs).
 
 import { createRequire } from "node:module";

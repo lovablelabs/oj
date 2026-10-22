@@ -577,6 +577,58 @@ fn slash(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+/// Vite's toAbsoluteGlob for one pattern of a call made from `importer_dir`:
+/// `/x` is project-root relative, `./x` and `../x` resolve against the
+/// importer's directory or, with `base`, against that base (itself
+/// root-relative when it starts with `/`), a `!**` negation stays as written,
+/// and anything else (an alias, a bare id, which Vite hands its resolver)
+/// joins the importer's directory. Path prefixes are glob-escaped (Vite's
+/// globSafePath), so a `(group)` or `[id]` directory matches literally. Like
+/// oj's dev server, a positive `**` pattern walks from the root, where Vite
+/// walks from `/`.
+pub fn to_absolute_glob(
+    pattern: &str,
+    importer_dir: &Path,
+    root: &Path,
+    base: Option<&str>,
+) -> String {
+    let (pre, glob) = match pattern.strip_prefix('!') {
+        Some(rest) => ("!", rest),
+        None => ("", pattern),
+    };
+    let safe_root = escaped(root);
+    let safe_dir = escaped(importer_dir);
+    let dir = match base {
+        Some(b) => match b.strip_prefix('/') {
+            Some(rest) => join_normalized(&safe_root, rest),
+            None => join_normalized(&safe_dir, b),
+        },
+        None => safe_dir.clone(),
+    };
+    let joined = if let Some(rest) = glob.strip_prefix('/') {
+        join_normalized(&safe_root, rest)
+    } else if let Some(rest) = glob.strip_prefix("./") {
+        join_normalized(&dir, rest)
+    } else if glob.starts_with("../") {
+        join_normalized(&dir, glob)
+    } else if glob.starts_with("**") {
+        if pre.is_empty() {
+            join_normalized(&safe_root, glob)
+        } else {
+            return format!("{pre}{glob}");
+        }
+    } else {
+        join_normalized(&safe_dir, glob)
+    };
+    format!("{pre}{}", joined.to_string_lossy())
+}
+
+/// `to` as an import specifier relative to `from_dir`: `./x` inside it,
+/// `../x` above it.
+pub fn relative_import(from_dir: &Path, to: &Path) -> String {
+    relative_spec(&normalize(from_dir), &normalize(to))
+}
+
 /// Vite's toAbsoluteGlob: a `/` pattern joins the root, `./` and `../` ones
 /// the directory they are relative to (the importer's, or `base`'s), and a
 /// `**` one is matched from the root as it stands. `None` for a root-led

@@ -5,12 +5,16 @@ apps. It lets `oj dev` and `oj build` run a TanStack Start app without Vite,
 by reproducing the build-time glue the TanStack Vite plugin provides and by
 running enough of the app's Vite plugins to keep its conventions working.
 
-The Rust side is small: `crates/oj/src/start_dev.rs` (dev server and prod build
-orchestration) and three helpers in `crates/oj_server/src/lib.rs`
-(`is_tanstack_start_app`, `write_start_assets`, and the `START_ASSETS` list).
-Everything else is the JavaScript assets in this directory, embedded into the
-binary with `include_str!` and written into `<app>/.oj-cache/start/` at run
-time.
+The Rust side does the bundling: `crates/oj/src/start_bundle/` builds the
+client, server and Cloudflare Worker bundles and the dev client bundle with
+its hot updates on the rolldown crates oj links, and
+`crates/oj/src/start_dev.rs` orchestrates dev and `oj build`. The app's Vite
+plugins run in plugin hosts behind a rolldown plugin. The JavaScript files in
+this directory are the framework entries oj synthesizes, the route generator
+driver, and the dev and prod runtime shims, embedded into the binary with
+`include_str!` and written into `<app>/.oj-cache/start/` at run time
+(`write_start_assets` and the `START_ASSETS` list in
+`crates/oj_server/src/lib.rs`).
 
 ## Detection
 
@@ -32,30 +36,62 @@ plus one manifest specifier:
 - `tanstack-start-manifest:v` becomes the client asset manifest.
 
 In dev these are resolved by the in-process Start module host
-(`crates/oj/src/start_host.rs`, the embedded JS engine's `ModuleHost`). In prod
-they are resolved at build time by rolldown's `resolve.alias` map. This seam is the reason the prod
+(`crates/oj/src/start_host.rs`, the embedded JS engine's `ModuleHost`) for
+SSR and by the client bundle's aliases for the browser. In prod they are
+rolldown aliases of the client and server bundles. This seam is the reason the prod
 server is fully bundled: `createStartHandler` (inside `@tanstack/start-server-core`)
 runs `import("#tanstack-router-entry")`, and that import only resolves if the
 framework package is bundled so rolldown can apply the alias. See "Known limits".
 
-## Asset files
+## Where things live
 
-Shared build helpers:
+The bundles (`crates/oj/src/start_bundle/`):
 
-- `resolve-pkg.mjs` resolves a package under a pnpm-strict layout (a transitive
-  dep is not reachable from the app root, so it is resolved through the app's
-  direct deps as anchors). Also exports `viteEnvDefine` for `import.meta.env`.
-- `rolldown-assets.mjs` holds the rolldown building blocks shared by dev and prod:
-  `assetsPlugin` (Vite-style `?url` / `?raw` / `?inline` / bare-asset / css
-  imports), `makeVitePlugins` (routes `virtual:` ids, `.mdx`, bare `.svg`, and
-  the `.svg?react` query through the plugin container), `nodeBuiltinShims`,
-  `pnpmStorePaths`, `workspaceRoot`, and `contentHashEmitter` (a
-  content-addressed asset emitter that rewrites css `url()` refs).
-- `vite-plugin-bridge.mjs` is the plugin container. See below.
-- `glob-transform.mjs` expands `import.meta.glob` into a literal map.
-- `cf-server.mjs` is the dev/prod shim for `@cloudflare/vite-plugin/server`.
+- `mod.rs`: what a Start bundle is configured from (`StartConfig`), the
+  framework aliases, the client and server defines, conditions and resolver
+  options, and `write_server_fn_resolver`, which scans `src/` for
+  `createServerFn` and writes the server-fn resolver (`getServerFnById`) with
+  static imports.
+- `host.rs` / `hosts.rs`: the app's Vite plugins inside a bundle. One plugin
+  host per Vite environment, started in bundle mode (the TanStack plugins oj
+  reimplements left out), driven from rolldown's hooks with Vite's order
+  around its core resolver; a plugin's `this.resolve` ends in the bundle's
+  own resolution through a reverse RPC.
+- `alias.rs`: the app's `resolve.alias`, ahead of every plugin.
+- `assets.rs`: Vite's asset, stylesheet and worker conventions (`?raw`, `?url`,
+  `?inline`, `?worker`, bare asset imports, CSS and CSS modules) and the
+  content-hash emitter the client, server and Worker builds share.
+- `code.rs`: `new URL(..., import.meta.url)`, `import.meta.glob` and the
+  `createServerFn` split (the transforms themselves live in
+  `oj_compiler::meta_glob` and `oj_compiler::server_fns`).
+- `shims.rs`: Node builtins in a browser bundle, as Vite stubs them.
+- `chunks.rs`: the app's `codeSplitting` / `chunkOptimization` policy, with
+  function-valued groups called back in the plugin host in batches.
+- `errors.rs`: Vite's unresolved-import error and its ErrorPayload fields for
+  the overlay.
+- `dev.rs` / `hot.rs` / `refresh.rs`: the dev client bundle, its hot updates
+  on `rolldown_dev`'s `DevEngine`, and React Fast Refresh.
+- `prod.rs` / `cloudflare.rs`: `oj build`, and the Worker environment's
+  bundle when the app uses `@cloudflare/vite-plugin`.
 
-Dev:
+The files in this directory:
+
+- `generate.mjs` runs `@tanstack/router-generator` to write `routeTree.gen.ts`,
+  importing it through `resolve-pkg.mjs` (which reaches a transitive dep under
+  a pnpm-strict layout through the app's direct deps as anchors). It runs in a
+  one-shot `oj start-script` child per regeneration.
+- `prerender.mjs` renders the `build.prerender` routes against the built
+  server bundle.
+- `cf-server.mjs` is the dev/prod shim for `@cloudflare/vite-plugin/server`,
+  `cf-workers.mjs` the dev stub for `cloudflare:workers`, and
+  `cf-server-worker.mjs` the Worker bundle's `getCloudflareContext()`.
+- `hmr-runtime.js` is the dev client's hot-update runtime; `live-reload.js` is
+  the dev client that snapshots and restores form state across a warm reload.
+- `vite-globs.mjs` loads Vite's own glob libraries (picomatch, tinyglobby)
+  from the app's vite, or the copies oj ships in `glob-libs.mjs`, for the
+  plugin host's hook filters and glob matchers.
+
+Dev SSR:
 
 - The SSR runner is IN-PROCESS: an embedded JS engine (`oj_js`, deno_core with
   Node compat over the app's node_modules) whose module loading is
@@ -67,27 +103,7 @@ Dev:
   interop and node_modules loading are the engine's byonm semantics. The JS
   half is `crates/oj/src/assets/start-bootstrap.mjs` (the `fetch(Request)`
   protocol only). The user's Vite plugins run in the ssr-environment plugin
-  host, reached over its ordinary stdio RPC (the old FIFO bridge is gone).
-- `generate.mjs` runs `@tanstack/router-generator` to write `routeTree.gen.ts`.
-- `gen-resolver.mjs` scans `src` for `createServerFn` and emits the server-fn
-  resolver (`getServerFnById`) with static imports.
-- `bundle-client.mjs` bundles the browser client entry with rolldown.
-- The three above export `run(env)` and execute on an embedded engine
-  (`ScriptEngine`), not on spawned `node`; rolldown's napi binding loads
-  against the oj binary's exported Node-API symbols. In dev the codegen runs
-  each get a one-shot `oj start-script` child process (env pairs on stdin);
-  the client bundle runs on one `oj start-script --serve` child for the
-  whole session, so the app's plugins keep one container (one buildStart,
-  state across rebundles) as Vite keeps one per server. `oj build` hosts the
-  engine in its own (exiting) process.
-- `live-reload.js` is the dev client that snapshots and restores form state
-  across a warm reload.
-
-Prod:
-
-- `build.mjs` is the production pipeline: client bundle, manifest, server
-  bundle, `server.mjs` (Node) and `worker.mjs` (edge), plugin `generateBundle`
-  emission, public copy, and prerender.
+  host, reached over its ordinary stdio RPC.
 
 Framework entries (synthesized, what the TanStack Vite plugin would inject):
 
@@ -102,8 +118,10 @@ Framework entries (synthesized, what the TanStack Vite plugin would inject):
 ## Dev flow (`start_dev`)
 
 1. Write the assets into `.oj-cache/start/`.
-2. Generate the route tree and the server-fn resolver (one-shot children).
-3. Bundle the browser client entry (on the session's bundler child).
+2. Generate the route tree (a one-shot child) and the server-fn resolver.
+3. Bundle the browser client entry in process; the session keeps one plugin
+   host for it (one buildStart, plugin state across rebundles) and, once a
+   page connects, one `DevEngine` that turns each edit into a hot update.
 4. Build on top of the normal oj dev server for module and asset serving.
 5. Boot the in-process SSR engine (`StartEngine`) on the built app's
    `SsrBridge`, plus a loopback shim for the plugin middleware's
@@ -176,9 +194,10 @@ Each pass:
      compared against `prev_routes`; a content edit leaves the tree alone.
    - the server-fn resolver only when a `.ts`/`.tsx` file that contains
      `createServerFn` was added, removed, or edited (or when the routes changed).
-4. Rebuild and reload: the client entry re-bundles on a blocking task; the
-   engine reload afterwards drops changed modules (and their transitive
-   importers) from the version graph and force-bumps the entry.
+4. Rebuild and reload: an edit the client's `DevEngine` accepts reaches the
+   page as a hot update; anything else re-bundles the client. The engine
+   reload afterwards drops changed modules (and their transitive importers)
+   from the version graph and force-bumps the entry.
 5. Signal the page. A broadcast on `reload_tx` reaches every `/@oj-start/hmr`
    WebSocket, which tells the live-reload client to snapshot state and reload.
 
@@ -192,43 +211,32 @@ chain; React and other node_modules stay external, unversioned and warm.
 Orphaned instances leak in the isolate, so after enough of them the engine is
 respawned behind a write lock (a cheap snapshot boot).
 
-## Prod flow (`start_build` and `build.mjs`)
+## Prod flow (`start_build` and `start_bundle::prod`)
 
 1. Generate the route tree and the server-fn resolver.
-2. Client bundle: rolldown, minified, hashed, code-split, with the plugin
-   container, `import.meta.glob`, `import.meta.env`, asset loaders, svgr, mdx,
-   and pnpm nodePaths.
-3. Manifest pointing at the hashed client entry.
-4. Server bundle: rolldown, minified, code-split (splitting preserves the
-   framework's top-level await, which a single-file bundle cannot), fully
-   bundled so the framework `#`-imports resolve at build time. Node builtins
-   stay external.
-5. `generateBundle`: run the app plugins' `generateBundle` hooks so plugins
-   that publish files (for example content-assets emitting
-   `/__content/<collection>/<file>`) produce their output into `dist/client`.
+2. Client bundle: minified, hashed, code-split, the app's chunk policy, with
+   the client plugin host, `import.meta.glob`, `import.meta.env`, the asset
+   conventions and the node-builtin shims, entered at `client-entry`.
+3. Manifest pointing at the hashed client entry and its stylesheets.
+4. Server bundle: `platform: node`, node builtins external, fully bundled so
+   the framework's `#`-import aliases resolve at build time, code-split
+   because the framework's server module uses top-level await that a
+   single-file bundle cannot always carry. With `@cloudflare/vite-plugin` the
+   Worker environment's bundle replaces it.
+5. Each bundle runs its plugin host's `renderChunk`, `generateBundle` and
+   `writeBundle` over the real output, so plugins that publish files (for
+   example content-assets emitting `/__content/<collection>/<file>`) or write
+   a deploy config (the Cloudflare plugin's `wrangler.json`) work.
 6. Emit `server.mjs` (Node http), `worker.mjs` (edge fetch handler),
    `cf-server.mjs` and `cf-loader.mjs`, copy `public/`, and prerender any
-   routes configured in `oj.config` `build.prerender`.
+   `build.prerender` routes.
 
-Client and server builds emit assets through the same `contentHashEmitter`, so
-both produce identical `/assets/<hash>` URLs for identical bytes with no shared
-manifest. CSS is emitted with its `url()` references rewritten and its
-referenced fonts and images emitted alongside. The emitter records the
-stylesheet urls, which the manifest lists under the root route's `css` so
-`HeadContent` links them in the SSR `<head>` (no flash of unstyled content); the
-client bundle no longer injects the link in production.
-
-### The two rolldown passes
-
-The client pass targets the browser: minified, hashed, code-split, with browser
-conditions and the node-builtin shims, entered at the hydration `client-entry`.
-The server pass targets Node: `platform: node`, node builtins external, fully
-bundled so the framework's `#`-import aliases resolve at build time, and
-code-split rather than single-file because the framework's server module uses
-top-level await that a single-file bundle cannot always
-propagate. Both passes run the same plugin container (svgr, mdx, virtuals) and
-the same asset plugins; the server container falls back to the client one for
-`load`, since some ssr plugins expect cross-environment state Vite would share.
+The bundles emit assets through one content-hash emitter, so they produce
+identical `/assets/<hash>` URLs for identical bytes. CSS is emitted with its
+`url()` references rewritten and its referenced fonts and images emitted
+alongside. The emitter records the stylesheet URLs, which the manifest lists
+under the root route's `css` so `HeadContent` links them in the SSR `<head>`
+(no flash of unstyled content).
 
 ### The prod server entrypoints
 
@@ -247,51 +255,31 @@ neither the loader nor the shim, because a real deployment gets its bindings
 from `cloudflare:workers`. (See Known limits for why a large app's worker can
 exceed the size cap.)
 
-## The plugin container (`vite-plugin-bridge.mjs`)
+## The plugin hosts
 
-`loadPluginContainer(app, { command, mode, environment })` loads the app's
-`vite.config` plugins with `vite.loadConfigFromFile` and exposes `resolveId`,
-`load`, `transform`, and `generateBundle` bound to one command and environment.
-It is the compatibility layer that makes `virtual:` modules, MDX, svgr, and
-content emission work. It applies the same gating Vite applies:
+A Start bundle reaches the app's Vite plugins through
+`start_bundle::host::StartHostPlugin`, one per bundle, over a plugin host
+started for that Vite environment (`client`, `ssr`, or the Worker's). The host
+resolves the app's config with the app's own Vite, minus the TanStack plugins
+oj reimplements, and applies Vite's gating: `apply` against the command,
+`applyToEnvironment`, object-form hooks `{ handler, filter, order }`, and
+`enforce` order. Around rolldown's own resolver, resolveId runs in Vite's two
+phases (the `pre` hooks first, the rest on what rolldown left), each answer
+kept whole, `external` included.
 
-- plugin `apply` ("build" | "serve" | function) versus the current command,
-- object-form hooks `{ handler, filter, order }` where `filter.id` must match
-  before the handler runs,
-- `enforce` order (pre, then normal, then post), first non-null wins,
-- `applyToEnvironment` for `generateBundle`.
-
-The container hosts every plugin that owns any of `resolveId`, `load`,
-`transform`, or `generateBundle`. Getting the gating right is what keeps a
-build-only, id-filtered stub plugin from swallowing every id. The prod server
-build passes the client container as a `fallback` for `load`, because some ssr
-plugins error expecting cross-environment state that Vite shares between the
-client and ssr builds and our separate containers do not.
+The live config stays in the host, so function-valued options (a chunk
+group's `name` / `test`, an `external` function) are handles the bundle calls
+back, never copies.
 
 ### svgr and the `?react` query
 
 svgr keys its `load` filter on the import id, so both svg import styles reach
-it as an id the plugin recognizes:
-
-- Bare `import Logo from "./logo.svg"`. rolldown resolves the file normally and
-  `makeVitePlugins` runs its `.svg` `load` for the resolved path. svgr claims
-  it when configured with `exportType: "default"` (or an `include` that matches
-  the file); otherwise the id falls back to an asset URL.
-- Explicit `import Logo from "./logo.svg?react"`. rolldown's resolver cannot
-  find a file named `logo.svg?react`, so `makeVitePlugins` strips the query,
-  resolves the real `.svg`, parks it in a `\0oj-svg-react:` virtual id, and calls
-  `container.load(path + "?react")` so svgr sees the query it filters on. The
-  dev loader mirrors this: it resolves the file and tags the url `?ojsvg=react`,
-  then `load()` hands svgr the `path + "?react"` id. Either way the URL fallback
-  applies when no plugin claims the id.
-
-The bare `.svg` `load` skips `\0`-prefixed ids so it does not also
-claim the `?react`-tagged files, which would drop the query before svgr runs.
+it through the host as the id it recognizes, `logo.svg` and `logo.svg?react`.
+A `.svg` no plugin componentized falls back to its asset URL.
 
 ## Resolution chain
 
-For app-owned specifiers the dev loader and the rolldown builds resolve in this
-order:
+For app-owned specifiers the dev SSR loader resolves in this order:
 
 1. framework aliases and the CF shim,
 2. `virtual:` ids, `.mdx`, and `.svg` (bare or `?react`) through the plugin
@@ -307,9 +295,9 @@ order:
    re-export its actual runtime keys; ESM files, including syntax-detected
    dual-package `.js`, are left to Node).
 
-rolldown handles CJS interop, `#`-imports, tsconfig paths, `.js`-to-`.ts`, and
-directory resolution natively when bundling, so the prod builds only need the
-plugin container, glob, env, assets, and shims.
+The bundles get the same conventions from rolldown's resolver (CJS interop,
+`#`-imports, tsconfig paths, `.js`-to-`.ts`, directory resolution) plus the
+plugins above.
 
 ## Server functions
 
@@ -319,16 +307,16 @@ everywhere so a browser call can find its handler.
 
 Three transform sites share that id:
 
-- Server (SSR). The dev module host (`rewrite_server_fns` in
-  `start_host.rs`) and the prod build's server pass rewrite `const NAME = createServerFn(...).handler(FN)` to pass
+- Server (SSR). The dev module host (`start_host.rs`) and the prod server
+  bundle rewrite (both through `oj_compiler::server_fns::rewrite_server`) `const NAME = createServerFn(...).handler(FN)` to pass
   `createServerRpc(meta, (opts) => NAME.__executeServer(opts))` as the first
   `.handler` argument and to export `NAME_createServerFn_handler`. The handler
   runs in process during SSR, and the export is importable by the resolver.
-- Client. The dev client bundle and the prod build's client pass replace that
-  first argument with `createClientRpc(id)`. The runtime treats argument one as
+- Client. The dev client bundle and the prod client bundle replace that
+  first argument with `createClientRpc(id)` (`rewrite_client`). The runtime treats argument one as
   the extracted function, so the browser makes an HTTP RPC to `/_serverFn/<id>`
   instead of running the handler.
-- The resolver. `gen-resolver.mjs` scans `src/` for the same declarations and
+- The resolver. `write_server_fn_resolver` scans `src/` for the same declarations and
   writes a manifest mapping each id to its module's exported handler, using
   static relative imports so it resolves in both the dev loader hook and the
   bundled prod server (a runtime `import` of a `.ts` would fail in the bundle).
@@ -350,30 +338,19 @@ Rust unit tests live beside the code they exercise:
 - `oj_server/src/lib.rs` (`adapter_tests`): `is_tanstack_start_app` detection,
   `locate` preferring the app root then the publicDir, and the SPA-navigation
   rule.
-- `oj_server/src/plugins.rs`: `parse_vite_values` / `merge_vite_values` (the
-  vite.config values oj adopts, including publicDir), asserting config never
-  overrides an explicit oj setting.
 - `oj/src/start_dev.rs`: `document_url`, `percent_decode`, `asset_mime`,
   `needs_css_compile`, `workspace_root`, `app_uses_tailwind`, and `classify`.
-- `oj/src/start_host.rs`: the server-fn rewrite, asset/style classification,
-  intent-query splitting, noExternal matching, CJS detection, the framework
-  alias table, and the base64url id encoding.
+- `oj/src/start_host.rs`: asset/style classification, intent-query
+  splitting, noExternal matching, CJS detection and the framework alias table.
+- `oj/src/start_bundle/`: each plugin's rules beside it, and `tests.rs`, which
+  drives the asset, alias, shim, glob and server-fn plugins through a real
+  rolldown bundle over temp files.
+- `oj_compiler`: `server_fns` (the split and the base64url ids) and
+  `meta_glob` (`import.meta.glob` and `new URL(..., import.meta.url)`).
 
-JS unit tests are `node --test e2e/unit/*.test.mjs` (rolldown for the harness
-comes from the fixture; the suite skips cleanly when it is not installed):
-
-- `glob-transform` expands `import.meta.glob`; `rolldown-assets` covers the
-  content-hash emitter, css `url()` rewriting, the Tailwind compile hook,
-  `workspaceRoot`, and `pnpmStorePaths`; `resolve-pkg` covers `viteEnvDefine`
-  and the pnpm-anchor resolver.
-- `plugin-gating` covers the plugin-container gating (`apply`, id filters,
-  enforce order, hook shapes); `cf-vars` covers the Cloudflare shim's
-  JSONC / toml / dotenv var parsers.
-- `asset-routing` is a build-level harness: it drives `assetsPlugin`,
-  `makeVitePlugins`, and `nodeBuiltinShims` through a real rolldown bundle over
-  temp files with a stub plugin container, asserting the `?url` / `?raw` /
-  `?inline` / bare-asset / css routing, the `virtual:` / `.mdx` / `.svg` (bare
-  and `?react`) container routing, and the node-builtin shims.
+JS unit tests are `node --test e2e/unit/*.test.mjs`: `resolve-pkg` covers the
+pnpm-anchor resolver, `cf-vars` the Cloudflare shim's JSONC / toml / dotenv
+var parsers.
 
 The integration test is `node e2e/start.mjs`. It runs oj against a self-contained
 Start app (`e2e/fixtures/start-app`) in dev and prod and asserts a server-rendered
@@ -393,10 +370,6 @@ skips when they are not installed (`cd e2e/fixtures/start-app && npm install`).
 - `worker.mjs` re-exports the bundled server, which for a large app exceeds
   Cloudflare Workers' size limit. A real edge deploy needs the Cloudflare
   plugin's route-split worker build.
-- `generateBundle` hooks that read the output `bundle` (for example
-  chunk-import-map or chunk-keyed i18n emissions) receive an empty bundle, so
-  those specific emissions are skipped. Asset emissions from a committed
-  manifest (content-assets) work.
 - Live Cloudflare KV / D1 / R2 / service bindings are not emulated; the
   `cf-server.mjs` shim provides env vars (wrangler `vars` plus `.dev.vars`) and
   an ASSETS binding backed by `dist/client`.

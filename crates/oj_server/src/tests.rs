@@ -1985,8 +1985,8 @@ fn child_registry_lifecycle_persists_and_drains() {
 #[test]
 fn start_assets_sibling_imports_are_written() {
     let names: std::collections::HashSet<&str> = START_ASSETS.iter().map(|(n, _)| *n).collect();
-    // Top-level import/export statements only: build.mjs also writes import
-    // lines into the server entry it generates, as string literals.
+    // Top-level import/export statements only (a script may write import
+    // lines into code it generates, as string literals).
     let sibling =
         regex::Regex::new(r#"(?m)^(?:import|export)\b[^;]*?\bfrom\s*["']\./([^"'/]+)["']"#)
             .unwrap();
@@ -1999,7 +1999,7 @@ fn start_assets_sibling_imports_are_written() {
             );
         }
     }
-    assert!(names.contains("vite-config-node.mjs"));
+    assert!(names.contains("vite-globs.mjs"));
 }
 
 // @cloudflare/vite-plugin (1.55+) adds `**/.wrangler/**` to the resolved

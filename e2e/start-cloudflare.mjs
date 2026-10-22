@@ -24,9 +24,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const PORT = 6733;
 const INSPECTOR_PORT = 6734;
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start cloudflare build: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");

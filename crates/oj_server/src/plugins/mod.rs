@@ -86,6 +86,35 @@ pub struct EmittedFile {
     pub source: String,
 }
 
+/// A plugin resolveId result as Rollup keeps it: the id, whether it is
+/// external (`true`, or `"absolute"` / `"relative"` for how it is written),
+/// and its side-effect flag when the plugin set one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedId {
+    pub id: String,
+    pub external: Option<serde_json::Value>,
+    pub module_side_effects: Option<bool>,
+}
+
+impl ResolvedId {
+    pub fn from_json(v: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            id: v.get("id")?.as_str()?.to_string(),
+            external: v.get("external").cloned(),
+            module_side_effects: v.get("moduleSideEffects").and_then(|b| b.as_bool()),
+        })
+    }
+
+    /// Whether the result is external, in any of Rollup's spellings.
+    pub fn is_external(&self) -> bool {
+        match &self.external {
+            Some(serde_json::Value::Bool(b)) => *b,
+            Some(serde_json::Value::String(s)) => s == "absolute" || s == "relative",
+            _ => false,
+        }
+    }
+}
+
 /// A chunk a plugin asked oj to emit via `this.emitFile({ type: "chunk" })`.
 #[derive(Debug, Clone)]
 pub struct ChunkEmit {

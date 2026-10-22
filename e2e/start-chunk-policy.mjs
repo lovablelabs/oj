@@ -22,9 +22,7 @@ const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 const PORT = 6855;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start-chunk-policy: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");

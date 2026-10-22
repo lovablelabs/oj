@@ -75,65 +75,6 @@
             hash = pin.hash;
           }} -C "$out"
         '';
-      # oj's Start bundles run on rolldown, and they are oj's own code: they
-      # get the version oj is written and tested against, vendored next to
-      # the binary, rather than whatever the app's vite pins (a vite <= 7 app
-      # pins none at all). The store path is embedded at compile time
-      # (OJ_VENDORED_ROLLDOWN -> option_env!), which also makes it a runtime
-      # dependency of the binary's closure; the app's own rolldown remains
-      # the fallback for oj builds that vendor nothing (resolve-pkg.mjs).
-      # On a bump: update the version and re-prefetch the hashes
-      # (nix store prefetch-file <registry tarball url>).
-      rolldownVersion = "1.2.14";
-      rolldownParts = pkgs:
-        let
-          binding = {
-            x86_64-linux = { name = "binding-linux-x64-gnu"; hash = "sha256-NlRy/Z9Sk8drkFshCtZ1arfCxW+ZIxzlW5KjHAIRWU4="; };
-            aarch64-linux = { name = "binding-linux-arm64-gnu"; hash = "sha256-wtdj9xC8FEb9es16nOl5DK1sHbk/Qgxu2P5pj5V/Fog="; };
-            aarch64-darwin = { name = "binding-darwin-arm64"; hash = "sha256-gndqPF7/d/AAGPeV6kyvl+xmjiYinp4ndllXBWjlTRo="; };
-            # No x86_64-darwin runner in nix.yml: this entry is the one the
-            # CI e2e never exercises — double-check name+hash on bumps.
-            x86_64-darwin = { name = "binding-darwin-x64"; hash = "sha256-u1M4KuF10hZHM4tbj/2SziMitdC3co49dZA8uVPPGZA="; };
-          }.${pkgs.stdenv.hostPlatform.system};
-        in [
-          { dir = "rolldown"; url = "https://registry.npmjs.org/rolldown/-/rolldown-${rolldownVersion}.tgz"; hash = "sha256-nBQvyh1b+5yaa1ij2hbbddnTDz5vh3jZSnW5dsgG5T0="; }
-          # rolldown pins "=0.154.0"; pluginutils is "^1.0.0".
-          { dir = "@oxc-project/types"; url = "https://registry.npmjs.org/@oxc-project/types/-/types-0.154.0.tgz"; hash = "sha256-aMjdC+Y6JVOXrc2WSLGuwEz09Mz6BCVBwV5yHIXGVTQ="; }
-          { dir = "@rolldown/pluginutils"; url = "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz"; hash = "sha256-E/yzQj03+VqOhhwXLkti/STyJBK+TpQghzZyQkduNAA="; }
-          { dir = "@rolldown/${binding.name}"; url = "https://registry.npmjs.org/@rolldown/${binding.name}/-/${binding.name}-${rolldownVersion}.tgz"; hash = binding.hash; }
-        ];
-      # Fixed-output on purpose, not hygiene: consumers' cache pipelines
-      # (lovable's fill-darwin-publish) require every staged non-root path to
-      # be upstream-corroborated UNLESS it is content-addressed (hash-pinned
-      # in a reviewed file, like the rusty_v8 archive above). PER SYSTEM: the
-      # vendor tree carries the platform's own @rolldown/binding-*, so each
-      # system has its own NAR hash. Recompute on a rolldownVersion bump by
-      # clearing a hash and rebuilding: nix prints the right one on the
-      # mismatch (a plain `nix hash path` of the output does NOT match the
-      # FOD canonicalization). A system with no entry builds the plain
-      # (non-fixed-output) derivation: correct, just not exempt from
-      # corroboration gates, which only darwin+linux pipelines run today.
-      rolldownVendorHashes = {
-        aarch64-darwin = "sha256-Au+t6Qe3m197m376rOkexDMdhh5M/qlsfOKWdDvRPjU=";
-        x86_64-linux = "sha256-ZWt8quX82jkA8471PicZk2J3+Fb5aoPWSwJ4d6jzWC0=";
-        aarch64-linux = "sha256-DmMsmL1Azb1srMHT4eLfqq7lgu4KmWa3bITdau4J0HM=";
-      };
-      rolldownVendor = pkgs:
-        pkgs.runCommand "oj-rolldown-vendor-${rolldownVersion}" (
-          nixpkgs.lib.optionalAttrs
-            ((rolldownVendorHashes.${pkgs.stdenv.hostPlatform.system} or "") != "")
-            {
-              outputHashMode = "recursive";
-              outputHashAlgo = "sha256";
-              outputHash = rolldownVendorHashes.${pkgs.stdenv.hostPlatform.system};
-            }
-        ) (
-          nixpkgs.lib.concatMapStrings (part: ''
-            mkdir -p "$out/node_modules/${part.dir}"
-            tar -xzf ${pkgs.fetchurl { url = part.url; hash = part.hash; }} \
-              --strip-components=1 -C "$out/node_modules/${part.dir}"
-          '') (rolldownParts pkgs)
-        );
       mkOj = pkgs:
         pkgs.rustPlatform.buildRustPackage ({
           pname = "oj";
@@ -164,7 +105,6 @@
             ++ nixpkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.patchelf ];
           buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           RUSTY_V8_ARCHIVE = rustyV8Archive pkgs;
-          OJ_VENDORED_ROLLDOWN = rolldownVendor pkgs;
           # The build directory name varies between nix implementations (and is
           # randomized on some), and rustc embeds dependency source paths from
           # the vendored tree in panic locations — remap them so the output is
@@ -214,14 +154,6 @@
           # mutated binary is re-signed explicitly.
           postFixup = ''
             keep=""
-            # The vendored rolldown is a REAL runtime reference, not a
-            # compile-only leftover: the binary hands the embedded
-            # OJ_VENDORED_ROLLDOWN store path to the Start bundle scripts at
-            # run time, so it must survive the nuke (and thereby stay in the
-            # runtime closure, which nix.yml asserts).
-            if [ -n "''${OJ_VENDORED_ROLLDOWN:-}" ]; then
-              keep="$keep -e ''${OJ_VENDORED_ROLLDOWN}"
-            fi
             if [ "$(uname)" = Darwin ]; then
               for p in $(otool -L "$out/bin/oj" | grep -o '/nix/store/[a-z0-9]\{32\}-[^/ ]*' | sort -u); do
                 keep="$keep -e $p"
@@ -304,7 +236,6 @@ PYUUID
       packages = forAllSystems (pkgs: rec {
         oj = mkOj pkgs;
         default = oj;
-        rolldown-vendor = rolldownVendor pkgs;
       });
       overlays.default = final: prev: { oj = mkOj final; };
     };

@@ -7,8 +7,6 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
-const OPTIMIZE_JS: &str = include_str!("assets/optimize-deps.mjs");
-
 /// The `optimizeDeps` knobs that apply to DIRECTLY-SERVED deps (ones the
 /// optimizer did not pre-bundle): `exclude` routes a dep through plugin
 /// hooks like Vite, and `needsInterop` forces the CJS interop rewrite even
@@ -69,22 +67,11 @@ fn url_version(url: &str) -> &str {
     url.rsplit_once("?v=").map(|(_, v)| v).unwrap_or("")
 }
 
-/// The sidecar's entry naming for a bare dep (its `optimize()` mirrors this):
-/// the future bundle file is known at registration, like Vite's
-/// `getOptimizedDepPath`, so the import rewrites to it before any bundling.
+/// The bundle file a bare dep is going to have: known at registration, like
+/// Vite's `getOptimizedDepPath`, so the import rewrites to it before any
+/// bundling.
 fn flatten_dep_file(dep: &str) -> String {
-    let name: String = dep
-        .trim_start_matches('@')
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{name}.mjs")
+    format!("{}.mjs", crate::prebundle::entry_name(dep))
 }
 
 pub type DepMap = HashMap<String, DepMeta>;
@@ -130,10 +117,9 @@ struct RerunState {
     /// phantom optimized URL. Vite instead resets `discovered` and retries on
     /// the next request, which can loop a persistently failing dep.
     failed: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Set when the initial pre-bundle could not run at all (no rolldown via
-    /// vite, vendored, or installed): registration declines everything, so
-    /// every dep keeps the per-file path a bundler-less app always had,
-    /// instead of phantom optimized URLs and a failed rerun per batch.
+    /// Set when the initial pre-bundle failed outright: registration declines
+    /// everything, so every dep keeps the per-file path, instead of phantom
+    /// optimized URLs and a failed rerun per batch.
     dead: std::sync::atomic::AtomicBool,
     exclude: Vec<String>,
     discovery: bool,
@@ -620,7 +606,7 @@ impl OptimizedDeps {
                             &root,
                             &dir,
                             &input,
-                            host.as_deref(),
+                            host.as_ref(),
                             &Default::default(),
                             &base_version,
                             false,
@@ -641,7 +627,7 @@ impl OptimizedDeps {
                                         &root,
                                         &dir,
                                         &input,
-                                        host.as_deref(),
+                                        host.as_ref(),
                                         &names,
                                         &base_version,
                                         true,
@@ -657,10 +643,8 @@ impl OptimizedDeps {
                             }
                         }
                         if bundled.is_none() {
-                            // No pre-bundle at all (no rolldown via vite,
-                            // vendored, or installed, or the run failed):
-                            // discovery off, deps serve per-file as a
-                            // bundler-less app always did.
+                            // No pre-bundle at all (the run failed):
+                            // discovery off, deps serve per-file.
                             rerun.dead.store(true, std::sync::atomic::Ordering::Release);
                             eprintln!(
                                 "oj: dep pre-bundling unavailable; serving dependencies per-file"
@@ -688,7 +672,7 @@ impl OptimizedDeps {
                 // flight ever, Vite's enqueuedRerun).
                 while wake_rx.recv().await.is_some() {
                     debounce_wakes(&mut wake_rx, DEBOUNCE).await;
-                    rerun_once(&rerun, &root, &dir, &hash, &input, host.as_deref()).await;
+                    rerun_once(&rerun, &root, &dir, &hash, &input, host.as_ref()).await;
                 }
             });
         }
@@ -840,7 +824,7 @@ async fn rerun_once(
     dir: &Path,
     hash: &str,
     input: &OptimizeInput,
-    host: Option<&crate::plugins::PluginHost>,
+    host: Option<&Arc<crate::plugins::PluginHost>>,
 ) {
     let provisional = rerun.discovered.lock().unwrap().clone();
     let pending: Vec<String> = rerun.pending.lock().unwrap().iter().cloned().collect();
@@ -1039,17 +1023,6 @@ fn effective_auto_discover(no_discovery: Option<bool>) -> bool {
     !no_discovery.unwrap_or(false)
 }
 
-/// The rolldown vendored next to the binary, for apps whose own Vite brings
-/// no bundler; `None` when this build vendors none or the vendor is unusable.
-fn vendored_rolldown() -> Option<(&'static str, &'static str)> {
-    match oj_cache::start_bundle::vendored_rolldown() {
-        oj_cache::start_bundle::VendoredRolldown::Resolved { path, version } => {
-            Some((path.as_str(), version.as_str()))
-        }
-        _ => None,
-    }
-}
-
 #[derive(Default, Clone)]
 pub struct OptimizeInput {
     pub no_discovery: Option<bool>,
@@ -1162,6 +1135,9 @@ fn hash_tagged_lists(hasher: &mut blake3::Hasher, lists: &[(&[u8], &Vec<String>)
     }
 }
 
+/// Bumped when the pre-bundle's output changes for the same inputs.
+const PREBUNDLE_FORMAT: &str = "\0prebundle:2";
+
 fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(version.as_bytes());
@@ -1203,14 +1179,15 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         )
         .as_bytes(),
     );
-    // The vendor's version can change without an oj version bump only in
-    // development, so it keys the prebundle; its path must not (relocating
-    // the binary would invalidate every app's cache for nothing).
-    if let Some((_, version)) = vendored_rolldown() {
-        hasher.update(format!("\0vendor:{version}").as_bytes());
-    }
+    // The pre-bundle's own shape: a change to how oj bundles deps must not
+    // reuse the files an older oj wrote under the same lockfile.
+    hasher.update(PREBUNDLE_FORMAT.as_bytes());
     if let Some(opts) = &input.bundler_options {
         hasher.update(b"\0o");
+        hasher.update(opts.to_string().as_bytes());
+    }
+    if let Some(opts) = &input.rolldown_options {
+        hasher.update(b"\0r");
         hasher.update(opts.to_string().as_bytes());
     }
     hash_tagged_lists(
@@ -1331,134 +1308,75 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<Manifest> {
     })
 }
 
-/// `discovered`: serve-time-found deps bundled alongside the configured set
-/// (as implicit includes, which never warn). `browser_version` is the `?v=`
-/// the emitted URLs carry, and `keep_existing` leaves the previous bundle's
+/// One optimizer run: the scan (through the plugins when there is a host),
+/// then the bundle into `dir`. `discovered` are deps the dev server found
+/// that the bundle must take too; `browser_version` is the version the
+/// emitted URLs carry, and `keep_existing` leaves the previous bundle's
 /// files in place so a page that predates the rerun keeps loading until the
-/// reload lands.
+/// reload lands. `on_plan` (the initial run only) gets the metadata the
+/// bundle is planned to commit as soon as the scan knows it.
 #[allow(clippy::too_many_arguments)]
 async fn run_optimizer(
     root: &Path,
     dir: &Path,
     input: &OptimizeInput,
-    host: Option<&crate::plugins::PluginHost>,
+    host: Option<&Arc<crate::plugins::PluginHost>>,
     discovered: &std::collections::BTreeSet<String>,
     browser_version: &str,
     keep_existing: bool,
     on_plan: Option<&(dyn Fn(DepMap) + Sync)>,
 ) -> Option<DepMap> {
-    let cache = oj_cache::cache_root(root);
-    std::fs::create_dir_all(&cache).ok()?;
-    // Atomic rename: an engine could import the script while a concurrent oj
-    // process rewrites it.
-    crate::plugins::ensure_asset(&cache, "optimize-deps.mjs", OPTIMIZE_JS).ok()?;
-    crate::plugins::ensure_glob_assets(&cache).ok()?;
-    let script = cache.join("optimize-deps.mjs");
     // react/jsx-dev-runtime is always prebundled (oj injects the dev JSX
     // runtime), but as oj's own implicit include: unlike the user's list it
     // must not warn when the app has no React.
-    let alias: Vec<[&str; 2]> = input
-        .alias
-        .iter()
-        .map(|(f, r)| [f.as_str(), r.as_str()])
-        .collect();
-    let auto_discover = effective_auto_discover(input.no_discovery);
-    // Config as JSON engine-call argument, metadata as the return value: argv
-    // has an OS length limit and stdout broke when a dep printed on require.
-    let mut cfg = serde_json::json!({
-        "root": root.to_string_lossy(),
-        "outDir": dir.to_string_lossy(),
-        "entries": input.entries,
-        "buildInputs": input.build_inputs,
-        "buildOutDir": input.build_out_dir,
-        "include": input.include,
-        "implicitInclude": std::iter::once("react/jsx-dev-runtime".to_string())
-            .chain(discovered.iter().cloned())
-            .collect::<Vec<_>>(),
-        "keepExisting": keep_existing,
-        "exclude": input.exclude,
-        "dedupe": input.dedupe,
-        "alias": alias,
-        "needsInterop": input.needs_interop,
-        "autoDiscover": auto_discover,
-        "nodeEnv": input.node_env,
-        "esbuildOptions": input.bundler_options,
-        "rolldownOptions": input.rolldown_options,
-        "vendoredRolldown": vendored_rolldown().map(|(path, _)| path),
-        "resolve": {
-            "conditions": input.conditions,
-            "mainFields": input.main_fields,
-            "extensions": input.extensions,
-            "preserveSymlinks": input.preserve_symlinks,
-        },
-    });
-    // Not gated on discovery: with noDiscovery the scan still resolves the
-    // include list, and Vite's container resolves manual includes through
-    // plugins either way.
-    if let Some(host) = host {
-        // Only the initial run publishes a plan; a rerun skips the guessing.
-        cfg["plan"] = on_plan.is_some().into();
-        let scan = scan_through_plugins(host, &cfg).await;
-        if let (Some(plan), Some(provisional)) = (on_plan, scan.get("provisional")) {
-            if let Some(map) = parse_metadata(provisional, browser_version) {
-                plan(map);
-            }
-        }
-        cfg["scanned"] = scan
-            .get("scanned")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+    let implicit =
+        std::iter::once("react/jsx-dev-runtime".to_string()).chain(discovered.iter().cloned());
+    let prebundle = Arc::new(crate::prebundle::Prebundle::new(
+        root,
+        dir,
+        input,
+        implicit,
+        keep_existing,
+    ));
+    let scanned = prebundle.scan(host).await;
+    if let Some(plan) = on_plan {
+        let provisional = prebundle.provisional(&prebundle.plan(&scanned, false));
+        plan(dep_map(provisional, browser_version));
     }
-    let job_root = root.to_path_buf();
-    let job_script = script.clone();
-    // spawn_blocking: the engine job blocks its thread for the whole
-    // pre-bundle (see run_engine_job), which must not park a runtime worker.
     // Unbounded, as Vite's optimizer run is: a large dep set bundles as long
-    // as it needs (the job wait logs progress); only job death fails it.
-    let result = tokio::task::spawn_blocking(move || {
-        crate::plugins::run_engine_job(&job_root, &job_script, "optimize", cfg, None)
-    })
-    .await
-    .ok()?;
-    let v = match result {
-        Ok(v) => v,
+    // as it needs.
+    match prebundle.bundle(&prebundle.plan(&scanned, true)).await {
+        Ok(built) => Some(dep_map(built, browser_version)),
         Err(e) => {
             eprintln!("oj: optimizer failed: {e}");
             oj_diag::emit(oj_diag::Event::new(
                 oj_diag::Kind::OptimizeError,
                 format!("optimizer failed: {e}"),
             ));
-            return None;
-        }
-    };
-    let metadata = v.get("metadata")?;
-    parse_metadata(metadata, browser_version)
-}
-
-/// The scan run in the plugin host (see `optimizeScan` in plugin-host.mjs):
-/// `{ scanned, provisional }`, the deps found and, on the initial run, the
-/// metadata their bundle is planned to commit.
-/// Null keeps the scan in the optimizer job: a host that failed, which is
-/// logged and costs only plugin-aware resolution.
-async fn scan_through_plugins(
-    host: &crate::plugins::PluginHost,
-    cfg: &serde_json::Value,
-) -> serde_json::Value {
-    match host.optimize_scan(&cfg.to_string()).await {
-        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
-        Ok(None) => serde_json::Value::Null,
-        Err(e) => {
-            eprintln!("oj: dependency scan through plugins failed ({e}); scanning without them");
-            oj_diag::emit(
-                oj_diag::Event::new(
-                    oj_diag::Kind::OptimizeError,
-                    format!("dependency scan through plugins failed: {e}"),
-                )
-                .warn(),
-            );
-            serde_json::Value::Null
+            None
         }
     }
+}
+
+/// A run's per-dep results as the map the dev server serves from, every URL
+/// under `version` (the first eight characters, as in a manifest).
+fn dep_map(
+    built: std::collections::BTreeMap<String, crate::prebundle::Prebuilt>,
+    version: &str,
+) -> DepMap {
+    let version = version.get(..8).unwrap_or(version);
+    built
+        .into_iter()
+        .map(|(dep, b)| {
+            let meta = DepMeta {
+                url: dep_url(&b.file, version),
+                file: b.file,
+                needs_interop: b.needs_interop,
+                file_hash: b.file_hash,
+            };
+            (dep, meta)
+        })
+        .collect()
 }
 
 #[cfg(test)]

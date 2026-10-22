@@ -1339,11 +1339,126 @@ impl PluginHost {
         self.call("resolveId", &[source, importer]).await
     }
 
-    /// The dep optimizer's scan, resolved through the plugins (optimize-deps.mjs
-    /// `scan`): JSON `{ dep: file }`. Unbounded like every call: a cold scan
-    /// of a large app runs as long as it needs, probed for liveness.
-    pub async fn optimize_scan(&self, input: &str) -> Result<Option<String>, String> {
-        self.call("optimizeScan", &[input]).await
+    /// One phase of the resolveId chain for a Start bundle host: `"pre"` (the
+    /// hooks Vite runs before its core resolver), `"post"` (the rest), or
+    /// `"all"`. The winning result whole, `external` included.
+    pub async fn resolve_id_phase(
+        &self,
+        source: &str,
+        importer: &str,
+        phase: &str,
+        is_entry: bool,
+    ) -> Result<Option<ResolvedId>, String> {
+        let entry = if is_entry { "true" } else { "false" };
+        let raw = self
+            .call("resolveIdPhase", &[source, importer, phase, entry])
+            .await?;
+        match raw {
+            None => Ok(None),
+            Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| ResolvedId::from_json(&v))
+                .map(Some)
+                .ok_or_else(|| format!("resolveId result for {source}: {raw}")),
+        }
+    }
+
+    /// The live config values a Start bundle reads (plugin-host.mjs
+    /// `startFacts`): aliases, externals, chunk policy, the Cloudflare Worker
+    /// environment and dev-server flags, functions as `{ "$fn": n }` handles.
+    pub async fn start_facts(&self) -> Result<serde_json::Value, String> {
+        let raw = self.call("startFacts", &[]).await?.unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("start facts: {e}"))
+    }
+
+    /// Calls the config function behind a `{ "$fn": n }` handle with JSON
+    /// arguments; its JSON result.
+    pub async fn call_start_fn(
+        &self,
+        handle: u64,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let raw = self
+            .call("callStartFn", &[&handle.to_string(), &args.to_string()])
+            .await?
+            .unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("config function #{handle}: {e}"))
+    }
+
+    /// A codeSplitting group function over a batch of module ids (one result
+    /// per id). `infos` (module infos, as JSON) carries the ones this
+    /// chunking `generation` has not sent yet. `tolerant`: a throw comes back
+    /// as `{ "$threw": message }` for its id instead of failing the batch.
+    pub async fn call_start_fn_batch(
+        &self,
+        handle: u64,
+        ids: &[String],
+        generation: u64,
+        infos: Option<&str>,
+        tolerant: bool,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let ids = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+        let raw = self
+            .call(
+                "callStartFnBatch",
+                &[
+                    &handle.to_string(),
+                    &ids,
+                    &generation.to_string(),
+                    infos.unwrap_or(""),
+                    if tolerant { "true" } else { "false" },
+                ],
+            )
+            .await?
+            .unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("codeSplitting function #{handle}: {e}"))
+    }
+
+    /// The resolveId chain as the dep scan runs it (Vite's
+    /// `pluginContainer.resolveId(..., { scan: true })`): the winning result
+    /// whole, `external` included.
+    pub(crate) async fn scan_resolve_id(
+        &self,
+        source: &str,
+        importer: &str,
+    ) -> Result<Option<ResolvedId>, String> {
+        let raw = self.call("scanResolveId", &[source, importer]).await?;
+        Ok(raw
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|v| ResolvedId::from_json(&v)))
+    }
+
+    /// Which hooks the live `optimizeDeps.rolldownOptions.plugins` implement;
+    /// `None` when the config lists none.
+    pub(crate) async fn scan_plugin_hooks(
+        &self,
+    ) -> Result<Option<crate::prebundle::ScanPluginHooks>, String> {
+        let Some(raw) = self.call("scanPluginHooks", &[]).await? else {
+            return Ok(None);
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("scan plugin hooks: {e}"))?;
+        let has = |k: &str| v.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
+        Ok(Some(crate::prebundle::ScanPluginHooks {
+            resolve_id: has("resolveId"),
+            load: has("load"),
+            transform: has("transform"),
+        }))
+    }
+
+    /// One hook of `optimizeDeps.rolldownOptions.plugins` over JSON
+    /// arguments: resolveId and load return the first plugin's answer,
+    /// transform the code after every plugin; null when none answered.
+    pub(crate) async fn scan_plugin_hook(
+        &self,
+        hook: &str,
+        args: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let raw = self
+            .call("scanPluginHook", &[hook, &args.to_string()])
+            .await?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(|e| format!("scan plugin {hook}: {e}")))
+            .transpose()
     }
 
     #[inline]

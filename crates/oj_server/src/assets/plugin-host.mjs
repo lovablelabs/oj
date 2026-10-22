@@ -265,6 +265,15 @@ process.on("unhandledRejection", (e) => {
 // themselves, so their config lifecycle hooks are tolerated per-plugin instead
 // of aborting the load, keeping the editor middleware (dev-server bridge) alive.
 const ojStartMode = initial.ojStartMode === true;
+// A Start bundle host backs one of oj's native Start bundles (the client
+// bundle in dev, the client/server/worker bundles of a build): the bundler is
+// rolldown in Rust, which drives this host's hooks, and a plugin's
+// `this.resolve` that no plugin answers ends in that bundler's resolution
+// (the `bundlerResolve` reverse RPC), as it ends in Rollup's under Vite.
+const ojBundleHost = initial.ojBundleHost === true;
+// The plugins a Start host leaves to oj: Vite's own (`vite:*`) and TanStack's
+// compiler and router plugins, whose work the Start pipeline does natively.
+const isReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
@@ -454,8 +463,6 @@ function searchForWorkspaceRoot(current, root = searchForPackageRoot(current)) {
 // get Vite's defaults (undefined-only, mergeWithDefaults semantics; warmup
 // and cors object forms deep-fill). `sourcemapIgnoreList: false` resolves
 // to a constant-false function and the default is Vite's isInNodeModules.
-// TWIN COPY: keep this function byte-identical with its sibling in
-// plugin-host.mjs / start/vite-plugin-bridge.mjs (separately embedded assets).
 function fillResolvedServerScalars(server) {
   // `host` is deliberately NOT filled: Vite overrides its own default with
   // undefined ("do not set here to detect whether host is set or not",
@@ -782,14 +789,35 @@ async function loadUserResolvedViteConfig() {
     // command-based defaultNodeEnv (never the mode) and lift oj's untouched
     // pre-set first so it computes isNodeEnvSet like a real CLI run.
     unsetOjNodeEnvForResolve();
-    const rc = await asNode(() =>
-      vite.resolveConfig(
-        { root: appRoot, configFile: pluginsPath, mode: env.mode, logLevel: "silent" },
+    const rc = await asNode(async () => {
+      if (!ojBundleHost || typeof vite.loadConfigFromFile !== "function") {
+        return vite.resolveConfig(
+          { root: appRoot, configFile: pluginsPath, mode: env.mode, logLevel: "silent" },
+          env.command,
+          env.mode,
+          defaultNodeEnv,
+        );
+      }
+      // A Start bundle host resolves without the framework plugins oj
+      // reimplements, as it runs without them: their config hooks (the
+      // router generator's among them) do work oj's own pipeline does.
+      const loaded = await vite.loadConfigFromFile(
+        { command: env.command, mode: env.mode, isSsrBuild: env.isSsrBuild, isPreview: false },
+        pluginsPath,
+        appRoot,
+        "silent",
+      );
+      const config = loaded?.config ?? {};
+      const kept = (await Promise.all([config.plugins ?? []].flat(Infinity))).filter(
+        (p) => p && !isReimplemented(p.name),
+      );
+      return vite.resolveConfig(
+        { ...config, plugins: kept, root: appRoot, configFile: false, mode: env.mode, logLevel: "silent" },
         env.command,
         env.mode,
         defaultNodeEnv,
-      ),
-    );
+      );
+    });
     return rc && typeof rc === "object" ? rc : null;
   } catch (e) {
     process.stderr.write(
@@ -1223,11 +1251,10 @@ try {
   // host: framework plugins oj reimplements natively (vite:*, tanstack's
   // compiler plugins) must not transform SSR modules — the Start pipeline does
   // their work (server-fn rewrite, route tree, refresh) — while user plugins
-  // (mdx, svgr, virtual modules) run. The same rule as vite-plugin-bridge's
-  // ojReimplemented, which the retired FIFO container applied.
-  if (ojStartMode && (initial.environment && initial.environment.name) === "ssr") {
-    const reimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
-    plugins = plugins.filter((p) => !reimplemented(p && p.name));
+  // (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
+  // plugins out: the native Start bundles do their work.
+  if (ojStartMode && ((initial.environment && initial.environment.name) === "ssr" || ojBundleHost)) {
+    plugins = plugins.filter((p) => !isReimplemented(p && p.name));
   }
   plugins.sort((a, b) => enforceRank(a) - enforceRank(b));
 } catch (e) {
@@ -1464,6 +1491,11 @@ const ctx = {
     if (map && map.has(source)) {
       const id = map.get(source);
       return id == null ? null : { id };
+    }
+    if (ojBundleHost) {
+      const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)]);
+      // Outside a running bundle (no bundler to ask) oj's resolver answers.
+      if (!r || !r.fallback) return r ?? null;
     }
     const id = await ctxRpc("resolve", [source, importer ?? ""]);
     return id == null ? null : { id };
@@ -3785,8 +3817,10 @@ async function resolveIdFull(source, importer, opts) {
   };
   const skip = opts && opts.skip;
   const skipCalls = (opts && opts.skipCalls) || null;
-  for (const { p, fn: handler } of withHtmlProxy(pluginsWithHook("resolveId"), "resolveId", source)) {
+  const phase = opts && opts.phase;
+  for (const { p, fn: handler, rank } of withHtmlProxy(pluginsWithHook("resolveId"), "resolveId", source)) {
     if (skip && p === skip) continue;
+    if (phase && (phase === "pre") !== runsBeforeCoreResolver(p, rank)) continue;
     // Vite merges skipCalls into the skip set: a plugin is skipped when its
     // recorded call re-issues the same id + importer, or when it already
     // re-entered once (`called`) -- the recursion hard-stop.
@@ -3818,24 +3852,207 @@ async function resolveId(source, importer, opts) {
   return r == null ? null : r.id;
 }
 
-// The dep optimizer's scan (optimize-deps.mjs, written next to this module):
-// run here so imports resolve through the plugins with `scan: true` and the
-// config's live optimizeDeps.rolldownOptions.plugins join it, as in Vite. The
-// bundle step stays in its own short-lived process.
+// Vite's order around its core resolver (vite:resolve): a hook that runs
+// before it (`enforce: "pre"`, or `order: "pre"`) sees every specifier first;
+// the rest see only what the core resolver left. A Start bundle asks for one
+// phase at a time, with its own resolution in between.
+function runsBeforeCoreResolver(p, rank) {
+  return rank < 0 || (rank === 0 && enforceRank(p) < 0);
+}
+
+// One phase ("pre", "post", or "all" for the whole chain) for a Start bundle:
+// the winning result as JSON (`id` and, when set, `external` and
+// `moduleSideEffects`), null when no plugin answered.
+async function resolveIdPhase(source, importer, phase, isEntry) {
+  const r = await resolveIdFull(source, importer || undefined, {
+    phase: phase === "all" ? null : phase,
+    isEntry: isEntry === "true",
+  });
+  if (r == null) return null;
+  const out = { id: String(r.id) };
+  if (r.external !== undefined && r.external !== false) out.external = r.external;
+  if (typeof r.moduleSideEffects === "boolean") out.moduleSideEffects = r.moduleSideEffects;
+  return JSON.stringify(out);
+}
+
+// The live config values a Start bundle reads (Vite reads them off its
+// resolved config): `resolve.alias`, the client `external`, the chunk policy,
+// the Cloudflare Worker environment, `server.hmr`/`server.watch`, and whether
+// the React plugin is configured. A function or RegExp cannot cross to Rust
+// as JSON, so a RegExp travels as `{ $regex, flags }` and a function as
+// `{ $fn: n }`, a handle `callStartFn` invokes.
+const startFns = [];
+function factValue(v, seen = new Set()) {
+  if (v instanceof RegExp) return { $regex: v.source, flags: v.flags };
+  if (typeof v === "function") return { $fn: startFns.push(v) - 1 };
+  if (Array.isArray(v)) return v.map((x) => factValue(x, seen));
+  if (v && typeof v === "object") {
+    if (seen.has(v)) return null;
+    seen.add(v);
+    const out = {};
+    for (const [k, x] of Object.entries(v)) if (x !== undefined) out[k] = factValue(x, seen);
+    return out;
+  }
+  return v;
+}
+function startFacts() {
+  startFns.length = 0;
+  const c = resolvedConfig ?? {};
+  const envOf = (name) => c.environments?.[name] ?? {};
+  const self = envOf(hostEnvName);
+  const top = c.build?.rolldownOptions ?? c.build?.rollupOptions ?? {};
+  const own = self.build?.rolldownOptions ?? {};
+  const output = { ...(top.output ?? {}), ...(own.output ?? {}) };
+  const codeSplitting = output.codeSplitting ?? output.advancedChunks;
+  const chunkOptimization = { ...(top.experimental ?? {}), ...(own.experimental ?? {}) }.chunkOptimization;
+  const external = own.external ?? c.build?.rolldownOptions?.external ?? c.build?.rollupOptions?.external;
+  const names = [...allPlugins, ...nativePlugins].map((p) => p && p.name);
+  return JSON.stringify({
+    alias: factValue(c.resolve?.alias ?? userResolveAlias ?? null),
+    external: external === undefined ? null : factValue(external),
+    codeSplitting: codeSplitting === undefined ? null : factValue(codeSplitting),
+    chunkOptimization: chunkOptimization === undefined ? null : factValue(chunkOptimization),
+    preserveEntrySignatures: own.preserveEntrySignatures ?? top.preserveEntrySignatures ?? null,
+    serverHmr: c.server?.hmr === false ? false : true,
+    serverWatch: c.server?.watch === null ? null : factValue(c.server?.watch ?? {}),
+    reactRefresh: names.includes("vite:react-refresh"),
+    cloudflare: cloudflareEnvironmentFacts(c),
+    // How many resolveId hooks run on each side of the core resolver.
+    resolveIdPhases: pluginsWithHook("resolveId").reduce(
+      (n, { p, rank }) => {
+        n[runsBeforeCoreResolver(p, rank) ? "pre" : "post"]++;
+        return n;
+      },
+      { pre: 0, post: 0 },
+    ),
+  });
+}
+const stringOr = (v) => (typeof v === "string" ? v : null);
+// @cloudflare/vite-plugin's Worker environment (its `config` hook declares
+// one per Worker, `resolve.builtins` naming the runtime's modules), or null.
+// With several Workers the entry Worker (the one writing the manifest) wins.
+function cloudflareEnvironmentFacts(c) {
+  const environments = c.environments;
+  if (!environments || typeof environments !== "object") return null;
+  const workers = Object.entries(environments).filter(([name, options]) => {
+    if (name === "client" || !options) return false;
+    const builtins = options.resolve?.builtins;
+    return (
+      (Array.isArray(builtins) && builtins.includes("cloudflare:workers")) ||
+      options.build?.rolldownOptions?.input?.index === "virtual:cloudflare/worker-entry"
+    );
+  });
+  if (!workers.length) return null;
+  const [name, options] = workers.find(([, o]) => o.build?.manifest === true) ?? workers[0];
+  const builtins = (options.resolve?.builtins ?? []).filter((b) => typeof b === "string" || b instanceof RegExp);
+  return {
+    name,
+    builtins: factValue(builtins),
+    conditions: Array.isArray(options.resolve?.conditions)
+      ? options.resolve.conditions.filter((x) => typeof x === "string" && !x.includes("|"))
+      : ["workerd", "worker", "module", "browser"],
+    target: typeof options.build?.target === "string" ? options.build.target : null,
+    // Rolldown builtin plugins the environment attached (Vite's
+    // esmExternalRequirePlugin): their names and options.
+    rolldownPlugins: (options.build?.rolldownOptions?.plugins ?? [])
+      .flat(Infinity)
+      .filter(Boolean)
+      .map((p) => ({ name: p.name ?? null, options: factValue(p._options ?? null) })),
+    // Where Vite puts the Worker: the plugin's config hook derives it from
+    // the user's own config (`environments.<name>.build.outDir`, else
+    // `<build.outDir>/<name>`), which a resolved base here already fills with
+    // Vite's defaults; read the user's config as the plugin would.
+    outDir: stringOr(userViteConfig?.environments?.[name]?.build?.outDir),
+    rootOutDir: stringOr(userViteConfig?.build?.outDir),
+  };
+}
+// A config function a fact handed out (`$fn`), called with JSON arguments
+// (an `external` function: `(id, importer, isResolved)`).
+async function callStartFn(index, argsJson) {
+  const fn = startFns[Number(index)];
+  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
+  const r = await fn(...JSON.parse(argsJson ?? "[]"));
+  return JSON.stringify(r === undefined ? null : factValue(r));
+}
+// A codeSplitting group's `name` or `test` over a batch of module ids, each
+// called as rolldown calls it: `(id, { getModuleInfo })`. The module infos of
+// a chunking pass arrive once, with its first batch (`generation` names the
+// pass), and back `getModuleInfo` for every later batch of the same pass.
+// A throw in dev comes back as `{ $threw: message }` for that id: Vite's dev
+// server never evaluates these functions, so one written for the build (fed
+// by a build-only plugin) must not take the dev server down.
+let chunkInfos = { generation: null, byId: new Map() };
+async function callStartFnBatch(index, idsJson, generation, infosJson, tolerant) {
+  const fn = startFns[Number(index)];
+  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
+  if (chunkInfos.generation !== generation) chunkInfos = { generation, byId: new Map() };
+  if (infosJson) for (const info of JSON.parse(infosJson)) chunkInfos.byId.set(info.id, info);
+  const ctx = { getModuleInfo: (id) => chunkInfos.byId.get(id) ?? null };
+  const out = [];
+  for (const id of JSON.parse(idsJson)) {
+    try {
+      const r = await fn(id, ctx);
+      out.push(r === undefined ? null : r);
+    } catch (e) {
+      if (tolerant !== "true") throw e;
+      out.push({ $threw: String((e && e.message) || e) });
+    }
+  }
+  return JSON.stringify(out);
+}
+
+// The dep optimizer's scan runs on oj's rolldown; it resolves each import
+// through the plugins here with `scan: true` (Vite's scan goes through its
+// plugin container) and runs the config's live
+// optimizeDeps.rolldownOptions.plugins, which Vite puts in the scan's plugin
+// list, through scanPluginHook.
 // Vite's asyncFlatten: plugin options may nest arrays and promises.
 async function flattenPlugins(value) {
   const v = await value;
   if (Array.isArray(v)) return (await Promise.all(v.map(flattenPlugins))).flat();
   return v ? [v] : [];
 }
-async function optimizeScan(inputJson) {
-  const { scanPlan } = await import(new URL("./optimize-deps.mjs", import.meta.url).href);
-  const ro = resolvedConfig?.optimizeDeps?.rolldownOptions;
-  const deps = await scanPlan(JSON.parse(inputJson), {
-    plugins: await flattenPlugins(ro?.plugins),
-    resolveId: (id, importer) => resolveIdFull(id, importer, { scan: true }),
-  });
-  return deps == null ? null : JSON.stringify(deps);
+async function scanResolveId(source, importer) {
+  const r = await resolveIdFull(source, importer || undefined, { scan: true });
+  return r == null ? null : JSON.stringify({ id: r.id, external: r.external ?? false });
+}
+let scanPlugins = null;
+async function scanPluginList() {
+  scanPlugins ??= flattenPlugins(resolvedConfig?.optimizeDeps?.rolldownOptions?.plugins);
+  return scanPlugins;
+}
+async function scanPluginHooks() {
+  const list = await scanPluginList();
+  if (!list.length) return null;
+  const has = (name) => list.some((p) => hookFn(p, name));
+  return JSON.stringify({ resolveId: has("resolveId"), load: has("load"), transform: has("transform") });
+}
+async function scanPluginHook(hook, argsJson) {
+  const args = JSON.parse(argsJson);
+  const original = args[0];
+  for (const p of await scanPluginList()) {
+    const fn = hookFn(p, hook);
+    if (!fn) continue;
+    if (hook === "resolveId") {
+      if (!hookIdMatches(p.resolveId, args[0])) continue;
+      const r = await fn.call(ctxFor(p), args[0], args[1] ?? undefined, { scan: true, isEntry: false });
+      if (r == null || r === false) continue;
+      if (typeof r === "string") return JSON.stringify({ id: r });
+      if (r.id != null) return JSON.stringify({ id: r.id, external: r.external ?? false });
+    } else if (hook === "load") {
+      if (!hookIdMatches(p.load, args[0])) continue;
+      const r = await fn.call(ctxFor(p), args[0]);
+      if (r == null) continue;
+      if (typeof r === "string") return JSON.stringify({ code: r });
+      if (r.code != null) return JSON.stringify({ code: r.code, moduleType: r.moduleType });
+    } else if (hook === "transform") {
+      if (!hookTransformMatches(p.transform, args[1], args[0])) continue;
+      const r = await fn.call(ctxFor(p), args[0], args[1]);
+      const code = typeof r === "string" ? r : r?.code;
+      if (code != null) args[0] = code;
+    }
+  }
+  return hook === "transform" && args[0] !== original ? JSON.stringify({ code: args[0] }) : null;
 }
 
 // Vite's vite:html-inline-proxy, which loads the inline module scripts the dev
@@ -4155,7 +4372,14 @@ async function run(hook, args) {
   }
   if (hook === "transform") return gateOnBuildStart().then(() => transform(args[0], args[1], args[2]));
   if (hook === "resolveId") return gateOnBuildStart().then(() => resolveId(args[0], args[1]));
-  if (hook === "optimizeScan") return gateOnBuildStart().then(() => optimizeScan(args[0]));
+  if (hook === "resolveIdPhase")
+    return gateOnBuildStart().then(() => resolveIdPhase(args[0], args[1], args[2], args[3]));
+  if (hook === "startFacts") return startFacts();
+  if (hook === "callStartFn") return callStartFn(args[0], args[1]);
+  if (hook === "callStartFnBatch") return callStartFnBatch(args[0], args[1], args[2], args[3], args[4]);
+  if (hook === "scanResolveId") return gateOnBuildStart().then(() => scanResolveId(args[0], args[1]));
+  if (hook === "scanPluginHooks") return gateOnBuildStart().then(() => scanPluginHooks());
+  if (hook === "scanPluginHook") return gateOnBuildStart().then(() => scanPluginHook(args[0], args[1]));
   if (hook === "load") return gateOnBuildStart().then(() => load(args[0]));
   if (hook === "handleHotUpdate") return handleHotUpdate(args[0], args[1], args[2], args[3]);
   if (hook === "transformIndexHtml") return gateOnBuildStart().then(() => transformIndexHtml(args[0], args[1]));

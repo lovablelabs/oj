@@ -11,16 +11,18 @@ mod hot;
 pub mod html;
 pub mod interop;
 pub mod json;
+pub mod meta_glob;
 mod rewrite;
 mod scan;
+pub mod server_fns;
 mod sourcemap;
 pub mod ssr;
 pub mod tsconfig;
 
 pub(crate) use compile::detect_refresh_registrations;
 pub use compile::{
-    compile, compile_module, compile_module_with_maps, CompileError, CompileOptions, CompileOutput,
-    HotAccept, ImportRewriter, JsxConfig, COMPILE_STACK_SIZE,
+    compile, compile_module, compile_module_with_maps, transform_for_bundle, CompileError,
+    CompileOptions, CompileOutput, HotAccept, ImportRewriter, JsxConfig, COMPILE_STACK_SIZE,
 };
 pub(crate) use env::defines_for;
 pub use env::ImportMetaEnv;

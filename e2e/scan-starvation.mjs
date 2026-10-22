@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 //
-// The in-host dependency scan must not starve the plugin host (issue #332):
-// with many modules resolving through a slow plugin chain, the scan's resolve
-// callbacks used to hold one event-loop pass for the whole crawl, so queued
+// The dependency scan must not starve the plugin host (issue #332): with
+// many modules resolving through a slow plugin chain, the scan's resolve
+// callbacks once held one event-loop pass for the whole crawl, so queued
 // hooks got no reply inside the watchdog window and the host was declared
-// gone (SSR answered 500 until restart). With the fairness gate the host
-// keeps answering hooks mid-scan. The plugin spins only for `options.scan`
-// calls, so request-path resolution stays cheap and any probe slowness is
-// starvation, not the fixture's own cost.
+// gone (SSR answered 500 until restart). The scan now runs on oj's rolldown
+// and asks the host one resolution at a time, so other hooks keep getting
+// answered mid-scan. The plugin spins only for `options.scan` calls, so
+// request-path resolution stays cheap and any probe slowness is starvation,
+// not the fixture's own cost.
 
 import { spawn } from "node:child_process";
 import { execSync } from "node:child_process";

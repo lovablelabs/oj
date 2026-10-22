@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT
-// Repeated HMR client rebundles must not grow the dev server. Each rebundle
-// runs in a one-shot `oj start-script` child whose exit returns the bundler's
-// native memory to the OS: rolldown's binding retains native memory per
-// build() invocation, and nothing short of process exit releases it, so an
-// in-process rebundle engine retained tens of MB PER EDIT on this small
-// fixture (hundreds of MB on large apps), never releasing any of it. This
-// test edits a route N times and asserts the dev server's RSS growth per
-// rebundle stays bounded once the caches and lazy paths are warm.
+// Repeated client rebundles must not grow the dev server. They run in process
+// on oj's own rolldown; rolldown's napi binding, which oj bundled with before,
+// retained tens of MB per build() on this small fixture (hundreds of MB on
+// large apps) until the process exited. This test edits a route N times and
+// asserts the dev server's RSS growth per rebundle stays bounded once the
+// caches and lazy paths are warm.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,9 +19,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 5239);
 const EDITS = 6;
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start-memory: fixture deps not installed");
   process.exit(0);

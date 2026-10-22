@@ -18,7 +18,7 @@ use oj_server::needs_css_compile;
 use tokio::sync::broadcast;
 
 use crate::start_chunks::{respond, Chunk};
-use crate::start_host::{ScriptEngine, StartEngine, StartRequest, StartResponse};
+use crate::start_host::{StartEngine, StartRequest, StartResponse};
 
 struct StartState {
     /// The scripts' env (see `script_env`), resolved once at boot for the
@@ -301,7 +301,7 @@ pub async fn start_dev(
     // The two codegen steps run SERIALIZED on purpose, not as a lost
     // concurrency opportunity: the route-tree generator writes
     // src/routeTree.gen.ts and rewrites route files in place (the generator
-    // keeps `createFileRoute` ids in sync), while gen-resolver.mjs reads
+    // keeps `createFileRoute` ids in sync), while the server-fn resolver reads
     // every .ts/.tsx under src — the generated tree included — and the
     // resolver's codegen cache hashes those same files as its key. Running
     // them concurrently would let the resolver scan half-written files and
@@ -316,12 +316,24 @@ pub async fn start_dev(
     route_tree.await??;
     oj_server::boot_phase("route tree ready");
     let resolver = {
-        let (root, cache, env) = (root.clone(), cache.clone(), Arc::clone(&script_vars));
-        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, &env))
+        let (root, cache) = (root.clone(), cache.clone());
+        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache))
     };
     resolver.await??;
     oj_server::boot_phase("resolver ready");
-    let bundler = Arc::new(ClientBundler::new(&root, &cache));
+    let bundler = {
+        let inputs = script_inputs(oj_env::get(), &root, config_file.as_deref(), "serve", &mode)?;
+        let start = crate::start_bundle::StartConfig {
+            base: crate::start_bundle::normalize_base(inputs.config.base.as_deref()),
+            root: root.clone(),
+            cache: cache.clone(),
+            command: crate::start_bundle::Command::Serve,
+            mode: mode.clone(),
+            config: inputs.config,
+            app_env: inputs.app_env,
+        };
+        Arc::new(ClientBundler::new(start, config_file.clone()))
+    };
     // A Cloudflare app's documents come from the worker environments, which
     // render them from TanStack's own manifest: their pages load the dev
     // client entry, never the Start bundle. It is built when a runner
@@ -329,26 +341,21 @@ pub async fn start_dev(
     // whose worker serves every document never starts the bundler at all.
     let defer_bundle = cf_hint;
     let bundle = {
-        let (bundler, cache, env, mode) = (
-            Arc::clone(&bundler),
-            cache.clone(),
-            Arc::clone(&script_vars),
-            mode.clone(),
-        );
+        let (bundler, cache, mode) = (Arc::clone(&bundler), cache.clone(), mode.clone());
         async move {
             if defer_bundle {
                 oj_server::boot_phase("client bundle deferred (worker-rendered documents)");
                 return Ok(Ok(None));
             }
             tokio::task::spawn_blocking(move || {
-                bundle_client_entry_cached(&bundler, &cache, &env, &mode).map(Some)
+                bundle_client_entry_cached(&bundler, &cache, &mode).map(Some)
             })
             .await
         }
     };
     let (reload_tx, _) = broadcast::channel::<()>(16);
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
-    // A build error in the app's code (bundle-client.mjs recorded it) keeps
+    // A build error in the app's code (client-error.json records it) keeps
     // the server up, as Vite's bundled dev does: pages render the overlay and
     // the next edit rebundles. Anything else (the bundler failing to load)
     // still aborts the boot.
@@ -910,7 +917,7 @@ fn spawn_mw_invalidate(
     Some(rt.spawn(async move { oj_server::notify_plugin_mw_invalidate(port, &changed).await }))
 }
 
-/// The last successful bundle's input set, written by bundle-client.mjs.
+/// The last successful bundle's input set (closure.json, start_bundle::dev).
 /// Empty on any read or parse failure: unknown always rebundles.
 fn load_client_closure(cache: &Path) -> std::collections::HashSet<PathBuf> {
     std::fs::read_to_string(cache.join("closure.json"))
@@ -928,7 +935,7 @@ fn load_client_glob_scopes(cache: &Path) -> Vec<oj_compiler::glob::GlobMatcher> 
         .collect()
 }
 
-/// The glob calls a bundle expanded, as bundle-client.mjs writes them beside
+/// The glob calls a bundle expanded, as the client bundle writes them beside
 /// the closure (Vite's resolved patterns and options, see
 /// `oj_compiler::glob::GlobCall`). Missing or unreadable is an empty list:
 /// the closure check still rebundles for every known input, and the
@@ -1024,7 +1031,7 @@ impl KnownFiles {
 }
 
 /// The files a stored generation's globs expand to today that its closure
-/// could hold: bundle-client.mjs leaves the generated route tree and its own
+/// could hold: the client bundle leaves the generated route tree and its own
 /// directory (`cache`) out of closure.json, so a glob reaching them has not
 /// grown, or every restore of such an app would miss.
 fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
@@ -1035,7 +1042,7 @@ fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// bundle-client.mjs's `routeTree.gen.[jt]sx?` closure filter.
+/// The client bundle's `routeTree.gen.[jt]sx?` closure filter.
 fn is_route_tree_gen(p: &Path) -> bool {
     p.file_name()
         .and_then(|n| n.to_str())
@@ -1344,7 +1351,7 @@ async fn rebundle_worker(
         // cannot change the client bundle (rollup watch semantics; Vite only
         // acts on files its module graphs know). Regen checks still run below
         // either way: a server fn can live in a file the client never
-        // imports, since gen-resolver scans all of src.
+        // imports, since the resolver scans all of src.
         let needs_bundle = run.force || client_bundle_affected(&state, &paths);
         let inputs = client_inputs(&state, &paths);
         let pages_run_bundle = state.pages_run_bundle();
@@ -1374,7 +1381,7 @@ async fn rebundle_worker(
                                 .is_ok_and(|s| s.contains("createServerFn")))
                 });
                 if routes_changed || server_fn_changed {
-                    let _ = generate_server_fn_resolver(&r, &c, &env);
+                    let _ = generate_server_fn_resolver(&r, &c);
                 }
                 // A route-set change rewrites the generated tree, a bundled
                 // input, even when the triggering paths missed the closure.
@@ -1416,7 +1423,7 @@ async fn rebundle_worker(
                         println!("  oj start: rebuilding for {shown}");
                     }
                 }
-                let outcome = match bundling.then(|| bundler.bundle(&c, &env, &inputs, false)) {
+                let outcome = match bundling.then(|| bundler.bundle(&inputs, false)) {
                     None => ClientRun::Skipped,
                     Some(Ok(true)) => ClientRun::Hot,
                     Some(Ok(false)) => match pinned_output(&r, &c, &m) {
@@ -1715,10 +1722,9 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         let generation = state.bundler.hot.generation();
         let started = state.refreshes.fetch_add(1, SeqCst) + 1;
         let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
-        let env = Arc::clone(&state.script_env);
         let bundler = Arc::clone(&state.bundler);
         let pinned = tokio::task::spawn_blocking(move || {
-            bundler.bundle(&c, &env, &[], true)?;
+            bundler.bundle(&[], true)?;
             pinned_output(&r, &c, &m).ok_or_else(|| anyhow::anyhow!("no client chunk index"))
         })
         .await
@@ -1746,9 +1752,6 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
 /// The config and app env a Start command's scripts are built from, resolved
 /// once per command.
 struct ScriptInputs {
-    root: PathBuf,
-    config_file: Option<PathBuf>,
-    command: String,
     config: oj_config::OjConfig,
     app_env: oj_env::AppEnv,
 }
@@ -1776,13 +1779,7 @@ fn script_inputs(
         oj_config::env_prefixes(&config),
         "development",
     );
-    Ok(ScriptInputs {
-        root: root.to_path_buf(),
-        config_file: config_file.map(Path::to_path_buf),
-        command: command.to_string(),
-        config,
-        app_env,
-    })
+    Ok(ScriptInputs { config, app_env })
 }
 
 /// The `.env` vars with an `envPrefix` that the shell does not already set
@@ -1796,172 +1793,15 @@ fn prefixed_dotenv_vars(env: &oj_env::Env, app_env: &oj_env::AppEnv) -> Vec<(Str
         .collect()
 }
 
-/// Environment handed to the Start node scripts: the mode's `.env` vars with an
-/// `envPrefix` (shell wins, as in Vite's loadEnv), the prefixes themselves
-/// (`OJ_ENV_PREFIX`), the per-environment defines (`OJ_DEFINE_CLIENT` /
-/// `OJ_DEFINE_SSR`, Vite's `environments.<name>.define`) and the JSX settings
-/// from the config (`OJ_JSX`, consumed by `jsxTransformOptions` in
-/// resolve-pkg.mjs).
-fn start_script_vars(
-    env: &oj_env::Env,
-    inputs: &ScriptInputs,
-) -> anyhow::Result<Vec<(String, String)>> {
-    let (root, command, config) = (
-        inputs.root.as_path(),
-        inputs.command.as_str(),
-        &inputs.config,
-    );
-    let prefixes = inputs.app_env.prefixes();
-    let mut vars = prefixed_dotenv_vars(env, &inputs.app_env);
-    if prefixes != ["VITE_"] {
-        vars.push((
-            "OJ_ENV_PREFIX".into(),
-            serde_json::to_string(&prefixes).unwrap_or_default(),
-        ));
-    }
-    for (env_name, var) in [("client", "OJ_DEFINE_CLIENT"), ("ssr", "OJ_DEFINE_SSR")] {
-        let defines: serde_json::Map<String, serde_json::Value> =
-            oj_config::environment_defines(config, env_name)
-                .into_iter()
-                .map(|(k, v)| (k, serde_json::Value::String(v)))
-                .collect();
-        if !defines.is_empty() {
-            vars.push((var.into(), serde_json::Value::Object(defines).to_string()));
-        }
-    }
-    if let Some(css) = &config.css {
-        vars.push(("OJ_START_CSS".into(), serde_json::to_string(css)?));
-    }
-    let jsx = oj_config::jsx_settings(config);
-    if jsx != oj_config::JsxSettings::default() {
-        vars.push((
-            "OJ_JSX".into(),
-            serde_json::to_string(&jsx).unwrap_or_default(),
-        ));
-    }
-    // The config's `define` map (values are JS expressions), applied by the SSR
-    // loader and the production bundles like Vite's define plugin.
-    let defines: serde_json::Map<String, serde_json::Value> = oj_config::config_defines(config)
-        .into_iter()
-        .map(|(k, v)| (k, serde_json::Value::String(v)))
-        .collect();
-    if !defines.is_empty() {
-        vars.push((
-            "OJ_DEFINE".into(),
-            serde_json::Value::Object(defines).to_string(),
-        ));
-    }
-    // The conditions the SSR loader adds to Node's export conditions, and the
-    // externalConditions swap for externalized deps. Vite-shaped selection:
-    // conditions never cross runtimes. When the ssr environment is
-    // runner-backed (its code executes in the Cloudflare plugin's workerd
-    // DevEnvironments), its condition list describes THAT runtime and never
-    // steers the loader — the loader is oj's own Node fallback and takes
-    // Vite's Node server semantics instead (DEFAULT_SERVER_CONDITIONS /
-    // DEFAULT_EXTERNAL_CONDITIONS plus the user's RAW top-level lists).
-    // Otherwise the user's list (environment → `ssr.resolve` sugar → top
-    // level) passes verbatim — an explicit `browser` for happy-dom-style Node
-    // SSR stays honored, as Vite honors user conditions — with the
-    // `development|production` placeholder mapped for the command.
-    let dev = command != "build";
-    let map_dev = |list: Vec<String>| -> Vec<String> {
-        let dev_prod = if dev { "development" } else { "production" };
-        list.into_iter()
-            .map(|c| {
-                if c == "development|production" {
-                    dev_prod.to_string()
-                } else {
-                    c
-                }
-            })
-            .collect()
-    };
-    let runner_backed = oj_config::ssr_runner_backed(config);
-    let resolve_conditions = if runner_backed {
-        Some(oj_config::node_server_conditions(config, dev))
-    } else {
-        oj_config::user_resolve_conditions(config, "ssr").map(map_dev)
-    };
-    if let Some(conditions) = resolve_conditions.filter(|c| !c.is_empty()) {
-        vars.push((
-            "OJ_RESOLVE_CONDITIONS".into(),
-            serde_json::to_string(&conditions).unwrap_or_default(),
-        ));
-    }
-    let external_conditions = if runner_backed {
-        Some(oj_config::node_server_external_conditions(config, dev))
-    } else {
-        oj_config::user_external_conditions(config, "ssr").map(map_dev)
-    };
-    if let Some(conditions) = external_conditions.filter(|c| !c.is_empty()) {
-        vars.push((
-            "OJ_EXTERNAL_CONDITIONS".into(),
-            serde_json::to_string(&conditions).unwrap_or_default(),
-        ));
-    }
-    // `ssr.noExternal`/`external`, consumed by the SSR loader to transform (rather
-    // than hand to Node) the dependencies Vite would bundle.
-    let externals = oj_config::ssr_externals(config);
-    if externals != oj_config::SsrExternals::default() {
-        vars.push((
-            "OJ_SSR_EXTERNALS".into(),
-            serde_json::to_string(&externals).unwrap_or_default(),
-        ));
-    }
-    // The client bundle's export conditions: Vite derives its client environment's
-    // conditions from `resolve.conditions` (DEFAULT_CLIENT_CONDITIONS plus the
-    // user list, dev/prod by command), so the Start client bundle must too
-    // instead of a hardcoded browser/module/import/development.
-    vars.push((
-        "OJ_CLIENT_CONDITIONS".into(),
-        serde_json::to_string(&oj_config::resolve_conditions_for(
-            config,
-            "client",
-            command != "build",
-        ))
-        .unwrap_or_default(),
-    ));
-    // `--config`: the Start plugin containers load this file instead of the
-    // default `vite.config.*` lookup (Vite's `configFile`).
-    if let Some(file) = &inputs.config_file {
-        vars.push((
-            "OJ_START_CONFIG_FILE".into(),
-            file.to_string_lossy().into_owned(),
-        ));
-    }
-    if let Some(entry) = configured_start_server_entry(config, root) {
-        vars.push((
-            "OJ_START_SERVER_ENTRY".into(),
-            entry.to_string_lossy().into_owned(),
-        ));
-    }
-    // The Start bundles are oj's own code and run on the rolldown vendored
-    // next to the binary (nix embeds it at build time; the env var overrides
-    // for tests and non-nix builds, and set-but-empty opts out entirely).
-    // resolve-pkg.mjs prefers it at oj's own import sites over whatever the
-    // app's vite pins — a vite <= 7 app pins none at all — and falls back to
-    // the app's copy when no vendor exists. A configured-but-broken vendor
-    // fails HERE, before any bundle runs: the cache key records the vendor's
-    // resolved identity, so silently building with something else would
-    // poison the bundle store.
-    match oj_cache::start_bundle::vendored_rolldown() {
-        oj_cache::start_bundle::VendoredRolldown::None => {}
-        oj_cache::start_bundle::VendoredRolldown::Broken { path, reason } => {
-            let hint = if reason.contains("UTF-8") {
-                "unset it or re-export a valid path"
-            } else {
-                "repair the vendor dir, or set OJ_VENDORED_ROLLDOWN= (empty) to use the app's rolldown"
-            };
-            anyhow::bail!("OJ_VENDORED_ROLLDOWN ({path}) is unusable: {reason}; {hint}");
-        }
-        oj_cache::start_bundle::VendoredRolldown::Resolved { path, .. } => {
-            vars.push(("OJ_VENDORED_ROLLDOWN".into(), path.clone()));
-        }
-    }
-    Ok(vars)
+/// The `.env` vars the Start scripts (route codegen, the SSR runtime's
+/// `process.env`) see: the mode's vars with an `envPrefix`, the shell winning,
+/// as in Vite's loadEnv.
+fn start_script_vars(env: &oj_env::Env, inputs: &ScriptInputs) -> Vec<(String, String)> {
+    prefixed_dotenv_vars(env, &inputs.app_env)
 }
 
 /// [`start_script_vars`] for one command, resolved against the process snapshot.
+#[cfg(test)]
 fn start_script_env(
     root: &Path,
     config_file: Option<&Path>,
@@ -1969,7 +1809,10 @@ fn start_script_env(
     mode: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let env = oj_env::get();
-    start_script_vars(env, &script_inputs(env, root, config_file, command, mode)?)
+    Ok(start_script_vars(
+        env,
+        &script_inputs(env, root, config_file, command, mode)?,
+    ))
 }
 
 /// The app's own TanStack Start server entry (`tanstackStart({ server: { entry } })`),
@@ -1978,7 +1821,10 @@ fn start_script_env(
 /// Vite's dev server imports as the SSR handler; oj reads the same alias. Only an
 /// app file counts: unconfigured, the alias points at Start's own package entry,
 /// which oj replaces with its runner entry as before.
-fn configured_start_server_entry(config: &oj_config::OjConfig, root: &Path) -> Option<PathBuf> {
+pub(crate) fn configured_start_server_entry(
+    config: &oj_config::OjConfig,
+    root: &Path,
+) -> Option<PathBuf> {
     let target = oj_config::resolve_alias(config, "ssr")
         .into_iter()
         .find(|(find, _)| find == "virtual:tanstack-start-server-entry")
@@ -2012,7 +1858,6 @@ pub async fn start_build(
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
-    let scripts = Arc::new(ScriptEngine::new(&root)?);
     {
         let gen_env = script_env(
             oj_env::get(),
@@ -2024,12 +1869,12 @@ pub async fn start_build(
         let (r, c) = (root.clone(), cache.clone());
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             generate_route_tree(&r, &c, &gen_env)?;
-            generate_server_fn_resolver(&r, &c, &gen_env)
+            generate_server_fn_resolver(&r, &c)
         })
         .await??;
     }
     // The build options Vite resolves for a Start app too: `--out`/`build.outDir`,
-    // `base`, `build.sourcemap`, `build.minify` (consumed by build.mjs).
+    // `base`, `build.sourcemap`, `build.minify`.
     let mut config = oj_config::load_with(&root, "build", mode).unwrap_or_default();
     oj_server::plugins::adopt_vite_config_values(
         &mut config,
@@ -2040,7 +1885,6 @@ pub async fn start_build(
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     let build_cfg = config.build.clone().unwrap_or_default();
-    let prerender = build_cfg.prerender.clone().unwrap_or_default().join(",");
     let out = out
         .or_else(|| build_cfg.out_dir.as_ref().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("dist"));
@@ -2055,82 +1899,37 @@ pub async fn start_build(
             out_dir.display()
         );
     }
-    // Vite's `base`: "" and "./" are relative, anything else an absolute prefix.
-    let base = match config.base.as_deref().unwrap_or("/") {
-        "" | "./" => "./".to_string(),
-        "/" => "/".to_string(),
-        b => format!("/{}/", b.trim_matches('/')),
-    };
-    let sourcemap = match oj_config::build_sourcemap(&config) {
-        oj_config::Sourcemap::Off => "false",
-        oj_config::Sourcemap::File => "true",
-        oj_config::Sourcemap::Inline => "inline",
-        oj_config::Sourcemap::Hidden => "hidden",
-    };
-    let minify = oj_config::build_minify(&config);
-    // Vite's rule: the shell's NODE_ENV wins, else `.env[.mode]` NODE_ENV=development
-    // makes a development build, else production. build.mjs derives DEV/PROD and
-    // process.env.NODE_ENV from what it receives here.
+    // Vite's rule: the shell's NODE_ENV wins, else `.env[.mode]`
+    // NODE_ENV=development makes a development build, else production. The
+    // shell's NODE_ENV comes from the startup snapshot, so nothing an engine
+    // writes process-wide can change the build's env rule.
     let env_dir = match config.env_dir.as_deref() {
         Some(d) => root.join(d),
         None => root.to_path_buf(),
     };
-    // The shell's NODE_ENV comes from the startup snapshot, so nothing an engine
-    // writes process-wide can change the build's env rule.
-    let node_env = oj_env::AppEnv::resolve(
+    let app_env = oj_env::AppEnv::resolve(
         oj_env::get(),
         &env_dir,
         mode,
         oj_config::env_prefixes(&config),
         "production",
-    )
-    .node_env()
-    .to_string();
-    let mut env = vec![
-        (
-            "OJ_APP_ROOT".to_string(),
-            root.to_string_lossy().into_owned(),
-        ),
-        (
-            "OJ_CACHE_ROOT".to_string(),
-            oj_cache::cache_root(&root).to_string_lossy().into_owned(),
-        ),
-        ("NODE_ENV".to_string(), node_env.clone()),
-        ("OJ_MODE".to_string(), mode.to_string()),
-        ("OJ_PRERENDER".to_string(), prerender),
-        (
-            "OJ_OUT_DIR".to_string(),
-            out_dir.to_string_lossy().into_owned(),
-        ),
-        ("OJ_BASE".to_string(), base),
-        ("OJ_SOURCEMAP".to_string(), sourcemap.to_string()),
-        (
-            "OJ_MINIFY".to_string(),
-            if minify { "true" } else { "false" }.to_string(),
-        ),
-        // Vite's build.cssMinify per environment (server on unless set,
-        // client following build.minify) and build.cssTarget.
-        (
-            "OJ_START_CSS_MINIFY".to_string(),
-            serde_json::json!({
-                "client": oj_config::build_css_minify(&config, false),
-                "ssr": oj_config::build_css_minify(&config, true),
-                "targets": oj_config::build_css_targets(&config),
-            })
-            .to_string(),
-        ),
-    ];
-    env.extend(start_script_env(
-        &root,
-        config_file.as_deref(),
-        "build",
-        mode,
-    )?);
-    // The production build runs on the embedded engine (rolldown's napi
-    // binding and the app's plugins load byonm, as they did under node).
-    scripts
-        .run_async(&cache.join("build.mjs"), &env, "production build")
-        .await?;
+    );
+    let output = crate::start_bundle::prod::BuildOutput {
+        out_dir: out_dir.clone(),
+        sourcemap: oj_config::build_sourcemap(&config),
+        minify: oj_config::build_minify(&config),
+        prerender: build_cfg.prerender.clone().unwrap_or_default(),
+    };
+    let start = crate::start_bundle::StartConfig {
+        base: crate::start_bundle::normalize_base(config.base.as_deref()),
+        root: root.clone(),
+        cache: cache.clone(),
+        command: crate::start_bundle::Command::Build,
+        mode: mode.to_string(),
+        config,
+        app_env,
+    };
+    crate::start_bundle::prod::build(start, config_file, output).await?;
     println!(
         "  {} build (tanstack start) -> {}",
         oj_server::oj_brand(),
@@ -2143,14 +1942,18 @@ pub async fn start_build(
     Ok(())
 }
 
+/// `script`: the codegen script whose bytes key its outputs (the route tree's
+/// generate.mjs); a generator built into oj is keyed by oj's version alone.
 fn codegen_store(
     root: &Path,
     cache: &Path,
     kind: &str,
-    script: &str,
+    script: Option<&str>,
     marker: Option<&str>,
 ) -> oj_cache::start_codegen::StartCodegenStore {
-    let mut extra = std::fs::read(cache.join(script)).unwrap_or_default();
+    let mut extra = script
+        .and_then(|s| std::fs::read(cache.join(s)).ok())
+        .unwrap_or_default();
     // The route tree's footer names the start entry, so which file (if any)
     // resolves keys the output; its content does not.
     if kind == "route-tree" {
@@ -2188,7 +1991,7 @@ fn generate_route_tree(
     cache: &Path,
     script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
-    let store = codegen_store(root, cache, "route-tree", "generate.mjs", None);
+    let store = codegen_store(root, cache, "route-tree", Some("generate.mjs"), None);
     let dest = root.join("src").join("routeTree.gen.ts");
     let outputs = [("routeTree.gen.ts", dest.as_path())];
     let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
@@ -2215,18 +2018,8 @@ fn generate_route_tree(
     Ok(())
 }
 
-fn generate_server_fn_resolver(
-    root: &Path,
-    cache: &Path,
-    script_env: &[(String, String)],
-) -> anyhow::Result<()> {
-    let store = codegen_store(
-        root,
-        cache,
-        "server-fn",
-        "gen-resolver.mjs",
-        Some("createServerFn"),
-    );
+fn generate_server_fn_resolver(root: &Path, cache: &Path) -> anyhow::Result<()> {
+    let store = codegen_store(root, cache, "server-fn", None, Some("createServerFn"));
     let dest = cache.join("server-fn-resolver.mjs");
     let outputs = [("server-fn-resolver.mjs", dest.as_path())];
     let inputs = list_src_ts_files(root);
@@ -2244,12 +2037,12 @@ fn generate_server_fn_resolver(
         }
         Err(miss) => println!("  oj start: server-fn resolver cache miss ({miss})"),
     }
-    run_script_process(
-        root,
-        &cache.join("gen-resolver.mjs"),
-        script_env,
-        "server-fn resolver",
-    )?;
+    let count = crate::start_bundle::write_server_fn_resolver(root, cache)
+        .map_err(|e| anyhow::anyhow!("server-fn resolver: {e}"))?;
+    eprintln!(
+        "{}: server-fn resolver ({count} function(s))",
+        oj_server::oj_brand()
+    );
     store.persist(&inputs, &outputs);
     Ok(())
 }
@@ -2324,10 +2117,10 @@ fn run_script_process(
     Ok(())
 }
 
-/// Where bundle-client.mjs records a failed client bundle (Vite's
+/// Where the client bundle records its failure (Vite's
 /// prepareError shape); absent after a success.
 const CLIENT_ERROR_FILE: &str = "client-error.json";
-/// Where bundle-client.mjs records whether a rebundle's changes all reached
+/// Where the client bundle records whether a rebundle's changes all reached
 /// the pages as hot updates.
 const CLIENT_HMR_FILE: &str = "client-hmr.json";
 
@@ -2355,7 +2148,7 @@ fn bundler_failure_frame(reason: &str) -> String {
 /// A file a compiled stylesheet can read: a sheet in any language oj
 /// compiles (a partial or a `composes` source included) or the PostCSS or
 /// Tailwind config.
-fn is_style_input(path: &Path) -> bool {
+pub(crate) fn is_style_input(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if matches!(
         ext,
@@ -2369,261 +2162,9 @@ fn is_style_input(path: &Path) -> bool {
         || name.starts_with("tailwind.config.")
 }
 
-/// The dev session's client bundler: one `oj start-script --serve` child
-/// running bundle-client.mjs, spawned by the first bundle and reused by every
-/// rebundle, so the app's plugins keep one container for the server's
-/// lifetime, as in Vite (buildStart once, plugin state across rebuilds). A
-/// fresh container per rebundle re-ran buildStart each time: a plugin that
-/// writes a generated input from it rewrote that file on every bundle, and
-/// the watcher fed the write back as the next rebundle, forever. A child that
-/// died is respawned by the next bundle; it exits on its own when stdin
-/// closes (this process exiting or exec'ing a restart).
-pub(crate) struct ClientBundler {
-    root: PathBuf,
-    script: PathBuf,
-    child: std::sync::Mutex<Option<BundlerChild>>,
-    /// The live child's stdin, for page events (`op`) sent while a bundle
-    /// holds `child`.
-    ops: std::sync::Mutex<Option<Arc<std::sync::Mutex<std::process::ChildStdin>>>>,
-    /// Pages that announced their runtime id, replayed to a respawned child.
-    clients: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// The bundler's hot updates on their way to the pages.
-    pub(crate) hot: Arc<crate::start_hot::HotUpdates>,
-    /// Whether pages may take hot updates (`OJ_START_HOT`): not while the
-    /// editor's HMR gate holds updates, where every edit reloads and a
-    /// bundler engine would only add cost. Known from the env knob at boot,
-    /// settled by the server's resolved gate once it is up.
-    hot_enabled: std::sync::atomic::AtomicBool,
-    /// Bumped by every batch that touched a style input, and handed to each
-    /// bundle (`OJ_START_STYLE_EPOCH`). The child's engine caches each
-    /// `import("oj-style:...")` by its url for the session, so the epoch in
-    /// that url is what makes a style edit recompile, a partial's included,
-    /// while unchanged sheets keep their one cached module.
-    style_epoch: std::sync::atomic::AtomicU64,
-}
-
-struct BundlerChild {
-    process: std::process::Child,
-    stdin: Arc<std::sync::Mutex<std::process::ChildStdin>>,
-    replies: std::sync::mpsc::Receiver<String>,
-}
-
-impl ClientBundler {
-    pub(crate) fn new(root: &Path, cache: &Path) -> ClientBundler {
-        ClientBundler {
-            root: root.to_path_buf(),
-            script: cache.join("bundle-client.mjs"),
-            child: std::sync::Mutex::new(None),
-            ops: std::sync::Mutex::new(None),
-            clients: std::sync::Mutex::new(std::collections::HashSet::new()),
-            hot: Arc::new(crate::start_hot::HotUpdates::new()),
-            hot_enabled: std::sync::atomic::AtomicBool::new(!oj_env::get().knobs.hmr_gate),
-            style_epoch: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    pub(crate) fn set_hot_enabled(&self, enabled: bool) {
-        self.hot_enabled
-            .store(enabled, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// A watch batch's changed paths: any style input moves the style epoch.
-    pub(crate) fn note_changes(&self, paths: &[PathBuf]) {
-        if paths.iter().any(|p| is_style_input(p)) {
-            self.style_epoch
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    /// A page event for the bundler's engine; dropped when no child runs
-    /// (the next one replays the pages).
-    fn op(&self, msg: serde_json::Value) {
-        use std::io::Write;
-        let stdin = self
-            .ops
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(stdin) = stdin {
-            let mut stdin = stdin
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = writeln!(stdin, "{msg}").and_then(|_| stdin.flush());
-        }
-    }
-
-    pub(crate) fn page_connected(&self, id: &str) {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.to_string());
-        self.op(serde_json::json!({ "op": "client", "id": id }));
-    }
-
-    pub(crate) fn page_gone(&self, id: &str) {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
-        self.op(serde_json::json!({ "op": "gone", "id": id }));
-    }
-
-    pub(crate) fn patch_delivered(&self, filename: &str) {
-        self.op(serde_json::json!({ "op": "delivered", "filename": filename }));
-    }
-
-    fn spawn(&self) -> anyhow::Result<BundlerChild> {
-        let exe =
-            std::env::current_exe().map_err(|e| anyhow::anyhow!("oj executable path: {e}"))?;
-        let mut process = std::process::Command::new(exe)
-            .arg("start-script")
-            .arg(&self.script)
-            .arg("--root")
-            .arg(&self.root)
-            .arg("--serve")
-            .current_dir(&self.root)
-            .env(
-                oj_server::plugins::PARENT_PID_ENV,
-                std::process::id().to_string(),
-            )
-            // rolldown's mimalloc keeps the pages of finished builds resident
-            // (rolldown/rolldown#10985); purging on free holds a long-lived
-            // bundler near one build's footprint. Linux, 3k-module app, idle
-            // after 15 rebundles: ~455MB at 0, ~495MB at 10ms, ~650MB at
-            // 1000ms, still growing past 900MB with purging off; no
-            // measurable rebundle cost.
-            .env(
-                "MIMALLOC_PURGE_DELAY",
-                oj_env::get().var("MIMALLOC_PURGE_DELAY").unwrap_or("0"),
-            )
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("could not run client entry bundling: {e}"))?;
-        oj_server::register_child(process.id());
-        oj_server::boot_phase(&format!("client bundler: child {} spawned", process.id()));
-        let stdin = Arc::new(std::sync::Mutex::new(
-            process.stdin.take().expect("piped stdin"),
-        ));
-        let stdout = process.stdout.take().expect("piped stdout");
-        let (tx, replies) = std::sync::mpsc::channel();
-        let hot = Arc::clone(&self.hot);
-        // The script's own output passes through; reply lines answer bundle(),
-        // event lines are its hot updates.
-        std::thread::spawn(move || {
-            use std::io::{BufRead, Write};
-            for line in std::io::BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if let Some(reply) = line.strip_prefix(crate::start_host::SCRIPT_REPLY) {
-                    let _ = tx.send(reply.to_string());
-                } else if let Some(event) = line.strip_prefix(crate::start_hot::SCRIPT_EVENT) {
-                    hot.accept(event);
-                } else {
-                    let mut out = std::io::stdout().lock();
-                    let _ = writeln!(out, "{line}");
-                }
-            }
-        });
-        *self
-            .ops
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&stdin));
-        let pages: Vec<String> = self
-            .clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .cloned()
-            .collect();
-        for id in pages {
-            self.op(serde_json::json!({ "op": "client", "id": id }));
-        }
-        Ok(BundlerChild {
-            process,
-            stdin,
-            replies,
-        })
-    }
-
-    /// The env of one bundle run. Every run sets every key: the script's env
-    /// outlives the run.
-    fn run_env(
-        &self,
-        script_env: &[(String, String)],
-        changed: &[PathBuf],
-        refresh: bool,
-    ) -> anyhow::Result<Vec<(String, String)>> {
-        use std::sync::atomic::Ordering::SeqCst;
-        let flag = |on: bool| if on { "1" } else { "0" }.to_string();
-        let mut env = script_env.to_vec();
-        env.push((
-            "OJ_START_STYLE_EPOCH".into(),
-            self.style_epoch.load(SeqCst).to_string(),
-        ));
-        env.push(("OJ_START_CHANGED".into(), serde_json::to_string(changed)?));
-        env.push(("OJ_START_REFRESH".into(), flag(refresh)));
-        env.push(("OJ_START_HOT".into(), flag(self.hot_enabled.load(SeqCst))));
-        Ok(env)
-    }
-
-    /// One client bundle on the session's bundler, given the batch's changed
-    /// paths. Ok(true) when every change already reached the pages as a hot
-    /// update (no reload needed); Err when it failed (the app's error, if
-    /// any, is in client-error.json) or the child died.
-    fn bundle(
-        &self,
-        cache: &Path,
-        script_env: &[(String, String)],
-        changed: &[PathBuf],
-        refresh: bool,
-    ) -> anyhow::Result<bool> {
-        use std::io::Write;
-        // Only this run's failure may read as an app build error: a stale
-        // record would let a bundler that never started pass for one.
-        let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
-        let mut slot = self.child.lock().unwrap();
-        let child = match slot.take() {
-            Some(mut c) => match c.process.try_wait() {
-                Ok(None) => c,
-                _ => {
-                    oj_server::unregister_child(c.process.id());
-                    self.spawn()?
-                }
-            },
-            None => self.spawn()?,
-        };
-        let env = self.run_env(script_env, changed, refresh)?;
-        let request = format!("{}\n", serde_json::to_string(&env)?);
-        let sent = {
-            let mut stdin = child
-                .stdin
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            stdin
-                .write_all(request.as_bytes())
-                .and_then(|_| stdin.flush())
-                .is_ok()
-        };
-        let reply = sent.then(|| child.replies.recv().ok()).flatten();
-        let Some(reply) = reply else {
-            // Dead mid-bundle: reap it; the next bundle spawns a new one.
-            let mut child = child;
-            let _ = child.process.kill();
-            let _ = child.process.wait();
-            oj_server::unregister_child(child.process.id());
-            *self
-                .ops
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-            anyhow::bail!("client entry bundling failed: the bundler exited");
-        };
-        *slot = Some(child);
-        match reply.strip_prefix("err") {
-            None => Ok(hot_handled(cache)),
-            Some(e) => anyhow::bail!("client entry bundling failed:{e}"),
-        }
-    }
-}
+/// The dev session's client bundler (start_bundle::dev), in process on oj's
+/// rolldown.
+pub(crate) type ClientBundler = crate::start_bundle::dev::DevBundler;
 
 /// The stylesheets the last bundle's hot updates imported for the first time
 /// (client-hmr.json `css`).
@@ -2633,16 +2174,6 @@ fn hot_styles_added(cache: &Path) -> Vec<String> {
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| serde_json::from_value(v.get("css")?.clone()).ok())
         .unwrap_or_default()
-}
-
-/// Whether the last bundle's changes all went out as hot updates
-/// (client-hmr.json, written by bundle-client.mjs).
-fn hot_handled(cache: &Path) -> bool {
-    std::fs::read_to_string(cache.join(CLIENT_HMR_FILE))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("handled").and_then(|h| h.as_bool()))
-        .unwrap_or(false)
 }
 
 fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartBundleStore {
@@ -2657,10 +2188,9 @@ fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartB
 fn bundle_client_entry_cached(
     bundler: &ClientBundler,
     cache: &Path,
-    script_env: &[(String, String)],
     mode: &str,
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
-    let root = bundler.root.as_path();
+    let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
     match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
@@ -2680,7 +2210,7 @@ fn bundle_client_entry_cached(
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
-    bundler.bundle(cache, script_env, &[], false)?;
+    bundler.bundle(&[], false)?;
     if let Some((key, pinned)) = store.persist(cache) {
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
@@ -2693,7 +2223,7 @@ fn bundle_client_entry_cached(
         .ok_or_else(|| anyhow::anyhow!("client chunk index missing after successful bundle"))
 }
 
-// Client module count written by bundle-client.mjs, for update/boot narration.
+// Client module count written by the client bundle, for update/boot narration.
 fn client_module_count(cache: &Path) -> usize {
     std::fs::read_to_string(cache.join("client-entry.modules"))
         .ok()
@@ -2728,9 +2258,8 @@ fn script_env(
             "NODE_ENV".to_string(),
             inputs.app_env.node_env().to_string(),
         ),
-        ("OJ_MODE".to_string(), mode.to_string()),
     ];
-    vars.extend(start_script_vars(env, &inputs)?);
+    vars.extend(start_script_vars(env, &inputs));
     Ok(vars)
 }
 
@@ -3686,38 +3215,18 @@ mod tests {
 
     #[test]
     fn the_hmr_gate_turns_the_bundlers_hot_updates_off() {
-        let bundler = ClientBundler::new(Path::new("/app"), Path::new("/app/.oj-cache"));
-        let hot = |bundler: &ClientBundler| {
-            let env = bundler
-                .run_env(&[], &[PathBuf::from("/app/src/a.tsx")], false)
-                .unwrap();
-            let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
-            for key in [
-                "OJ_START_STYLE_EPOCH",
-                "OJ_START_CHANGED",
-                "OJ_START_REFRESH",
-            ] {
-                assert!(keys.contains(&key), "{key} missing from the run env");
-            }
-            env.into_iter()
-                .find(|(k, _)| k == "OJ_START_HOT")
-                .map(|(_, v)| v)
-        };
+        let bundler = ClientBundler::for_tests(Path::new("/app"));
         bundler.set_hot_enabled(true);
-        assert_eq!(hot(&bundler).as_deref(), Some("1"));
-        // A gated server: every edit reloads, so the script keeps build().
+        assert!(bundler.hot_enabled());
+        // A gated server: every edit reloads, so the bundle never goes hot.
         bundler.set_hot_enabled(false);
-        assert_eq!(hot(&bundler).as_deref(), Some("0"));
+        assert!(!bundler.hot_enabled());
     }
 
     #[test]
     fn a_style_edit_moves_the_bundlers_style_epoch() {
-        let bundler = ClientBundler::new(Path::new("/app"), Path::new("/app/.oj-cache"));
-        let epoch = || {
-            bundler
-                .style_epoch
-                .load(std::sync::atomic::Ordering::SeqCst)
-        };
+        let bundler = ClientBundler::for_tests(Path::new("/app"));
+        let epoch = || bundler.style_epoch();
         bundler.note_changes(&[PathBuf::from("/app/src/routes/about.tsx")]);
         assert_eq!(epoch(), 0, "a script edit keeps every style import cached");
         bundler.note_changes(&[
@@ -3776,7 +3285,7 @@ mod tests {
         std::fs::write(&tree, "// tree").unwrap();
         let inputs = vec![root.join("src/routes/index.tsx")];
         let outputs = [("routeTree.gen.ts", tree.as_path())];
-        let store = |kind: &str| codegen_store(&root, &cache, kind, "generate.mjs", None);
+        let store = |kind: &str| codegen_store(&root, &cache, kind, Some("generate.mjs"), None);
 
         store("route-tree").persist(&inputs, &outputs).unwrap();
         store("server-fn").persist(&inputs, &outputs).unwrap();
@@ -4370,7 +3879,7 @@ mod tests {
     // is the one way a NEW file changes a bundle whose inputs all resolved.
     // New is what the bundle never read, however the watcher reported it (a
     // file renamed into place is a rename event). The calls are
-    // glob-transform.mjs output, verbatim.
+    // the glob expansion's output (glob-scopes.json), verbatim.
     #[test]
     fn new_files_rebundle_only_when_a_glob_matches_them() {
         let dir = tmp("glob-scopes-load");
@@ -4568,7 +4077,7 @@ mod tests {
         assert!(known.adds(&ev(rename, &[&edited])).is_empty());
     }
 
-    // bundle-client.mjs leaves the generated route tree and its own dir out
+    // The client bundle leaves the generated route tree and its own dir out
     // of closure.json: a glob reaching either has not grown, or a restore of
     // such an app would miss on every boot.
     #[test]
@@ -4652,22 +4161,13 @@ mod tests {
     }
 
     // Vite's loadEnv rule for the Start scripts: `.env.<mode>` vars with any
-    // configured envPrefix (not just VITE_) pass, unprefixed ones never do; the
-    // prefixes and the per-environment defines travel alongside.
+    // configured envPrefix (not just VITE_) pass, unprefixed ones never do.
     #[test]
-    fn start_script_env_honors_env_prefix_and_environment_defines() {
+    fn start_script_env_honors_env_prefix() {
         let root = tmp("script-env");
         std::fs::write(
             root.join("oj.config.json"),
-            r#"{
-              "envPrefix": ["VITE_", "APP_"],
-              "resolve": { "conditions": ["custom", "development|production"] },
-              "define": { "__SHARED__": "1" },
-              "environments": {
-                "client": { "define": { "__SIDE__": "\"client\"" } },
-                "ssr": { "define": { "__SIDE__": "\"server\"", "__ONLY_SSR__": "true" } }
-              }
-            }"#,
+            r#"{ "envPrefix": ["VITE_", "APP_"] }"#,
         )
         .unwrap();
         std::fs::write(root.join(".env.staging"), "VITE_X=1\nAPP_Y=2\nSECRET_Z=3\n").unwrap();
@@ -4676,125 +4176,13 @@ mod tests {
         assert_eq!(get("VITE_X").as_deref(), Some("1"));
         assert_eq!(get("APP_Y").as_deref(), Some("2"));
         assert_eq!(get("SECRET_Z"), None);
-        assert_eq!(get("OJ_ENV_PREFIX").as_deref(), Some(r#"["VITE_","APP_"]"#));
-        assert_eq!(get("OJ_DEFINE").as_deref(), Some(r#"{"__SHARED__":"1"}"#));
-        assert_eq!(
-            get("OJ_DEFINE_CLIENT").as_deref(),
-            Some(r#"{"__SIDE__":"\"client\""}"#)
-        );
-        assert_eq!(
-            get("OJ_RESOLVE_CONDITIONS").as_deref(),
-            Some(r#"["custom","development"]"#)
-        );
 
-        // Conditions never cross runtimes: on a runner-backed ssr environment
-        // (the extractor's `ssr.runnerBacked`, set when a plugin declares a
-        // dev-runtime environment, e.g. the Cloudflare plugin's workerd
-        // DevEnvironments) the environment's own list —
-        // conditions AND externalConditions — describes workerd and never
-        // reaches the Node loader; Vite's Node server semantics apply instead
-        // (DEFAULT_SERVER_CONDITIONS / DEFAULT_EXTERNAL_CONDITIONS plus the
-        // user's RAW top-level lists). Without the flag a user list is honored
-        // verbatim, as Vite honors user conditions.
-        {
-            let runner_backed = tmp("script-env-runner-backed");
-            std::fs::write(
-                runner_backed.join("oj.config.json"),
-                r#"{ "ssr": { "runnerBacked": true, "resolve": { "conditions": ["workerd", "worker", "module", "browser", "development|production"], "externalConditions": ["workerd", "development|production"] } } }"#,
-            )
-            .unwrap();
-            let vars = start_script_env(&runner_backed, None, "serve", "development").unwrap();
-            let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-            assert_eq!(
-                var("OJ_RESOLVE_CONDITIONS").as_deref(),
-                Some(r#"["module","node","development","import","default"]"#),
-                "a runner-backed environment's workerd list must not steer the Node loader; node defaults apply"
-            );
-            assert_eq!(
-                var("OJ_EXTERNAL_CONDITIONS").as_deref(),
-                Some(r#"["node","module-sync"]"#),
-                "the workerd externalConditions never cross either; Vite's DEFAULT_EXTERNAL_CONDITIONS apply"
-            );
-
-            // The user's RAW top-level lists (the extractor's `rawResolve`)
-            // are user-authored and runtime-neutral: conditions join the node
-            // defaults, externalConditions replace them, dev|prod mapped.
-            let with_raw = tmp("script-env-runner-raw");
-            std::fs::write(
-                with_raw.join("oj.config.json"),
-                r#"{ "ssr": { "runnerBacked": true, "resolve": { "conditions": ["workerd", "module", "browser"] } },
-                     "rawResolve": { "conditions": ["custom", "module"], "externalConditions": ["custom-ext", "development|production"] },
-                     "resolve": { "conditions": ["module", "browser", "development|production"] } }"#,
-            )
-            .unwrap();
-            let vars = start_script_env(&with_raw, None, "serve", "development").unwrap();
-            let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-            assert_eq!(
-                var("OJ_RESOLVE_CONDITIONS").as_deref(),
-                Some(r#"["module","node","development","custom","import","default"]"#),
-                "raw top-level user conditions join the node defaults; the resolved client list never does"
-            );
-            assert_eq!(
-                var("OJ_EXTERNAL_CONDITIONS").as_deref(),
-                Some(r#"["custom-ext","development"]"#),
-                "raw top-level externalConditions replace the default, as a user list does in Vite"
-            );
-
-            let plain_browser = tmp("script-env-browser-honored");
-            std::fs::write(
-                plain_browser.join("oj.config.json"),
-                r#"{ "environments": { "ssr": { "resolve": { "conditions": ["browser", "module"] } } } }"#,
-            )
-            .unwrap();
-            let vars = start_script_env(&plain_browser, None, "serve", "development").unwrap();
-            let cond = vars
-                .iter()
-                .find(|(n, _)| n == "OJ_RESOLVE_CONDITIONS")
-                .map(|(_, v)| v.clone());
-            assert_eq!(
-                cond.as_deref(),
-                Some(r#"["browser","module"]"#),
-                "a user browser condition on a non-runner-backed environment is honored verbatim"
-            );
-
-            // The extraction shape on a Cloudflare Start app: the resolved ssr
-            // environment's workerd conditions arrive on the `ssr.resolve`
-            // sugar with `runnerBacked` alongside, and the resolved top-level
-            // list carries Vite's client defaults. Neither list may steer the
-            // Node loader: node defaults win.
-            let cf_shape = tmp("script-env-cf-shape");
-            std::fs::write(
-                cf_shape.join("oj.config.json"),
-                r#"{ "ssr": { "runnerBacked": true, "noExternal": true, "target": "node", "resolve": { "conditions": ["workerd", "worker", "module", "browser", "development|production"] } },
-                     "resolve": { "conditions": ["module", "browser", "development|production"] } }"#,
-            )
-            .unwrap();
-            let vars = start_script_env(&cf_shape, None, "serve", "development").unwrap();
-            let cond = vars
-                .iter()
-                .find(|(n, _)| n == "OJ_RESOLVE_CONDITIONS")
-                .map(|(_, v)| v.clone());
-            assert_eq!(
-                cond.as_deref(),
-                Some(r#"["module","node","development","import","default"]"#),
-                "neither the workerd sugar nor the client top-level list crosses into the Node loader"
-            );
-        }
-        let ssr: serde_json::Value = serde_json::from_str(&get("OJ_DEFINE_SSR").unwrap()).unwrap();
-        assert_eq!(ssr["__SIDE__"], "\"server\"");
-        assert_eq!(ssr["__ONLY_SSR__"], "true");
-
-        // Defaults: VITE_ only, and no prefix/define vars at all.
+        // Defaults: VITE_ only.
         let plain = tmp("script-env-plain");
         std::fs::write(plain.join(".env"), "VITE_X=1\nAPP_Y=2\n").unwrap();
         let vars = start_script_env(&plain, None, "serve", "development").unwrap();
         let names: Vec<&str> = vars.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"VITE_X"));
-        assert!(!names.contains(&"APP_Y"));
-        assert!(!names.contains(&"OJ_ENV_PREFIX"));
-        assert!(!names.contains(&"OJ_DEFINE_CLIENT"));
-        assert!(!names.contains(&"OJ_DEFINE_SSR"));
-        assert!(!names.contains(&"OJ_RESOLVE_CONDITIONS"));
+        assert_eq!(names, ["VITE_X"]);
     }
 
     // The static Cloudflare hint gates skipping the boot prewarm: true only
@@ -4899,48 +4287,6 @@ mod tests {
         );
         let vars = prefixed_dotenv_vars(&env, &app_env);
         assert_eq!(vars, vec![("VITE_A".to_string(), "file".to_string())]);
-    }
-
-    #[test]
-    fn start_script_env_carries_the_client_resolve_conditions() {
-        let root = tmp("client-conds");
-        std::fs::write(root.join("package.json"), r#"{"name":"app"}"#).unwrap();
-        let conds = |command: &str| -> Vec<String> {
-            let vars = start_script_env(&root, None, command, "development").unwrap();
-            let raw = &vars
-                .iter()
-                .find(|(k, _)| k == "OJ_CLIENT_CONDITIONS")
-                .expect("var")
-                .1;
-            serde_json::from_str(raw).unwrap()
-        };
-        // Defaults: Vite's client set, development for dev and production for build.
-        let dev = conds("serve");
-        assert!(
-            dev.iter().any(|c| c == "browser") && dev.iter().any(|c| c == "development"),
-            "{dev:?}"
-        );
-        let build = conds("build");
-        assert!(
-            build.iter().any(|c| c == "production") && !build.iter().any(|c| c == "development"),
-            "{build:?}"
-        );
-        // A user resolve.conditions list reaches the client bundle.
-        std::fs::write(
-            root.join("oj.config.json"),
-            r#"{"environments":{"client":{"resolve":{"conditions":["custom","development|production"]}}}}"#,
-        )
-        .unwrap();
-        let custom = conds("serve");
-        assert!(custom.iter().any(|c| c == "custom"), "{custom:?}");
-        assert!(
-            custom.iter().any(|c| c == "development"),
-            "placeholder mapped: {custom:?}"
-        );
-        assert!(
-            !custom.iter().any(|c| c == "browser"),
-            "user list replaces the defaults: {custom:?}"
-        );
     }
 
     #[test]

@@ -28,13 +28,13 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      # The optimizer, config-extraction and Start alias tests run the real
-      # vite/rolldown (and the config loader's esbuild) from the start-app
-      # fixture and skip without it, so it installs BEFORE the cargo run.
+      # The config-extraction and Start tests run the real vite (and the config
+      # loader's rolldown and esbuild) from the start-app fixture and skip
+      # without it, so it installs BEFORE the cargo run.
       # One workspace run only: a second `-p` scoped run resolves features
       # differently and rebuilt v8, which then could not find the rusty_v8
       # archive in the restored cache.
-      - name: install start-app fixture (bundlers for optimizer + config tests)
+      - name: install start-app fixture (vite for the config and Start tests)
         run: npm ci --prefix e2e/fixtures/start-app
       # The dev tests that need a page drive headless Chrome over the DevTools
       # protocol and skip without one; Playwright only installs the browser.
@@ -129,8 +129,6 @@ jobs:
         run: node e2e/ssr-prod.mjs
       - name: native addon re-registration across one-shot engines (rolldown 1.1.0)
         run: node e2e/native-addon-reregister.mjs
-      - name: vendored rolldown is authoritative for Start builds
-        run: node e2e/vendored-rolldown.mjs
       - name: server fast-paths (cache bound, mtime, hmr gating)
         run: |
           node e2e/memory-cache.mjs
@@ -183,6 +181,8 @@ jobs:
         run: node e2e/cjs-require-condition.mjs
       - name: optimizeDeps.exclude'd packages run through every plugin load/transform
         run: node e2e/plugin-excluded-dep.mjs
+      - name: start dev SSR, client bundle and prod build of the fixture app
+        run: node e2e/start.mjs
       - name: start prod build honors outDir, base, sourcemap, minify
         run: node e2e/start-build-options.mjs
       - name: throwing lifecycle hooks fail the build and dev startup
@@ -253,13 +253,13 @@ jobs:
         run: node e2e/server-fs-allow.mjs
       - name: optimized deps are versioned and served immutable with an ETag
         run: node e2e/dep-optimize.mjs
-      - name: a Vite 8 app without esbuild discovers and pre-bundles its deps with rolldown
+      - name: the dep scan resolves through the app's plugins and pre-bundles on oj's rolldown
         run: node e2e/dep-optimize-rolldown.mjs
       - name: a dep the scan missed is discovered at serve time and re-optimized
         run: node e2e/dep-optimize-discover.mjs
       - name: an optimized dep imported by another optimized dep evaluates once
         run: node e2e/dep-optimize-entry-instance.mjs
-      - name: the in-host scan keeps answering plugin hooks (no watchdog starvation)
+      - name: the dep scan keeps the plugin host answering hooks (no watchdog starvation)
         run: node e2e/scan-starvation.mjs
       - name: thousands of plugin fs.watch handles register and deliver under a write storm
         run: node e2e/fs-watch-many-watchers.mjs

@@ -44,9 +44,18 @@ rustls-pemfile = "2.2"
 hyper = "1.11"
 hyper-util = { version = "0.1.20", features = ["server", "server-auto", "http1", "http2", "service", "tokio"] }
 futures-util = "0.3"
-rolldown = "=1.2.14"
+# `experimental`: the dep scan (Bundler::scan), which crawls without generating.
+rolldown = { version = "=1.2.14", features = ["experimental"] }
 rolldown_common = "=1.2.14"
 rolldown_plugin = "=1.2.14"
+rolldown_utils = "=1.2.14"
+rolldown_error = "=1.2.14"
+oxc_allocator.workspace = true
+oxc_parser.workspace = true
+oxc_span.workspace = true
+oxc_syntax.workspace = true
+arcstr = "1.2.0"
+rustc-hash = "2.1.3"
 
 [dev-dependencies]
 tempfile.workspace = true

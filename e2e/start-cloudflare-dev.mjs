@@ -26,9 +26,7 @@ const REQ_PORT = 6840;
 // stdout so a stale server never makes the browser hit the wrong server.
 let PORT = REQ_PORT;
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start cloudflare dev: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");

@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 //
-// A Start dev rebundle that fails before the app's build runs (here the
-// vendored rolldown vanishing mid-session, as a package install can do to an
-// app's own copy) names its cause in the overlay and the dev server log, never
+// A Start dev rebundle that fails (here an edit importing a package that is
+// not installed) names its cause in the overlay and the dev server log, never
 // a generic "client bundle failed" or "change outside every served graph".
-// Once rolldown is back, the next bundle clears the overlay.
+// Once the import is fixed, the next bundle clears the overlay.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -21,9 +19,9 @@ const app = path.join(repo, "e2e", "fixtures", "start-app");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 5404);
 const DIALOG = 'div[role="dialog"][aria-label="Build error"]';
-const appRolldown = path.join(app, "node_modules", "rolldown");
+const MISSING = "oj-rebundle-missing-dep";
 
-if (!fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) || !fs.existsSync(appRolldown)) {
+if (!fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"))) {
   console.log("SKIP start rebundle failure: fixture deps not installed");
   process.exit(0);
 }
@@ -37,7 +35,7 @@ const must = (cond, msg) => {
 const aboutFile = path.join(app, "src", "routes", "about.tsx");
 const originalAbout = fs.readFileSync(aboutFile, "utf8");
 // The marker is set after hydration, so it shows what the client bundle runs.
-const about = (marker) => `import { createRoute } from "@tanstack/react-router";
+const about = (marker, extra = "") => `import { createRoute } from "@tanstack/react-router";${extra}
 import { useEffect, useState } from "react";
 
 import { rootRoute } from "./__root";
@@ -60,24 +58,16 @@ function About() {
 }
 `;
 
-// A vendor dir is the one rolldown oj's bundler may use, so unlinking it
-// makes rolldown unresolvable without touching the fixture's install.
-const vendor = fs.mkdtempSync(path.join(os.tmpdir(), "oj-rolldown-vendor-"));
-const vendored = path.join(vendor, "node_modules", "rolldown");
-fs.mkdirSync(path.dirname(vendored), { recursive: true });
-const linkRolldown = () => fs.symlinkSync(appRolldown, vendored, "dir");
-
 let srv;
 let browser;
 let log = "";
 try {
-  linkRolldown();
   fs.writeFileSync(aboutFile, about("client-one"));
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
     stdio: ["ignore", "pipe", "pipe"],
     // Ungated hot mode: an editor flush gate would hold the recovery reload.
-    env: { ...process.env, OJ_VENDORED_ROLLDOWN: vendor, LOVABLE_DEV_SERVER: "0", OJ_HMR_GATE: "0" },
+    env: { ...process.env, LOVABLE_DEV_SERVER: "0", OJ_HMR_GATE: "0" },
   });
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
@@ -88,28 +78,25 @@ try {
   await page.goto(`http://localhost:${PORT}/about`, { waitUntil: "load", timeout: 30000 });
   await page.waitForSelector('[data-mark="client"]:text("client-one")', { timeout: 30000 });
 
-  fs.rmSync(vendored);
   const logFrom = log.length;
-  fs.writeFileSync(aboutFile, about("client-two"));
+  fs.writeFileSync(aboutFile, about("client-two", `\nimport ${JSON.stringify(MISSING)};`));
   const after = () => log.slice(logFrom);
   const deadline = Date.now() + 30000;
   while (!after().includes("client bundle failed") && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 100));
   }
   must(
-    /client bundle failed.*has no node_modules\/rolldown/.test(after()),
+    new RegExp(`client bundle failed.*failed to resolve import "${MISSING}"`).test(after()),
     `the dev server log does not name the bundler's error:\n${after()}`,
   );
   must(
     !after().includes("change outside every served graph"),
     `the failed rebundle was logged as a change outside every served graph:\n${after()}`,
   );
-  const named = await page
-    .waitForSelector(`${DIALOG}:has-text("has no node_modules/rolldown")`, { timeout: 30000 })
-    .then(
-      () => true,
-      () => false,
-    );
+  const named = await page.waitForSelector(`${DIALOG}:has-text("${MISSING}")`, { timeout: 30000 }).then(
+    () => true,
+    () => false,
+  );
   if (!named) {
     const text = await page
       .locator(DIALOG)
@@ -117,12 +104,11 @@ try {
       .catch(() => "(no overlay)");
     throw new Error(`the overlay does not name the bundler's error:\n${text}`);
   }
-  console.log("start dev: a rebundle that fails before the build names its error in the overlay and the log");
+  console.log("start dev: a failed rebundle names its error in the overlay and the log");
 
-  linkRolldown();
   fs.writeFileSync(aboutFile, about("client-three"));
   await page.waitForSelector(DIALOG, { state: "detached", timeout: 30000 });
-  console.log("start dev: with rolldown back, the next bundle clears the overlay");
+  console.log("start dev: with the import fixed, the next bundle clears the overlay");
   console.log("\nSTART REBUNDLE FAILURE PASSED");
 } catch (e) {
   console.error("\nSTART REBUNDLE FAILURE FAILED:", e.message);
@@ -132,5 +118,4 @@ try {
   await browser?.close();
   srv?.kill("SIGKILL");
   fs.writeFileSync(aboutFile, originalAbout);
-  fs.rmSync(vendor, { recursive: true, force: true });
 }

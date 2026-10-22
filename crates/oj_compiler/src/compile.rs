@@ -303,6 +303,32 @@ fn validate_emitted(path: &Path, code: &str, source_type: SourceType) -> Result<
     Ok(())
 }
 
+/// One module's TypeScript strip and JSX transform on its way through a
+/// bundler, with React Fast Refresh registration in dev where plugin-react
+/// would add it: what Vite's oxc plugin does for a bundled environment. The
+/// JavaScript out and its source map JSON.
+pub fn transform_for_bundle(
+    path: &Path,
+    source_text: &str,
+    jsx: &JsxConfig,
+    dev: bool,
+) -> Result<(String, Option<String>), CompileError> {
+    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
+    let opts = CompileOptions {
+        dev,
+        refresh: dev,
+        sourcemap: true,
+        jsx: jsx.clone(),
+        ..CompileOptions::prod()
+    };
+    let allocator = Allocator::default();
+    let mut program = parse(&allocator, path, source_text, source_type)?;
+    transform(&allocator, path, source_text, &opts, &mut program)?;
+    let (code, map) = codegen(&program, path, &opts, false, &[]);
+    validate_emitted(path, &code, source_type)?;
+    Ok((code, map))
+}
+
 /// TypeScript strip, JSX and (dev) React Refresh instrumentation.
 fn transform<'a>(
     allocator: &'a Allocator,

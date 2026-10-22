@@ -37,9 +37,7 @@ let chromium = null;
 try {
   chromium = (await import("playwright")).chromium;
 } catch {}
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed || !chromium) {
   console.log("SKIP start cloudflare hmr: fixture deps or playwright not installed");
   process.exit(0);
@@ -188,7 +186,6 @@ async function served(label, marker, phase, { beforeFirstDocument } = {}) {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" },
   });
-  ojGroup = srv.pid;
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
   const exited = new Promise((r) => srv.once("exit", r));
@@ -244,17 +241,6 @@ async function served(label, marker, phase, { beforeFirstDocument } = {}) {
     }, 2000).unref();
     await exited;
   }
-}
-
-// Whether a Start client bundler runs under this test's oj (its process
-// group, `detached` above).
-let ojGroup = null;
-function bundlerRunning() {
-  const rows = execSync("ps -A -o pgid=,command=", { encoding: "utf8" }).split("\n");
-  return rows.some((r) => {
-    const [pgid, ...cmd] = r.trim().split(/\s+/);
-    return Number(pgid) === ojGroup && cmd.join(" ").includes("bundle-client");
-  });
 }
 
 async function hydrate(page, base) {
@@ -326,8 +312,6 @@ async function workerDocuments(base, log, page) {
   must(await rendered(), `the worker's document lacks a note renamed into its glob:\n${log().slice(-3000)}`);
   console.log("start-cloudflare-hmr: a note renamed into the worker's glob reached its document");
   must(!/client bundl(ing|ed)/.test(log()), `the Start client was bundled though no page loads it:\n${log()}`);
-  // Nor is the bundler process started, which holds the bundle's memory.
-  must(!bundlerRunning(), "a Start client bundler process is running though no page loads its bundle");
   console.log("start-cloudflare-hmr: worker documents, the Start client never bundled");
 }
 
