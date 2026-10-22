@@ -79,7 +79,8 @@ try {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, OJ_VENDORED_ROLLDOWN: vendor },
+    // Ungated hot mode: an editor flush gate would hold the recovery reload.
+    env: { ...process.env, OJ_VENDORED_ROLLDOWN: vendor, LOVABLE_DEV_SERVER: "0", OJ_HMR_GATE: "0" },
   });
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
