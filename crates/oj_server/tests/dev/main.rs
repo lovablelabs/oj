@@ -53,6 +53,7 @@ mod optimize_plan;
 mod plugin_close_hooks;
 mod plugin_ctx_chain;
 mod plugin_error_surfaced;
+mod plugin_filter_globs;
 mod plugin_middleware;
 mod plugin_module_graph;
 mod plugin_object_hooks;

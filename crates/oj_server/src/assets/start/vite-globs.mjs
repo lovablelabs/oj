@@ -54,9 +54,11 @@ const tinyglobby = () => viteGlobs().tinyglobby;
 // glob joined to `cwd` unless it starts with `**` or is absolute.
 const slash = (p) => p.replace(/\\/g, "/");
 const idFilterCache = new Map();
+export function idFilterGlob(pattern, cwd) {
+  return pattern.startsWith("**") || posix.isAbsolute(slash(pattern)) ? slash(pattern) : slash(join(cwd, pattern));
+}
 export function idFilterRegExp(pattern, cwd) {
-  const glob =
-    pattern.startsWith("**") || posix.isAbsolute(slash(pattern)) ? slash(pattern) : slash(join(cwd, pattern));
+  const glob = idFilterGlob(pattern, cwd);
   let re = idFilterCache.get(glob);
   if (!re) {
     re = viteGlobs().picomatch.makeRe(glob, { dot: true });

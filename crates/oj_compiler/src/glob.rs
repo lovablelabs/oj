@@ -269,12 +269,14 @@ impl GlobCall {
 /// matches when an affirmed pattern does and no negated one does. `*` and
 /// `**` stop at a dot-led part the pattern does not spell, and a
 /// `node_modules` part below the pattern's scan base is ignored.
+#[derive(Debug)]
 pub struct GlobMatcher {
     affirmed: Vec<Affirmed>,
     negated: globset::GlobSet,
     exhaustive: bool,
 }
 
+#[derive(Debug)]
 struct Affirmed {
     glob: globset::GlobMatcher,
     /// pm.scan's base, unescaped: the literal directory the pattern starts in.
@@ -320,6 +322,24 @@ impl GlobMatcher {
                 .unwrap_or_else(|_| globset::GlobSet::empty()),
             exhaustive: call.exhaustive,
         }
+    }
+
+    /// Vite's pluginFilter matcher for a string `filter.id` already joined to
+    /// its cwd (`picomatch(glob, { dot: true })`): no `node_modules` ignore,
+    /// dot-led parts matched. None for an extglob (`@(..)`, `!(..)`, ...),
+    /// which picomatch reads there and globset cannot spell.
+    pub fn plugin_id_filter(glob: &str) -> Option<GlobMatcher> {
+        if ["@(", "!(", "+(", "?(", "*("]
+            .iter()
+            .any(|x| glob.contains(x))
+        {
+            return None;
+        }
+        Some(GlobMatcher::new(&GlobCall {
+            patterns: vec![glob.to_string()],
+            exhaustive: true,
+            case_sensitive: true,
+        }))
     }
 
     /// Whether `file` (absolute, `/`-separated) is in the call's expansion.

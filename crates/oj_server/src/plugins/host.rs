@@ -1746,30 +1746,30 @@ impl PluginHost {
         self.call_flag("getHasLoad", false).await
     }
 
-    /// `filter.code` include patterns of every object-form transform hook, as
-    /// regex sources; dependency transforms are gated on these.
-    pub async fn dep_transform_filters(&self) -> Vec<String> {
+    /// `filter.code` include patterns of every object-form transform hook;
+    /// dependency transforms are gated on these.
+    pub async fn dep_transform_filters(&self) -> Vec<HookFilter> {
         self.call_ok("getDepTransformFilters")
             .await
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .map(|s| HookFilter::list_from_json(&s))
             .unwrap_or_default()
     }
 
     /// `filter.id` include patterns of every object-form `load` hook: deps cost
     /// no RPC unless a plugin asked for them.
-    pub async fn dep_load_filters(&self) -> Vec<String> {
+    pub async fn dep_load_filters(&self) -> Vec<HookFilter> {
         self.call_ok("getDepLoadFilters")
             .await
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .map(|s| HookFilter::list_from_json(&s))
             .unwrap_or_default()
     }
 
     /// `filter.id` include patterns of every object-form `resolveId` hook: a
     /// non-bare import is offered to plugin resolveId only when it matches one.
-    pub async fn resolve_id_filters(&self) -> Vec<String> {
+    pub async fn resolve_id_filters(&self) -> Vec<HookFilter> {
         self.call_ok("getResolveIdFilters")
             .await
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .map(|s| HookFilter::list_from_json(&s))
             .unwrap_or_default()
     }
 

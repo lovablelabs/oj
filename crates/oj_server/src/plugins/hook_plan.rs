@@ -9,8 +9,49 @@ pub struct HookFilterPlan {
 
 #[derive(Debug, Clone)]
 pub struct PluginFilter {
-    pub id: Vec<regex::Regex>,
-    pub code: Vec<regex::Regex>,
+    pub id: Vec<HookFilter>,
+    pub code: Vec<HookFilter>,
+}
+
+/// One `filter` pattern as the host's gatePatterns hands it over: a Rust
+/// regex source (`{re}`), Vite's cwd-joined picomatch glob for a string id
+/// (`{glob}`), or `{any}` for one it could not carry. A pattern that does not
+/// compile here matches everything: the gate may over-match, never under.
+#[derive(Debug, Clone)]
+pub enum HookFilter {
+    Regex(regex::Regex),
+    Glob(std::sync::Arc<oj_compiler::glob::GlobMatcher>),
+    Any,
+}
+
+impl HookFilter {
+    pub fn from_json(v: &serde_json::Value) -> HookFilter {
+        if let Some(re) = v.get("re").and_then(|s| s.as_str()) {
+            return regex::Regex::new(re).map_or(HookFilter::Any, HookFilter::Regex);
+        }
+        if let Some(glob) = v.get("glob").and_then(|s| s.as_str()) {
+            return oj_compiler::glob::GlobMatcher::plugin_id_filter(glob)
+                .map_or(HookFilter::Any, |m| {
+                    HookFilter::Glob(std::sync::Arc::new(m))
+                });
+        }
+        HookFilter::Any
+    }
+
+    /// A JSON array of patterns.
+    pub fn list_from_json(text: &str) -> Vec<HookFilter> {
+        serde_json::from_str::<Vec<serde_json::Value>>(text)
+            .map(|items| items.iter().map(HookFilter::from_json).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn is_match(&self, input: &str) -> bool {
+        match self {
+            HookFilter::Regex(re) => re.is_match(input),
+            HookFilter::Glob(glob) => glob.is_match(input),
+            HookFilter::Any => true,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -45,14 +86,9 @@ impl HookFilterPlan {
             .map(|a| a.as_slice())
             .unwrap_or(&[])
         {
-            let compile = |key: &str| -> Option<Vec<regex::Regex>> {
-                let mut out = Vec::new();
-                for s in entry.get(key).and_then(|x| x.as_array())? {
-                    // A JS regex the regex crate cannot compile (lookaround,
-                    // backrefs) cannot gate; the plugin then always crosses.
-                    out.push(regex::Regex::new(s.as_str()?).ok()?);
-                }
-                Some(out)
+            let compile = |key: &str| -> Option<Vec<HookFilter>> {
+                let items = entry.get(key).and_then(|x| x.as_array())?;
+                Some(items.iter().map(HookFilter::from_json).collect())
             };
             match (compile("id"), compile("code")) {
                 (Some(id), Some(code)) if !id.is_empty() || !code.is_empty() => {
@@ -86,10 +122,10 @@ impl HookFilterPlan {
         };
         let id = id.as_ref();
         self.plugins.iter().any(|p| {
-            let id_ok = p.id.is_empty() || p.id.iter().any(|re| re.is_match(id));
+            let id_ok = p.id.is_empty() || p.id.iter().any(|f| f.is_match(id));
             let code_ok = p.code.is_empty()
                 || match code {
-                    Some(c) => p.code.iter().any(|re| re.is_match(c)),
+                    Some(c) => p.code.iter().any(|f| f.is_match(c)),
                     None => true,
                 };
             id_ok && code_ok
