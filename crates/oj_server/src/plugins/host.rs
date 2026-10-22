@@ -119,6 +119,7 @@ fn new_host_engine(
 /// Writes the boot module the host's engine calls before the host module.
 fn ensure_boot_module(root: &Path) -> Result<String, String> {
     let dir = oj_cache::cache_root(root);
+    ensure_asset(&dir, "vite-config-node.mjs", VITE_CONFIG_NODE_JS).map_err(|e| e.to_string())?;
     ensure_asset(&dir, "plugin-host-boot.mjs", PLUGIN_HOST_BOOT_JS).map_err(|e| e.to_string())?;
     Ok(dir
         .join("plugin-host-boot.mjs")

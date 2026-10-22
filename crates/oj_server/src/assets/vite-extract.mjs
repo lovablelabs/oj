@@ -6,7 +6,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
-import { asNode } from "./vite-config-node.mjs";
+import { asNode, esmEntry } from "./vite-config-node.mjs";
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -633,7 +633,8 @@ async function loadConfig() {
   // An error raised while vite's own loader RAN the config file (as opposed
   // to vite itself being unusable, which lands in viteErr).
   let loadErr = null;
-  const vitePath = resolvePkg("vite");
+  const resolvedVite = resolvePkg("vite");
+  const vitePath = resolvedVite && esmEntry(resolvedVite, "vite");
   if (vitePath) {
     try {
       const vite = await import(pathToFileURL(vitePath).href);

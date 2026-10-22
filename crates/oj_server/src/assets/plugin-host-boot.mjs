@@ -6,6 +6,7 @@
 // leaves running at import would hold every later eval, and the host's boot
 // with it, for as long as the timer lives.
 
+import { esmEntry } from "./vite-config-node.mjs";
 import { createRequire } from "node:module";
 
 // The host's identity, read by plugin-host.mjs when it is imported.
@@ -18,6 +19,6 @@ export function seed(boot) {
 // imports for real.
 export async function warmVite(anchor) {
   try {
-    await import(createRequire(anchor).resolve("vite"));
+    await import(esmEntry(createRequire(anchor).resolve("vite"), "vite"));
   } catch {}
 }

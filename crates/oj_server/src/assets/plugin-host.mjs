@@ -20,7 +20,7 @@ import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
-import { asNode } from "./vite-config-node.mjs";
+import { appViteEntry, asNode } from "./vite-config-node.mjs";
 import { idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
@@ -789,7 +789,7 @@ async function loadUserResolvedViteConfig() {
   const appRoot = initial.config?.root ?? process.cwd();
   let vite;
   try {
-    vite = await import(createRequire(appRoot + "/package.json").resolve("vite"));
+    vite = await import(appViteEntry(appRoot));
   } catch {
     return null;
   }
@@ -1131,10 +1131,9 @@ async function bundleViteConfigFile(configPath, appRoot) {
 
 async function loadViteConfig(configPath) {
   const appRoot = initial.config?.root ?? process.cwd();
-  const req = createRequire(appRoot + "/package.json");
   let vite = null;
   try {
-    vite = await import(req.resolve("vite"));
+    vite = await import(appViteEntry(appRoot));
   } catch (e) {
     process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} vite unavailable (${e}); bundling config directly\n`);
   }
@@ -1393,7 +1392,7 @@ let rollupVersion = "4.0.0";
 let rolldownVersion = "1.0.0";
 try {
   const _root = initial.config?.root ?? process.cwd();
-  const _vite = await import(createRequire(_root + "/package.json").resolve("vite"));
+  const _vite = await import(appViteEntry(_root));
   if (typeof _vite.parseAst === "function") viteParseAst = _vite.parseAst;
   if (typeof _vite.transformWithOxc === "function") viteTransformWithOxc = _vite.transformWithOxc;
   if (typeof _vite.createFilter === "function") viteCreateFilter = _vite.createFilter;
@@ -2117,7 +2116,7 @@ async function loadAppVite() {
   if (appVite) return appVite;
   try {
     const root = (resolvedConfig && resolvedConfig.root) || (initial.config && initial.config.root) || process.cwd();
-    appVite = await import(createRequire(root + "/package.json").resolve("vite"));
+    appVite = await import(appViteEntry(root));
   } catch (e) {
     process.stderr.write(`${OJ} plugin host: could not load app vite: ${(e && e.message) || e}\n`);
   }

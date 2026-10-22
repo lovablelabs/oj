@@ -72,6 +72,7 @@ mod tailwind_js_import;
 mod tailwind_postcss_imports;
 mod tailwind_sheet_stale;
 mod unresolved_bare;
+mod vite_esm_entry;
 mod vite_hmr_socket;
 mod warm_transform_virtual;
 mod wasm;
