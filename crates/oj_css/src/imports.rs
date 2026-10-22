@@ -131,7 +131,10 @@ fn hoist_imports(css: &str) -> String {
     while let Some(pos) = rest.find(IMPORT) {
         let (before, at) = rest.split_at(pos);
         body.push_str(before);
-        match at_statement_start(before).then(|| at.find(';')).flatten() {
+        match at_statement_start(before)
+            .then(|| statement_end(at))
+            .flatten()
+        {
             Some(end) => {
                 imports.push(&at[..=end]);
                 rest = &at[end + 1..];
@@ -164,6 +167,39 @@ fn hoist_imports(css: &str) -> String {
     out
 }
 
+/// The contents of the string `s` opens with and the bytes through its
+/// closing quote.
+fn quoted(s: &str) -> Option<(&str, usize)> {
+    let quote = s.chars().next().filter(|&q| q == '"' || q == '\'')?;
+    let close = s[1..].find(quote)?;
+    Some((&s[1..1 + close], close + 2))
+}
+
+/// The `;` ending the statement `s` starts, skipping strings and parens (a
+/// Google Fonts url carries `;`s), as PostCSS's tokenizer does. None when a
+/// block opens or closes first.
+fn statement_end(s: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut depth = 0usize;
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                chars.next();
+            }
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => depth = depth.saturating_sub(1),
+            (None, ';') if depth == 0 => return Some(i),
+            (None, '{' | '}') => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// An inlinable `@import`: `"x"`, `'x'`, `url(x)` or `url("x")`, optionally
 /// with a media query.
 #[derive(Debug, PartialEq, Eq)]
@@ -181,20 +217,23 @@ impl PlainImport {
         let trimmed = after.trim_start();
         let ws = after.len() - trimmed.len();
         let (spec, used) = if let Some(inner) = trimmed.strip_prefix("url(") {
-            let close = inner.find(')')?;
-            let raw = inner[..close].trim().trim_matches(['"', '\'']);
+            let body = inner.trim_start();
+            let lead = inner.len() - body.len();
+            let (raw, close) = match quoted(body) {
+                Some((raw, end)) => (raw, lead + end + body[end..].find(')')?),
+                None => {
+                    let close = inner.find(')')?;
+                    (inner[..close].trim(), close)
+                }
+            };
             (raw, "url(".len() + close + 1)
         } else {
-            let quote = trimmed.chars().next().filter(|&q| q == '"' || q == '\'')?;
-            let close = trimmed[1..].find(quote)?;
-            (&trimmed[1..1 + close], close + 2)
+            let (raw, end) = quoted(trimmed)?;
+            (raw, end)
         };
         let tail = &trimmed[used..];
-        let semi = tail.find(';')?;
+        let semi = statement_end(tail)?;
         let cond = &tail[..semi];
-        if cond.contains(['{', '}']) {
-            return None;
-        }
         let cond = cond.trim();
         if cond.contains("layer(") || cond.contains("supports(") || cond.starts_with("layer") {
             return None;
@@ -539,5 +578,46 @@ mod tests {
             out.starts_with("@import url(https://x.test/a.css);"),
             "{out}"
         );
+    }
+
+    const FONTS: &str =
+        "@import url('https://fonts.test/css2?family=X:wght@400;500;700&display=swap');";
+
+    #[test]
+    fn remote_import_with_semicolons_hoists_whole() {
+        let out = hoist_imports(&format!(".a{{}}\n{FONTS}\n.b{{}}\n"));
+        assert!(out.starts_with(&format!("{FONTS}\n")), "{out}");
+        assert!(out.contains(".a{}") && out.contains(".b{}"), "{out}");
+    }
+
+    #[test]
+    fn statement_end_skips_strings_and_parens() {
+        assert_eq!(statement_end(" url('a;b') print;x"), Some(17));
+        assert_eq!(statement_end(" \"a;b\";"), Some(6));
+        assert_eq!(statement_end(" url(a;b);"), Some(9));
+        assert_eq!(statement_end(" \"a\\\";\";"), Some(7));
+        assert_eq!(statement_end(" x { y; }"), None);
+    }
+
+    #[test]
+    fn relative_imports_after_a_remote_font_import_are_inlined() {
+        let base = std::env::temp_dir().join(format!("oj-css-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("styles")).unwrap();
+        std::fs::write(base.join("styles/a.css"), ".from-a { color: red; }\n").unwrap();
+        std::fs::write(base.join("styles/b.css"), ".from-b { color: blue; }\n").unwrap();
+        let src = format!(
+            "{FONTS}\n@import \"./styles/a.css\";\n@import './styles/b.css';\n\n.app {{ margin: 0; }}\n"
+        );
+        let out = inline_imports(&src, &base.join("index.css")).unwrap();
+        assert!(out.starts_with(&format!("{FONTS}\n")), "{out}");
+        assert!(!out.contains("./styles/"), "{out}");
+        let css = compile_css_dev("/index.css", &out, false, &CssResolve::default())
+            .unwrap()
+            .css;
+        for rule in [".from-a", ".from-b", ".app", "wght@400;500;700"] {
+            assert!(css.contains(rule), "{rule} kept:\n{css}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

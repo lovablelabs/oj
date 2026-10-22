@@ -285,12 +285,39 @@ fn source_digest(source: &str) -> u64 {
     h.finish()
 }
 
+/// A Tailwind sheet compiled, with the files its `@import`s inlined. Under a
+/// PostCSS config, Vite's compileCSS runs postcss-import ahead of the app's
+/// plugins (Tailwind v3 resolves no `@import`); without one, Tailwind v4's
+/// compiler resolves them itself.
 pub(crate) async fn compile_tailwind(
+    state: &Arc<ServerState>,
+    file: &Path,
+    url: &str,
+    source: &str,
+) -> Result<(String, Vec<PathBuf>), String> {
+    state.tailwind_urls.lock().unwrap().insert(url.to_string());
+    let mut imported = Vec::new();
+    let inlined;
+    let source = if state.has_postcss {
+        inlined = oj_css::inline_imports_collecting(
+            source,
+            file,
+            &state.css_resolve.as_ref(),
+            &mut imported,
+        )?;
+        inlined.as_str()
+    } else {
+        source
+    };
+    let css = compile_tailwind_sheet(state, url, source).await?;
+    Ok((css, imported))
+}
+
+async fn compile_tailwind_sheet(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    state.tailwind_urls.lock().unwrap().insert(url.to_string());
     let digest = source_digest(source);
     let sheets = &state.tailwind_sheets;
     if let Some(css) = sheets.get(url, digest) {

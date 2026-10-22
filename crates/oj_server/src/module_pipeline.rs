@@ -69,10 +69,19 @@ pub(crate) async fn ensure_module_as(
     };
     record_glob_importer(state, file, url, &source);
     if ext == Some("css") && is_tailwind_css(&source) {
-        let css = compile_tailwind(state, url, &source).await?;
+        let (css, imported) = compile_tailwind(state, file, url, &source).await?;
+        // Inlined files are the sheet's imports, so an edit to one updates it.
+        let mut imports: Vec<String> = imported
+            .iter()
+            .filter(|p| p.starts_with(&state.root) && p.as_path() != file)
+            .map(|p| url_of(&state.root, p))
+            .collect();
+        imports.sort();
+        imports.dedup();
         let module = CachedModule {
             is_boundary: true,
             kind: "css".into(),
+            imports,
             ..code_module(css)
         };
         return Ok(register_uncached(state, url, module));

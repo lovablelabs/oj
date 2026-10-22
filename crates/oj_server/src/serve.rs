@@ -375,8 +375,8 @@ async fn serve_raw_file(state: &Arc<ServerState>, file: &Path, ext: &str) -> Res
                 return ([(header::CONTENT_TYPE, "text/css")], source).into_response();
             }
             let url = url_of(&state.root, file);
-            match compile_tailwind(state, &url, &source).await {
-                Ok(css) => (
+            match compile_tailwind(state, file, &url, &source).await {
+                Ok((css, _)) => (
                     [
                         (header::CONTENT_TYPE, "text/css"),
                         (header::CACHE_CONTROL, "no-cache"),
