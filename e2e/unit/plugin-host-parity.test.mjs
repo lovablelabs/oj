@@ -49,8 +49,10 @@ test("ConfigEnv carries isSsrBuild / isPreview and apply() sees the merged confi
   });
   try {
     const seen = await probe(host, fx);
-    assert.deepEqual(seen.apply.env, { command: "build", mode: "production", isSsrBuild: true, isPreview: false });
-    assert.deepEqual(seen.configEnv, { command: "build", mode: "production", isSsrBuild: true, isPreview: false });
+    // Even in the ssr environment's host: Vite takes isSsrBuild from the
+    // inline config's build.ssr alone, which an environment build never sets.
+    assert.deepEqual(seen.apply.env, { command: "build", mode: "production", isSsrBuild: false, isPreview: false });
+    assert.deepEqual(seen.configEnv, { command: "build", mode: "production", isSsrBuild: false, isPreview: false });
     assert.equal(seen.apply.mode, "production", "apply(config) carries mode like Vite's { ...config, mode }");
     assert.equal(seen.apply.root, fx.root, "apply(config) is the merged config, not an empty shape");
   } finally {

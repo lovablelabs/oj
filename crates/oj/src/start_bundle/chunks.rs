@@ -183,24 +183,33 @@ impl Guard {
     }
 }
 
-/// The module infos a chunking pass has sent to the host, keyed by the
-/// pass: a pass's [`ChunkingContext`] lives for the whole pass.
+/// The module infos a chunking pass has sent to the host. A pass is its
+/// [`ChunkingContext`]; holding it keeps a later pass from reusing its
+/// address and reading as the same pass.
 #[derive(Default)]
 struct Sent {
-    generation: usize,
+    pass: Option<ChunkingContext>,
+    generation: u64,
     ids: HashSet<String>,
 }
 
 static SENT: std::sync::LazyLock<Mutex<Sent>> = std::sync::LazyLock::new(Default::default);
 
-/// The infos of `ids` the host has not seen this pass, as Rollup's
-/// ModuleInfo (code left out), and the pass's generation.
+/// The pass's generation and the infos the host has not seen this pass, as
+/// Rollup's ModuleInfo (code left out): those of `ids` and of every module
+/// reachable from them through imports and importers, so `getModuleInfo`
+/// answers a walk of the graph, as it does under Vite, and not only for the
+/// ids a function was called with.
 fn infos_to_send(ids: &[String], ctx: &ChunkingContext) -> (u64, Option<String>) {
-    let generation = std::ptr::from_ref(&**ctx).cast::<()>() as usize;
     let mut sent = SENT.lock().unwrap();
-    if sent.generation != generation {
+    if !sent
+        .pass
+        .as_ref()
+        .is_some_and(|pass| std::ptr::eq(&**pass, &**ctx))
+    {
         *sent = Sent {
-            generation,
+            pass: Some(ctx.clone()),
+            generation: sent.generation + 1,
             ids: HashSet::new(),
         };
     }
@@ -210,25 +219,48 @@ fn infos_to_send(ids: &[String], ctx: &ChunkingContext) -> (u64, Option<String>)
             .collect::<Vec<_>>()
     };
     let mut infos = Vec::new();
-    for id in ids {
+    let mut queue: Vec<String> = ids.to_vec();
+    while let Some(id) = queue.pop() {
         if !sent.ids.insert(id.clone()) {
             continue;
         }
-        if let Some(info) = ctx.get_module_info(id) {
-            infos.push(serde_json::json!({
-                "id": info.id.as_str(),
-                "isEntry": info.is_entry,
-                "importers": list(&info.importers),
-                "dynamicImporters": list(&info.dynamic_importers),
-                "importedIds": list(&info.imported_ids),
-                "dynamicallyImportedIds": list(&info.dynamically_imported_ids),
-                "exports": info.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
-                "code": null,
-            }));
+        let Some(info) = ctx.get_module_info(&id) else {
+            continue;
+        };
+        for linked in [
+            &info.importers,
+            &info.dynamic_importers,
+            &info.imported_ids,
+            &info.dynamically_imported_ids,
+        ] {
+            queue.extend(
+                linked
+                    .iter()
+                    .map(|m| m.as_str())
+                    .filter(|m| !sent.ids.contains(*m))
+                    .map(str::to_string),
+            );
         }
+        infos.push(serde_json::json!({
+            "id": info.id.as_str(),
+            "isEntry": info.is_entry,
+            "importers": list(&info.importers),
+            "dynamicImporters": list(&info.dynamic_importers),
+            "importedIds": list(&info.imported_ids),
+            "dynamicallyImportedIds": list(&info.dynamically_imported_ids),
+            "exports": info.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+            "code": null,
+        }));
     }
     let json = (!infos.is_empty()).then(|| Value::Array(infos).to_string());
-    (generation as u64, json)
+    (sent.generation, json)
+}
+
+/// The generation of the pass in flight. rolldown calls a group's `test`
+/// without the pass's context, between `name` batches of the same pass, so
+/// the call names that pass and the host keeps its module infos.
+fn current_generation() -> u64 {
+    SENT.lock().unwrap().generation
 }
 
 type NameFn = dyn Fn(
@@ -267,7 +299,7 @@ fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn>
 
 fn test_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<TestFn> {
     Arc::new(move |ids: Vec<String>| {
-        let (generation, infos) = (0, None::<String>);
+        let (generation, infos) = (current_generation(), None::<String>);
         let host = Arc::clone(&host);
         let guard = Arc::clone(&guard);
         Box::pin(async move {
@@ -315,6 +347,70 @@ mod tests {
         ] {
             assert_eq!(truthy(&v), want, "{v}");
         }
+    }
+
+    fn pass(edges: &[(&str, &str)], lone: &[&str]) -> ChunkingContext {
+        use rolldown_common::{ModuleId, ModuleInfo};
+        let ids: Vec<&str> = edges
+            .iter()
+            .flat_map(|(a, b)| [*a, *b])
+            .chain(lone.iter().copied())
+            .collect();
+        let map = rolldown_utils::dashmap::FxDashMap::default();
+        for id in ids {
+            let mut info = ModuleInfo {
+                code: None,
+                id: ModuleId::new(id),
+                is_entry: false,
+                importers: Default::default(),
+                dynamic_importers: Default::default(),
+                imported_ids: Default::default(),
+                dynamically_imported_ids: Default::default(),
+                exports: Vec::new(),
+                input_format: Default::default(),
+            };
+            for (importer, imported) in edges {
+                if *imported == id {
+                    info.importers.insert(ModuleId::new(*importer));
+                }
+                if *importer == id {
+                    info.imported_ids.insert(ModuleId::new(*imported));
+                }
+            }
+            map.insert(arcstr::ArcStr::from(id), Arc::new(info));
+        }
+        ChunkingContext::new(Arc::new(map))
+    }
+
+    fn sent_ids(json: Option<String>) -> Vec<String> {
+        let mut ids: Vec<String> = json
+            .map(|j| serde_json::from_str::<Vec<Value>>(&j).unwrap())
+            .unwrap_or_default()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn module_infos_cover_the_graph_once_per_pass_and_test_calls_keep_the_pass() {
+        let first = pass(&[("/entry", "/route"), ("/route", "/dep")], &["/lone"]);
+        // A name batch over one module sends what a walk from it reaches.
+        let (generation, json) = infos_to_send(&["/route".into()], &first);
+        assert_eq!(sent_ids(json), ["/dep", "/entry", "/route"]);
+        // A test call between name batches names the same pass, so the host
+        // keeps the infos (it resets them on a new generation).
+        assert_eq!(current_generation(), generation);
+        // Later batches of the pass send only what the host lacks.
+        let (again, json) = infos_to_send(&["/entry".into(), "/lone".into()], &first);
+        assert_eq!(again, generation);
+        assert_eq!(sent_ids(json), ["/lone"]);
+        // A new pass is a new generation and sends its own graph.
+        let second = pass(&[("/entry", "/route")], &[]);
+        let (next, json) = infos_to_send(&["/entry".into()], &second);
+        assert_ne!(next, generation);
+        assert_eq!(sent_ids(json), ["/entry", "/route"]);
     }
 
     #[test]

@@ -52,6 +52,25 @@ fs.writeFileSync(
   // allow-extension for it and warns INVALID_OPTION when the option is unset;
   // Vite's client build sets false.
   { name: "vendor-scheduler", test: /node_modules[\\\\/]scheduler[\\\\/]/, includeDependenciesRecursively: false, priority: 20 },
+  // A function test and a function name that walks the graph, after a
+  // function-named group already ran: getModuleInfo answers every module of
+  // the pass, importers included, as it does under Vite.
+  {
+    test: (id: string) => /[\\\\/]src[\\\\/]routes[\\\\/]/.test(id),
+    name: (id: string, { getModuleInfo }: any) => {
+      const info = getModuleInfo(id);
+      if (!info) throw new Error(\`getModuleInfo(\${id}) is null\`);
+      for (const importer of info.importers) {
+        if (!getModuleInfo(importer)) throw new Error(\`getModuleInfo(\${importer}), an importer of \${id}, is null\`);
+      }
+      if (info.importers.length && !(globalThis as any).__walked) {
+        (globalThis as any).__walked = true;
+        console.error("chunk-policy-walk: getModuleInfo answered a route and its importers");
+      }
+      return "app-routes";
+    },
+    priority: 1,
+  },
 ];
 // The route-shared shape: a group computed by an apply-build plugin, whose
 // guard throws when that plugin did not run. Dev must step around it;
@@ -101,6 +120,9 @@ try {
   if (!chunks.react) throw new Error("dev bundle has no vendor-react chunk (codeSplitting not honored)");
   if (!chunks.tanstack) throw new Error("dev bundle has no vendor-tanstack chunk (function-named group lost)");
   if (!chunks.scheduler) throw new Error("dev bundle has no vendor-scheduler chunk (non-recursive group lost)");
+  // The walk's group stepping aside under dev would hide a null answer.
+  if (log.includes("getModuleInfo(")) throw new Error(`a group's getModuleInfo walk came back null in dev:\n${log}`);
+  if (!log.includes("chunk-policy-walk:")) throw new Error("the getModuleInfo walk group never ran in dev");
   if (log.includes("INVALID_OPTION")) {
     throw new Error("dev bundle warned INVALID_OPTION (preserveEntrySignatures left unset, Vite sets false)");
   }
@@ -150,6 +172,9 @@ try {
   }
   if (!assets.some((f) => /^vendor-tanstack-.*\.js$/.test(f))) {
     throw new Error("prod client build has no vendor-tanstack chunk (function-named group lost)");
+  }
+  if (!buildLog.includes("chunk-policy-walk:")) {
+    throw new Error(`the getModuleInfo walk group never ran in the prod build:\n${buildLog.slice(-800)}`);
   }
   console.log("chunk-policy: prod client build grouped the app's vendor chunks");
   console.log("START-CHUNK-POLICY E2E PASSED");
