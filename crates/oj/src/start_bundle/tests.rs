@@ -451,3 +451,73 @@ async fn the_server_bundle_never_takes_a_packages_browser_build() {
         "the client keeps its browser build:\n{client}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn environment_functions_compile_per_bundle_in_app_and_dep_code() {
+    // A dep compiled the same way: TanStack's own packages call the factories.
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "import { who, secret } from \"./env\";\nimport { router } from \"tanstack-dep\";\nconsole.log(who(), secret, router());\n",
+        ),
+        (
+            "src/env.ts",
+            "import { createIsomorphicFn, createServerOnlyFn } from \"@tanstack/start-fn-stubs\";\nexport const who = createIsomorphicFn().server(() => \"app-server-side\").client(() => \"app-client-side\");\nexport const secret = createServerOnlyFn(() => \"app-server-only\");\n",
+        ),
+        (
+            "node_modules/tanstack-dep/package.json",
+            r#"{"name":"tanstack-dep","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/tanstack-dep/index.js",
+            "import { createIsomorphicFn } from \"@tanstack/start-fn-stubs\";\nexport const router = createIsomorphicFn().client(() => \"dep-client-side\").server(() => \"dep-server-side\");\n",
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/package.json",
+            r#"{"name":"@tanstack/start-fn-stubs","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/index.js",
+            "export const createIsomorphicFn = () => ({});\nexport const createServerOnlyFn = (f) => f;\n",
+        ),
+    ]);
+    let build = |target: CodeTarget| {
+        bundle(
+            &app,
+            "src/entry.ts",
+            vec![Pluginable::new_shared(StartCodePlugin::new(
+                &app.dir, target,
+            ))],
+        )
+    };
+    let client = build(CodeTarget::Client).await.unwrap();
+    for gone in ["app-server-side", "app-server-only", "dep-server-side"] {
+        assert!(
+            !client.contains(gone),
+            "{gone} in the client bundle:\n{client}"
+        );
+    }
+    for kept in [
+        "app-client-side",
+        "dep-client-side",
+        "can only be called on the server!",
+    ] {
+        assert!(
+            client.contains(kept),
+            "{kept} missing from the client bundle:\n{client}"
+        );
+    }
+    let server = build(CodeTarget::Server).await.unwrap();
+    for gone in ["app-client-side", "dep-client-side"] {
+        assert!(
+            !server.contains(gone),
+            "{gone} in the server bundle:\n{server}"
+        );
+    }
+    for kept in ["app-server-side", "app-server-only", "dep-server-side"] {
+        assert!(
+            server.contains(kept),
+            "{kept} missing from the server bundle:\n{server}"
+        );
+    }
+}

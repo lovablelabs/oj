@@ -169,6 +169,19 @@ impl Plugin for StartCodePlugin {
             }
         }
 
+        // TanStack's start-compiler compiles the environment functions per
+        // environment in every module, its own packages included, so the
+        // other side's code is not bundled (a worker runs in the browser).
+        let env = match self.target {
+            CodeTarget::Server => oj_compiler::env_fns::Env::Server,
+            CodeTarget::Client | CodeTarget::Worker { .. } => oj_compiler::env_fns::Env::Client,
+        };
+        if let Some(out) =
+            oj_compiler::env_fns::rewrite_env_fns(&code, &file.to_string_lossy(), env)
+        {
+            code = Cow::Owned(out);
+        }
+
         if app && code.contains("createServerFn") {
             let rel = file
                 .strip_prefix(&self.root)
