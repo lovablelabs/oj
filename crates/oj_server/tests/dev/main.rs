@@ -71,6 +71,7 @@ mod svgr;
 mod tailwind_js_import;
 mod tailwind_postcss_imports;
 mod tailwind_sheet_stale;
+mod tailwind_v4_persistent;
 mod unresolved_bare;
 mod vite_hmr_socket;
 mod warm_transform_virtual;
