@@ -5,6 +5,21 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.44] - 2026-10-22
+
+### Fixed
+
+- An edit made while the file watcher was losing events is no longer lost until a restart. A burst of writes (a `git checkout`, a package install, a code generator) can overflow the Linux inotify queue, and macOS can ask for a subtree to be rescanned; oj ignored both, so edits made meanwhile never hot-updated or rebundled, and a directory created meanwhile was never watched. As Zed does, the watcher now keeps a snapshot of the files it knows (mtime, inode, size and birth time) and on a rescan diffs the affected tree against it: new files are creates, files gone are deletes, files whose stamp moved are edits, and directories born during the overflow are watched again. Untouched files stay silent.
+- In plain dev, a create event for a file that already existed when the server started is an edit, as in chokidar, which Vite uses.
+- In TanStack Start dev, a file added to a bundled `import.meta.glob` reaches the client bundle however it arrives. A file written atomically (to a temp file, then renamed into place), a directory moved in with files inside, and a file added while no server ran all used to be left out until another edit. A file renamed into place, or found inside a new directory, also reaches the worker environments as a create, as chokidar reports it. The Start client bundle cache format moves to 4, so existing entries are rebuilt once.
+- A directory created or moved anywhere under the root now reports the files it already holds, not only directories at the top level. A freshly created `node_modules`, `.git` or `dist` is never walked.
+- In TanStack Start dev, a batch of file events reloads the browser only when one of its own paths changed a module the runner loaded, as Vite acts on each event's file alone. An unrelated write (a Finder `.DS_Store`, an editor's stray file) could reload the page when some other file had changed behind the watcher's back.
+- The dependency optimizer globs with Vite's own code (tinyglobby and picomatch, as Vite 8.2.1 ships them) for its entries, `optimizeDeps.include` patterns and the `import.meta.glob` calls it scans, so an importer under a directory like `routes/[id]/` finds its siblings and character classes and braces work. Apps without a Vite install use the same bundled libraries.
+
+### Changed
+
+- notify is now `9.0.0-rc.6`. oj's file watchers subscribe to changes only: inotify no longer queues an event for every open of a watched file, which reads alone could use to flood or overflow the queue. `Deno.watchFs` (and `node:fs.watch` in plugins) keeps the events it reported before.
+
 ## [0.2.43] - 2026-10-21
 
 ### Fixed
