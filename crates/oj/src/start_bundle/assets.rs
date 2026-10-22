@@ -269,14 +269,21 @@ pub(crate) fn needs_css_compile(src: &str) -> bool {
         || src.contains("@apply")
 }
 
-/// Bundles a worker entry on its own (Vite's bundleWorkerEntry): the entry's
-/// code, one ES file.
+/// A worker entry's bundle: the entry chunk's code and the file name the
+/// bundler gave it (the chunks it loads are written already).
+#[derive(Clone, Debug)]
+pub(crate) struct WorkerBundle {
+    pub code: String,
+    pub file_name: String,
+}
+
+/// Bundles a worker entry on its own (Vite's bundleWorkerEntry).
 pub(crate) type WorkerBundler = Arc<
     dyn Fn(
             PathBuf,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<WorkerBundle, String>> + Send>,
+        > + Send
         + Sync,
 >;
 
@@ -293,8 +300,13 @@ pub(crate) struct Emitter {
     /// The emitted client stylesheets, in emit order: the root route's links.
     css_urls: Mutex<Vec<String>>,
     worker_bundler: Mutex<Option<WorkerBundler>>,
-    worker_codes: Mutex<HashMap<PathBuf, Arc<tokio::sync::OnceCell<String>>>>,
+    /// `worker.format` is "es": workers start as modules, not classic scripts.
+    worker_module: std::sync::atomic::AtomicBool,
+    worker_codes: Mutex<HashMap<PathBuf, Arc<tokio::sync::OnceCell<WorkerBundle>>>>,
     worker_urls: Mutex<HashMap<PathBuf, Arc<tokio::sync::OnceCell<String>>>>,
+    /// The first worker bundle that failed: rolldown reports a failed load as
+    /// "plugin threw an error", and the worker's own error is what Vite shows.
+    worker_error: Mutex<Option<String>>,
 }
 
 impl Emitter {
@@ -307,13 +319,27 @@ impl Emitter {
             emitting: Mutex::new(Default::default()),
             css_urls: Mutex::new(Vec::new()),
             worker_bundler: Mutex::new(None),
+            worker_module: std::sync::atomic::AtomicBool::new(false),
             worker_codes: Mutex::new(HashMap::new()),
             worker_urls: Mutex::new(HashMap::new()),
+            worker_error: Mutex::new(None),
         }
     }
 
-    pub fn set_worker_bundler(&self, bundler: WorkerBundler) {
+    /// The build's worker bundler; `module` when `worker.format` is "es".
+    pub fn set_worker_bundler(&self, bundler: WorkerBundler, module: bool) {
         *self.worker_bundler.lock().unwrap() = Some(bundler);
+        self.worker_module
+            .store(module, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Why a worker bundle failed, when one did.
+    pub fn worker_error(&self) -> Option<String> {
+        self.worker_error.lock().unwrap().clone()
+    }
+
+    fn worker_is_module(&self) -> bool {
+        self.worker_module.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn css_urls(&self) -> Vec<String> {
@@ -458,8 +484,8 @@ impl Emitter {
         Ok(out)
     }
 
-    /// The bundled code of a worker entry, bundled once per file.
-    pub async fn worker_code(&self, path: &Path) -> Result<String, String> {
+    /// A worker entry's bundle, bundled once per file.
+    pub async fn worker_code(&self, path: &Path) -> Result<WorkerBundle, String> {
         let cell = Arc::clone(
             self.worker_codes
                 .lock()
@@ -468,13 +494,21 @@ impl Emitter {
                 .or_default(),
         );
         let bundler = self.worker_bundler.lock().unwrap().clone();
-        cell.get_or_try_init(|| async move {
-            let bundler =
-                bundler.ok_or_else(|| format!("oj: no worker bundler for {}", path.display()))?;
-            bundler(path.to_path_buf()).await
-        })
-        .await
-        .cloned()
+        let result = cell
+            .get_or_try_init(|| async move {
+                let bundler = bundler
+                    .ok_or_else(|| format!("oj: no worker bundler for {}", path.display()))?;
+                bundler(path.to_path_buf()).await
+            })
+            .await
+            .cloned();
+        if let Err(e) = &result {
+            self.worker_error
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| e.clone());
+        }
+        result
     }
 
     /// The emitted URL of a worker entry's bundle.
@@ -487,8 +521,14 @@ impl Emitter {
                 .or_default(),
         );
         cell.get_or_try_init(|| async move {
-            let code = self.worker_code(path).await?;
-            self.write(&path.with_extension("js"), code.as_bytes())
+            let bundle = self.worker_code(path).await?;
+            let assets = self.assets_dir.parent().unwrap_or(&self.assets_dir);
+            let dest = assets.join(&bundle.file_name);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&dest, bundle.code.as_bytes()).map_err(|e| e.to_string())?;
+            Ok(format!("{}{}", self.base, bundle.file_name))
         })
         .await
         .cloned()
@@ -592,20 +632,37 @@ fn data_uri(path: &Path) -> Result<String, String> {
     ))
 }
 
+/// The options a worker wrapper starts its worker with: a module only when
+/// `worker.format` is "es" (Vite's worker load; unbundled dev always serves
+/// modules).
+fn worker_type_option(module: bool) -> &'static str {
+    if module {
+        "{ type: \"module\", name: options?.name }"
+    } else {
+        "{ name: options?.name }"
+    }
+}
+
 /// Vite's `?worker&inline` in a bundled environment: the bundled worker in
-/// the importer as a string, started from a Blob URL that revokes itself,
-/// falling back to a data: URL; a SharedWorker always takes the data: URL (a
-/// blob URL would make separate instances).
-fn inline_worker_module(shared: bool, code: &str) -> String {
+/// the importer as a string, started from a Blob URL that revokes itself
+/// (through `self.location` in a classic worker), falling back to a data:
+/// URL; a SharedWorker always takes the data: URL (a blob URL would make
+/// separate instances).
+fn inline_worker_module(shared: bool, code: &str, module: bool) -> String {
     let js_content = format!(
         "const jsContent = {};",
         serde_json::Value::String(code.to_string())
     );
-    let options = "{ type: \"module\", name: options?.name }";
+    let options = worker_type_option(module);
+    let revoke = if module {
+        "'URL.revokeObjectURL(import.meta.url);'"
+    } else {
+        "'(self.URL || self.webkitURL).revokeObjectURL(self.location.href);'"
+    };
     if !shared {
         return format!(
             r#"{js_content}
-const blob = typeof self !== "undefined" && self.Blob && new Blob(['URL.revokeObjectURL(import.meta.url);', jsContent], {{ type: "text/javascript;charset=utf-8" }});
+const blob = typeof self !== "undefined" && self.Blob && new Blob([{revoke}, jsContent], {{ type: "text/javascript;charset=utf-8" }});
 export default function WorkerWrapper(options) {{
   let objURL;
   try {{
@@ -738,16 +795,21 @@ impl StartAssetsPlugin {
             AssetTag::Inline => format!("export default {};", json(&data_uri(path)?)),
             AssetTag::Worker { shared, form } => {
                 let ctor = if shared { "SharedWorker" } else { "Worker" };
+                let module = match &self.mode {
+                    AssetMode::Dev { .. } => true,
+                    AssetMode::Build { emitter, .. } => emitter.worker_is_module(),
+                };
                 match (form, &self.mode) {
                     (WorkerForm::Inline, AssetMode::Build { emitter, .. }) => {
-                        inline_worker_module(shared, &emitter.worker_code(path).await?)
+                        inline_worker_module(shared, &emitter.worker_code(path).await?.code, module)
                     }
                     (WorkerForm::Url, _) => {
                         format!("export default {};", json(&self.worker_url_for(path).await?))
                     }
                     _ => format!(
-                        "export default function WorkerWrapper(options) {{ return new {ctor}({}, {{ type: \"module\", name: options?.name }}); }}",
-                        json(&self.worker_url_for(path).await?)
+                        "export default function WorkerWrapper(options) {{ return new {ctor}({}, {}); }}",
+                        json(&self.worker_url_for(path).await?),
+                        worker_type_option(module)
                     ),
                 }
             }
@@ -898,14 +960,22 @@ mod tests {
 
     #[test]
     fn the_inline_worker_wrapper_matches_vites() {
-        let module = inline_worker_module(false, "self.onmessage=()=>{}");
+        let module = inline_worker_module(false, "self.onmessage=()=>{}", true);
         assert!(
             module.starts_with("const jsContent = \"self.onmessage=()=>{}\";"),
             "{module}"
         );
         assert!(module.contains("URL.revokeObjectURL(import.meta.url);"));
         assert!(module.contains("new Worker(objURL, { type: \"module\", name: options?.name })"));
-        let shared = inline_worker_module(true, "x");
+        // An iife worker (Vite's default format) is a classic script.
+        let classic = inline_worker_module(false, "x", false);
+        assert!(
+            classic.contains("'(self.URL || self.webkitURL).revokeObjectURL(self.location.href);'"),
+            "{classic}"
+        );
+        assert!(classic.contains("new Worker(objURL, { name: options?.name })"));
+        assert!(!classic.contains("type: \"module\""));
+        let shared = inline_worker_module(true, "x", true);
         assert!(
             shared.contains("new SharedWorker('data:text/javascript;charset=utf-8,'"),
             "{shared}"

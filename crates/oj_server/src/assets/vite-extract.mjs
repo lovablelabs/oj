@@ -1441,8 +1441,9 @@ function extractCss(css) {
 // with the raw config file's export, not the resolved config: Vite's resolveConfig
 // fills every option with defaults (esbuild.jsxDev/charset/legalComments, worker,
 // ssr.resolve, cors.origin, optimizeDeps.esbuildOptions, terserOptions) and none of
-// those are configuration to warn about.
-function warnUnsupported(c) {
+// those are configuration to warn about. `worker` only reaches a build's
+// worker bundles, which only an SPA build (`spaBuild`) makes without it.
+function warnUnsupported(c, spaBuild = false) {
   if (!c || typeof c !== "object") return;
   if (c.build?.terserOptions) warn("build.terserOptions is not applied (oj minifies with oxc)");
   if (c.esbuild?.jsx === "preserve" || c.oxc?.jsx === "preserve") {
@@ -1452,7 +1453,7 @@ function warnUnsupported(c) {
     const rest = Object.keys(c.esbuild).filter((k) => !JSX_ESBUILD_KEYS.includes(k));
     if (rest.length) warn(`esbuild options ${rest.join(", ")} are not applied (jsx* are)`);
   }
-  if (c.worker) warn("worker config is not applied");
+  if (c.worker && spaBuild) warn("worker config is not applied");
   if (Array.isArray(c.optimizeDeps?.esbuildOptions?.plugins) && c.optimizeDeps.esbuildOptions.plugins.length) {
     warn("optimizeDeps.esbuildOptions.plugins are not applied (scalar esbuild options are)");
   }
@@ -1524,7 +1525,7 @@ export async function extract(input) {
     installConfigReadRecorder();
     const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
     const c = config ?? {};
-    warnUnsupported(raw ?? c);
+    warnUnsupported(raw ?? c, input.spaBuild === true);
     // Extraction is the single runner-backed detection authority (the plugin
     // host and every Rust consumer read what it publishes). On the resolveConfig
     // path the sentinel decided inside Vite's own hook run; otherwise the port

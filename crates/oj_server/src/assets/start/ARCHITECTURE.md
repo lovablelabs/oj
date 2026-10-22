@@ -52,11 +52,12 @@ The bundles (`crates/oj/src/start_bundle/`):
   options, and `write_server_fn_resolver`, which scans `src/` for
   `createServerFn` and writes the server-fn resolver (`getServerFnById`) with
   static imports.
-- `host.rs` / `hosts.rs`: the app's Vite plugins inside a bundle. One plugin
-  host per Vite environment, started in bundle mode (the TanStack plugins oj
-  reimplements left out), driven from rolldown's hooks with Vite's order
-  around its core resolver; a plugin's `this.resolve` ends in the bundle's
-  own resolution through a reverse RPC.
+- `host.rs` / `hosts.rs`: the app's Vite plugins inside a bundle. A plugin
+  host started in bundle mode (the TanStack plugins oj reimplements left
+  out), driven from rolldown's hooks with Vite's order around its core
+  resolver; a plugin's `this.resolve` ends in the bundle's own resolution
+  through a reverse RPC. A build shares one host across its environments; a
+  worker bundle gets its own.
 - `alias.rs`: the app's `resolve.alias`, ahead of every plugin.
 - `assets.rs`: Vite's asset, stylesheet and worker conventions (`?raw`, `?url`,
   `?inline`, `?worker`, bare asset imports, CSS and CSS modules) and the
@@ -226,7 +227,8 @@ respawned behind a write lock (a cheap snapshot boot).
 5. Each bundle runs its plugin host's `renderChunk`, `generateBundle` and
    `writeBundle` over the real output, so plugins that publish files (for
    example content-assets emitting `/__content/<collection>/<file>`) or write
-   a deploy config (the Cloudflare plugin's `wrangler.json`) work.
+   a deploy config (the Cloudflare plugin's `wrangler.json`) work, then its
+   `closeBundle`, before the next environment builds.
 6. Emit `server.mjs` (Node http), `worker.mjs` (edge fetch handler),
    `cf-server.mjs` and `cf-loader.mjs`, copy `public/`, and prerender any
    `build.prerender` routes.
@@ -259,7 +261,7 @@ exceed the size cap.)
 
 A Start bundle reaches the app's Vite plugins through
 `start_bundle::host::StartHostPlugin`, one per bundle, over a plugin host
-started for that Vite environment (`client`, `ssr`, or the Worker's). The host
+started for a Vite environment (`client`, `ssr`, or the Worker's). The host
 resolves the app's config with the app's own Vite, minus the TanStack plugins
 oj reimplements, and applies Vite's gating: `apply` against the command,
 `applyToEnvironment`, object-form hooks `{ handler, filter, order }`, and
@@ -270,6 +272,37 @@ kept whole, `external` included.
 The live config stays in the host, so function-valued options (a chunk
 group's `name` / `test`, an `external` function) are handles the bundle calls
 back, never copies.
+
+`oj build` follows Vite's builder:
+
+- One host serves every environment, as TanStack Start's
+  `builder.sharedPlugins` asks: once the client is written the host switches
+  to the server environment (`switchEnvironment`) on the same plugin
+  instances, with its own plugin set (`applyToEnvironment`), buildStart,
+  module graph, emitted files and closeBundle.
+- `config`, `configEnvironment`, `configResolved` and `buildApp` run on
+  Vite's minimal plugin context (`this.meta` with the Vite and rolldown
+  versions, no `this.environment`), `configEnvironment` plugin by plugin.
+- The `buildApp` hooks run in hook order, with oj's environment builds (the
+  `buildEnvironments` reverse RPC) standing in for TanStack Start's config
+  builder just before the first post-order hook. A throwing hook fails the
+  build; an environment a plugin builds itself (Nitro's) stops it with an
+  error, since oj does not run it.
+- moduleParsed comes from rolldown (every module, node_modules included,
+  with the resolved imports), its code lowered to JS as vite:oxc would.
+- Off the client `build.emitAssets` is false by default, and at vite:asset's
+  place in the sorted `generateBundle` hooks (after the `order: "pre"` hooks
+  and the enforce:"pre" plugins' unordered ones) the bundle's assets and the
+  files emitted so far are dropped.
+- A `?worker` entry is bundled with `worker.plugins` alone, as Vite's
+  `bundleWorkerEntry` does: a fresh host per worker bundle (the option is a
+  function), `configResolved` with `isWorker`, the whole bundle lifecycle,
+  and what its plugins emit shipped with the client. The bundle takes
+  `worker.rolldownOptions` (not the app's `build.rolldownOptions`) and
+  `worker.format`, iife by default: a classic script whose `import.meta.url`
+  is `self.location.href`, started without `type: "module"`; "es" splits
+  its chunks and starts as a module. The app's plugins never see a worker's
+  modules.
 
 ### svgr and the `?react` query
 

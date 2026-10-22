@@ -181,6 +181,42 @@ export default { base: "/loud/" };"#);
 }
 
 #[test]
+fn worker_config_warns_only_in_an_spa_build() {
+    let _g = lock();
+    let config = r#"export default { worker: { format: "es" } };"#;
+    let warning = "worker config is not applied";
+    let spa = app(config);
+    let root = spa.path();
+    let vite = root.join("vite.config.mjs");
+    extract_vite_values_with(root, None, "build", "production", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&vite, "build", "production@spa-build")
+        .expect("an SPA build's extraction is cached under its own key");
+    assert!(hit.stderr.contains(warning), "{}", hit.stderr);
+    // Dev bundles no worker, so `worker` is nothing oj leaves out there.
+    extract_vite_values_with(root, None, "serve", "development", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&vite, "serve", "development")
+        .expect("cached");
+    assert!(!hit.stderr.contains(warning), "{}", hit.stderr);
+
+    // The Start build bundles workers with `worker` applied.
+    let start = app(config);
+    let root = start.path();
+    std::fs::create_dir_all(root.join("src/routes")).unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"name":"fx","version":"1.0.0","type":"module","dependencies":{"@tanstack/react-start":"*"}}"#,
+    )
+    .unwrap();
+    extract_vite_values_with(root, None, "build", "production", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&root.join("vite.config.mjs"), "build", "production")
+        .expect("cached");
+    assert!(!hit.stderr.contains(warning), "{}", hit.stderr);
+}
+
+#[test]
 fn config_env_writes_do_not_leak_into_the_oj_process() {
     let _g = lock();
     // The engine must shadow process.env (Vite's own NODE_ENV dance runs on

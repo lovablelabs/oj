@@ -383,6 +383,15 @@ pub(crate) fn extract_vite_values_timed(
     } else {
         format!("{mode}@default")
     };
+    // `worker` options reach only a build's worker bundles, which an SPA build
+    // makes without them (the Start build applies them, dev bundles none), so
+    // only an SPA build warns; its stderr is cached apart.
+    let spa_build = command == "build" && !crate::is_tanstack_start_app(root);
+    let mode_key = if spa_build {
+        format!("{mode_key}@spa-build")
+    } else {
+        mode_key
+    };
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
     let store = extraction_store(root);
@@ -403,6 +412,7 @@ pub(crate) fn extract_vite_values_timed(
         "command": command,
         "mode": mode,
         "modeKind": if mode_explicit { "explicit" } else { "default" },
+        "spaBuild": spa_build,
         "cacheDir": cache.to_string_lossy(),
     });
     // The result is the call's return value: config code that prints cannot corrupt it.

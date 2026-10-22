@@ -1334,6 +1334,29 @@ impl PluginHost {
         self.call_unit("replayModuleParsed", &[id]).await
     }
 
+    /// A Start build's module_parsed: rolldown's ModuleInfo as JSON (`id`,
+    /// `code`, `importedIds`, `dynamicallyImportedIds`, `importers`,
+    /// `dynamicImporters`, `exports`, `isEntry`).
+    #[inline]
+    pub async fn bundle_module_parsed(&self, info_json: &str) -> Result<(), String> {
+        self.call_unit("bundleModuleParsed", &[info_json]).await
+    }
+
+    /// Moves a Start build's host to the next environment's build, on the
+    /// same plugin instances (Vite's `builder.sharedPlugins`).
+    #[inline]
+    pub async fn switch_environment(&self, name: &str) -> Result<(), String> {
+        self.call_unit("switchEnvironment", &[name]).await
+    }
+
+    /// Vite's `builder.buildApp`: the plugins' buildApp hooks, which reach
+    /// oj's environment builds through the `buildEnvironments` reverse RPC.
+    /// `built_json` names the environments oj builds (name -> `{ outDir, input }`).
+    #[inline]
+    pub async fn build_app(&self, built_json: &str) -> Result<(), String> {
+        self.call_unit("buildApp", &[built_json]).await
+    }
+
     #[inline]
     pub async fn resolve_id(&self, source: &str, importer: &str) -> Result<Option<String>, String> {
         self.call("resolveId", &[source, importer]).await

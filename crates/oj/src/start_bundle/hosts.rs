@@ -35,6 +35,32 @@ pub(crate) async fn spawn(
     config_file: Option<&Path>,
     env_name: &str,
 ) -> anyhow::Result<Option<BundleHost>> {
+    spawn_with(start, config_file, env_name, None).await
+}
+
+/// A worker entry's host (Vite's bundleWorkerEntry): `worker.plugins` alone,
+/// a fresh set for this bundle, its resolved config `isWorker` with `chain`.
+pub(crate) async fn spawn_worker(
+    start: &StartConfig,
+    config_file: Option<&Path>,
+    chain: &[&Path],
+) -> anyhow::Result<Option<BundleHost>> {
+    let chain: Vec<String> = chain.iter().map(|p| p.display().to_string()).collect();
+    spawn_with(
+        start,
+        config_file,
+        "client",
+        Some(serde_json::json!({ "chain": chain })),
+    )
+    .await
+}
+
+async fn spawn_with(
+    start: &StartConfig,
+    config_file: Option<&Path>,
+    env_name: &str,
+    worker_bundle: Option<serde_json::Value>,
+) -> anyhow::Result<Option<BundleHost>> {
     let Some(source) = oj_server::plugins::plugin_source(&start.root, config_file) else {
         return Ok(None);
     };
@@ -63,12 +89,27 @@ pub(crate) async fn spawn(
         "pluginsFormat": format,
         "ojStartMode": true,
         "ojBundleHost": true,
+        "ojWorkerBundle": worker_bundle,
     })
     .to_string();
     let host = PluginHost::spawn(&start.root, &file, &payload, None)
         .await
         .map_err(|e| anyhow::anyhow!("the {env_name} plugin host failed to start: {e}"))?;
     let ctx = serve_bundler_resolve(&host);
+    let (facts, defines, env_delta) = read_facts(&host, env_name).await?;
+    Ok(Some(BundleHost {
+        host,
+        ctx,
+        facts,
+        defines,
+        env_delta,
+    }))
+}
+
+async fn read_facts(
+    host: &PluginHost,
+    env_name: &str,
+) -> anyhow::Result<(Facts, Vec<(String, String)>, Vec<(String, String)>)> {
     let facts = Facts::from_json(
         &host
             .start_facts()
@@ -77,11 +118,24 @@ pub(crate) async fn spawn(
     );
     let defines = host.config_defines().await;
     let env_delta = host.env_delta().await.into_iter().collect();
-    Ok(Some(BundleHost {
-        host,
-        ctx,
-        facts,
-        defines,
-        env_delta,
-    }))
+    Ok((facts, defines, env_delta))
+}
+
+impl BundleHost {
+    /// The same host for the next environment's build (Vite's
+    /// `builder.sharedPlugins`): its plugin set, facts and defines.
+    pub async fn switch_environment(&self, env_name: &str) -> anyhow::Result<BundleHost> {
+        self.host
+            .switch_environment(env_name)
+            .await
+            .map_err(|e| anyhow::anyhow!("the {env_name} plugin host: {e}"))?;
+        let (facts, defines, env_delta) = read_facts(&self.host, env_name).await?;
+        Ok(BundleHost {
+            host: Arc::clone(&self.host),
+            ctx: self.ctx.clone(),
+            facts,
+            defines,
+            env_delta,
+        })
+    }
 }

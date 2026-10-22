@@ -185,6 +185,10 @@ jobs:
         run: node e2e/start.mjs
       - name: start prod build honors outDir, base, sourcemap, minify
         run: node e2e/start-build-options.mjs
+      - name: start build shares plugin instances, runs moduleParsed, buildApp and emitAssets
+        run: node e2e/start-shared-plugins.mjs
+      - name: start build bundles workers with worker.plugins, worker.format and worker.rolldownOptions
+        run: node e2e/start-worker-plugins.mjs
       - name: throwing lifecycle hooks fail the build and dev startup
         run: node e2e/plugin-lifecycle-errors.mjs
       - name: plugin config() define reaches dev and build compiles
