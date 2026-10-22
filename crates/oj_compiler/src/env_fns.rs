@@ -73,11 +73,14 @@ pub fn rewrite_env_fns_with(
     // A factory call inside a kept function is compiled on the next pass,
     // once the call around it is gone.
     for _ in 0..16 {
-        let Some(next) = rewrite_outermost(&out, path, env, reexported)? else {
+        let Some((next, nested)) = rewrite_outermost(&out, path, env, reexported)? else {
             break;
         };
         out = next;
         changed = true;
+        if !nested {
+            break;
+        }
     }
     Ok(changed.then(|| drop_dead_bindings(code, out, path)))
 }
@@ -203,7 +206,9 @@ fn rewrite_outermost(
     path: &str,
     env: Env,
     reexported: &[(String, String)],
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, bool)>, String> {
+    #[cfg(test)]
+    tests::PASSES.with(|n| n.set(n.get() + 1));
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(path)).parse();
     if parsed.fatal_error {
@@ -218,12 +223,20 @@ fn rewrite_outermost(
         env,
         code,
         edits: Vec::new(),
+        kept: Vec::new(),
         error: None,
     };
     finder.visit_program(&parsed.program);
     if let Some(error) = finder.error {
         return Err(error);
     }
+    // A call inside a kept implementation needs another pass.
+    let nested = finder.edits.iter().any(|e| {
+        finder
+            .kept
+            .iter()
+            .any(|&(start, end)| start <= e.start && e.end <= end)
+    });
     // Only the outermost: a chain's own prefix (`createIsomorphicFn().server(s)`
     // inside `.client(c)`) and calls inside its arguments are covered by it.
     let mut edits = finder.edits;
@@ -238,7 +251,7 @@ fn rewrite_outermost(
     if outermost.is_empty() {
         return Ok(None);
     }
-    Ok(Some(apply(code, outermost)))
+    Ok(Some((apply(code, outermost), nested)))
 }
 
 /// `code` with `edits` (sorted, disjoint) applied, each padded with the
@@ -483,6 +496,8 @@ struct Finder<'b> {
     env: Env,
     code: &'b str,
     edits: Vec<Edit>,
+    /// The implementations kept as replacement text, as source spans.
+    kept: Vec<(usize, usize)>,
     /// The first call TanStack's compiler rejects.
     error: Option<String>,
 }
@@ -533,7 +548,10 @@ impl Finder<'_> {
     /// `arg` as replacement text, or `error` recorded when it is not one.
     fn arg_text(&mut self, arg: Arg, error: impl FnOnce() -> String) -> Option<String> {
         match arg {
-            Arg::Expr(start, end) => Some(format!("({})", &self.code[start..end])),
+            Arg::Expr(start, end) => {
+                self.kept.push((start, end));
+                Some(format!("({})", &self.code[start..end]))
+            }
             Arg::NotAFunction => {
                 self.error.get_or_insert_with(error);
                 None
@@ -599,6 +617,16 @@ impl<'a> Visit<'a> for Finder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        pub(super) static PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn passes(f: impl FnOnce()) -> usize {
+        PASSES.with(|n| n.set(0));
+        f();
+        PASSES.with(|n| n.get())
+    }
 
     const IMPORT: &str = "import { createIsomorphicFn, createServerOnlyFn, createClientOnlyFn } from \"@tanstack/react-start\";\n";
 
@@ -794,5 +822,15 @@ mod tests {
             client.contains("can only be called on the server!"),
             "{client}"
         );
+    }
+
+    #[test]
+    fn only_a_call_inside_a_kept_implementation_takes_another_pass() {
+        let flat = "const a = createIsomorphicFn().server(() => 1).client(() => createServerOnlyFn(() => 2));\nconst b = createClientOnlyFn(() => 3);\n";
+        assert_eq!(passes(|| drop(rewrite(flat, Env::Server))), 1);
+        let nested = "const a = createIsomorphicFn().client(() => 1).server(() => createServerOnlyFn(() => 2));\n";
+        let mut out = String::new();
+        assert_eq!(passes(|| out = rewrite(nested, Env::Server)), 2);
+        assert!(out.contains("const a = (() => (() => 2));"), "{out}");
     }
 }
