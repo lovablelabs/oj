@@ -3723,11 +3723,11 @@ function hookOrderRank(hook) {
   const o = hook && typeof hook === "object" ? hook.order : undefined;
   return o === "pre" ? -1 : o === "post" ? 1 : 0;
 }
-// A hook `filter`'s include patterns as oj's Rust-side gates take them, which
-// may only over-approximate the host's own matching: a RegExp as a Rust regex
-// source, a string id pattern as Vite's cwd-joined picomatch glob, a string
-// code pattern as an escaped literal (Vite's `code.includes`). null when a
-// pattern cannot be carried, so the gate fails open.
+// A hook `filter`'s include patterns as oj's Rust-side gates take them
+// (HookFilter::from_json, which may only over-approximate the host's own
+// matching): a RegExp as its source and flags, a string id pattern as Vite's
+// cwd-joined picomatch glob, a string code pattern as a literal (Vite's
+// `code.includes`). null when a pattern is neither, so the gate fails open.
 function gatePatterns(inc, kind) {
   if (inc && typeof inc === "object" && !(inc instanceof RegExp) && !Array.isArray(inc)) {
     inc = inc.include;
@@ -3736,65 +3736,22 @@ function gatePatterns(inc, kind) {
   const out = [];
   for (const r of list) {
     if (typeof r === "string") {
-      out.push(
-        kind === "id"
-          ? { glob: idFilterGlob(r, initial.config?.root ?? process.cwd()) }
-          : { re: r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") },
-      );
-      continue;
+      out.push(kind === "id" ? { glob: idFilterGlob(r, initial.config?.root ?? process.cwd()) } : { literal: r });
+    } else if (r instanceof RegExp) {
+      out.push({ source: r.source, flags: r.flags });
+    } else {
+      return null;
     }
-    if (!(r instanceof RegExp)) return null;
-    // i/s change what the pattern matches and Rust supports them inline;
-    // g/y/d only affect JS-side statefulness or match metadata, not the
-    // language. m cannot be carried: JS multiline anchors honor \r and
-    // \u2028, Rust's (?m) only \n, so an m-filtered plugin could be
-    // under-matched on CRLF sources. Any uncarryable flag (m, u, v, ...)
-    // fails the gate open rather than risking an under-match.
-    if (/[^isgyd]/.test(r.flags)) return null;
-    const source = rustRegexSource(r.source);
-    if (source == null) return null;
-    const inline = ["i", "s"].filter((f) => r.flags.includes(f)).join("");
-    out.push({ re: inline ? `(?${inline})${source}` : source });
   }
   return out;
 }
-
-// JS's perl classes are ASCII-defined (\b \w \d) and its \s is its own
-// whitespace set, while Rust's are Unicode: spelled out here so /\bimport\b/
-// matches in Rust exactly where it does in JS. null for a class negation
-// inside a set (`[\W]`), which has no spelling; any other JS-only syntax
-// fails Rust's compile, and the gate then fails open.
-const JS_SPACE =
-  "\\t\\n\\x0B\\f\\r \\x{A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}";
-const JS_CLASSES = { d: "0-9", w: "0-9A-Za-z_", s: JS_SPACE };
-function rustRegexSource(source) {
-  let out = "";
-  let inSet = false;
-  for (let i = 0; i < source.length; i++) {
-    const c = source[i];
-    if (c === "\\" && i + 1 < source.length) {
-      const e = source[++i];
-      const lower = e.toLowerCase();
-      if (lower in JS_CLASSES) {
-        const negated = e !== lower;
-        if (inSet) {
-          if (negated) return null;
-          out += JS_CLASSES[lower];
-        } else {
-          out += `[${negated ? "^" : ""}${JS_CLASSES[lower]}]`;
-        }
-      } else if (e === "b" || e === "B") {
-        out += inSet ? `\\${e}` : `(?-u:\\${e})`;
-      } else {
-        out += `\\${e}`;
-      }
-      continue;
-    }
-    if (c === "[" && !inSet) inSet = true;
-    else if (c === "]" && inSet) inSet = false;
-    out += c;
-  }
-  return out;
+// gatePatterns for the dependency and resolveId gates, which keep one flat
+// list for all plugins: a filter with no include (exclude-only, or an empty
+// include) matches everything it does not exclude, as in Vite, so it claims
+// everything there.
+function depGatePatterns(inc, kind) {
+  const pats = gatePatterns(inc, kind);
+  return pats && pats.length > 0 ? pats : [{ any: true }];
 }
 function pluginsWithHook(name) {
   const out = [];
@@ -4529,7 +4486,8 @@ async function run(hook, args) {
     // gate must only ever OVER-approximate, so anything it cannot represent
     // exactly makes that plugin "unfiltered" (always called): function-form
     // hooks, filters without includes (exclude- or moduleType-only), and
-    // patterns gatePatterns cannot carry.
+    // patterns gatePatterns cannot carry (Rust fails the ones it cannot
+    // translate open on its side).
     const planFor = (name, withCode) => {
       // The transform RPC is what fires moduleParsed AND fills the module-info
       // map that this.getModuleInfo()/getModuleIds() read from later hooks, so
@@ -4559,7 +4517,7 @@ async function run(hook, args) {
         const code = withCode && f ? gatePatterns(f.code, "code") : null;
         const idHas = Array.isArray(id) && id.length > 0;
         const codeHas = Array.isArray(code) && code.length > 0;
-        // A pattern set regexes() refused (null) or a filter with no usable
+        // A pattern set gatePatterns refused (null) or a filter with no usable
         // includes cannot gate; that plugin must always be offered the module.
         if (
           (id === null && f && f.id != null) ||
@@ -4628,7 +4586,7 @@ async function run(hook, args) {
     for (const p of plugins) {
       const t = p && p.transform;
       const f = t && typeof t === "object" ? t.filter : null;
-      if (f && f.code != null) pats.push(...(gatePatterns(f.code, "code") ?? [{ any: true }]));
+      if (f && f.code != null) pats.push(...depGatePatterns(f.code, "code"));
     }
     return JSON.stringify(pats);
   }
@@ -4642,7 +4600,7 @@ async function run(hook, args) {
     for (const p of plugins) {
       const l = p && p.load;
       const f = l && typeof l === "object" ? l.filter : null;
-      if (f && f.id != null) pats.push(...(gatePatterns(f.id, "id") ?? [{ any: true }]));
+      if (f && f.id != null) pats.push(...depGatePatterns(f.id, "id"));
     }
     return JSON.stringify(pats);
   }
@@ -4655,7 +4613,7 @@ async function run(hook, args) {
     for (const p of plugins) {
       const r = p && p.resolveId;
       const f = r && typeof r === "object" ? r.filter : null;
-      if (f && f.id != null) pats.push(...(gatePatterns(f.id, "id") ?? [{ any: true }]));
+      if (f && f.id != null) pats.push(...depGatePatterns(f.id, "id"));
     }
     return JSON.stringify(pats);
   }

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! An object-form `resolveId` whose `filter.id` is a string glob (Vite's
-//! pluginFilter: picomatch, `dot: true`) or a flagged RegExp claims the
+//! pluginFilter: picomatch, `dot: true`), a flagged RegExp or an exclude
+//! alone (everything it does not exclude) claims the
 //! imports it matches, even ones that exist on disk: Vite offers every import
 //! to plugin resolveId before its own resolver, so oj's must step aside.
 
@@ -33,19 +34,31 @@ const PLUGINS: &str = r#"export default [
       handler(id) { return "export default " + JSON.stringify("flag " + id.slice(8)) + ";\n"; },
     },
   },
+  {
+    name: "exclude-only",
+    resolveId: {
+      filter: { id: { exclude: /\.css$/ } },
+      handler(id) { return id.endsWith(".magic3") ? "\0magic3:" + id : null; },
+    },
+    load: {
+      filter: { id: /^\0magic3:/ },
+      handler(id) { return "export default " + JSON.stringify("excl " + id.slice(8)) + ";\n"; },
+    },
+  },
 ];
 "#;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn glob_and_flagged_id_filters_claim_their_imports() {
+async fn glob_flagged_and_exclude_only_id_filters_claim_their_imports() {
     let app = App::new(&[
         ("package.json", r#"{"name":"filter-globs","version":"1.0.0"}"#),
         (
             "src/main.js",
-            "import a from \"/src/thing.magic\";\nimport b from \"/src/other.magic2\";\nwindow.__R = [a, b];\n",
+            "import a from \"/src/thing.magic\";\nimport b from \"/src/other.magic2\";\nimport c from \"/src/third.magic3\";\nwindow.__R = [a, b, c];\n",
         ),
         ("src/thing.magic", "export default \"disk\";\n"),
         ("src/other.magic2", "export default \"disk\";\n"),
+        ("src/third.magic3", "export default \"disk\";\n"),
         ("index.html", INDEX_HTML),
         ("oj.plugins.mjs", PLUGINS),
     ]);
@@ -56,7 +69,7 @@ async fn glob_and_flagged_id_filters_claim_their_imports() {
         .captures_iter(&main)
         .map(|c| c[1].to_string())
         .collect();
-    assert_eq!(urls.len(), 2, "two imports rewritten:\n{main}");
+    assert_eq!(urls.len(), 3, "three imports rewritten:\n{main}");
     let a = server.text(&urls[0]).await;
     assert!(
         a.contains("glob /src/thing.magic"),
@@ -68,5 +81,11 @@ async fn glob_and_flagged_id_filters_claim_their_imports() {
         b.contains("flag /src/other.magic2"),
         "the case-insensitive RegExp filter claimed it ({}):\n{b}",
         urls[1]
+    );
+    let c = server.text(&urls[2]).await;
+    assert!(
+        c.contains("excl /src/third.magic3"),
+        "the exclude-only filter claimed it ({}):\n{c}",
+        urls[2]
     );
 }
