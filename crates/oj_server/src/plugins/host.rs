@@ -1907,6 +1907,8 @@ pub struct HostTransform {
     pub watch_files: Vec<String>,
     /// The maps the plugins returned, in chain order.
     pub maps: Vec<String>,
+    /// The plugin that returned each of `maps`.
+    pub map_plugins: Vec<String>,
     /// The first plugin that returned code without a map, which breaks the
     /// chain as in Rollup (`map: null` does not).
     pub map_broken: Option<String>,
@@ -1947,6 +1949,7 @@ impl HostTransform {
                 .to_string(),
             watch_files: str_array("watchFiles"),
             maps: str_array("maps"),
+            map_plugins: str_array("mapPlugins"),
             map_broken: v
                 .get("mapBroken")
                 .and_then(|n| n.as_str())

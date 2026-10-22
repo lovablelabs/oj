@@ -1703,6 +1703,7 @@ struct OjUserPlugin {
     host: Arc<PluginHost>,
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     emit: Arc<EmitState>,
+    map_warnings: Arc<MapWarnings>,
     // Vite/rolldown push hook filters into the bundler so a filtered hook never
     // runs for a module it does not claim; the host's live plan gates the
     // isolate RPCs the same way. It only over-approximates (the host
@@ -1730,6 +1731,7 @@ impl OjUserPlugin {
             host,
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             emit,
+            map_warnings: Arc::default(),
             gate,
             gate_debug: oj_server::plugins::hook_gate_debug(),
             gate_count: oj_server::plugins::hook_gate_debug() || cfg!(test),
@@ -1755,46 +1757,97 @@ pub(crate) fn module_type_for_id(id: &str) -> rolldown_common::ModuleType {
     }
 }
 
+/// The source-map warnings of one build, each printed once.
+#[derive(Debug, Default)]
+pub(crate) struct MapWarnings(Mutex<std::collections::HashSet<String>>);
+
+impl MapWarnings {
+    fn warn(&self, text: String) {
+        if self.0.lock().unwrap().insert(text.clone()) {
+            eprintln!("oj build warning: {text}");
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn printed(&self) -> Vec<String> {
+        self.0.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+/// Which hook's chain `host_chain_map` collapses: rolldown breaks a module's
+/// transform chain at a missing map, but only skips that step's map in a
+/// chunk's renderChunk chain.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChainHook {
+    Transform,
+    RenderChunk,
+}
+
 /// The one map rolldown takes for the host's plugin chain: the plugins' maps
 /// collapsed in order. A plugin that changed the code without a map breaks
-/// the chain, as in Rollup; `warn` names it once with Rollup's warning, since
-/// rolldown's own would name oj's wrapper plugin.
+/// the chain as rolldown does for `hook`, and so does a map that cannot be
+/// read; `warnings` names the plugin, since rolldown's own warning would name
+/// oj's wrapper.
 pub(crate) fn host_chain_map(
     sourcemap: bool,
     t: &oj_server::plugins::HostTransform,
-    warn: bool,
+    hook: ChainHook,
+    warnings: Option<&MapWarnings>,
 ) -> HookTransformOutputMap {
-    static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     if !sourcemap {
         return HookTransformOutputMap::Omitted;
     }
+    let warn = |text: String| {
+        if let Some(w) = warnings {
+            w.warn(text);
+        }
+    };
     if let Some(name) = &t.map_broken {
-        let mut warned = WARNED.lock().unwrap();
-        if warn && !warned.contains(name) {
-            warned.push(name.clone());
-            eprintln!(
-                "oj build warning: Sourcemap is likely to be incorrect: a plugin ({name}) was used to transform files, but didn't generate a sourcemap for the transformation."
-            );
-        }
-        return HookTransformOutputMap::Omitted;
-    }
-    let parsed: Option<Vec<rolldown_sourcemap::SourceMap>> = t
-        .maps
-        .iter()
-        .map(|m| {
-            oxc_sourcemap::SourceMap::from_json_string(m)
-                .ok()
-                .map(|m| m.into_owned())
-        })
-        .collect();
-    match parsed.as_deref() {
-        None => HookTransformOutputMap::Omitted,
-        Some([]) => HookTransformOutputMap::Null,
-        Some([one]) => one.clone().into(),
-        Some(all) => {
-            rolldown_sourcemap::collapse_sourcemaps(&all.iter().collect::<Vec<_>>()).into()
+        warn(format!(
+            "Sourcemap is likely to be incorrect: a plugin ({name}) was used to transform files, but didn't generate a sourcemap for the transformation."
+        ));
+        if hook == ChainHook::Transform {
+            return HookTransformOutputMap::Omitted;
         }
     }
+    let mut maps = Vec::with_capacity(t.maps.len());
+    for (i, json) in t.maps.iter().enumerate() {
+        let Some(map) = parse_plugin_map(json) else {
+            let name = t.map_plugins.get(i).map_or("?", String::as_str);
+            warn(format!(
+                "Sourcemap is likely to be incorrect: a plugin ({name}) returned a sourcemap oj cannot read."
+            ));
+            if hook == ChainHook::Transform {
+                return HookTransformOutputMap::Omitted;
+            }
+            continue;
+        };
+        maps.push(map);
+    }
+    match maps.as_slice() {
+        [] if t.map_broken.is_some() => HookTransformOutputMap::Omitted,
+        [] => HookTransformOutputMap::Null,
+        [one] => one.clone().into(),
+        all => rolldown_sourcemap::collapse_sourcemaps(&all.iter().collect::<Vec<_>>()).into(),
+    }
+}
+
+/// A plugin's map as rolldown's JS side takes it: an object that leaves out
+/// `version`, `sources` or `names` still reads (rolldown fills `sources` with
+/// the module id afterwards).
+fn parse_plugin_map(json: &str) -> Option<rolldown_sourcemap::SourceMap> {
+    if let Ok(map) = oxc_sourcemap::SourceMap::from_json_string(json) {
+        return Some(map.into_owned());
+    }
+    let mut v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let o = v.as_object_mut()?;
+    o.entry("version").or_insert(3.into());
+    o.entry("sources").or_insert(serde_json::json!([""]));
+    o.entry("names").or_insert(serde_json::json!([]));
+    let json = v.to_string();
+    oxc_sourcemap::SourceMap::from_json_string(&json)
+        .ok()
+        .map(|m| m.into_owned())
 }
 
 // Forward chunks a plugin emitted (in buildStart or transform) to rolldown as
@@ -2003,6 +2056,7 @@ impl Plugin for OjUserPlugin {
         let code: &str = args.code;
         let id: &str = args.id;
         let sourcemap = ctx.inner.options().is_sourcemap_enabled();
+        let map_warnings = Arc::clone(&self.map_warnings);
         async move {
             if !pass {
                 return Ok(None);
@@ -2018,7 +2072,12 @@ impl Plugin for OjUserPlugin {
                 Ok(t) => {
                     forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
                     if t.code != code {
-                        let map = host_chain_map(sourcemap, &t, true);
+                        let map = host_chain_map(
+                            sourcemap,
+                            &t,
+                            ChainHook::Transform,
+                            Some(&map_warnings),
+                        );
                         Ok(Some(HookTransformOutput {
                             code: Some(t.code),
                             map,
@@ -2099,6 +2158,7 @@ impl Plugin for OjUserPlugin {
         let enabled = Arc::clone(&self.render_chunk_enabled);
         let code = Arc::clone(&args.code);
         let sourcemap = args.options.is_sourcemap_enabled();
+        let map_warnings = Arc::clone(&self.map_warnings);
         // Once the first call learned no plugin has renderChunk, later chunks
         // skip the JSON serialization too, not just the RPC.
         let chunk_json = if enabled.get() == Some(&false) {
@@ -2115,7 +2175,8 @@ impl Plugin for OjUserPlugin {
             }
             match host.render_chunk(&code, &chunk_json).await {
                 Ok(t) if t.code != *code => {
-                    let map = host_chain_map(sourcemap, &t, true);
+                    let map =
+                        host_chain_map(sourcemap, &t, ChainHook::RenderChunk, Some(&map_warnings));
                     Ok(Some(HookRenderChunkOutput { code: t.code, map }))
                 }
                 _ => Ok(None),

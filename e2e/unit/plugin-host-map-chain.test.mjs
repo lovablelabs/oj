@@ -26,6 +26,8 @@ const PLUGINS = `export default [{
 }, {
   name: "no-map",
   transform(code, id) { return id.endsWith("/nomap.js") ? { code: code + ";" } : null; },
+}, {
+  transform(code, id) { return id.endsWith("/unnamed.js") ? code + ";" : null; },
 }];
 `;
 
@@ -52,13 +54,15 @@ test("the host reports each plugin's map and the first that left none", async ()
   };
   const chain = async (name) => {
     const r = await call("transform", ["export const a = 1", path.join(fx.root, name), ""]);
-    return { maps: r.maps.length, mapBroken: r.mapBroken };
+    return { maps: r.maps.length, mapPlugins: r.mapPlugins, mapBroken: r.mapBroken };
   };
   try {
-    assert.deepEqual(await chain("string.js"), { maps: 0, mapBroken: "string" });
-    assert.deepEqual(await chain("null.js"), { maps: 0, mapBroken: null });
-    assert.deepEqual(await chain("mapped.js"), { maps: 1, mapBroken: null });
-    assert.deepEqual(await chain("nomap.js"), { maps: 0, mapBroken: "no-map" });
+    assert.deepEqual(await chain("string.js"), { maps: 0, mapPlugins: [], mapBroken: "string" });
+    assert.deepEqual(await chain("null.js"), { maps: 0, mapPlugins: [], mapBroken: null });
+    assert.deepEqual(await chain("mapped.js"), { maps: 1, mapPlugins: ["mapped"], mapBroken: null });
+    assert.deepEqual(await chain("nomap.js"), { maps: 0, mapPlugins: [], mapBroken: "no-map" });
+    // A plugin without a name still breaks the chain.
+    assert.deepEqual(await chain("unnamed.js"), { maps: 0, mapPlugins: [], mapBroken: "?" });
     const rendered = await call("renderChunk", ["export {}", "{}"]);
     assert.equal(rendered.code, "export {};");
     assert.equal(rendered.mapBroken, "string");

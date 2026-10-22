@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use super::{build_app, scratch, write_files};
+use crate::build::ChainHook;
 
 const MAIN: &str = "const a = 1;\nconst b = 2;\nconsole.log(\"MARK\", a + b);\n";
 
@@ -112,7 +113,8 @@ fn the_host_chain_collapses_in_order_and_a_missing_map_breaks_it() {
         maps: vec![down_one.to_string(), down_one.to_string()],
         ..Default::default()
     };
-    let HookTransformOutputMap::Sourcemap(map) = crate::build::host_chain_map(true, &t, false)
+    let HookTransformOutputMap::Sourcemap(map) =
+        crate::build::host_chain_map(true, &t, ChainHook::Transform, None)
     else {
         panic!("two maps collapse into one");
     };
@@ -122,13 +124,112 @@ fn the_host_chain_collapses_in_order_and_a_missing_map_breaks_it() {
 
     t.map_broken = Some("raw".into());
     assert!(matches!(
-        crate::build::host_chain_map(true, &t, false),
+        crate::build::host_chain_map(true, &t, ChainHook::Transform, None),
         HookTransformOutputMap::Omitted
     ));
     t.map_broken = None;
     t.maps.clear();
     assert!(matches!(
-        crate::build::host_chain_map(true, &t, false),
+        crate::build::host_chain_map(true, &t, ChainHook::Transform, None),
         HookTransformOutputMap::Null
     ));
+}
+
+/// A map the plugin left without `version`, `sources` or `names` reads as
+/// rolldown's JS side reads it.
+#[test]
+fn a_map_without_version_or_sources_still_joins_the_chain() {
+    use rolldown_plugin::HookTransformOutputMap;
+    let t = oj_server::plugins::HostTransform {
+        maps: vec![r#"{"mappings":";AAAA"}"#.to_string()],
+        map_plugins: vec!["terse".into()],
+        ..Default::default()
+    };
+    let HookTransformOutputMap::Sourcemap(map) =
+        crate::build::host_chain_map(true, &t, ChainHook::Transform, None)
+    else {
+        panic!("the terse map reads");
+    };
+    let lut = map.generate_lookup_table();
+    let tok = map.lookup_token(&lut, 1, 0).expect("line 2 is mapped");
+    assert_eq!(tok.get_src_line(), 0);
+}
+
+/// A map oj cannot read breaks the chain and names the plugin that sent it;
+/// each warning prints once per build, and the next build warns again.
+#[test]
+fn an_unreadable_map_breaks_the_chain_and_warns_once_per_build() {
+    use rolldown_plugin::HookTransformOutputMap;
+    let good = r#"{"version":3,"sources":["a.js"],"names":[],"mappings":"AAAA"}"#;
+    let t = oj_server::plugins::HostTransform {
+        maps: vec![good.to_string(), r#"{"mappings":[[0,0,0,0]]}"#.to_string()],
+        map_plugins: vec!["fine".into(), "decoded".into()],
+        ..Default::default()
+    };
+    let build = crate::build::MapWarnings::default();
+    for _ in 0..2 {
+        assert!(matches!(
+            crate::build::host_chain_map(true, &t, ChainHook::Transform, Some(&build)),
+            HookTransformOutputMap::Omitted
+        ));
+    }
+    let printed = build.printed();
+    assert_eq!(printed.len(), 1, "{printed:?}");
+    assert!(printed[0].contains("(decoded)"), "{printed:?}");
+
+    let next = crate::build::MapWarnings::default();
+    crate::build::host_chain_map(true, &t, ChainHook::Transform, Some(&next));
+    assert_eq!(next.printed().len(), 1, "a new build warns again");
+
+    let off = crate::build::MapWarnings::default();
+    crate::build::host_chain_map(false, &t, ChainHook::Transform, Some(&off));
+    assert!(off.printed().is_empty(), "no sourcemap, no warning");
+}
+
+/// A renderChunk step without a map skips only its own map, as in rolldown:
+/// a footer plugin that returns a string leaves the next plugin's map in
+/// the chunk's chain.
+#[tokio::test]
+async fn a_render_chunk_step_without_a_map_keeps_the_others() {
+    let root = scratch("smap-render-chunk-footer");
+    shifting_app(&root, "renderChunk(code) { return shift(code); }");
+    let plugins = fs::read_to_string(root.join("oj.plugins.mjs")).unwrap().replace(
+        "export default [{",
+        "export default [{ name: \"footer\", renderChunk(code) { return code + \"\\n// footer\\n\"; } }, {",
+    );
+    fs::write(root.join("oj.plugins.mjs"), plugins).unwrap();
+    build_app(&root).await.expect("build");
+    let (source, line) = mark_origin(&root).expect("MARK is mapped");
+    assert!(source.ends_with("src/main.js"), "{source}");
+    assert_eq!(line, 2, "MARK is on main.js line 3");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// In a renderChunk chain, a step without a map or with one oj cannot read
+/// drops out on its own and the other maps still collapse.
+#[test]
+fn a_render_chunk_chain_skips_only_its_unmapped_steps() {
+    use rolldown_plugin::HookTransformOutputMap;
+    let down_one = r#"{"version":3,"sources":["a.js"],"names":[],"mappings":";AAAA;AACA"}"#;
+    let t = oj_server::plugins::HostTransform {
+        maps: vec![down_one.to_string(), "not a map".to_string()],
+        map_plugins: vec!["shift".into(), "garbled".into()],
+        map_broken: Some("footer".into()),
+        ..Default::default()
+    };
+    let warnings = crate::build::MapWarnings::default();
+    let HookTransformOutputMap::Sourcemap(map) =
+        crate::build::host_chain_map(true, &t, ChainHook::RenderChunk, Some(&warnings))
+    else {
+        panic!("the readable map survives");
+    };
+    let lut = map.generate_lookup_table();
+    assert_eq!(map.lookup_token(&lut, 1, 0).unwrap().get_src_line(), 0);
+    let mut printed = warnings.printed();
+    printed.sort();
+    assert_eq!(printed.len(), 2, "{printed:?}");
+    assert!(
+        printed[0].contains("(footer)") && printed[1].contains("(garbled)"),
+        "{printed:?}"
+    );
 }
