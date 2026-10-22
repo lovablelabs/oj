@@ -1,0 +1,4 @@
+[submodule "vendor/tsrs"]
+	path = vendor/tsrs
+	url = https://github.com/oxc-project/tsrs.git
+	shallow = true
