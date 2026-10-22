@@ -1290,34 +1290,9 @@ impl PluginHost {
         code: &str,
         id: &str,
         resolved: &str,
-    ) -> Result<(String, Vec<String>, Vec<String>, Vec<ChunkEmit>), String> {
-        let Some(raw) = self.call("transform", &[code, id, resolved]).await? else {
-            return Ok((code.to_string(), Vec::new(), Vec::new(), Vec::new()));
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            return Ok((raw, Vec::new(), Vec::new(), Vec::new()));
-        };
-        let out = v
-            .get("code")
-            .and_then(|c| c.as_str())
-            .unwrap_or(code)
-            .to_string();
-        let str_array = |key: &str| {
-            v.get(key)
-                .and_then(|w| w.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        Ok((
-            out,
-            str_array("watchFiles"),
-            str_array("maps"),
-            emitted_chunks(&v),
-        ))
+    ) -> Result<HostTransform, String> {
+        let raw = self.call("transform", &[code, id, resolved]).await?;
+        Ok(HostTransform::parse(raw, code))
     }
 
     pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
@@ -1641,8 +1616,9 @@ impl PluginHost {
         &self,
         code: &str,
         chunk_json: &str,
-    ) -> Result<Option<String>, String> {
-        self.call("renderChunk", &[code, chunk_json]).await
+    ) -> Result<HostTransform, String> {
+        let raw = self.call("renderChunk", &[code, chunk_json]).await?;
+        Ok(HostTransform::parse(raw, code))
     }
 
     #[inline]
@@ -1922,4 +1898,60 @@ fn emitted_chunks(v: &serde_json::Value) -> Vec<ChunkEmit> {
         .and_then(|c| c.as_array())
         .map(|a| a.iter().filter_map(ChunkEmit::from_value).collect())
         .unwrap_or_default()
+}
+
+/// What a plugin chain (transform or renderChunk) made of a module or chunk.
+#[derive(Debug, Default)]
+pub struct HostTransform {
+    pub code: String,
+    pub watch_files: Vec<String>,
+    /// The maps the plugins returned, in chain order.
+    pub maps: Vec<String>,
+    /// The first plugin that returned code without a map, which breaks the
+    /// chain as in Rollup (`map: null` does not).
+    pub map_broken: Option<String>,
+    pub chunks: Vec<ChunkEmit>,
+}
+
+impl HostTransform {
+    /// A reply that is not the host's JSON is the code itself; none leaves
+    /// `code` as it was.
+    fn parse(raw: Option<String>, code: &str) -> Self {
+        let Some(raw) = raw else {
+            return Self {
+                code: code.to_string(),
+                ..Self::default()
+            };
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Self {
+                code: raw,
+                ..Self::default()
+            };
+        };
+        let str_array = |key: &str| {
+            v.get(key)
+                .and_then(|w| w.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Self {
+            code: v
+                .get("code")
+                .and_then(|c| c.as_str())
+                .unwrap_or(code)
+                .to_string(),
+            watch_files: str_array("watchFiles"),
+            maps: str_array("maps"),
+            map_broken: v
+                .get("mapBroken")
+                .and_then(|n| n.as_str())
+                .map(str::to_string),
+            chunks: emitted_chunks(&v),
+        }
+    }
 }

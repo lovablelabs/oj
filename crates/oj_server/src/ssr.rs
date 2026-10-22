@@ -293,7 +293,7 @@ pub(crate) async fn ssr_transform_source(
             let resolved =
                 resolved_imports_json(&state.resolver, &state.fs_allow, &source, Path::new(id));
             match host.transform(&source, id, &resolved).await {
-                Ok((code, _, _, _)) => code,
+                Ok(t) => t.code,
                 Err(e) => {
                     return Err(SsrModuleError::Failed(format!(
                         "oj: plugin transform error for {id}:\n{e}"

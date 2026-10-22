@@ -859,7 +859,7 @@ impl StartHost {
                 Some(host) => host
                     .transform(&raw, &clean, "{}")
                     .await
-                    .map(|(code, _, _, _)| code)
+                    .map(|t| t.code)
                     .map_err(|e| e.to_string())?,
                 None => return Err(format!("no plugin compiles {clean}")),
             };

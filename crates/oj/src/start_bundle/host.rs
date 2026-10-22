@@ -22,9 +22,8 @@ use rolldown_common::{ModuleType, ResolvedExternal};
 use rolldown_plugin::{
     HookLoadArgs, HookLoadOutput, HookLoadReturn, HookRenderChunkArgs, HookRenderChunkOutput,
     HookRenderChunkReturn, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn,
-    HookTransformArgs, HookTransformOutput, HookTransformOutputMap, HookTransformReturn, Plugin,
-    PluginContext, PluginContextResolveOptions, SharedLoadPluginContext,
-    SharedTransformPluginContext,
+    HookTransformArgs, HookTransformOutput, HookTransformReturn, Plugin, PluginContext,
+    PluginContextResolveOptions, SharedLoadPluginContext, SharedTransformPluginContext,
 };
 
 use super::facts::Facts;
@@ -466,17 +465,20 @@ impl Plugin for StartHostPlugin {
             && self.host.hook_wants_transform(id, code);
         let host = Arc::clone(&self.host);
         let emit = Arc::clone(&self.emit);
+        let sourcemap = ctx.inner.options().is_sourcemap_enabled();
+        let warn = self.command == Command::Build;
         async move {
             if !pass {
                 return Ok(None);
             }
-            let (out, _, _, chunks) = host
+            let t = host
                 .transform(code, id, "{}")
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
-            crate::build::forward_emitted_chunks(&ctx.inner, &chunks, &emit);
-            Ok((out != code).then(|| HookTransformOutput {
-                code: Some(out),
+            crate::build::forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
+            Ok((t.code != code).then(|| HookTransformOutput {
+                map: crate::build::host_chain_map(sourcemap, &t, warn),
+                code: Some(t.code),
                 ..Default::default()
             }))
         }
@@ -519,6 +521,8 @@ impl Plugin for StartHostPlugin {
         let host = Arc::clone(&self.host);
         let enabled = Arc::clone(&self.render_chunk_enabled);
         let code = Arc::clone(&args.code);
+        let sourcemap = args.options.is_sourcemap_enabled();
+        let warn = self.command == Command::Build;
         let chunk_json = if enabled.get() == Some(&false) {
             String::new()
         } else {
@@ -536,9 +540,9 @@ impl Plugin for StartHostPlugin {
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin renderChunk failed:\n{e}"))?
             {
-                Some(out) if out != *code => Ok(Some(HookRenderChunkOutput {
-                    code: out,
-                    map: HookTransformOutputMap::Null,
+                t if t.code != *code => Ok(Some(HookRenderChunkOutput {
+                    map: crate::build::host_chain_map(sourcemap, &t, warn),
+                    code: t.code,
                 })),
                 _ => Ok(None),
             }

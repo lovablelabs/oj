@@ -44,6 +44,7 @@ mod plugin_error_surfaced_build;
 mod plugin_hook_gating_build;
 mod plugin_load_jsx;
 mod plugin_object_hooks_build;
+mod plugin_sourcemap_build;
 mod postcss_config_discovery_build;
 mod preload_relative_base_build;
 mod preprocessors_build;
