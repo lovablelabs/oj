@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! An object-form `resolveId` whose `filter.id` is a string glob (Vite's
-//! pluginFilter: picomatch, `dot: true`), a flagged RegExp or an exclude
-//! alone (everything it does not exclude) claims the
+//! pluginFilter: picomatch, `dot: true`) or a flagged RegExp claims the
 //! imports it matches, even ones that exist on disk: Vite offers every import
-//! to plugin resolveId before its own resolver, so oj's must step aside.
+//! to plugin resolveId before its own resolver, so oj's must step aside. An
+//! exclude-only filter claims nothing, like a function-form hook: oj resolves
+//! a file on disk itself and offers the plugin only what it cannot resolve.
 
 use regex::Regex;
 
@@ -49,12 +50,12 @@ const PLUGINS: &str = r#"export default [
 "#;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn glob_flagged_and_exclude_only_id_filters_claim_their_imports() {
+async fn glob_and_flagged_id_filters_claim_and_exclude_only_falls_back() {
     let app = App::new(&[
         ("package.json", r#"{"name":"filter-globs","version":"1.0.0"}"#),
         (
             "src/main.js",
-            "import a from \"/src/thing.magic\";\nimport b from \"/src/other.magic2\";\nimport c from \"/src/third.magic3\";\nwindow.__R = [a, b, c];\n",
+            "import a from \"/src/thing.magic\";\nimport b from \"/src/other.magic2\";\nimport c from \"/src/third.magic3\";\nimport d from \"/src/missing.magic3\";\nwindow.__R = [a, b, c, d];\n",
         ),
         ("src/thing.magic", "export default \"disk\";\n"),
         ("src/other.magic2", "export default \"disk\";\n"),
@@ -69,7 +70,7 @@ async fn glob_flagged_and_exclude_only_id_filters_claim_their_imports() {
         .captures_iter(&main)
         .map(|c| c[1].to_string())
         .collect();
-    assert_eq!(urls.len(), 3, "three imports rewritten:\n{main}");
+    assert_eq!(urls.len(), 4, "four imports rewritten:\n{main}");
     let a = server.text(&urls[0]).await;
     assert!(
         a.contains("glob /src/thing.magic"),
@@ -84,8 +85,14 @@ async fn glob_flagged_and_exclude_only_id_filters_claim_their_imports() {
     );
     let c = server.text(&urls[2]).await;
     assert!(
-        c.contains("excl /src/third.magic3"),
-        "the exclude-only filter claimed it ({}):\n{c}",
+        c.contains("\"disk\""),
+        "an exclude-only filter leaves a file on disk to oj's resolver ({}):\n{c}",
         urls[2]
+    );
+    let d = server.text(&urls[3]).await;
+    assert!(
+        d.contains("excl /src/missing.magic3"),
+        "an import oj cannot resolve still falls back to it ({}):\n{d}",
+        urls[3]
     );
 }

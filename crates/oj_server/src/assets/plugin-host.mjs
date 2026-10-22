@@ -3950,14 +3950,6 @@ function gatePatterns(inc, kind) {
   }
   return out;
 }
-// gatePatterns for the dependency and resolveId gates, which keep one flat
-// list for all plugins: a filter with no include (exclude-only, or an empty
-// include) matches everything it does not exclude, as in Vite, so it claims
-// everything there.
-function depGatePatterns(inc, kind) {
-  const pats = gatePatterns(inc, kind);
-  return pats && pats.length > 0 ? pats : [{ any: true }];
-}
 function pluginsWithHook(name) {
   const out = [];
   for (const p of plugins) {
@@ -4842,7 +4834,7 @@ async function run(hook, args) {
     for (const p of plugins) {
       const t = p && p.transform;
       const f = t && typeof t === "object" ? t.filter : null;
-      if (f && f.code != null) pats.push(...depGatePatterns(f.code, "code"));
+      if (f && f.code != null) pats.push(...(gatePatterns(f.code, "code") ?? [{ any: true }]));
     }
     return JSON.stringify(pats);
   }
@@ -4856,7 +4848,7 @@ async function run(hook, args) {
     for (const p of plugins) {
       const l = p && p.load;
       const f = l && typeof l === "object" ? l.filter : null;
-      if (f && f.id != null) pats.push(...depGatePatterns(f.id, "id"));
+      if (f && f.id != null) pats.push(...(gatePatterns(f.id, "id") ?? [{ any: true }]));
     }
     return JSON.stringify(pats);
   }
@@ -4864,12 +4856,15 @@ async function run(hook, args) {
     // Object-form `resolveId` hooks' `filter.id` include patterns. Vite offers
     // every import (relative and absolute too) to plugin resolveId before its
     // own resolver; oj resolves natively first and routes a non-bare import
-    // through the plugins only when one of these patterns claims it.
+    // through the plugins only when one of these patterns claims it. A filter
+    // with no include (exclude-only) claims nothing, like a function-form
+    // hook: both stay plugin fallbacks for what oj cannot resolve, since
+    // claiming every import would route the whole graph through /@id/.
     const pats = [];
     for (const p of plugins) {
       const r = p && p.resolveId;
       const f = r && typeof r === "object" ? r.filter : null;
-      if (f && f.id != null) pats.push(...depGatePatterns(f.id, "id"));
+      if (f && f.id != null) pats.push(...(gatePatterns(f.id, "id") ?? [{ any: true }]));
     }
     return JSON.stringify(pats);
   }
