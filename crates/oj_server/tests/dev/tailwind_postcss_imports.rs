@@ -48,10 +48,14 @@ async fn inlined_files_hot_update_the_sheet_and_serve_root_urls() {
             "postcss.config.mjs",
             "export default { plugins: [{ postcssPlugin: \"oj-marker\", Once(root) { root.append(\".from-postcss { color: green; }\"); } }] };\n",
         ),
+        (
+            "vite.config.mjs",
+            "import path from \"node:path\";\nexport default { resolve: { alias: { \"@\": path.resolve(import.meta.dirname, \"src\") } } };\n",
+        ),
         ("src/styles/c.css", ".from-c { color: red; }\n"),
         (
             "src/styles/nested/b.css",
-            "@import \"../c.css\";\n.from-b { background: url(./img.png); }\n",
+            "@import \"../c.css\";\n.from-b { background: url(./img.png); }\n.from-alias { background: url(@/styles/nested/img.png); }\n",
         ),
         ("src/main.js", "import \"./index.css\";\n"),
         ("index.html", crate::INDEX_HTML),
@@ -79,9 +83,11 @@ async fn inlined_files_hot_update_the_sheet_and_serve_root_urls() {
     ] {
         assert!(css.contains(rule), "{rule} served:\n{css}");
     }
-    assert!(
-        css.contains("url(\"/src/styles/nested/img.png\")"),
-        "an inlined file's url points at its served path:\n{css}"
+    // Vite's UrlRewritePostcssPlugin spelling: the served path, unquoted.
+    assert_eq!(
+        css.matches("url(/src/styles/nested/img.png)").count(),
+        2,
+        "an inlined file's relative and aliased urls point at the served path:\n{css}"
     );
 
     app.write(&[("src/styles/c.css", ".from-c-edited { color: red; }\n")]);
@@ -123,10 +129,17 @@ async fn tailwind_postcss_keeps_layer_order_and_partial_plugin_paths() {
             "@import \"tailwindcss\";\n@import \"./styles/layer.css\" layer(components);\n@import \"./styles/sub/plugin.css\";\n",
         ),
         ("src/styles/layer.css", ".from-layer { margin: 1px; }\n"),
-        ("src/styles/sub/plugin.css", "@plugin \"./plug.js\";\n"),
+        (
+            "src/styles/sub/plugin.css",
+            "@plugin \"./plug.js\";\n@plugin \"./opts.js\" { color: blue; }\n",
+        ),
         (
             "src/styles/sub/plug.js",
             "export default function ({ addBase }) { addBase({ \".from-plugin\": { color: \"red\" } }); }\n",
+        ),
+        (
+            "src/styles/sub/opts.js",
+            "import plugin from \"tailwindcss/plugin\";\nexport default plugin.withOptions((o = {}) => ({ addBase }) => addBase({ \".from-opts\": { color: o.color } }));\n",
         ),
         ("src/main.js", "import \"./index.css\";\n"),
         ("index.html", crate::INDEX_HTML),
@@ -149,5 +162,11 @@ async fn tailwind_postcss_keeps_layer_order_and_partial_plugin_paths() {
     assert!(
         css.contains(".from-plugin"),
         "a partial's relative @plugin resolved from its own file:\n{css}"
+    );
+    assert!(
+        regex::Regex::new(r"\.from-opts\s*\{\s*color:\s*blue")
+            .unwrap()
+            .is_match(&css),
+        "the options-block form too:\n{css}"
     );
 }

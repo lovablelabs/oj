@@ -52,10 +52,11 @@ pub(crate) fn rebase_to_dir(
 /// the file they are written in, which `@tailwindcss/postcss` rebases from
 /// each node's source file (its fix-relative-paths step). An inlined file
 /// loses that origin, so its paths are rebased here: a quoted `./` / `../`
-/// param, after an optional `!`, made relative to the inlining sheet.
+/// param, after an optional `!`, made relative to the inlining sheet, in the
+/// statement form and the options-block form (`@plugin "./x" { ... }`).
 fn rebase_tailwind_paths(css: &str, base: &str) -> String {
     static TAILWIND_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"@[\w-]*(?:source|plugin|config)[\w-]*\s+("[^"]*"|'[^']*')\s*;"#).unwrap()
+        Regex::new(r#"@[\w-]*(?:source|plugin|config)[\w-]*\s+("[^"]*"|'[^']*')\s*[;{]"#).unwrap()
     });
     TAILWIND_PATH_RE
         .replace_all(css, |caps: &regex::Captures<'_>| {
@@ -249,10 +250,16 @@ fn parse_srcset(srcset: &str) -> Vec<(String, String)> {
 }
 
 /// A `style` attribute's declarations with their urls rewritten like Vite's
-/// url-rewrite PostCSS plugin does in dev: `url()`s, then `image-set()`
-/// candidates, rebased as in a sheet served at `url`. Text only, as under
-/// Vite's default PostCSS transformer, so the declarations stay as written.
+/// url-rewrite PostCSS plugin does in dev. Text only, as under Vite's default
+/// PostCSS transformer, so the declarations stay as written.
 pub fn rewrite_style_attribute_dev(url: &str, code: &str, resolve: &CssResolve<'_>) -> String {
+    rewrite_urls_dev(url, code, resolve)
+}
+
+/// A dev sheet's `url()`s and `image-set()` candidates as served urls, the
+/// text rewrite of Vite's UrlRewritePostcssPlugin for a sheet served at `url`
+/// (aliases resolved, relative paths joined when they name a file).
+pub fn rewrite_urls_dev(url: &str, code: &str, resolve: &CssResolve<'_>) -> String {
     let Some(base) = css_base_dir(url) else {
         return code.to_string();
     };

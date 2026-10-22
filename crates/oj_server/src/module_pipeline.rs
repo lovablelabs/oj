@@ -72,8 +72,7 @@ pub(crate) async fn ensure_module_as(
         let (css, imported) = compile_tailwind(state, file, url, &source).await?;
         // Vite's dev css rewrites a sheet's urls to served paths, so the
         // `<style>` the JS wrapper injects resolves them from any page.
-        let dir = file.parent().unwrap_or(Path::new("/"));
-        let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
+        let css = oj_css::rewrite_urls_dev(url, &css, &state.css_resolve.as_ref());
         let module = CachedModule {
             is_boundary: true,
             kind: "css".into(),
