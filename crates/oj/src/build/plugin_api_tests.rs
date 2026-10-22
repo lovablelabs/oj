@@ -33,6 +33,7 @@ mod html_entries_build;
 mod html_entry_build;
 mod html_env_build;
 mod jsx_import_source_build;
+mod load_error_build;
 mod manifest;
 mod manual_chunks_build;
 mod modulepreload;
@@ -44,6 +45,7 @@ mod plugin_error_surfaced_build;
 mod plugin_hook_gating_build;
 mod plugin_load_jsx;
 mod plugin_object_hooks_build;
+mod plugin_sourcemap_build;
 mod postcss_config_discovery_build;
 mod preload_relative_base_build;
 mod preprocessors_build;
@@ -191,4 +193,20 @@ pub(super) fn js_under(dir: &Path) -> String {
         .map(|(_, code)| code)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A build's in-process host chdirs the whole test process into the app root,
+/// so a test deleting its root afterwards leaves every concurrent test on a
+/// deleted cwd (engine loads then fail with NotFound). [`scratch`] cleans
+/// before use instead.
+#[test]
+fn no_check_deletes_its_app_root() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/build/plugin_api_tests");
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let code = fs::read_to_string(&path).unwrap();
+        for bad in ["remove_dir_all(&root)", "remove_dir_all(root)"] {
+            assert!(!code.contains(bad), "{} calls {bad}", path.display());
+        }
+    }
 }

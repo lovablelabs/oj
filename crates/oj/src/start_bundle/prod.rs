@@ -179,7 +179,6 @@ fn client_plugins(
     styles: &Arc<Styles>,
     emitter: &Arc<Emitter>,
     emit: &Arc<EmitState>,
-    nested: bool,
 ) -> Vec<SharedPluginable> {
     let mut plugins: Vec<SharedPluginable> = Vec::new();
     if let Some(h) = host {
@@ -188,19 +187,17 @@ fn client_plugins(
                 entries: h.facts.alias.clone(),
             }));
         }
-        let plugin = StartHostPlugin::new(
-            Arc::clone(&h.host),
-            h.ctx.clone(),
-            &h.facts,
-            start.command,
-            &start.root,
-            Arc::clone(emit),
-        );
-        plugins.push(Pluginable::new_shared(if nested {
-            plugin.nested()
-        } else {
-            plugin
-        }));
+        plugins.push(Pluginable::new_shared(
+            StartHostPlugin::new(
+                Arc::clone(&h.host),
+                h.ctx.clone(),
+                &h.facts,
+                start.command,
+                &start.root,
+                Arc::clone(emit),
+            )
+            .with_module_parsed(start.jsx_config()),
+        ));
     }
     plugins.push(Pluginable::new_shared(StartCodePlugin::new(
         &start.root,
@@ -273,17 +270,27 @@ pub(crate) async fn build(
     }
     std::fs::create_dir_all(&client_dir)?;
 
+    // TanStack Start's config hook sets Vite's `builder.sharedPlugins`, so
+    // every environment builds on the same plugin instances: one host, moved
+    // to the server environment once the client is written.
     let client_host = hosts::spawn(&start, config_file.as_deref(), "client").await?;
-    let mut server_host = hosts::spawn(&start, config_file.as_deref(), "ssr").await?;
     // With @cloudflare/vite-plugin the server build is the Worker environment
     // the plugin declared (named from the wrangler config, or its
     // `viteEnvironment.name`); the plugin's hooks must see that environment.
-    let cf_env = server_host
+    let cf_env = client_host
         .as_ref()
         .and_then(|h| h.facts.cloudflare.clone());
-    if let Some(env) = cf_env.as_ref().filter(|e| e.name != "ssr") {
-        server_host = hosts::spawn(&start, config_file.as_deref(), &env.name).await?;
-    }
+    let server_env_name = cf_env
+        .as_ref()
+        .map_or("ssr", |e| e.name.as_str())
+        .to_string();
+    let server_entry = start
+        .server_entry()
+        .unwrap_or_else(|| start.cache.join("server-entry.tsx"));
+    let server_out_dir = match &cf_env {
+        Some(env) => cloudflare::worker_out_dir(env, &start.root, &dist),
+        None => dist.clone(),
+    };
 
     let styles = Arc::new(Styles::new(&start));
     let emitter = Arc::new(Emitter::new(&client_dir, &start.base, Arc::clone(&styles)));
@@ -303,390 +310,566 @@ pub(crate) async fn build(
     let minify = crate::build::rolldown_minify(out.minify);
 
     // `?worker` / `?worker&url` in a build: Vite's bundleWorkerEntry bundles
-    // the worker entry on its own (one ES file, the client's transform,
-    // define and plugins, a worker starting itself getting its own URL).
+    // the worker entry on its own (the client's transform and define) with
+    // `worker.plugins` alone, a fresh set per bundle with their whole
+    // lifecycle (generate, no write): what their generateBundle emits ships
+    // with the client. The bundle takes `worker.rolldownOptions` (never the
+    // app's build options) and `worker.format`, iife by default: a classic
+    // script whose `import.meta.url` is its own URL (vite:worker-post). The
+    // entry is emitted where it is imported, its chunks beside it.
+    let worker_options = client_facts.worker.clone();
     {
         let start = Arc::clone(&start);
         let styles = Arc::clone(&styles);
         let weak_emitter = Arc::downgrade(&emitter);
-        let host = client_host.clone();
-        let defines = client_defines.clone();
+        let config_file = config_file.clone();
+        let client_dir = client_dir.clone();
+        let mut defines = client_defines.clone();
+        if !worker_options.is_module() {
+            defines.push(("import.meta.url".into(), "self.location.href".into()));
+            defines.push(("import.meta".into(), "{ url: self.location.href }".into()));
+        }
         let resolve = resolve_client.clone();
-        let external = client_external(client_facts, client_host.as_ref().map(|h| &h.host), None);
         let minify = minify.clone();
+        let sourcemap_kind = out.sourcemap;
+        let worker = worker_options.clone();
         let bundler: WorkerBundler = Arc::new(move |file: PathBuf| {
             let start = Arc::clone(&start);
             let styles = Arc::clone(&styles);
             let emitter = weak_emitter.upgrade();
-            let host = host.clone();
+            let config_file = config_file.clone();
+            let client_dir = client_dir.clone();
             let defines = defines.clone();
             let resolve = resolve.clone();
-            let external = external.clone();
             let minify = minify.clone();
+            let worker = worker.clone();
             Box::pin(async move {
                 let emitter = emitter.ok_or("the build is over")?;
-                let emit = Arc::new(EmitState::new(start.root.clone()));
-                let plugins = client_plugins(
+                let host = hosts::spawn_worker(&start, config_file.as_deref(), &[&file])
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let result = bundle_worker(
                     &start,
                     host.as_ref(),
-                    CodeTarget::Worker {
-                        entry: file.clone(),
-                    },
+                    &file,
                     &styles,
                     &emitter,
-                    &emit,
-                    true,
+                    &client_dir,
+                    &worker,
+                    WorkerBundleOptions {
+                        defines,
+                        resolve,
+                        minify,
+                        sourcemap: sourcemap_kind,
+                    },
+                )
+                .await;
+                if let Some(h) = &host {
+                    let closed = h.host.close_bundle().await;
+                    h.host.shutdown();
+                    closed.map_err(|e| format!("plugin closeBundle failed:\n{e}"))?;
+                }
+                result
+            })
+        });
+        emitter.set_worker_bundler(bundler, worker_options.is_module());
+    }
+
+    let build_all = async {
+        // The client.
+        let policy = match &client_host {
+            Some(h) => Some(super::chunks::chunk_policy(&h.facts, &h.host, false)?),
+            None => None,
+        };
+        let mut client = BundlerBuilder::default()
+            .with_plugins(client_plugins(
+                &start,
+                client_host.as_ref(),
+                CodeTarget::Client,
+                &styles,
+                &emitter,
+                &emit,
+            ))
+            .with_options(BundlerOptions {
+                input: Some(vec![input("client", &start.cache.join("client-entry.tsx"))]),
+                cwd: Some(start.root.clone()),
+                platform: Some(Platform::Browser),
+                transform: Some(start.transform_options()),
+                define: Some(client_defines.iter().cloned().collect()),
+                resolve: Some(resolve_client.clone()),
+                external: client_external(
+                    client_facts,
+                    client_host.as_ref().map(|h| &h.host),
+                    None,
+                ),
+                dir: Some(client_dir.to_string_lossy().into_owned()),
+                format: Some(OutputFormat::Esm),
+                minify: Some(minify.clone()),
+                sourcemap: sourcemap(out.sourcemap),
+                entry_filenames: Some("assets/[name]-[hash].js".to_string().into()),
+                chunk_filenames: Some("assets/[name]-[hash].js".to_string().into()),
+                asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
+                banner: Some(AddonOutputOption::String(Some(start.client_banner()))),
+                code_splitting: policy.as_ref().and_then(|p| p.code_splitting.clone()),
+                preserve_entry_signatures: Some(
+                    policy
+                        .as_ref()
+                        .map_or(rolldown_common::PreserveEntrySignatures::False, |p| {
+                            p.preserve_entry_signatures
+                        }),
+                ),
+                experimental: policy.as_ref().and_then(|p| p.chunk_optimization).map(|o| {
+                    rolldown_common::ExperimentalOptions {
+                        chunk_optimization: Some(o),
+                        ..Default::default()
+                    }
+                }),
+                ..Default::default()
+            })
+            .build()
+            .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
+        let output = client
+            .write()
+            .await
+            .map_err(|errs| bundle_failed(&emitter, errs.into_vec()))?;
+        client
+            .close()
+            .await
+            .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
+        let output = checked(output)?;
+        // Vite's buildEnvironment closes an environment's bundle as soon as
+        // its output is written, before the next environment builds.
+        if let Some(h) = &client_host {
+            write_emitted(&h.host, &client_dir).await?;
+            h.host
+                .close_bundle()
+                .await
+                .map_err(|e| anyhow::anyhow!("plugin closeBundle failed:\n{e}"))?;
+        }
+        let entry = output
+            .assets
+            .iter()
+            .find_map(|o| match o {
+                rolldown_common::Output::Chunk(c) if c.is_entry => Some(c.filename.to_string()),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("the client bundle has no entry chunk"))?;
+        let client_url = format!("{}{entry}", start.base);
+
+        // The server bundle bakes this manifest in (its alias maps the manifest
+        // virtual to the same file), so it serves the shape every framework
+        // version reads: 1.168+ the per-route `scripts`/`css`, 1.167 and earlier
+        // the top-level `clientEntry` and css from per-route `assets`.
+        let css = emitter.css_urls();
+        let root_route = serde_json::json!({
+            "preloads": [client_url],
+            "css": css,
+            "scripts": [{ "attrs": { "type": "module", "async": true, "src": client_url } }],
+            "assets": css.iter().map(|href| serde_json::json!({ "tag": "link", "attrs": { "rel": "stylesheet", "href": href } })).collect::<Vec<_>>(),
+        });
+        std::fs::write(
+            start.cache.join("manifest.ts"),
+            format!(
+                "export const tsrStartManifest = () => ({});\n",
+                serde_json::json!({ "routes": { "__root__": root_route }, "clientEntry": client_url })
+            ),
+        )?;
+
+        // The server, on the client's plugin instances.
+        let server_host = match &client_host {
+            Some(h) => Some(h.switch_environment(&server_env_name).await?),
+            None => None,
+        };
+        let server_defines = start.server_defines(
+            &server_env_name,
+            server_host.as_ref().map_or(&[][..], |h| &h.env_delta),
+            server_host.as_ref().map_or(&[][..], |h| &h.defines),
+        );
+        let server_plugins = || -> Vec<SharedPluginable> {
+            let mut plugins: Vec<SharedPluginable> = Vec::new();
+            if let Some(facts) = server_host
+                .as_ref()
+                .map(|h| &h.facts)
+                .filter(|f| !f.alias.is_empty())
+            {
+                plugins.push(Pluginable::new_shared(AppAliasPlugin {
+                    entries: facts.alias.clone(),
+                }));
+            }
+            if let Some(h) = &server_host {
+                plugins.push(Pluginable::new_shared(
+                    StartHostPlugin::new(
+                        Arc::clone(&h.host),
+                        h.ctx.clone(),
+                        &h.facts,
+                        start.command,
+                        &start.root,
+                        Arc::clone(&emit),
+                    )
+                    .with_module_parsed(start.jsx_config()),
+                ));
+            }
+            plugins.push(Pluginable::new_shared(StartCodePlugin::new(
+                &start.root,
+                CodeTarget::Server,
+            )));
+            plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
+                &start.root,
+                Arc::clone(&styles),
+                AssetMode::Build {
+                    emitter: Arc::clone(&emitter),
+                    server: true,
+                },
+            )));
+            plugins
+        };
+        let mut server_aliases = start.server_aliases();
+        let worker_dir = match &cf_env {
+            Some(env) => {
+                let dir = server_out_dir.clone();
+                server_aliases.push((
+                    "@cloudflare/vite-plugin/server".into(),
+                    start.cache.join("cf-server-worker.mjs"),
+                ));
+                let mut plugins: Vec<SharedPluginable> = Vec::new();
+                if let Some(h) = &server_host {
+                    plugins.push(Pluginable::new_shared(CloudflareWorkerPlugin::new(
+                        Arc::clone(&h.host),
+                        env.clone(),
+                        server_entry.clone(),
+                    )));
+                }
+                plugins.extend(server_plugins());
+                plugins.extend(cloudflare::builtin_plugins(env));
+                let mut conditions = env.conditions.clone();
+                conditions.push("import".into());
+                conditions.push(
+                    if start.is_production() {
+                        "production"
+                    } else {
+                        "development"
+                    }
+                    .into(),
                 );
-                let mut bundler = BundlerBuilder::default()
+                let mut transform = start.transform_options();
+                if let Some(target) = &env.target {
+                    transform.target = Some(rolldown_common::Either::Left(target.clone()));
+                }
+                let mut worker = BundlerBuilder::default()
                     .with_plugins(plugins)
                     .with_options(BundlerOptions {
-                        input: Some(vec![input("worker", &file)]),
+                        input: Some(vec![InputItem {
+                            name: Some("index".into()),
+                            import: cloudflare::WORKER_ENTRY.into(),
+                        }]),
                         cwd: Some(start.root.clone()),
-                        platform: Some(Platform::Browser),
-                        transform: Some(start.transform_options()),
-                        define: Some(defines.into_iter().collect()),
-                        resolve: Some(resolve),
-                        external,
+                        platform: Some(Platform::Neutral),
+                        transform: Some(transform),
+                        define: Some(server_defines.iter().cloned().collect()),
+                        resolve: Some(
+                            start.resolve_options(
+                                &server_aliases,
+                                Some(
+                                    env.main_fields
+                                        .clone()
+                                        .unwrap_or_else(oj_resolver::default_server_main_fields),
+                                ),
+                                Some(conditions),
+                            ),
+                        ),
+                        dir: Some(dir.to_string_lossy().into_owned()),
                         format: Some(OutputFormat::Esm),
-                        minify: Some(minify),
-                        code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
+                        minify: Some(minify.clone()),
+                        sourcemap: sourcemap(out.sourcemap),
+                        entry_filenames: Some("[name].js".to_string().into()),
+                        chunk_filenames: Some("assets/[name]-[hash].js".to_string().into()),
+                        asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
                         ..Default::default()
                     })
                     .build()
-                    .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
-                let output = bundler
-                    .generate()
+                    .map_err(|errs| {
+                        anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
+                    })?;
+                let output = worker
+                    .write()
                     .await
-                    .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
-                let _ = bundler.close().await;
-                let output = checked(output).map_err(|e| e.to_string())?;
-                output
-                    .assets
-                    .iter()
-                    .find_map(|o| match o {
-                        rolldown_common::Output::Chunk(c) if c.is_entry => Some(c.code.clone()),
-                        _ => None,
+                    .map_err(|errs| bundle_failed(&emitter, errs.into_vec()))?;
+                worker.close().await.map_err(|errs| {
+                    anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
+                })?;
+                checked(output)?;
+                Some(dir)
+            }
+            None => {
+                server_aliases.push((
+                    "@cloudflare/vite-plugin/server".into(),
+                    start.cache.join("cf-server.mjs"),
+                ));
+                let mut server = BundlerBuilder::default()
+                    .with_plugins(server_plugins())
+                    .with_options(BundlerOptions {
+                        input: Some(vec![input("server-bundle", &server_entry)]),
+                        cwd: Some(start.root.clone()),
+                        platform: Some(Platform::Node),
+                        external: ssr_external(&start),
+                        transform: Some(start.transform_options()),
+                        define: Some(server_defines.iter().cloned().collect()),
+                        resolve: Some(start.resolve_options(
+                            &server_aliases,
+                            Some(start.server_main_fields()),
+                            None,
+                        )),
+                        dir: Some(dist.to_string_lossy().into_owned()),
+                        format: Some(OutputFormat::Esm),
+                        minify: Some(minify.clone()),
+                        sourcemap: sourcemap(out.sourcemap),
+                        entry_filenames: Some("[name].mjs".to_string().into()),
+                        chunk_filenames: Some("chunks/[name]-[hash].mjs".to_string().into()),
+                        banner: Some(AddonOutputOption::String(Some(
+                            "import { createRequire as ___cr } from 'node:module'; const require = ___cr(import.meta.url || 'file:///worker.js');".into(),
+                        ))),
+                        ..Default::default()
                     })
-                    .ok_or_else(|| {
-                        format!("the worker bundle of {} has no entry chunk", file.display())
-                    })
-            })
-        });
-        emitter.set_worker_bundler(bundler);
-    }
+                    .build()
+                    .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
+                let output = server
+                    .write()
+                    .await
+                    .map_err(|errs| bundle_failed(&emitter, errs.into_vec()))?;
+                server.close().await.map_err(|errs| {
+                    anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
+                })?;
+                checked(output)?;
+                std::fs::write(dist.join("server.mjs"), node_server(&start.base))?;
+                std::fs::write(dist.join("worker.mjs"), WORKER_MJS)?;
+                std::fs::copy(
+                    start.cache.join("cf-server.mjs"),
+                    dist.join("cf-server.mjs"),
+                )?;
+                std::fs::write(dist.join("cf-loader.mjs"), CF_LOADER_MJS)?;
+                None
+            }
+        };
+        if let Some(h) = &server_host {
+            write_emitted(&h.host, &server_out_dir).await?;
+            h.host
+                .close_bundle()
+                .await
+                .map_err(|e| anyhow::anyhow!("plugin closeBundle failed:\n{e}"))?;
+        }
 
-    // The client.
-    let policy = match &client_host {
-        Some(h) => Some(super::chunks::chunk_policy(&h.facts, &h.host, false)?),
-        None => None,
+        if let Some(public_dir) = oj_config::public_dir(&start.config, &start.root) {
+            copy_dir_over(&public_dir, &client_dir)?;
+        }
+
+        if !out.prerender.is_empty() {
+            if worker_dir.is_some() {
+                // The Worker bundle imports the runtime's own modules; it does not run under Node.
+                eprintln!(
+                    "{}: prerender skipped: the Cloudflare Worker bundle only runs in workerd",
+                    oj_server::oj_brand()
+                );
+            } else {
+                prerender(&start, &dist, &client_dir, &out.prerender).await?;
+                eprintln!(
+                    "{}: prerendered {} route(s)",
+                    oj_server::oj_brand(),
+                    out.prerender.len()
+                );
+            }
+        }
+
+        eprintln!(
+            "{}: built dist (client {client_url})",
+            oj_server::oj_brand()
+        );
+        if let (Some(dir), Some(env)) = (&worker_dir, &cf_env) {
+            eprintln!(
+                "{}: cloudflare worker \"{}\" -> {}/index.js (deploy: wrangler deploy)",
+                oj_server::oj_brand(),
+                env.name,
+                dir.strip_prefix(&start.root).unwrap_or(dir).display()
+            );
+        }
+        Ok::<(), anyhow::Error>(())
     };
-    let mut client = BundlerBuilder::default()
-        .with_plugins(client_plugins(
-            &start,
-            client_host.as_ref(),
-            CodeTarget::Client,
-            &styles,
-            &emitter,
-            &emit,
-            false,
-        ))
+
+    let Some(host) = &client_host else {
+        return build_all.await;
+    };
+    // Vite's `vite build` is builder.buildApp: the plugins' buildApp hooks,
+    // with oj's environment builds standing in for TanStack Start's config
+    // builder, run once when a hook (or the builder's own turn) asks.
+    let built = serde_json::json!({
+        "client": {
+            "outDir": client_dir.display().to_string(),
+            "input": start.cache.join("client-entry.tsx").display().to_string(),
+        },
+        server_env_name.clone(): {
+            "outDir": server_out_dir.display().to_string(),
+            "input": if cf_env.is_some() {
+                cloudflare::WORKER_ENTRY.to_string()
+            } else {
+                server_entry.display().to_string()
+            },
+        },
+    })
+    .to_string();
+    let mut requests = host.ctx.build_requests();
+    let app = host.host.build_app(&built);
+    tokio::pin!(app);
+    tokio::pin!(build_all);
+    let mut result: Option<anyhow::Result<()>> = None;
+    let app_result = loop {
+        tokio::select! {
+            r = &mut app => break r,
+            Some(rpc) = requests.recv() => {
+                if result.is_none() {
+                    result = Some((&mut build_all).await);
+                }
+                let reply = match &result {
+                    Some(Err(e)) => Err(format!("{e:#}")),
+                    _ => Ok(serde_json::Value::Null),
+                };
+                host.host.rpc_reply(rpc.id, reply);
+            }
+        }
+    };
+    match result {
+        Some(Err(e)) => Err(e),
+        Some(Ok(())) => app_result.map_err(|e| anyhow::anyhow!("plugin buildApp failed:\n{e}")),
+        None => {
+            app_result.map_err(|e| anyhow::anyhow!("plugin buildApp failed:\n{e}"))?;
+            build_all.await
+        }
+    }
+}
+
+/// A failed bundle's error: a worker bundle's own when one failed under it
+/// (rolldown reports that load only as "plugin threw an error").
+fn bundle_failed(emitter: &Emitter, errs: Vec<rolldown_error::BuildDiagnostic>) -> anyhow::Error {
+    match emitter.worker_error() {
+        Some(e) => anyhow::anyhow!("{e}"),
+        None => anyhow::Error::new(BundleError::from_diagnostics(&errs)),
+    }
+}
+
+/// What a worker bundle takes from the client build.
+struct WorkerBundleOptions {
+    defines: Vec<(String, String)>,
+    resolve: rolldown_common::ResolveOptions,
+    minify: rolldown_common::RawMinifyOptions,
+    sourcemap: oj_config::Sourcemap,
+}
+
+/// One worker entry's bundle (Vite's bundleWorkerEntry) on its own host's
+/// `worker.plugins`: generated, its plugins' generateBundle and emitted files
+/// applied, every output but the entry written under the client.
+#[allow(clippy::too_many_arguments)]
+async fn bundle_worker(
+    start: &StartConfig,
+    host: Option<&BundleHost>,
+    file: &Path,
+    styles: &Arc<Styles>,
+    emitter: &Arc<Emitter>,
+    client_dir: &Path,
+    worker: &super::facts::WorkerOptions,
+    options: WorkerBundleOptions,
+) -> Result<super::assets::WorkerBundle, String> {
+    let emit = Arc::new(EmitState::new(start.root.clone()));
+    let plugins = client_plugins(
+        start,
+        host,
+        CodeTarget::Worker {
+            entry: file.to_path_buf(),
+        },
+        styles,
+        emitter,
+        &emit,
+    );
+    // The worker's own `rolldownOptions.external` (its function a handle on
+    // the worker's host).
+    let external = host.and_then(|h| {
+        let facts = Facts {
+            external: h.facts.worker.external.clone(),
+            ..Facts::default()
+        };
+        client_external(&facts, Some(&h.host), None)
+    });
+    let name = |given: &Option<String>, default: &str| {
+        given.clone().unwrap_or_else(|| default.to_string())
+    };
+    let format = if worker.is_module() {
+        OutputFormat::Esm
+    } else {
+        OutputFormat::Iife
+    };
+    let mut bundler = BundlerBuilder::default()
+        .with_plugins(plugins)
         .with_options(BundlerOptions {
-            input: Some(vec![input("client", &start.cache.join("client-entry.tsx"))]),
+            input: Some(vec![input("worker", file)]),
             cwd: Some(start.root.clone()),
             platform: Some(Platform::Browser),
             transform: Some(start.transform_options()),
-            define: Some(client_defines.iter().cloned().collect()),
-            resolve: Some(resolve_client.clone()),
-            external: client_external(client_facts, client_host.as_ref().map(|h| &h.host), None),
-            dir: Some(client_dir.to_string_lossy().into_owned()),
-            format: Some(OutputFormat::Esm),
-            minify: Some(minify.clone()),
-            sourcemap: sourcemap(out.sourcemap),
-            entry_filenames: Some("assets/[name]-[hash].js".to_string().into()),
-            chunk_filenames: Some("assets/[name]-[hash].js".to_string().into()),
-            asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
-            banner: Some(AddonOutputOption::String(Some(start.client_banner()))),
-            code_splitting: policy.as_ref().and_then(|p| p.code_splitting.clone()),
-            preserve_entry_signatures: Some(
-                policy
-                    .as_ref()
-                    .map_or(rolldown_common::PreserveEntrySignatures::False, |p| {
-                        p.preserve_entry_signatures
-                    }),
+            define: Some(options.defines.into_iter().collect()),
+            resolve: Some(options.resolve),
+            external,
+            format: Some(format),
+            minify: Some(options.minify),
+            sourcemap: sourcemap(options.sourcemap),
+            entry_filenames: Some(name(&worker.entry_file_names, "assets/[name]-[hash].js").into()),
+            chunk_filenames: Some(name(&worker.chunk_file_names, "assets/[name]-[hash].js").into()),
+            asset_filenames: Some(
+                name(&worker.asset_file_names, "assets/[name]-[hash][extname]").into(),
             ),
-            experimental: policy.as_ref().and_then(|p| p.chunk_optimization).map(|o| {
-                rolldown_common::ExperimentalOptions {
-                    chunk_optimization: Some(o),
-                    ..Default::default()
-                }
-            }),
+            preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::False),
             ..Default::default()
         })
         .build()
-        .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
-    let output = client
-        .write()
+        .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
+    let output = bundler
+        .generate()
         .await
-        .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
-    client
-        .close()
-        .await
-        .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
-    let output = checked(output)?;
-    if let Some(h) = &client_host {
-        write_emitted(&h.host, &client_dir).await?;
-    }
-    let entry = output
-        .assets
-        .iter()
-        .find_map(|o| match o {
-            rolldown_common::Output::Chunk(c) if c.is_entry => Some(c.filename.to_string()),
-            _ => None,
-        })
-        .ok_or_else(|| anyhow::anyhow!("the client bundle has no entry chunk"))?;
-    let client_url = format!("{}{entry}", start.base);
-
-    // The server bundle bakes this manifest in (its alias maps the manifest
-    // virtual to the same file), so it serves the shape every framework
-    // version reads: 1.168+ the per-route `scripts`/`css`, 1.167 and earlier
-    // the top-level `clientEntry` and css from per-route `assets`.
-    let css = emitter.css_urls();
-    let root_route = serde_json::json!({
-        "preloads": [client_url],
-        "css": css,
-        "scripts": [{ "attrs": { "type": "module", "async": true, "src": client_url } }],
-        "assets": css.iter().map(|href| serde_json::json!({ "tag": "link", "attrs": { "rel": "stylesheet", "href": href } })).collect::<Vec<_>>(),
-    });
-    std::fs::write(
-        start.cache.join("manifest.ts"),
-        format!(
-            "export const tsrStartManifest = () => ({});\n",
-            serde_json::json!({ "routes": { "__root__": root_route }, "clientEntry": client_url })
-        ),
-    )?;
-
-    // The server.
-    let server_entry = start
-        .server_entry()
-        .unwrap_or_else(|| start.cache.join("server-entry.tsx"));
-    let server_env_name = cf_env
-        .as_ref()
-        .map_or("ssr", |e| e.name.as_str())
-        .to_string();
-    let server_defines = start.server_defines(
-        &server_env_name,
-        server_host.as_ref().map_or(&[][..], |h| &h.env_delta),
-        server_host.as_ref().map_or(&[][..], |h| &h.defines),
-    );
-    let server_plugins = |worker: bool| -> Vec<SharedPluginable> {
-        let mut plugins: Vec<SharedPluginable> = Vec::new();
-        let facts = server_host
-            .as_ref()
-            .map(|h| &h.facts)
-            .or(client_host.as_ref().map(|h| &h.facts));
-        if let Some(facts) = facts.filter(|f| !f.alias.is_empty()) {
-            plugins.push(Pluginable::new_shared(AppAliasPlugin {
-                entries: facts.alias.clone(),
-            }));
-        }
-        if let Some(h) = &server_host {
-            let mut plugin = StartHostPlugin::new(
-                Arc::clone(&h.host),
-                h.ctx.clone(),
-                &h.facts,
-                start.command,
-                &start.root,
-                Arc::clone(&emit),
-            );
-            if let Some(c) = &client_host {
-                plugin = plugin.with_fallback(Arc::clone(&c.host));
-            }
-            plugins.push(Pluginable::new_shared(plugin));
-        }
-        plugins.push(Pluginable::new_shared(StartCodePlugin::new(
-            &start.root,
-            CodeTarget::Server,
-        )));
-        plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
-            &start.root,
-            Arc::clone(&styles),
-            AssetMode::Build {
-                emitter: Arc::clone(&emitter),
-                server: true,
-            },
-        )));
-        let _ = worker;
-        plugins
-    };
-    let mut server_aliases = start.server_aliases();
-    let worker_dir = match &cf_env {
-        Some(env) => {
-            let dir = cloudflare::worker_out_dir(env, &start.root, &dist);
-            server_aliases.push((
-                "@cloudflare/vite-plugin/server".into(),
-                start.cache.join("cf-server-worker.mjs"),
-            ));
-            let mut plugins: Vec<SharedPluginable> = Vec::new();
-            if let Some(h) = &server_host {
-                plugins.push(Pluginable::new_shared(CloudflareWorkerPlugin::new(
-                    Arc::clone(&h.host),
-                    env.clone(),
-                    server_entry.clone(),
-                )));
-            }
-            plugins.extend(server_plugins(true));
-            plugins.extend(cloudflare::builtin_plugins(env));
-            let mut conditions = env.conditions.clone();
-            conditions.push("import".into());
-            conditions.push(
-                if start.is_production() {
-                    "production"
-                } else {
-                    "development"
-                }
-                .into(),
-            );
-            let mut transform = start.transform_options();
-            if let Some(target) = &env.target {
-                transform.target = Some(rolldown_common::Either::Left(target.clone()));
-            }
-            let mut worker = BundlerBuilder::default()
-                .with_plugins(plugins)
-                .with_options(BundlerOptions {
-                    input: Some(vec![InputItem {
-                        name: Some("index".into()),
-                        import: cloudflare::WORKER_ENTRY.into(),
-                    }]),
-                    cwd: Some(start.root.clone()),
-                    platform: Some(Platform::Neutral),
-                    transform: Some(transform),
-                    define: Some(server_defines.iter().cloned().collect()),
-                    resolve: Some(
-                        start.resolve_options(
-                            &server_aliases,
-                            Some(
-                                env.main_fields
-                                    .clone()
-                                    .unwrap_or_else(oj_resolver::default_server_main_fields),
-                            ),
-                            Some(conditions),
-                        ),
-                    ),
-                    dir: Some(dir.to_string_lossy().into_owned()),
-                    format: Some(OutputFormat::Esm),
-                    minify: Some(minify.clone()),
-                    sourcemap: sourcemap(out.sourcemap),
-                    entry_filenames: Some("[name].js".to_string().into()),
-                    chunk_filenames: Some("assets/[name]-[hash].js".to_string().into()),
-                    asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
-                    ..Default::default()
-                })
-                .build()
-                .map_err(|errs| {
-                    anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
-                })?;
-            let output = worker.write().await.map_err(|errs| {
-                anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
-            })?;
-            worker.close().await.map_err(|errs| {
-                anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
-            })?;
-            checked(output)?;
-            if let Some(h) = &server_host {
-                write_emitted(&h.host, &dir).await?;
-            }
-            Some(dir)
-        }
-        None => {
-            server_aliases.push((
-                "@cloudflare/vite-plugin/server".into(),
-                start.cache.join("cf-server.mjs"),
-            ));
-            let mut server = BundlerBuilder::default()
-                .with_plugins(server_plugins(false))
-                .with_options(BundlerOptions {
-                    input: Some(vec![input("server-bundle", &server_entry)]),
-                    cwd: Some(start.root.clone()),
-                    platform: Some(Platform::Node),
-                    external: ssr_external(&start),
-                    transform: Some(start.transform_options()),
-                    define: Some(server_defines.iter().cloned().collect()),
-                    resolve: Some(start.resolve_options(
-                        &server_aliases,
-                        Some(start.server_main_fields()),
-                        None,
-                    )),
-                    dir: Some(dist.to_string_lossy().into_owned()),
-                    format: Some(OutputFormat::Esm),
-                    minify: Some(minify.clone()),
-                    sourcemap: sourcemap(out.sourcemap),
-                    entry_filenames: Some("[name].mjs".to_string().into()),
-                    chunk_filenames: Some("chunks/[name]-[hash].mjs".to_string().into()),
-                    banner: Some(AddonOutputOption::String(Some(
-                        "import { createRequire as ___cr } from 'node:module'; const require = ___cr(import.meta.url || 'file:///worker.js');".into(),
-                    ))),
-                    ..Default::default()
-                })
-                .build()
-                .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
-            let output = server.write().await.map_err(|errs| {
-                anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
-            })?;
-            server.close().await.map_err(|errs| {
-                anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
-            })?;
-            checked(output)?;
-            std::fs::write(dist.join("server.mjs"), node_server(&start.base))?;
-            std::fs::write(dist.join("worker.mjs"), WORKER_MJS)?;
-            std::fs::copy(
-                start.cache.join("cf-server.mjs"),
-                dist.join("cf-server.mjs"),
-            )?;
-            std::fs::write(dist.join("cf-loader.mjs"), CF_LOADER_MJS)?;
-            None
-        }
-    };
-
-    if let Some(public_dir) = oj_config::public_dir(&start.config, &start.root) {
-        copy_dir_over(&public_dir, &client_dir)?;
-    }
-
-    if !out.prerender.is_empty() {
-        if worker_dir.is_some() {
-            // The Worker bundle imports the runtime's own modules; it does not run under Node.
-            eprintln!(
-                "{}: prerender skipped: the Cloudflare Worker bundle only runs in workerd",
-                oj_server::oj_brand()
-            );
-        } else {
-            prerender(&start, &dist, &client_dir, &out.prerender).await?;
-            eprintln!(
-                "{}: prerendered {} route(s)",
-                oj_server::oj_brand(),
-                out.prerender.len()
-            );
-        }
-    }
-
-    for h in client_host.iter().chain(server_host.iter()) {
-        h.host
-            .close_bundle()
+        .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
+    let _ = bundler.close().await;
+    let output = checked(output).map_err(|e| e.to_string())?;
+    if let Some(h) = host {
+        write_emitted(&h.host, client_dir)
             .await
-            .map_err(|e| anyhow::anyhow!("plugin closeBundle failed:\n{e}"))?;
+            .map_err(|e| e.to_string())?;
     }
-    eprintln!(
-        "{}: built dist (client {client_url})",
-        oj_server::oj_brand()
-    );
-    if let (Some(dir), Some(env)) = (&worker_dir, &cf_env) {
-        eprintln!(
-            "{}: cloudflare worker \"{}\" -> {}/index.js (deploy: wrangler deploy)",
-            oj_server::oj_brand(),
-            env.name,
-            dir.strip_prefix(&start.root).unwrap_or(dir).display()
-        );
+    let write = |file_name: &str, bytes: &[u8]| -> Result<(), String> {
+        let dest = client_dir.join(file_name);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&dest, bytes).map_err(|e| e.to_string())
+    };
+    let mut entry = None;
+    for o in &output.assets {
+        match o {
+            rolldown_common::Output::Chunk(c) => {
+                if let Some(map) = &c.map {
+                    if !matches!(options.sourcemap, oj_config::Sourcemap::Inline) {
+                        write(
+                            &format!("{}.map", c.filename),
+                            map.to_json_string().as_bytes(),
+                        )?;
+                    }
+                }
+                if c.is_entry {
+                    entry = Some(super::assets::WorkerBundle {
+                        code: c.code.clone(),
+                        file_name: c.filename.to_string(),
+                    });
+                } else {
+                    write(&c.filename, c.code.as_bytes())?;
+                }
+            }
+            rolldown_common::Output::Asset(a) => write(&a.filename, a.source.as_bytes())?,
+        }
     }
-    Ok(())
+    entry.ok_or_else(|| format!("the worker bundle of {} has no entry chunk", file.display()))
 }
 
 /// `public/` copied over the client output (a file there wins, as Vite's

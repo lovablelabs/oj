@@ -428,8 +428,11 @@ try {
     inlineSource.includes("inline-41") && !/\bimport\b/.test(inlineSource),
     `the inlined worker is not the bundled entry:\n${inlineSource}`,
   );
+  // The default worker.format is iife: a classic worker, which revokes its
+  // Blob URL through self.location (Vite's worker load).
   must(
-    clientJs.includes("URL.revokeObjectURL(import.meta.url)") && clientJs.includes("createObjectURL"),
+    clientJs.includes("(self.URL || self.webkitURL).revokeObjectURL(self.location.href);") &&
+      clientJs.includes("createObjectURL"),
     "the inline worker does not start from a Blob URL",
   );
   console.log("start build: ?worker&inline ships the bundled worker inline and starts it from a Blob URL");

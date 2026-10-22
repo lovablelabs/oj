@@ -22,7 +22,6 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   dropSnapshotEnvironments,
@@ -30,7 +29,7 @@ import {
   priorDepIds,
   writeIncludeSnapshot,
 } from "./discovered-deps.mjs";
-import { asNode } from "./vite-config-node.mjs";
+import { appViteEntry, asNode } from "./vite-config-node.mjs";
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj:";
@@ -61,8 +60,7 @@ async function main() {
 
   let vite;
   try {
-    const require = createRequire(join(root, "package.json"));
-    vite = await import(pathToFileURL(require.resolve("vite")).href);
+    vite = await import(pathToFileURL(appViteEntry(root)).href);
   } catch (e) {
     warn(`deps pre-optimization: could not load the app's vite: ${e?.message ?? e}`);
     return report([], false);

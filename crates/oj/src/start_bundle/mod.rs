@@ -212,6 +212,17 @@ impl StartConfig {
         )
     }
 
+    /// The app's JSX settings for oj's own TS and JSX lowering.
+    pub fn jsx_config(&self) -> oj_compiler::JsxConfig {
+        let jsx = oj_config::jsx_settings(&self.config);
+        oj_compiler::JsxConfig {
+            runtime: jsx.runtime,
+            import_source: jsx.import_source,
+            pragma: jsx.pragma,
+            pragma_frag: jsx.pragma_frag,
+        }
+    }
+
     /// rolldown's JSX transform: automatic by default, the config's runtime,
     /// import source and pragmas, `development` following NODE_ENV.
     pub fn transform_options(&self) -> rolldown_common::BundlerTransformOptions {

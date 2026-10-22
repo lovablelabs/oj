@@ -22,9 +22,8 @@ use rolldown_common::{ModuleType, ResolvedExternal};
 use rolldown_plugin::{
     HookLoadArgs, HookLoadOutput, HookLoadReturn, HookRenderChunkArgs, HookRenderChunkOutput,
     HookRenderChunkReturn, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn,
-    HookTransformArgs, HookTransformOutput, HookTransformOutputMap, HookTransformReturn, Plugin,
-    PluginContext, PluginContextResolveOptions, SharedLoadPluginContext,
-    SharedTransformPluginContext,
+    HookTransformArgs, HookTransformOutput, HookTransformReturn, Plugin, PluginContext,
+    PluginContextResolveOptions, SharedLoadPluginContext, SharedTransformPluginContext,
 };
 
 use super::facts::Facts;
@@ -34,18 +33,45 @@ use crate::build::EmitState;
 /// The rolldown context a host's `this.resolve` fallback resolves through:
 /// the bundle the host currently serves (set at its buildStart).
 #[derive(Clone, Default)]
-pub(crate) struct BundlerCtx(Arc<Mutex<Option<PluginContext>>>);
+pub(crate) struct BundlerCtx {
+    ctx: Arc<Mutex<Option<PluginContext>>>,
+    /// Where a buildApp hook's `buildEnvironments` requests go while
+    /// `oj build` runs the hooks.
+    builds: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<oj_server::plugins::HostRpc>>>>,
+}
 
 impl BundlerCtx {
     fn set(&self, ctx: &PluginContext) {
         *self
-            .0
+            .ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.clone());
     }
 
     fn get(&self) -> Option<PluginContext> {
-        self.0
+        self.ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The `buildEnvironments` requests from here on; the caller answers
+    /// each with `rpc_reply`.
+    pub fn build_requests(
+        &self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<oj_server::plugins::HostRpc> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        *self
+            .builds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        rx
+    }
+
+    fn build_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<oj_server::plugins::HostRpc>> {
+        self.builds
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -66,6 +92,15 @@ pub(crate) fn serve_bundler_resolve(host: &Arc<PluginHost>) -> BundlerCtx {
             let Some(host) = weak.upgrade() else {
                 return;
             };
+            if rpc.method == "buildEnvironments" {
+                match slot.build_sender() {
+                    Some(tx) => {
+                        let _ = tx.send(rpc);
+                    }
+                    None => host.rpc_reply(rpc.id, Err("no build is running".into())),
+                }
+                continue;
+            }
             let slot = slot.clone();
             tokio::spawn(async move {
                 let result = answer(&rpc, slot.get()).await;
@@ -113,20 +148,19 @@ async fn answer(
 /// A Start bundle's view of one plugin host.
 pub(crate) struct StartHostPlugin {
     host: Arc<PluginHost>,
-    /// The server build's client host: a load the server host leaves goes to
-    /// it, as some ssr plugins expect state Vite shares between environments.
-    fallback: Option<Arc<PluginHost>>,
     bundler_ctx: BundlerCtx,
     emit: Arc<EmitState>,
     command: Command,
     root: PathBuf,
     pre: bool,
     post: bool,
-    /// False for a bundle nested in another (a worker entry): the host's
-    /// lifecycle hooks belong to the bundle that owns it.
-    lifecycle: bool,
+    /// A build reports rolldown's moduleParsed, with TS and JSX lowered as
+    /// this JSX config says.
+    module_parsed: Option<oj_compiler::JsxConfig>,
+    module_parsed_enabled: Arc<tokio::sync::OnceCell<bool>>,
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     warned_virtual: Mutex<HashSet<String>>,
+    map_warnings: Arc<crate::build::MapWarnings>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -146,21 +180,23 @@ impl StartHostPlugin {
     ) -> Self {
         Self {
             host,
-            fallback: None,
             bundler_ctx,
             emit,
             command,
             root: root.to_path_buf(),
             pre: facts.resolve_id_pre > 0,
             post: facts.resolve_id_post > 0,
-            lifecycle: true,
+            module_parsed: None,
+            module_parsed_enabled: Arc::new(tokio::sync::OnceCell::new()),
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             warned_virtual: Mutex::new(HashSet::new()),
+            map_warnings: Arc::default(),
         }
     }
 
-    pub fn with_fallback(mut self, fallback: Arc<PluginHost>) -> Self {
-        self.fallback = Some(fallback);
+    /// Reports rolldown's moduleParsed to the host (a build), its code as JS.
+    pub fn with_module_parsed(mut self, jsx: oj_compiler::JsxConfig) -> Self {
+        self.module_parsed = Some(jsx);
         self
     }
 
@@ -183,11 +219,22 @@ impl StartHostPlugin {
         }
         Ok(())
     }
+}
 
-    pub fn nested(mut self) -> Self {
-        self.lifecycle = false;
-        self
+/// The code a moduleParsed hook reads: JS, as after Vite's vite:oxc (a
+/// TypeScript or JSX module lowered; anything else, or a module that does
+/// not lower, as loaded).
+fn module_parsed_code(id: &str, code: &str, jsx: &oj_compiler::JsxConfig) -> String {
+    let file = id.split('?').next().unwrap_or(id);
+    let lowers = matches!(
+        Path::new(file).extension().and_then(|e| e.to_str()),
+        Some("ts" | "tsx" | "mts" | "cts" | "jsx")
+    );
+    if !lowers {
+        return code.to_string();
     }
+    oj_compiler::transform_for_bundle(Path::new(file), code, jsx, false)
+        .map_or_else(|_| code.to_string(), |(js, _)| js)
 }
 
 /// A plugin resolveId answer as rolldown's.
@@ -263,14 +310,18 @@ impl Plugin for StartHostPlugin {
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
         use rolldown_plugin::HookUsage;
-        let mut usage = HookUsage::ResolveId | HookUsage::Load | HookUsage::Transform;
-        if self.lifecycle {
-            usage |= HookUsage::BuildStart | HookUsage::RenderStart;
-            if self.command == Command::Build {
-                usage |= HookUsage::BuildEnd
-                    | HookUsage::RenderChunk
-                    | HookUsage::GenerateBundle
-                    | HookUsage::WriteBundle;
+        let mut usage = HookUsage::ResolveId
+            | HookUsage::Load
+            | HookUsage::Transform
+            | HookUsage::BuildStart
+            | HookUsage::RenderStart;
+        if self.command == Command::Build {
+            usage |= HookUsage::BuildEnd
+                | HookUsage::RenderChunk
+                | HookUsage::GenerateBundle
+                | HookUsage::WriteBundle;
+            if self.module_parsed.is_some() {
+                usage |= HookUsage::ModuleParsed;
             }
         }
         usage
@@ -289,12 +340,52 @@ impl Plugin for StartHostPlugin {
             Ok(chunks) => crate::build::forward_emitted_chunks(ctx, &chunks, &self.emit),
             Err(e) => self.build_start_failed(&self.host, &e)?,
         }
-        if let Some(fallback) = &self.fallback {
-            if let Err(e) = fallback.build_start().await {
-                self.build_start_failed(fallback, &e)?;
-            }
-        }
         Ok(())
+    }
+
+    /// Rolldown's moduleParsed (every module, node_modules included, with
+    /// the resolved imports) as Rollup's ModuleInfo. Rolldown's code is the
+    /// code as loaded, and oj lowers TS and JSX inside rolldown rather than
+    /// in a plugin as vite:oxc does, so the code is lowered here.
+    async fn module_parsed(
+        &self,
+        _ctx: &PluginContext,
+        info: Arc<rolldown_common::ModuleInfo>,
+        _module: &rolldown_common::NormalModule,
+    ) -> rolldown_plugin::HookNoopReturn {
+        let Some(jsx) = &self.module_parsed else {
+            return Ok(());
+        };
+        let host = Arc::clone(&self.host);
+        if !*self
+            .module_parsed_enabled
+            .get_or_init(|| async { host.has_module_parsed().await })
+            .await
+        {
+            return Ok(());
+        }
+        let id = info.id.as_str();
+        let code = info
+            .code
+            .as_deref()
+            .map(|code| module_parsed_code(id, code, jsx));
+        fn ids<'a>(set: impl IntoIterator<Item = &'a rolldown_common::ModuleId>) -> Vec<&'a str> {
+            set.into_iter().map(|m| m.as_str()).collect()
+        }
+        let json = serde_json::json!({
+            "id": id,
+            "code": code,
+            "isEntry": info.is_entry,
+            "importedIds": ids(&info.imported_ids),
+            "dynamicallyImportedIds": ids(&info.dynamically_imported_ids),
+            "importers": ids(&info.importers),
+            "dynamicImporters": ids(&info.dynamic_importers),
+            "exports": info.exports.iter().map(|e| e.as_str()).collect::<Vec<_>>(),
+        });
+        self.host
+            .bundle_module_parsed(&json.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin moduleParsed failed:\n{e}"))
     }
 
     fn resolve_id(
@@ -362,7 +453,6 @@ impl Plugin for StartHostPlugin {
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
         let id = args.id.to_string();
         let host = Arc::clone(&self.host);
-        let fallback = self.fallback.clone();
         let wants = !id.starts_with("\0oj-") && self.host.hook_wants_load(&id);
         let dev = self.command == Command::Serve;
         let root = self.root.clone();
@@ -383,19 +473,19 @@ impl Plugin for StartHostPlugin {
             if on_disk && super::assets::asset_tag(&id, false).is_some() {
                 return Ok(None);
             }
-            let fail = |e: String| anyhow::anyhow!("plugin load failed for {id}:\n{e}");
+            let fail = |e: String| {
+                oj_server::plugins::load_failed(
+                    "oj:start-plugins",
+                    anyhow::anyhow!("plugin load failed for {id}:\n{e}"),
+                )
+            };
             let mut code = None;
             if wants {
-                for h in std::iter::once(&host).chain(fallback.iter()) {
-                    // The FULL id first: a plugin's load keys on its own query
-                    // (`?tsr-split=...`), Vite's contract; then the file.
-                    code = h.load(&id).await.map_err(fail)?;
-                    if code.is_none() && on_disk && id != clean && is_app_source(&clean) {
-                        code = h.load(&clean).await.map_err(fail)?;
-                    }
-                    if code.is_some() {
-                        break;
-                    }
+                // The FULL id first: a plugin's load keys on its own query
+                // (`?tsr-split=...`), Vite's contract; then the file.
+                code = host.load(&id).await.map_err(fail)?;
+                if code.is_none() && on_disk && id != clean && is_app_source(&clean) {
+                    code = host.load(&clean).await.map_err(fail)?;
                 }
             }
             if let Some(code) = code {
@@ -466,17 +556,25 @@ impl Plugin for StartHostPlugin {
             && self.host.hook_wants_transform(id, code);
         let host = Arc::clone(&self.host);
         let emit = Arc::clone(&self.emit);
+        let sourcemap = ctx.inner.options().is_sourcemap_enabled();
+        let warnings = (self.command == Command::Build).then(|| Arc::clone(&self.map_warnings));
         async move {
             if !pass {
                 return Ok(None);
             }
-            let (out, _, _, chunks) = host
+            let t = host
                 .transform(code, id, "{}")
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
-            crate::build::forward_emitted_chunks(&ctx.inner, &chunks, &emit);
-            Ok((out != code).then(|| HookTransformOutput {
-                code: Some(out),
+            crate::build::forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
+            Ok((t.code != code).then(|| HookTransformOutput {
+                map: crate::build::host_chain_map(
+                    sourcemap,
+                    &t,
+                    crate::build::ChainHook::Transform,
+                    warnings.as_deref(),
+                ),
+                code: Some(t.code),
                 ..Default::default()
             }))
         }
@@ -519,6 +617,8 @@ impl Plugin for StartHostPlugin {
         let host = Arc::clone(&self.host);
         let enabled = Arc::clone(&self.render_chunk_enabled);
         let code = Arc::clone(&args.code);
+        let sourcemap = args.options.is_sourcemap_enabled();
+        let warnings = (self.command == Command::Build).then(|| Arc::clone(&self.map_warnings));
         let chunk_json = if enabled.get() == Some(&false) {
             String::new()
         } else {
@@ -536,9 +636,14 @@ impl Plugin for StartHostPlugin {
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin renderChunk failed:\n{e}"))?
             {
-                Some(out) if out != *code => Ok(Some(HookRenderChunkOutput {
-                    code: out,
-                    map: HookTransformOutputMap::Null,
+                t if t.code != *code => Ok(Some(HookRenderChunkOutput {
+                    map: crate::build::host_chain_map(
+                        sourcemap,
+                        &t,
+                        crate::build::ChainHook::RenderChunk,
+                        warnings.as_deref(),
+                    ),
+                    code: t.code,
                 })),
                 _ => Ok(None),
             }
@@ -688,6 +793,31 @@ mod tests {
         assert_eq!(file_module_type("/a/b.mts"), ModuleType::Ts);
         assert_eq!(file_module_type("/a/b.jsx"), ModuleType::Jsx);
         assert_eq!(file_module_type("/a/b.mjs"), ModuleType::Js);
+    }
+
+    #[test]
+    fn module_parsed_reads_typescript_and_jsx_as_js() {
+        let jsx = oj_compiler::JsxConfig::default();
+        let tsx = module_parsed_code(
+            "/app/src/a.tsx",
+            "const n: number = 1;\nexport const A = () => <p>{n}</p>;\n",
+            &jsx,
+        );
+        assert!(!tsx.contains(": number") && !tsx.contains("<p>"), "{tsx}");
+        assert!(tsx.contains("react/jsx-runtime"), "{tsx}");
+        // A query keeps the file's own kind.
+        let ts = module_parsed_code("/app/src/b.ts?v=1", "let x: string = \"\";\n", &jsx);
+        assert!(!ts.contains(": string"), "{ts}");
+        // JS and virtual modules are reported as loaded.
+        let js = "export const y = 1;\n";
+        assert_eq!(
+            module_parsed_code("/app/node_modules/p/index.js", js, &jsx),
+            js
+        );
+        assert_eq!(module_parsed_code("\0virtual:x", js, &jsx), js);
+        // A module that does not lower is reported as loaded too.
+        let broken = "const = ;";
+        assert_eq!(module_parsed_code("/app/src/c.ts", broken, &jsx), broken);
     }
 
     #[test]

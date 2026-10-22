@@ -183,6 +183,18 @@ pub fn plugin_source(root: &Path, config: Option<&Path>) -> Option<PluginSource>
     vite_config_file(root, config).map(PluginSource::ViteConfig)
 }
 
+/// A load hook's error as rolldown's plugin-error diagnostic. rolldown reports
+/// a plain load error as "Could not load x - plugin `p` threw an error" and
+/// drops the error itself; a diagnostic it reports as is, which is what Vite
+/// prints for a failed load (the plugin and its message).
+pub fn load_failed(plugin: &'static str, e: anyhow::Error) -> anyhow::Error {
+    rolldown_error::BuildDiagnostic::plugin_error(
+        rolldown_error::CausedPlugin::new(plugin.into()),
+        e,
+    )
+    .into()
+}
+
 mod extract;
 mod hook_plan;
 mod host;

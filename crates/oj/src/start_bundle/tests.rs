@@ -226,6 +226,40 @@ console.log(a, b);
     assert!(std::fs::read_dir(client.join("assets")).unwrap().count() >= 3);
 }
 
+/// A stylesheet that fails to compile names why and which plugin, as Vite's
+/// error does; rolldown alone said only "plugin threw an error".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_asset_load_says_why() {
+    let app = App::new(&[
+        ("src/entry.js", "import \"./b.styl\";\n"),
+        ("src/b.styl", ".box\n  color red\n"),
+    ]);
+    let start = app.start();
+    let styles = Arc::new(Styles::new(&start));
+    let emitter = Arc::new(Emitter::new(
+        &app.dir.join("dist/client"),
+        "/",
+        Arc::clone(&styles),
+    ));
+    let plugin = Pluginable::new_shared(StartAssetsPlugin::new(
+        &app.dir,
+        styles,
+        AssetMode::Build {
+            emitter,
+            server: false,
+        },
+    ));
+    let err = bundle(&app, "src/entry.js", vec![plugin])
+        .await
+        .expect_err("stylus is not installed");
+    assert!(
+        err.message.contains("is stylus installed?"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("[oj:start-assets]"), "{}", err.message);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn node_builtins_become_browser_stubs_unless_a_package_owns_the_name() {
     let app = App::new(&[

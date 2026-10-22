@@ -472,10 +472,10 @@ pub(crate) async fn plugin_transform(
     }
     let resolved = resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
     match host.transform(&source, transform_id, &resolved).await {
-        Ok((code, watch_files, maps, _)) => Ok(Transformed {
-            code,
-            watch_files,
-            maps,
+        Ok(t) => Ok(Transformed {
+            code: t.code,
+            watch_files: t.watch_files,
+            maps: t.maps,
         }),
         // Vite fails the request with the plugin's error (code frame in the
         // overlay); serving the untransformed source would ship wrong code.

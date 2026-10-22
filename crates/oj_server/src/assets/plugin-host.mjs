@@ -20,7 +20,7 @@ import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
-import { asNode } from "./vite-config-node.mjs";
+import { appViteEntry, asNode } from "./vite-config-node.mjs";
 import { idFilterGlob, idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
@@ -274,6 +274,10 @@ const ojStartMode = initial.ojStartMode === true;
 // `this.resolve` that no plugin answers ends in that bundler's resolution
 // (the `bundlerResolve` reverse RPC), as it ends in Rollup's under Vite.
 const ojBundleHost = initial.ojBundleHost === true;
+// A worker entry's bundle (Vite's bundleWorkerEntry): its plugins are
+// `worker.plugins` alone, a fresh set per bundle, and its resolved config says
+// `isWorker` with the bundle chain (`{ chain: [entry, ...] }`).
+const workerBundle = initial.ojWorkerBundle ?? null;
 // The plugins a Start host leaves to oj: Vite's own (`vite:*`) and TanStack's
 // compiler and router plugins, whose work the Start pipeline does natively.
 const isReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
@@ -687,7 +691,10 @@ function withResolvedDefaults(config) {
   return merged;
 }
 
-const envName = initial.environment?.name ?? "client";
+// The environment the host's hooks run in. A Start build's host serves every
+// environment in turn on the same plugin instances (Vite's
+// `builder.sharedPlugins`): `switchEnvironment` moves it to the next one.
+let envName = initial.environment?.name ?? "client";
 const environment = {
   name: envName,
   mode: initial.environment?.mode ?? env.mode,
@@ -782,7 +789,7 @@ async function loadUserResolvedViteConfig() {
   const appRoot = initial.config?.root ?? process.cwd();
   let vite;
   try {
-    vite = await import(createRequire(appRoot + "/package.json").resolve("vite"));
+    vite = await import(appViteEntry(appRoot));
   } catch {
     return null;
   }
@@ -1124,10 +1131,9 @@ async function bundleViteConfigFile(configPath, appRoot) {
 
 async function loadViteConfig(configPath) {
   const appRoot = initial.config?.root ?? process.cwd();
-  const req = createRequire(appRoot + "/package.json");
   let vite = null;
   try {
-    vite = await import(req.resolve("vite"));
+    vite = await import(appViteEntry(appRoot));
   } catch (e) {
     process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} vite unavailable (${e}); bundling config directly\n`);
   }
@@ -1218,6 +1224,16 @@ try {
     userViteConfig = userConfig;
     userResolveAlias = cfg?.resolve?.alias ?? null;
     list = await Promise.all((cfg?.plugins ?? []).flat(Infinity));
+    if (workerBundle) {
+      // The option is a function returning the plugins (an array is Vite's
+      // older spelling), possibly nested and async.
+      const option = cfg?.worker?.plugins;
+      const flatten = async (v) => {
+        const x = await v;
+        return Array.isArray(x) ? (await Promise.all(x.map(flatten))).flat() : [x];
+      };
+      list = await flatten(typeof option === "function" ? option() : (option ?? []));
+    }
   } else {
     const mod = await import(pathToFileURL(pluginsPath).href);
     list = mod.default ?? mod.plugins ?? [];
@@ -1372,13 +1388,17 @@ let viteCreateFilter = null;
 // basePluginContextMeta); plugins feature-detect on it. The app's own Vite
 // reports its version; without one, the Vite line oj tracks.
 let viteVersion = "8.0.0";
+let rollupVersion = "4.0.0";
+let rolldownVersion = "1.0.0";
 try {
   const _root = initial.config?.root ?? process.cwd();
-  const _vite = await import(createRequire(_root + "/package.json").resolve("vite"));
+  const _vite = await import(appViteEntry(_root));
   if (typeof _vite.parseAst === "function") viteParseAst = _vite.parseAst;
   if (typeof _vite.transformWithOxc === "function") viteTransformWithOxc = _vite.transformWithOxc;
   if (typeof _vite.createFilter === "function") viteCreateFilter = _vite.createFilter;
   if (typeof _vite.version === "string") viteVersion = _vite.version;
+  if (typeof _vite.rollupVersion === "string") rollupVersion = _vite.rollupVersion;
+  if (typeof _vite.rolldownVersion === "string") rolldownVersion = _vite.rolldownVersion;
   if (!viteTransformWithOxc) {
     // An app Vite too old to export transformWithOxc: the vite:oxc-slot strip
     // cannot run, so normal/post plugins will see raw TS/JSX, exactly as
@@ -1439,7 +1459,7 @@ function updateModuleInfo(id, result) {
 
 const ctx = {
   environment,
-  meta: { viteVersion, rollupVersion: "4.0.0", rolldownVersion: "1.0.0", watchMode: true, framework: "oj" },
+  meta: { viteVersion, rollupVersion, rolldownVersion, watchMode: command === "serve", framework: "oj" },
   parse: (code, opts) => (viteParseAst ? viteParseAst(code, opts) : {}),
   get pluginName() {
     return (this && this._plugin && this._plugin.name) || "";
@@ -1596,6 +1616,32 @@ function resolveHookCtx(p, skipCalls) {
   return Object.create(base, { _resolveSkipCalls: { value: skipCalls } });
 }
 
+// Vite's BasicMinimalPluginContext, the `this` of config, configEnvironment,
+// configResolved and buildApp: the version meta (with `watchMode` for
+// configResolved and buildApp), logging and error(), no environment.
+function minimalContext(meta) {
+  return {
+    meta: { viteVersion, rollupVersion, rolldownVersion, ...meta },
+    get pluginName() {
+      return "";
+    },
+    debug() {},
+    info(m) {
+      process.stderr.write(pluginLogMessage("info", m, null));
+    },
+    warn(m) {
+      process.stderr.write(pluginLogMessage("warning", m, null));
+    },
+    error(m) {
+      throw typeof m === "string" ? new Error(m) : m;
+    },
+  };
+}
+// A config-phase hook failed and was skipped: plugins that share state then
+// fail in each other's later hooks (Nitro's buildApp after its config hook),
+// so a buildApp failure is reported instead of failing the build.
+let configHookSkipped = false;
+
 let pluginConfigDelta = {};
 async function runConfigHooks() {
   userResolvedViteConfig = await loadUserResolvedViteConfig();
@@ -1627,10 +1673,11 @@ async function runConfigHooks() {
     configPlugins.push(cssPostShim);
   }
   config.plugins = configPlugins;
+  const configContext = minimalContext();
   for (const { p, fn } of pluginsWithHook("config")) {
     initStage(`config:${p.name ?? "?"}`);
     try {
-      const partial = await fn.call(ctxFor(p), config, env);
+      const partial = await fn.call(configContext, config, env);
       if (partial) {
         config = mergeConfigLite(config, partial);
         // What the plugins themselves contributed (Vite merges it into the
@@ -1640,6 +1687,7 @@ async function runConfigHooks() {
       }
     } catch (e) {
       if (!ojStartMode) throw e;
+      configHookSkipped = true;
       process.stderr.write(`${OJ} plugin host: config(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
     }
     // Keep the plugin array stable regardless of what a config hook returned.
@@ -1652,18 +1700,21 @@ async function runConfigHooks() {
   const envNames = Object.keys(config.environments ?? {});
   for (const n of ["client", "ssr"]) if (!envNames.includes(n)) envNames.push(n);
   const configEnvHooks = pluginsWithHook("configEnvironment");
+  // Plugin by plugin, then environment by environment, as
+  // runConfigEnvironmentHook loops.
   if (configEnvHooks.length) {
     config.environments = { ...(config.environments ?? {}) };
-    for (const name of envNames) {
-      config.environments[name] = config.environments[name] ?? {};
-      const opts = { ...env, isSsrTargetWebworker: false };
-      for (const { p, fn } of configEnvHooks) {
-        initStage(`configEnvironment:${p.name ?? "?"}`);
+    for (const name of envNames) config.environments[name] = config.environments[name] ?? {};
+    const opts = { ...env, isSsrTargetWebworker: false };
+    for (const { p, fn } of configEnvHooks) {
+      initStage(`configEnvironment:${p.name ?? "?"}`);
+      for (const name of envNames) {
         try {
-          const r = await fn.call(ctx, name, config.environments[name], opts);
+          const r = await fn.call(configContext, name, config.environments[name], opts);
           if (r) config.environments[name] = mergeConfigLite(config.environments[name], r);
         } catch (e) {
           if (!ojStartMode) throw e;
+          configHookSkipped = true;
           process.stderr.write(
             `${OJ} plugin host: configEnvironment(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`,
           );
@@ -1677,12 +1728,18 @@ async function runConfigHooks() {
   coerceBundledDevOff(config);
   resolvedConfig = withResolvedDefaults(config);
   resolvedConfig.plugins = configPlugins;
+  if (workerBundle) {
+    resolvedConfig.isWorker = true;
+    resolvedConfig.bundleChain = workerBundle.chain;
+  }
+  const resolvedContext = minimalContext({ watchMode: command === "serve" });
   for (const { p, fn } of pluginsWithHook("configResolved")) {
     initStage(`configResolved:${p.name ?? "?"}`);
     try {
-      await fn.call(ctx, resolvedConfig);
+      await fn.call(resolvedContext, resolvedConfig);
     } catch (e) {
       if (!ojStartMode) throw e;
+      configHookSkipped = true;
       process.stderr.write(`${OJ} plugin host: configResolved(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
     }
   }
@@ -1697,22 +1754,30 @@ initStage("config-hooks-done");
 // are captured); Vite shares one `server` object across environments, so a
 // post-boot push would be visible everywhere there. oj's serving allow-list
 // reads the raw config on its own path and is unaffected either way.
-environment.config =
-  envName === "client"
-    ? resolvedConfig
-    : withResolvedDefaults(mergeConfigLite(resolvedConfig, (resolvedConfig.environments ?? {})[envName] ?? {}));
-environment.config.consumer = environment.config.consumer ?? (envName === "client" ? "client" : "server");
-environment.logger = resolvedConfig.logger;
-environment.getTopLevelConfig = () => resolvedConfig;
+// The plugins every environment resolves its own set from (the top-level
+// resolved plugins, before applyToEnvironment).
+let topLevelPlugins = plugins;
+async function resolveEnvironment(name) {
+  envName = name;
+  environment.name = name;
+  const own = (resolvedConfig.environments ?? {})[name] ?? {};
+  environment.config = name === "client" ? resolvedConfig : withResolvedDefaults(mergeConfigLite(resolvedConfig, own));
+  // The environment's own consumer: the client's config is the resolved
+  // config itself, whose consumer every other environment would inherit.
+  environment.config.consumer = own.consumer ?? (name === "client" ? "client" : "server");
+  environment.logger = resolvedConfig.logger;
+  environment.getTopLevelConfig = () => resolvedConfig;
+  plugins = await environmentPlugins(topLevelPlugins);
+}
 
 // Vite (plugin.ts resolveEnvironmentPlugins): `applyToEnvironment` is awaited;
 // a falsy result drops the plugin, `true` keeps it, and a plugin or plugin
 // array replaces it with what it returned (perEnvironmentPlugin), whose
 // config-phase hooks are ignored with a warning.
-{
+async function environmentPlugins(candidates) {
   const ignoredEnvironmentPluginHooks = ["config", "configEnvironment", "configureServer", "configResolved"];
   const next = [];
-  for (const p of plugins) {
+  for (const p of candidates) {
     if (typeof p.applyToEnvironment !== "function") {
       next.push(p);
       continue;
@@ -1746,8 +1811,9 @@ environment.getTopLevelConfig = () => resolvedConfig;
     }
     next.push(...returned);
   }
-  plugins = next;
+  return next;
 }
+await resolveEnvironment(envName);
 process.stderr.write(
   `${OJ} plugin host: ${plugins.length} plugin(s) active for ${env.command}: ${plugins.map((p) => `${p.name}[${p.enforce ?? "-"}]`).join(",")}\n`,
 );
@@ -2050,7 +2116,7 @@ async function loadAppVite() {
   if (appVite) return appVite;
   try {
     const root = (resolvedConfig && resolvedConfig.root) || (initial.config && initial.config.root) || process.cwd();
-    appVite = await import(createRequire(root + "/package.json").resolve("vite"));
+    appVite = await import(appViteEntry(root));
   } catch (e) {
     process.stderr.write(`${OJ} plugin host: could not load app vite: ${(e && e.message) || e}\n`);
   }
@@ -3616,6 +3682,11 @@ async function transform(code, id, resolvedJson) {
     if (id) seenIds.add(id);
     let current = code;
     const maps = [];
+    // Who returned each map, so a bundle can name a map it cannot read.
+    const mapPlugins = [];
+    // Rollup's missing map: a plugin that returns code without `map` breaks
+    // the chain (`map: null` does not). Only a bundle reads it.
+    let mapBroken = null;
     const transformOptions = { ssr: environment && environment.name === "ssr" };
     let stripped = !viteTransformWithOxc || !id || id.startsWith("\0") || !oxcStripMatches(id);
     // Vite sorts a hook's plugins by the hook's own `order` (pre, normal, post)
@@ -3639,7 +3710,10 @@ async function transform(code, id, resolvedJson) {
             throw decoratePluginError(e, { name: "vite:oxc" }, id);
           }
           current = r.code;
-          if (r.map != null) maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
+          if (r.map != null) {
+            maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
+            mapPlugins.push("vite:oxc");
+          }
         }
       }
       if (!hookTransformMatches(p.transform, id, current)) continue;
@@ -3652,10 +3726,14 @@ async function transform(code, id, resolvedJson) {
       if (r == null) continue;
       if (typeof r === "string") {
         current = r;
+        mapBroken ??= p.name ?? "?";
         continue;
       }
       if (r.code != null) current = r.code;
-      if (r.map != null) maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
+      if (r.map != null) {
+        maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
+        mapPlugins.push(p.name ?? "?");
+      } else if (r.code != null && r.map === undefined) mapBroken ??= p.name ?? "?";
       updateModuleInfo(id, r);
     }
     const prior = moduleInfoCache.get(id);
@@ -3672,11 +3750,14 @@ async function transform(code, id, resolvedJson) {
     );
     moduleInfoCache.set(id, info);
     seenIds.add(id);
-    for (const { p, fn } of pluginsWithHook("moduleParsed")) await fn.call(ctxFor(p), info);
+    // A Start build's bundler reports every parsed module itself (bundleModuleParsed).
+    if (!bundleBuild) for (const { p, fn } of pluginsWithHook("moduleParsed")) await fn.call(ctxFor(p), info);
     return JSON.stringify({
       code: current,
       watchFiles: [...bucket],
       maps,
+      mapPlugins,
+      mapBroken,
       emittedChunks: chunkBucket,
     });
   };
@@ -3694,6 +3775,130 @@ async function replayModuleParsed(id) {
 }
 
 const anyModuleParsed = () => pluginsWithHook("moduleParsed").length > 0;
+// A Start build: rolldown drives the hooks, and its module_parsed reports
+// every module it parses (node_modules included) with the resolved imports,
+// Rollup's ModuleInfo, and the code as JS (Vite's vite:oxc lowers TS and JSX
+// in a transform, so plugins never read either).
+const bundleBuild = ojBundleHost && command === "build";
+async function bundleModuleParsed(infoJson) {
+  const reported = JSON.parse(infoJson);
+  const prior = moduleInfoCache.get(reported.id);
+  const info = makeModuleInfo(reported.id, reported.code ?? "", {
+    ...(prior
+      ? {
+          meta: prior.meta,
+          moduleSideEffects: prior.moduleSideEffects,
+          syntheticNamedExports: prior.syntheticNamedExports,
+        }
+      : {}),
+    importedIds: reported.importedIds ?? [],
+    dynamicallyImportedIds: reported.dynamicallyImportedIds ?? [],
+    importers: reported.importers ?? [],
+    dynamicImporters: reported.dynamicImporters ?? [],
+    exports: reported.exports ?? null,
+    isEntry: !!reported.isEntry,
+  });
+  moduleInfoCache.set(info.id, info);
+  seenIds.add(info.id);
+  for (const { p, fn } of pluginsWithHook("moduleParsed")) await fn.call(ctxFor(p), info);
+  return null;
+}
+
+// Vite's builder with `sharedPlugins`: every environment builds on these
+// plugin instances. The next environment's build starts afresh: its own
+// plugin set (applyToEnvironment), buildStart, module graph, emitted files
+// and closeBundle.
+async function switchEnvironment(name) {
+  await resolveEnvironment(name);
+  buildStartRun = null;
+  closeBundleDone = false;
+  emitted.length = 0;
+  moduleInfoCache.clear();
+  seenIds.clear();
+  return null;
+}
+
+// Vite's builder.buildApp: every buildApp hook over the top-level plugins, in
+// hook order, with the config builder's own (TanStack Start's, which builds
+// every environment: oj's builds, the `buildEnvironments` reverse RPC) run
+// just before the first post-order hook. `builder.environments` lists every
+// configured environment; Rust names the ones it builds (`builtJson`: name ->
+// { outDir, input }) and builds any of them a hook asks for, once. A throwing
+// hook fails the build, as in Vite, unless a config-phase hook was skipped.
+async function buildApp(builtJson) {
+  const built = JSON.parse(builtJson || "{}");
+  const names = new Set(["client", "ssr", ...Object.keys(resolvedConfig?.environments ?? {})]);
+  const environments = {};
+  for (const name of names) {
+    const own = resolvedConfig?.environments?.[name] ?? {};
+    const config = withResolvedDefaults(mergeConfigLite(resolvedConfig ?? {}, own));
+    const ojBuild = built[name];
+    if (ojBuild) {
+      config.build = {
+        ...config.build,
+        outDir: ojBuild.outDir,
+        rollupOptions: { ...config.build?.rollupOptions, input: ojBuild.input },
+        rolldownOptions: { ...config.build?.rolldownOptions, input: ojBuild.input },
+      };
+    }
+    environments[name] = { name, config, isBuilt: false };
+  }
+  let buildingAll = null;
+  const buildEnvironments = () =>
+    (buildingAll ??= asyncRpc("buildEnvironments", []).then(() => {
+      for (const name of Object.keys(built)) if (environments[name]) environments[name].isBuilt = true;
+    }));
+  const builder = {
+    config: resolvedConfig,
+    environments,
+    async build(environment) {
+      const name = typeof environment === "string" ? environment : environment?.name;
+      if (!built[name]) {
+        const own = Object.keys(built).join(" and ");
+        throw new Error(
+          `oj build builds the ${own} environments; the "${name}" environment a plugin builds is not supported yet`,
+        );
+      }
+      await buildEnvironments();
+    },
+    async runDevTools() {},
+  };
+  const context = minimalContext({ watchMode: false });
+  const hooks = topLevelPlugins
+    .filter((p) => !isReimplemented(p && p.name))
+    .map((p) => ({ p, fn: hookFn(p, "buildApp"), rank: hookOrderRank(p.buildApp) }))
+    .filter((h) => h.fn)
+    .sort((a, b) => a.rank - b.rank);
+  let ran = false;
+  for (const { p, fn } of hooks) {
+    if (!ran && p.buildApp && typeof p.buildApp === "object" && p.buildApp.order === "post") {
+      ran = true;
+      await buildEnvironments();
+    }
+    try {
+      await fn.call(context, builder);
+    } catch (e) {
+      if (!configHookSkipped) throw decoratePluginError(e, p);
+      process.stderr.write(
+        `${OJ} plugin host: buildApp(${p.name ?? "?"}) failed (skipped): ${(e && e.message) || e}\n`,
+      );
+    }
+  }
+  if (!ran) await buildEnvironments();
+  return null;
+}
+
+// Vite's resolved `build.emitAssets`: `build.ssrEmitAssets` for ssr, then the
+// environment's own setting, then the top-level `build` every environment
+// inherits, else true on the client only.
+function environmentEmitAssets() {
+  const c = resolvedConfig ?? {};
+  if (envName === "ssr" && c.build?.ssrEmitAssets !== undefined) return !!c.build.ssrEmitAssets;
+  const own = c.environments?.[envName]?.build?.emitAssets ?? c.build?.emitAssets;
+  return own === undefined ? environment.config.consumer === "client" : !!own;
+}
+// What vite:asset keeps of an environment's assets without emitAssets.
+const keptWithoutEmitAssets = (fileName) => /ssr-manifest\.json$/.test(fileName) || /\.[cm]?js\.map$/.test(fileName);
 // transformIndexHtml accepts a legacy `transform` key that generic hookHandler
 // does not; this is the one unwrap both the runner and hasTransformIndexHtml use.
 function htmlHookFn(p) {
@@ -3929,7 +4134,7 @@ function startFacts() {
   startFns.length = 0;
   const c = resolvedConfig ?? {};
   const envOf = (name) => c.environments?.[name] ?? {};
-  const self = envOf(hostEnvName);
+  const self = envOf(envName);
   const top = c.build?.rolldownOptions ?? c.build?.rollupOptions ?? {};
   const own = self.build?.rolldownOptions ?? {};
   const output = { ...(top.output ?? {}), ...(own.output ?? {}) };
@@ -3947,6 +4152,7 @@ function startFacts() {
     serverWatch: c.server?.watch === null ? null : factValue(c.server?.watch ?? {}),
     reactRefresh: names.includes("vite:react-refresh"),
     cloudflare: cloudflareEnvironmentFacts(c),
+    worker: workerFacts(c),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook("resolveId").reduce(
       (n, { p, rank }) => {
@@ -3958,6 +4164,21 @@ function startFacts() {
   });
 }
 const stringOr = (v) => (typeof v === "string" ? v : null);
+// Vite's resolved worker options: `format` (iife by default) and
+// `rolldownOptions` (`rollupOptions` its older name; the first output of an
+// array), which a worker bundle takes in place of the app's build options.
+function workerFacts(c) {
+  const w = c.worker ?? userViteConfig?.worker ?? {};
+  const options = w.rolldownOptions ?? w.rollupOptions ?? {};
+  const output = (Array.isArray(options.output) ? options.output[0] : options.output) ?? {};
+  return {
+    format: stringOr(w.format) ?? "iife",
+    external: options.external === undefined ? null : factValue(options.external),
+    entryFileNames: stringOr(output.entryFileNames),
+    chunkFileNames: stringOr(output.chunkFileNames),
+    assetFileNames: stringOr(output.assetFileNames),
+  };
+}
 // @cloudflare/vite-plugin's Worker environment (its `config` hook declares
 // one per Worker, `resolve.builtins` naming the runtime's modules), or null.
 // With several Workers the entry Worker (the one writing the manifest) wins.
@@ -4361,9 +4582,28 @@ async function gateOnBuildStart() {
 async function generateBundle(bundleJson, isWrite) {
   const bundle = JSON.parse(bundleJson || "{}");
   const outputOptions = environment.config?.build ?? {};
-  for (const { p, fn } of pluginsWithHook("generateBundle")) {
+  // Without `build.emitAssets` (the default off the client) vite:asset's
+  // generateBundle deletes the bundle's assets, an ssr-manifest.json and JS
+  // source maps aside. A core plugin with an unordered hook, it runs after
+  // every `order: "pre"` hook and the enforce:"pre" plugins' unordered ones:
+  // what was emitted before it is gone, later emits stay.
+  const emitAssets = environmentEmitAssets();
+  let assetStep = false;
+  const viteAsset = () => {
+    if (assetStep || emitAssets) return;
+    assetStep = true;
+    for (const [file, out] of Object.entries(bundle)) {
+      if (out && out.type === "asset" && !keptWithoutEmitAssets(file)) delete bundle[file];
+    }
+    const kept = emitted.filter((e) => keptWithoutEmitAssets(e.fileName));
+    emitted.length = 0;
+    emitted.push(...kept);
+  };
+  for (const { p, fn, rank } of pluginsWithHook("generateBundle")) {
+    if (rank > 0 || (rank === 0 && p.enforce !== "pre")) viteAsset();
     await runHookOrThrow(p, fn, [outputOptions, bundle, isWrite]);
   }
+  viteAsset();
   return JSON.stringify(bundle);
 }
 
@@ -4376,12 +4616,24 @@ async function renderChunk(code, chunkJson) {
   const root = resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
   const options = { dir: pathResolve(root, outDir), format: "es" };
   let current = code;
+  const maps = [];
+  const mapPlugins = [];
+  let mapBroken = null;
   for (const { p, fn } of pluginsWithHook("renderChunk")) {
     const r = await fn.call(ctxFor(p), current, chunk, options);
     if (r == null) continue;
-    current = typeof r === "string" ? r : (r.code ?? current);
+    if (typeof r === "string") {
+      current = r;
+      mapBroken ??= p.name ?? "?";
+      continue;
+    }
+    if (r.code != null) current = r.code;
+    if (r.map != null) {
+      maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
+      mapPlugins.push(p.name ?? "?");
+    } else if (r.code != null && r.map === undefined) mapBroken ??= p.name ?? "?";
   }
-  return current;
+  return JSON.stringify({ code: current, maps, mapPlugins, mapBroken });
 }
 
 async function writeBundle(bundleJson, isWrite) {
@@ -4474,6 +4726,9 @@ async function run(hook, args) {
   }
   if (hook === "getWatchFiles") return JSON.stringify([...watchedFiles]);
   if (hook === "hasModuleParsed") return String(anyModuleParsed());
+  if (hook === "bundleModuleParsed") return bundleModuleParsed(args[0]);
+  if (hook === "switchEnvironment") return switchEnvironment(args[0]);
+  if (hook === "buildApp") return buildApp(args[0]);
   if (hook === "replayModuleParsed") return replayModuleParsed(args[0]);
   if (hook === "hasTransformIndexHtml") {
     return String(plugins.some((p) => typeof htmlHookFn(p) === "function"));
@@ -4538,7 +4793,8 @@ async function run(hook, args) {
     });
   }
   if (hook === "hasGenerateBundle") {
-    return String(pluginsWithHook("generateBundle").length > 0);
+    // Without emitAssets vite:asset's own generateBundle runs.
+    return String(pluginsWithHook("generateBundle").length > 0 || (bundleBuild && !environmentEmitAssets()));
   }
   if (hook === "generateBundle") return generateBundle(args[0], args[1] === "true");
   if (hook === "hasRenderChunk") {

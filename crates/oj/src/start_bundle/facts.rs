@@ -44,6 +44,7 @@ pub(crate) struct Facts {
     /// Whether the app configures `@vitejs/plugin-react` (`vite:react-refresh`).
     pub react_refresh: bool,
     pub cloudflare: Option<CloudflareEnv>,
+    pub worker: WorkerOptions,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -71,9 +72,53 @@ impl Facts {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             cloudflare: v.get("cloudflare").and_then(CloudflareEnv::from_json),
+            worker: WorkerOptions::from_json(v.get("worker").unwrap_or(&Value::Null)),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }
+    }
+}
+
+/// Vite's resolved `worker` options a worker bundle takes in place of the
+/// app's build options: `format` and `rolldownOptions`' `external` and
+/// output file names.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkerOptions {
+    /// `iife` (Vite's default) or `es`.
+    pub format: String,
+    pub external: Option<Value>,
+    pub entry_file_names: Option<String>,
+    pub chunk_file_names: Option<String>,
+    pub asset_file_names: Option<String>,
+}
+
+impl Default for WorkerOptions {
+    fn default() -> Self {
+        Self {
+            format: "iife".into(),
+            external: None,
+            entry_file_names: None,
+            chunk_file_names: None,
+            asset_file_names: None,
+        }
+    }
+}
+
+impl WorkerOptions {
+    fn from_json(v: &Value) -> Self {
+        let text = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+        Self {
+            format: text("format").unwrap_or_else(|| "iife".into()),
+            external: v.get("external").filter(|e| !e.is_null()).cloned(),
+            entry_file_names: text("entryFileNames"),
+            chunk_file_names: text("chunkFileNames"),
+            asset_file_names: text("assetFileNames"),
+        }
+    }
+
+    /// An `es` worker runs as a module; any other format as a classic script.
+    pub fn is_module(&self) -> bool {
+        matches!(self.format.as_str(), "es" | "esm" | "module")
     }
 }
 
@@ -321,6 +366,30 @@ impl CloudflareEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_options_default_to_vites_iife() {
+        let none = Facts::from_json(&serde_json::json!({})).worker;
+        assert_eq!(none.format, "iife");
+        assert!(!none.is_module());
+        assert!(none.external.is_none() && none.entry_file_names.is_none());
+        let es = Facts::from_json(&serde_json::json!({
+            "worker": {
+                "format": "es",
+                "external": ["left-pad"],
+                "entryFileNames": "assets/wk-[name]-[hash].js",
+                "chunkFileNames": null,
+            }
+        }))
+        .worker;
+        assert!(es.is_module());
+        assert_eq!(es.external, Some(serde_json::json!(["left-pad"])));
+        assert_eq!(
+            es.entry_file_names.as_deref(),
+            Some("assets/wk-[name]-[hash].js")
+        );
+        assert!(es.chunk_file_names.is_none());
+    }
 
     #[test]
     fn a_regex_alias_replaces_with_javascripts_patterns() {
