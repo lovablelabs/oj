@@ -12,7 +12,9 @@
 //!
 //! A call counts when its factory is imported from a `@tanstack/*` module
 //! (the framework packages re-export `@tanstack/start-fn-stubs`), by name or
-//! through a namespace import. Edits keep the module's line count. As
+//! through a namespace import, or by name from a module the caller found
+//! re-exports TanStack's ([`foreign_factory_imports`], [`reexport_of`]), as
+//! TanStack resolves an import through the modules that re-export it. Edits keep the module's line count. As
 //! TanStack's compiler does after it, the bindings only the dropped side used
 //! go too, so the other side's imports are not bundled.
 
@@ -50,7 +52,18 @@ const FACTORIES: [(&str, Factory); 3] = [
 /// `code` with its environment functions compiled for `env`; `None` when it
 /// has none. `path` picks the parser's language.
 pub fn rewrite_env_fns(code: &str, path: &str, env: Env) -> Option<String> {
-    if !FACTORIES.iter().any(|(name, _)| code.contains(name)) {
+    rewrite_env_fns_with(code, path, env, &[])
+}
+
+/// [`rewrite_env_fns`], also counting the `(source, name)` imports in
+/// `reexported` as TanStack's factories.
+pub fn rewrite_env_fns_with(
+    code: &str,
+    path: &str,
+    env: Env,
+    reexported: &[(String, String)],
+) -> Option<String> {
+    if !has_factory_name(code) {
         return None;
     }
     let mut out = code.to_string();
@@ -58,7 +71,7 @@ pub fn rewrite_env_fns(code: &str, path: &str, env: Env) -> Option<String> {
     // A factory call inside a kept function is compiled on the next pass,
     // once the call around it is gone.
     for _ in 0..16 {
-        let Some(next) = rewrite_outermost(&out, path, env) else {
+        let Some(next) = rewrite_outermost(&out, path, env, reexported) else {
             break;
         };
         out = next;
@@ -67,13 +80,134 @@ pub fn rewrite_env_fns(code: &str, path: &str, env: Env) -> Option<String> {
     changed.then(|| drop_dead_bindings(code, out, path))
 }
 
-fn rewrite_outermost(code: &str, path: &str, env: Env) -> Option<String> {
+fn has_factory_name(code: &str) -> bool {
+    FACTORIES.iter().any(|(name, _)| code.contains(name))
+}
+
+/// The `(source, name)` imports of a factory name from outside `@tanstack/*`
+/// (`import { createIsomorphicFn } from "~/lib/start"`): the ones whose module
+/// re-exports TanStack's go to [`rewrite_env_fns_with`].
+pub fn foreign_factory_imports(code: &str, path: &str) -> Vec<(String, String)> {
+    if !has_factory_name(code) {
+        return Vec::new();
+    }
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
+    let mut out = Vec::new();
+    for statement in &parsed.program.body {
+        let Statement::ImportDeclaration(import) = statement else {
+            continue;
+        };
+        if import.source.value.starts_with("@tanstack/") {
+            continue;
+        }
+        for specifier in import.specifiers.iter().flatten() {
+            if let ImportDeclarationSpecifier::ImportSpecifier(s) = specifier {
+                let imported = export_name(&s.imported);
+                if factory_named(imported).is_some() {
+                    out.push((import.source.value.to_string(), imported.to_string()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Where a module's export `name` comes from, when it re-exports it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReExport {
+    /// A factory of a `@tanstack/*` module.
+    TanStack,
+    /// Export `name` of module `source`.
+    From { source: String, name: String },
+    /// One of these `export *` sources, if any has it.
+    Stars(Vec<String>),
+}
+
+/// How `code` (a module) exports `name`: `export { x as name } from`, an
+/// import it exports again, or `export *`; `None` when it defines it itself.
+pub fn reexport_of(code: &str, path: &str, name: &str) -> Option<ReExport> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
+    let from = |source: &str, imported: &str| {
+        if source.starts_with("@tanstack/") && factory_named(imported).is_some() {
+            ReExport::TanStack
+        } else {
+            ReExport::From {
+                source: source.to_string(),
+                name: imported.to_string(),
+            }
+        }
+    };
+    let mut local = None;
+    let mut stars = Vec::new();
+    for statement in &parsed.program.body {
+        match statement {
+            Statement::ExportFromDeclaration(export) => {
+                for s in &export.specifiers {
+                    if export_name(&s.exported) == name {
+                        return Some(from(&export.source.value, export_name(&s.local)));
+                    }
+                }
+            }
+            Statement::ExportNamedDeclaration(export) => {
+                for s in &export.specifiers {
+                    if export_name(&s.exported) == name {
+                        local = Some(export_name(&s.local).to_string());
+                    }
+                }
+            }
+            Statement::ExportAllDeclaration(export) if export.exported.is_none() => {
+                stars.push(export.source.value.to_string());
+            }
+            _ => {}
+        }
+    }
+    if let Some(local) = local {
+        for statement in &parsed.program.body {
+            let Statement::ImportDeclaration(import) = statement else {
+                continue;
+            };
+            for specifier in import.specifiers.iter().flatten() {
+                if let ImportDeclarationSpecifier::ImportSpecifier(s) = specifier {
+                    if s.local.name == local.as_str() {
+                        return Some(from(&import.source.value, export_name(&s.imported)));
+                    }
+                }
+            }
+        }
+        return None;
+    }
+    if stars.iter().any(|s| s.starts_with("@tanstack/")) && factory_named(name).is_some() {
+        return Some(ReExport::TanStack);
+    }
+    (!stars.is_empty()).then_some(ReExport::Stars(stars))
+}
+
+fn export_name<'a>(name: &'a ModuleExportName) -> &'a str {
+    match name {
+        ModuleExportName::IdentifierName(id) => id.name.as_str(),
+        ModuleExportName::IdentifierReference(id) => id.name.as_str(),
+        ModuleExportName::StringLiteral(lit) => lit.value.as_str(),
+    }
+}
+
+fn factory_named(name: &str) -> Option<Factory> {
+    FACTORIES.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)
+}
+
+fn rewrite_outermost(
+    code: &str,
+    path: &str,
+    env: Env,
+    reexported: &[(String, String)],
+) -> Option<String> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(path)).parse();
     if parsed.fatal_error {
         return None;
     }
-    let bindings = Bindings::of(&parsed.program);
+    let bindings = Bindings::of(&parsed.program, reexported);
     if bindings.is_empty() {
         return None;
     }
@@ -272,30 +406,30 @@ struct Bindings {
 }
 
 impl Bindings {
-    fn of(program: &Program) -> Bindings {
+    fn of(program: &Program, reexported: &[(String, String)]) -> Bindings {
         let mut out = Bindings::default();
         for statement in &program.body {
             let Statement::ImportDeclaration(import) = statement else {
                 continue;
             };
-            if !import.source.value.starts_with("@tanstack/") {
-                continue;
-            }
+            let source = import.source.value.as_str();
+            let tanstack = source.starts_with("@tanstack/");
             for specifier in import.specifiers.iter().flatten() {
                 match specifier {
                     ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                        let imported = match &s.imported {
-                            ModuleExportName::IdentifierName(id) => id.name.as_str(),
-                            ModuleExportName::IdentifierReference(id) => id.name.as_str(),
-                            ModuleExportName::StringLiteral(lit) => lit.value.as_str(),
-                        };
-                        if let Some((_, factory)) = FACTORIES.iter().find(|(n, _)| *n == imported) {
-                            out.names.push((s.local.name.to_string(), *factory));
+                        let imported = export_name(&s.imported);
+                        let counts = tanstack
+                            || reexported
+                                .iter()
+                                .any(|(src, n)| src == source && n == imported);
+                        if let Some(factory) = factory_named(imported).filter(|_| counts) {
+                            out.names.push((s.local.name.to_string(), factory));
                         }
                     }
-                    ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                    ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) if tanstack => {
                         out.namespaces.push(s.local.name.to_string());
                     }
+                    ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {}
                     ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {}
                 }
             }
@@ -551,5 +685,52 @@ mod tests {
         assert!(client.contains("import def from \"./x\";"), "{client}");
         assert!(client.contains("const c = () => def;"), "{client}");
         assert!(client.contains("export function helper()"), "{client}");
+    }
+
+    #[test]
+    fn a_factory_reexported_by_a_local_module_compiles() {
+        let code = "import { createIsomorphicFn } from \"~/lib/start\";\nimport { createServerOnlyFn } from \"@tanstack/react-start\";\nexport const f = createIsomorphicFn().server(() => 1).client(() => 2);\n";
+        assert_eq!(
+            foreign_factory_imports(code, "a.ts"),
+            vec![("~/lib/start".to_string(), "createIsomorphicFn".to_string())]
+        );
+        assert_eq!(rewrite_env_fns(code, "a.ts", Env::Client), None);
+        let reexported = foreign_factory_imports(code, "a.ts");
+        let out = rewrite_env_fns_with(code, "a.ts", Env::Client, &reexported).unwrap();
+        assert!(out.contains("export const f = (() => 2);"), "{out}");
+    }
+
+    #[test]
+    fn reexports_are_traced_to_tanstack() {
+        let name = "createIsomorphicFn";
+        let of = |code: &str| reexport_of(code, "lib.ts", name);
+        assert_eq!(
+            of("export { createIsomorphicFn } from \"@tanstack/react-start\";"),
+            Some(ReExport::TanStack)
+        );
+        assert_eq!(
+            of("import { createIsomorphicFn as iso } from \"@tanstack/react-start\";\nexport { iso as createIsomorphicFn };"),
+            Some(ReExport::TanStack)
+        );
+        assert_eq!(
+            of("export * from \"@tanstack/react-start\";"),
+            Some(ReExport::TanStack)
+        );
+        assert_eq!(
+            of("export { iso as createIsomorphicFn } from \"./inner\";"),
+            Some(ReExport::From {
+                source: "./inner".to_string(),
+                name: "iso".to_string()
+            })
+        );
+        assert_eq!(
+            of("export * from \"./a\";\nexport * from \"./b\";"),
+            Some(ReExport::Stars(vec!["./a".to_string(), "./b".to_string()]))
+        );
+        assert_eq!(of("export const createIsomorphicFn = () => ({});"), None);
+        assert_eq!(
+            of("export { createIsomorphicFn as other } from \"@tanstack/react-start\";"),
+            None
+        );
     }
 }

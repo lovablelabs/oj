@@ -561,3 +561,43 @@ async fn a_dropped_sides_imports_leave_the_bundle() {
         "the server side's import in the client bundle:\n{client}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_factory_reexported_by_app_modules_compiles() {
+    // TanStack follows an import through the modules that re-export it.
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "import { who } from \"./env\";\nconsole.log(who());\n",
+        ),
+        (
+            "src/env.ts",
+            "import { createIsomorphicFn } from \"./lib/start\";\nexport const who = createIsomorphicFn().server(() => \"server-side\").client(() => \"client-side\");\n",
+        ),
+        ("src/lib/start.ts", "export * from \"./inner\";\n"),
+        (
+            "src/lib/inner.ts",
+            "export { createIsomorphicFn } from \"@tanstack/start-fn-stubs\";\n",
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/package.json",
+            r#"{"name":"@tanstack/start-fn-stubs","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/index.js",
+            "export const createIsomorphicFn = () => ({});\n",
+        ),
+    ]);
+    let client = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(StartCodePlugin::new(
+            &app.dir,
+            CodeTarget::Client,
+        ))],
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the client bundle: {}", e.message));
+    assert!(client.contains("client-side"), "{client}");
+    assert!(!client.contains("server-side"), "{client}");
+}
