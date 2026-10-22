@@ -116,6 +116,27 @@ function resolver(dirs) {
   };
 }
 
+// Vite runs every PostCSS config on its own postcss (a dependency of vite,
+// css.ts `import('postcss')`), which a strict (pnpm) layout keeps out of the
+// app's resolution. The config's or the app's own copy serves an app run
+// without vite.
+function vitesPostcss(base) {
+  try {
+    const vitePkg = createRequire(pathToFileURL(join(base, "package.json")).href).resolve("vite/package.json");
+    return createRequire(pathToFileURL(vitePkg).href).resolve("postcss");
+  } catch {
+    return null;
+  }
+}
+
+function resolveOrNull(resolve, spec) {
+  try {
+    return resolve(spec);
+  } catch {
+    return null;
+  }
+}
+
 async function loadPostcss(base, cfgPath) {
   const key = `${base}\0${cfgPath || ""}`;
   if (processors.has(key)) return processors.get(key);
@@ -123,27 +144,24 @@ async function loadPostcss(base, cfgPath) {
   const found = await readPostcssConfig(base, cfgPath);
   if (found) {
     const resolve = resolver(found.dir === base ? [base] : [found.dir, base]);
-    let postcss;
-    try {
-      postcss = (await import(pathToFileURL(resolve("postcss")).href)).default;
-    } catch {
-      postcss = null;
-    }
-    if (postcss) {
-      const raw = found.config.plugins ?? {};
-      const plugins = [];
-      if (Array.isArray(raw)) {
-        for (const p of raw) if (p) plugins.push(p);
-      } else {
-        for (const [name, opts] of Object.entries(raw)) {
-          if (opts === false) continue;
-          const imported = await import(pathToFileURL(resolve(name)).href);
-          const factory = imported.default ?? imported;
-          plugins.push(typeof factory === "function" ? factory(opts ?? {}) : factory);
-        }
+    const postcssPath = vitesPostcss(base) ?? resolveOrNull(resolve, "postcss");
+    // A config always runs: Vite has its own postcss. Without one here the
+    // config would be skipped silently, so say what is missing instead.
+    if (!postcssPath) throw missingPackage("postcss", `cannot resolve 'postcss' from ${found.dir}`);
+    const postcss = (await import(pathToFileURL(postcssPath).href)).default;
+    const raw = found.config.plugins ?? {};
+    const plugins = [];
+    if (Array.isArray(raw)) {
+      for (const p of raw) if (p) plugins.push(p);
+    } else {
+      for (const [name, opts] of Object.entries(raw)) {
+        if (opts === false) continue;
+        const imported = await import(pathToFileURL(resolve(name)).href);
+        const factory = imported.default ?? imported;
+        plugins.push(typeof factory === "function" ? factory(opts ?? {}) : factory);
       }
-      processor = postcss(plugins);
     }
+    processor = postcss(plugins);
   }
   processors.set(key, processor);
   return processor;

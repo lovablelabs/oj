@@ -62,6 +62,7 @@ mod plugin_watch_change;
 mod plugin_ws;
 mod plugin_ws_execute;
 mod postcss_config_discovery;
+mod postcss_from_vite;
 mod preprocessors;
 mod query_assets;
 mod redirect_passthrough;
