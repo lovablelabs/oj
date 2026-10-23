@@ -259,9 +259,12 @@ struct OjCssPlugin {
     /// None: a bare browser bundle (server and library builds).
     worker: Option<Arc<WorkerBundleOpts>>,
     /// Vite's resolved `build.cssMinify` (defaults to `build.minify`).
-    /// Source ids of `?worker` / `?worker&url` entries emitted as chunks, so the
-    /// document-only build helpers can skip chunks that only a worker loads.
-    worker_entries: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// `?worker` entries already bundled (Vite's bundleWorkerEntry cache), by
+    /// entry and the chain of workers above it: the emitted entry's file
+    /// reference, so every import of one worker shares one bundle.
+    worker_bundles: WorkerBundles,
+    /// The worker entries this bundle is nested under, outermost first.
+    worker_chain: Arc<Vec<String>>,
     /// The normalized `base` a public-file import's URL is built on.
     base: String,
     /// Each HTML page input (its absolute path) to the module it loads as:
@@ -283,7 +286,18 @@ struct WorkerBundleOpts {
     is_production: bool,
     define: Vec<(String, String)>,
     minify: bool,
+    assets_dir: String,
+    sourcemap: Option<SourceMapType>,
 }
+
+/// In-flight and finished `?worker` bundles by (entry, worker chain). Keyed by
+/// the chain too, so two workers importing each other fail on the cycle instead
+/// of waiting on each other's bundle.
+type WorkerBundles = Arc<
+    Mutex<
+        std::collections::HashMap<(String, Arc<Vec<String>>), Arc<tokio::sync::OnceCell<String>>>,
+    >,
+>;
 
 /// What `@import`/`@use`/`url()` specifiers inside stylesheets resolve through,
 /// as Vite's CSS resolvers do: the environment's `resolve.alias`, the root and
@@ -1321,13 +1335,39 @@ fn worker_id_parts(id: &str) -> Option<(&str, &'static str, bool, bool)> {
     ))
 }
 
+/// A worker bundle's options (Vite's `bundleWorkerEntry`): the app's resolve
+/// (alias, conditions), transform (target, JSX), define and minify settings.
+/// `opts` is None for a bare browser bundle (server and library builds).
+fn worker_bundler_options(
+    root: &Path,
+    file: &str,
+    opts: Option<&Arc<WorkerBundleOpts>>,
+) -> BundlerOptions {
+    BundlerOptions {
+        input: Some(vec![InputItem {
+            name: Some(
+                Path::new(file)
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("worker")
+                    .to_string(),
+            ),
+            import: file.to_string(),
+        }]),
+        cwd: Some(root.to_path_buf()),
+        format: Some(OutputFormat::Esm),
+        platform: Some(rolldown::Platform::Browser),
+        resolve: opts.and_then(|o| rolldown_resolve(root, &o.config, "client")),
+        transform: opts.and_then(|o| transform_options(&o.config, o.is_production)),
+        define: opts.map(|o| o.define.iter().cloned().collect()),
+        minify: Some(rolldown_minify(opts.is_none_or(|o| o.minify))),
+        ..Default::default()
+    }
+}
+
 /// Bundle a worker entry to a single ESM string (dynamic imports inlined) for
 /// `?worker&inline`, so the worker ships inside the importing chunk as in Vite.
-/// The worker is bundled the way Vite's `bundleWorkerEntry` does it: under the
-/// app's resolve (alias, conditions), transform (target, JSX), define and minify
-/// settings, with oj's own asset/CSS/worker plugin so `?url`, stylesheets and
-/// nested workers inside the worker behave as in the main bundle. `nested` is
-/// the plugin for that inner bundle, built by the caller from its own fields.
+/// `nested` is the plugin for that inner bundle, built by the caller.
 async fn bundle_worker_inline(
     root: &Path,
     file: &str,
@@ -1338,19 +1378,8 @@ async fn bundle_worker_inline(
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
-            input: Some(vec![InputItem {
-                name: Some("worker".to_string()),
-                import: file.to_string(),
-            }]),
-            cwd: Some(root.to_path_buf()),
-            format: Some(OutputFormat::Esm),
-            platform: Some(rolldown::Platform::Browser),
             code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
-            resolve: opts.and_then(|o| rolldown_resolve(root, &o.config, "client")),
-            transform: opts.and_then(|o| transform_options(&o.config, o.is_production)),
-            define: opts.map(|o| o.define.iter().cloned().collect()),
-            minify: Some(rolldown_minify(opts.is_none_or(|o| o.minify))),
-            ..Default::default()
+            ..worker_bundler_options(root, file, opts)
         })
         .build()
         .map_err(rolldown_failure!("inline worker init failed"))?;
@@ -1365,6 +1394,77 @@ async fn bundle_worker_inline(
         }
     }
     Ok(code)
+}
+
+/// A `?worker` / `?worker&url` / `new Worker(new URL(..))` entry's own bundle,
+/// as Vite's `bundleWorkerEntry` builds it: apart from the importing bundle's
+/// module graph, so nothing document-only (the preload helper, CSS injection)
+/// reaches the worker, with its chunks split and named under `assetsDir`.
+/// Every output file is emitted into the importing bundle under its name;
+/// returns the entry's file reference.
+async fn bundle_worker_entry(
+    ctx: &SharedLoadPluginContext,
+    root: &Path,
+    file: &str,
+    opts: Option<&Arc<WorkerBundleOpts>>,
+    nested: OjCssPlugin,
+) -> anyhow::Result<String> {
+    let names = |tail: &str| {
+        oj_config::assets_dir_path(opts.map_or("assets", |o| o.assets_dir.as_str()), tail)
+    };
+    let plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(nested)];
+    let mut bundler = BundlerBuilder::default()
+        .with_plugins(plugins)
+        .with_options(BundlerOptions {
+            entry_filenames: Some(names("[name]-[hash].js").into()),
+            chunk_filenames: Some(names("[name]-[hash].js").into()),
+            asset_filenames: Some(names("[name]-[hash][extname]").into()),
+            sourcemap: opts.and_then(|o| o.sourcemap),
+            preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::False),
+            ..worker_bundler_options(root, file, opts)
+        })
+        .build()
+        .map_err(rolldown_failure!("worker init failed"))?;
+    let out = bundler
+        .generate()
+        .await
+        .map_err(rolldown_failure!("worker build failed for {file}"))?;
+    let emit = |file_name: String, source: rolldown_common::StrOrBytes| {
+        ctx.emit_file(
+            rolldown_common::EmittedAsset {
+                file_name: Some(file_name.into()),
+                source,
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!(e))
+    };
+    let mut entry = None;
+    for asset in out.assets {
+        match asset {
+            rolldown_common::Output::Chunk(chunk) => {
+                if let Some(map) = &chunk.map {
+                    emit(
+                        format!("{}.map", chunk.filename),
+                        rolldown_common::StrOrBytes::Str(map.to_json_string()),
+                    )?;
+                }
+                let reference = emit(
+                    chunk.filename.to_string(),
+                    rolldown_common::StrOrBytes::Str(chunk.code.clone()),
+                )?;
+                if chunk.is_entry {
+                    entry = Some(reference.to_string());
+                }
+            }
+            rolldown_common::Output::Asset(a) => {
+                emit(a.filename.to_string(), a.source.clone())?;
+            }
+        }
+    }
+    entry.ok_or_else(|| anyhow::anyhow!("the worker bundle of {file} has no entry chunk"))
 }
 
 /// The `import.meta.glob` / variable dynamic import / `new URL(.., import.meta.url)`
@@ -1634,7 +1734,8 @@ impl Plugin for OjCssPlugin {
         let routes_id = root.join("oj-routes.tsx").to_string_lossy().into_owned();
         let client = self.client;
         let inline_limit = self.inline_limit;
-        let worker_entries = Arc::clone(&self.worker_entries);
+        let worker_bundles = Arc::clone(&self.worker_bundles);
+        let worker_chain = Arc::clone(&self.worker_chain);
         let host = self.host.clone();
         let css_transform_enabled = Arc::clone(&self.css_transform_enabled);
         let self_has_postcss = self.has_postcss;
@@ -1866,27 +1967,50 @@ impl Plugin for OjCssPlugin {
                 }));
             }
             if let Some((file, ctor, inline, url)) = worker_id_parts(&id) {
+                if worker_chain.iter().any(|w| w == file) {
+                    let names: Vec<String> = worker_chain
+                        .iter()
+                        .map(String::as_str)
+                        .chain([file])
+                        .map(|w| {
+                            Path::new(w).strip_prefix(&root).map_or_else(
+                                |_| w.to_string(),
+                                |r| r.to_string_lossy().replace('\\', "/"),
+                            )
+                        })
+                        .collect();
+                    bail!(
+                        "Circular worker imports detected. Vite does not support it. Import chain: {}",
+                        names.join(" -> ")
+                    );
+                }
+                // The worker's own bundle runs oj's plugin too, so `?url`,
+                // stylesheets and nested workers inside it behave as here.
+                let mut chain = (*worker_chain).clone();
+                chain.push(file.to_string());
+                let chain = Arc::new(chain);
+                let nested = OjCssPlugin {
+                    collected: Arc::new(Mutex::new(Vec::new())),
+                    root: root.clone(),
+                    has_postcss: self_has_postcss,
+                    client: true,
+                    inline_limit,
+                    css_code_split: false,
+                    host: host.clone(),
+                    css_transform_enabled: Arc::clone(&css_transform_enabled),
+                    css: css_cfg.clone(),
+                    html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                    worker: worker.clone(),
+                    resolve: css_resolve.clone(),
+                    worker_bundles: Arc::clone(&worker_bundles),
+                    worker_chain: Arc::clone(&chain),
+                    base: base.clone(),
+                    pages: Default::default(),
+                    chunk_css_hashing: None,
+                };
                 if inline {
                     // `?worker&inline`: the worker's bundled code travels inside
                     // this chunk and starts from a Blob URL (data: URL fallback).
-                    let nested = OjCssPlugin {
-                        collected: Arc::new(Mutex::new(Vec::new())),
-                        root: root.clone(),
-                        has_postcss: self_has_postcss,
-                        client: true,
-                        inline_limit,
-                        css_code_split: false,
-                        host: host.clone(),
-                        css_transform_enabled: Arc::clone(&css_transform_enabled),
-                        css: css_cfg.clone(),
-                        html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                        worker: worker.clone(),
-                        resolve: css_resolve.clone(),
-                        worker_entries: Arc::clone(&worker_entries),
-                        base: base.clone(),
-                        pages: Default::default(),
-                        chunk_css_hashing: None,
-                    };
                     let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
                     let literal = serde_json::Value::String(code).to_string();
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1897,22 +2021,21 @@ impl Plugin for OjCssPlugin {
                         ..Default::default()
                     }));
                 }
-                let stem = std::path::Path::new(file)
-                    .file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("worker")
-                    .to_string();
-                worker_entries.lock().unwrap().insert(file.to_string());
-                let reference = ctx
-                    .emit_chunk(rolldown_common::EmittedChunk {
-                        id: file.to_string(),
-                        name: Some(stem.into()),
-                        preserve_entry_signatures: Some(
-                            rolldown_common::PreserveEntrySignatures::False,
-                        ),
-                        ..Default::default()
+                // The chain above this bundle is part of the key: it names the
+                // bundle the worker's files are emitted into.
+                let cell = Arc::clone(
+                    worker_bundles
+                        .lock()
+                        .unwrap()
+                        .entry((file.to_string(), Arc::clone(&worker_chain)))
+                        .or_default(),
+                );
+                let reference = cell
+                    .get_or_try_init(|| {
+                        bundle_worker_entry(&ctx, &root, file, worker.as_ref(), nested)
                     })
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                    .await?
+                    .clone();
                 let code = if url {
                     // `?worker&url` (also what `new Worker(new URL(...))` becomes):
                     // the chunk's URL as a string.
@@ -3321,8 +3444,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     }
 
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-    let worker_entries: Arc<Mutex<std::collections::HashSet<String>>> =
-        Arc::new(Mutex::new(std::collections::HashSet::new()));
     let css_split = css_code_split_of(&config);
     let plugin_host = user_plugin_host(
         cli.config.as_deref(),
@@ -3379,8 +3500,11 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             is_production,
             define: client_define.clone(),
             minify: client_minify,
+            assets_dir: assets_dir.clone(),
+            sourcemap: env_sourcemap(&config, "client", sourcemap),
         })),
-        worker_entries: Arc::clone(&worker_entries),
+        worker_bundles: Default::default(),
+        worker_chain: Default::default(),
         pages: Arc::new(pages),
         chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
     }));
@@ -3988,7 +4112,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             &imports_map,
             &chunk_css,
             oj_config::module_preload_links(&config),
-            &worker_entries.lock().unwrap().clone(),
         )?;
     }
 
@@ -4815,7 +4938,8 @@ pub(crate) async fn build_ssr(
         css: config.css.clone(),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
-        worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        worker_bundles: Default::default(),
+        worker_chain: Default::default(),
         pages: Default::default(),
         chunk_css_hashing: None,
     }));
@@ -5001,7 +5125,8 @@ async fn build_server_fns(
                 css: config.css.clone(),
                 html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 worker: None,
-                worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+                worker_bundles: Default::default(),
+                worker_chain: Default::default(),
                 pages: Default::default(),
                 chunk_css_hashing: None,
             })])
@@ -5411,7 +5536,8 @@ async fn build_client_entry(
         css: config.css.clone(),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
-        worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        worker_bundles: Default::default(),
+        worker_chain: Default::default(),
         pages: Default::default(),
         chunk_css_hashing: None,
     }));
@@ -5684,7 +5810,8 @@ async fn build_library(
             css: config.css.clone(),
             html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
             worker: None,
-            worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            worker_bundles: Default::default(),
+            worker_chain: Default::default(),
             pages: Default::default(),
             chunk_css_hashing: None,
         }));
@@ -6304,41 +6431,12 @@ fn apply_preload_helper(
     imports_map: &std::collections::HashMap<String, Vec<String>>,
     chunk_css: &[(String, String)],
     module_preload: bool,
-    worker_entries: &std::collections::HashSet<String>,
 ) -> anyhow::Result<()> {
     let css_of: std::collections::HashMap<&str, &str> = chunk_css
         .iter()
         .map(|(c, css)| (c.as_str(), css.as_str()))
         .collect();
     let relative = is_relative_base(base);
-    // Chunks only a worker ever loads run without a `document`: they preload
-    // nothing (Vite builds workers without its import analysis, `isWorker`).
-    let worker_only = {
-        let mut entries: Vec<(String, bool)> = Vec::new();
-        let mut dynamic_map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for asset in &output.assets {
-            if let rolldown_common::Output::Chunk(chunk) = asset {
-                let file = chunk.filename.to_string();
-                dynamic_map.insert(
-                    file.clone(),
-                    chunk
-                        .dynamic_imports
-                        .iter()
-                        .map(|d| d.to_string())
-                        .collect(),
-                );
-                if chunk.is_entry {
-                    let is_worker = chunk
-                        .facade_module_id
-                        .as_ref()
-                        .is_some_and(|f| worker_entries.contains(f.as_ref() as &str));
-                    entries.push((file, is_worker));
-                }
-            }
-        }
-        worker_only_chunks(&entries, imports_map, &dynamic_map)
-    };
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
             continue;
@@ -6348,11 +6446,7 @@ fn apply_preload_helper(
         let Ok(code) = fs::read_to_string(&path) else {
             continue;
         };
-        let in_worker = worker_only.contains(&file);
         let dependency = |f: &str| -> Option<vite_preload::Dependency<'_>> {
-            if in_worker {
-                return None;
-            }
             let (name, imports) = imports_map.get_key_value(f)?;
             Some(vite_preload::Dependency {
                 js: Some(name.as_str()),
@@ -6388,42 +6482,6 @@ fn apply_preload_helper(
         fs::write(&path, written)?;
     }
     Ok(())
-}
-
-/// The chunks reachable (statically or dynamically) from worker entries but from
-/// no other entry.
-fn worker_only_chunks(
-    entries: &[(String, bool)],
-    imports_map: &std::collections::HashMap<String, Vec<String>>,
-    dynamic_map: &std::collections::HashMap<String, Vec<String>>,
-) -> std::collections::BTreeSet<String> {
-    let closure = |roots: &[&String]| -> std::collections::BTreeSet<String> {
-        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut stack: Vec<String> = roots.iter().map(|r| (*r).clone()).collect();
-        while let Some(f) = stack.pop() {
-            if !seen.insert(f.clone()) {
-                continue;
-            }
-            for m in [imports_map, dynamic_map] {
-                if let Some(deps) = m.get(&f) {
-                    stack.extend(deps.iter().cloned());
-                }
-            }
-        }
-        seen
-    };
-    let workers: Vec<&String> = entries.iter().filter(|(_, w)| *w).map(|(f, _)| f).collect();
-    if workers.is_empty() {
-        return std::collections::BTreeSet::new();
-    }
-    let others: Vec<&String> = entries
-        .iter()
-        .filter(|(_, w)| !*w)
-        .map(|(f, _)| f)
-        .collect();
-    let from_workers = closure(&workers);
-    let from_others = closure(&others);
-    from_workers.difference(&from_others).cloned().collect()
 }
 
 /// Vite's `ssr-manifest.json` (ssrManifestPlugin): for every source module in the
@@ -7682,6 +7740,121 @@ mod tests {
         );
     }
 
+    /// Vite's `bundleWorkerEntry`: a `?worker` is its own bundle, so the app's
+    /// import analysis never wraps the worker's `import()` in `__vitePreload`
+    /// (which reaches for `document`), not even for a module the app shares,
+    /// and the worker's lazy chunk is split off next to it.
+    #[tokio::test]
+    async fn worker_bundle_carries_no_document_helpers() {
+        let root = scratch("worker-own-bundle");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        fs::write(
+            root.join("src/shared.js"),
+            "export const load = () => import('./lazy.js');\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/lazy.js"), "export const v = 'lazy-value';\n").unwrap();
+        fs::write(
+            root.join("src/w.js"),
+            "import { load } from './shared.js';\nself.onmessage = async () => self.postMessage((await load()).v);\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main.js"),
+            "import W from './w.js?worker';\nimport url from './w.js?worker&url';\nimport { load } from './shared.js';\n\
+             load().then((m) => { document.body.textContent = m.v + url; new W(); });\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("index.html"),
+            r#"<html><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        )
+        .unwrap();
+        build(root.clone(), Some("production"), CliOptions::default())
+            .await
+            .expect("worker fixture should build");
+        let assets: Vec<String> = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let read = |f: &str| fs::read_to_string(root.join("dist/assets").join(f)).unwrap();
+        let workers: Vec<&String> = assets
+            .iter()
+            .filter(|f| f.starts_with("w-") && f.ends_with(".js"))
+            .collect();
+        assert_eq!(workers.len(), 1, "one bundle for both imports: {assets:?}");
+        let worker = read(workers[0]);
+        assert!(
+            !worker.contains("__vitePreload") && !worker.contains("document"),
+            "document-only helper in the worker:\n{worker}"
+        );
+        assert!(
+            worker.contains("import("),
+            "the worker keeps its lazy import:\n{worker}"
+        );
+        let main = read(
+            assets
+                .iter()
+                .find(|f| f.starts_with("index-") && f.ends_with(".js"))
+                .unwrap(),
+        );
+        assert!(
+            main.contains(workers[0].as_str()),
+            "the app points at the worker bundle:\n{main}"
+        );
+        assert!(
+            assets
+                .iter()
+                .filter(|f| f.starts_with("lazy-") && f.ends_with(".js"))
+                .any(|f| read(f).contains("lazy-value")),
+            "the lazy chunk is emitted: {assets:?}"
+        );
+    }
+
+    /// Two workers importing each other fail with Vite's cycle error instead of
+    /// waiting on each other's bundle.
+    #[tokio::test]
+    async fn circular_worker_imports_fail() {
+        let root = scratch("worker-cycle");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        fs::write(
+            root.join("src/a.js"),
+            "import B from './b.js?worker';\nnew B();\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/b.js"),
+            "import A from './a.js?worker';\nnew A();\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main.js"),
+            "import A from './a.js?worker';\nimport B from './b.js?worker';\nnew A(); new B();\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("index.html"),
+            r#"<html><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        )
+        .unwrap();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            build(root.clone(), Some("production"), CliOptions::default()),
+        )
+        .await
+        .expect("a worker cycle must fail, not hang")
+        .expect_err("a worker cycle must fail the build");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Circular worker imports detected")
+                && (msg.contains("src/a.js -> src/b.js -> src/a.js")
+                    || msg.contains("src/b.js -> src/a.js -> src/b.js")),
+            "{msg}"
+        );
+    }
+
     /// The plugin host of an SSR (and client-entry) build is told the real mode,
     /// so a plugin's `configResolved(config).mode` under `--mode staging` is
     /// "staging" as in Vite, not a hardcoded "production".
@@ -7980,37 +8153,6 @@ mod tests {
         let w = chunk_size_warning(500.0);
         assert!(w.contains("larger than 500 kB after minification"));
         assert!(w.contains("build.chunkSizeWarningLimit"));
-    }
-
-    #[test]
-    fn worker_only_chunks_exclude_anything_a_page_entry_reaches() {
-        let entries = vec![("main.js".to_string(), false), ("w.js".to_string(), true)];
-        let imports: std::collections::HashMap<String, Vec<String>> = [
-            ("main.js".to_string(), vec!["shared.js".to_string()]),
-            (
-                "w.js".to_string(),
-                vec!["shared.js".to_string(), "wlib.js".to_string()],
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let dynamics: std::collections::HashMap<String, Vec<String>> =
-            [("w.js".to_string(), vec!["wlazy.js".to_string()])]
-                .into_iter()
-                .collect();
-        let only = worker_only_chunks(&entries, &imports, &dynamics);
-        assert_eq!(
-            only.into_iter().collect::<Vec<_>>(),
-            vec![
-                "w.js".to_string(),
-                "wlazy.js".to_string(),
-                "wlib.js".to_string()
-            ],
-            "shared.js is reachable from the page, so it keeps the document helpers"
-        );
-        assert!(
-            worker_only_chunks(&[("main.js".to_string(), false)], &imports, &dynamics).is_empty()
-        );
     }
 
     #[test]
