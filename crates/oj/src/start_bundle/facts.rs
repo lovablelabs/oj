@@ -44,6 +44,7 @@ pub(crate) struct Facts {
     /// Whether the app configures `@vitejs/plugin-react` (`vite:react-refresh`).
     pub react_refresh: bool,
     pub cloudflare: Option<CloudflareEnv>,
+    pub nitro: Option<NitroEnv>,
     pub worker: WorkerOptions,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
@@ -72,6 +73,7 @@ impl Facts {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             cloudflare: v.get("cloudflare").and_then(CloudflareEnv::from_json),
+            nitro: v.get("nitro").and_then(NitroEnv::from_json),
             worker: WorkerOptions::from_json(v.get("worker").unwrap_or(&Value::Null)),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
@@ -273,6 +275,30 @@ pub(crate) fn normalize_alias(alias: &Value) -> Vec<AliasEntry> {
             }
         })
         .collect()
+}
+
+/// nitro/vite's layout: Nitro builds the app's server itself, from the client
+/// in its public directory and the ssr environment as one of its services.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NitroEnv {
+    /// False when the plugin's config hook failed, so Nitro declared no
+    /// environment of its own.
+    pub configured: bool,
+    /// The client environment's `build.outDir` (Nitro's public directory).
+    pub client_out_dir: Option<String>,
+    /// The ssr environment's `build.outDir` (Nitro's service directory).
+    pub ssr_out_dir: Option<String>,
+}
+
+impl NitroEnv {
+    fn from_json(v: &Value) -> Option<NitroEnv> {
+        let text = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+        v.is_object().then(|| NitroEnv {
+            configured: v.get("configured").and_then(Value::as_bool).unwrap_or(true),
+            client_out_dir: text("clientOutDir"),
+            ssr_out_dir: text("ssrOutDir"),
+        })
+    }
 }
 
 /// The Worker environment @cloudflare/vite-plugin declared, and what its

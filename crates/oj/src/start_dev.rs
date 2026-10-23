@@ -228,17 +228,21 @@ fn change_type(p: &Path, created: &std::collections::HashSet<PathBuf>) -> &'stat
     }
 }
 
-// Static hint that the app uses @cloudflare/vite-plugin, readable before the
+// The plugins whose own runtime renders the documents in dev (a worker
+// environment: workerd for Cloudflare, Nitro's env runner).
+const RUNTIME_PLUGIN_SPECIFIERS: &[&str] = &["@cloudflare/vite-plugin", "nitro/vite"];
+
+// Static hint that the app uses one of those plugins, readable before the
 // plugin host boots (the definitive flag is the host's serve info, live on
 // BuiltApp::plugin_serve). A plain text search of the config file: false for
-// every non-Cloudflare app, so their boot path is untouched. Used only to gate
-// the prewarm decision below.
-fn config_mentions_cloudflare_plugin(root: &Path, config: &Option<PathBuf>) -> bool {
+// every other app, so their boot path is untouched. Used only to gate the
+// prewarm and client bundle decisions below.
+fn config_mentions_runtime_plugin(root: &Path, config: &Option<PathBuf>) -> bool {
     let file = config
         .clone()
         .or_else(|| oj_server::plugins::vite_config_file(root, config.as_deref()));
     file.and_then(|f| std::fs::read_to_string(f).ok())
-        .is_some_and(|s| s.contains("@cloudflare/vite-plugin"))
+        .is_some_and(|s| RUNTIME_PLUGIN_SPECIFIERS.iter().any(|p| s.contains(p)))
 }
 
 // A --config path is resolved against the app root, the way `build` resolves
@@ -267,7 +271,7 @@ pub async fn start_dev(
     // Same order `build` uses: resolve --config against the root once; it is
     // threaded to every config read from here on.
     let config_file = config_path(&root, config);
-    let cf_hint = config_mentions_cloudflare_plugin(&root, &config_file);
+    let runtime_hint = config_mentions_runtime_plugin(&root, &config_file);
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
@@ -334,12 +338,12 @@ pub async fn start_dev(
         };
         Arc::new(ClientBundler::new(start, config_file.clone()))
     };
-    // A Cloudflare app's documents come from the worker environments, which
-    // render them from TanStack's own manifest: their pages load the dev
-    // client entry, never the Start bundle. It is built when a runner
+    // A Cloudflare or Nitro app's documents come from the worker
+    // environments, which render them from TanStack's own manifest: their
+    // pages load the dev client entry, never the Start bundle. It is built when a runner
     // document first hands it out (`ensure_bundle_current`), so a session
     // whose worker serves every document never starts the bundler at all.
-    let defer_bundle = cf_hint;
+    let defer_bundle = runtime_hint;
     let bundle = {
         let (bundler, cache, mode) = (Arc::clone(&bundler), cache.clone(), mode.clone());
         async move {
@@ -445,7 +449,7 @@ pub async fn start_dev(
         let warm_host = built.plugin_host.clone();
         let warm_root = root.clone();
         tokio::spawn(async move {
-            if cf_hint {
+            if runtime_hint {
                 if let Some(mut hold) = prewarm_hold {
                     // Held until the serve info is KNOWN or there is wedge
                     // EVIDENCE (host death, a burned init window, the host's
@@ -1885,6 +1889,7 @@ pub async fn start_build(
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     let build_cfg = config.build.clone().unwrap_or_default();
+    let out_flag = out.is_some();
     let out = out
         .or_else(|| build_cfg.out_dir.as_ref().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("dist"));
@@ -1919,6 +1924,7 @@ pub async fn start_build(
         sourcemap: oj_config::build_sourcemap(&config),
         minify: oj_config::build_minify(&config),
         prerender: build_cfg.prerender.clone().unwrap_or_default(),
+        out_flag,
     };
     let start = crate::start_bundle::StartConfig {
         base: crate::start_bundle::normalize_base(config.base.as_deref()),
@@ -1929,15 +1935,15 @@ pub async fn start_build(
         config,
         app_env,
     };
-    crate::start_bundle::prod::build(start, config_file, output).await?;
+    let built = crate::start_bundle::prod::build(start, config_file, output).await?;
     println!(
         "  {} build (tanstack start) -> {}",
         oj_server::oj_brand(),
-        out_dir.display()
+        built.out_dir.display()
     );
     // A Cloudflare build (the app uses @cloudflare/vite-plugin) has no Node server.
-    if out_dir.join("server.mjs").exists() {
-        println!("  run: node {}", out_dir.join("server.mjs").display());
+    if let Some(run) = built.run {
+        println!("  run: {run}");
     }
     Ok(())
 }
@@ -4185,21 +4191,27 @@ mod tests {
         assert_eq!(names, ["VITE_X"]);
     }
 
-    // The static Cloudflare hint gates skipping the boot prewarm: true only
-    // when the config file names @cloudflare/vite-plugin, so every other app
-    // keeps the current boot path.
+    // The static runtime-plugin hint gates skipping the boot prewarm: true
+    // only when the config file names @cloudflare/vite-plugin or nitro/vite,
+    // so every other app keeps the current boot path.
     #[test]
-    fn cloudflare_hint_reads_the_config_file() {
+    fn runtime_plugin_hint_reads_the_config_file() {
         let root = tmp("cf-hint");
-        assert!(!config_mentions_cloudflare_plugin(&root, &None));
+        assert!(!config_mentions_runtime_plugin(&root, &None));
         std::fs::write(
             root.join("vite.config.ts"),
             "import { cloudflare } from \"@cloudflare/vite-plugin\";\nexport default {};\n",
         )
         .unwrap();
-        assert!(config_mentions_cloudflare_plugin(&root, &None));
+        assert!(config_mentions_runtime_plugin(&root, &None));
+        std::fs::write(
+            root.join("vite.config.ts"),
+            "import { nitro } from \"nitro/vite\";\nexport default {};\n",
+        )
+        .unwrap();
+        assert!(config_mentions_runtime_plugin(&root, &None));
         std::fs::write(root.join("other.config.ts"), "export default {};\n").unwrap();
-        assert!(!config_mentions_cloudflare_plugin(
+        assert!(!config_mentions_runtime_plugin(
             &root,
             &Some(root.join("other.config.ts"))
         ));

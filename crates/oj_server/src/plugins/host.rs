@@ -1370,6 +1370,19 @@ impl PluginHost {
         serde_json::from_str(&raw).map_err(|e| format!("start facts: {e}"))
     }
 
+    /// The current environment's build options (plugin-host.mjs
+    /// `environmentBuildFacts`), for an environment oj bundles from its
+    /// config alone: input, output options, resolve and define, functions
+    /// as `{ "$fn": n }` handles. Read after `start_facts`, whose call resets
+    /// the handles.
+    pub async fn environment_build_facts(&self) -> Result<serde_json::Value, String> {
+        let raw = self
+            .call("environmentBuildFacts", &[])
+            .await?
+            .unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("environment build facts: {e}"))
+    }
+
     /// Calls the config function behind a `{ "$fn": n }` handle with JSON
     /// arguments; its JSON result.
     pub async fn call_start_fn(

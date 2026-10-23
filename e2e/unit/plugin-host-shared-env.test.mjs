@@ -188,7 +188,8 @@ test("an ssr generateBundle drops the assets emitted before vite:asset", async (
 // Vite's builder.buildApp: hooks in hook order, the config builder's own
 // (oj's environment builds, the buildEnvironments reverse RPC) just before
 // the first post-order hook, `builder.build` of an environment oj does not
-// build refused, and a throwing hook failing the build.
+// build (Nitro's) asked of Rust by name (the buildEnvironment reverse RPC)
+// and answered with its output, and a throwing hook failing the build.
 test("buildApp runs the hooks around oj's environment builds", async () => {
   const fx = tmpProject({ prefix: "oj-shared-app-" });
   fx.write(
@@ -198,7 +199,9 @@ test("buildApp runs the hooks around oj's environment builds", async () => {
        { name: "post", buildApp: { order: "post", async handler(b) {
            log("post built=" + b.environments.client.isBuilt + "," + b.environments.ssr.isBuilt + " outDir=" + b.environments.ssr.config.build.outDir);
            await b.build(b.environments.client);
-           try { await b.build("nitro"); } catch (e) { log("nitro: " + e.message); }
+           const out = await b.build("nitro");
+           log("nitro output=" + out.output.map((o) => o.fileName).join(",") + " built=" + b.environments.nitro.isBuilt);
+           try { await b.build("missing"); } catch (e) { log("missing: " + e.message); }
            if (process.env.OJ_TEST_THROW) this.error("refused");
          } } },
        { name: "pre", buildApp: { order: "pre", handler(b) { log("pre this.environment=" + (this.environment === undefined) + " built=" + b.environments.client.isBuilt); } } },
@@ -226,12 +229,19 @@ test("buildApp runs the hooks around oj's environment builds", async () => {
     try {
       await host.initSignal();
       host.child.stdin.write(JSON.stringify({ id: 1, hook: "buildApp", args: [built] }) + "\n");
-      const request = await host.nextFrame();
-      assert.equal(request.method, "buildEnvironments", JSON.stringify(request));
-      log("buildEnvironments");
-      return await host
-        .send({ id: 2, hook: "rpcReply", args: [String(request.rpc), JSON.stringify({ result: null })] })
-        .then(async (reply) => (reply.id === 1 ? reply : host.nextFrame()));
+      const answers = {
+        buildEnvironments: () => null,
+        buildEnvironment: ([name]) => ({ output: [{ type: "chunk", fileName: `${name}/index.mjs`, isEntry: true }] }),
+      };
+      let frame = await host.nextFrame();
+      for (let id = 2; frame.id !== 1; id++) {
+        assert.ok(answers[frame.method], JSON.stringify(frame));
+        log(`${frame.method}(${frame.args.join(",")})`);
+        const result = answers[frame.method](frame.args);
+        const reply = await host.send({ id, hook: "rpcReply", args: [String(frame.rpc), JSON.stringify({ result })] });
+        frame = reply.id === 1 ? reply : await host.nextFrame();
+      }
+      return frame;
     } finally {
       host.close();
     }
@@ -242,9 +252,11 @@ test("buildApp runs the hooks around oj's environment builds", async () => {
     assert.equal(ok.error, undefined, JSON.stringify(ok));
     assert.deepEqual(events(fx), [
       "pre this.environment=true built=false",
-      "buildEnvironments",
+      "buildEnvironments()",
       "post built=true,true outDir=/out",
-      'nitro: oj build builds the client and ssr environments; the "nitro" environment a plugin builds is not supported yet',
+      "buildEnvironment(nitro)",
+      "nitro output=nitro/index.mjs built=true",
+      'missing: oj build: there is no "missing" environment to build',
     ]);
     fs.rmSync(path.join(fx.root, "events.log"));
     const failed = await run({ OJ_TEST_THROW: "1" });
@@ -304,6 +316,64 @@ test(
       assert.deepEqual(events(fx), [
         "worker configResolved isWorker=true chain=/app/src/w.ts calls=1",
         "worker buildStart client",
+      ]);
+    } finally {
+      host.close();
+      fx.cleanup();
+    }
+  },
+);
+
+// Vite runs the config hooks on the user's config and fills its defaults in
+// after them: a Start build host's hooks see `build.outDir` unset unless the
+// user set it (Nitro derives its public assets from it), and its fresh resolve
+// runs none of the app's plugins, whose config the host's own instances add
+// once (a second instance's would merge in beside them).
+test(
+  "a build host's config hooks see the user's config, each plugin's config once",
+  { skip: !fs.existsSync(viteSrc) && "fixture vite not installed" },
+  async () => {
+    const fx = tmpProject({ prefix: "oj-config-base-" });
+    fs.symlinkSync(viteSrc, path.join(fx.root, "node_modules", "vite"), "dir");
+    fx.write(
+      "vite.config.mjs",
+      `${LOG}
+     export default {
+       build: { sourcemap: true },
+       plugins: [{
+         name: "instance",
+         config(config) {
+           const n = (globalThis.__ojInstances = (globalThis.__ojInstances ?? 0) + 1);
+           log("config outDir=" + config.build?.outDir + " sourcemap=" + config.build?.sourcemap + " ssr=" + (config.environments?.ssr !== undefined));
+           return { environments: { extra: { consumer: "server", resolve: { conditions: ["instance-" + n] } } } };
+         },
+         configResolved(c) {
+           log("configResolved outDir=" + c.build.outDir + " conditions=" + c.environments.extra.resolve.conditions.join(","));
+         },
+       }],
+     };\n`,
+    );
+    const host = rpcSidecar("plugin-host.mjs", {
+      args: [
+        path.join(fx.root, "vite.config.mjs"),
+        JSON.stringify({
+          pluginsFormat: "vite",
+          config: { root: fx.root, base: "/", mode: "production", command: "build" },
+          env: { command: "build", mode: "production" },
+          environment: { name: "client", mode: "build" },
+          ojStartMode: true,
+          ojBundleHost: true,
+        }),
+      ],
+      env: { OJ_CACHE_ROOT: fx.root },
+      cwd: fx.root,
+    });
+    try {
+      const r = await host.send({ id: 1, hook: "buildStart", args: [] });
+      assert.equal(r.error, undefined, `${r.error}\n${host.stderr()}`);
+      assert.deepEqual(events(fx), [
+        "config outDir=undefined sourcemap=true ssr=false",
+        "configResolved outDir=dist conditions=instance-1",
       ]);
     } finally {
       host.close();

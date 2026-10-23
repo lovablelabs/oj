@@ -35,8 +35,9 @@ use crate::build::EmitState;
 #[derive(Clone, Default)]
 pub(crate) struct BundlerCtx {
     ctx: Arc<Mutex<Option<PluginContext>>>,
-    /// Where a buildApp hook's `buildEnvironments` requests go while
-    /// `oj build` runs the hooks.
+    /// Where a buildApp hook's `buildEnvironments` (oj's environments) and
+    /// `buildEnvironment` (another one, by name) requests go while `oj build`
+    /// runs the hooks.
     builds: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<oj_server::plugins::HostRpc>>>>,
 }
 
@@ -92,7 +93,7 @@ pub(crate) fn serve_bundler_resolve(host: &Arc<PluginHost>) -> BundlerCtx {
             let Some(host) = weak.upgrade() else {
                 return;
             };
-            if rpc.method == "buildEnvironments" {
+            if rpc.method == "buildEnvironments" || rpc.method == "buildEnvironment" {
                 match slot.build_sender() {
                     Some(tx) => {
                         let _ = tx.send(rpc);

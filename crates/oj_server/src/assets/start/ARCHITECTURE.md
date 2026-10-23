@@ -74,6 +74,11 @@ The bundles (`crates/oj/src/start_bundle/`):
   on `rolldown_dev`'s `DevEngine`, and React Fast Refresh.
 - `prod.rs` / `cloudflare.rs`: `oj build`, and the Worker environment's
   bundle when the app uses `@cloudflare/vite-plugin`.
+- `environment.rs`: an environment a plugin's buildApp hook builds itself
+  (`builder.build(env)`, Nitro's `nitro`), bundled from its resolved config:
+  input, output options (file name functions called back in the host),
+  resolve conditions, defines and `transform.inject`, on the host's plugin
+  set for it, `build.rolldownOptions.plugins` included.
 
 The files in this directory:
 
@@ -223,7 +228,10 @@ respawned behind a write lock (a cheap snapshot boot).
    the framework's `#`-import aliases resolve at build time, code-split
    because the framework's server module uses top-level await that a
    single-file bundle cannot always carry. With `@cloudflare/vite-plugin` the
-   Worker environment's bundle replaces it.
+   Worker environment's bundle replaces it. With `nitro/vite` it is Nitro's
+   ssr service: written to the ssr environment's `outDir`, `nitro/*` left
+   external, the client in Nitro's public directory (both where Nitro's
+   configEnvironment hook put them).
 5. Each bundle runs its plugin host's `renderChunk`, `generateBundle` and
    `writeBundle` over the real output, so plugins that publish files (for
    example content-assets emitting `/__content/<collection>/<file>`) or write
@@ -231,7 +239,11 @@ respawned behind a write lock (a cheap snapshot boot).
    `closeBundle`, before the next environment builds.
 6. Emit `server.mjs` (Node http), `worker.mjs` (edge fetch handler),
    `cf-server.mjs` and `cf-loader.mjs`, copy `public/`, and prerender any
-   `build.prerender` routes.
+   `build.prerender` routes. With `nitro/vite`, Nitro's post buildApp hook
+   does the rest instead: it copies the public assets, prerenders, and has
+   oj build its `nitro` environment (`environment.rs`) into its output
+   (`.output` by default), whose directory and preview command `oj build`
+   reports.
 
 The bundles emit assets through one content-hash emitter, so they produce
 identical `/assets/<hash>` URLs for identical bytes. CSS is emitted with its
@@ -280,14 +292,26 @@ back, never copies.
   to the server environment (`switchEnvironment`) on the same plugin
   instances, with its own plugin set (`applyToEnvironment`), buildStart,
   module graph, emitted files and closeBundle.
+- A Start bundle host's resolved base config comes from a resolve without
+  the app's plugins: the host runs their config hooks itself, so each adds
+  its config once (a second Nitro's, its preset picked for Deno, would
+  merge in beside it). As in Vite, the `config` hooks see the user's own
+  values, and the defaults the base filled in (`build.outDir`, the client
+  and ssr environments) merge in after them.
 - `config`, `configEnvironment`, `configResolved` and `buildApp` run on
   Vite's minimal plugin context (`this.meta` with the Vite and rolldown
   versions, no `this.environment`), `configEnvironment` plugin by plugin.
 - The `buildApp` hooks run in hook order, with oj's environment builds (the
   `buildEnvironments` reverse RPC) standing in for TanStack Start's config
   builder just before the first post-order hook. A throwing hook fails the
-  build; an environment a plugin builds itself (Nitro's) stops it with an
-  error, since oj does not run it.
+  build. Any other environment a hook builds (Nitro's) Rust bundles from its
+  config (the `buildEnvironment` reverse RPC), answering its output; one
+  built ahead of oj's own moves the shared host back to the client.
+- A build runs an environment's `build.rolldownOptions.plugins` after its
+  normal plugins, ahead of the post ones (Vite's
+  `vite:rollup-options-plugins`). The resolved base config's bundler plugins
+  are left out: they are that resolve's own instances (Nitro's, bound to
+  another Nitro); oj's instances' config hooks add theirs.
 - moduleParsed comes from rolldown (every module, node_modules included,
   with the resolved imports), its code lowered to JS as vite:oxc would.
 - Off the client `build.emitAssets` is false by default, and at vite:asset's
