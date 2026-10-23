@@ -124,6 +124,7 @@ function workerPlugins() {
         this.emitFile({ type: "asset", fileName: "worker-plugin.txt", source: "emitted" });
       },
       closeBundle() {
+        if (process.env.OJ_E2E_WORKER_CLOSE_THROWS) throw new Error("worker closeBundle threw");
         add("closeBundle", "ran");
         writeFileSync(${JSON.stringify(report)}, JSON.stringify({ calls: workerPluginCalls, ...seen }));
       },
@@ -166,12 +167,12 @@ const must = (cond, msg) => {
 
 const out = path.join(app, "dist");
 const client = path.join(out, "client");
-const buildWith = (format) => {
+const buildWith = (format, env = {}) => {
   try {
     return execSync(`${JSON.stringify(oj)} build ${JSON.stringify(app)} --out ${JSON.stringify(out)} 2>&1`, {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, OJ_E2E_WORKER_FORMAT: format ?? "" },
+      env: { ...process.env, OJ_E2E_WORKER_FORMAT: format ?? "", ...env },
     });
   } catch (e) {
     throw new Error(`oj build (worker format ${format ?? "default"}) failed:\n${e.stdout ?? ""}${e.stderr ?? ""}`);
@@ -267,18 +268,44 @@ try {
     `the nested worker's bundle chain is not [outer, inner]: ${JSON.stringify(seenChains)}`,
   );
 
-  // A worker importing itself fails the build naming the chain, as in Vite.
-  fs.writeFileSync(workerFile, 'import selfUrl from "./worker.ts?worker&url";\nconsole.log(selfUrl);\n' + workerSource);
+  // A worker importing its own entry starts itself again at its own URL
+  // (Vite's vite:worker), no second bundle.
+  fs.writeFileSync(
+    workerFile,
+    'import selfUrl from "./worker.ts?worker&url";\nconsole.log("self:" + selfUrl);\n' + workerSource,
+  );
+  buildWith(undefined);
+  assets = fs.readdirSync(path.join(client, "assets"));
+  code = fs.readFileSync(
+    path.join(
+      client,
+      "assets",
+      assets.find((f) => /^wk-worker-.*\.js$/.test(f)),
+    ),
+    "utf8",
+  );
+  must(code.includes("self:"), "the worker's self import is not in its bundle");
+  must(!code.includes("/assets/wk-worker-"), "a worker importing itself bundled itself again");
+
+  // Through another worker it is a cycle: the build fails naming the chain.
+  fs.writeFileSync(
+    path.join(app, "src/lib/wk/inner.ts"),
+    'import back from "./worker.ts?worker&url";\nconsole.log(back);\n',
+  );
+  fs.writeFileSync(
+    workerFile,
+    'import innerUrl from "./inner.ts?worker&url";\nconsole.log(innerUrl);\n' + workerSource,
+  );
   let circular = null;
   try {
     buildWith(undefined);
   } catch (e) {
     circular = e.message;
   }
-  must(circular, "a worker importing itself built; Vite fails on circular worker imports");
+  must(circular, "a worker cycle built; Vite fails on circular worker imports");
   must(
     circular.includes(
-      "Circular worker imports detected. Vite does not support it. Import chain: src/lib/wk/worker.ts -> src/lib/wk/worker.ts",
+      "Circular worker imports detected. Vite does not support it. Import chain: src/lib/wk/worker.ts -> src/lib/wk/inner.ts -> src/lib/wk/worker.ts",
     ),
     `the failure does not name the circular worker chain:\n${circular}`,
   );
@@ -287,9 +314,10 @@ try {
     workerFile,
     'import { buildTag } from "virtual:build-info";\n' + workerSource + "console.log(buildTag);\n",
   );
+  // A worker plugin's closeBundle failing too does not hide why the bundle failed.
   let failure = null;
   try {
-    buildWith(undefined);
+    buildWith(undefined, { OJ_E2E_WORKER_CLOSE_THROWS: "1" });
   } catch (e) {
     failure = e.message;
   }

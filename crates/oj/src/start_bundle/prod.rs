@@ -352,6 +352,8 @@ pub(crate) async fn build(
                     Some(h) => Some(h.worker(&chain).await.map_err(|e| e.to_string())?),
                     None => None,
                 };
+                // A build dropped mid-bundle still closes the container.
+                let mut guard = host.as_ref().map(BundleHost::close_on_drop);
                 let result = bundle_worker(
                     &start,
                     host.as_ref(),
@@ -369,10 +371,17 @@ pub(crate) async fn build(
                     },
                 )
                 .await;
-                if let Some(h) = &host {
-                    h.close_worker().await?;
+                if let Some(guard) = guard.as_mut() {
+                    guard.disarm();
                 }
-                result
+                let closed = match &host {
+                    Some(h) => h.close_worker().await,
+                    None => Ok(()),
+                };
+                // The bundle's own failure is the one to report.
+                let bundle = result?;
+                closed?;
+                Ok(bundle)
             })
         });
         emitter.set_worker_bundler(bundler, worker_options.is_module());
@@ -844,6 +853,16 @@ async fn bundle_worker(
         write_emitted(&h.host, client_dir)
             .await
             .map_err(|e| e.to_string())?;
+        let css: Vec<String> = h
+            .host
+            .get_plugin_css()
+            .await
+            .into_iter()
+            .map(|(_, css)| css)
+            .collect();
+        if !css.is_empty() {
+            emitter.worker_css(file, &css.join("\n"))?;
+        }
     }
     let write = |file_name: &str, bytes: &[u8]| -> Result<(), String> {
         let dest = client_dir.join(file_name);

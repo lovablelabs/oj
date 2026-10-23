@@ -10,7 +10,11 @@ pub(crate) const MAIN_CONTAINER: u32 = 0;
 pub struct PluginHost {
     pub(crate) core: std::sync::Arc<HostCore>,
     /// The container this handle's hook calls address.
-    container: u32,
+    pub(crate) container: u32,
+    /// A worker container's engine generation: a revived engine numbers its
+    /// containers afresh, so the handle answers nothing past it. `None` for
+    /// the host's own container, which every generation re-creates.
+    generation: Option<u64>,
     /// Live hook plan: starts fail-open, overwritten only by a successful fetch,
     /// reverts to fail-open on engine respawn; a failed fetch is never cached.
     hook_plan: std::sync::RwLock<BuildHookPlan>,
@@ -632,6 +636,7 @@ impl PluginHost {
         let host = std::sync::Arc::new(PluginHost::over(
             std::sync::Arc::clone(&core),
             MAIN_CONTAINER,
+            None,
         ));
         let _ = core.main.set(std::sync::Arc::downgrade(&host));
         LIVE_HOSTS
@@ -1150,6 +1155,9 @@ impl PluginHost {
     /// Where this container's async reverse RPCs go (each container answers
     /// its own: a worker bundle's `this.resolve` ends in that bundle).
     pub fn set_rpc_request_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<HostRpc>) {
+        if self.is_stale() {
+            return;
+        }
         self.core
             .rpc_routes
             .lock()
@@ -1211,7 +1219,20 @@ impl PluginHost {
 
     /// One hook call into this handle's container.
     async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+        if self.is_stale() {
+            return Err(format!(
+                "plugin container {} died with its plugin host's engine",
+                self.container
+            ));
+        }
         self.core.call(self.container, hook, args).await
+    }
+
+    /// A worker container from an engine since revived: its id may name
+    /// another bundle's container in the new one.
+    fn is_stale(&self) -> bool {
+        self.generation
+            .is_some_and(|g| g != self.core.revive.lock().unwrap().generation)
     }
 
     async fn call_unit(&self, hook: &str, args: &[&str]) -> Result<(), String> {
@@ -1237,10 +1258,11 @@ impl PluginHost {
     }
 
     /// A handle on `container` of `core`, its hook plan fail-open until fetched.
-    fn over(core: std::sync::Arc<HostCore>, container: u32) -> PluginHost {
+    fn over(core: std::sync::Arc<HostCore>, container: u32, generation: Option<u64>) -> PluginHost {
         PluginHost {
             core,
             container,
+            generation,
             hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
             hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
             hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
@@ -1260,13 +1282,20 @@ impl PluginHost {
             .await?
             .and_then(|id| id.parse::<u32>().ok())
             .ok_or("the plugin host opened no worker container")?;
-        Ok(PluginHost::over(std::sync::Arc::clone(&self.core), id))
+        let generation = self.core.revive.lock().unwrap().generation;
+        Ok(PluginHost::over(
+            std::sync::Arc::clone(&self.core),
+            id,
+            Some(generation),
+        ))
     }
 
     /// Drops this handle's worker container from the host (its plugins answer
     /// no more hooks); the host's own container is never closed.
     pub async fn close_container(&self) -> Result<(), String> {
-        if self.container == MAIN_CONTAINER {
+        // A stale handle's container died with its engine, and its id may
+        // be a live bundle's now.
+        if self.container == MAIN_CONTAINER || self.is_stale() {
             return Ok(());
         }
         self.core.rpc_routes.lock().unwrap().remove(&self.container);
@@ -1745,7 +1774,12 @@ impl HostCore {
         let _ = self.initialized.send_replace(false);
         let _ = self.init_failed.send_replace(false);
         self.serve_info_push.send_replace(None);
-        // Worker containers died with the old engine; the host's own refetches.
+        // Worker containers died with the old engine, their routes with them;
+        // the host's own refetches.
+        self.rpc_routes
+            .lock()
+            .unwrap()
+            .retain(|&container, _| container == MAIN_CONTAINER);
         if let Some(main) = self.main_container() {
             main.reset_hook_plan();
         }

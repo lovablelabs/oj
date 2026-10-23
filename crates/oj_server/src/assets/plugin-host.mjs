@@ -1242,6 +1242,7 @@ try {
   }
   allPlugins = (Array.isArray(list) ? list : [list]).filter(Boolean);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
+  main.rawPlugins = allPlugins;
   main.plugins = hostedPlugins(allPlugins, userConfig);
 } catch (e) {
   process.stderr.write(`${OJ} plugin host: failed to load ${pluginsPath}: ${(e && e.stack) || e}\n`);
@@ -1301,7 +1302,7 @@ const transformEmitStore = new AsyncLocalStorage();
 // (see getPluginCss). Only relevant fields are implemented. Each container's
 // resolved config lists its own, as each Vite environment resolves its own
 // css-post: a worker bundle's CSS never joins the app's stylesheet.
-const ojPluginCss = [];
+const ojPluginCss = main.pluginCss;
 const cssPostShimInto = (sink) => ({
   name: "vite:css-post",
   transform: {
@@ -1337,6 +1338,10 @@ function createContainer(id, environment, resolvedConfig) {
     buildStartRun: null,
     buildStartFailureLogged: false,
     closeBundleDone: false,
+    // The plugins as the config listed them, natively run ones included, and
+    // what they routed through the container's css-post (getPluginCss).
+    rawPlugins: [],
+    pluginCss: [],
     // A config-phase hook of this container's plugins failed and was skipped:
     // plugins that share state then fail in each other's later hooks (Nitro's
     // buildApp after its config hook), so a buildApp failure is reported
@@ -3887,12 +3892,11 @@ async function openWorkerContainer(bundleChain) {
       );
     }
   }
-  const workerPlugins = hostedPlugins(
-    await flattenPlugins(typeof create === "function" ? create() : []),
-    userViteConfig,
-  );
+  const raw = await flattenPlugins(typeof create === "function" ? create() : []);
+  const workerPlugins = hostedPlugins(raw, userViteConfig);
   const c = createContainer(nextContainerId++, { name: "client", mode: environment.mode }, null);
   c.topLevelPlugins = workerPlugins;
+  c.rawPlugins = raw;
   const workerConfig = await runConfigHook(mergeConfigLite({}, hookedUserConfig), workerPlugins, { container: c });
   const resolved = {
     ...workerConfig,
@@ -3901,7 +3905,9 @@ async function openWorkerContainer(bundleChain) {
     mainConfig: main.resolvedConfig,
     bundleChain,
   };
-  resolved.plugins = withCssPostShim(workerPlugins, cssPostShimInto([]));
+  // As the app's: the natively run plugins stay listed (hooks unrun).
+  const native = raw.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
+  resolved.plugins = withCssPostShim(workerPlugins.concat(native), cssPostShimInto(c.pluginCss));
   await runConfigResolved(workerPlugins, resolved, c);
   c.resolvedConfig = resolved;
   await resolveEnvironment(c, "client");
@@ -4230,7 +4236,7 @@ function startFacts(c) {
   const codeSplitting = output.codeSplitting ?? output.advancedChunks;
   const chunkOptimization = { ...(top.experimental ?? {}), ...(own.experimental ?? {}) }.chunkOptimization;
   const external = own.external ?? cfg.build?.rolldownOptions?.external ?? cfg.build?.rollupOptions?.external;
-  const names = [...allPlugins, ...nativePlugins].map((p) => p && p.name);
+  const names = c.rawPlugins.map((p) => p && p.name);
   return JSON.stringify({
     alias: factValue(cfg.resolve?.alias ?? userResolveAlias ?? null, fns),
     external: external === undefined ? null : factValue(external, fns),
@@ -4780,7 +4786,7 @@ async function run(hook, args, c) {
   if (hook === "getEmittedFiles") {
     return JSON.stringify(c.emitted.map(({ fileName, source }) => ({ fileName, source })));
   }
-  if (hook === "getPluginCss") return JSON.stringify(ojPluginCss);
+  if (hook === "getPluginCss") return JSON.stringify(c.pluginCss);
   // Plugins wrap server.close() to dispose runtimes they started (@cloudflare/vite-plugin's workerd).
   if (hook === "closeDevServer") {
     await devServer?.close?.();

@@ -383,16 +383,18 @@ test(
 );
 
 // Each Vite environment resolves its own `vite:css-post`: CSS a worker
-// plugin routes through it stays out of the app's stylesheet.
+// plugin routes through it ships with the worker, not the app's stylesheet.
+// The worker's own natively run plugins stay listed and drive its facts.
 test(
-  "a worker container's css-post keeps its CSS from the app's",
+  "a worker container's css-post and plugin list are its own",
   { skip: !fs.existsSync(viteSrc) && "fixture vite not installed" },
   async () => {
     const fx = tmpProject({ prefix: "oj-worker-css-" });
     // Each plugin hands CSS to the css-post its resolved config lists.
     fx.write(
       "vite.config.mjs",
-      `const routes = (name) => {
+      `import { appendFileSync } from "node:fs";
+       const routes = (name) => {
          let resolved;
          return {
            name,
@@ -400,10 +402,16 @@ test(
            buildStart() {
              const post = resolved.plugins.find((p) => p.name === "vite:css-post");
              post.transform.handler("." + name + "{}", "/" + name + ".css");
+             const listed = resolved.plugins.some((p) => p.name === "vite:react-refresh");
+             appendFileSync(new URL("./events.log", import.meta.url), name + " lists react-refresh=" + listed + "\\n");
            },
          };
        };
-       export default { plugins: [routes("app")], worker: { plugins: () => [routes("worker")] } };\n`,
+       const refresh = { name: "vite:react-refresh" };
+       export default {
+         plugins: [routes("app")],
+         worker: { plugins: () => [routes("worker"), refresh] },
+       };\n`,
     );
     const host = rpcSidecar("plugin-host.mjs", {
       args: [
@@ -431,6 +439,12 @@ test(
       await call(2, "buildStart", [], worker);
       await call(3, "buildStart", []);
       assert.deepEqual(JSON.parse(await call(4, "getPluginCss", [])), [{ id: "/app.css", css: ".app{}" }]);
+      assert.deepEqual(JSON.parse(await call(5, "getPluginCss", [], worker)), [
+        { id: "/worker.css", css: ".worker{}" },
+      ]);
+      assert.deepEqual(events(fx), ["worker lists react-refresh=true", "app lists react-refresh=false"]);
+      assert.equal(JSON.parse(await call(6, "startFacts", [], worker)).reactRefresh, true);
+      assert.equal(JSON.parse(await call(7, "startFacts", [])).reactRefresh, false);
     } finally {
       host.close();
       fx.cleanup();

@@ -703,3 +703,55 @@ async fn nested_workers_carry_the_chain_and_a_cycle_fails() {
         "each bundle sees its importers, then itself"
     );
 }
+
+/// Two workers importing each other, both imported by the client: each
+/// bundle runs under its own chain (Vite shares only finished bundles), so
+/// both fail naming the cycle instead of waiting on each other.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cycle_between_two_client_workers_fails_both() {
+    let app = App::new(&[("src/a.js", ""), ("src/b.js", "")]);
+    let start = app.start();
+    let styles = Arc::new(Styles::new(&start));
+    let emitter = Arc::new(Emitter::new(
+        &app.dir.join("dist/client"),
+        "/",
+        Arc::clone(&styles),
+    ));
+    let (a, b) = (app.dir.join("src/a.js"), app.dir.join("src/b.js"));
+    // Both client-started bundles are in flight before either imports.
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let weak = Arc::downgrade(&emitter);
+    let (a2, b2) = (a.clone(), b.clone());
+    emitter.set_worker_bundler(
+        Arc::new(move |file: PathBuf, chain: Vec<PathBuf>| {
+            let emitter = weak.upgrade().unwrap();
+            let import = if file == a2 { b2.clone() } else { a2.clone() };
+            let barrier = Arc::clone(&barrier);
+            Box::pin(async move {
+                if chain.len() == 1 {
+                    barrier.wait().await;
+                }
+                emitter.worker(&import, &chain).await?;
+                Ok(super::assets::WorkerBundle {
+                    code: String::new(),
+                    file_name: "w.js".into(),
+                })
+            })
+        }),
+        false,
+    );
+    let (ra, rb) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        tokio::join!(emitter.worker(&a, &[]), emitter.worker(&b, &[]))
+    })
+    .await
+    .expect("the two bundles wait on each other");
+    let cycle = "Circular worker imports detected. Vite does not support it. Import chain: ";
+    assert_eq!(
+        ra.unwrap_err(),
+        format!("{cycle}src/a.js -> src/b.js -> src/a.js")
+    );
+    assert_eq!(
+        rb.unwrap_err(),
+        format!("{cycle}src/b.js -> src/a.js -> src/b.js")
+    );
+}

@@ -216,6 +216,42 @@ async fn a_gone_host_is_revived_by_the_next_call() {
     assert!(!*host.core.host_gone.borrow(), "the host is live again");
 }
 
+// A revived engine numbers its worker containers afresh: a handle from the
+// dead one answers nothing and closing it leaves the new container 1 alone.
+#[tokio::test]
+async fn a_worker_container_handle_dies_with_its_engine() {
+    let (_root, host) = spawn_live_host("worker-gen").await;
+    let old = host
+        .open_worker_container(&[])
+        .await
+        .expect("a worker container");
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    host.resolve_id("x", "").await.expect("revived");
+
+    let new = host
+        .open_worker_container(&[])
+        .await
+        .expect("a worker container");
+    assert_eq!(
+        old.container, new.container,
+        "the revived engine reuses the id"
+    );
+    let err = old
+        .resolve_id("x", "")
+        .await
+        .expect_err("the old handle is stale");
+    assert!(err.contains("died with its plugin host's engine"), "{err}");
+    old.close_container()
+        .await
+        .expect("closing a stale handle is a no-op");
+    new.resolve_id("x", "")
+        .await
+        .expect("the new container is untouched by the stale close");
+    new.close_container().await.expect("closed");
+}
+
 // A death report about a replaced engine (an old call's transport belt
 // firing after a revive) is stale and must not kill the new generation.
 #[tokio::test]
