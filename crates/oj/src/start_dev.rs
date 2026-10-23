@@ -647,9 +647,9 @@ pub async fn start_dev(
         });
     }
     {
-        let (root, mode) = (root.clone(), mode.clone());
+        let (root, mode, config_file) = (root.clone(), mode.clone(), config_file.clone());
         tokio::task::spawn_blocking(move || {
-            start_bundle_store(&root, &mode)
+            start_bundle_store(&root, &mode, config_file.as_deref())
                 .prune(oj_cache::start_bundle::DEFAULT_PRUNE_BUDGET_BYTES);
         });
     }
@@ -1190,11 +1190,7 @@ fn spawn_start_watcher(
     // module changes and never flip this.
     let watch_root = root.clone();
     let boot_entry = crate::start_host::app_start_entry(&watch_root);
-    rt.spawn(refresh_worker(
-        root.clone(),
-        cache.clone(),
-        Arc::clone(&state),
-    ));
+    rt.spawn(refresh_worker(cache.clone(), Arc::clone(&state)));
     rt.spawn(rebundle_worker(
         root,
         cache,
@@ -1430,7 +1426,7 @@ async fn rebundle_worker(
                 let outcome = match bundling.then(|| bundler.bundle(&inputs, false)) {
                     None => ClientRun::Skipped,
                     Some(Ok(true)) => ClientRun::Hot,
-                    Some(Ok(false)) => match pinned_output(&bundler, &r, &c, &m) {
+                    Some(Ok(false)) => match pinned_output(&bundler, &c, &m) {
                         Some(pinned) => ClientRun::Fresh(pinned),
                         None => ClientRun::Failed("the bundle left no output to serve".into()),
                     },
@@ -1677,11 +1673,10 @@ enum ClientRun {
 /// The output a successful bundle wrote, cached for the next boot.
 fn pinned_output(
     bundler: &ClientBundler,
-    root: &Path,
     cache: &Path,
     mode: &str,
 ) -> Option<oj_cache::start_bundle::PinnedBundle> {
-    match start_bundle_store(root, mode).persist(cache) {
+    match start_bundle_store(bundler.root(), mode, bundler.config_file()).persist(cache) {
         Some((key, pinned)) => {
             save_stylex_rules(bundler, cache, &key);
             Some(pinned)
@@ -1721,7 +1716,7 @@ const REFRESH_PAUSE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Brings the client output current after hot updates, once edits pause or
 /// as soon as a document or a page's reload needs it.
-async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
+async fn refresh_worker(cache: PathBuf, state: Arc<StartState>) {
     use std::sync::atomic::Ordering::SeqCst;
     loop {
         state.refresh_wake.notified().await;
@@ -1737,12 +1732,11 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         }
         let generation = state.bundler.hot.generation();
         let started = state.refreshes.fetch_add(1, SeqCst) + 1;
-        let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
+        let (c, m) = (cache.clone(), state.mode.clone());
         let bundler = Arc::clone(&state.bundler);
         let pinned = tokio::task::spawn_blocking(move || {
             bundler.bundle(&[], true)?;
-            pinned_output(&bundler, &r, &c, &m)
-                .ok_or_else(|| anyhow::anyhow!("no client chunk index"))
+            pinned_output(&bundler, &c, &m).ok_or_else(|| anyhow::anyhow!("no client chunk index"))
         })
         .await
         .map_err(anyhow::Error::from)
@@ -1981,7 +1975,10 @@ fn codegen_store(
     // resolves keys the output; its content does not.
     if kind == "route-tree" {
         if let Some(entry) = crate::start_host::app_start_entry(root) {
-            extra.extend_from_slice(entry.to_string_lossy().as_bytes());
+            // Root-relative, so worktrees share the tree.
+            let rel = oj_cache::store::rel_key(root, &entry)
+                .unwrap_or_else(|| entry.to_string_lossy().into_owned());
+            extra.extend_from_slice(rel.as_bytes());
         }
         extra.push(0);
     }
@@ -2199,13 +2196,43 @@ fn hot_styles_added(cache: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartBundleStore {
+fn start_bundle_store(
+    root: &Path,
+    mode: &str,
+    config_file: Option<&Path>,
+) -> oj_cache::start_bundle::StartBundleStore {
     oj_cache::start_bundle::StartBundleStore::for_mode(
         root,
         env!("CARGO_PKG_VERSION"),
         oj_cache::integrity::VerifyMode::Standard,
         mode,
     )
+    .with_extra_salt(&config_salt(root, config_file))
+}
+
+/// The config the app runs (the `--config` file, else the default one) and
+/// every file it imported, by worktree-independent name and content: the
+/// client bundle's plugins come from there, so a bundle built under one
+/// config must never restore under another. The store's own epoch only
+/// knows the default config names.
+fn config_salt(root: &Path, config_file: Option<&Path>) -> Vec<u8> {
+    let workspace = oj_cache::store::workspace_root(root);
+    let mut files: Vec<PathBuf> = oj_server::plugins::vite_config_file(root, config_file)
+        .into_iter()
+        .chain(oj_server::plugins::config_dependencies().iter().cloned())
+        .collect();
+    files.sort();
+    files.dedup();
+    let mut salt = Vec::new();
+    for file in files {
+        if let Ok(bytes) = std::fs::read(&file) {
+            salt.extend_from_slice(oj_cache::store::salt_key(root, &workspace, &file).as_bytes());
+            salt.push(0);
+            salt.extend_from_slice(&bytes);
+            salt.push(0);
+        }
+    }
+    salt
 }
 
 fn bundle_client_entry_cached(
@@ -2215,7 +2242,7 @@ fn bundle_client_entry_cached(
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
-    let store = start_bundle_store(root, mode);
+    let store = start_bundle_store(root, mode, bundler.config_file());
     let stylex = bundler.stylex();
     match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
         // A restored bundle never ran the StyleX transform: its modules'
@@ -4201,6 +4228,35 @@ mod tests {
     // The client bundle leaves the generated route tree and its own dir out
     // of closure.json: a glob reaching either has not grown, or a restore of
     // such an app would miss on every boot.
+    // The client bundle's plugins come from the config the app runs: a
+    // `--config` file and what it imports key the bundle, by root-relative
+    // name, so another config never restores it and another worktree with
+    // the same config still does.
+    #[test]
+    fn the_running_config_keys_the_client_bundle_worktree_independently() {
+        let app = |label: &str, plugin: &str| {
+            let root = tmp(&format!("config-salt-{label}"));
+            std::fs::write(root.join("vite.config.ts"), "export default {}").unwrap();
+            std::fs::write(
+                root.join("vite.alt.config.ts"),
+                format!("export default {{ plugins: [{plugin}] }}"),
+            )
+            .unwrap();
+            root
+        };
+        let a = app("a", "one()");
+        let b = app("b", "one()");
+        let other = app("other", "two()");
+        let alt = |root: &Path| config_salt(root, Some(&root.join("vite.alt.config.ts")));
+        assert_eq!(alt(&a), alt(&b), "same config, other worktree");
+        assert_ne!(alt(&a), alt(&other), "other plugins");
+        assert_ne!(
+            alt(&a),
+            config_salt(&a, None),
+            "--config vs the default config"
+        );
+    }
+
     #[test]
     fn restore_glob_members_skip_what_the_closure_leaves_out() {
         let app = tmp("restore-glob-members");

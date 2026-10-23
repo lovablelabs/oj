@@ -879,3 +879,29 @@ fn an_out_of_root_glob_keeps_the_generation_to_its_root() {
         "{err:?}"
     );
 }
+
+// Inputs only the caller knows (the config the app was started with) key
+// the bundle: a generation persisted under one never restores under another.
+#[test]
+fn the_extra_salt_keys_the_bundle() {
+    let fx = Fixture::new("extra-salt");
+    let (key, _) = fx
+        .store()
+        .with_extra_salt(b"config-a")
+        .persist(&fx.start)
+        .unwrap();
+    let (again, _) = fx
+        .store()
+        .with_extra_salt(b"config-a")
+        .persist(&fx.start)
+        .unwrap();
+    assert_eq!(key, again);
+    match fx
+        .store()
+        .with_extra_salt(b"config-b")
+        .restore(&fx.start, no_globs)
+    {
+        Err(Miss::NoEntryForKey(k)) => assert_ne!(k, key),
+        other => panic!("expected key miss, got {other:?}"),
+    }
+}

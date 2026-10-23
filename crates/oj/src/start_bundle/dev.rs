@@ -118,6 +118,11 @@ impl DevBundler {
         &self.start.root
     }
 
+    /// The `--config` file the app was started with, if any.
+    pub(crate) fn config_file(&self) -> Option<&Path> {
+        self.config_file.as_deref()
+    }
+
     pub(crate) fn set_hot_enabled(&self, enabled: bool) {
         self.hot_enabled
             .store(enabled, std::sync::atomic::Ordering::SeqCst);

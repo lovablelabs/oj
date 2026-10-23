@@ -290,6 +290,15 @@ impl StartBundleStore {
         }
     }
 
+    /// Folds `extra` into the key salt: bundle inputs only the caller knows,
+    /// such as the config file the app was started with and the files it
+    /// imported. Hash them worktree-independently, or nothing is shared.
+    pub fn with_extra_salt(mut self, extra: &[u8]) -> Self {
+        self.salt.push(':');
+        self.salt.push_str(&blake3::hash(extra).to_hex());
+        self
+    }
+
     /// The generation `current` names, when its closure still hashes to a
     /// stored key. The key covers every file the bundle read, but a file an
     /// `import.meta.glob` would expand to now and the bundle never read (one
