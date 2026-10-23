@@ -272,29 +272,56 @@ async fn a_vanished_versioned_dep_file_is_outdated_not_missing() {
     );
 }
 
-// Vite's sessionTimestamp: dep URLs are cached immutable, so a cold session
-// (a restart after the deps cache was cleared) must not serve its bundle
-// under a URL an earlier session already handed out.
+// Dep URLs are cached immutable (Vite salts them with its sessionTimestamp
+// for this): a cold session (a restart after the deps cache was cleared)
+// may hand out an earlier session's URL only for the same bytes. Over the
+// same node_modules it does, so worktrees and restarts share URLs and the
+// compiles keyed on them; over an edited dependency no URL an earlier
+// session served comes back.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_cold_session_never_reuses_an_earlier_sessions_dep_urls() {
+async fn a_cold_session_reuses_dep_urls_only_for_the_same_bytes() {
     crate::require_fixture!("vite");
     let app = plain_esm_app();
-    let first = {
+    let session = || async {
         let server = app.serve().await;
         let urls = dep_urls(&server.text("/main.js").await);
         for url in &urls {
-            server.text(url).await;
+            assert_eq!(server.get(url).await.status, 200, "{url}");
         }
         urls
     };
-    std::fs::remove_dir_all(oj_cache::cache_root(&app.root).join("deps")).unwrap();
+    let first = session().await;
+    assert!(!first.is_empty());
+    let deps = oj_cache::cache_root(&app.root).join("deps");
+    std::fs::remove_dir_all(&deps).unwrap();
+    let second = session().await;
+    assert_eq!(first, second, "the same bundle keeps its URLs");
+
+    std::fs::remove_dir_all(&deps).unwrap();
+    app.write(&[(
+        "node_modules/plain-esm/index.js",
+        "export const hi = () => 2;\n",
+    )]);
     let server = app.serve().await;
-    let second = dep_urls(&server.text("/main.js").await);
-    assert_eq!(first.len(), second.len(), "{first:?} vs {second:?}");
-    for (a, b) in first.iter().zip(&second) {
-        assert_ne!(a, b, "a cold session minted a URL an earlier one served");
-        server.text(b).await;
-    }
+    // The plan's URLs are the earlier ones until the commit finds the bytes
+    // moved; then every URL moves and the page reloads onto new ones.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let third = loop {
+        let urls = dep_urls(&server.text("/main.js").await);
+        if urls.iter().all(|u| !first.contains(u)) {
+            break urls;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "an edited dependency kept an earlier session's URL: {urls:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let plain = third.iter().find(|u| u.contains("plain-esm")).unwrap();
+    assert!(
+        server.text(plain).await.contains("2"),
+        "the new bytes serve"
+    );
 }
 
 // Vite's cached _metadata.json: a warm session reuses the persisted versions,
