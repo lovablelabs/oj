@@ -905,3 +905,41 @@ fn the_extra_salt_keys_the_bundle() {
         other => panic!("expected key miss, got {other:?}"),
     }
 }
+
+// A closure file reached through a symlink out of the root (a linked
+// package, a symlinked node_modules) ids by its canonical path, which sorts
+// apart from its in-root spelling, and may appear under both spellings. The
+// key a persist computes must be the one a restore recomputes from the
+// stored closure, or every boot misses.
+#[cfg(unix)]
+#[test]
+fn a_closure_reaching_out_of_the_root_restores_under_its_own_key() {
+    let fx = Fixture::new("symlinked");
+    let outside = fx
+        .root
+        .with_file_name(format!("oj-start-bundle-outside-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&outside);
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("z.tsx"), "export const z = 1;").unwrap();
+    std::os::unix::fs::symlink(outside.join("z.tsx"), fx.module("link.tsx")).unwrap();
+    let closure = vec![
+        fx.module("a.tsx").display().to_string(),
+        fx.module("b.tsx").display().to_string(),
+        fx.module("link.tsx").display().to_string(),
+        outside.join("z.tsx").display().to_string(),
+    ];
+    fs::write(
+        fx.start.join(CLOSURE_FILE),
+        serde_json::to_vec(&closure).unwrap(),
+    )
+    .unwrap();
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    fx.clear_start_dir();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(
+        stats.files, 3,
+        "one id for both spellings of the linked file"
+    );
+    let _ = fs::remove_dir_all(&outside);
+}

@@ -14,8 +14,17 @@ use super::{
 
 impl StartBundleStore {
     pub fn persist(&self, start_dir: &Path) -> Option<(String, PinnedBundle)> {
-        let files = read_closure(&start_dir.join(CLOSURE_FILE))?;
-        let ids: Vec<String> = files.iter().map(|p| self.closure_id(p)).collect();
+        // Ordered and deduplicated by id, exactly as a restore reads the
+        // stored closure back: a file outside the root (a symlinked package)
+        // ids by its canonical path, which sorts apart from its in-root
+        // spelling, and two spellings of one file are one id.
+        let mut pairs: Vec<(String, PathBuf)> = read_closure(&start_dir.join(CLOSURE_FILE))?
+            .into_iter()
+            .map(|p| (self.closure_id(&p), p))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        pairs.dedup_by(|a, b| a.0 == b.0);
+        let (ids, files): (Vec<String>, Vec<PathBuf>) = pairs.into_iter().unzip();
         let digests = par_map(&files, |p| hash_file(p));
         let globs =
             self.relocate_globs(&fs::read_to_string(start_dir.join(GLOB_SCOPES_FILE)).ok()?);
