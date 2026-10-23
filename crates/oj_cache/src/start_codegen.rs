@@ -12,6 +12,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub const START_CODEGEN_FORMAT: u32 = 2;
 pub const DEFAULT_KEEP_ENTRIES: usize = 8;
+/// The shared store serves every worktree and app on the machine, so its
+/// per-kind entry budget is wider than a single app's.
+pub const SHARED_KEEP_ENTRIES: usize = 32;
 
 const MEMO_FILE: &str = "memo.json";
 const TOUCH_FILE: &str = "last-used";
@@ -21,9 +24,17 @@ const MEMO_FRESHNESS_SLACK_NS: u64 = 2_000_000_000;
 
 pub struct StartCodegenStore {
     root: PathBuf,
+    /// Entry directories (content, keyed root-relative): the shared per-user
+    /// store when one is available, so worktree B restores what worktree A
+    /// generated; the per-app cache otherwise.
     dir: PathBuf,
+    /// The memo (mtime fast-path) is per-root pointer state: its relative
+    /// paths mean nothing outside this worktree and its mtimes are this
+    /// checkout's, so it always stays under the app, split from the entries.
+    memo_dir: PathBuf,
     salt: String,
     marker: Option<String>,
+    keep_entries: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -89,14 +100,47 @@ impl StartCodegenStore {
         extra_salt: &[u8],
         marker: Option<&str>,
     ) -> Self {
+        let local = crate::cache_root(root).join("start-codegen").join(kind);
+        let (dir, keep_entries) = match crate::store::store_root() {
+            Some(store) => (store.join("start-codegen").join(kind), SHARED_KEEP_ENTRIES),
+            None => (local.clone(), DEFAULT_KEEP_ENTRIES),
+        };
+        Self::at_dirs(
+            root,
+            dir,
+            local,
+            keep_entries,
+            kind,
+            tool_version,
+            extra_salt,
+            marker,
+        )
+    }
+
+    /// The explicit-layout constructor `new` resolves into: entries at `dir`
+    /// (shareable), memo at `memo_dir` (per-root). Tests and embedders that
+    /// must not touch the user's shared store build through this.
+    #[allow(clippy::too_many_arguments)]
+    pub fn at_dirs(
+        root: &Path,
+        dir: PathBuf,
+        memo_dir: PathBuf,
+        keep_entries: usize,
+        kind: &str,
+        tool_version: &str,
+        extra_salt: &[u8],
+        marker: Option<&str>,
+    ) -> Self {
         Self {
             root: root.to_path_buf(),
-            dir: crate::cache_root(root).join("start-codegen").join(kind),
+            dir,
+            memo_dir,
             salt: format!(
                 "{tool_version}:{START_CODEGEN_FORMAT}:{kind}:{}",
                 blake3::hash(extra_salt).to_hex()
             ),
             marker: marker.map(str::to_owned),
+            keep_entries,
         }
     }
 
@@ -123,7 +167,7 @@ impl StartCodegenStore {
                 return Err(Miss::EntryCorrupt(key));
             }
         }
-        if scan.rehashed > 0 || !self.dir.join(MEMO_FILE).is_file() {
+        if scan.rehashed > 0 || !self.memo_dir.join(MEMO_FILE).is_file() {
             self.write_memo(&build_memo(&self.root, &scan.inputs, &scan.infos));
         }
         touch(&entry);
@@ -144,7 +188,7 @@ impl StartCodegenStore {
         }
         self.write_memo(&build_memo(&self.root, &scan.inputs, &scan.infos));
         touch(&entry);
-        self.prune(DEFAULT_KEEP_ENTRIES);
+        self.prune(self.keep_entries);
         Some(key)
     }
 
@@ -261,17 +305,17 @@ impl StartCodegenStore {
     }
 
     fn read_memo(&self) -> Option<Memo> {
-        integrity::read_json_or_remove(&self.dir.join(MEMO_FILE))
+        integrity::read_json_or_remove(&self.memo_dir.join(MEMO_FILE))
     }
 
     fn write_memo(&self, memo: &Memo) {
         let Ok(bytes) = serde_json::to_vec(memo) else {
             return;
         };
-        if fs::create_dir_all(&self.dir).is_err() {
+        if fs::create_dir_all(&self.memo_dir).is_err() {
             return;
         }
-        let _ = integrity::atomic_write(&self.dir.join(MEMO_FILE), &bytes);
+        let _ = integrity::atomic_write(&self.memo_dir.join(MEMO_FILE), &bytes);
     }
 }
 
@@ -463,16 +507,42 @@ mod tests {
         }
 
         fn store(&self) -> StartCodegenStore {
-            StartCodegenStore::new(&self.root, "route-tree", "0.0.1-test", b"script-v1", None)
+            self.store_at(&self.root, "route-tree", None)
+        }
+
+        /// Old single-directory layout, pinned to fixture-local paths so no
+        /// test can reach the developer's real shared store.
+        fn store_at(&self, root: &Path, kind: &str, marker: Option<&str>) -> StartCodegenStore {
+            let local = crate::cache_root(root).join("start-codegen").join(kind);
+            StartCodegenStore::at_dirs(
+                root,
+                local.clone(),
+                local,
+                DEFAULT_KEEP_ENTRIES,
+                kind,
+                "0.0.1-test",
+                b"script-v1",
+                marker,
+            )
         }
 
         fn marked_store(&self) -> StartCodegenStore {
-            StartCodegenStore::new(
+            self.store_at(&self.root, "server-fn", Some("createServerFn"))
+        }
+
+        fn store_salted(&self, tool_version: &str, extra_salt: &[u8]) -> StartCodegenStore {
+            let local = crate::cache_root(&self.root)
+                .join("start-codegen")
+                .join("route-tree");
+            StartCodegenStore::at_dirs(
                 &self.root,
-                "server-fn",
-                "0.0.1-test",
-                b"script-v1",
-                Some("createServerFn"),
+                local.clone(),
+                local,
+                DEFAULT_KEEP_ENTRIES,
+                "route-tree",
+                tool_version,
+                extra_salt,
+                None,
             )
         }
 
@@ -623,15 +693,15 @@ mod tests {
         let (out, _) = tree_outputs(&fx);
         let outputs = [("routeTree.gen.ts", out.as_path())];
         let key = fx.store().persist(&fx.inputs(), &outputs).unwrap();
-        let other_script =
-            StartCodegenStore::new(&fx.root, "route-tree", "0.0.1-test", b"script-v2", None)
-                .persist(&fx.inputs(), &outputs)
-                .unwrap();
+        let other_script = fx
+            .store_salted("0.0.1-test", b"script-v2")
+            .persist(&fx.inputs(), &outputs)
+            .unwrap();
         assert_ne!(other_script, key, "script content salts the key");
-        let other_version =
-            StartCodegenStore::new(&fx.root, "route-tree", "9.9.9", b"script-v1", None)
-                .persist(&fx.inputs(), &outputs)
-                .unwrap();
+        let other_version = fx
+            .store_salted("9.9.9", b"script-v1")
+            .persist(&fx.inputs(), &outputs)
+            .unwrap();
         assert_ne!(other_version, key, "tool version salts the key");
     }
 
@@ -786,5 +856,144 @@ mod tests {
             Err(Miss::EntryCorrupt(_))
         ));
         assert!(!fx.entry_dir("route-tree", &key).exists());
+    }
+    // ---- store/scratch split: the pulp P0 contract ----
+
+    /// Two identical worktrees sharing one entries dir, each with its own
+    /// memo dir — the layout `new()` builds when a shared store exists.
+    fn split_pair(label: &str) -> (Fixture, Fixture, PathBuf) {
+        let a = Fixture::new(&format!("{label}-a"));
+        let b = Fixture::new(&format!("{label}-b"));
+        let shared = std::env::temp_dir().join(format!(
+            "oj-start-codegen-shared-{}-{label}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&shared);
+        (a, b, shared)
+    }
+
+    fn split_store(root: &Path, shared: &Path) -> StartCodegenStore {
+        StartCodegenStore::at_dirs(
+            root,
+            shared.join("start-codegen/route-tree"),
+            crate::cache_root(root).join("start-codegen/route-tree"),
+            SHARED_KEEP_ENTRIES,
+            "route-tree",
+            "0.0.1-test",
+            b"script-v1",
+            None,
+        )
+    }
+
+    #[test]
+    fn worktree_b_restores_what_worktree_a_generated() {
+        let (a, b, shared) = split_pair("xwt");
+        let (out_a, _) = tree_outputs(&a);
+        let key_a = split_store(&a.root, &shared)
+            .persist(&a.inputs(), &[("routeTree.gen.ts", out_a.as_path())])
+            .unwrap();
+
+        // Worktree B never persisted anything; same content, different root.
+        let dest_b = b.root.join("src/routeTree.gen.ts");
+        fs::remove_file(&dest_b).unwrap();
+        let stats = split_store(&b.root, &shared)
+            .restore(&b.inputs(), &[("routeTree.gen.ts", dest_b.as_path())])
+            .unwrap();
+        assert_eq!(stats.key, key_a, "same content, same key, across roots");
+        assert_eq!(
+            fs::read_to_string(&dest_b).unwrap(),
+            "// tree-v1",
+            "worktree A's output materialized into worktree B"
+        );
+    }
+
+    #[test]
+    fn edited_worktree_misses_instead_of_taking_the_other_worktrees_entry() {
+        let (a, b, shared) = split_pair("xwt-miss");
+        let (out_a, _) = tree_outputs(&a);
+        split_store(&a.root, &shared)
+            .persist(&a.inputs(), &[("routeTree.gen.ts", out_a.as_path())])
+            .unwrap();
+
+        b.write("src/routes/index.tsx", "export const Route = 999;");
+        let dest_b = b.root.join("src/routeTree.gen.ts");
+        let miss = split_store(&b.root, &shared)
+            .restore(&b.inputs(), &[("routeTree.gen.ts", dest_b.as_path())])
+            .unwrap_err();
+        assert!(matches!(miss, Miss::NoEntryForKey(_)), "{miss:?}");
+    }
+
+    #[test]
+    fn memos_stay_per_root_and_never_land_in_the_shared_dir() {
+        let (a, b, shared) = split_pair("xwt-memo");
+        let (out_a, _) = tree_outputs(&a);
+        let store_a = split_store(&a.root, &shared);
+        store_a
+            .persist(&a.inputs(), &[("routeTree.gen.ts", out_a.as_path())])
+            .unwrap();
+
+        // Settle B's inputs past the memo freshness slack, or the memo
+        // (correctly) refuses to trust their mtimes.
+        b.settle(&["src/routes/index.tsx", "src/routes/about.tsx"]);
+        let dest_b = b.root.join("src/routeTree.gen.ts");
+        let store_b = split_store(&b.root, &shared);
+        let first = store_b
+            .restore(&b.inputs(), &[("routeTree.gen.ts", dest_b.as_path())])
+            .unwrap();
+        assert!(first.rehashed > 0, "cold worktree hashes its inputs once");
+        // The memo fast-path belongs to B alone and works on the next boot.
+        let second = store_b
+            .restore(&b.inputs(), &[("routeTree.gen.ts", dest_b.as_path())])
+            .unwrap();
+        assert_eq!(second.rehashed, 0, "warm worktree trusts its own memo");
+
+        for root in [&a.root, &b.root] {
+            assert!(
+                crate::cache_root(root)
+                    .join("start-codegen/route-tree/memo.json")
+                    .is_file(),
+                "memo lives under {}",
+                root.display()
+            );
+        }
+        assert!(
+            !shared.join("start-codegen/route-tree/memo.json").exists(),
+            "no per-root pointer state in the shared dir"
+        );
+        // And one worktree's memo mtimes never leak into the other's: A's
+        // memo predates B's restore and is untouched by it.
+        let a_memo =
+            fs::read(crate::cache_root(&a.root).join("start-codegen/route-tree/memo.json"))
+                .unwrap();
+        let b_memo =
+            fs::read(crate::cache_root(&b.root).join("start-codegen/route-tree/memo.json"))
+                .unwrap();
+        assert_ne!(a_memo, b_memo, "memos are per-worktree state");
+    }
+
+    #[test]
+    fn shared_prune_budget_is_wider_and_prune_spares_foreign_entries_dirs() {
+        let (a, _b, shared) = split_pair("xwt-prune");
+        let store = split_store(&a.root, &shared);
+        let (out, _) = tree_outputs(&a);
+        store
+            .persist(&a.inputs(), &[("routeTree.gen.ts", out.as_path())])
+            .unwrap();
+        // A second app's entry in the same shared kind dir survives this
+        // store's prune while the budget holds.
+        let entries: Vec<_> = fs::read_dir(shared.join("start-codegen/route-tree"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        store.prune(SHARED_KEEP_ENTRIES);
+        assert!(
+            shared
+                .join("start-codegen/route-tree")
+                .join(entries[0].file_name())
+                .is_dir(),
+            "within budget, nothing is evicted"
+        );
     }
 }

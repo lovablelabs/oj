@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -166,6 +166,43 @@ impl ResolvedOptions {
         self.import_sources
             .get(index)
             .map(ImportSource::from_specifier)
+    }
+
+    /// Recomputes [`Self::cache_repr`] with the paths under `root` (the
+    /// `rootDir` and alias targets) spelled `<root>/<rel>`. The compile names
+    /// a file by its package- or rootDir-relative path, never absolutely, so
+    /// two checkouts whose options differ only in where the checkout lives
+    /// compile identically and may share cache entries. A path outside
+    /// `root` keeps its absolute spelling.
+    pub fn relocate_cache_repr(&mut self, root: &Path) {
+        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let rel = |p: &Path| {
+            [root, canonical.as_path()].iter().find_map(|r| {
+                let rest = p.strip_prefix(r).ok()?;
+                Some(format!(
+                    "<root>/{}",
+                    rest.to_string_lossy().replace('\\', "/")
+                ))
+            })
+        };
+        let mut copy = self.clone();
+        copy.cache_repr = String::new();
+        if let Some(dir) = copy
+            .unstable_module_resolution
+            .as_mut()
+            .and_then(|m| m.root_dir.as_mut())
+            && let Some(r) = rel(dir)
+        {
+            *dir = PathBuf::from(r);
+        }
+        for targets in copy.aliases.iter_mut().flatten().map(|(_, t)| t) {
+            for target in targets.iter_mut() {
+                if let Some(r) = rel(Path::new(target.as_str())) {
+                    *target = r;
+                }
+            }
+        }
+        self.cache_repr = format!("{copy:?}");
     }
 }
 

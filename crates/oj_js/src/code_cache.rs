@@ -22,6 +22,14 @@ use deno_runtime::code_cache::CodeCacheType;
 
 pub struct FsCodeCache {
     dir: PathBuf,
+    /// Roots that file specifiers are relativized against before hashing
+    /// (longest match wins): the identity that lets two worktrees of the
+    /// same app, or two apps with the same node_modules layout, share one
+    /// entry. Each root is kept in both its spelled and canonicalized form,
+    /// because module specifiers may arrive either way (macOS /var vs
+    /// /private/var). A specifier under none of them keys absolute, which
+    /// costs sharing, never correctness.
+    rel_roots: Vec<PathBuf>,
 }
 
 /// The key callers partition persistent engine caches by: the V8 version,
@@ -45,7 +53,29 @@ fn hash64(bytes: &[u8]) -> u64 {
 
 impl FsCodeCache {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            rel_roots: Vec::new(),
+        }
+    }
+
+    /// A cache whose file-specifier keys are relative to `roots` — the
+    /// shared-store constructor. `new` keeps absolute keys for callers that
+    /// only sweep or that serve a single fixed tree.
+    pub fn with_roots(dir: PathBuf, roots: Vec<PathBuf>) -> Self {
+        let mut rel_roots: Vec<PathBuf> = Vec::with_capacity(roots.len() * 2);
+        for root in roots {
+            if let Ok(canon) = std::fs::canonicalize(&root) {
+                if canon != root {
+                    rel_roots.push(canon);
+                }
+            }
+            rel_roots.push(root);
+        }
+        // Longest prefix first, so a nested root wins over its parent.
+        rel_roots.sort_by_key(|r| std::cmp::Reverse(r.as_os_str().len()));
+        rel_roots.dedup();
+        Self { dir, rel_roots }
     }
 
     /// The engine-side hash for sources it caches itself (the ESM and
@@ -60,10 +90,7 @@ impl FsCodeCache {
     /// source hash guards staleness — and an unedited module hits across
     /// restarts. Intent params (`?url`, `?raw`) stay: their compiled forms
     /// differ.
-    fn entry_key(specifier: &Url) -> u64 {
-        if specifier.query().is_none() && specifier.fragment().is_none() {
-            return hash64(stable_specifier(specifier.as_str()).as_bytes());
-        }
+    fn entry_key(&self, specifier: &Url) -> u64 {
         let kept: Vec<&str> = specifier
             .query()
             .unwrap_or("")
@@ -73,19 +100,43 @@ impl FsCodeCache {
                 !p.is_empty() && name != "v" && name != "t"
             })
             .collect();
-        let mut base = specifier.clone();
-        base.set_fragment(None);
-        if kept.is_empty() {
-            base.set_query(None);
+        // Root-relative form for file specifiers under a known root: the
+        // worktree-independent identity (`oj:/<rel>`), so worktree A's entry
+        // is worktree B's hit. Everything else keys on the full URL.
+        let path_part = specifier
+            .to_file_path()
+            .ok()
+            .and_then(|path| {
+                self.rel_roots.iter().find_map(|root| {
+                    let rel = path.strip_prefix(root).ok()?;
+                    let rel = rel.to_string_lossy();
+                    if std::path::MAIN_SEPARATOR == '/' {
+                        Some(format!("oj:/{rel}"))
+                    } else {
+                        Some(format!(
+                            "oj:/{}",
+                            rel.replace(std::path::MAIN_SEPARATOR, "/")
+                        ))
+                    }
+                })
+            })
+            .unwrap_or_else(|| {
+                let mut base = specifier.clone();
+                base.set_fragment(None);
+                base.set_query(None);
+                base.as_str().to_string()
+            });
+        let key = if kept.is_empty() {
+            path_part
         } else {
-            base.set_query(Some(&kept.join("&")));
-        }
-        hash64(stable_specifier(base.as_str()).as_bytes())
+            format!("{path_part}?{}", kept.join("&"))
+        };
+        hash64(stable_specifier(&key).as_bytes())
     }
 
     fn entry_path(&self, specifier: &Url, suffix: &str) -> PathBuf {
         self.dir
-            .join(format!("{:016x}-{suffix}.bin", Self::entry_key(specifier)))
+            .join(format!("{:016x}-{suffix}.bin", self.entry_key(specifier)))
     }
 
     fn kind_suffix(kind: CodeCacheType) -> &'static str {
@@ -643,6 +694,228 @@ mod hygiene_tests {
             names.iter().filter(|n| n.ends_with(".bin")).count(),
             1,
             "entry kept: {names:?}"
+        );
+    }
+    // ---- shared-store keying: the pulp P0 contract ----
+
+    fn url_of(path: &str) -> Url {
+        Url::from_file_path(path).unwrap()
+    }
+
+    #[test]
+    fn same_rel_path_across_worktrees_shares_one_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("cc");
+        let a = FsCodeCache::with_roots(store.clone(), vec!["/work/wt-a".into()]);
+        let b = FsCodeCache::with_roots(store.clone(), vec!["/work/wt-b".into()]);
+
+        a.put(
+            &url_of("/work/wt-a/src/App.tsx"),
+            CodeCacheType::EsModule,
+            7,
+            b"bytecode",
+        );
+        // Worktree B, same relative module, same source: worktree A's entry.
+        assert_eq!(
+            b.get(
+                &url_of("/work/wt-b/src/App.tsx"),
+                CodeCacheType::EsModule,
+                7
+            )
+            .as_deref(),
+            Some(b"bytecode".as_slice())
+        );
+        // Different relative module: no false sharing.
+        assert_eq!(
+            b.get(
+                &url_of("/work/wt-b/src/Other.tsx"),
+                CodeCacheType::EsModule,
+                7
+            ),
+            None
+        );
+        // Same module, edited source (new hash): a miss, never stale bytes.
+        assert_eq!(
+            b.get(
+                &url_of("/work/wt-b/src/App.tsx"),
+                CodeCacheType::EsModule,
+                8
+            ),
+            None
+        );
+        // Exactly one entry file backs both worktrees.
+        let entries = std::fs::read_dir(&store)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".bin"))
+            .count();
+        assert_eq!(entries, 1);
+    }
+
+    #[test]
+    fn node_modules_share_across_different_apps() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("cc");
+        let app1 = FsCodeCache::with_roots(store.clone(), vec!["/apps/blog".into()]);
+        let app2 = FsCodeCache::with_roots(store.clone(), vec!["/apps/shop".into()]);
+        let dep = "node_modules/react/index.js";
+
+        app1.put(
+            &url_of(&format!("/apps/blog/{dep}")),
+            CodeCacheType::Script,
+            42,
+            b"react-bytecode",
+        );
+        assert_eq!(
+            app2.get(
+                &url_of(&format!("/apps/shop/{dep}")),
+                CodeCacheType::Script,
+                42
+            )
+            .as_deref(),
+            Some(b"react-bytecode".as_slice())
+        );
+    }
+
+    #[test]
+    fn out_of_root_specifiers_key_absolute_and_do_not_collide_with_rel() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("cc");
+        let cache = FsCodeCache::with_roots(store.clone(), vec!["/work/app".into()]);
+
+        // A monorepo sibling outside the root: cached, but keyed absolute.
+        let outside = url_of("/work/shared/util.ts");
+        cache.put(&outside, CodeCacheType::EsModule, 1, b"outside");
+        assert_eq!(
+            cache.get(&outside, CodeCacheType::EsModule, 1).as_deref(),
+            Some(b"outside".as_slice())
+        );
+
+        // An in-root module whose rel form spells the same string as the
+        // absolute one must not collide: "oj:/" namespaces rel keys.
+        let inside = url_of("/work/app/work/shared/util.ts");
+        assert_eq!(cache.get(&inside, CodeCacheType::EsModule, 1), None);
+    }
+
+    #[test]
+    fn volatile_params_are_stripped_from_rel_keys_and_intent_params_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::with_roots(dir.path().join("cc"), vec!["/wt".into()]);
+
+        let mut v1 = url_of("/wt/src/x.js");
+        v1.set_query(Some("v=1"));
+        let mut v2 = url_of("/wt/src/x.js");
+        v2.set_query(Some("v=2&t=999"));
+        cache.put(&v1, CodeCacheType::EsModule, 5, b"data");
+        // A cache-busted re-request of the same module overwrites in place
+        // and hits: no one-entry-per-edit growth.
+        assert_eq!(
+            cache.get(&v2, CodeCacheType::EsModule, 5).as_deref(),
+            Some(b"data".as_slice())
+        );
+
+        // Intent params compile differently and stay distinct.
+        let mut raw = url_of("/wt/src/x.js");
+        raw.set_query(Some("raw"));
+        assert_eq!(cache.get(&raw, CodeCacheType::EsModule, 5), None);
+    }
+
+    #[test]
+    fn canonicalized_specifier_matches_symlinked_root() {
+        // macOS hands out /var/folders tempdirs that canonicalize to
+        // /private/var; a root spelled one way must match specifiers spelled
+        // the other.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/m.js"), b"export {}").unwrap();
+        let canon_root = std::fs::canonicalize(&root).unwrap();
+
+        let store = dir.path().join("cc");
+        // Cache constructed with the SPELLED root; specifier uses CANONICAL.
+        let cache = FsCodeCache::with_roots(store.clone(), vec![root.clone()]);
+        let canon_url = Url::from_file_path(canon_root.join("src/m.js")).unwrap();
+        let spelled_url = Url::from_file_path(root.join("src/m.js")).unwrap();
+
+        cache.put(&canon_url, CodeCacheType::EsModule, 3, b"bc");
+        assert_eq!(
+            cache
+                .get(&spelled_url, CodeCacheType::EsModule, 3)
+                .as_deref(),
+            Some(b"bc".as_slice()),
+            "spelled and canonical forms of one module share the entry"
+        );
+    }
+
+    #[test]
+    fn cjs_analysis_entries_share_across_worktrees_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("cc");
+        let a = FsCodeCache::with_roots(store.clone(), vec!["/wt-a".into()]);
+        let b = FsCodeCache::with_roots(store, vec!["/wt-b".into()]);
+
+        let hash = a.compute_source_hash("module.exports = {}");
+        let analysis = DenoCjsAnalysis::Esm;
+        a.set_cjs_analysis(&url_of("/wt-a/node_modules/dep/index.cjs"), hash, &analysis);
+        assert!(b
+            .get_cjs_analysis(&url_of("/wt-b/node_modules/dep/index.cjs"), hash)
+            .is_some());
+        // A different source hash misses.
+        let other = NodeAnalysisCacheSourceHash(hash.0 ^ 1);
+        assert!(b
+            .get_cjs_analysis(&url_of("/wt-b/node_modules/dep/index.cjs"), other)
+            .is_none());
+    }
+
+    #[test]
+    fn plain_new_keeps_absolute_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("cc");
+        let plain = FsCodeCache::new(store.clone());
+        plain.put(
+            &url_of("/wt-a/src/x.js"),
+            CodeCacheType::EsModule,
+            9,
+            b"abs",
+        );
+        // Without rel roots, another path never aliases.
+        assert_eq!(
+            plain.get(&url_of("/wt-b/src/x.js"), CodeCacheType::EsModule, 9),
+            None
+        );
+        assert_eq!(
+            plain
+                .get(&url_of("/wt-a/src/x.js"), CodeCacheType::EsModule, 9)
+                .as_deref(),
+            Some(b"abs".as_slice())
+        );
+    }
+
+    #[test]
+    fn nested_root_wins_over_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("cc");
+        // Both the app and a nested package root are registered: the longest
+        // prefix must win so the key is stable however the caller lists them.
+        let a =
+            FsCodeCache::with_roots(store.clone(), vec!["/mono".into(), "/mono/apps/web".into()]);
+        let b = FsCodeCache::with_roots(store, vec!["/mono2/apps/web".into(), "/mono2".into()]);
+        a.put(
+            &url_of("/mono/apps/web/src/a.ts"),
+            CodeCacheType::EsModule,
+            4,
+            b"x",
+        );
+        // Rel to the NESTED root ("src/a.ts") in both caches, whatever the
+        // vec order, so the entry is shared.
+        assert_eq!(
+            b.get(
+                &url_of("/mono2/apps/web/src/a.ts"),
+                CodeCacheType::EsModule,
+                4
+            )
+            .as_deref(),
+            Some(b"x".as_slice())
         );
     }
 }

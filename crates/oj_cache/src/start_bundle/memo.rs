@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! Per-generation (size, mtime) -> digest memo, so a restore rehashes only
-//! closure files whose stat changed.
+//! Per-root (size, mtime) -> digest memo, keyed by closure id, so a restore
+//! rehashes only closure files whose stat changed.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,8 +32,8 @@ struct MemoFile {
 }
 
 /// An unparseable memo is deleted so the next write starts clean.
-pub(super) fn read_memo(entry: &Path) -> Option<Memo> {
-    let path = entry.join(MEMO_FILE);
+pub(super) fn read_memo(dir: &Path) -> Option<Memo> {
+    let path = dir.join(MEMO_FILE);
     let bytes = fs::read(&path).ok()?;
     match serde_json::from_slice(&bytes) {
         Ok(memo) => Some(memo),
@@ -44,30 +44,35 @@ pub(super) fn read_memo(entry: &Path) -> Option<Memo> {
     }
 }
 
-pub(super) fn write_memo(entry: &Path, memo: &Memo) {
+pub(super) fn write_memo(dir: &Path, memo: &Memo) {
     let Ok(bytes) = serde_json::to_vec(memo) else {
         return;
     };
-    let _ = integrity::atomic_write(&entry.join(MEMO_FILE), &bytes);
+    // A cold worktree's first restore may be the first write to its dir.
+    let _ = fs::create_dir_all(dir);
+    let _ = integrity::atomic_write(&dir.join(MEMO_FILE), &bytes);
 }
 
-pub(super) fn build_memo(files: &[PathBuf], digests: &[Option<blake3::Hash>]) -> Memo {
+pub(super) fn build_memo(
+    files: &[PathBuf],
+    ids: &[String],
+    digests: &[Option<blake3::Hash>],
+) -> Memo {
     let written_at_ns = now_ns();
     let stats = par_map(files, |p| {
         let meta = fs::metadata(p).ok()?;
         Some((meta.len(), mtime_ns(&meta)?))
     });
     let mut map = HashMap::new();
-    for ((path, digest), stat) in files.iter().zip(digests).zip(&stats) {
-        let (Some(digest), Some((size, mtime_ns)), Some(path)) = (digest, stat, path.to_str())
-        else {
+    for ((id, digest), stat) in ids.iter().zip(digests).zip(&stats) {
+        let (Some(digest), Some((size, mtime_ns))) = (digest, stat) else {
             continue;
         };
         if mtime_ns.saturating_add(MEMO_FRESHNESS_SLACK_NS) > written_at_ns {
             continue;
         }
         map.insert(
-            path.to_string(),
+            id.clone(),
             MemoFile {
                 size: *size,
                 mtime_ns: *mtime_ns,
@@ -85,11 +90,13 @@ pub(super) fn build_memo(files: &[PathBuf], digests: &[Option<blake3::Hash>]) ->
 /// plus how many had to be rehashed.
 pub(super) fn verified_digests(
     files: &[PathBuf],
+    ids: &[String],
     memo: Option<&Memo>,
 ) -> (Vec<Option<blake3::Hash>>, usize) {
     let rehashed = AtomicUsize::new(0);
-    let digests = par_map(files, |p| {
-        if let Some(digest) = memo.and_then(|m| memoized_digest(m, p)) {
+    let pairs: Vec<(&PathBuf, &String)> = files.iter().zip(ids).collect();
+    let digests = par_map(&pairs, |&(p, id)| {
+        if let Some(digest) = memo.and_then(|m| memoized_digest(m, p, id)) {
             return Some(digest);
         }
         rehashed.fetch_add(1, Ordering::Relaxed);
@@ -98,8 +105,8 @@ pub(super) fn verified_digests(
     (digests, rehashed.into_inner())
 }
 
-fn memoized_digest(memo: &Memo, p: &Path) -> Option<blake3::Hash> {
-    let known = memo.files.get(p.to_str()?)?;
+fn memoized_digest(memo: &Memo, p: &Path, id: &str) -> Option<blake3::Hash> {
+    let known = memo.files.get(id)?;
     let meta = fs::metadata(p).ok()?;
     if meta.len() != known.size || mtime_ns(&meta) != Some(known.mtime_ns) {
         return None;

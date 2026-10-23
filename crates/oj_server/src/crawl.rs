@@ -79,7 +79,7 @@ pub(crate) fn served_module_paths(state: &ServerState) -> Vec<PathBuf> {
 /// The file behind a crawled url, when it is one the eager crawl compiles.
 fn crawl_file(state: &ServerState, url: &str) -> Option<PathBuf> {
     let file = if let Some(abs) = url.strip_prefix("/@fs") {
-        let f = PathBuf::from(abs);
+        let f = crate::rewrite::fs_url_to_path(&state.workspace_root_dir, abs);
         let allowed = state
             .fs_allow
             .lock()

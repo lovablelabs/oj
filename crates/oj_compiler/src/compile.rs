@@ -89,6 +89,13 @@ pub struct CompileOptions {
     /// The config's `@stylexjs/unplugin`, run on the parsed source before any
     /// other transform (the plugin is `enforce: 'pre'`).
     pub stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
+    /// The path this module is *named* by in its own output: the jsx dev
+    /// `__source` fileName and the sourcemap `sources` entry. Callers that
+    /// cache compiled output across worktrees pass the root-relative served
+    /// path (`/src/App.tsx`) so the artifact carries no absolute path; `None`
+    /// names it by its filesystem path. Filesystem work (extension sniffing,
+    /// glob expansion) always uses the real path.
+    pub display_path: Option<PathBuf>,
 }
 
 impl CompileOptions {
@@ -104,6 +111,7 @@ impl CompileOptions {
             root: None,
             alias: Arc::from([]),
             stylex: None,
+            display_path: None,
         }
     }
 
@@ -119,6 +127,7 @@ impl CompileOptions {
             root: None,
             alias: Arc::from([]),
             stylex: None,
+            display_path: None,
         }
     }
 }
@@ -375,9 +384,13 @@ fn transform<'a>(
         });
     }
     let scoping = semantic.semantic.into_scoping();
-    let transform_ret =
-        Transformer::new(allocator, path, &transform_options(path, source_text, opts))
-            .build_with_scoping(scoping, program);
+    let display_path = opts.display_path.as_deref().unwrap_or(path);
+    let transform_ret = Transformer::new(
+        allocator,
+        display_path,
+        &transform_options(path, source_text, opts),
+    )
+    .build_with_scoping(scoping, program);
     if !transform_ret.diagnostics.is_empty() {
         return Err(CompileError::Transform {
             path: path.to_path_buf(),
@@ -501,7 +514,8 @@ fn codegen(
     // Synthesized nodes carry generated-string spans; sourcemapping them panics
     // oxc's builder on out-of-range spans.
     let codegen_options = CodegenOptions {
-        source_map_path: (opts.sourcemap && !synthesized).then(|| path.to_path_buf()),
+        source_map_path: (opts.sourcemap && !synthesized)
+            .then(|| opts.display_path.as_deref().unwrap_or(path).to_path_buf()),
         ..CodegenOptions::default()
     };
     let CodegenReturn { code, map, .. } =
@@ -736,6 +750,7 @@ import React from "react";
                 root: None,
                 alias: Arc::from([]),
                 stylex: None,
+                display_path: None,
             },
             None,
         )
@@ -827,6 +842,7 @@ import React from "react";
                 root: None,
                 alias: Arc::from([]),
                 stylex: None,
+                display_path: None,
             },
             None,
         )

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod config_extract;
 pub mod integrity;
 pub mod start_bundle;
+pub mod store;
 
 use serde::{Deserialize, Serialize};
 
@@ -120,7 +121,7 @@ pub(crate) fn hash_nul_joined(fields: &[&[u8]]) -> blake3::Hash {
     hasher.finalize()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CachedModule {
     pub code: String,
     /// Raw sourcemap JSON; encoded to a data URL at serve time (Vite's
@@ -151,6 +152,126 @@ pub struct CachedModule {
     /// its part of the stylesheet without recompiling.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stylex_rules: Vec<oj_stylex::rules::StylexRule>,
+    /// Constructive trace (pulp P2): files a plugin hook actually READ while
+    /// producing this entry, beyond the module source the key already covers.
+    /// A warm hit re-verifies every row; any mismatch (edited, deleted) is a
+    /// miss, never a stale serve. Empty for the vast majority of modules, so
+    /// verification costs nothing where plugins did nothing.
+    #[serde(default)]
+    pub trace: Vec<TraceRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TraceRow {
+    /// The file's identity: absolute in memory, `ws:`/`mono:`-relative in the
+    /// stored form (see `relocated_for_store`).
+    pub id: String,
+    /// blake3 of the file's content at build time.
+    pub digest: String,
+}
+
+impl CachedModule {
+    /// The on-disk form: absolute paths under `root` become `ws:<rel>` so the
+    /// stored artifact means the same thing in every worktree. Fields it
+    /// covers are the metadata paths oj itself consumes (`fs_allow`,
+    /// `watch_files`); anything not under the root stays absolute, which
+    /// keeps the entry correct and merely non-shareable. `rehome` is the
+    /// inverse, applied on read against the reading worktree's root.
+    pub fn relocated_for_store(&self, root: &Path, workspace: &Path) -> CachedModule {
+        let mut out = self.clone();
+        let relocate = |entry: &mut String| {
+            // Glob rows carry their pattern behind a `glob:` tag; the inner
+            // pattern relocates like a path.
+            let (prefix, inner) = match entry.strip_prefix("glob:") {
+                Some(inner) => ("glob:", inner.to_string()),
+                None => ("", entry.clone()),
+            };
+            if let Some(rel) = crate::store::rel_key(root, Path::new(&inner)) {
+                *entry = format!("{prefix}ws:{rel}");
+            } else if let Some(rel) = crate::store::rel_key(workspace, Path::new(&inner)) {
+                *entry = format!("{prefix}mono:{rel}");
+            }
+        };
+        for list in [&mut out.fs_allow, &mut out.watch_files] {
+            for entry in list.iter_mut() {
+                relocate(entry);
+            }
+        }
+        for row in &mut out.trace {
+            relocate(&mut row.id);
+        }
+        out
+    }
+
+    /// Expand `ws:<rel>` metadata paths against this worktree's root: the
+    /// read-side inverse of `relocated_for_store`.
+    pub fn rehomed(&self, root: &Path, workspace: &Path) -> CachedModule {
+        let mut out = self.clone();
+        let rehome = |entry: &mut String| {
+            let (prefix, inner) = match entry.strip_prefix("glob:") {
+                Some(inner) => ("glob:", inner.to_string()),
+                None => ("", entry.clone()),
+            };
+            if let Some(rel) = inner.strip_prefix("ws:") {
+                *entry = format!("{prefix}{}", root.join(rel).to_string_lossy());
+            } else if let Some(rel) = inner.strip_prefix("mono:") {
+                *entry = format!("{prefix}{}", workspace.join(rel).to_string_lossy());
+            }
+        };
+        for list in [&mut out.fs_allow, &mut out.watch_files] {
+            for entry in list.iter_mut() {
+                rehome(entry);
+            }
+        }
+        for row in &mut out.trace {
+            rehome(&mut row.id);
+        }
+        out
+    }
+
+    /// True when nothing in the stored form still points into a specific
+    /// worktree: the admission test for a shared store. Checks the metadata
+    /// paths and the rewritten import URLs (`/@fs/<abs>` pins an artifact to
+    /// one checkout; `importer=` hex params are covered by their own `ws:`
+    /// encoding at generation time).
+    pub fn is_relocatable(&self) -> bool {
+        let path_free = |s: &str| {
+            let s = s.strip_prefix("glob:").unwrap_or(s);
+            s.starts_with("ws:") || s.starts_with("mono:") || !Path::new(s).is_absolute()
+        };
+        // Served-URL fields: /@fs/<abs> and /@oj-pkg/<hex abs> pin an entry
+        // to one checkout (the latter hex-encodes an absolute entry path).
+        // /@fs/@mono/<rel> is the workspace-relative form: the serving
+        // worktree resolves it against its OWN workspace root, so it does
+        // not pin.
+        let pinned_url = |s: &str| {
+            (s.starts_with("/@fs/") && !s.starts_with("/@fs/@mono/")) || s.starts_with("/@oj-pkg/")
+        };
+        self.fs_allow.iter().all(|p| path_free(p))
+            && self.watch_files.iter().all(|p| path_free(p))
+            && self.trace.iter().all(|row| path_free(&row.id))
+            && !self.imports.iter().any(|i| pinned_url(i))
+            && !self
+                .require_map
+                .iter()
+                .any(|(_, target)| pinned_url(target))
+            && !code_pins(&self.code)
+            && !self.code.contains("/@oj-pkg/")
+    }
+}
+
+/// True when `code` contains a worktree-pinning `/@fs/` reference: any
+/// occurrence NOT in the workspace-relative `/@fs/@mono/` form.
+fn code_pins(code: &str) -> bool {
+    let mut rest = code;
+    while let Some(i) = rest.find("/@fs/") {
+        let after = &rest[i + "/@fs/".len()..];
+        if !after.starts_with("@mono/") {
+            return true;
+        }
+        rest = after;
+    }
+    false
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -165,7 +286,13 @@ pub struct HotMeta {
 }
 
 pub struct PersistentCache {
+    /// The per-app home: entries whose stored form still pins a worktree
+    /// (`/@fs/` imports, absolute metadata) live here and nowhere else.
     dir: PathBuf,
+    /// The shared per-user modules directory. Entries that pass
+    /// [`CachedModule::is_relocatable`] are written here, where every
+    /// worktree (and every app whose salted key matches) can hit them.
+    shared: Option<PathBuf>,
     salt: String,
 }
 
@@ -173,8 +300,18 @@ impl PersistentCache {
     pub fn new(dir: PathBuf, tool_version: &str) -> Self {
         Self {
             dir,
+            shared: None,
             salt: format!("{tool_version}:{CACHE_FORMAT}"),
         }
+    }
+
+    /// Attach the shared modules directory (pulp P1 capstone). Callers hand
+    /// entries to `put` in their stored (`ws:`-relative) form; `put` admits
+    /// them to the shared directory only when nothing in that form still
+    /// points into a specific worktree.
+    pub fn with_shared(mut self, shared: Option<PathBuf>) -> Self {
+        self.shared = shared;
+        self
     }
 
     /// Compiled modules embed inlined `import.meta.env` values, so anything
@@ -198,11 +335,28 @@ impl PersistentCache {
     }
 
     pub fn get(&self, key: &str) -> Option<CachedModule> {
-        integrity::read_json_or_remove(&self.path_for(key)?)
+        // Shared first: relocatable entries (most of a typical app) are
+        // written there. A corrupt entry is removed from whichever directory
+        // held it and reads fall through.
+        if let Some(module) = self
+            .shared
+            .as_deref()
+            .and_then(|shared| integrity::read_json_or_remove(&Self::path_in(shared, key)?))
+        {
+            return Some(module);
+        }
+        integrity::read_json_or_remove(&Self::path_in(&self.dir, key)?)
     }
 
     pub fn put(&self, key: &str, module: &CachedModule) {
-        let Some(path) = self.path_for(key) else {
+        // Admission control for the shared store: only an entry whose stored
+        // form carries no worktree-specific path may leave this app's cache.
+        // Everything else stays correct and local.
+        let dir = match &self.shared {
+            Some(shared) if module.is_relocatable() => shared,
+            _ => &self.dir,
+        };
+        let Some(path) = Self::path_in(dir, key) else {
             return;
         };
         let Some(parent) = path.parent() else { return };
@@ -219,11 +373,11 @@ impl PersistentCache {
 
     /// `<dir>/<key[..2]>/<key>.json`; `None` for anything but a lowercase
     /// blake3 hex digest, so a key can never escape the cache dir.
-    fn path_for(&self, key: &str) -> Option<PathBuf> {
+    fn path_in(dir: &Path, key: &str) -> Option<PathBuf> {
         if key.len() != 64 || !is_lower_hex(key) {
             return None;
         }
-        Some(self.dir.join(&key[..2]).join(format!("{key}.json")))
+        Some(dir.join(&key[..2]).join(format!("{key}.json")))
     }
 }
 
@@ -254,6 +408,7 @@ mod tests {
             import_bindings: Vec::new(),
             hot: None,
             stylex_rules: Vec::new(),
+            trace: Vec::new(),
         }
     }
 
@@ -297,7 +452,7 @@ mod tests {
         let cache = temp_cache("corrupt");
         let key = cache.key(b"s", "/u", "dev");
         cache.put(&key, &sample());
-        let path = cache.path_for(&key).unwrap();
+        let path = PersistentCache::path_in(&cache.dir, &key).unwrap();
         std::fs::write(&path, b"{ not json").unwrap();
         assert_eq!(cache.get(&key), None);
         assert!(!path.exists(), "corrupt entry must be removed");
@@ -308,7 +463,7 @@ mod tests {
         let cache = temp_cache("shard");
         let key = cache.key(b"s", "/u", "dev");
         cache.put(&key, &sample());
-        let path = cache.path_for(&key).unwrap();
+        let path = PersistentCache::path_in(&cache.dir, &key).unwrap();
         assert_eq!(
             path.parent()
                 .unwrap()
@@ -385,6 +540,286 @@ mod tests {
             cache.join("user-stuff").exists(),
             "unknown dirs are left alone"
         );
+    }
+
+    fn shared_pair(label: &str) -> (PersistentCache, PersistentCache, PathBuf) {
+        let base =
+            std::env::temp_dir().join(format!("oj-shared-cache-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let shared = base.join("store/modules");
+        let a = PersistentCache::new(base.join("wt-a/.oj-cache/v1"), "0.0.1-test")
+            .with_shared(Some(shared.clone()));
+        let b = PersistentCache::new(base.join("wt-b/.oj-cache/v1"), "0.0.1-test")
+            .with_shared(Some(shared.clone()));
+        (a, b, base)
+    }
+
+    #[test]
+    fn relocatable_entries_are_shared_across_worktrees() {
+        let (a, b, base) = shared_pair("hit");
+        let module = CachedModule {
+            code: "export const x = 1;".into(),
+            fs_allow: vec!["ws:node_modules/dep".into()],
+            ..Default::default()
+        };
+        let key = a.key(b"src", "/src/App.tsx", "dev");
+        a.put(&key, &module);
+        assert_eq!(
+            b.get(&key).as_ref(),
+            Some(&module),
+            "worktree B reads what worktree A compiled"
+        );
+        // It lives in the shared directory, not in either app's cache.
+        assert!(base
+            .join("store/modules")
+            .join(&key[..2])
+            .join(format!("{key}.json"))
+            .is_file());
+        assert!(!base.join("wt-a/.oj-cache/v1").join(&key[..2]).exists());
+    }
+
+    #[test]
+    fn pinned_entries_stay_in_their_own_worktree() {
+        let (a, b, base) = shared_pair("pin");
+        let pinned = CachedModule {
+            code: "import u from \"/@fs//work/wt-a/pkg/u.ts\";".into(),
+            imports: vec!["/@fs//work/wt-a/pkg/u.ts".into()],
+            ..Default::default()
+        };
+        let key = a.key(b"src", "/src/uses-sibling.ts", "dev");
+        a.put(&key, &pinned);
+        assert_eq!(
+            a.get(&key).as_ref(),
+            Some(&pinned),
+            "A still hits its own entry"
+        );
+        assert_eq!(
+            b.get(&key),
+            None,
+            "B must never receive an entry that points into A's checkout"
+        );
+        assert!(!base.join("store/modules").join(&key[..2]).exists());
+    }
+
+    #[test]
+    fn without_a_shared_dir_everything_stays_local() {
+        let cache = temp_cache("no-shared");
+        let module = sample();
+        let key = cache.key(b"src", "/src/a.ts", "dev");
+        cache.put(&key, &module);
+        assert_eq!(cache.get(&key).as_ref(), Some(&module));
+    }
+
+    #[test]
+    fn corrupt_shared_entry_is_removed_and_misses() {
+        let (a, b, base) = shared_pair("corrupt");
+        let key = a.key(b"src", "/src/App.tsx", "dev");
+        let shard = base.join("store/modules").join(&key[..2]);
+        std::fs::create_dir_all(&shard).unwrap();
+        let path = shard.join(format!("{key}.json"));
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert_eq!(b.get(&key), None);
+        assert!(!path.exists(), "corrupt shared entry deleted on read");
+        let _ = a;
+    }
+
+    #[test]
+    fn relocatability_covers_require_map_and_pkg_bundle_urls() {
+        let clean = CachedModule {
+            code: "require(\"react\");".into(),
+            require_map: vec![("react".into(), "/node_modules/react/index.js".into())],
+            ..Default::default()
+        };
+        assert!(clean.is_relocatable());
+        let fs_require = CachedModule {
+            require_map: vec![("sib".into(), "/@fs//work/wt-a/sib/index.js".into())],
+            ..clean.clone()
+        };
+        assert!(!fs_require.is_relocatable(), "/@fs require target pins");
+        let pkg_import = CachedModule {
+            imports: vec!["/@oj-pkg/6162".into()],
+            ..clean.clone()
+        };
+        assert!(
+            !pkg_import.is_relocatable(),
+            "/@oj-pkg hex-encodes an absolute path"
+        );
+    }
+
+    #[test]
+    fn cached_module_relocates_metadata_and_rehomes_in_another_worktree() {
+        let root_a = Path::new("/work/wt-a/mono/app");
+        let ws_a = Path::new("/work/wt-a/mono");
+        let root_b = Path::new("/elsewhere/wt-b/mono/app");
+        let ws_b = Path::new("/elsewhere/wt-b/mono");
+        let module = CachedModule {
+            code: "export {}".into(),
+            fs_allow: vec![
+                "/work/wt-a/mono/app/node_modules/dep".into(),
+                "/work/wt-a/mono/packages/common".into(),
+                "/outside/sibling".into(),
+            ],
+            watch_files: vec!["/work/wt-a/mono/app/tailwind.config.js".into()],
+            ..Default::default()
+        };
+        let stored = module.relocated_for_store(root_a, ws_a);
+        assert_eq!(
+            stored.fs_allow,
+            vec![
+                "ws:node_modules/dep".to_string(),
+                "mono:packages/common".to_string(),
+                "/outside/sibling".to_string()
+            ],
+            "root-relative, workspace-relative, and external forms"
+        );
+        assert_eq!(
+            stored.watch_files,
+            vec!["ws:tailwind.config.js".to_string()]
+        );
+        // Reading worktree B expands against ITS root and workspace.
+        let rehomed = stored.rehomed(root_b, ws_b);
+        assert_eq!(
+            rehomed.fs_allow,
+            vec![
+                "/elsewhere/wt-b/mono/app/node_modules/dep".to_string(),
+                "/elsewhere/wt-b/mono/packages/common".to_string(),
+                "/outside/sibling".to_string()
+            ]
+        );
+        assert_eq!(
+            rehomed.watch_files,
+            vec!["/elsewhere/wt-b/mono/app/tailwind.config.js".to_string()]
+        );
+        // The roundtrip in one worktree is the identity.
+        assert_eq!(
+            module
+                .relocated_for_store(root_a, ws_a)
+                .rehomed(root_a, ws_a),
+            module
+        );
+    }
+
+    #[test]
+    fn trace_rows_relocate_rehome_and_gate_admission() {
+        let root_a = Path::new("/wt-a/mono/app");
+        let ws_a = Path::new("/wt-a/mono");
+        let module = CachedModule {
+            code: "export {}".into(),
+            trace: vec![
+                TraceRow {
+                    id: "/wt-a/mono/app/extra.txt".into(),
+                    digest: "d1".into(),
+                },
+                TraceRow {
+                    id: "/wt-a/mono/packages/tokens.json".into(),
+                    digest: "d2".into(),
+                },
+                TraceRow {
+                    id: "/etc/hosts".into(),
+                    digest: "d3".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let stored = module.relocated_for_store(root_a, ws_a);
+        assert_eq!(stored.trace[0].id, "ws:extra.txt");
+        assert_eq!(stored.trace[1].id, "mono:packages/tokens.json");
+        assert_eq!(stored.trace[2].id, "/etc/hosts");
+        assert!(
+            !stored.is_relocatable(),
+            "a trace row outside the workspace pins the entry"
+        );
+        let in_ws = CachedModule {
+            trace: stored.trace[..2].to_vec(),
+            ..stored.clone()
+        };
+        assert!(in_ws.is_relocatable(), "ws:/mono: trace rows do not pin");
+        // B rehomes against its own roots; digests travel untouched.
+        let rehomed = in_ws.rehomed(Path::new("/b/mono/app"), Path::new("/b/mono"));
+        assert_eq!(rehomed.trace[0].id, "/b/mono/app/extra.txt");
+        assert_eq!(rehomed.trace[1].id, "/b/mono/packages/tokens.json");
+        assert_eq!(rehomed.trace[1].digest, "d2");
+    }
+
+    #[test]
+    fn glob_trace_rows_relocate_behind_their_tag() {
+        let module = CachedModule {
+            trace: vec![TraceRow {
+                id: "glob:/wt-a/mono/app/globbed/*.ts".into(),
+                digest: "d".into(),
+            }],
+            ..Default::default()
+        };
+        let stored =
+            module.relocated_for_store(Path::new("/wt-a/mono/app"), Path::new("/wt-a/mono"));
+        assert_eq!(stored.trace[0].id, "glob:ws:globbed/*.ts");
+        assert!(stored.is_relocatable());
+        let rehomed = stored.rehomed(Path::new("/b/app"), Path::new("/b"));
+        assert_eq!(rehomed.trace[0].id, "glob:/b/app/globbed/*.ts");
+        // Out-of-workspace glob pins.
+        let pinned = CachedModule {
+            trace: vec![TraceRow {
+                id: "glob:/elsewhere/*.ts".into(),
+                digest: "d".into(),
+            }],
+            ..Default::default()
+        };
+        assert!(!pinned
+            .relocated_for_store(Path::new("/wt-a/app"), Path::new("/wt-a"))
+            .is_relocatable());
+    }
+
+    #[test]
+    fn relocatability_is_judged_on_the_stored_form() {
+        let clean = CachedModule {
+            code: "import x from \"/src/a.js\";".into(),
+            imports: vec!["/src/a.js".into()],
+            fs_allow: vec!["ws:node_modules/dep".into()],
+            watch_files: vec![],
+            ..Default::default()
+        };
+        assert!(clean.is_relocatable());
+
+        let abs_allow = CachedModule {
+            fs_allow: vec!["/work/wt-a/node_modules/dep".into()],
+            ..clean.clone()
+        };
+        assert!(
+            !abs_allow.is_relocatable(),
+            "absolute fs_allow pins the entry"
+        );
+
+        let fs_import = CachedModule {
+            imports: vec!["/@fs//work/wt-a/pkg/util.ts".into()],
+            ..clean.clone()
+        };
+        assert!(!fs_import.is_relocatable(), "/@fs import pins the entry");
+
+        let fs_in_code = CachedModule {
+            code: "import u from \"/@fs//work/wt-a/pkg/util.ts\";".into(),
+            ..clean.clone()
+        };
+        assert!(!fs_in_code.is_relocatable());
+
+        // The workspace-relative /@fs/@mono form does NOT pin: the serving
+        // worktree resolves it against its own workspace root.
+        let mono_import = CachedModule {
+            code: "import r from \"/@fs/@mono/node_modules/react/index.js?v=1\";".into(),
+            imports: vec!["/@fs/@mono/node_modules/react/index.js?v=1".into()],
+            fs_allow: vec!["mono:node_modules/react".into()],
+            ..clean.clone()
+        };
+        assert!(
+            mono_import.is_relocatable(),
+            "@mono urls are worktree-independent"
+        );
+        // But one pinning occurrence among mono ones still pins.
+        let mixed = CachedModule {
+            code: "import a from \"/@fs/@mono/x.js\"; import b from \"/@fs//work/wt-a/y.js\";"
+                .into(),
+            ..clean.clone()
+        };
+        assert!(!mixed.is_relocatable(), "one absolute /@fs still pins");
     }
 
     #[test]

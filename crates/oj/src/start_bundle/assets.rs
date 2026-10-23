@@ -801,7 +801,7 @@ pub(crate) struct DevStyleState {
 
 /// Where the asset modules point.
 pub(crate) enum AssetMode {
-    /// The dev server's files: `/@oj-start/fs/<abs>`, workers on the dev
+    /// The dev server's files (`oj_server::start_dev_file_url`), workers on the dev
     /// pipeline. `css_urls` collects the linked stylesheets.
     Dev {
         css_urls: Arc<Mutex<Vec<String>>>,
@@ -819,8 +819,6 @@ pub(crate) enum AssetMode {
         worker_chain: Vec<PathBuf>,
     },
 }
-
-pub(crate) const DEV_FS_BASE: &str = "/@oj-start/fs";
 
 pub(crate) struct StartAssetsPlugin {
     root: PathBuf,
@@ -846,7 +844,7 @@ impl StartAssetsPlugin {
     async fn url_for(&self, path: &Path) -> Result<String, String> {
         match &self.mode {
             AssetMode::Dev { url_base, .. } => {
-                Ok(format!("{url_base}{DEV_FS_BASE}{}", path.display()))
+                Ok(oj_server::start_dev_file_url(url_base, &self.root, path))
             }
             AssetMode::Build { emitter, .. } => emitter.emit(path).await,
         }

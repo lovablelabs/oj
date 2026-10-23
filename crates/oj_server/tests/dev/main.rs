@@ -104,7 +104,9 @@ pub struct App {
 }
 
 /// This process's parent dir for apps; the first call removes the dirs of
-/// runs whose process is gone.
+/// runs whose process is gone. It also points the shared oj store at
+/// `<run dir>/store` before the env snapshot is taken, so no test writes into
+/// the developer's real store.
 pub fn run_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -119,8 +121,18 @@ pub fn run_dir() -> &'static Path {
                 }
             }
         }
-        tmp.join(format!("oj-dev-tests-{}", std::process::id()))
+        let dir = tmp.join(format!("oj-dev-tests-{}", std::process::id()));
+        std::env::set_var("OJ_STORE_DIR", dir.join("store"));
+        oj_env::init();
+        dir
     })
+}
+
+/// The modules dir of this run's shared store (see [`run_dir`]).
+pub fn store_modules_dir() -> PathBuf {
+    oj_cache::store::store_root()
+        .expect("the run's store")
+        .join("modules")
 }
 
 impl App {

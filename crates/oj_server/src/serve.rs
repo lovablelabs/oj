@@ -123,7 +123,9 @@ async fn serve_internal_route(
         let id_path = path.to_string();
         let importer = match uri.query() {
             Some(q) => match q.strip_prefix("importer=") {
-                Some(importer) => decode_at_id(importer),
+                Some(importer) => {
+                    crate::rewrite::decode_importer(&state.root, &decode_at_id(importer))
+                }
                 None => {
                     spec = at_id_with_query(&spec, q);
                     String::new()
@@ -245,7 +247,11 @@ async fn request_file(
     rel: &str,
 ) -> Result<PathBuf, Box<Response>> {
     if let Some(abs) = uri.path().strip_prefix("/@fs") {
-        let Some(real) = fs_gate(state, &PathBuf::from(urldecode(abs))) else {
+        // `/@mono/<rel>` is the worktree-independent form for in-workspace
+        // files: resolve it against THIS server's workspace root, so a
+        // restored artifact can never point into another checkout.
+        let candidate = crate::rewrite::fs_url_to_path(&state.workspace_root_dir, &urldecode(abs));
+        let Some(real) = fs_gate(state, &candidate) else {
             return Err(Box::new(
                 (StatusCode::FORBIDDEN, "oj: /@fs path not allow-listed").into_response(),
             ));

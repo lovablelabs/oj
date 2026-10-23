@@ -239,6 +239,7 @@ fn an_entry_is_only_ever_published_whole() {
         import_bindings: Vec::new(),
         hot: None,
         stylex_rules: Vec::new(),
+        trace: Vec::new(),
     };
     f.cache.put(&key, &written);
     assert_eq!(f.cache.get(&key), Some(written));

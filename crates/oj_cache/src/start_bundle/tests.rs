@@ -27,12 +27,33 @@ impl Fixture {
         fx
     }
 
+    /// The single-directory layout, pinned to fixture-local paths so no
+    /// test reaches the developer's real shared store.
+    fn store_with(&self, verify: VerifyMode, mode: &str) -> StartBundleStore {
+        let local = crate::cache_root(&self.root).join("start-bundle");
+        StartBundleStore::at_dirs(
+            &self.root,
+            local.clone(),
+            local,
+            KEEP_GENERATIONS,
+            "0.0.1-test",
+            verify,
+            mode,
+        )
+    }
+
     fn store(&self) -> StartBundleStore {
-        StartBundleStore::new(&self.root, "0.0.1-test", VerifyMode::Standard)
+        self.store_with(VerifyMode::Standard, "development")
     }
 
     fn full_store(&self) -> StartBundleStore {
-        StartBundleStore::new(&self.root, "0.0.1-test", VerifyMode::Full)
+        self.store_with(VerifyMode::Full, "development")
+    }
+
+    fn memo_path(&self) -> PathBuf {
+        crate::cache_root(&self.root)
+            .join("start-bundle")
+            .join(MEMO_FILE)
     }
 
     fn module(&self, name: &str) -> PathBuf {
@@ -123,7 +144,7 @@ fn set_mtime(path: &Path, t: SystemTime) {
     f.set_times(fs::FileTimes::new().set_modified(t)).unwrap();
 }
 
-fn no_globs(_: &Path) -> Vec<PathBuf> {
+fn no_globs(_: &str) -> Vec<PathBuf> {
     Vec::new()
 }
 
@@ -141,8 +162,8 @@ fn a_file_new_to_a_bundled_glob_misses_the_restore() {
     fx.store().persist(&fx.start).unwrap();
     fx.clear_start_dir();
     let src = fx.root.join("src");
-    let members = |scopes: &Path| {
-        assert!(fs::read_to_string(scopes).unwrap().contains("src/*.tsx"));
+    let members = |scopes: &str| {
+        assert!(scopes.contains("src/*.tsx"));
         let mut files: Vec<PathBuf> = fs::read_dir(&src)
             .unwrap()
             .map(|e| e.unwrap().path())
@@ -152,8 +173,11 @@ fn a_file_new_to_a_bundled_glob_misses_the_restore() {
     };
     assert!(fx.store().restore(&fx.start, members).is_ok());
     assert_eq!(
-        fs::read_to_string(fx.start.join(GLOB_SCOPES_FILE)).unwrap(),
-        r#"[{"patterns":["src/*.tsx"]}]"#,
+        serde_json::from_str::<serde_json::Value>(
+            &fs::read_to_string(fx.start.join(GLOB_SCOPES_FILE)).unwrap()
+        )
+        .unwrap(),
+        serde_json::json!([{"patterns":["src/*.tsx"]}]),
         "the restore brings the calls back for the dev gate"
     );
     fx.write_module("c.tsx", "export const c = 3;");
@@ -310,17 +334,24 @@ fn epoch_input_changes_the_key() {
         Err(Miss::NoEntryForKey(k)) => assert_ne!(k, key),
         other => panic!("expected key miss, got {other:?}"),
     }
-    let other_version =
-        StartBundleStore::new(&fx.root, "9.9.9", VerifyMode::Standard).persist(&fx.start);
+    let local = crate::cache_root(&fx.root).join("start-bundle");
+    let other_version = StartBundleStore::at_dirs(
+        &fx.root,
+        local.clone(),
+        local,
+        KEEP_GENERATIONS,
+        "9.9.9",
+        VerifyMode::Standard,
+        "development",
+    )
+    .persist(&fx.start);
     assert_ne!(other_version.unwrap().0, key, "tool version salts the key");
 }
 
 #[test]
 fn dev_mode_and_its_env_file_change_the_key() {
     let fx = Fixture::new("mode");
-    let staging = |root: &Path| {
-        StartBundleStore::for_mode(root, "0.0.1-test", VerifyMode::Standard, "staging")
-    };
+    let staging = |_: &Path| fx.store_with(VerifyMode::Standard, "staging");
     let (dev_key, _) = fx.store().persist(&fx.start).unwrap();
     let (staging_key, _) = staging(&fx.root).persist(&fx.start).unwrap();
     assert_ne!(staging_key, dev_key, "the mode salts the key");
@@ -482,6 +513,7 @@ fn persist_enforces_the_generation_window() {
             .filter(|e| {
                 e.path().is_dir()
                     && e.file_name() != "blobs"
+                    && e.file_name() != "pins"
                     && !e.file_name().to_string_lossy().starts_with(".tmp-")
             })
             .count()
@@ -572,7 +604,7 @@ fn missing_memo_falls_back_to_full_hash_and_heals() {
     let fx = Fixture::new("memo-fallback");
     fx.settle_modules();
     let (key, _) = fx.store().persist(&fx.start).unwrap();
-    let memo_path = fx.entry_dir(&key).join(MEMO_FILE);
+    let memo_path = fx.memo_path();
     fs::remove_file(&memo_path).unwrap();
     let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key);
@@ -587,9 +619,391 @@ fn corrupt_memo_is_dropped_and_falls_back() {
     let fx = Fixture::new("memo-corrupt");
     fx.settle_modules();
     let (key, _) = fx.store().persist(&fx.start).unwrap();
-    let memo_path = fx.entry_dir(&key).join(MEMO_FILE);
+    let memo_path = fx.memo_path();
     fs::write(&memo_path, b"{ not json").unwrap();
     let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.key, key);
     assert_eq!(stats.rehashed, 2);
+}
+
+#[test]
+fn identical_worktrees_compute_one_bundle_key() {
+    let a = Fixture::new("xwt-key-a");
+    let b = Fixture::new("xwt-key-b");
+    let (key_a, _) = a.store().persist(&a.start).unwrap();
+    let (key_b, _) = b.store().persist(&b.start).unwrap();
+    assert_eq!(key_a, key_b, "same content in two roots keys identically");
+}
+
+#[test]
+fn an_edit_still_changes_the_key_across_worktrees() {
+    let a = Fixture::new("xwt-edit-a");
+    let b = Fixture::new("xwt-edit-b");
+    b.write_module("a.tsx", "export const a = 999;");
+    let (key_a, _) = a.store().persist(&a.start).unwrap();
+    let (key_b, _) = b.store().persist(&b.start).unwrap();
+    assert_ne!(key_a, key_b);
+}
+
+#[test]
+fn the_stored_closure_is_root_relative() {
+    let fx = Fixture::new("rel-closure");
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    let stored: Vec<String> =
+        serde_json::from_slice(&fs::read(fx.entry_dir(&key).join(CLOSURE_FILE)).unwrap()).unwrap();
+    assert!(!stored.is_empty());
+    for entry in &stored {
+        assert!(entry.starts_with("ws:"), "stored relative, got {entry}");
+        assert!(
+            !entry.contains("oj-start-bundle-test"),
+            "no root leak: {entry}"
+        );
+    }
+}
+
+#[test]
+fn memo_survives_path_spelling_differences() {
+    // macOS temp_dir is /var/..., canonical is /private/var/...: the memo is
+    // keyed by closure id, so either spelling hits it.
+    let fx = Fixture::new("memo-spelling");
+    fx.settle_modules();
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(stats.rehashed, 0);
+}
+
+/// Generations and blobs in `shared`, pointers under each app.
+fn split_store_at(root: &Path, shared: &Path, keep: usize) -> StartBundleStore {
+    StartBundleStore::at_dirs(
+        root,
+        shared.join("start-bundle"),
+        crate::cache_root(root).join("start-bundle"),
+        keep,
+        "0.0.1-test",
+        VerifyMode::Standard,
+        "development",
+    )
+}
+
+fn shared_base(label: &str) -> PathBuf {
+    let base = std::env::temp_dir().join(format!(
+        "oj-start-bundle-shared-{}-{label}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    base
+}
+
+#[test]
+fn cold_worktree_restores_through_the_probe() {
+    let shared = shared_base("probe");
+    let a = Fixture::new("split-probe-a");
+    let b = Fixture::new("split-probe-b");
+    let (key_a, _) = split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS)
+        .persist(&a.start)
+        .unwrap();
+
+    // B is cold: no current, no memo, empty start dir.
+    b.clear_start_dir();
+    let (stats, pinned) = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS)
+        .restore(&b.start, no_globs)
+        .unwrap();
+    assert_eq!(
+        stats.key, key_a,
+        "the probe predicted A's closure and B's files agreed"
+    );
+    assert!(!pinned.is_empty());
+    assert!(b.start.join("manifest.ts").is_file());
+    let local = crate::cache_root(&b.root).join("start-bundle");
+    assert!(local.join(CURRENT_FILE).is_file(), "current is per-root");
+    assert!(local.join(MEMO_FILE).is_file(), "memo is per-root");
+    let pins = fs::read_dir(shared.join("start-bundle").join(PINS_DIR))
+        .unwrap()
+        .count();
+    assert_eq!(pins, 2, "one pin per root");
+}
+
+#[test]
+fn an_edited_cold_worktree_misses_instead_of_taking_the_wrong_bundle() {
+    let shared = shared_base("probe-miss");
+    let a = Fixture::new("split-miss-a");
+    let b = Fixture::new("split-miss-b");
+    split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS)
+        .persist(&a.start)
+        .unwrap();
+    b.write_module("a.tsx", "export const a = 999;");
+    let err = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS)
+        .restore(&b.start, no_globs)
+        .unwrap_err();
+    assert!(matches!(err, Miss::NoEntryForKey(_)), "{err:?}");
+}
+
+#[test]
+fn another_roots_pin_survives_eviction() {
+    let shared = shared_base("pin-protect");
+    let a = Fixture::new("split-pin-a");
+    let b = Fixture::new("split-pin-b");
+    let (key_a, _) = split_store_at(&a.root, &shared, 2)
+        .persist(&a.start)
+        .unwrap();
+
+    // B churns generations through a window of 2, which without pins would
+    // evict A's generation and its blobs.
+    let store_b = split_store_at(&b.root, &shared, 2);
+    for i in 0..4 {
+        b.write_module("a.tsx", &format!("export const a = {i};"));
+        b.write_build(&format!("bundle-b{i}"));
+        store_b.persist(&b.start).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    store_b.join_eviction();
+    store_b.prune(DEFAULT_PRUNE_BUDGET_BYTES);
+
+    assert!(shared.join("start-bundle").join(&key_a).is_dir());
+    let (stats, _) = split_store_at(&a.root, &shared, 2)
+        .restore(&a.start, no_globs)
+        .unwrap();
+    assert_eq!(stats.key, key_a, "A still restores, blobs included");
+}
+
+#[test]
+fn stale_pins_stop_protecting_and_are_removed() {
+    let shared = shared_base("pin-stale");
+    let a = Fixture::new("split-stale-a");
+    let b = Fixture::new("split-stale-b");
+    let store_a = split_store_at(&a.root, &shared, 2);
+    let (key_a, _) = store_a.persist(&a.start).unwrap();
+    // A's checkout is gone: its pointers with it, its pin and its
+    // generation's recency aged past the freshness window.
+    let _ = fs::remove_dir_all(&a.root);
+    let old = SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
+    let pin = shared
+        .join("start-bundle")
+        .join(PINS_DIR)
+        .join(&store_a.pin_id);
+    set_mtime(&pin, old);
+    set_mtime(
+        &shared.join("start-bundle").join(&key_a).join(TOUCH_FILE),
+        old,
+    );
+
+    let store_b = split_store_at(&b.root, &shared, 2);
+    for i in 0..4 {
+        b.write_module("a.tsx", &format!("export const a = {i};"));
+        b.write_build(&format!("bundle-b{i}"));
+        store_b.persist(&b.start).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    store_b.join_eviction();
+
+    assert!(
+        !shared.join("start-bundle").join(&key_a).is_dir(),
+        "a dead worktree's generation is evictable"
+    );
+    assert!(!pin.is_file(), "the stale pin file itself is cleaned up");
+}
+
+/// glob-scopes.json for one call over `patterns`.
+fn glob_scopes(patterns: &[String]) -> String {
+    serde_json::json!([{ "patterns": patterns, "exhaustive": true, "caseSensitive": true }])
+        .to_string()
+}
+
+// The bundle's glob patterns are absolute: a shared generation stores them
+// root-relative and hands each worktree its own, or B would expand A's
+// checkout and its dev gate would watch A's files.
+#[test]
+fn in_root_globs_rehome_onto_the_restoring_worktree() {
+    let shared = shared_base("glob-rehome");
+    let a = Fixture::new("split-glob-a");
+    let b = Fixture::new("split-glob-b");
+    let pattern = |fx: &Fixture| vec![format!("{}/src/*.tsx", fx.root.display())];
+    fs::write(a.start.join(GLOB_SCOPES_FILE), glob_scopes(&pattern(&a))).unwrap();
+    let (key_a, _) = split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS)
+        .persist(&a.start)
+        .unwrap();
+    let stored = fs::read_to_string(
+        shared
+            .join("start-bundle")
+            .join(&key_a)
+            .join(GLOB_SCOPES_FILE),
+    )
+    .unwrap();
+    assert!(
+        !stored.contains("split-glob-a"),
+        "stored without A's root: {stored}"
+    );
+
+    b.clear_start_dir();
+    let seen = std::cell::RefCell::new(String::new());
+    let (stats, _) = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS)
+        .restore(&b.start, |scopes: &str| {
+            *seen.borrow_mut() = scopes.to_string();
+            Vec::new()
+        })
+        .unwrap();
+    assert_eq!(stats.key, key_a);
+    let expect: serde_json::Value = serde_json::from_str(&glob_scopes(&pattern(&b))).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&seen.borrow()).unwrap(),
+        expect
+    );
+    let restored = fs::read_to_string(b.start.join(GLOB_SCOPES_FILE)).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&restored).unwrap(),
+        expect
+    );
+}
+
+// A glob reaching outside the root cannot be rehomed, so its generation is
+// keyed to the root that built it: it still restores there, never elsewhere.
+#[test]
+fn an_out_of_root_glob_keeps_the_generation_to_its_root() {
+    let shared = shared_base("glob-pin");
+    let a = Fixture::new("split-globpin-a");
+    let b = Fixture::new("split-globpin-b");
+    let outside = vec!["/elsewhere/shared/*.ts".to_string()];
+    fs::write(a.start.join(GLOB_SCOPES_FILE), glob_scopes(&outside)).unwrap();
+    let store_a = split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS);
+    let (key_a, _) = store_a.persist(&a.start).unwrap();
+    a.clear_start_dir();
+    assert_eq!(store_a.restore(&a.start, no_globs).unwrap().0.key, key_a);
+
+    b.clear_start_dir();
+    let err = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS)
+        .restore(&b.start, no_globs)
+        .unwrap_err();
+    assert!(
+        matches!(&err, Miss::NoEntryForKey(k) if *k != key_a),
+        "{err:?}"
+    );
+}
+
+// Inputs only the caller knows (the config the app was started with) key
+// the bundle: a generation persisted under one never restores under another.
+#[test]
+fn the_extra_salt_keys_the_bundle() {
+    let fx = Fixture::new("extra-salt");
+    let (key, _) = fx
+        .store()
+        .with_extra_salt(b"config-a")
+        .persist(&fx.start)
+        .unwrap();
+    let (again, _) = fx
+        .store()
+        .with_extra_salt(b"config-a")
+        .persist(&fx.start)
+        .unwrap();
+    assert_eq!(key, again);
+    match fx
+        .store()
+        .with_extra_salt(b"config-b")
+        .restore(&fx.start, no_globs)
+    {
+        Err(Miss::NoEntryForKey(k)) => assert_ne!(k, key),
+        other => panic!("expected key miss, got {other:?}"),
+    }
+}
+
+// A closure file reached through a symlink out of the root (a linked
+// package, a symlinked node_modules) ids by its canonical path, which sorts
+// apart from its in-root spelling, and may appear under both spellings. The
+// key a persist computes must be the one a restore recomputes from the
+// stored closure, or every boot misses.
+#[cfg(unix)]
+#[test]
+fn a_closure_reaching_out_of_the_root_restores_under_its_own_key() {
+    let fx = Fixture::new("symlinked");
+    let outside = fx
+        .root
+        .with_file_name(format!("oj-start-bundle-outside-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&outside);
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("z.tsx"), "export const z = 1;").unwrap();
+    std::os::unix::fs::symlink(outside.join("z.tsx"), fx.module("link.tsx")).unwrap();
+    let closure = vec![
+        fx.module("a.tsx").display().to_string(),
+        fx.module("b.tsx").display().to_string(),
+        fx.module("link.tsx").display().to_string(),
+        outside.join("z.tsx").display().to_string(),
+    ];
+    fs::write(
+        fx.start.join(CLOSURE_FILE),
+        serde_json::to_vec(&closure).unwrap(),
+    )
+    .unwrap();
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    fx.clear_start_dir();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(
+        stats.files, 3,
+        "one id for both spellings of the linked file"
+    );
+    let _ = fs::remove_dir_all(&outside);
+}
+
+// A restore into a build dir that never built (another worktree's
+// generation) leaves the chunk index a consumer reads and the closure the
+// dev rebundle gate consults; the chunks stay in the blob store.
+#[test]
+fn a_restore_leaves_the_build_dirs_index_and_closure() {
+    let shared = shared_base("build-view");
+    let a = Fixture::new("view-a");
+    let b = Fixture::new("view-b");
+    split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS)
+        .persist(&a.start)
+        .unwrap();
+    b.clear_start_dir();
+    let _ = fs::remove_file(b.start.join(CHUNK_INDEX_FILE));
+    let _ = fs::remove_file(b.start.join(CLOSURE_FILE));
+    let (_, pinned) = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS)
+        .restore(&b.start, no_globs)
+        .unwrap();
+    let index: serde_json::Value =
+        serde_json::from_slice(&fs::read(b.start.join(CHUNK_INDEX_FILE)).unwrap()).unwrap();
+    assert_eq!(index["entry"], "client-entry.js");
+    let names: Vec<&str> = index["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert!(names.iter().all(|n| pinned.chunk(n).is_some()), "{names:?}");
+    let closure: Vec<String> =
+        serde_json::from_slice(&fs::read(b.start.join(CLOSURE_FILE)).unwrap()).unwrap();
+    assert_eq!(closure.len(), 2);
+    assert!(
+        closure.iter().all(|f| f.contains("view-b")),
+        "the closure names this worktree's files: {closure:?}"
+    );
+    assert!(!b.start.join(CHUNKS_DIR).exists(), "no chunk bytes copied");
+}
+
+// An attachment travels with its generation: another worktree restoring
+// the generation reads it back; another key, a gone generation, or a name
+// that is not a plain file name has none.
+#[test]
+fn attachments_travel_with_their_generation() {
+    let shared = shared_base("attach");
+    let a = Fixture::new("attach-a");
+    let b = Fixture::new("attach-b");
+    let store_a = split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS);
+    let (key, _) = store_a.persist(&a.start).unwrap();
+    assert!(store_a.attach(&key, "rules.json", b"[1]"));
+    assert!(
+        !store_a.attach("0000", "rules.json", b"[1]"),
+        "no such generation"
+    );
+    assert!(!store_a.attach(&key, "../escape", b"x"), "not a plain name");
+    let store_b = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS);
+    b.clear_start_dir();
+    let (stats, _) = store_b.restore(&b.start, no_globs).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(
+        store_b.attachment(&key, "rules.json").as_deref(),
+        Some(&b"[1]"[..])
+    );
+    assert_eq!(store_b.attachment(&key, "other.json"), None);
 }

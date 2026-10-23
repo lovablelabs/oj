@@ -80,8 +80,8 @@ pub struct OptimizedDeps {
     rx: watch::Receiver<Option<Arc<DepMap>>>,
     dir: PathBuf,
     /// The session's base version: the persisted one on a warm boot, else
-    /// the prebundle hash salted with the session, so stale immutable entries
-    /// never share a URL. Empty when disabled.
+    /// the prebundle hash salted with the ledger's epoch (see [`DepLedger`]).
+    /// Empty when disabled.
     version: String,
     rerun: Option<Arc<RerunState>>,
     link_memo: LinkMemo,
@@ -100,9 +100,14 @@ type OnCommit = Box<dyn Fn(&[String]) + Send + Sync>;
 struct RerunState {
     /// Base prebundle hash, the seed of every browser version.
     hash: String,
-    /// Vite's sessionTimestamp: salts every version this optimizer mints, so
-    /// no two sessions serve one immutable URL.
-    session: String,
+    /// Salts every version this optimizer mints: the ledger's epoch, so every
+    /// worktree on one store mints the same URLs for the same bundle (and a
+    /// wiped store or cache moves them all), or a per-process timestamp,
+    /// Vite's sessionTimestamp, when there is no ledger.
+    epoch: String,
+    /// What each URL already served; `None` leaves the epoch alone to keep
+    /// URLs unique.
+    ledger: Option<DepLedger>,
     tx: watch::Sender<Option<Arc<DepMap>>>,
     /// Every serve-time-discovered dep with its provisional meta (the version
     /// its URLs were first served under); persists across reruns.
@@ -137,20 +142,21 @@ pub enum DepServe {
     Outdated,
 }
 
-/// A discovery's URL version: the base key, this optimizer's session, and the
+/// A discovery's URL version: the base key, the optimizer's epoch, and the
 /// (sorted) discovered set, so chunks that change can never be served under a
-/// URL a page already holds (Vite's getDiscoveredBrowserHash). The session is
-/// Vite's sessionTimestamp: URLs are `immutable`, and a later session (a
-/// restart, a cleared cache) may bundle other bytes under the same set.
+/// URL a page already holds (Vite's getDiscoveredBrowserHash). URLs are
+/// `immutable`, and a later session (a restart, a cleared cache) may bundle
+/// other bytes under the same set: the epoch and the [`DepLedger`] keep any
+/// URL from ever naming two bundles.
 fn browser_hash<'a>(
     hash: &str,
-    session: &str,
+    epoch: &str,
     discovered: impl Iterator<Item = &'a String>,
 ) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(hash.as_bytes());
     hasher.update(b"\0");
-    hasher.update(session.as_bytes());
+    hasher.update(epoch.as_bytes());
     for dep in discovered {
         hasher.update(b"\0");
         hasher.update(dep.as_bytes());
@@ -164,6 +170,129 @@ fn session_timestamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos().to_string())
         .unwrap_or_default()
+}
+
+/// Which bytes every dep URL has served, so versions can be content-derived
+/// instead of per session. Vite salts every version with a per-process
+/// sessionTimestamp because its URLs are cached `immutable`: a restart that
+/// rebundled other bytes under an old URL would leave browsers on the old
+/// ones. That also makes every worktree mint its own URLs, and the dep
+/// version salts every persistent module-cache key, so no two worktrees
+/// could ever share a compiled module. The ledger gives the same guarantee
+/// without the per-process salt: versions come from the inputs and an epoch
+/// that lives as long as the ledger, each URL is recorded write-once with
+/// its file's content hash, and a commit whose bytes disagree with a
+/// recorded URL re-mints a version from the bytes (and reloads, as a
+/// contradicted plan does). Wiping the ledger's directory starts a new
+/// epoch, which moves every URL.
+struct DepLedger {
+    dir: PathBuf,
+    epoch: String,
+}
+
+impl DepLedger {
+    /// The ledger under `dir`: in the shared oj store when there is one, so
+    /// worktrees share URLs, else in the app's cache (outside the deps dir,
+    /// so clearing pre-bundles keeps it). `None` when it cannot be written.
+    fn open(dir: PathBuf) -> Option<Self> {
+        std::fs::create_dir_all(&dir).ok()?;
+        let fresh = format!("{}-{}", session_timestamp(), std::process::id());
+        if !write_once(&dir.join("epoch"), fresh.as_bytes()) {
+            return None;
+        }
+        let epoch = std::fs::read_to_string(dir.join("epoch")).ok()?;
+        let epoch = epoch.trim().to_string();
+        (!epoch.is_empty()).then_some(Self { dir, epoch })
+    }
+
+    fn for_app(root: &Path) -> Option<Self> {
+        Self::open(
+            oj_cache::store::store_root()
+                .map(|store| store.join("dep-ledger"))
+                .unwrap_or_else(|| oj_cache::cache_root(root).join("dep-ledger")),
+        )
+    }
+
+    /// Records that `/@oj-deps/<file>?v=<version>` serves bytes hashing to
+    /// `file_hash`, or checks that it already did.
+    fn agrees(&self, version: &str, file: &str, file_hash: &str) -> bool {
+        let dir = self.dir.join(version);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return false;
+        }
+        let path = dir.join(&blake3::hash(file.as_bytes()).to_hex()[..16]);
+        write_once(&path, file_hash.as_bytes())
+            && std::fs::read(&path).is_ok_and(|b| b == file_hash.as_bytes())
+    }
+}
+
+/// Creates `path` holding `bytes` unless it exists: written aside and hard
+/// linked into place, so a reader never sees a partial file and the first
+/// writer wins. False only when neither this write nor an earlier one landed.
+fn write_once(path: &Path, bytes: &[u8]) -> bool {
+    if path.is_file() {
+        return true;
+    }
+    let tmp = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        session_timestamp()
+    ));
+    let linked = std::fs::write(&tmp, bytes).is_ok()
+        && match std::fs::hard_link(&tmp, path) {
+            Ok(()) => true,
+            Err(e) => e.kind() == std::io::ErrorKind::AlreadyExists,
+        };
+    let _ = std::fs::remove_file(&tmp);
+    linked
+}
+
+/// Whether the ledger agrees with every bundled entry of `map` under the
+/// version its URL carries (provisional entries have no bytes yet).
+fn ledger_agrees(rerun: &RerunState, map: &DepMap) -> bool {
+    let Some(ledger) = &rerun.ledger else {
+        return true;
+    };
+    map.values()
+        .filter(|meta| !meta.file_hash.is_empty())
+        .all(|meta| {
+            let version = url_version(&meta.url);
+            version.is_empty() || ledger.agrees(version, &meta.file, &meta.file_hash)
+        })
+}
+
+/// Moves every URL of `map` to a version derived from its bytes that the
+/// ledger agrees with: two worktrees that hit the same disagreement re-mint
+/// the same version. A ledger that never agrees (unwritable) falls back to a
+/// per-process version, unique by construction.
+fn remint(rerun: &RerunState, base: &str, map: &mut DepMap) -> String {
+    let bytes: std::collections::BTreeSet<String> = map
+        .iter()
+        .map(|(dep, meta)| format!("{dep}\0{}", meta.file_hash))
+        .collect();
+    let restamp = |map: &mut DepMap, version: &str| {
+        for meta in map.values_mut() {
+            meta.url = dep_url(&meta.file, version);
+        }
+    };
+    for attempt in 0..4 {
+        let version = browser_hash(
+            &format!("{base}+bytes{attempt}"),
+            &rerun.epoch,
+            bytes.iter(),
+        );
+        restamp(map, &version);
+        if ledger_agrees(rerun, map) {
+            return version;
+        }
+    }
+    let version = browser_hash(
+        &format!("{base}+session"),
+        &session_timestamp(),
+        bytes.iter(),
+    );
+    restamp(map, &version);
+    version
 }
 
 /// Vite's `moduleListContains`: an exclude entry names the dep or a parent path.
@@ -452,7 +581,7 @@ impl OptimizedDeps {
             );
             // Hashing the set it joins (sorted, so registration order is
             // moot): Vite's getDiscoveredBrowserHash over known + missing.
-            let version = browser_hash(&r.hash, &r.session, discovered.keys());
+            let version = browser_hash(&r.hash, &r.epoch, discovered.keys());
             let meta = DepMeta {
                 url: dep_url(&file, &version),
                 file,
@@ -540,7 +669,10 @@ impl OptimizedDeps {
     ) -> Self {
         let dir = oj_cache::cache_root(root).join("deps");
         let hash = lockfile_hash(root, version, &input);
-        let session = session_timestamp();
+        let ledger = DepLedger::for_app(root);
+        let epoch = ledger
+            .as_ref()
+            .map_or_else(session_timestamp, |l| l.epoch.clone());
         let (tx, rx) = watch::channel(None);
 
         // optimizeDeps.force: ignore any cached pre-bundle and always rebuild.
@@ -557,18 +689,20 @@ impl OptimizedDeps {
                 (seeded, m.browser_hash.clone())
             }
             // Vite's initDepsOptimizerMetadata: a cold session's base
-            // version is salted too, since a source edit can change the dep
-            // set (and the bytes) without changing the hash.
+            // version is salted too (with the epoch), since a source edit can
+            // change the dep set (and the bytes) without changing the hash;
+            // the commit's ledger check catches bytes that moved.
             None => (
                 std::collections::BTreeMap::new(),
-                browser_hash(&hash, &session, std::iter::empty()),
+                browser_hash(&hash, &epoch, std::iter::empty()),
             ),
         };
         let base_version = initial_version.clone();
         let (wake, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: hash.clone(),
-            session,
+            epoch,
+            ledger,
             tx,
             discovered: std::sync::Mutex::new(initial_discovered),
             pending: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -693,8 +827,9 @@ impl OptimizedDeps {
 /// URL moves to a new version, so no compile key (persistent cache included)
 /// still matches a module compiled against the plan, and the page reloads,
 /// Vite's "optimized dependencies changed". Vite's committed browserHash is
-/// unsalted; this one keeps the session salt, so a later session's
-/// contradicted plan never lands on this URL either. `persist` gets the bundled entries and
+/// unsalted; this one keeps the epoch salt, so a later epoch's contradicted
+/// plan never lands on this URL either. Bytes the ledger has seen under
+/// another URL's version re-mint and reload the same way. `persist` gets the bundled entries and
 /// their version before the commit releases any held request, as Vite's
 /// commit writes the metadata before resolving the processing promise.
 fn commit_initial(
@@ -703,11 +838,11 @@ fn commit_initial(
     planned: Option<DepMap>,
     persist: impl FnOnce(&DepMap, &str),
 ) {
-    let changed = planned.as_ref().is_some_and(|plan| !same_plan(plan, &map));
-    let version = if changed {
+    let mut changed = planned.as_ref().is_some_and(|plan| !same_plan(plan, &map));
+    let mut version = if changed {
         let version = browser_hash(
             &format!("{}+committed", rerun.hash),
-            &rerun.session,
+            &rerun.epoch,
             map.keys(),
         );
         for meta in map.values_mut() {
@@ -727,6 +862,11 @@ fn commit_initial(
         }
         rerun.browser_version.read().unwrap().clone()
     };
+    if !ledger_agrees(rerun, &map) {
+        version = remint(rerun, &format!("{}+committed", rerun.hash), &mut map);
+        *rerun.browser_version.write().unwrap() = version.clone();
+        changed = true;
+    }
     persist(&map, &version);
     {
         let mut pending = rerun.pending.lock().unwrap();
@@ -832,7 +972,7 @@ async fn rerun_once(
         return;
     }
     let names: std::collections::BTreeSet<String> = provisional.keys().cloned().collect();
-    let candidate = browser_hash(hash, &rerun.session, names.iter());
+    let candidate = browser_hash(hash, &rerun.epoch, names.iter());
     let Some(new_map) = run_optimizer(root, dir, input, host, &names, &candidate, true, None).await
     else {
         // Park the batch as failed (importers recompile onto the per-file
@@ -921,7 +1061,7 @@ async fn rerun_once(
             p.remove(dep);
         }
     }
-    let final_map: DepMap = if needs_reload {
+    let mut final_map: DepMap = if needs_reload {
         // Every URL moves to the batch version, this batch's own deps
         // included (parse stamped it already): exactly Vite's commitProcessing
         // on needsReload, where each entry carries the new browserHash, an
@@ -943,11 +1083,17 @@ async fn rerun_once(
             })
             .collect()
     };
-    let bv = if needs_reload {
+    let mut bv = if needs_reload {
         candidate.clone()
     } else {
         rerun.browser_version.read().unwrap().clone()
     };
+    // Bytes some earlier session served under one of these URLs: every URL
+    // moves to a version of these bytes, and the page reloads.
+    if !ledger_agrees(rerun, &final_map) {
+        bv = remint(rerun, hash, &mut final_map);
+        needs_reload = true;
+    }
     // The manifest holds only bundled entries (a provisional one points at a
     // file that does not exist yet, which would void the warm boot); the
     // committed map additionally carries every still-pending provisional
@@ -1097,7 +1243,7 @@ const LOCKFILES: &[(&str, Option<&str>)] = &[
 
 /// Fold every lockfile in the nearest ancestor directory that has one (Vite's
 /// lookupFile), plus its patch-package dir mtime, into `hasher`.
-fn hash_lockfiles(root: &Path, hasher: &mut blake3::Hasher) {
+pub(crate) fn hash_lockfiles(root: &Path, hasher: &mut blake3::Hasher) {
     let mut dir = Some(root);
     while let Some(d) = dir {
         let mut found = false;
@@ -1166,11 +1312,16 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     );
     hasher.update(b"\0bo=");
     hasher.update(input.build_out_dir.as_bytes());
+    let workspace = crate::rewrite::workspace_of(root);
     for (find, replacement) in &input.alias {
         hasher.update(b"\0a");
         hasher.update(find.as_bytes());
         hasher.update(b"=");
-        hasher.update(replacement.as_bytes());
+        // Alias targets are absolute paths inside the app or, in a monorepo,
+        // a workspace sibling: hash the worktree-independent spelling so the
+        // same vite.config in two worktrees yields one prebundle key.
+        hasher
+            .update(oj_cache::store::salt_key(root, &workspace, Path::new(replacement)).as_bytes());
     }
     hasher.update(
         format!(
@@ -1698,7 +1849,8 @@ mod tests {
         let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: "testhash".into(),
-            session: session_timestamp(),
+            epoch: session_timestamp(),
+            ledger: None,
             tx,
             discovered: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             pending: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -1783,10 +1935,11 @@ mod tests {
     }
 
     #[test]
-    fn a_later_session_never_reuses_a_discovered_url() {
+    fn without_a_ledger_a_later_session_never_reuses_a_discovered_url() {
         // Same hash, same discovered set, a new optimizer (a restart, or a
         // boot after the cache was cleared): its bundle may differ, and the
-        // first session's URL is cached immutable, so the URL must differ.
+        // first session's URL is cached immutable. With no ledger to vouch
+        // for the bytes, the URL must differ.
         let first = test_deps(true, vec![]);
         let url = first
             .register_missing("date-fns/locale", false)
@@ -1875,7 +2028,7 @@ mod tests {
             two,
             browser_hash("hash", "s1", set(&["dayjs", "lodash"]).iter())
         );
-        // Vite's sessionTimestamp: another session never mints the same URL.
+        // Another epoch never mints the same URL.
         assert_ne!(base, browser_hash("hash", "s2", set(&[]).iter()));
         assert_ne!(
             two,
@@ -2162,6 +2315,114 @@ mod tests {
         }
     }
 
+    /// A test optimizer whose ledger (and so epoch) lives in `dir`.
+    fn ledgered_deps(dir: &Path) -> OptimizedDeps {
+        let mut deps = test_deps(true, vec![]);
+        let r = Arc::get_mut(deps.rerun.as_mut().unwrap()).unwrap();
+        r.ledger = DepLedger::open(dir.to_path_buf());
+        r.epoch = r.ledger.as_ref().unwrap().epoch.clone();
+        deps
+    }
+
+    #[test]
+    fn the_ledger_holds_each_url_to_its_first_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = DepLedger::open(dir.path().join("l")).unwrap();
+        assert!(
+            ledger.agrees("v1", "react.mjs", "aaaa"),
+            "first sight records"
+        );
+        assert!(ledger.agrees("v1", "react.mjs", "aaaa"), "same bytes agree");
+        assert!(
+            !ledger.agrees("v1", "react.mjs", "bbbb"),
+            "other bytes do not"
+        );
+        assert!(ledger.agrees("v2", "react.mjs", "bbbb"), "per version");
+        assert!(ledger.agrees("v1", "zod.mjs", "bbbb"), "per file");
+        let again = DepLedger::open(dir.path().join("l")).unwrap();
+        assert_eq!(
+            again.epoch, ledger.epoch,
+            "the epoch lives as long as the ledger"
+        );
+        assert!(!again.agrees("v1", "react.mjs", "bbbb"));
+        let wiped = DepLedger::open(dir.path().join("other")).unwrap();
+        assert_ne!(wiped.epoch, ledger.epoch, "a new ledger is a new epoch");
+    }
+
+    // Two sessions on one ledger (a restart, another worktree on the same
+    // store) bundling the same bytes mint the same URLs: nothing reloads, and
+    // a compile keyed on the version is shared.
+    #[test]
+    fn same_bytes_keep_their_url_across_sessions_on_one_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions: Vec<String> = (0..2)
+            .map(|_| {
+                let deps = ledgered_deps(dir.path());
+                let r = deps.rerun.as_ref().unwrap();
+                let v = browser_hash(&r.hash, &r.epoch, std::iter::empty());
+                *r.browser_version.write().unwrap() = v.clone();
+                let mut plan: DepMap = [("react".to_string(), meta("react.mjs", true))].into();
+                plan.get_mut("react").unwrap().url = dep_url("react.mjs", &v);
+                let mut bundled = plan.clone();
+                bundled.get_mut("react").unwrap().file_hash = "abc".into();
+                commit_initial(r, bundled, Some(plan), |_, _| {});
+                assert_eq!(deps.browser_version(), v, "agreeing bytes keep the URL");
+                deps.meta_now("react").unwrap().url
+            })
+            .collect();
+        assert_eq!(versions[0], versions[1]);
+    }
+
+    // Vite's sessionTimestamp guarantee, kept by the ledger: other bytes
+    // under a URL an earlier session served (a cleared pre-bundle over an
+    // edited node_modules) move every URL to a version of the new bytes, and
+    // the page reloads.
+    #[test]
+    fn other_bytes_under_a_served_url_remint_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let commit = |file_hash: &str| {
+            let deps = ledgered_deps(dir.path());
+            let r = deps.rerun.as_ref().unwrap();
+            let reloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = Arc::clone(&reloads);
+            let _ = r.on_commit.set(Box::new(move |_| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+            let v = browser_hash(&r.hash, &r.epoch, std::iter::empty());
+            *r.browser_version.write().unwrap() = v.clone();
+            let mut plan: DepMap = [("react".to_string(), meta("react.mjs", true))].into();
+            plan.get_mut("react").unwrap().url = dep_url("react.mjs", &v);
+            let mut bundled = plan.clone();
+            bundled.get_mut("react").unwrap().file_hash = file_hash.into();
+            let mut persisted = String::new();
+            commit_initial(r, bundled, Some(plan), |_, version| {
+                persisted = version.to_string();
+            });
+            let url = deps.meta_now("react").unwrap().url;
+            (
+                v,
+                url,
+                persisted,
+                reloads.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        };
+        let (v, first, _, first_reloads) = commit("aaaa");
+        assert_eq!(first, dep_url("react.mjs", &v));
+        assert_eq!(first_reloads, 0);
+        let (_, second, persisted, reloads) = commit("bbbb");
+        assert_ne!(second, first, "a served URL never names other bytes");
+        assert_eq!(
+            second,
+            dep_url("react.mjs", &persisted),
+            "the manifest gets the new version"
+        );
+        assert_eq!(reloads, 1, "modules compiled against the old URL reload");
+        // The re-minted version is the new bytes': a third session with them
+        // lands on it without another re-mint.
+        let (_, third, _, _) = commit("bbbb");
+        assert_eq!(third, second);
+    }
+
     // The bundle confirming the plan commits quietly: the planned deps stop
     // pending, a dep a compile discovered meanwhile keeps its provisional
     // entry for its rerun, and nothing reloads.
@@ -2376,7 +2637,8 @@ mod tests {
         let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: "testhash".into(),
-            session: session_timestamp(),
+            epoch: session_timestamp(),
+            ledger: None,
             tx,
             discovered: Default::default(),
             pending: Default::default(),

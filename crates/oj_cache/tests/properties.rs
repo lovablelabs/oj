@@ -37,6 +37,7 @@ fn cached_module() -> impl Strategy<Value = CachedModule> {
                     .collect(),
                 hot: None,
                 stylex_rules: Vec::new(),
+                trace: Vec::new(),
             },
         )
 }

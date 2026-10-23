@@ -68,6 +68,9 @@ pub(crate) async fn ensure_module_as(
         None => load_source(state, file, url, is_dep).await?,
     };
     record_glob_importer(state, file, url, &source);
+    // Captured before transforms consume `source`: glob rows key the module
+    // cache entry on what the patterns match today.
+    let glob_rows = glob_trace_rows(state, file, &source);
     if ext == Some("css") && is_tailwind_css(&source) {
         let (css, imported) = compile_tailwind(state, file, url, &source).await?;
         // Vite's dev css rewrites a sheet's urls to served paths, so the
@@ -87,6 +90,7 @@ pub(crate) async fn ensure_module_as(
     let CompileKey {
         key,
         class_field_semantics,
+        hmr_stamped,
     } = compile_key(state, file, url, &source, is_server, stamp);
 
     if let Some(module) = memory_hit(state, url, &key) {
@@ -102,11 +106,25 @@ pub(crate) async fn ensure_module_as(
     if let Some(module) = memory_hit(state, url, &key) {
         return Ok((key, module));
     }
-    if let Some(module) = persistent_hit(state, &key, is_dep) {
-        memory_put(state, url, &key, &module);
-        register_in_graph(state, url, &module);
-        replay_module_parsed(state, file, &key, is_dep, is_server).await;
-        return Ok((key, module));
+    let mut verify_against: Option<Arc<CachedModule>> = None;
+    let hit = match persistent_hit(state, &key, is_dep) {
+        Some(module) => Some(module),
+        None => remote_hit(state, &key, is_dep).await,
+    };
+    if let Some(module) = hit {
+        if verify_hit_sampled() {
+            // Trust-but-verify (pulp P2): recompile this hit anyway and
+            // compare below. A divergence means a plugin produced different
+            // output from identical keyed-and-traced inputs — impurity the
+            // key cannot see — and names itself in the log instead of
+            // poisoning caches silently.
+            verify_against = Some(Arc::clone(&module));
+        } else {
+            memory_put(state, url, &key, &module);
+            register_in_graph(state, url, &module);
+            replay_module_parsed(state, file, &key, is_dep, is_server).await;
+            return Ok((key, module));
+        }
     }
 
     if is_server {
@@ -119,7 +137,7 @@ pub(crate) async fn ensure_module_as(
             module.stylex_rules = pre.rules;
         }
         let module = Arc::new(module);
-        store_module(state, url, &key, &module);
+        store_module(state, url, &key, &module, hmr_stamped);
         return Ok((key, module));
     }
 
@@ -201,7 +219,11 @@ pub(crate) async fn ensure_module_as(
         is_svelte,
         class_field_semantics,
         css,
-        plugin_maps: transformed.maps,
+        plugin_maps: transformed
+            .maps
+            .into_iter()
+            .map(|map| served_map_sources(&state.root, map))
+            .collect(),
         dep_map,
     };
     let compiled = tokio::task::spawn_blocking(move || job.run()).await;
@@ -212,6 +234,24 @@ pub(crate) async fn ensure_module_as(
             if let Some(rules) = stylex_rules {
                 module.stylex_rules = rules;
             }
+            // Constructive trace: digest every side file the plugin read, so
+            // a warm hit can prove those inputs unchanged. The module's own
+            // source is already in the key; host scratch is oj's machinery.
+            let own = file.to_string_lossy();
+            let scratch = oj_cache::cache_base(&state.root);
+            module.trace = transformed
+                .read_files
+                .iter()
+                .filter(|p| p.as_str() != own && !Path::new(p.as_str()).starts_with(&scratch))
+                .filter_map(|p| {
+                    let bytes = std::fs::read(p).ok()?;
+                    Some(oj_cache::TraceRow {
+                        id: p.clone(),
+                        digest: blake3::hash(&bytes).to_hex().to_string(),
+                    })
+                })
+                .collect();
+            module.trace.extend(glob_rows.clone());
             Arc::new(module)
         }
         Ok(Err(err)) => {
@@ -230,7 +270,15 @@ pub(crate) async fn ensure_module_as(
         }
         Err(join_err) => return Err(format!("compiler task failed: {join_err}")),
     };
-    store_module(state, url, &key, &module);
+    if let Some(prev) = &verify_against {
+        if prev.code != module.code {
+            eprintln!(
+                "oj: cache verify: {url} recompiled DIFFERENTLY from identical inputs; \
+a plugin is impure (reads env/network/time the key cannot see). Serving the fresh output."
+            );
+        }
+    }
+    store_module(state, url, &key, &module, hmr_stamped);
     state
         .resolve_failed
         .lock()
@@ -257,6 +305,7 @@ fn code_module(code: String) -> CachedModule {
         watch_files: Vec::new(),
         import_bindings: Vec::new(),
         stylex_rules: Vec::new(),
+        trace: Vec::new(),
     }
 }
 
@@ -280,8 +329,32 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
     Some(module)
 }
 
-fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    if state.persistent_cache {
+/// OJ_VERIFY_HITS: probability (0..=1, or "1") that a persistent hit is
+/// recompiled and compared anyway. Off (0) by default; CI can run at 1.
+fn verify_hit_sampled() -> bool {
+    let p = oj_env::get().knobs.verify_hits;
+    if p <= 0.0 {
+        return false;
+    }
+    if p >= 1.0 {
+        return true;
+    }
+    // Cheap process-local sampling; cryptographic quality is irrelevant here.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    (now % 10_000) as f64 / 10_000.0 < p
+}
+
+fn store_module(
+    state: &ServerState,
+    url: &str,
+    key: &str,
+    module: &Arc<CachedModule>,
+    hmr_stamped: bool,
+) {
+    if state.persistent_cache && !hmr_stamped {
         let _ = state
             .cache_writes
             .try_send((key.to_string(), Arc::clone(module)));
@@ -371,6 +444,103 @@ async fn plugin_load(
         .map_err(|e| format!("plugin load error for {url}:\n{e}"))
 }
 
+/// A worktree-independent digest of what an `import.meta.glob` pattern
+/// matches RIGHT NOW: the sorted workspace-spelled matches, hashed. A file
+/// created or deleted under the pattern changes the digest, so a cold restart
+/// re-expands instead of serving the stale expansion (HMR covers the live
+/// case; this covers the cache).
+fn glob_listing_digest(root: &Path, workspace: &Path, abs_pattern: &str) -> String {
+    let opts = glob::MatchOptions {
+        require_literal_separator: true,
+        ..Default::default()
+    };
+    let mut names: Vec<String> = glob::glob_with(abs_pattern, opts)
+        .map(|paths| {
+            paths
+                .flatten()
+                .map(|p| oj_cache::store::salt_key(root, workspace, &p))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    let mut hasher = blake3::Hasher::new();
+    for n in &names {
+        hasher.update(n.as_bytes());
+        hasher.update(&[0]);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// Trace rows for every glob pattern a module expands, appended at compile
+/// time and re-verified on warm hits. One row per affirmative pattern of each
+/// call: a negation only shrinks what a call matches, so the un-negated
+/// listing changes whenever the call's does (and sometimes when it does not,
+/// which costs a recompile, never a stale serve).
+fn glob_trace_rows(state: &ServerState, file: &Path, source: &str) -> Vec<oj_cache::TraceRow> {
+    if !source.contains("import.meta.glob") {
+        return Vec::new();
+    }
+    let workspace = &state.workspace_root_dir;
+    glob_trace_patterns(source, file, &state.root, &state.glob_alias)
+        .into_iter()
+        .map(|pattern| oj_cache::TraceRow {
+            digest: glob_listing_digest(&state.root, workspace, &pattern),
+            id: format!("glob:{pattern}"),
+        })
+        .collect()
+}
+
+/// A map an earlier transform returned (a plugin's, StyleX's), its in-root
+/// `sources` named by served path as the compile names the module itself
+/// (`/src/App.tsx`): the composed map then carries no checkout's path, so a
+/// cached entry means the same in every worktree. `sourcesContent` is
+/// embedded, so the name is a label; out-of-root sources stay as written.
+pub(crate) fn served_map_sources(root: &Path, map: String) -> String {
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&map) else {
+        return map;
+    };
+    let canonical = std::fs::canonicalize(root).ok();
+    let Some(sources) = json.get_mut("sources").and_then(|s| s.as_array_mut()) else {
+        return map;
+    };
+    let mut changed = false;
+    for source in sources.iter_mut() {
+        let Some(path) = source.as_str() else {
+            continue;
+        };
+        let rel = std::iter::once(root)
+            .chain(canonical.as_deref())
+            .find_map(|r| oj_cache::store::rel_key(r, Path::new(path)));
+        if let Some(rel) = rel.filter(|r| !r.is_empty()) {
+            *source = serde_json::Value::String(format!("/{rel}"));
+            changed = true;
+        }
+    }
+    if changed {
+        json.to_string()
+    } else {
+        map
+    }
+}
+
+/// The affirmative patterns a module's globs expand, resolved as the compile
+/// resolves them (root-led and aliased ones included), so a trace row lists
+/// what the expansion actually read.
+pub(crate) fn glob_trace_patterns(
+    source: &str,
+    file: &Path,
+    root: &Path,
+    alias: &[(String, String)],
+) -> Vec<String> {
+    oj_compiler::glob::glob_patterns_aliased(source, file, Some(root), &|id| {
+        oj_compiler::glob::string_alias(alias, id)
+    })
+    .into_iter()
+    .flat_map(|call| call.patterns)
+    .filter(|pattern| !pattern.starts_with('!'))
+    .collect()
+}
+
 fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &str) {
     if !source.contains("import.meta.glob") {
         return;
@@ -392,6 +562,9 @@ fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &st
 }
 
 struct CompileKey {
+    /// HMR-stamped keys (mode@timestamp) are session-local: they can never
+    /// hit after a restart, so they are not persisted.
+    hmr_stamped: bool,
     key: String,
     /// tsconfig class-field semantics, decided ONCE from the real path: the
     /// compile may run on a synthetic one (`x.svg` -> `x.svg.tsx`).
@@ -441,7 +614,13 @@ fn compile_key(
         mode_key.push_str("+stylex");
         mode_key.push_str(stylex.fingerprint());
     }
-    let key = state.cache.key(source.as_bytes(), url, &mode_key);
+    let key = state.cache.key(
+        source.as_bytes(),
+        // /@fs URLs under the workspace key by their relative spelling, so a
+        // hoisted dep's path-free entry is one entry for every worktree.
+        &crate::rewrite::key_url(&state.workspace_root_dir, url),
+        &mode_key,
+    );
     if let Some((mtime, size)) = stamp {
         state
             .mtime_keys
@@ -452,6 +631,7 @@ fn compile_key(
     CompileKey {
         key,
         class_field_semantics,
+        hmr_stamped: imports_stamp > 0,
     }
 }
 
@@ -464,17 +644,51 @@ fn persistent_hit(state: &ServerState, key: &str, is_dep: bool) -> Option<Arc<Ca
         state
             .persistent_cache
             .then(|| state.cache.get(key))
-            .flatten()?,
+            .flatten()?
+            // Expand ws:/mono: metadata against THIS worktree's roots.
+            .rehomed(&state.root, &state.workspace_root_dir),
     );
     let needs_retransform = state.plugins_have_transform
         && !is_dep
         && imports_a_plugin_virtual(&module.imports, &state.root, &state.dir_cache);
-    (!needs_retransform).then_some(module)
+    // Constructive-trace verification: every side input recorded at build
+    // time must still digest the same, or the entry is a miss. File rows
+    // re-hash the file (unreadable counts as changed); glob rows re-expand
+    // the pattern against THIS worktree. Empty for plugin-less, glob-less
+    // modules, which cost nothing.
+    let trace_stale = module
+        .trace
+        .iter()
+        .any(|row| match row.id.strip_prefix("glob:") {
+            Some(pattern) => {
+                glob_listing_digest(&state.root, &state.workspace_root_dir, pattern) != row.digest
+            }
+            None => std::fs::read(&row.id)
+                .map(|bytes| blake3::hash(&bytes).to_hex().to_string() != row.digest)
+                .unwrap_or(true),
+        });
+    (!needs_retransform && !trace_stale).then_some(module)
+}
+
+/// Remote read-through (pulp P3): on a local shared-store miss, ask the
+/// substituter for this exact key. The fetched entry lands in the local
+/// shared store (so the next worktree on this machine never asks again) and
+/// then passes the SAME admission path as a local hit: rehome, the
+/// plugin-virtual check, and trace verification against this worktree.
+async fn remote_hit(state: &ServerState, key: &str, is_dep: bool) -> Option<Arc<CachedModule>> {
+    if !state.persistent_cache {
+        return None;
+    }
+    let remote = state.remote_store.as_ref()?;
+    let stored = remote.fetch_module(key).await?;
+    state.cache.put(key, &stored);
+    persistent_hit(state, key, is_dep)
 }
 
 pub(crate) struct Transformed {
     pub(crate) code: String,
     watch_files: Vec<String>,
+    read_files: Vec<String>,
     maps: Vec<String>,
 }
 
@@ -486,6 +700,7 @@ pub(crate) async fn plugin_transform(
     is_dep: bool,
 ) -> Result<Transformed, String> {
     let untouched = |code| Transformed {
+        read_files: Vec::new(),
         code,
         watch_files: Vec::new(),
         maps: Vec::new(),
@@ -511,6 +726,7 @@ pub(crate) async fn plugin_transform(
         Ok(t) => Ok(Transformed {
             code: t.code,
             watch_files: t.watch_files,
+            read_files: t.reads,
             maps: t.maps,
         }),
         // Vite fails the request with the plugin's error (code frame in the
@@ -768,7 +984,7 @@ impl CompileJob {
             }),
             code: output.code,
             map_json: output.map_json,
-            fs_allow: fs_allow_from(&output.imports),
+            fs_allow: fs_allow_from(&self.state.root, &output.imports),
             watch_files: Vec::new(),
             import_bindings: output.import_bindings,
             imports: output.imports,
@@ -780,6 +996,7 @@ impl CompileJob {
             require_map: Vec::new(),
             css_exports: Vec::new(),
             stylex_rules: output.stylex_rules,
+            trace: Vec::new(),
         })
     }
 
@@ -843,6 +1060,13 @@ impl CompileJob {
         if self.is_svelte {
             opts.refresh = false;
         }
+        // Name the module by its served, root-relative path in its own
+        // artifact (jsx __source, sourcemap sources): the compiled bytes are
+        // then identical in every worktree. sourcesContent is embedded, so
+        // the relative name is a label; out-of-root files keep their real
+        // path (their artifacts rely on /@fs/@mono urls instead).
+        opts.display_path = oj_cache::store::rel_key(&self.state.root, &self.file)
+            .map(|rel| std::path::PathBuf::from(format!("/{rel}")));
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
@@ -871,7 +1095,7 @@ impl ImportRewrite<'_> {
         format!(
             "/@id/{}?importer={}",
             hex_encode(spec),
-            hex_encode(&self.job.importer_abs)
+            crate::rewrite::encode_importer(&self.job.state.root, &self.job.importer_abs)
         )
     }
 
@@ -1096,11 +1320,16 @@ pub(crate) fn package_root(path: &Path) -> PathBuf {
     path.parent().unwrap_or(path).to_path_buf()
 }
 
-pub(crate) fn fs_allow_from(imports: &[String]) -> Vec<String> {
+pub(crate) fn fs_allow_from(root: &Path, imports: &[String]) -> Vec<String> {
+    let workspace = crate::rewrite::workspace_of(root);
     imports
         .iter()
         .filter_map(|i| i.split('?').next().unwrap_or(i).strip_prefix("/@fs"))
-        .map(|p| package_root(Path::new(p)).display().to_string())
+        .map(|p| {
+            package_root(&crate::rewrite::fs_url_to_path(&workspace, p))
+                .display()
+                .to_string()
+        })
         .collect()
 }
 

@@ -23,6 +23,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-nocache-"));
+// Relocatable entries land in the shared store these days, pinned ones in the
+// app's own cache: count both, isolated from the developer's real store.
+const store = fs.mkdtempSync(path.join(os.tmpdir(), "oj-nocache-store-"));
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "nocache", version: "1.0.0" }));
 fs.writeFileSync(
   path.join(app, "index.html"),
@@ -31,9 +34,10 @@ fs.writeFileSync(
 fs.writeFileSync(path.join(app, "main.tsx"), `export const value: number = 41 + 1;\nconsole.log(value);\n`);
 
 // A persistent module-cache entry is a `<hash>.json` inside a two-hex shard
-// directory under .oj-cache/v*/. Count those (ignores graph snapshots etc.).
-function moduleCacheEntries() {
-  const root = path.join(app, ".oj-cache");
+// directory (under the app's .oj-cache/v*/ for pinned entries, under the
+// shared store's modules/ for relocatable ones). Count both (ignores graph
+// snapshots etc.).
+function entriesUnder(root) {
   let n = 0;
   const walk = (dir) => {
     let ents;
@@ -52,16 +56,22 @@ function moduleCacheEntries() {
   return n;
 }
 
+function moduleCacheEntries() {
+  return entriesUnder(path.join(app, ".oj-cache")) + entriesUnder(path.join(store, "v1", "modules"));
+}
+
 // Run oj (optionally with --no-cache), request the module, give the async cache
 // writer time to flush, and return how many module cache entries exist after.
 async function runAndCount({ noCache }) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+  fs.rmSync(path.join(store, "v1"), { recursive: true, force: true });
   // The persistent cache is opt-in (--enable-cache), so both runs enable it:
   // the control's "caches normally" then means something, and the other run
-  // proves --no-cache beats --enable-cache.
+  // proves --no-cache beats --enable-cache. The store is isolated so
+  // relocatable entries land where we count them.
   const args = ["dev", app, "--port", String(port), "--enable-cache"];
   if (noCache) args.push("--no-cache");
-  const proc = spawn(oj, args, { stdio: "ignore" });
+  const proc = spawn(oj, args, { stdio: "ignore", env: { ...process.env, OJ_STORE_DIR: store } });
   try {
     await waitUp(`http://localhost:${port}/`);
     const r = await fetch(`http://localhost:${port}/main.tsx`);

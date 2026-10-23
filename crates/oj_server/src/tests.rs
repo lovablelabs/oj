@@ -2367,3 +2367,249 @@ fn rescan_changes_diff_against_the_known_files() {
     assert!(sub.changed.is_empty() && sub.removed.is_empty());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+// ---- pulp: the oj store ----
+
+#[test]
+fn engine_code_cache_dir_is_root_independent_under_a_shared_store() {
+    let store = Some(Path::new("/shared/oj-store"));
+    let a = engine_code_cache_dir_in(Path::new("/work/wt-a"), store);
+    let b = engine_code_cache_dir_in(Path::new("/work/wt-b"), store);
+    assert_eq!(a, b, "two worktrees must share one bytecode directory");
+    assert!(a.starts_with("/shared/oj-store"));
+    let a = engine_code_cache_dir_in(Path::new("/work/wt-a"), None);
+    let b = engine_code_cache_dir_in(Path::new("/work/wt-b"), None);
+    assert_ne!(a, b, "without a store each app keeps its own");
+}
+
+fn salt_fixture(label: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("oj-salt-{}-{label}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("package.json"), br#"{"name":"app"}"#).unwrap();
+    std::fs::write(root.join("package-lock.json"), br#"{"lockfileVersion":3}"#).unwrap();
+    std::fs::write(root.join("tsconfig.json"), br#"{"compilerOptions":{}}"#).unwrap();
+    std::fs::write(root.join("vite.config.ts"), b"export default {}").unwrap();
+    root
+}
+
+fn salt_settings(root: &Path) -> oj_resolver::ResolveSettings {
+    oj_resolver::ResolveSettings {
+        conditions: vec!["import".into()],
+        alias: vec![("@".into(), root.join("src").to_string_lossy().into_owned())],
+        dedupe: vec![],
+        extensions: None,
+        main_fields: None,
+        preserve_symlinks: false,
+        server: false,
+    }
+}
+
+#[test]
+fn module_cache_salt_is_worktree_independent() {
+    let a = salt_fixture("wt-a");
+    let b = salt_fixture("wt-b");
+    assert_eq!(
+        module_cache_config_salt(&a, &salt_settings(&a), Some(&a.join("vite.config.ts"))),
+        module_cache_config_salt(&b, &salt_settings(&b), Some(&b.join("vite.config.ts"))),
+        "same content in two worktrees must salt identically"
+    );
+}
+
+#[test]
+fn module_cache_salt_moves_with_every_input_it_claims_to_cover() {
+    let root = salt_fixture("inputs");
+    let cfg = root.join("vite.config.ts");
+    let base = module_cache_config_salt(&root, &salt_settings(&root), Some(&cfg));
+    std::fs::write(
+        root.join("tsconfig.json"),
+        br#"{"compilerOptions":{"paths":{}}}"#,
+    )
+    .unwrap();
+    let after_ts = module_cache_config_salt(&root, &salt_settings(&root), Some(&cfg));
+    assert_ne!(base, after_ts, "tsconfig edit must invalidate");
+    std::fs::write(&cfg, b"export default { plugins: [] }").unwrap();
+    let after_cfg = module_cache_config_salt(&root, &salt_settings(&root), Some(&cfg));
+    assert_ne!(after_ts, after_cfg, "vite.config edit must invalidate");
+    std::fs::write(
+        root.join("package-lock.json"),
+        br#"{"lockfileVersion":3,"x":1}"#,
+    )
+    .unwrap();
+    let after_lock = module_cache_config_salt(&root, &salt_settings(&root), Some(&cfg));
+    assert_ne!(after_cfg, after_lock, "lockfile change must invalidate");
+    let mut settings = salt_settings(&root);
+    settings.alias = vec![("@".into(), root.join("lib").to_string_lossy().into_owned())];
+    assert_ne!(
+        after_lock,
+        module_cache_config_salt(&root, &settings, Some(&cfg)),
+        "alias retarget must invalidate"
+    );
+}
+
+#[test]
+fn monorepo_alias_targets_do_not_poison_the_salt() {
+    fn mono_fixture(label: &str) -> (PathBuf, PathBuf) {
+        let mono =
+            std::env::temp_dir().join(format!("oj-salt-mono-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&mono);
+        let app = mono.join("app");
+        std::fs::create_dir_all(mono.join("node_modules")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("package.json"), br#"{"name":"app"}"#).unwrap();
+        std::fs::write(app.join("package-lock.json"), br#"{"lockfileVersion":3}"#).unwrap();
+        (mono, app)
+    }
+    let (mono_a, app_a) = mono_fixture("wt-a");
+    let (mono_b, app_b) = mono_fixture("wt-b");
+    let settings = |mono: &Path| oj_resolver::ResolveSettings {
+        conditions: vec!["import".into()],
+        alias: vec![(
+            "^@x/common$".into(),
+            mono.join("packages/common/src/index.ts")
+                .to_string_lossy()
+                .into_owned(),
+        )],
+        dedupe: vec![],
+        extensions: None,
+        main_fields: None,
+        preserve_symlinks: false,
+        server: false,
+    };
+    assert_eq!(
+        module_cache_config_salt(&app_a, &settings(&mono_a), None),
+        module_cache_config_salt(&app_b, &settings(&mono_b), None),
+        "out-of-root alias targets must hash workspace-relative"
+    );
+}
+
+#[test]
+fn fs_urls_key_workspace_relative_without_touching_other_urls() {
+    let ws = Path::new("/work/wt-a/mono");
+    assert_eq!(
+        rewrite::key_url(ws, "/@fs//work/wt-a/mono/node_modules/react/index.js?v=abc"),
+        "/@fs/@mono/node_modules/react/index.js?v=abc"
+    );
+    assert_eq!(
+        rewrite::key_url(ws, "/@fs//work/wt-a/mono/node_modules/x.js"),
+        rewrite::key_url(
+            Path::new("/elsewhere/b/mono"),
+            "/@fs//elsewhere/b/mono/node_modules/x.js"
+        ),
+    );
+    assert_eq!(
+        rewrite::key_url(ws, "/@fs//opt/external/x.js"),
+        "/@fs//opt/external/x.js"
+    );
+    assert_eq!(rewrite::key_url(ws, "/src/App.tsx"), "/src/App.tsx");
+}
+
+#[test]
+fn fs_url_paths_expand_mono_against_the_serving_workspace() {
+    let ws = Path::new("/elsewhere/b/mono");
+    assert_eq!(
+        rewrite::fs_url_to_path(ws, "/@mono/node_modules/react/index.js"),
+        Path::new("/elsewhere/b/mono/node_modules/react/index.js")
+    );
+    assert_eq!(
+        rewrite::fs_url_to_path(ws, "/opt/external/x.js"),
+        Path::new("/opt/external/x.js")
+    );
+}
+
+#[test]
+fn importer_params_are_worktree_independent_and_decode_against_the_serving_root() {
+    let a = Path::new("/work/wt-a");
+    let b = Path::new("/work/wt-b");
+    let enc_a = rewrite::encode_importer(a, "/work/wt-a/src/App.tsx");
+    let enc_b = rewrite::encode_importer(b, "/work/wt-b/src/App.tsx");
+    assert_eq!(enc_a, enc_b);
+    assert_eq!(
+        rewrite::decode_importer(b, &decode_at_id(&enc_a)),
+        "/work/wt-b/src/App.tsx"
+    );
+    let virt = rewrite::encode_importer(a, "virtual:oj-routes");
+    assert_eq!(
+        rewrite::decode_importer(b, &decode_at_id(&virt)),
+        "virtual:oj-routes"
+    );
+    let legacy = hex_encode("/work/wt-a/src/App.tsx");
+    assert_eq!(
+        rewrite::decode_importer(b, &decode_at_id(&legacy)),
+        "/work/wt-a/src/App.tsx"
+    );
+}
+
+#[test]
+fn mono_importers_encode_workspace_relative_and_decode_against_the_serving_workspace() {
+    let base = std::env::temp_dir().join(format!("oj-mono-imp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let mk = |wt: &str| {
+        let mono = base.join(wt).join("mono");
+        std::fs::create_dir_all(mono.join("node_modules")).unwrap();
+        std::fs::create_dir_all(mono.join("app")).unwrap();
+        std::fs::create_dir_all(mono.join("packages/ui")).unwrap();
+        std::fs::write(mono.join("packages/ui/Button.tsx"), b"export {}").unwrap();
+        mono
+    };
+    let mono_a = mk("wt-a");
+    let mono_b = mk("wt-b");
+    let enc_a = rewrite::encode_importer(
+        &mono_a.join("app"),
+        &mono_a.join("packages/ui/Button.tsx").to_string_lossy(),
+    );
+    let enc_b = rewrite::encode_importer(
+        &mono_b.join("app"),
+        &mono_b.join("packages/ui/Button.tsx").to_string_lossy(),
+    );
+    assert_eq!(
+        enc_a, enc_b,
+        "monorepo importers must encode worktree-independent"
+    );
+    let decoded = rewrite::decode_importer(&mono_b.join("app"), &decode_at_id(&enc_a));
+    let expected = std::fs::canonicalize(&mono_b)
+        .unwrap()
+        .join("packages/ui/Button.tsx");
+    assert_eq!(PathBuf::from(decoded), expected);
+}
+
+// A trace row must name what the glob expansion read: an aliased pattern
+// resolves through resolve.alias like the compile's, or the row lists
+// nothing and a file added under the alias never invalidates the entry.
+#[test]
+fn glob_trace_rows_resolve_aliased_patterns() {
+    let root = Path::new("/work/app");
+    let alias = [("@".to_string(), "/work/app/src".to_string())];
+    let source = "const pages = import.meta.glob(\"@/pages/*.tsx\");\n";
+    let patterns = crate::module_pipeline::glob_trace_patterns(
+        source,
+        &root.join("src/main.tsx"),
+        root,
+        &alias,
+    );
+    assert_eq!(patterns, ["/work/app/src/pages/*.tsx"]);
+}
+
+// An earlier transform's map (StyleX's, a plugin's) names the module by its
+// served path once it joins the chain, as the compile names it, so a shared
+// cache entry's sourcemap carries no checkout's path.
+#[test]
+fn chained_maps_name_in_root_sources_by_served_path() {
+    let root = Path::new("/work/wt-a/app");
+    let map = r#"{"version":3,"sources":["/work/wt-a/app/src/main.ts","/opt/lib/x.js"],"sourcesContent":["a","b"],"mappings":""}"#;
+    let out: serde_json::Value = serde_json::from_str(&crate::module_pipeline::served_map_sources(
+        root,
+        map.to_string(),
+    ))
+    .unwrap();
+    assert_eq!(
+        out["sources"],
+        serde_json::json!(["/src/main.ts", "/opt/lib/x.js"])
+    );
+    assert_eq!(out["sourcesContent"], serde_json::json!(["a", "b"]));
+    let not_a_map = "not json".to_string();
+    assert_eq!(
+        crate::module_pipeline::served_map_sources(root, not_a_map.clone()),
+        not_a_map
+    );
+}

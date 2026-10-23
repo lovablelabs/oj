@@ -39,6 +39,8 @@ use client_js::*;
 mod assets_serve;
 use assets_serve::*;
 mod rewrite;
+pub mod store_remote;
+pub mod store_server;
 use rewrite::*;
 mod deps;
 use deps::*;
@@ -82,8 +84,8 @@ mod style_file;
 pub mod stylex;
 pub use ssr::*;
 pub use style_file::{
-    compile_style_file, needs_css_compile, needs_preprocess_engine, start_dev_inline_style,
-    start_dev_url_base, StyleInputs, StyleModule,
+    compile_style_file, needs_css_compile, needs_preprocess_engine, start_dev_file_url,
+    start_dev_inline_style, start_dev_url_base, StyleInputs, StyleModule,
 };
 mod middleware;
 mod preview;
@@ -175,9 +177,18 @@ const START_ASSETS: &[(&str, &str)] = &[
 /// Persistent V8 code-cache dir for embedded engines, keyed by the V8 ABI and
 /// NOT the oj version: per-entry source hashes already invalidate changed scripts.
 pub fn engine_code_cache_dir(root: &Path) -> PathBuf {
-    oj_cache::cache_root(root)
-        .join("code-cache")
-        .join(oj_js::engine_abi_key())
+    engine_code_cache_dir_in(root, oj_cache::store::store_root().as_deref())
+}
+
+/// [`engine_code_cache_dir`] with the shared store given. Bytecode is
+/// path-free (keys are root-relative, entries carry their source hash), so
+/// with a store every worktree and app on this machine warms one directory.
+fn engine_code_cache_dir_in(root: &Path, store: Option<&Path>) -> PathBuf {
+    let leaf = PathBuf::from("code-cache").join(oj_js::engine_abi_key());
+    match store {
+        Some(store) => store.join(leaf),
+        None => oj_cache::cache_root(root).join(leaf),
+    }
 }
 
 pub fn prepare_cache_root(root: &Path) {
@@ -262,6 +273,12 @@ pub struct DevServer {
 
 struct ServerState {
     root: PathBuf,
+    /// The remote substituter (OJ_STORE_REMOTE), when configured: local
+    /// shared store first, then this, Metro's chain.
+    remote_store: Option<std::sync::Arc<store_remote::RemoteStore>>,
+    /// The (canonical) workspace root: `/@fs/@mono/<rel>` URLs resolve
+    /// against it, and module-cache keys relativize /@fs URLs through it.
+    workspace_root_dir: PathBuf,
     /// Vite's `publicDir`; None when the config disables it (`publicDir: false`).
     public_dir: Option<PathBuf>,
     persistent_cache: bool,
@@ -1087,19 +1104,97 @@ fn hmr_setup(
     }
 }
 
+fn client_settings(config: &oj_config::OjConfig) -> oj_resolver::ResolveSettings {
+    oj_resolver::ResolveSettings {
+        conditions: oj_config::resolve_conditions(config, "client"),
+        alias: oj_config::resolve_alias(config, "client"),
+        dedupe: oj_config::resolve_dedupe(config),
+        extensions: oj_config::resolve_extensions(config),
+        main_fields: oj_config::resolve_main_fields(config),
+        preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+        server: false,
+    }
+}
+
 fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
-    OjResolver::with_settings(
-        root,
-        oj_resolver::ResolveSettings {
-            conditions: oj_config::resolve_conditions(config, "client"),
-            alias: oj_config::resolve_alias(config, "client"),
-            dedupe: oj_config::resolve_dedupe(config),
-            extensions: oj_config::resolve_extensions(config),
-            main_fields: oj_config::resolve_main_fields(config),
-            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
-            server: false,
-        },
-    )
+    OjResolver::with_settings(root, client_settings(config))
+}
+
+/// Everything besides the source bytes that changes a module's compiled
+/// output, folded into the persistent module cache's salt (pulp P1). Metro's
+/// rule: hash the toolchain, not just the file. Covers, by content digest:
+/// the dependency epoch (lockfiles + patches + package.json, also the
+/// plugin-version epoch), the config graph (vite/oj config plus every file it
+/// imported), tsconfig.json, and the resolver settings with alias targets
+/// hashed root-/workspace-relative so the salt is worktree-independent.
+fn module_cache_config_salt(
+    root: &Path,
+    settings: &oj_resolver::ResolveSettings,
+    config_path: Option<&Path>,
+) -> String {
+    // Spelled (uncanonicalized) workspace: alias targets come from config
+    // resolution against the root's own spelling, and the salt only needs
+    // internal consistency, not realpath identity.
+    let workspace = oj_cache::store::workspace_root(root);
+    let debug_salt = oj_env::get().knobs.debug_salt;
+    let dbg_line = |label: &str, value: &str| {
+        if debug_salt {
+            eprintln!("oj: salt: {label} = {value}");
+        }
+    };
+    dbg_line("workspace", &workspace.to_string_lossy());
+    let mut hasher = blake3::Hasher::new();
+    optimize::hash_lockfiles(root, &mut hasher);
+    for name in ["package.json", "tsconfig.json"] {
+        if let Ok(bytes) = std::fs::read(root.join(name)) {
+            hasher.update(name.as_bytes());
+            hasher.update(&bytes);
+        }
+    }
+    let mut config_files: Vec<PathBuf> = config_path.map(Path::to_path_buf).into_iter().collect();
+    if let Some(config) = config_path {
+        config_files.extend(plugins::config_dependencies_of(config));
+    }
+    config_files.sort();
+    config_files.dedup();
+    for file in &config_files {
+        if let Ok(bytes) = std::fs::read(file) {
+            let id = oj_cache::store::salt_key(root, &workspace, file);
+            dbg_line("config-file", &id);
+            hasher.update(id.as_bytes());
+            hasher.update(&bytes);
+        }
+    }
+    hasher.update(b"\0resolve");
+    for (tag, list) in [
+        (b"c" as &[u8], &settings.conditions),
+        (b"d", &settings.dedupe),
+    ] {
+        for entry in list {
+            hasher.update(tag);
+            hasher.update(entry.as_bytes());
+        }
+    }
+    for list in [settings.extensions.as_ref(), settings.main_fields.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        for entry in list {
+            hasher.update(b"e");
+            hasher.update(entry.as_bytes());
+        }
+    }
+    for (find, replacement) in &settings.alias {
+        hasher.update(b"a");
+        hasher.update(find.as_bytes());
+        hasher.update(b"=");
+        hasher
+            .update(oj_cache::store::salt_key(root, &workspace, Path::new(replacement)).as_bytes());
+    }
+    hasher.update(&[b's', settings.preserve_symlinks as u8]);
+    let out = format!("cfg={}", hasher.finalize().to_hex());
+    dbg_line("final", &out);
+    out
 }
 
 /// Feeds the unbundled Node SSR path, and the SSR build's externalization
@@ -1248,7 +1343,17 @@ fn spawn_state_tasks(
         let state = Arc::clone(state);
         std::thread::spawn(move || {
             while let Some((key, module)) = write_rx.blocking_recv() {
-                state.cache.put(&key, &module);
+                // Disk gets the worktree-independent form (ws:/mono:
+                // relative metadata paths); memory keeps the absolute one.
+                let stored = module.relocated_for_store(&state.root, &state.workspace_root_dir);
+                state.cache.put(&key, &stored);
+                // Push relocatable entries to the remote substituter (queued,
+                // never blocking this thread on the network).
+                if let Some(remote) = &state.remote_store {
+                    if stored.is_relocatable() {
+                        remote.push_module(&key, &stored);
+                    }
+                }
             }
         });
     }
@@ -1684,6 +1789,8 @@ impl DevServer {
             config_file: config_file.clone(),
             engine_registry: engine_registry.clone(),
             root: root.clone(),
+            remote_store: store_remote::RemoteStore::from_env(),
+            workspace_root_dir: rewrite::workspace_of(&root),
             public_dir,
             reload_tx: reload_tx.clone(),
             graph: Mutex::new(ModuleGraph::new()),
@@ -1691,7 +1798,20 @@ impl DevServer {
             resolver: client_resolver,
             ssr_resolver: Arc::new(ssr_resolver(&root, &config)),
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
+                // Relocatable entries go to the shared per-user store, where
+                // worktree B hits what worktree A compiled; pinned entries
+                // (/@fs imports and friends) stay in this app's cache.
+                .with_shared(oj_cache::store::store_root().map(|s| s.join("modules")))
                 .with_salt_extra(&installed.digest)
+                // Everything else that shapes compiled output (pulp P1):
+                // plugin chain + options (config graph, lockfile epoch),
+                // resolver config, tsconfig paths. A config edit is a clean
+                // miss, never a stale hit.
+                .with_salt_extra(&module_cache_config_salt(
+                    &root,
+                    &client_settings(&config),
+                    plugins::vite_config_file(&root, config_file.as_deref()).as_deref(),
+                ))
                 // A cached compile embeds the JSX runtime import; a changed
                 // importSource/runtime must not serve the old module.
                 .with_salt_extra(&format!("jsx={jsx:?}")),

@@ -226,10 +226,103 @@ pub(crate) fn in_node_modules(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == "node_modules")
 }
 
+/// The (canonical) workspace root for an app root, cached: `url_of` runs per
+/// rewritten import and must not walk ancestors every time.
+pub(crate) fn workspace_of(root: &Path) -> PathBuf {
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, PathBuf>>> =
+        std::sync::Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    if let Some(ws) = map.get(root) {
+        return ws.clone();
+    }
+    let ws = oj_cache::store::workspace_root(root);
+    let ws = std::fs::canonicalize(&ws).unwrap_or(ws);
+    map.insert(root.to_path_buf(), ws.clone());
+    ws
+}
+
 pub(crate) fn url_of(root: &Path, file: &Path) -> String {
-    match file.strip_prefix(root) {
-        Ok(rel) => format!("/{}", rel.display()),
-        Err(_) => format!("/@fs{}", file.display()),
+    if let Ok(rel) = file.strip_prefix(root) {
+        return format!("/{}", rel.display());
+    }
+    // In-workspace files outside the root (hoisted node_modules, monorepo
+    // siblings) get the worktree-independent form: the serving worktree
+    // expands `@mono/` against its OWN workspace root, so cached artifacts
+    // carrying these URLs mean the same thing in every worktree.
+    let workspace = workspace_of(root);
+    if let Ok(rel) = file.strip_prefix(&workspace) {
+        return format!("/@fs/@mono/{}", rel.display());
+    }
+    if let Ok(canon) = std::fs::canonicalize(file) {
+        if let Ok(rel) = canon.strip_prefix(&workspace) {
+            return format!("/@fs/@mono/{}", rel.display());
+        }
+    }
+    format!("/@fs{}", file.display())
+}
+
+/// The reverse of `url_of` for `/@fs` request paths: the piece after `/@fs`,
+/// with `/@mono/<rel>` expanded against this server's workspace root.
+pub(crate) fn fs_url_to_path(workspace: &Path, after_fs: &str) -> PathBuf {
+    match after_fs.strip_prefix("/@mono/") {
+        Some(rel) => workspace.join(rel),
+        None => PathBuf::from(after_fs),
+    }
+}
+
+/// Encode an importer for an `/@id/...?importer=` URL. In-root importers
+/// encode root-relative (`ws:<rel>`), in-workspace ones workspace-relative
+/// (`mono:<rel>`), so rewritten imports in cached artifacts are
+/// worktree-independent; the decode side re-roots against the SERVING
+/// worktree. Anything else (virtual ids, external paths) encodes verbatim.
+pub(crate) fn encode_importer(root: &Path, importer: &str) -> String {
+    if let Some(rel) = oj_cache::store::rel_key(root, Path::new(importer)) {
+        return hex_encode(&format!("ws:{rel}"));
+    }
+    let workspace = workspace_of(root);
+    if let Some(rel) = oj_cache::store::rel_key(&workspace, Path::new(importer)) {
+        return hex_encode(&format!("mono:{rel}"));
+    }
+    // The workspace is canonical; an importer in a different spelling
+    // (/var vs /private/var) still relativizes through its realpath.
+    if let Ok(canon) = std::fs::canonicalize(importer) {
+        if let Some(rel) = oj_cache::store::rel_key(&workspace, &canon) {
+            return hex_encode(&format!("mono:{rel}"));
+        }
+    }
+    hex_encode(importer)
+}
+
+/// The inverse of `encode_importer`, against this server's root/workspace.
+pub(crate) fn decode_importer(root: &Path, decoded: &str) -> String {
+    if let Some(rel) = decoded.strip_prefix("ws:") {
+        return root.join(rel).to_string_lossy().into_owned();
+    }
+    if let Some(rel) = decoded.strip_prefix("mono:") {
+        return workspace_of(root).join(rel).to_string_lossy().into_owned();
+    }
+    decoded.to_string()
+}
+
+/// The URL component of a module-cache key: `/@fs/<abs>` URLs under the
+/// workspace key by their relative spelling, so a hoisted dep's path-free
+/// entry is one entry for every worktree. Serving is untouched.
+pub(crate) fn key_url(workspace: &Path, url: &str) -> String {
+    let Some(rest) = url.strip_prefix("/@fs/") else {
+        return url.to_string();
+    };
+    let (path_part, query) = match rest.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (rest, None),
+    };
+    let abs = PathBuf::from(format!("/{}", path_part.trim_start_matches('/')));
+    match oj_cache::store::rel_key(workspace, &abs) {
+        Some(rel) => match query {
+            Some(q) => format!("/@fs/@mono/{rel}?{q}"),
+            None => format!("/@fs/@mono/{rel}"),
+        },
+        None => url.to_string(),
     }
 }
 

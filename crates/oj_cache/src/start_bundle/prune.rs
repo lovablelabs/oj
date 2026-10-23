@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! Eviction: the save-path generation window (background) and the boot-time
-//! budget prune. Both evict oldest-first by last-use stamp, never touch the
-//! `current` generation, and only delete blobs no surviving generation
-//! references.
+//! budget prune. Both evict oldest-first by last-use stamp, never touch a
+//! protected generation (this root's `current`, any root's fresh pin), and
+//! only delete blobs no surviving generation references.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{
-    entry_size, read_current, read_manifest, StartBundleStore, BLOBS_DIR, KEEP_GENERATIONS,
-    LEGACY_POINTER_FILE, TOUCH_FILE,
+    entry_size, is_generation_dir, read_manifest, StartBundleStore, BLOBS_DIR, LEGACY_POINTER_FILE,
+    PINS_DIR, TOUCH_FILE,
 };
 
 /// A `.tmp-` entry younger than this is presumed live (a persist mid-copy,
@@ -30,7 +30,7 @@ fn tmp_is_stale(path: &Path) -> bool {
 }
 
 /// Last-use time of a generation: its touch file, else the dir's own mtime.
-fn generation_stamp(path: &Path) -> SystemTime {
+pub(super) fn generation_stamp(path: &Path) -> SystemTime {
     fs::metadata(path.join(TOUCH_FILE))
         .or_else(|_| fs::metadata(path))
         .and_then(|m| m.modified())
@@ -46,13 +46,13 @@ fn manifest_hashes(entry: &Path) -> Vec<String> {
 
 impl StartBundleStore {
     pub fn prune(&self, budget_bytes: u64) {
-        self.prune_with(budget_bytes, KEEP_GENERATIONS)
+        self.prune_with(budget_bytes, self.keep_generations)
     }
 
     /// The save-path half of eviction. Like Vite's dep-cache commit (rename +
     /// background rm), but the whole pass (listing, renames-aside, blob
     /// sweep) runs on a detached thread so the save path pays one spawn.
-    /// Safe because: it never touches `current`, a mid-sweep crash strands
+    /// Safe because: it never touches a protected generation, a mid-sweep crash strands
     /// only `.tmp-` dirs the boot prune age-gates away, and a sweep racing the
     /// next persist is covered by persist's post-commit blob re-check. Each
     /// thread joins its predecessor first, so sweeps never stack and
@@ -60,11 +60,12 @@ impl StartBundleStore {
     pub(super) fn enforce_window(&self, max_generations: usize) {
         let prev = self.sweeper.lock().ok().and_then(|mut s| s.take());
         let dir = self.dir.clone();
+        let protected = self.protected_keys();
         let handle = std::thread::spawn(move || {
             if let Some(prev) = prev {
                 let _ = prev.join();
             }
-            enforce_window_blocking(&dir, max_generations);
+            enforce_window_blocking(&dir, max_generations, &protected);
         });
         if let Ok(mut slot) = self.sweeper.lock() {
             *slot = Some(handle);
@@ -80,15 +81,15 @@ impl StartBundleStore {
     }
 
     /// Boot-time prune: sweeps stale `.tmp-` leftovers, evicts the oldest
-    /// non-current generations until both the byte budget and the window
+    /// unprotected generations until both the byte budget and the window
     /// hold, then deletes every blob no remaining generation references.
     fn prune_with(&self, budget_bytes: u64, max_generations: usize) {
         let _ = fs::remove_file(self.dir.join(LEGACY_POINTER_FILE));
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
-        let keep = read_current(&self.dir).unwrap_or_default();
-        let mut gens = scan_generations(entries, &keep);
+        let protected = self.protected_keys();
+        let mut gens = scan_generations(entries, &protected);
         let blobs_dir = self.dir.join(BLOBS_DIR);
         let blob_sizes = scan_blobs(&blobs_dir);
         let mut refcount: HashMap<String, usize> = HashMap::new();
@@ -109,9 +110,10 @@ impl StartBundleStore {
             .filter(|&(_, c)| c > 0)
             .map(|(h, _)| h)
             .collect();
-        // `current` may have moved since the scan (a concurrent persist).
-        if let Some(now_current) = read_current(&self.dir) {
-            live.extend(manifest_hashes(&self.dir.join(now_current)));
+        // Protection may have moved since the scan (a concurrent persist or
+        // another root's restore).
+        for key in self.protected_keys() {
+            live.extend(manifest_hashes(&self.dir.join(key)));
         }
         for hash in blob_sizes.keys() {
             if !live.contains(hash) {
@@ -126,16 +128,16 @@ struct Generation {
     stamp: SystemTime,
     own_size: u64,
     refs: Vec<String>,
-    is_current: bool,
+    protected: bool,
 }
 
 /// Lists generation dirs, deleting stale `.tmp-` dirs along the way.
-fn scan_generations(entries: fs::ReadDir, keep: &str) -> Vec<Generation> {
+fn scan_generations(entries: fs::ReadDir, protected: &HashSet<String>) -> Vec<Generation> {
     let mut gens = Vec::new();
     for e in entries.flatten() {
         let path = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
-        if name == BLOBS_DIR || !path.is_dir() {
+        if name == BLOBS_DIR || name == PINS_DIR || !path.is_dir() {
             continue;
         }
         if name.starts_with(".tmp-") {
@@ -148,7 +150,7 @@ fn scan_generations(entries: fs::ReadDir, keep: &str) -> Vec<Generation> {
         let stamp = generation_stamp(&path);
         gens.push(Generation {
             own_size: entry_size(&path),
-            is_current: name == keep,
+            protected: protected.contains(&name),
             path,
             stamp,
             refs,
@@ -177,7 +179,7 @@ fn scan_blobs(blobs_dir: &Path) -> HashMap<String, u64> {
     blob_sizes
 }
 
-/// Removes generations oldest-first (skipping current) until the total size
+/// Removes generations oldest-first (skipping protected ones) until the total size
 /// (generation dirs plus referenced blobs) fits the budget and at most
 /// `max_generations` remain. Decrements `refcount` for each eviction.
 fn evict_oldest(
@@ -199,7 +201,7 @@ fn evict_oldest(
         if total <= budget_bytes && kept <= max_generations {
             break;
         }
-        if g.is_current {
+        if g.protected {
             continue;
         }
         // A dir already gone (another process's prune won the race) is an
@@ -222,13 +224,12 @@ fn evict_oldest(
     }
 }
 
-fn enforce_window_blocking(dir: &Path, max_generations: usize) {
-    let keep = read_current(dir).unwrap_or_default();
-    let evicted = rename_aside_overflow(dir, &keep, max_generations);
+fn enforce_window_blocking(dir: &Path, max_generations: usize, protected: &HashSet<String>) {
+    let evicted = rename_aside_overflow(dir, protected, max_generations);
     if evicted.is_empty() {
         return;
     }
-    // Blobs still referenced by a surviving generation (or current) stay;
+    // Blobs still referenced by a surviving generation stay;
     // everything the evicted generations uniquely owned goes.
     let live = live_blob_hashes(dir);
     let blobs = dir.join(BLOBS_DIR);
@@ -243,22 +244,30 @@ fn enforce_window_blocking(dir: &Path, max_generations: usize) {
 }
 
 /// Renames the oldest generations beyond the window to `.tmp-evict-` dirs
-/// and returns them. `current` is never a candidate.
-fn rename_aside_overflow(dir: &Path, keep: &str, max_generations: usize) -> Vec<PathBuf> {
+/// and returns them. A protected generation is never a candidate.
+fn rename_aside_overflow(
+    dir: &Path,
+    protected: &HashSet<String>,
+    max_generations: usize,
+) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut gens: Vec<(SystemTime, PathBuf)> = Vec::new();
+    let mut kept = 0;
     for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let path = e.path();
-        if name == BLOBS_DIR || name == keep || name.starts_with(".tmp-") || !path.is_dir() {
+        if !is_generation_dir(&e) {
             continue;
         }
-        gens.push((generation_stamp(&path), path));
+        if protected.contains(e.file_name().to_string_lossy().as_ref()) {
+            kept += 1;
+            continue;
+        }
+        gens.push((generation_stamp(&e.path()), e.path()));
     }
-    // `keep` was skipped above, so the window is current + max-1 others.
-    let overflow = (gens.len() + 1).saturating_sub(max_generations);
+    // Protected generations count toward the window (at least one: the
+    // generation this persist just made current).
+    let overflow = (gens.len() + kept.max(1)).saturating_sub(max_generations);
     if overflow == 0 {
         return Vec::new();
     }
@@ -280,17 +289,12 @@ fn rename_aside_overflow(dir: &Path, keep: &str, max_generations: usize) -> Vec<
     evicted
 }
 
-/// Every blob hash referenced by a generation dir (including current).
+/// Every blob hash referenced by a generation dir (protected ones included).
 fn live_blob_hashes(dir: &Path) -> HashSet<String> {
     let mut live = HashSet::new();
     if let Ok(entries) = fs::read_dir(dir) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let path = e.path();
-            if name == BLOBS_DIR || name.starts_with(".tmp-") || !path.is_dir() {
-                continue;
-            }
-            live.extend(manifest_hashes(&path));
+        for e in entries.flatten().filter(is_generation_dir) {
+            live.extend(manifest_hashes(&e.path()));
         }
     }
     live
