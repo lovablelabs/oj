@@ -102,6 +102,48 @@ impl HostPolicy {
     }
 }
 
+/// Vite's baseMiddleware: a request under `base` reaches the routes with the
+/// base stripped, so oj's own `/@oj/...` routes answer `/app/@oj/client.js`,
+/// and a page visit to `/` redirects to the base. Unbased requests pass
+/// through, as in Vite's middleware mode: oj's rewritten import URLs carry no
+/// base. Handlers that need the browser's URL read `OriginalUri`.
+pub(crate) async fn base_middleware(
+    State(base): State<Arc<str>>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path();
+    let rest = if path == base.trim_end_matches('/') {
+        Some("/")
+    } else {
+        path.strip_prefix(base.trim_end_matches('/'))
+            .filter(|rest| rest.starts_with('/'))
+    };
+    if let Some(rest) = rest {
+        let pq = match req.uri().query() {
+            Some(q) => format!("{rest}?{q}"),
+            None => rest.to_string(),
+        };
+        if let Ok(uri) = pq.parse::<Uri>() {
+            *req.uri_mut() = uri;
+        }
+        return next.run(req).await;
+    }
+    if (path == "/" || path == "/index.html") && !is_websocket_upgrade(req.headers()) {
+        let query = req
+            .uri()
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+        return (
+            StatusCode::FOUND,
+            [(header::LOCATION, format!("{base}{query}"))],
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
 pub(crate) async fn host_check_middleware(
     State(state): State<Arc<ServerState>>,
     req: axum::extract::Request,

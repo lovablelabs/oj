@@ -17,7 +17,14 @@ pub(crate) async fn serve_path(
         decoded.as_str()
     };
 
-    if let Some(resp) = serve_internal_route(&state, &headers, &uri).await {
+    let internal = match (path.len() != uri.path().len(), uri.query()) {
+        (false, _) => None,
+        (true, Some(q)) => format!("{path}?{q}").parse::<Uri>().ok(),
+        (true, None) => path.parse::<Uri>().ok(),
+    };
+    if let Some(resp) =
+        serve_internal_route(&state, &headers, internal.as_ref().unwrap_or(&uri)).await
+    {
         return resp;
     }
     let file = match request_file(&state, &headers, &uri, rel).await {

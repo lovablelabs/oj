@@ -148,6 +148,8 @@ jobs:
         run: node e2e/plugin-server-process.mjs
       - name: json import edit reaches the boundary (stamped import)
         run: node e2e/hmr-json-update.mjs
+      - name: a non-root base serves the HMR client and refresh preamble
+        run: node e2e/dev-base-hmr.mjs
       - name: unresolved relative import errors, creating the file recovers
         run: node e2e/hmr-unresolved-import.mjs
       - name: an env-file edit restarts dev and the open page reloads

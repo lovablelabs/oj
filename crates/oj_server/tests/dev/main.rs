@@ -24,6 +24,7 @@ mod css_outside_root_deps;
 mod css_preprocessor_options;
 mod css_url_inline;
 mod dep_plugin_load;
+mod dev_base;
 mod dev_condition;
 mod dev_cors_host;
 mod dev_html_native;
