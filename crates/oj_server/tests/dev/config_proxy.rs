@@ -41,3 +41,33 @@ async fn vite_config_proxy_forwards_to_the_backend() {
     let body = server.text("/api/hello").await;
     assert_eq!(body, "BACKEND:/api/hello", "proxy did not forward");
 }
+
+// Vite's proxy `bypass` returning a path serves that path locally, through
+// the normal routes. The fallback past the routes once restored the
+// browser's URL wholesale (undoing a base strip), which undid the bypass
+// rewrite too and served the SPA page instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bypass_path_serves_that_path() {
+    let port = backend().await;
+    let config = format!(
+        "export default {{ server: {{ proxy: {{ \"/byp\": {{ target: \"http://127.0.0.1:{port}\", \
+         bypass: (req) => (req.url === \"/byp/local\" ? \"/served.html\" : undefined) }} }} }} }};\n"
+    );
+    let app = App::new(&[
+        ("package.json", r#"{"name":"bypass-app","version":"1.0.0"}"#),
+        ("vite.config.mjs", &config),
+        (
+            "index.html",
+            "<!doctype html><html><head><title>t</title></head><body>home</body></html>",
+        ),
+        (
+            "served.html",
+            "<!doctype html><html><head><title>t</title></head><body>SERVED-LOCALLY</body></html>",
+        ),
+    ]);
+    let server = app.serve().await;
+    crate::plugin_middleware::middleware_ready(&server).await;
+    let page = server.text("/byp/local").await;
+    assert!(page.contains("SERVED-LOCALLY"), "{page}");
+    assert_eq!(server.text("/byp/other").await, "BACKEND:/byp/other");
+}

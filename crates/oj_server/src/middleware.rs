@@ -135,6 +135,13 @@ pub(crate) fn strip_base<'a>(path: &'a str, base: &str) -> Option<&'a str> {
     path.strip_prefix(base).filter(|rest| rest.starts_with('/'))
 }
 
+/// The URI a request carried before [`base_middleware`] stripped the base:
+/// past the routes, oj's file lookup and plugin middleware see it again.
+/// Only the strip is undone; a rewrite made before it (a proxy `bypass`
+/// returning a path) stands, which axum's `OriginalUri` would undo too.
+#[derive(Clone)]
+pub(crate) struct UnstrippedUri(pub(crate) Uri);
+
 /// Vite's baseMiddleware: a request under `base` reaches the routes with the
 /// base stripped, so oj's own `/@oj/...` routes answer `/app/@oj/client.js`,
 /// and a page visit to `/` redirects to the base. Unbased requests pass
@@ -152,7 +159,8 @@ pub(crate) async fn base_middleware(
             None => rest.to_string(),
         };
         if let Ok(uri) = pq.parse::<Uri>() {
-            *req.uri_mut() = uri;
+            let unstripped = std::mem::replace(req.uri_mut(), uri);
+            req.extensions_mut().insert(UnstrippedUri(unstripped));
         }
         return next.run(req).await;
     }

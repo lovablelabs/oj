@@ -226,10 +226,13 @@ pub(crate) async fn serve_fallback(
     State(state): State<Arc<ServerState>>,
     mut req: axum::extract::Request,
 ) -> Response {
-    // Past the routes, oj's file lookup and plugin middleware see the
-    // browser's URL, base included, as Vite's configureServer middleware does.
-    if let Some(original) = req.extensions().get::<axum::extract::OriginalUri>() {
-        *req.uri_mut() = original.0.clone();
+    // Past the routes, oj's file lookup and plugin middleware see the URL
+    // with its base again, as Vite's configureServer middleware does.
+    if let Some(unstripped) = req
+        .extensions_mut()
+        .remove::<crate::middleware::UnstrippedUri>()
+    {
+        *req.uri_mut() = unstripped.0;
     }
     // A WebSocket upgrade nothing above claimed (oj's own ws endpoints and
     // `ws: true` proxies run earlier): plugin `upgrade` listeners get it.
