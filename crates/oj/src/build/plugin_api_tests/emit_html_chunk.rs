@@ -8,9 +8,10 @@ use super::{build_app, files_under, scratch, write_files};
 /// A plugin emits an HTML page as a chunk (the way @crxjs emits its
 /// manifest's popup/options pages). oj must treat the `.html` id as a page,
 /// as Vite's build-html plugin does for html inputs: extract its
-/// `<script type=module>`, bundle those as entries, emit the processed HTML
-/// at its root-relative path, and resolve getFileName(refId) to the page's
-/// output path. The root index.html still builds alongside it.
+/// `<script type=module>` into the page's own entry chunk (named by the
+/// emit's `name`), emit the processed HTML at its root-relative path, and
+/// resolve getFileName(refId) to that entry chunk, as Vite does. The root
+/// index.html still builds alongside it.
 #[tokio::test]
 async fn an_emitted_html_chunk_is_built_as_a_page_at_its_root_relative_path() {
     let root = scratch("ehc-page");
@@ -21,7 +22,7 @@ async fn an_emitted_html_chunk_is_built_as_a_page_at_its_root_relative_path() {
             ("src/entry.js", "console.log(\"entry\");\n"),
             (
                 "src/pages/popup/popup.js",
-                "export const popup = \"popup-page-body\";\n",
+                "export const popup = \"popup-page-body\";\nconsole.log(popup);\n",
             ),
             (
                 "src/pages/popup/index.html",
@@ -84,14 +85,15 @@ export default [{
         "chunk holds the page's source:\n{chunk}"
     );
 
-    // getFileName(refId) for the emitted page returns its output path.
+    // getFileName(refId) for the emitted page names its entry chunk.
     let resolved = fs::read_to_string(dist.join("popup-path.txt"))
         .expect("generateBundle wrote popup-path.txt");
     assert_eq!(
         resolved.trim(),
-        "src/pages/popup/index.html",
-        "getFileName resolves the emitted page path"
+        src,
+        "getFileName resolves the page's chunk"
     );
+    assert!(src.starts_with("assets/popup-"), "named by the emit: {src}");
 
     // The root index.html still built.
     assert!(dist.join("index.html").exists(), "root page still built");

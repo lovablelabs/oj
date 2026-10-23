@@ -267,7 +267,7 @@ struct OjCssPlugin {
     /// Each HTML page input (its absolute path) to the module it loads as:
     /// Vite's html proxy, importing the modulepreload polyfill and then the
     /// page's module scripts in order.
-    pages: Arc<std::collections::HashMap<String, String>>,
+    pages: Arc<Mutex<std::collections::HashMap<String, String>>>,
     /// Where split chunk stylesheets go and how they are named, so a chunk's
     /// hash covers its stylesheet's name (vite:css-post's augmentChunkHash);
     /// None for builds that emit no split CSS.
@@ -1643,7 +1643,7 @@ impl Plugin for OjCssPlugin {
         let html_inline = Arc::clone(&self.html_inline);
         let worker = self.worker.clone();
         let base = self.base.clone();
-        let page = self.pages.get(&id).cloned();
+        let page = self.pages.lock().unwrap().get(&id).cloned();
         let load = async move {
             let js = |code: String| {
                 Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -2176,9 +2176,8 @@ pub(crate) struct EmitState {
     root: PathBuf,
     // oj chunk ref id -> rolldown ref id, resolved to the hashed name later.
     pub(crate) chunk_refs: std::sync::Mutex<std::collections::HashMap<String, String>>,
-    // oj ref id -> an already-resolved output name (emitted `.html` pages, whose
-    // output path is known at emit time rather than via rolldown).
-    direct_names: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    // How an emitted `.html` chunk becomes a page; None where no pages build.
+    pages: Option<Arc<PageSetup>>,
     // `.html` pages a plugin emitted as chunks, to render after the build.
     html_docs: std::sync::Mutex<Vec<HtmlDoc>>,
 }
@@ -2188,9 +2187,90 @@ impl EmitState {
         Self {
             root,
             chunk_refs: std::sync::Mutex::new(std::collections::HashMap::new()),
-            direct_names: std::sync::Mutex::new(std::collections::HashMap::new()),
+            pages: None,
             html_docs: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    fn with_pages(root: PathBuf, pages: Arc<PageSetup>) -> Self {
+        Self {
+            pages: Some(pages),
+            ..Self::new(root)
+        }
+    }
+}
+
+/// What turns a page into its entry: the proxy module each page id loads
+/// as, the inline module scripts its proxy imports, whether it imports the
+/// modulepreload polyfill, and `publicDir` (whose scripts stay on the page).
+#[derive(Debug)]
+struct PageSetup {
+    pages: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    html_inline: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    polyfill: bool,
+    public_dir: Option<PathBuf>,
+}
+
+/// A page as Vite's build-html transform leaves it: its html with inline
+/// module scripts externalized, what its entry imports (in document order)
+/// and the entry's proxy module, empty when the page imports nothing.
+struct PreparedPage {
+    content: String,
+    refs: Vec<PageRef>,
+    proxy: String,
+}
+
+fn prepare_page(abs: &Path, content: &str, root: &Path, setup: &PageSetup) -> PreparedPage {
+    let html_dir = abs.parent().unwrap_or(root);
+    let (content, inline) = externalize_inline_scripts(content, abs);
+    for (_, id, body) in &inline {
+        setup
+            .html_inline
+            .lock()
+            .unwrap()
+            .insert(id.clone(), body.clone());
+    }
+    // A linked stylesheet that does not resolve stays on the page.
+    let refs: Vec<PageRef> = html_tags::page_refs(&content, is_css_request)
+        .into_iter()
+        .filter(|r| match r {
+            PageRef::Style(href) => resolve_html_ref(href, html_dir, root).is_file(),
+            PageRef::Script { .. } => true,
+        })
+        .map(|r| match r {
+            PageRef::Script { src, is_async, .. } => PageRef::Script {
+                public: is_public_file(&src, setup.public_dir.as_deref()),
+                src,
+                is_async,
+            },
+            style => style,
+        })
+        .collect();
+    // The page itself is the rollup input, as in Vite: a proxy module
+    // importing the modulepreload polyfill (when the page has a module
+    // script) and then each module script and bundled stylesheet in document
+    // order. Its entry chunk, and that chunk's stylesheet, take the input's
+    // name: `index` for the default index.html, the key of an object `input`,
+    // never a script's own file name.
+    let mut proxy = String::new();
+    if setup.polyfill && refs.iter().any(|r| matches!(r, PageRef::Script { .. })) {
+        proxy.push_str("import \"vite/modulepreload-polyfill\";\n");
+    }
+    for r in &refs {
+        let target = match r {
+            PageRef::Script { public: true, .. } => continue,
+            PageRef::Script { src, .. } => match inline.iter().find(|(p, _, _)| p == src) {
+                Some((_, id, _)) => PathBuf::from(id),
+                None => resolve_html_ref(src, html_dir, root),
+            },
+            PageRef::Style(href) => resolve_html_ref(href, html_dir, root),
+        };
+        proxy.push_str(&format!("import {:?};\n", target.to_string_lossy()));
+    }
+    PreparedPage {
+        content,
+        refs,
+        proxy,
     }
 }
 
@@ -2379,6 +2459,9 @@ pub(crate) fn forward_emitted_chunks(
 }
 
 fn forward_emitted_html(ctx: &PluginContext, c: &oj_server::plugins::ChunkEmit, emit: &EmitState) {
+    let Some(setup) = emit.pages.as_deref() else {
+        return;
+    };
     let abs = if Path::new(&c.id).is_absolute() {
         PathBuf::from(&c.id)
     } else {
@@ -2387,7 +2470,6 @@ fn forward_emitted_html(ctx: &PluginContext, c: &oj_server::plugins::ChunkEmit, 
     let Ok(content) = fs::read_to_string(&abs) else {
         return;
     };
-    let html_dir = abs.parent().unwrap_or(&emit.root).to_path_buf();
     let out_rel = abs
         .strip_prefix(&emit.root)
         .map(|p| p.display().to_string().replace('\\', "/"))
@@ -2396,30 +2478,30 @@ fn forward_emitted_html(ctx: &PluginContext, c: &oj_server::plugins::ChunkEmit, 
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| c.id.clone())
         });
-    let scripts: Vec<HtmlScript> = module_script_srcs(&content)
-        .into_iter()
-        .map(|src| {
-            let sabs = resolve_html_ref(&src, &html_dir, &emit.root);
-            let emitted = rolldown_common::EmittedChunk {
-                id: sabs.display().to_string(),
-                name: sabs.file_stem().and_then(|s| s.to_str()).map(Into::into),
-                ..Default::default()
-            };
-            let _ = ctx.emit_chunk(emitted);
-            HtmlScript { src, abs: sabs }
-        })
-        .collect();
-    emit.direct_names
-        .lock()
-        .unwrap()
-        .insert(c.ref_id.clone(), out_rel.clone());
+    // An emitted page is an entry like an input page (Vite's build-html
+    // transforms every `.html` module): its id loads as the page's proxy,
+    // even an empty one, and its ref names the entry chunk.
+    let page = prepare_page(&abs, &content, &emit.root, setup);
+    let id = abs.to_string_lossy().into_owned();
+    setup.pages.lock().unwrap().insert(id.clone(), page.proxy);
+    let emitted = rolldown_common::EmittedChunk {
+        id,
+        name: c.name.clone().map(Into::into),
+        file_name: c.file_name.clone().map(Into::into),
+        ..Default::default()
+    };
+    if let Ok(rd_ref) = ctx.emit_chunk(emitted) {
+        emit.chunk_refs
+            .lock()
+            .unwrap()
+            .insert(c.ref_id.clone(), rd_ref.to_string());
+    }
     emit.html_docs.lock().unwrap().push(HtmlDoc {
         out_rel,
-        src_html: content,
-        scripts,
-        refs: Vec::new(),
-        dir: emit.root.clone(),
-        entry: None,
+        src_html: page.content,
+        refs: page.refs,
+        dir: abs.parent().unwrap_or(&emit.root).to_path_buf(),
+        entry: abs.clone(),
     });
 }
 
@@ -2607,24 +2689,12 @@ impl Plugin for OjUserPlugin {
             .iter()
             .map(|(a, b)| (a.clone(), b.clone()))
             .collect();
-        let direct: Vec<(String, String)> = self
-            .emit
-            .direct_names
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(a, b)| (a.clone(), b.clone()))
-            .collect();
-        if !refs.is_empty() || !direct.is_empty() {
+        if !refs.is_empty() {
             let mut map = serde_json::Map::new();
             for (oj_ref, rd_ref) in refs {
                 if let Ok(name) = ctx.get_file_name(&rd_ref) {
                     map.insert(oj_ref, serde_json::Value::String(name.to_string()));
                 }
-            }
-            // Emitted `.html` pages resolve directly to their output path.
-            for (oj_ref, name) in direct {
-                map.insert(oj_ref, serde_json::Value::String(name));
             }
             if !map.is_empty() {
                 let _ = self
@@ -3202,16 +3272,17 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     }
 
     let mut html_docs: Vec<HtmlDoc> = Vec::new();
-    let page_public_dir = oj_config::public_dir(&config, &root);
-    let html_inline: Arc<Mutex<std::collections::HashMap<String, String>>> =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
     let mut inputs: Vec<InputItem> = Vec::new();
     let mut seen_imports: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut had_html = false;
-    let mut pages: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // Vite's build import analysis, the polyfill included, is es output only.
-    let page_polyfill = oj_config::module_preload_polyfill(&config)
-        && ro_output_overrides(ro_opts).format.is_none();
+    let page_setup = Arc::new(PageSetup {
+        pages: Default::default(),
+        html_inline: Default::default(),
+        polyfill: oj_config::module_preload_polyfill(&config)
+            && ro_output_overrides(ro_opts).format.is_none(),
+        public_dir: oj_config::public_dir(&config, &root),
+    });
     let push_input = |abs: &Path,
                       name: String,
                       inputs: &mut Vec<InputItem>,
@@ -3243,63 +3314,13 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             };
             had_html = true;
             let html_dir = abs.parent().unwrap_or(&root).to_path_buf();
-            let (content, inline) = externalize_inline_scripts(&content, &abs);
-            for (_, id, body) in &inline {
-                html_inline.lock().unwrap().insert(id.clone(), body.clone());
-            }
-            // A linked stylesheet that does not resolve stays on the page.
-            let refs: Vec<PageRef> = html_tags::page_refs(&content, is_css_request)
-                .into_iter()
-                .filter(|r| match r {
-                    PageRef::Style(href) => resolve_html_ref(href, &html_dir, &root).is_file(),
-                    PageRef::Script { .. } => true,
-                })
-                .map(|r| match r {
-                    PageRef::Script { src, is_async, .. } => PageRef::Script {
-                        public: is_public_file(&src, page_public_dir.as_deref()),
-                        src,
-                        is_async,
-                    },
-                    style => style,
-                })
-                .collect();
-            let ref_abs = |r: &PageRef| match r {
-                PageRef::Script { src, .. } => match inline.iter().find(|(p, _, _)| p == src) {
-                    Some((_, id, _)) => PathBuf::from(id),
-                    None => resolve_html_ref(src, &html_dir, &root),
-                },
-                PageRef::Style(href) => resolve_html_ref(href, &html_dir, &root),
-            };
-            let scripts: Vec<HtmlScript> = refs
-                .iter()
-                .filter_map(|r| match r {
-                    PageRef::Script {
-                        src, public: false, ..
-                    } => Some(HtmlScript {
-                        src: src.clone(),
-                        abs: ref_abs(r),
-                    }),
-                    _ => None,
-                })
-                .collect();
-            // The page itself is the rollup input, as in Vite: a proxy
-            // module importing the modulepreload polyfill (when the page has
-            // a module script) and then each module script and bundled
-            // stylesheet in document order. Its entry chunk, and that chunk's
-            // stylesheet, take the input's name: `index` for the default
-            // index.html, the key of an object `input`, never a script's own
-            // file name.
-            let mut proxy = String::new();
-            if page_polyfill && refs.iter().any(|r| matches!(r, PageRef::Script { .. })) {
-                proxy.push_str("import \"vite/modulepreload-polyfill\";\n");
-            }
-            for r in &refs {
-                if !matches!(r, PageRef::Script { public: true, .. }) {
-                    proxy.push_str(&format!("import {:?};\n", ref_abs(r).to_string_lossy()));
-                }
-            }
-            if !proxy.is_empty() {
-                pages.insert(abs.to_string_lossy().into_owned(), proxy);
+            let page = prepare_page(&abs, &content, &root, &page_setup);
+            if !page.proxy.is_empty() {
+                page_setup
+                    .pages
+                    .lock()
+                    .unwrap()
+                    .insert(abs.to_string_lossy().into_owned(), page.proxy);
                 push_input(&abs, name.clone(), &mut inputs, &mut seen_imports);
             }
             let out_rel = if rel_path.is_absolute() {
@@ -3313,11 +3334,10 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             };
             html_docs.push(HtmlDoc {
                 out_rel,
-                src_html: content,
-                scripts,
-                refs,
+                src_html: page.content,
+                refs: page.refs,
                 dir: html_dir,
-                entry: Some(abs.clone()),
+                entry: abs.clone(),
             });
         } else {
             if !abs.exists() {
@@ -3349,7 +3369,10 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
-    let emit = Arc::new(EmitState::new(root.to_path_buf()));
+    let emit = Arc::new(EmitState::with_pages(
+        root.to_path_buf(),
+        Arc::clone(&page_setup),
+    ));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
     let stylex =
         oj_server::stylex::plugin_for(&root, &config, "build").map_err(|e| anyhow::anyhow!(e))?;
@@ -3386,7 +3409,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
-        html_inline: Arc::clone(&html_inline),
+        html_inline: Arc::clone(&page_setup.html_inline),
         worker: Some(Arc::new(WorkerBundleOpts {
             config: config.clone(),
             is_production,
@@ -3394,7 +3417,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             minify: client_minify,
         })),
         worker_entries: Arc::clone(&worker_entries),
-        pages: Arc::new(pages),
+        pages: Arc::clone(&page_setup.pages),
         chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
     }));
     let out_ov = ro_output_overrides(ro_opts);
@@ -3559,14 +3582,12 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         oj_env::html_env_map(&defines)
     };
     let mut emitted: Vec<(String, usize)> = Vec::new();
-    let has_postcss = oj_server::has_postcss_config(&root);
     let public_dir = oj_config::public_dir(&config, &root);
-    let link_css_transform_enabled: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::new();
-    let link_css_resolve = css_resolve_of(&root, &config, "client", is_production);
+    let css_asset_resolve = css_resolve_of(&root, &config, "client", is_production);
     let css_asset_opts = CssAssetOpts {
         inline_limit: assets_inline_limit_of(&config),
         asset_names: Some(asset_names_pattern.as_str()),
-        resolve: link_css_resolve.as_ref(),
+        resolve: css_asset_resolve.as_ref(),
     };
     let mut manifest_entries: Vec<ManifestEntry> = Vec::new();
     let mut manifest_assets: Vec<ManifestAsset> = Vec::new();
@@ -3773,143 +3794,52 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         // The tags injectToHead writes for the page's entry chunk, once its
         // other assets are rewritten.
         let mut entry_tags: Vec<Tag> = Vec::new();
-        if doc.entry.is_some() {
-            rewritten_html = html_tags::strip_page_refs(&rewritten_html, &doc.refs);
-            rewritten_html = html_tags::rewrite_script_srcs(&rewritten_html, |src| {
-                is_public_file(src, public_dir.as_deref()).then(|| with_base(src, &page_base))
+        rewritten_html = html_tags::strip_page_refs(&rewritten_html, &doc.refs);
+        rewritten_html = html_tags::rewrite_script_srcs(&rewritten_html, |src| {
+            is_public_file(src, public_dir.as_deref()).then(|| with_base(src, &page_base))
+        });
+        // A page whose entry imports nothing has no entry chunk.
+        if let Some(file) = facade_to_file.get(&doc.entry) {
+            let is_async = doc.refs.iter().all(|r| match r {
+                PageRef::Script { is_async, .. } => *is_async,
+                PageRef::Style(_) => true,
             });
-        }
-        match doc.entry.as_ref().and_then(|e| facade_to_file.get(e)) {
-            Some(file) => {
-                let is_async = doc.refs.iter().all(|r| match r {
-                    PageRef::Script { is_async, .. } => *is_async,
-                    PageRef::Style(_) => true,
-                });
-                let imports = imported_chunks(file, &imports_map);
-                // Vite's inlined entry: a chunk of nothing but side-effect
-                // imports (a page whose scripts only pull in CSS and shared
-                // chunks) is not emitted; the page loads what it imports.
-                if chunk_code.get(file).is_some_and(|c| is_entirely_import(c)) {
-                    inlined_entries.insert(file.clone());
-                    // An external import is loaded by its own URL.
-                    entry_tags.extend(imports.iter().map(|c| {
-                        let src = match chunk_code.contains_key(c) {
-                            true => with_base(c, &page_base),
-                            false => c.clone(),
-                        };
-                        Tag::script(src, is_async)
-                    }));
-                } else {
-                    entry_tags.push(Tag::script(with_base(file, &page_base), is_async));
-                    if oj_config::module_preload_links(&config) {
-                        entry_tags.extend(
-                            imports
-                                .iter()
-                                .filter(|c| chunk_code.contains_key(*c))
-                                .map(|c| Tag::modulepreload(with_base(c, &page_base))),
-                        );
-                    }
-                }
-                entry_tags.extend(
-                    page_css_files(&chunk_css, file, &imports_map)
-                        .into_iter()
-                        .map(|css| Tag::stylesheet(with_base(css, &page_base))),
-                );
-                doc_entry_files.push(file.clone());
-            }
-            None => {
-                for s in &doc.scripts {
-                    if let Some(file) = facade_to_file.get(&s.abs) {
-                        let out_src = with_base(file, &page_base);
-                        rewritten_html = rewritten_html.replace(&s.src, &out_src);
-                        rewritten_html = add_script_crossorigin(&rewritten_html, &out_src);
-                        doc_entry_files.push(file.clone());
-                    }
-                }
-                let mut preloads: std::collections::BTreeSet<String> =
-                    std::collections::BTreeSet::new();
-                for entry in &doc_entry_files {
-                    preloads.extend(transitive_imports(entry, &imports_map));
-                }
+            let imports = imported_chunks(file, &imports_map);
+            // Vite's inlined entry: a chunk of nothing but side-effect
+            // imports (a page whose scripts only pull in CSS and shared
+            // chunks) is not emitted; the page loads what it imports.
+            if chunk_code.get(file).is_some_and(|c| is_entirely_import(c)) {
+                inlined_entries.insert(file.clone());
+                // An external import is loaded by its own URL.
+                entry_tags.extend(imports.iter().map(|c| {
+                    let src = match chunk_code.contains_key(c) {
+                        true => with_base(c, &page_base),
+                        false => c.clone(),
+                    };
+                    Tag::script(src, is_async)
+                }));
+            } else {
+                entry_tags.push(Tag::script(with_base(file, &page_base), is_async));
                 if oj_config::module_preload_links(&config) {
                     entry_tags.extend(
-                        preloads
+                        imports
                             .iter()
-                            .map(|f| Tag::modulepreload(with_base(f, &page_base))),
-                    );
-                }
-                for entry in &doc_entry_files {
-                    entry_tags.extend(
-                        page_css_files(&chunk_css, entry, &imports_map)
-                            .into_iter()
-                            .map(|css| Tag::stylesheet(with_base(css, &page_base))),
+                            .filter(|c| chunk_code.contains_key(*c))
+                            .map(|c| Tag::modulepreload(with_base(c, &page_base))),
                     );
                 }
             }
+            entry_tags.extend(
+                page_css_files(&chunk_css, file, &imports_map)
+                    .into_iter()
+                    .map(|css| Tag::stylesheet(with_base(css, &page_base))),
+            );
+            doc_entry_files.push(file.clone());
         }
         page_entry_files.extend(doc_entry_files.iter().cloned());
         for entry in &doc_entry_files {
             all_sync_chunks.insert(entry.clone());
             all_sync_chunks.extend(transitive_imports(entry, &imports_map));
-        }
-
-        // A plugin-emitted page's `<link rel="stylesheet" href>` to a local file
-        // goes through the same pipeline as an imported stylesheet (Sass/
-        // PostCSS/Tailwind, lightningcss, url() assets) and is emitted hashed.
-        // An input page's are its entry's imports, or (`media`, `disabled`)
-        // plain assets, as in Vite.
-        if doc.entry.is_none() {
-            let mut seen_link_assets: std::collections::HashMap<PathBuf, String> =
-                std::collections::HashMap::new();
-            for href in stylesheet_hrefs(&doc.src_html) {
-                let src = resolve_html_ref(&href, &doc.dir, &root);
-                if !src.is_file() {
-                    continue;
-                }
-                let src_str = src.to_string_lossy().into_owned();
-                let out = compile_stylesheet(
-                    &root,
-                    &plugin_host,
-                    &link_css_transform_enabled,
-                    has_postcss,
-                    &config.css,
-                    &link_css_resolve,
-                    &src_str,
-                    &src_str,
-                )
-                .await
-                .with_context(|| format!("stylesheet {href} linked from {}", doc.out_rel))?;
-                let dir = src
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| root.clone());
-                let css = rebase_css_urls(
-                    &out.css,
-                    &dir,
-                    &out_dir,
-                    &base,
-                    css_asset_opts,
-                    &mut emitted,
-                    &mut seen_link_assets,
-                );
-                let hash = css_asset_hash(&css);
-                let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("style");
-                let name = render_asset_name(
-                    css_asset_opts.asset_names,
-                    &sanitize_asset_name(stem),
-                    &hash,
-                    "css",
-                );
-                let dest = out_dir.join(&name);
-                if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&dest, &css)?;
-                emitted.push((name.clone(), css.len()));
-                push_css_manifest_row(&mut manifest_assets, &root, &src_str, &name);
-                rewritten_html =
-                    rewrite_link_hrefs(&rewritten_html, &href, &with_base(&name, &base));
-            }
         }
 
         // Every other asset the page references by attribute (img src/srcset,
@@ -4101,32 +4031,17 @@ fn human_bytes(bytes: usize) -> String {
     }
 }
 
-fn module_script_srcs(html: &str) -> Vec<String> {
-    scan_attrs(html, "<script", "src")
-        .into_iter()
-        .filter(|src| oj_server::html_entry_src(src).is_some())
-        .collect()
-}
-
-#[derive(Debug)]
-struct HtmlScript {
-    src: String,
-    abs: PathBuf,
-}
-
 #[derive(Debug)]
 struct HtmlDoc {
     out_rel: String,
     src_html: String,
-    scripts: Vec<HtmlScript>,
     /// What the page's entry imports, which leave the built page (Vite's
     /// build-html moves them into the entry chunk's tags).
     refs: Vec<PageRef>,
     /// Directory of the source page; relative `<link href>`s resolve against it.
     dir: PathBuf,
-    /// The page as the build's input (its proxy module's id); None for a page
-    /// a plugin emitted, whose scripts are entries of their own.
-    entry: Option<PathBuf>,
+    /// The page's id: its proxy module, the facade of its entry chunk.
+    entry: PathBuf,
 }
 
 /// Inline `<script type="module">…</script>` blocks (no `src`): the byte range
@@ -4196,35 +4111,6 @@ fn externalize_inline_scripts(
     (out, entries)
 }
 
-/// `href`s of `<link rel="stylesheet">` tags that name a local file (relative or
-/// root-absolute), in document order.
-fn stylesheet_hrefs(html: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for (start, _) in html.match_indices("<link") {
-        let Some(end) = html[start..].find('>') else {
-            continue;
-        };
-        let tag = &html[start..start + end];
-        // Quoted or unquoted attributes, any case (html_attr is the shared parser).
-        if !html_attr(tag, "rel").is_some_and(|v| v.eq_ignore_ascii_case("stylesheet")) {
-            continue;
-        }
-        let Some(href) = html_attr(tag, "href") else {
-            continue;
-        };
-        if href.is_empty()
-            || href.starts_with("http://")
-            || href.starts_with("https://")
-            || href.starts_with("//")
-            || href.starts_with("data:")
-        {
-            continue;
-        }
-        out.push(href.to_string());
-    }
-    out
-}
-
 fn normalize_input_entries(input: &serde_json::Value) -> Vec<(String, String)> {
     let name_of = |p: &str| {
         Path::new(p)
@@ -4268,30 +4154,6 @@ fn resolve_html_ref(src: &str, html_dir: &Path, root: &Path) -> PathBuf {
             other => out.push(other),
         }
     }
-    out
-}
-
-/// Vite emits every entry `<script type="module">` with `crossorigin` (module
-/// scripts fetch in CORS mode anyway, and only a crossorigin tag can be
-/// preloaded with `<link rel="preload">`); add it to the tag whose `src` is
-/// `src` unless the page already set it.
-fn add_script_crossorigin(html: &str, src: &str) -> String {
-    let mut out = String::with_capacity(html.len() + 16);
-    let mut rest = html;
-    while let Some(start) = rest.find("<script") {
-        let Some(end) = rest[start..].find('>') else {
-            break;
-        };
-        let tag = &rest[start..start + end];
-        let has_src = html_attr(tag, "src") == Some(src);
-        out.push_str(&rest[..start + end]);
-        if has_src && !has_bare_attr(tag, "crossorigin") && html_attr(tag, "crossorigin").is_none()
-        {
-            out.push_str(" crossorigin");
-        }
-        rest = &rest[start + end..];
-    }
-    out.push_str(rest);
     out
 }
 
@@ -4364,35 +4226,6 @@ fn imported_chunks(
     }
     let mut out = Vec::new();
     walk(file, imports_map, &mut Default::default(), &mut out);
-    out
-}
-
-/// Rewrite the `href` of every `<link>` whose value is `from`, keeping the tag's
-/// own quoting (single, double or none), so a bundled stylesheet link is updated
-/// however the page spelled it.
-fn rewrite_link_hrefs(html: &str, from: &str, to: &str) -> String {
-    let mut out = String::with_capacity(html.len() + to.len());
-    let mut last = 0;
-    for (start, _) in html.match_indices("<link") {
-        if start < last {
-            continue;
-        }
-        let Some(end) = html[start..].find('>') else {
-            continue;
-        };
-        let tag = &html[start..start + end];
-        let Some(value) = html_attr(tag, "href") else {
-            continue;
-        };
-        if value != from {
-            continue;
-        }
-        let offset = value.as_ptr() as usize - tag.as_ptr() as usize;
-        out.push_str(&html[last..start + offset]);
-        out.push_str(to);
-        last = start + offset + value.len();
-    }
-    out.push_str(&html[last..]);
     out
 }
 
@@ -4701,25 +4534,6 @@ fn html_asset_url(
 }
 
 use oj_compiler::html::html_attr;
-
-fn scan_attrs(html: &str, tag_prefix: &str, attr_name: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    for (start, _) in html.match_indices(tag_prefix) {
-        let Some(end) = html[start..].find('>') else {
-            continue;
-        };
-        let tag = &html[start..start + end];
-        if tag_prefix == "<script"
-            && !html_attr(tag, "type").is_some_and(|value| value.eq_ignore_ascii_case("module"))
-        {
-            continue;
-        }
-        if let Some(value) = html_attr(tag, attr_name) {
-            values.push(value.to_string());
-        }
-    }
-    values
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_ssr(
@@ -7976,18 +7790,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_scripts_get_crossorigin_once() {
-        let html = r#"<script type="module" src="/assets/main-1.js"></script><script src="/other.js"></script><script type="module" crossorigin src="/assets/main-1.js"></script>"#;
-        let out = add_script_crossorigin(html, "/assets/main-1.js");
-        assert_eq!(
-            out,
-            r#"<script type="module" src="/assets/main-1.js" crossorigin></script><script src="/other.js"></script><script type="module" crossorigin src="/assets/main-1.js"></script>"#
-        );
-        // Untouched when no tag has that src.
-        assert_eq!(add_script_crossorigin(html, "/nope.js"), html);
-    }
-
-    #[test]
     fn reporter_gzip_and_chunk_warning_follow_vite() {
         let out = scratch("reporter");
         let big = "x".repeat(20_000);
@@ -8141,23 +7943,6 @@ mod tests {
             relative_chunk_path("assets/a/main-h.js", "assets/lazy-h.js"),
             "../lazy-h.js"
         );
-    }
-
-    #[test]
-    fn module_script_srcs_only_module_type_absolute() {
-        let html = r#"<script type="module" src="/src/main.tsx"></script>
-                      <script src="/legacy.js"></script>
-                      <script type="module" src="https://cdn/x.js"></script>"#;
-        let srcs = module_script_srcs(html);
-        assert_eq!(srcs, vec!["/src/main.tsx"]);
-    }
-
-    #[test]
-    fn module_script_srcs_accepts_relative_entries() {
-        let html = r#"<script type="module" src="src/index.tsx"></script>"#;
-        assert_eq!(module_script_srcs(html), vec!["src/index.tsx"]);
-        let html2 = r#"<script type="module" src="./app/main.ts"></script>"#;
-        assert_eq!(module_script_srcs(html2), vec!["./app/main.ts"]);
     }
 
     #[test]
@@ -8584,35 +8369,6 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_link_hrefs_keeps_the_pages_quoting() {
-        let html = "<link rel='stylesheet' href='/site.css'><link rel=stylesheet href=/site.css><link rel=\"stylesheet\" href = \"/site.css\"><link href=\"/other.css\">";
-        let out = rewrite_link_hrefs(html, "/site.css", "/assets/site-abc.css");
-        assert_eq!(
-            out,
-            "<link rel='stylesheet' href='/assets/site-abc.css'><link rel=stylesheet href=/assets/site-abc.css><link rel=\"stylesheet\" href = \"/assets/site-abc.css\"><link href=\"/other.css\">"
-        );
-        assert_eq!(
-            rewrite_link_hrefs("<p>no links</p>", "/a", "/b"),
-            "<p>no links</p>"
-        );
-    }
-
-    #[test]
-    fn stylesheet_hrefs_take_local_stylesheet_links_only() {
-        let html = r#"<html><head>
-          <link rel="stylesheet" href="/src/base.css">
-          <link rel="stylesheet" href="./src/theme.scss">
-          <link rel="stylesheet" href="https://cdn.test/x.css">
-          <link rel="icon" href="favicon.ico">
-          <link rel="modulepreload" href="/assets/chunk.js">
-        </head></html>"#;
-        assert_eq!(
-            stylesheet_hrefs(html),
-            vec!["/src/base.css".to_string(), "./src/theme.scss".to_string()]
-        );
-    }
-
-    #[test]
     fn inline_module_scripts_become_html_proxy_entries() {
         let html = "<html><body>\n<script type=\"module\">import { x } from \"./src/x.js\"; x();</script>\n<script type=\"module\" src=\"/src/main.js\"></script>\n<script>var legacy = 1;</script>\n<script type=\"module\">console.log(2)</script></body></html>";
         let blocks = inline_module_scripts(html);
@@ -8643,8 +8399,10 @@ mod tests {
             out.contains("src=\"/src/main.js\""),
             "external module kept: {out}"
         );
-        // The placeholder is picked up as a module entry src.
-        assert!(module_script_srcs(&out).contains(&"/@oj-inline/0.js".to_string()));
+        // The placeholder is picked up as one of the page entry's imports.
+        assert!(html_tags::page_refs(&out, is_css_request)
+            .iter()
+            .any(|r| matches!(r, PageRef::Script { src, .. } if src == "/@oj-inline/0.js")));
     }
 
     #[test]

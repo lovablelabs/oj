@@ -383,3 +383,47 @@ fn public_dir_scripts_build_vites_exact_files() {
     };
     assert_same_output(&root);
 }
+
+/// Pages a plugin emits as `.html` chunks build like input pages: one entry
+/// each (named by the emit, or after the page), their tags in `<head>`, a
+/// linked stylesheet in the entry's sheet, and `getFileName` naming the chunk.
+#[test]
+fn plugin_emitted_pages_build_vites_exact_files() {
+    let Some(root) = app(
+        "emitted-pages",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            (
+                "vite.config.js",
+                Some(
+                    "import path from \"node:path\";\nconst root = import.meta.dirname;\nlet popup, opts;\n\
+                     export default { plugins: [{\n  name: \"page-emitter\",\n  buildStart() {\n\
+                     \x20   popup = this.emitFile({ type: \"chunk\", id: path.join(root, \"src/pages/popup/index.html\"), name: \"popup\" });\n\
+                     \x20   opts = this.emitFile({ type: \"chunk\", id: path.join(root, \"src/pages/opts/index.html\") });\n  },\n\
+                     \x20 generateBundle() {\n\
+                     \x20   this.emitFile({ type: \"asset\", fileName: \"paths.txt\", source: `${this.getFileName(popup)}\\n${this.getFileName(opts)}\\n` });\n\
+                     \x20 },\n}] };\n",
+                ),
+            ),
+            ("index.html", Some(PAGE)),
+            ("src/main.js", Some("import { s } from \"./shared.js\";\nconsole.log(\"main\", s);\n")),
+            ("src/shared.js", Some("export const s = 1;\n")),
+            (
+                "src/pages/popup/index.html",
+                Some("<!doctype html>\n<html>\n  <head>\n    <title>popup</title>\n    <link rel=\"stylesheet\" href=\"./popup.css\">\n  </head>\n  <body>\n    <script type=\"module\" src=\"./popup.js\"></script>\n  </body>\n</html>\n"),
+            ),
+            (
+                "src/pages/popup/popup.js",
+                Some("import { s } from \"../../shared.js\";\nconsole.log(\"popup\", s);\n"),
+            ),
+            ("src/pages/popup/popup.css", Some(".popup { color: red; }\n")),
+            (
+                "src/pages/opts/index.html",
+                Some("<html><head></head><body><script type=\"module\">console.log(\"opts\")</script></body></html>\n"),
+            ),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
