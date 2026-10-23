@@ -359,7 +359,13 @@ try {
     stdio: ["ignore", "ignore", "inherit"],
   });
   const assets = path.join(out, "client", "assets");
-  const workerFile = fs.readdirSync(assets).find((f) => /^worker-[\w-]+\.js$/.test(f));
+  // The app has two workers: lib/wk's (with the inlined helper) and the one
+  // that fetches an asset. Pick wk's by what it does, not by listing order,
+  // which follows the content hash in its name.
+  const workerFile = fs
+    .readdirSync(assets)
+    .filter((f) => /^worker-[\w-]+\.js$/.test(f))
+    .find((f) => !fs.readFileSync(path.join(assets, f), "utf8").includes("wasset-"));
   must(workerFile, `the build emitted no worker asset: ${fs.readdirSync(assets).join(", ")}`);
   const workerCode = fs.readFileSync(path.join(assets, workerFile), "utf8");
   // The helper's 41 is inlined (a minifier folds `41 + 1` to 42).
