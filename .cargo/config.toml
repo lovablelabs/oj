@@ -6,3 +6,12 @@
 # RUSTFLAGS or append this cfg to it.
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+
+# Anything cargo runs (tests above all) gets no shared oj store: an empty
+# OJ_STORE_DIR turns sharing off, so every cache stays under its app, as
+# tests expect, instead of persisting into ~/.cache/oj/store across runs.
+# Not forced: a run that sets OJ_STORE_DIR keeps it, and the dev test
+# harness points it at its own run dir. `cargo run -p oj -- dev --store=DIR`
+# still opts in.
+[env]
+OJ_STORE_DIR = ""

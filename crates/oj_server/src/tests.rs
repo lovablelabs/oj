@@ -2572,3 +2572,20 @@ fn mono_importers_encode_workspace_relative_and_decode_against_the_serving_works
         .join("packages/ui/Button.tsx");
     assert_eq!(PathBuf::from(decoded), expected);
 }
+
+// A trace row must name what the glob expansion read: an aliased pattern
+// resolves through resolve.alias like the compile's, or the row lists
+// nothing and a file added under the alias never invalidates the entry.
+#[test]
+fn glob_trace_rows_resolve_aliased_patterns() {
+    let root = Path::new("/work/app");
+    let alias = [("@".to_string(), "/work/app/src".to_string())];
+    let source = "const pages = import.meta.glob(\"@/pages/*.tsx\");\n";
+    let patterns = crate::module_pipeline::glob_trace_patterns(
+        source,
+        &root.join("src/main.tsx"),
+        root,
+        &alias,
+    );
+    assert_eq!(patterns, ["/work/app/src/pages/*.tsx"]);
+}

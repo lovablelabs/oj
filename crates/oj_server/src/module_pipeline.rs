@@ -477,15 +477,31 @@ fn glob_trace_rows(state: &ServerState, file: &Path, source: &str) -> Vec<oj_cac
         return Vec::new();
     }
     let workspace = &state.workspace_root_dir;
-    oj_compiler::glob::glob_patterns(source, file, Some(&state.root))
-        .iter()
-        .flat_map(|call| call.patterns.iter())
-        .filter(|pattern| !pattern.starts_with('!'))
+    glob_trace_patterns(source, file, &state.root, &state.glob_alias)
+        .into_iter()
         .map(|pattern| oj_cache::TraceRow {
+            digest: glob_listing_digest(&state.root, workspace, &pattern),
             id: format!("glob:{pattern}"),
-            digest: glob_listing_digest(&state.root, workspace, pattern),
         })
         .collect()
+}
+
+/// The affirmative patterns a module's globs expand, resolved as the compile
+/// resolves them (root-led and aliased ones included), so a trace row lists
+/// what the expansion actually read.
+pub(crate) fn glob_trace_patterns(
+    source: &str,
+    file: &Path,
+    root: &Path,
+    alias: &[(String, String)],
+) -> Vec<String> {
+    oj_compiler::glob::glob_patterns_aliased(source, file, Some(root), &|id| {
+        oj_compiler::glob::string_alias(alias, id)
+    })
+    .into_iter()
+    .flat_map(|call| call.patterns)
+    .filter(|pattern| !pattern.starts_with('!'))
+    .collect()
 }
 
 fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &str) {
