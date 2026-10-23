@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 mod build;
+mod build_watch;
 mod ssr_dev;
 mod ssr_host;
 mod start_bundle;
@@ -151,7 +152,7 @@ enum Command {
         /// Emit the ssr manifest json (optionally under this file name).
         #[arg(long = "ssrManifest", num_args = 0..=1, default_missing_value = "true")]
         ssr_manifest: Option<String>,
-        /// Rebuild on changes (Vite's -w); not supported by oj yet.
+        /// Rebuild on changes (Vite's -w).
         #[arg(short = 'w', long)]
         watch: bool,
         /// Vite's `--app` (builder mode). oj's build already covers every
@@ -617,6 +618,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             });
             let config = resolve_config_arg(&root, config);
             if oj_server::is_tanstack_start_app(&root) {
+                if watch {
+                    anyhow::bail!(
+                        "oj build --watch is not supported for TanStack Start apps yet; run `oj build` again after changes, or use `oj dev`"
+                    );
+                }
                 let mode = mode.unwrap_or_else(|| "production".to_string());
                 start_dev::start_build(root, config, &mode, out).await
             } else {

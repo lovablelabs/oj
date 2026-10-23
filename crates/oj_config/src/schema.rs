@@ -479,7 +479,9 @@ pub struct BuildConfig {
     pub chunk_size_warning_limit: Option<f64>,
     /// Vite's `build.write`; only `true` is supported (oj writes the bundle to disk).
     pub write: Option<bool>,
-    /// Vite's `build.watch`; not supported by oj (warned about, ignored).
+    /// Vite's `build.watch`: `true`/`{}` enables `oj build --watch`; the object
+    /// form carries a chokidar subset (`ignored`, `usePolling`, `interval`) and
+    /// `buildDelay`. Missing/`false`/`null` disables watch.
     pub watch: Option<serde_json::Value>,
     /// Vite's `build.license`; not supported by oj (warned about, ignored).
     pub license: Option<serde_json::Value>,

@@ -10,7 +10,7 @@
 // is independent of `minify`; `import.meta.hot` is `undefined` in a build;
 // unsupported `build.*` options warn instead of being silently ignored.
 
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -63,6 +63,16 @@ function run(args, config) {
   const r = spawnSync(oj, ["build", app, ...args], { encoding: "utf8" });
   return r;
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(pred, what, ms = 30000) {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (pred()) return;
+    await sleep(50);
+  }
+  throw new Error(`timeout waiting for ${what}`);
+}
+const once = (emitter, event) => new Promise((r) => emitter.once(event, r));
 function ok(args, config) {
   const r = run(args, config);
   assert.equal(r.status, 0, `oj build ${args.join(" ")} failed:\n${r.stderr}\n${r.stdout}`);
@@ -191,15 +201,22 @@ try {
   );
   console.log("ok: --manifest <name>, --out alias, -m, -c, --app");
 
-  // 4. --watch is a clear error, not a silent full build.
-  const w = run(["--watch"]);
-  assert.notEqual(w.status, 0, "--watch exits non-zero");
-  assert.match(w.stderr, /--watch is not supported/);
-  console.log("ok: --watch is rejected with a clear message");
+  // 4. --watch starts watching instead of rejecting (behavior is covered by
+  // e2e/build-watch.mjs; here just the banner and a clean signal exit).
+  const w = spawn(oj, ["build", app, "--watch"], { stdio: ["ignore", "pipe", "pipe"] });
+  let watchErr = "";
+  w.stderr.setEncoding("utf8");
+  w.stderr.on("data", (d) => (watchErr += d));
+  w.stdout.resume();
+  await waitFor(() => watchErr.includes("watching for file changes"), "--watch banner");
+  assert.ok(!watchErr.includes("not supported"), "--watch is accepted");
+  w.kill("SIGTERM");
+  await once(w, "exit");
+  console.log("ok: --watch starts watching");
 
-  // 5. Unsupported build.* options warn once each.
-  const u = ok([], { build: { write: false, license: true, commonjsOptions: {}, watch: {} } });
-  for (const key of ["write: false", "watch", "license", "commonjsOptions"]) {
+  // 5. Unsupported build.* options warn once each (watch is supported now).
+  const u = ok([], { build: { write: false, license: true, commonjsOptions: {} } });
+  for (const key of ["write: false", "license", "commonjsOptions"]) {
     assert.ok(u.stderr.includes(`build.${key} is not supported`), `warns about build.${key}:\n${u.stderr}`);
   }
   console.log("ok: unsupported build options warn");

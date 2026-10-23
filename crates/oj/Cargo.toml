@@ -67,6 +67,7 @@ oj_css.workspace = true
 axum.workspace = true
 tower.workspace = true
 notify.workspace = true
+glob = "0.3.4"
 tokio-stream = "0.1.19"
 futures-util = "0.3"
 # Linked (not yet called) so the napi symbols named by build.rs's
