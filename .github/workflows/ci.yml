@@ -185,6 +185,8 @@ jobs:
         run: node e2e/start.mjs
       - name: start prod build honors outDir, base, sourcemap, minify
         run: node e2e/start-build-options.mjs
+      - name: start build empties outDir by Vite's emptyOutDir rule
+        run: node e2e/start-build-outdir.mjs
       - name: start build shares plugin instances, runs moduleParsed, buildApp and emitAssets
         run: node e2e/start-shared-plugins.mjs
       - name: start build bundles workers with worker.plugins, worker.format and worker.rolldownOptions

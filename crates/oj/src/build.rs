@@ -674,7 +674,11 @@ fn empty_dir_keep_git(out_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn prepare_out_dir(root: &Path, out_dir: &Path, empty: Option<bool>) -> anyhow::Result<()> {
+pub(crate) fn prepare_out_dir(
+    root: &Path,
+    out_dir: &Path,
+    empty: Option<bool>,
+) -> anyhow::Result<()> {
     if out_dir_emptiable(root, out_dir, empty, true) {
         // Emptying an outDir that IS the project root deletes the sources the
         // build reads, so it can never be what anyone meant, even with an explicit

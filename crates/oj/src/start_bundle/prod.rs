@@ -263,11 +263,7 @@ pub(crate) async fn build(
     let start = Arc::new(start);
     let dist = out.out_dir.clone();
     let client_dir = dist.join("client");
-    match std::fs::remove_dir_all(&dist) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(anyhow::anyhow!("could not empty {}: {e}", dist.display())),
-    }
+    // The caller emptied the outDir under Vite's emptyOutDir rule.
     std::fs::create_dir_all(&client_dir)?;
 
     // TanStack Start's config hook sets Vite's `builder.sharedPlugins`, so

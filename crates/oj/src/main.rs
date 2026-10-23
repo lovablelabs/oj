@@ -618,7 +618,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let config = resolve_config_arg(&root, config);
             if oj_server::is_tanstack_start_app(&root) {
                 let mode = mode.unwrap_or_else(|| "production".to_string());
-                start_dev::start_build(root, config, &mode, out).await
+                start_dev::start_build(root, config, &mode, out, empty_out_dir).await
             } else {
                 build::build(
                     root,

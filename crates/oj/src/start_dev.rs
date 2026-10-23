@@ -1846,11 +1846,39 @@ pub(crate) fn configured_start_server_entry(
     Some(real)
 }
 
+/// The Start build's outDir (`--out`, else `build.outDir`, else `dist`),
+/// emptied by Vite's emptyOutDir rule as in `oj build`: one outside the root
+/// is left alone unless `--emptyOutDir`/`build.emptyOutDir` says otherwise,
+/// and the root itself is never emptied.
+fn prepare_start_out_dir(
+    root: &Path,
+    out: Option<PathBuf>,
+    build_cfg: &oj_config::BuildConfig,
+    empty_out_dir: bool,
+) -> anyhow::Result<PathBuf> {
+    let out = out
+        .or_else(|| build_cfg.out_dir.as_ref().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("dist"));
+    let out_dir = if out.is_absolute() {
+        out
+    } else {
+        root.join(out)
+    };
+    let empty = if empty_out_dir {
+        Some(true)
+    } else {
+        build_cfg.empty_out_dir
+    };
+    crate::build::prepare_out_dir(root, &out_dir, empty)?;
+    Ok(out_dir)
+}
+
 pub async fn start_build(
     root: PathBuf,
     config_file: Option<PathBuf>,
     mode: &str,
     out: Option<PathBuf>,
+    empty_out_dir: bool,
 ) -> anyhow::Result<()> {
     let root = root
         .canonicalize()
@@ -1885,20 +1913,7 @@ pub async fn start_build(
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     let build_cfg = config.build.clone().unwrap_or_default();
-    let out = out
-        .or_else(|| build_cfg.out_dir.as_ref().map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("dist"));
-    let out_dir = if out.is_absolute() {
-        out
-    } else {
-        root.join(out)
-    };
-    if out_dir.canonicalize().ok().as_deref() == Some(root.as_path()) {
-        anyhow::bail!(
-            "build.outDir {} is the project root; refusing to empty it. Point outDir at a subdirectory.",
-            out_dir.display()
-        );
-    }
+    let out_dir = prepare_start_out_dir(&root, out, &build_cfg, empty_out_dir)?;
     // Vite's rule: the shell's NODE_ENV wins, else `.env[.mode]`
     // NODE_ENV=development makes a development build, else production. The
     // shell's NODE_ENV comes from the startup snapshot, so nothing an engine
@@ -3212,6 +3227,57 @@ fn collect_headers(headers: &header::HeaderMap) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_build_out_dir_follows_vites_empty_out_dir_rule() {
+        let base = tmp("start-out-dir");
+        let root = base.join("app");
+        let outside = base.join("shared");
+        for dir in [root.join("dist"), outside.clone()] {
+            std::fs::create_dir_all(dir.join(".git")).unwrap();
+            std::fs::write(dir.join("keep.txt"), "x").unwrap();
+        }
+        let cfg = oj_config::BuildConfig::default();
+
+        // Inside the root: emptied, `.git` kept.
+        let dist = prepare_start_out_dir(&root, None, &cfg, false).unwrap();
+        assert_eq!(dist, root.join("dist"));
+        assert!(!dist.join("keep.txt").exists());
+        assert!(dist.join(".git").is_dir());
+
+        // Outside the root: left alone.
+        prepare_start_out_dir(&root, Some(outside.clone()), &cfg, false).unwrap();
+        assert!(
+            outside.join("keep.txt").exists(),
+            "an outside outDir was emptied"
+        );
+
+        // `--emptyOutDir` and `build.emptyOutDir: true` opt in.
+        prepare_start_out_dir(&root, Some(outside.clone()), &cfg, true).unwrap();
+        assert!(!outside.join("keep.txt").exists());
+        std::fs::write(outside.join("keep.txt"), "x").unwrap();
+        let opted = oj_config::BuildConfig {
+            empty_out_dir: Some(true),
+            out_dir: Some(outside.display().to_string()),
+            ..Default::default()
+        };
+        prepare_start_out_dir(&root, None, &opted, false).unwrap();
+        assert!(!outside.join("keep.txt").exists());
+
+        // `build.emptyOutDir: false` keeps an inside outDir.
+        std::fs::write(root.join("dist/keep.txt"), "x").unwrap();
+        let kept = oj_config::BuildConfig {
+            empty_out_dir: Some(false),
+            ..Default::default()
+        };
+        prepare_start_out_dir(&root, None, &kept, false).unwrap();
+        assert!(root.join("dist/keep.txt").exists());
+
+        // The root itself is refused even when asked.
+        std::fs::write(root.join("src.ts"), "x").unwrap();
+        assert!(prepare_start_out_dir(&root, Some(root.clone()), &cfg, true).is_err());
+        assert!(root.join("src.ts").exists());
+    }
 
     #[test]
     fn the_hmr_gate_turns_the_bundlers_hot_updates_off() {
