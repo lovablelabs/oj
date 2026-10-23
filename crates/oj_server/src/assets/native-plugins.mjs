@@ -30,6 +30,9 @@ export const OJ_NATIVE_PLUGIN_NAMES = new Set([
   "vite:react-refresh-fbm",
   "vite:react-swc:refresh-bundled-dev",
   "vite:react-virtual-preamble",
+  // @stylexjs/unplugin: oj compiles StyleX natively (oj_stylex) with the
+  // options extraction records, and serves the plugin's dev endpoints itself.
+  "@stylexjs/unplugin",
 ]);
 
 // Dev-tooling plugins oj cannot host: they drive a full Vite dev server (ws

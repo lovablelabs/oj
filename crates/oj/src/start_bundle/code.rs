@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use oj_compiler::glob::GlobCall;
+
+use super::facts::AliasEntry;
 use oj_compiler::meta_glob::{self, MetaUrlTarget};
 use rolldown_plugin::{
     HookTransformArgs, HookTransformOutput, HookTransformReturn, Plugin,
@@ -37,6 +39,9 @@ pub(crate) struct StartCodePlugin {
     /// Every glob a client bundle expanded, for the dev rebundle gate (a file
     /// created that one matches changes the bundle).
     glob_scopes: Option<Arc<Mutex<Vec<GlobCall>>>>,
+    /// The app's `resolve.alias`, which an aliased glob pattern resolves
+    /// through (Vite's toAbsoluteGlob -> resolveId).
+    alias: Vec<AliasEntry>,
     warned: Mutex<HashSet<String>>,
 }
 
@@ -52,8 +57,14 @@ impl StartCodePlugin {
             root: root.to_path_buf(),
             target,
             glob_scopes: None,
+            alias: Vec::new(),
             warned: Mutex::new(HashSet::new()),
         }
+    }
+
+    pub fn with_alias(mut self, alias: Vec<AliasEntry>) -> Self {
+        self.alias = alias;
+        self
     }
 
     pub fn recording_globs(mut self, scopes: Arc<Mutex<Vec<GlobCall>>>) -> Self {
@@ -159,7 +170,8 @@ impl Plugin for StartCodePlugin {
             && code.contains("import.meta.glob")
         {
             let mut scopes = Vec::new();
-            let out = meta_glob::transform_glob(&code, &file, &self.root, &mut scopes)
+            let alias = |id: &str| self.alias.iter().find_map(|e| e.apply(id));
+            let out = meta_glob::transform_glob(&code, &file, &self.root, &alias, &mut scopes)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(record) = &self.glob_scopes {
                 record.lock().unwrap().extend(scopes);

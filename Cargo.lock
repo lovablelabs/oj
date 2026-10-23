@@ -86,6 +86,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -828,6 +829,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "browserslist-data"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21d369bf3fe9811518eead42e2cdf9ed9915579242864297689894c0f1089712"
+dependencies = [
+ "ahash 0.8.12",
+ "chrono",
+]
+
+[[package]]
+name = "browserslist-rs"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dd48a6ca358df4f7000e3fb5f08738b1b91a0e5d5f862e2f77b2b14647547f5"
+dependencies = [
+ "ahash 0.8.12",
+ "browserslist-data",
+ "chrono",
+ "either",
+ "itertools 0.13.0",
+ "nom 7.1.3",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1041,8 +1069,10 @@ version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
+ "iana-time-zone",
  "num-traits",
  "serde",
+ "windows-link",
 ]
 
 [[package]]
@@ -4019,6 +4049,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fru"
+version = "0.2.45"
+dependencies = [
+ "clap",
+ "mimalloc",
+ "oj_env",
+ "oj_stylex",
+ "serde_json",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4761,6 +4802,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "iana-time-zone"
+version = "0.1.65"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
+dependencies = [
+ "android_system_properties",
+ "core-foundation-sys",
+ "iana-time-zone-haiku",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "windows-core",
+]
+
+[[package]]
+name = "iana-time-zone-haiku"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "icu_calendar"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5458,6 +5523,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "libnghttp2"
 version = "1.68.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5521,6 +5595,7 @@ checksum = "d31b760f96e8fdfe1d0c295e4bf76c503d6f15d2d470d53bd8cd1f7aa8c7d934"
 dependencies = [
  "ahash 0.8.12",
  "bitflags 2.13.2",
+ "browserslist-rs",
  "const-str",
  "cssparser 0.37.0",
  "cssparser-color",
@@ -5667,6 +5742,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mimalloc"
+version = "0.1.52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+dependencies = [
+ "libmimalloc-sys",
 ]
 
 [[package]]
@@ -6194,6 +6278,7 @@ dependencies = [
  "oj_js",
  "oj_resolver",
  "oj_server",
+ "oj_stylex",
  "oxc_allocator",
  "oxc_parser",
  "oxc_sourcemap",
@@ -6242,6 +6327,7 @@ version = "0.2.45"
 dependencies = [
  "blake3",
  "oj_env",
+ "oj_stylex",
  "proptest",
  "serde",
  "serde_json",
@@ -6257,6 +6343,7 @@ dependencies = [
  "globset",
  "memchr",
  "oj_env",
+ "oj_stylex",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
@@ -6304,6 +6391,7 @@ name = "oj_css"
 version = "0.2.45"
 dependencies = [
  "base64 0.22.1",
+ "browserslist-rs",
  "grass",
  "lightningcss",
  "oxc_resolver",
@@ -6524,6 +6612,7 @@ dependencies = [
  "oj_graph",
  "oj_js",
  "oj_resolver",
+ "oj_stylex",
  "oxc_allocator",
  "oxc_parser",
  "oxc_sourcemap",
@@ -6549,6 +6638,30 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tower",
+]
+
+[[package]]
+name = "oj_stylex"
+version = "0.2.45"
+dependencies = [
+ "blake3",
+ "clap",
+ "memchr",
+ "oj_env",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_ast_visit",
+ "oxc_codegen",
+ "oxc_parser",
+ "oxc_semantic",
+ "oxc_sourcemap",
+ "oxc_span",
+ "oxc_str",
+ "oxc_syntax",
+ "ryu-js",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

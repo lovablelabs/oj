@@ -1,0 +1,8625 @@
+[
+ {
+  "name": "const string",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = 'red';\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "const number",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst w = 4;\nexport const s = stylex.create({ a: { width: w } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "const object members",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { primary: 'red', size: 4 };\nexport const s = stylex.create({ a: { color: t.primary, width: t.size } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "nested object chain",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { button: { primary: 'blue' } };\nexport const s = stylex.create({ a: { color: t.button.primary } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xju2f9n",
+    "ltr": ".xju2f9n{color:blue}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xju2f9n"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "computed member const key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { primary: 'red' };\nconst k = 'primary';\nexport const s = stylex.create({ a: { color: t[k] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "computed member literal key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { 'weird key': 'red' };\nexport const s = stylex.create({ a: { color: t['weird key'] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "template compose",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst size = 8;\nexport const s = stylex.create({ a: { width: `${size}px` } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1xc55vz",
+    "ltr": ".x1xc55vz{width:8px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1xc55vz"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "template arithmetic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst size = 8;\nexport const s = stylex.create({ a: { width: `${size / 2}px`, height: `${size * 1.5}px` } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1kpxq89",
+    "ltr": ".x1kpxq89{height:12px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "kZKoxP",
+           "x1kpxq89"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "template nested",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst size = 8;\nexport const s = stylex.create({ a: { width: `${`${size}`}px` } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1xc55vz",
+    "ltr": ".x1xc55vz{width:8px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1xc55vz"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "template number formatting",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: `${1e21}px`, height: `${0.5}px` } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x16az5ie",
+    "ltr": ".x16az5ie{width:1e+21px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x28ko6u",
+    "ltr": ".x28ko6u{height:.5px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x16az5ie"
+          ],
+          [
+           "kZKoxP",
+           "x28ko6u"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "annotated const",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c: string = 'red';\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "as const object",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { primary: 'red' } as const;\nexport const s = stylex.create({ a: { color: t.primary } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "satisfies",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = 'red' satisfies string;\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "as-expression inline",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: (4 as number) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "arithmetic ops",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 4 + 4, height: 9 - 2, margin: 8 * 2, padding: 9 / 3, top: 9 % 4, zIndex: 2 ** 5 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1xc55vz",
+    "ltr": ".x1xc55vz{width:8px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1hagigm",
+    "ltr": ".x1hagigm{height:7px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xtj3y72",
+    "ltr": ".xtj3y72{margin:16px}",
+    "rtl": null,
+    "priority": 1000
+   },
+   {
+    "className": "x9ms5i6",
+    "ltr": ".x9ms5i6{padding:3px}",
+    "rtl": null,
+    "priority": 1000
+   },
+   {
+    "className": "xnfr1j",
+    "ltr": ".xnfr1j{top:1px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xcegukh",
+    "ltr": ".xcegukh{z-index:32}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1xc55vz"
+          ],
+          [
+           "kZKoxP",
+           "x1hagigm"
+          ],
+          [
+           "kogj98",
+           "xtj3y72"
+          ],
+          [
+           "kmVPX3",
+           "x9ms5i6"
+          ],
+          [
+           "k87sOh",
+           "xnfr1j"
+          ],
+          [
+           "kY2c9j",
+           "xcegukh"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "float concat",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: (0.1 + 0.2) + 'px' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xcqrntm",
+    "ltr": ".xcqrntm{width:.30000000000000004px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xcqrntm"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string concat calc",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst gap = 8;\nexport const s = stylex.create({ a: { width: 'calc(100% - ' + gap + 'px)' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1o2z316",
+    "ltr": ".x1o2z316{width:calc(100% - 8px)}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1o2z316"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "unary ops",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst w = 4;\nexport const s = stylex.create({ a: { width: -w, height: +'8', zIndex: ~3 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xwuqybm",
+    "ltr": ".xwuqybm{width:-4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xdk7pt",
+    "ltr": ".xdk7pt{height:8px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1ait3xh",
+    "ltr": ".x1ait3xh{z-index:-4}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xwuqybm"
+          ],
+          [
+           "kZKoxP",
+           "xdk7pt"
+          ],
+          [
+           "kY2c9j",
+           "x1ait3xh"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "conditional const test",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst dark = true;\nexport const s = stylex.create({ a: { color: dark ? 'black' : 'white' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1mqxbix",
+    "ltr": ".x1mqxbix{color:black}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1mqxbix"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "conditional untaken nonstatic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: true ? 4 : unknownRef } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "logical forms",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst empty = '';\nconst v = 'red';\nexport const s = stylex.create({ a: { color: empty || 'blue', backgroundColor: v && 'green', outlineColor: null ?? 'purple' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xju2f9n",
+    "ltr": ".xju2f9n{color:blue}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1u857p9",
+    "ltr": ".x1u857p9{background-color:green}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xirdtz0",
+    "ltr": ".xirdtz0{outline-color:purple}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xju2f9n"
+          ],
+          [
+           "kWkggS",
+           "x1u857p9"
+          ],
+          [
+           "kjBf7l",
+           "xirdtz0"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "logical or right nonstatic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 4 || unknownRef } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "infinity nan values",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { zIndex: Infinity, opacity: NaN } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xbdygrb",
+    "ltr": ".xbdygrb{z-index:Infinity}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1yfwku",
+    "ltr": ".x1yfwku{opacity:NaN}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kY2c9j",
+           "xbdygrb"
+          ],
+          [
+           "kSiTet",
+           "x1yfwku"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: String(5) + 'px', content: String() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1ftt334",
+    "ltr": ".x1ftt334{width:5px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x14axycx",
+    "ltr": ".x14axycx{content:\"\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1ftt334"
+          ],
+          [
+           "kah6P1",
+           "x14axycx"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "number call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { opacity: Number('0.5'), zIndex: Number(true), order: Number() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xbyyjgo",
+    "ltr": ".xbyyjgo{opacity:.5}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1vjfegm",
+    "ltr": ".x1vjfegm{z-index:1}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1g77sc7",
+    "ltr": ".x1g77sc7{order:0}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kSiTet",
+           "xbyyjgo"
+          ],
+          [
+           "kY2c9j",
+           "x1vjfegm"
+          ],
+          [
+           "kayTVb",
+           "x1g77sc7"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math calls",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.min(4, 8), height: Math.max(1, 2, 3), top: Math.floor(4.7), bottom: Math.ceil(4.2), left: Math.round(2.5), right: Math.abs(-3), margin: Math.pow(2, 3), padding: Math.sqrt(16) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xuoj239",
+    "ltr": ".xuoj239{height:3px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xndqk7f",
+    "ltr": ".xndqk7f{top:4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1wa3icf",
+    "ltr": ".x1wa3icf{bottom:5px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x4mh905",
+    "ltr": ".x4mh905{left:3px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xmnqija",
+    "ltr": ".xmnqija{right:3px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xkib98w",
+    "ltr": ".xkib98w{margin:8px}",
+    "rtl": null,
+    "priority": 1000
+   },
+   {
+    "className": "xfawy5m",
+    "ltr": ".xfawy5m{padding:4px}",
+    "rtl": null,
+    "priority": 1000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "kZKoxP",
+           "xuoj239"
+          ],
+          [
+           "k87sOh",
+           "xndqk7f"
+          ],
+          [
+           "krVfgx",
+           "x1wa3icf"
+          ],
+          [
+           "kbCHJM",
+           "x4mh905"
+          ],
+          [
+           "kCIrl2",
+           "xmnqija"
+          ],
+          [
+           "kogj98",
+           "xkib98w"
+          ],
+          [
+           "kmVPX3",
+           "xfawy5m"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "typeof in sequence",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst o = { a: 1 };\nexport const s = stylex.create({ a: { width: ('a' in o) ? 1 : 2, height: (unusedRef, 4), color: typeof 'x' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1i1rx1s",
+    "ltr": ".x1i1rx1s{width:1px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xqu0tyb",
+    "ltr": ".xqu0tyb{height:4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1hvktrv",
+    "ltr": ".x1hvktrv{color:string}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1i1rx1s"
+          ],
+          [
+           "kZKoxP",
+           "xqu0tyb"
+          ],
+          [
+           "kMwMTN",
+           "x1hvktrv"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "equality ops",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 4 === 4 ? 1 : 2, height: '4' == 4 ? 3 : 4, top: 4 != 4 ? 5 : 6, bottom: '4' != 4 ? 7 : 8 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1i1rx1s",
+    "ltr": ".x1i1rx1s{width:1px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xuoj239",
+    "ltr": ".xuoj239{height:3px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1atx4j1",
+    "ltr": ".x1atx4j1{top:6px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1l3r47z",
+    "ltr": ".x1l3r47z{bottom:7px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1i1rx1s"
+          ],
+          [
+           "kZKoxP",
+           "xuoj239"
+          ],
+          [
+           "k87sOh",
+           "x1atx4j1"
+          ],
+          [
+           "krVfgx",
+           "x1l3r47z"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "comparison ops",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 3 < 4 ? 1 : 2, height: 'b' > 'a' ? 3 : 4, top: 4 <= 4 ? 5 : 6 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1i1rx1s",
+    "ltr": ".x1i1rx1s{width:1px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xuoj239",
+    "ltr": ".xuoj239{height:3px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1jzctok",
+    "ltr": ".x1jzctok{top:5px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1i1rx1s"
+          ],
+          [
+           "kZKoxP",
+           "xuoj239"
+          ],
+          [
+           "k87sOh",
+           "x1jzctok"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "bitwise ops",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 6 & 3, height: 6 | 3, top: 6 ^ 3, bottom: 1 << 4, left: -8 >> 1, right: -8 >>> 28 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1hagigm",
+    "ltr": ".x1hagigm{height:7px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1jzctok",
+    "ltr": ".x1jzctok{top:5px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x191j7n5",
+    "ltr": ".x191j7n5{bottom:16px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x6zskup",
+    "ltr": ".x6zskup{left:-4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xck1cs1",
+    "ltr": ".xck1cs1{right:15px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "kZKoxP",
+           "x1hagigm"
+          ],
+          [
+           "k87sOh",
+           "x1jzctok"
+          ],
+          [
+           "krVfgx",
+           "x191j7n5"
+          ],
+          [
+           "kbCHJM",
+           "x6zskup"
+          ],
+          [
+           "kCIrl2",
+           "xck1cs1"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "spread inner",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst base = { color: 'red' };\nexport const s = stylex.create({ a: { ...base, width: 4 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "spread overwrite order",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst base = { color: 'red', width: 1 };\nexport const s = stylex.create({ a: { color: 'blue', ...base, width: 2 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "spread of spread",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst inner = { color: 'red' };\nconst outer = { ...inner, width: 4 };\nexport const s = stylex.create({ a: { ...outer } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "spread nullish noop",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst nothing = null;\nexport const s = stylex.create({ a: { ...nothing, color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "computed condition key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst k = ':hover';\nexport const s = stylex.create({ a: { [k]: { color: 'red' } } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1dgwipm",
+    "ltr": ".x1dgwipm:hover{color:red}",
+    "rtl": null,
+    "priority": 3130
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kDPRdz",
+           "x1dgwipm"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "computed namespace key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst n = 'primary';\nexport const s = stylex.create({ [n]: { color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "primary",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "template namespace key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst i = 2;\nexport const s = stylex.create({ [`ns${i}`]: { color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "ns2",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "numeric computed prop key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { [10]: 'x', color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xboj4u0",
+    "ltr": ".xboj4u0{10:x}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kWc9cM",
+           "xboj4u0"
+          ],
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "numeric namespace keys reorder",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ 10: { color: 'red' }, 2: { color: 'blue' }, zz: { color: 'green' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xju2f9n",
+    "ltr": ".xju2f9n{color:blue}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1prwzq3",
+    "ltr": ".x1prwzq3{color:green}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "2",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xju2f9n"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ],
+       [
+        "10",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ],
+       [
+        "zz",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1prwzq3"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array value from const",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst f = ['var(--a)', 'red'];\nexport const s = stylex.create({ a: { color: f } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1om8dd8",
+    "ltr": ".x1om8dd8{color:var(--a);color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1om8dd8"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "bool arithmetic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: true + true } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "let unmutated",
+  "source": "import * as stylex from '@stylexjs/stylex';\nlet c = 'red';\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "var unmutated",
+  "source": "import * as stylex from '@stylexjs/stylex';\nvar c = 'green';\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1prwzq3",
+    "ltr": ".x1prwzq3{color:green}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1prwzq3"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string length and index",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = 'red';\nexport const s = stylex.create({ a: { width: c.length, content: c[0] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1g8rjiy",
+    "ltr": ".x1g8rjiy{width:3px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1rntxz0",
+    "ltr": ".x1rntxz0{content:\"r\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1g8rjiy"
+          ],
+          [
+           "kah6P1",
+           "x1rntxz0"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "const referencing const",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst base = 4;\nconst double = base * 2;\nexport const s = stylex.create({ a: { width: double } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1xc55vz",
+    "ltr": ".x1xc55vz{width:8px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1xc55vz"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "deep member into arrays",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { list: ['a', 'b'] };\nexport const s = stylex.create({ a: { content: t.list[1], width: t.list.length } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xa8xio6",
+    "ltr": ".xa8xio6{content:\"b\"}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "xa8xio6"
+          ],
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme value",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x148nit4",
+    "ltr": ".x148nit4{color:var(--xvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x148nit4"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme value treeshake",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.accent, backgroundColor: colors.foreground } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "treeshakeCompensation": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x148nit4",
+    "ltr": ".x148nit4{color:var(--xvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x15ripmy",
+    "ltr": ".x15ripmy{background-color:var(--xq0mp9o)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [
+   "./tokens.stylex"
+  ],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x148nit4"
+          ],
+          [
+           "kWkggS",
+           "x15ripmy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme two files treeshake order",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints } from './consts.stylex.const';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: { default: colors.accent, [breakpoints.small]: 'blue' } } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "treeshakeCompensation": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x148nit4",
+    "ltr": ".x148nit4{color:var(--xvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xbih2e2",
+    "ltr": "var(--xo8ayu9){.xbih2e2.xbih2e2{color:blue}}",
+    "rtl": null,
+    "priority": 6000
+   }
+  ],
+  "expectedTreeshake": [
+   "./consts.stylex.const",
+   "./tokens.stylex"
+  ],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x148nit4 xbih2e2"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme custom-prop key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors['--raw'] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1n05w2n",
+    "ltr": ".x1n05w2n{color:var(--raw)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1n05w2n"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme digit and weird keys debug",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors['2fast'], backgroundColor: colors['weird key!'] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "debug": true,
+   "enableDebugClassNames": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "color-x14jsx6",
+    "ltr": ".color-x14jsx6{color:var(--_2fast-x1b5gxzd)}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "backgroundColor-xkf3gr3",
+    "ltr": ".backgroundColor-xkf3gr3{background-color:var(--weird_key_-x1ry63tk)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "color-kMwMTN",
+           "color-x14jsx6"
+          ],
+          [
+           "backgroundColor-kWkggS",
+           "backgroundColor-xkf3gr3"
+          ],
+          [
+           "$$css",
+           "eval-pins-pkg:src/input.ts:3"
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme var group hash member",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.__varGroupHash__ } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1tdo0ie",
+    "ltr": ".x1tdo0ie{color:x2zeerb}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1tdo0ie"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme tostring template",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: `${colors}` } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1tdo0ie",
+    "ltr": ".x1tdo0ie{color:x2zeerb}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1tdo0ie"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme tostring call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.toString() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1tdo0ie",
+    "ltr": ".x1tdo0ie{color:x2zeerb}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1tdo0ie"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme nested dotted chain",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.button.primary } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xcqo5n",
+    "ltr": ".xcqo5n{color:var(--xpb7u25)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xcqo5n"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme nested computed chain",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors['button']['primary'], backgroundColor: colors.button['secondary'] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xcqo5n",
+    "ltr": ".xcqo5n{color:var(--xpb7u25)}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1ad3cdi",
+    "ltr": ".x1ad3cdi{background-color:var(--x1fo2xnh)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xcqo5n"
+          ],
+          [
+           "kWkggS",
+           "x1ad3cdi"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme numeric key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors[0] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xngpi6s",
+    "ltr": ".xngpi6s{color:var(--x1mvd0rx)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xngpi6s"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme prefix option",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "classNamePrefix": "pfx"
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "pfx17713ut",
+    "ltr": ".pfx17713ut{color:var(--pfxvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "pfx17713ut"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme dev mode",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "dev": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x148nit4",
+    "ltr": ".x148nit4{color:var(--xvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "input__s.a",
+           "input__s.a"
+          ],
+          [
+           "color-kMwMTN",
+           "x148nit4"
+          ],
+          [
+           "$$css",
+           "eval-pins-pkg:src/input.ts:3"
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "const condition key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints } from './consts.stylex.const';\nexport const s = stylex.create({ a: { color: { default: 'red', [breakpoints.small]: 'blue' } } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xbih2e2",
+    "ltr": "var(--xo8ayu9){.xbih2e2.xbih2e2{color:blue}}",
+    "rtl": null,
+    "priority": 6000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu xbih2e2"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "const as value",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints } from './consts.stylex.const';\nexport const s = stylex.create({ a: { content: breakpoints.small } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1xaspa9",
+    "ltr": ".x1xaspa9{content:var(--xo8ayu9)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x1xaspa9"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme value as namespace key",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ [colors.accent]: { color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "var(--xvmhlkl)",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme aliased import hashes imported name",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors as c } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: c.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x148nit4",
+    "ltr": ".x148nit4{color:var(--xvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x148nit4"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme two groups one decl",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors, spacing } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.accent, gap: spacing.gap } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x148nit4",
+    "ltr": ".x148nit4{color:var(--xvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xtnr8wz",
+    "ltr": ".xtnr8wz{gap:var(--xffqri5)}",
+    "rtl": null,
+    "priority": 2000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x148nit4"
+          ],
+          [
+           "kOIVth",
+           "xtnr8wz"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "theme specifier with ts ext",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex.ts';\nexport const s = stylex.create({ a: { color: colors.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x148nit4",
+    "ltr": ".x148nit4{color:var(--xvmhlkl)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x148nit4"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "probe dual extensionless picks js",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { dual } from './dual.stylex';\nexport const s = stylex.create({ a: { color: dual.x } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1prt8z0",
+    "ltr": ".x1prt8z0{color:var(--xxtybpe)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1prt8z0"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "probe dual ts direct",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { dual } from './dual.stylex.ts';\nexport const s = stylex.create({ a: { color: dual.x } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1cd0hyz",
+    "ltr": ".x1cd0hyz{color:var(--xai900s)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1cd0hyz"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "probe raw file wins",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { raw } from './raw.stylex';\nexport const s = stylex.create({ a: { color: raw.x } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x132u083",
+    "ltr": ".x132u083{color:var(--x11xz37v)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x132u083"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "probe js specifier ts on disk",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { only } from './onlyts.stylex.js';\nexport const s = stylex.create({ a: { color: only.x } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1vz4d5k",
+    "ltr": ".x1vz4d5k{color:var(--x1lnszyo)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1vz4d5k"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "noname package canonical",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { t } from '../../noname/tokens.stylex';\nexport const s = stylex.create({ a: { color: t.a } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x19omar4",
+    "ltr": ".x19omar4{color:var(--xhjb6j8)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x19omar4"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "bare tree rootdir-relative canonical",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { plain } from './plain.stylex';\nexport const s = stylex.create({ a: { color: plain.a } });",
+  "filename": "<FIXROOT>/bare/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/bare"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1p23duv",
+    "ltr": ".x1p23duv{color:var(--x1plh1qd)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1p23duv"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "bare tree wider rootdir",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { plain } from './plain.stylex';\nexport const s = stylex.create({ a: { color: plain.a } });",
+  "filename": "<FIXROOT>/bare/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1dop0cc",
+    "ltr": ".x1dop0cc{color:var(--x16yh9rv)}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1dop0cc"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "debug data prop lines",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({\n  one: { color: 'red' },\n  two: { width: 4 },\n});",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "debug": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "one",
+        {
+         "$obj": [
+          [
+           "color-kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           "eval-pins-pkg:src/input.ts:3"
+          ]
+         ]
+        }
+       ],
+       [
+        "two",
+        {
+         "$obj": [
+          [
+           "width-kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           "eval-pins-pkg:src/input.ts:4"
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "dev classnames",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({\n  one: { color: 'red' },\n  two: { width: 4 },\n});",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "dev": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "one",
+        {
+         "$obj": [
+          [
+           "input__s.one",
+           "input__s.one"
+          ],
+          [
+           "color-kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           "eval-pins-pkg:src/input.ts:3"
+          ]
+         ]
+        }
+       ],
+       [
+        "two",
+        {
+         "$obj": [
+          [
+           "input__s.two",
+           "input__s.two"
+          ],
+          [
+           "width-kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           "eval-pins-pkg:src/input.ts:4"
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "test mode",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({\n  one: { color: 'red' },\n  two: { width: 4 },\n});",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "test": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "one",
+        {
+         "$obj": [
+          [
+           "input__s.one",
+           "input__s.one"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ],
+       [
+        "two",
+        {
+         "$obj": [
+          [
+           "input__s.two",
+           "input__s.two"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "debug rootdir branch",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: 'red' } });",
+  "filename": "<FIXROOT>/bare/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/bare"
+   },
+   "debug": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "color-kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           "src/input.ts:2"
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "debug cwd inside package",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({\n  one: { color: 'red' },\n  two: { width: 4 },\n});",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>/pkg/src",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "debug": true
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "one",
+        {
+         "$obj": [
+          [
+           "color-kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           "src/input.ts:3"
+          ]
+         ]
+        }
+       ],
+       [
+        "two",
+        {
+         "$obj": [
+          [
+           "width-kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           "src/input.ts:4"
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "require namespace",
+  "source": "const stylex = require('@stylexjs/stylex');\nconst s = stylex.create({ a: { color: 'red' } });\nexport { s };",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "named create import",
+  "source": "import { create } from '@stylexjs/stylex';\nexport const s = create({ a: { color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "aliased create import",
+  "source": "import { create as c } from '@stylexjs/stylex';\nexport const s = c({ a: { color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "custom import source",
+  "source": "import * as css from 'foo-bar';\nexport const s = css.create({ a: { color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "importSources": [
+    "foo-bar"
+   ]
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "default export create",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport default (stylex.create({ a: { color: 'red' } }));",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "default"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "default",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "two creates share rules",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: 'red' } });\nexport const t = stylex.create({ b: { color: 'red', width: 4 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s",
+   "t"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ],
+    [
+     "t",
+     {
+      "$obj": [
+       [
+        "b",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "import after create still counts",
+  "source": "export const s = stylex.create({ a: { color: 'red' } });\nimport * as stylex from '@stylexjs/stylex';",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "err imported helper call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { helper } from './helpers';\nexport const s = stylex.create({ a: { color: helper() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Could not resolve the path to the imported file.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err imported helper value",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { helper } from './helpers';\nexport const s = stylex.create({ a: { color: helper } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Could not resolve the path to the imported file.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err math random",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.random() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err undeclared ref",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: mystery } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced constant is not defined.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err non-theme import",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { helper } from './not-a-theme';\nexport const s = stylex.create({ a: { color: helper } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Could not resolve the path to the imported file.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err default import from theme",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport colors from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "There was an error when attempting to evaluate the imported file.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err namespace import from theme",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport * as tokens from './tokens.stylex';\nexport const s = stylex.create({ a: { color: tokens.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced constant is not defined.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err missing theme file",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { nope } from './missing.stylex';\nexport const s = stylex.create({ a: { color: nope.x } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Could not resolve the path to the imported file.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err theme import without moduleResolution",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: colors.accent } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {},
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Could not resolve the path to the imported file.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err stylex named import as value",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { create } from 'stylex';\nexport const s = stylex.create({ a: { color: create } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Could not resolve the path to the imported file.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err used before declaration",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: W } });\nconst W = 4;",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is used before declaration.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err reassigned let",
+  "source": "import * as stylex from '@stylexjs/stylex';\nlet c = 'red';\nc = 'blue';\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err mutated const push",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst f = ['red'];\nf.push('blue');\nexport const s = stylex.create({ a: { color: f } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err object assign mutation",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { color: 'red' };\nObject.assign(t, { color: 'blue' });\nexport const s = stylex.create({ a: { ...t } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err destructured const",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst { c } = { c: 'red' };\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: VariableDeclarator",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err let without init",
+  "source": "import * as stylex from '@stylexjs/stylex';\nlet c;\nexport const s = stylex.create({ a: { color: c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unexpected error:",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err array elision",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: [, 'red'] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unexpected error:",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err array spread",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst more = ['red'];\nexport const s = stylex.create({ a: { color: ['blue', ...more] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: SpreadElement",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err nullish falsy left",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst z = 0;\nexport const s = stylex.create({ a: { width: z ?? 5 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "unknown error",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err ts non-null",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst w = 4 as number;\nexport const s = stylex.create({ a: { width: w! } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: TSNonNullExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err tagged template",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: String.raw`x` } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: TaggedTemplateExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err bigint",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 4n } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: BigIntLiteral",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err regex value",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: /x/ } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: RegExpLiteral",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err optional member",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 4 };\nexport const s = stylex.create({ a: { width: t?.a } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: OptionalMemberExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err optional call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 4 };\nexport const s = stylex.create({ a: { width: t?.a?.() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: OptionalCallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err object method namespace",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { b() { return 1; } } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported object method.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err object getter",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: { get x() { return 1; } }.x } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported object method.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err top-level spread",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst base = { a: { color: 'red' } };\nexport const s = stylex.create({ ...base });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Object spreads are not allowed in create() calls.",
+   "code": "NoObjectSpreads",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err non-object arg",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create('red');",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "create() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err two args",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: 'red' } }, {});",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "create() should have 1 argument.",
+   "code": "IllegalArgumentLength",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err as-const wrapped arg",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: 'red' } } as const);",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "create() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err computed namespace key nonstatic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ [Math.random()]: { color: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Only static values are allowed inside of a create() call.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err computed condition key nonstatic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { [Math.random()]: 'red' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err member on undefined",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { width: t.b.c } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Cannot read properties of undefined (reading 'c')",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err undefined value",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: undefined } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "A style value can only contain an array, string or number.",
+   "code": "IllegalPropValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err env member value",
+  "source": "import * as stylex from '@stylexjs/stylex';\nimport { env } from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: env.THEME } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   },
+   "env": {}
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "A style value can only contain an array, string or number.",
+   "code": "IllegalPropValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err delete operator",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { width: delete t.a } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err template nonstatic expr",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: `${Math.random()}px` } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err logical and left nonstatic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: unknownRef && 4 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced constant is not defined.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "err logical or right nonstatic taken",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: false || unknownRef } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced constant is not defined.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "nullish truthy left short circuit",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 4 ?? unknownRef } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "err nullish left nonstatic",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: unknownRef ?? 4 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced constant is not defined.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "gap dynamic arrow namespace",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: (w) => ({ width: w }) });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "rustExpect": {
+   "code": "UnsupportedApi"
+  },
+  "expectedRules": [
+   {
+    "className": "x5lhr3w",
+    "ltr": ".x5lhr3w{width:var(--x-width)}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "--x-width",
+    "ltr": "@property --x-width { syntax: \"*\"; inherits: false;}",
+    "rtl": null,
+    "priority": 0
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "local arrow call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst f = () => 'red';\nexport const s = stylex.create({ a: { color: f() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "local arrow call with params",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst px = (n, unit) => `${n}${unit}`;\nexport const s = stylex.create({ a: { width: px(4, 'px') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string method call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: 'abc'.toUpperCase() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xj5ouxf",
+    "ltr": ".xj5ouxf{content:\"ABC\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "xj5ouxf"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "object keys call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { width: Object.keys(t).length } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1i1rx1s",
+    "ltr": ".x1i1rx1s{width:1px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1i1rx1s"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "coerce arr eq zero",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: [] == 0 ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "coerce obj eq obj",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: ({}) == ({}) ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xju2f9n",
+    "ltr": ".xju2f9n{color:blue}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xju2f9n"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "identity self strict eq",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst x = {};\nexport const s = stylex.create({ a: { color: x === x ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "identity alias strict eq",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst x = {};\nconst y = x;\nexport const s = stylex.create({ a: { color: x === y ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "coerce arr relational",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: ['2'] < ['10'] ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xju2f9n",
+    "ltr": ".xju2f9n{color:blue}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xju2f9n"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "identity arr self le",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst x = [2];\nexport const s = stylex.create({ a: { color: x <= x ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "coerce arr eq string",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: [2] == '2' ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "coerce arr eq false",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: [0] == false ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "fresh array elements identity",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst x = {};\nconst a = [x, x];\nexport const s = stylex.create({ a: { color: a[0] === a[1] ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xju2f9n",
+    "ltr": ".xju2f9n{color:blue}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xju2f9n"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "identity arrow self eq",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst f = () => 1;\nexport const s = stylex.create({ a: { color: f === f ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math min nan",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { opacity: Math.min(1, NaN, 2) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1yfwku",
+    "ltr": ".x1yfwku{opacity:NaN}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kSiTet",
+           "x1yfwku"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math max nan width",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.max(1, NaN, 2) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1c9rq88",
+    "ltr": ".x1c9rq88{width:NaNpx}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1c9rq88"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array constructor member",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: Array('red')[0] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array constructor length",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Array(3).length } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1g8rjiy",
+    "ltr": ".x1g8rjiy{width:3px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1g8rjiy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math trunc",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.trunc(1.9) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1i1rx1s",
+    "ltr": ".x1i1rx1s{width:1px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1i1rx1s"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math sign product",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.sign(-3) * -4 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math hypot",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.hypot(3, 4) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1ftt334",
+    "ltr": ".x1ftt334{width:5px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1ftt334"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math clz32 imul",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.clz32(1) + Math.imul(3, 4) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xyg06dn",
+    "ltr": ".xyg06dn{width:43px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xyg06dn"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "math random deopts",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.random() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "math const call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math.PI() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "func.apply is not a function",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "math called directly",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math(1) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "func.apply is not a function",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "object values entries",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 4 };\nexport const s = stylex.create({ a: { width: Object.values(t)[0], height: Object.entries(t)[0][1] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "xqu0tyb",
+    "ltr": ".xqu0tyb{height:4px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "kZKoxP",
+           "xqu0tyb"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "object keys of string",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = 'ab';\nexport const s = stylex.create({ a: { width: Object.keys(t).length } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "object keys undefined",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Object.keys(undefined).length } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Cannot convert undefined or null to object",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "object fromentries is hasown",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { width: Object.fromEntries([['a', 4]]).a, color: Object.is(NaN, NaN) && Object.hasOwn(t, 'a') ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x51ohtg",
+    "ltr": ".x51ohtg{width:4px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x51ohtg"
+          ],
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "getownpropertynames array",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = [1, 2];\nexport const s = stylex.create({ a: { content: Object.getOwnPropertyNames(t).join('-') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x8masv",
+    "ltr": ".x8masv{content:\"0-1-length\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x8masv"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string fromcharcode",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: String.fromCharCode(97, 98) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xarbti",
+    "ltr": ".xarbti{content:\"ab\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "xarbti"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "number parseint parsefloat",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Number.parseInt('42px', 10) + Number.parseFloat('.5e1x') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xs2mk4o",
+    "ltr": ".xs2mk4o{width:47px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xs2mk4o"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "number isnan isinteger",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { color: Number.isNaN(NaN) && Number.isInteger(4) ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array isarray of from",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Array.isArray([]) ? Array.of(4)[0] + Array.from('ab').length : 0 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1v4s8kt",
+    "ltr": ".x1v4s8kt{width:6px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1v4s8kt"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array from arraylike mapper",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { length: 2 };\nexport const s = stylex.create({ a: { content: Array.from('ab', (c) => c + '!').join('') , width: Array.from(t).length } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xrzm2ae",
+    "ltr": ".xrzm2ae{content:\"a!b!\"}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "xrzm2ae"
+          ],
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string literal methods",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: 'abc'.toUpperCase() + 'ABC'.toLowerCase() + 'abcdef'.slice(1, 3) + 'ab'.repeat(2) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x10brbo8",
+    "ltr": ".x10brbo8{content:\"ABCabcbcabab\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x10brbo8"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string search methods",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: 'abcabc'.indexOf('b', 2) + 'abc'.charCodeAt(0), color: 'abc'.endsWith('bc') && 'abc'.includes('b') && 'abc'.startsWith('a') ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xfvs6mw",
+    "ltr": ".xfvs6mw{width:101px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xfvs6mw"
+          ],
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string pad at substring",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: '5'.padStart(3, '0') + 'abc'.at(-1) + 'abcdef'.substring(4, 1) + 'abcdef'.substr(1, 2) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1tp1au3",
+    "ltr": ".x1tp1au3{content:\"005cbcdbc\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x1tp1au3"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "string split join",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = 'a b';\nexport const s = stylex.create({ a: { content: c.split(' ').join('-') + 'a,b'.split().join('|') + 'ab'.split('').join('.') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1hnp236",
+    "ltr": ".x1hnp236{content:\"a-ba,ba.b\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x1hnp236"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "const string method receiver",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = 'abc';\nexport const s = stylex.create({ a: { content: c.toUpperCase() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xj5ouxf",
+    "ltr": ".xj5ouxf{content:\"ABC\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "xj5ouxf"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array methods with arrows",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = [1, 5, 8];\nexport const s = stylex.create({ a: { width: c.map((x) => x * 2)[1] + c.filter((x) => x > 4).length + c.find((x) => x > 4) + c.reduce((a, b) => a + b, 0) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xq14iec",
+    "ltr": ".xq14iec{width:31px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xq14iec"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array join includes indexof",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = ['a', 'b'];\nexport const s = stylex.create({ a: { content: c.join('-'), width: c.includes('b') ? c.indexOf('b') + 1 : 0 } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1t42mo",
+    "ltr": ".x1t42mo{content:\"a-b\"}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x1t42mo"
+          ],
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "array slice concat flat",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst c = [1, [2, [3]]];\nexport const s = stylex.create({ a: { width: c.flat(1).length + [1].concat([2, 3], 4).length + [1, 2, 3].slice(-2)[0] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1wc42o8",
+    "ltr": ".x1wc42o8{width:9px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "x1wc42o8"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "inline sort join",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: [3, 1, 20].sort().join('') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1eckobr",
+    "ltr": ".x1eckobr{content:\"1203\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x1eckobr"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "keys sort binding mutation deopt",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst k = Object.keys({ b: 1, a: 2 });\nexport const s = stylex.create({ a: { content: k.sort().join('') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "number tostring radix tofixed",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst n = 255;\nconst m = 0.125;\nexport const s = stylex.create({ a: { content: n.toString(16) + '|' + m.toFixed(2) + '|' + (-0.125).toFixed(2) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1v7sqn5",
+    "ltr": ".x1v7sqn5{content:\"ff|0.13|-0.13\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x1v7sqn5"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "numeric literal method this error",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: (1.5).toFixed(1) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Number.prototype.toFixed requires that 'this' be a Number",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "object prototype methods",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { content: t.toString(), color: t.hasOwnProperty('a') && t.propertyIsEnumerable('a') ? 'red' : 'blue', width: t.valueOf().a } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x12ljtz1",
+    "ltr": ".x12ljtz1{content:\"[object Object]\"}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   },
+   {
+    "className": "x1i1rx1s",
+    "ltr": ".x1i1rx1s{width:1px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x12ljtz1"
+          ],
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "kzqmXN",
+           "x1i1rx1s"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "own noncallable call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { width: t.a() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "func.apply is not a function",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "own missing call deopts",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { width: t.b() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "shadowed math still global",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst Math = { min: () => 99 };\nexport const s = stylex.create({ a: { width: Math.min(1, 2) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1i1rx1s",
+    "ltr": ".x1i1rx1s{width:1px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "shadowed number local arrow wins",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst Number = (x) => 99;\nexport const s = stylex.create({ a: { width: Number('4') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xgf8fm",
+    "ltr": ".xgf8fm{width:99px}",
+    "rtl": null,
+    "priority": 4000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "computed math member deopts",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Math['min'](1, 2) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "unknown global call",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: parseInt('42px') } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced constant is not defined.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "json stringify deopts",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst t = { a: 1 };\nexport const s = stylex.create({ a: { content: JSON.stringify(t) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "string repeat negative",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: 'ab'.repeat(-1) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Invalid count value: -1",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "reduce empty no initial",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: [].reduce((a, b) => a + b) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Reduce of empty array with no initial value",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "duplicate var nonconstant",
+  "source": "import * as stylex from '@stylexjs/stylex';\nvar w = 1;\nvar w = 2;\nexport const s = stylex.create({ a: { width: w } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "cycle two consts",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst a = b;\nconst b = a;\nexport const s = stylex.create({ x: { color: a } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is used before declaration.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "alias chain forward tdz skip",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst a = b;\nconst b = 'red';\nexport const s = stylex.create({ x: { color: a } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "mutated alias resolve bypass",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst theme = { color: 'red' };\nObject.assign(theme, { color: 'blue' });\nconst alias = theme;\nexport const s = stylex.create({ a: { color: alias.color } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "violated alias stays nonconstant",
+  "source": "import * as stylex from '@stylexjs/stylex';\nlet theme = { color: 'red' };\ntheme = { color: 'green' };\nconst alias = theme;\nexport const s = stylex.create({ a: { color: alias.color } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "defaulted arrow deopts",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst f = (x = 1) => x;\nexport const s = stylex.create({ a: { width: f() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: ArrowFunctionExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "const number call func apply",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst f = 5;\nexport const s = stylex.create({ a: { width: f() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "func.apply is not a function",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "const zero call deopts",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst f = 0;\nexport const s = stylex.create({ a: { width: f() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Unsupported expression: CallExpression",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "registry value call func apply",
+  "source": "import { when, create } from '@stylexjs/stylex';\nexport const s = create({ a: { width: when() } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "func.apply is not a function",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "parens object assign",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst theme = { color: 'red' };\nObject.assign((theme), { color: 'blue' });\nexport const s = stylex.create({ a: { color: theme.color } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "parens member assign",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst theme = { color: 'red' };\n((theme)).color = 'blue';\nexport const s = stylex.create({ a: { color: theme.color } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "parens push delete update",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst arr = ['red'];\n(arr).push('blue');\nexport const s = stylex.create({ a: { color: arr[0] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "ts as wrapper hides mutation",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst theme = { color: 'red' };\nObject.assign(theme as any, { color: 'blue' });\n(theme as any).color = 'green';\nexport const s = stylex.create({ a: { color: theme.color } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": []
+ },
+ {
+  "name": "parens callee object assign",
+  "source": "import * as stylex from '@stylexjs/stylex';\nconst theme = { color: 'red' };\n(Object.assign)(theme, { color: 'blue' });\nexport const s = stylex.create({ a: { color: theme.color } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedError": {
+   "message": "Referenced value is not a constant.",
+   "code": "NonStaticValue",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "emoji index lone surrogate",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: '\\uD83D\\uDE00'[0] } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "rustExpect": {
+   "code": "UnsupportedApi"
+  }
+ },
+ {
+  "name": "lone surrogate literal",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: '\\uD800' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "rustExpect": {
+   "code": "UnsupportedApi"
+  }
+ },
+ {
+  "name": "fromcharcode lone surrogate",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: String.fromCharCode(0xD800) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "rustExpect": {
+   "code": "UnsupportedApi"
+  }
+ },
+ {
+  "name": "emoji whole and paired slice",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: '\\uD83D\\uDE00' + 'x\\uD83D\\uDE00y'.slice(1, 3) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "x119eoyx",
+    "ltr": ".x119eoyx{content:\"😀😀\"}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kah6P1",
+           "x119eoyx"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ {
+  "name": "emoji charat lone surrogate",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { content: '\\uD83D\\uDE00'.charAt(1) } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "rustExpect": {
+   "code": "UnsupportedApi"
+  }
+ },
+ {
+  "name": "number nel whitespace",
+  "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ a: { width: Number('\\u0085') ? 1 : 2, color: Number.isNaN(Number('\\u0085')) ? 'red' : 'blue' } });",
+  "filename": "<FIXROOT>/pkg/src/input.ts",
+  "cwd": "<FIXROOT>",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>/pkg"
+   }
+  },
+  "exports": [
+   "s"
+  ],
+  "expectedRules": [
+   {
+    "className": "xfo62xy",
+    "ltr": ".xfo62xy{width:2px}",
+    "rtl": null,
+    "priority": 4000
+   },
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ],
+  "expectedTreeshake": [],
+  "expectedCompiled": {
+   "$obj": [
+    [
+     "s",
+     {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kzqmXN",
+           "xfo62xy"
+          ],
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ }
+]

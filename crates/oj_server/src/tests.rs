@@ -860,19 +860,41 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
 }
 
 #[test]
-fn restart_triggers_include_every_config_flavor() {
+fn restart_triggers_are_the_files_oj_loaded() {
+    let root = Path::new("/app");
+    let files = restart_files(
+        root,
+        &root.join("config/../env"),
+        "staging",
+        Some(Path::new("/elsewhere/custom.config.ts")),
+    );
     for f in [
-        "oj.config.ts",
-        "oj.config.json",
-        "vite.config.mts",
-        ".env",
-        ".env.staging",
-        "postcss.config.cjs",
+        "/app/oj.config.ts",
+        "/app/oj.config.json",
+        "/app/vite.config.mts",
+        "/app/postcss.config.cjs",
+        "/app/env/.env",
+        "/app/env/.env.local",
+        "/app/env/.env.staging",
+        "/app/env/.env.staging.local",
+        "/elsewhere/custom.config.ts",
     ] {
-        assert!(is_restart_trigger(Path::new(f)), "{f}");
+        assert!(is_restart_trigger(&files, Path::new(f)), "{f}");
     }
-    for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
-        assert!(!is_restart_trigger(Path::new(f)), "{f}");
+    // Vite restarts for the mode's env files in envDir and the config only:
+    // the same names elsewhere (a sibling package an outside-root `@source`
+    // watches, a nested dir, another mode) are files like any other.
+    for f in [
+        "/app/src/main.ts",
+        "/app/package.json",
+        "/app/.env",
+        "/app/env/.env.production",
+        "/app/src/.env",
+        "/app/packages/ui/vite.config.ts",
+        "/sibling/.env",
+        "/sibling/postcss.config.js",
+    ] {
+        assert!(!is_restart_trigger(&files, Path::new(f)), "{f}");
     }
 }
 
@@ -1303,7 +1325,11 @@ fn stamp_import_url_marks_only_compilable_module_urls() {
         stamp_import_url("/src/a.css?inline", 5),
         "/src/a.css?inline&t=5"
     );
-    assert_eq!(stamp_import_url("/logo.svg?url", 5), "/logo.svg?url");
+    assert_eq!(
+        stamp_import_url("/src/hero.png?url", 5),
+        "/src/hero.png?url&t=5",
+        "an updated image's importer must fetch its new url"
+    );
     assert_eq!(
         stamp_import_url("/@oj-deps/react.js", 5),
         "/@oj-deps/react.js"
@@ -1397,29 +1423,54 @@ fn preload_hints_name_the_exact_import_url() {
         "/@oj-deps/react.mjs?v=1d335a14".to_string(),
     )]
     .into();
-    assert_eq!(preload_href("/src/main.tsx", &entries), "/src/main.tsx");
-    assert_eq!(preload_href("/src/a.css", &entries), "/src/a.css?import");
+    assert_eq!(
+        preload_href("/src/main.tsx", &entries, false),
+        "/src/main.tsx"
+    );
+    assert_eq!(
+        preload_href("/src/a.css", &entries, false),
+        "/src/a.css?import"
+    );
     // A pre-bundled entry preloads under the URL importers name it by now,
     // not the session's base version, so the preload and the later import
     // hit one immutable cache entry and a rerun leaves no stale hint.
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &entries),
+        preload_href("/@oj-deps/react.mjs", &entries, false),
         "/@oj-deps/react.mjs?v=1d335a14"
     );
     assert_eq!(
-        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries),
+        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries, false),
         "/@oj-deps/chunk-AB12CD.mjs",
         "dep files import chunks bare"
     );
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &HashMap::new()),
+        preload_href("/@oj-deps/react.mjs", &HashMap::new(), false),
         "/@oj-deps/react.mjs",
         "no entry, no query"
     );
     assert_eq!(
-        preload_href("/@id/6e6f6465", &entries),
+        preload_href("/@id/6e6f6465", &entries, false),
         "/@id/6e6f6465",
         "stubs are unversioned"
+    );
+    // The bare asset url is the `<img src>`'s raw file; the import is `?url`.
+    assert_eq!(
+        preload_href("/src/assets/hero.png", &entries, false),
+        "/src/assets/hero.png?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, false),
+        "/src/logo.svg?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, true),
+        "/src/logo.svg",
+        "a transform plugin may componentize a bare svg import"
+    );
+    assert_eq!(
+        preload_href("/node_modules/pkg/icon.png", &entries, false),
+        "/node_modules/pkg/icon.png",
+        "a dependency's asset import is not marked"
     );
 }
 

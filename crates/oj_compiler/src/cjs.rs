@@ -20,25 +20,43 @@ use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 use crate::{CompileError, CompileOutput};
 
 /// A dependency file: ESM goes through the normal compile with `env`'s
-/// defines (so `process.env.NODE_ENV` is replaced), CJS is wrapped.
+/// defines (so `process.env.NODE_ENV` is replaced), CJS is wrapped. `stylex`
+/// compiles a dependency the StyleX plugin reaches (one kept out of the
+/// pre-bundle), in either module format.
 pub fn compile_dep(
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut dyn FnMut(&str) -> Option<String>,
     env: Option<std::sync::Arc<crate::ImportMetaEnv>>,
+    stylex: Option<&std::sync::Arc<oj_stylex::plugin::StylexPlugin>>,
 ) -> Result<CompileOutput, CompileError> {
     if has_module_syntax(path, source_text) {
         let opts = crate::CompileOptions {
             refresh: false,
             sourcemap: false,
             env,
+            stylex: stylex.cloned(),
             ..crate::CompileOptions::dev()
         };
-        crate::compile_module(path, source_text, &opts, Some(resolve))
-    } else {
-        wrap_cjs(path, url, source_text, resolve)
+        return crate::compile_module(path, source_text, &opts, Some(resolve));
     }
+    // Babel compiles `require` forms too; the wrap follows the compile.
+    let compiled = match stylex {
+        Some(plugin) if plugin.handles(&path.to_string_lossy(), source_text) => plugin
+            .transform_source(path, source_text)
+            .map_err(|message| CompileError::Transform {
+                path: path.to_path_buf(),
+                message,
+            })?,
+        _ => None,
+    };
+    let Some(compiled) = compiled else {
+        return wrap_cjs(path, url, source_text, resolve);
+    };
+    let mut out = wrap_cjs(path, url, &compiled.code, resolve)?;
+    out.stylex_rules = compiled.rules;
+    Ok(out)
 }
 
 pub fn has_module_syntax_pub(path: &Path, source_text: &str) -> bool {
@@ -183,6 +201,7 @@ pub fn wrap_cjs(
         import_bindings: Vec::new(),
         is_refresh_boundary: false,
         hot_accept: None,
+        stylex_rules: Vec::new(),
     })
 }
 
@@ -589,7 +608,7 @@ exports.named = 1;
     fn esm_deps_bypass_the_cjs_wrapper() {
         let src = r#"export const x = 1;"#;
         let mut resolve = |_: &str| None;
-        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve, None).unwrap();
+        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve, None, None).unwrap();
         assert!(out.code.contains("export const x = 1"));
         assert!(!out.code.contains("__cjs_exports"));
     }

@@ -1,0 +1,207 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-when-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/when-when-ancestor-function-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor(':hover')]: 'red',\n              },\n            },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-when-siblingbefore-function-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.siblingBefore(':focus')]: 'red',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-namespace-imports-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        \n        const styles = stylex.create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [stylex.when.ancestor(':hover')]: 'red',\n              [stylex.when.siblingBefore(':focus')]: 'green',\n              [stylex.when.anySibling(':active')]: 'yellow',\n              [stylex.when.siblingAfter(':focus')]: 'purple',\n              [stylex.when.descendant(':focus')]: 'orange',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-aliased-imports-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when as w, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [w.ancestor(':hover')]: 'red',\n              [w.siblingBefore(':focus')]: 'green',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-validates-pseudo-selector-fo-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n          \n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('hover')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/when-rejects-pseudo-elements-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n\n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('::before')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/when-validates-attribute-selector-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n\n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('[data-state=\"open\"')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/when-rejects-invalid-selector-for-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n\n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('invalid')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/when-when-ancestor-with-attribute-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n\n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.ancestor('[data-panel-state=\"open\"]')]: 'red',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-when-descendant-with-attribu-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n\n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.descendant('[data-panel-state=\"open\"]')]: 'green',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-named-import-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { defaultMarker, props } from '@stylexjs/stylex';\n        \n        const classNames = props(defaultMarker());\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "props"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-namespace-import-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        \n        const classNames = stylex.props(stylex.defaultMarker());\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "props"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/when-named-import-of-custom-marke-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import {customMarker} from 'custom-marker.stylex';\n\n        const styles = stylex.create({\n          foo: {\n            backgroundColor: {\n              default: 'blue',\n              [stylex.when.ancestor(':hover', customMarker)]: 'red',\n            },\n          },\n        });\n        \n        const container = stylex.props(customMarker);\n        const classNames = stylex.props(styles.foo);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["when", "props", "create"],
+      "expect": "ok"
+    }
+  ]
+}

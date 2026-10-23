@@ -55,8 +55,18 @@ async fn compile_plugin_source(
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let compile_opts = dev_compile_opts(state);
-    tokio::task::spawn_blocking(move || {
+    let mut compile_opts = dev_compile_opts(state);
+    // StyleX compiles the loaded source under its id (its hashes derive from
+    // it, and its rules are recorded there), not under the synthetic path the
+    // compile below uses.
+    compile_opts.stylex = None;
+    let stylex_id = importer.trim_start_matches('\0').to_string();
+    let st = Arc::clone(state);
+    let compiled = tokio::task::spawn_blocking(move || {
+        let (source, stylex_rules) = match crate::stylex::pre_transform(&st, &stylex_id, &source)? {
+            Some(pre) => (pre.code, Some((stylex_id, pre.rules))),
+            None => (source, None),
+        };
         let mut rewrite = |spec: &str| {
             if let Some(url) = pre(spec) {
                 return Some(url);
@@ -81,11 +91,16 @@ async fn compile_plugin_source(
             &compile_opts,
             Some(&mut rewrite),
         )
-        .map(|o| o.code_with_inline_map())
+        .map(|o| (o.code_with_inline_map(), stylex_rules))
         .map_err(|e| format!("{e}"))
     })
     .await
-    .unwrap_or_else(|e| Err(format!("compile task failed: {e}")))
+    .unwrap_or_else(|e| Err(format!("compile task failed: {e}")))?;
+    let (code, stylex_rules) = compiled;
+    if let Some((id, rules)) = stylex_rules {
+        crate::stylex::record_id(state, &id, &rules);
+    }
+    Ok(code)
 }
 
 fn compiled_response(compiled: Result<String, String>) -> Response {

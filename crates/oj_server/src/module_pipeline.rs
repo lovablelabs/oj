@@ -111,13 +111,40 @@ pub(crate) async fn ensure_module_as(
 
     if is_server {
         let code = server_fn_stub(&oj_compiler::exports(&source, file), url);
-        let module = Arc::new(code_module(code));
+        let mut module = code_module(code);
+        // Vite's StyleX pass (`enforce: 'pre'`) runs before the server-fn
+        // rewrite, so the stub keeps the module's rules, which its SSR compile
+        // records under the same id.
+        if let Some(pre) = crate::stylex::pre_transform(state, &hook_id(file, url), &source)? {
+            module.stylex_rules = pre.rules;
+        }
+        let module = Arc::new(module);
         store_module(state, url, &key, &module);
         return Ok((key, module));
     }
 
     let transform_id = transform_id.map_or_else(|| hook_id(file, url), str::to_string);
-    let transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
+    // The StyleX plugin is `enforce: 'pre'`: it compiles the module's own
+    // source, ahead of the app's transforms and oj's CJS-interop rewrite (off
+    // the async workers: a large module's compile is real work).
+    let (source, stylex_map, stylex_rules) = match &state.stylex {
+        Some(plugin) if plugin.handles(&transform_id, &source) => {
+            let (st, id) = (Arc::clone(state), transform_id.clone());
+            let pre = tokio::task::spawn_blocking(move || {
+                crate::stylex::pre_transform(&st, &id, &source).map(|pre| {
+                    pre.unwrap_or_else(|| crate::stylex::PreTransformed::unchanged(source))
+                })
+            })
+            .await
+            .map_err(|e| format!("StyleX compile task failed: {e}"))??;
+            (pre.code, pre.map, Some(pre.rules))
+        }
+        _ => (source, None, None),
+    };
+    let mut transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
+    if let Some(map) = stylex_map {
+        transformed.maps.insert(0, map);
+    }
     let source = if is_preprocessor(url) {
         preprocess_less_stylus(state, url, transformed.code).await?
     } else {
@@ -182,6 +209,9 @@ pub(crate) async fn ensure_module_as(
     let module = match compiled {
         Ok(Ok(mut module)) => {
             module.watch_files = transformed.watch_files;
+            if let Some(rules) = stylex_rules {
+                module.stylex_rules = rules;
+            }
             Arc::new(module)
         }
         Ok(Err(err)) => {
@@ -226,15 +256,15 @@ fn code_module(code: String) -> CachedModule {
         fs_allow: Vec::new(),
         watch_files: Vec::new(),
         import_bindings: Vec::new(),
+        stylex_rules: Vec::new(),
     }
 }
 
 /// `export default "<url>"`: how a non-compiled asset import is served.
 fn url_asset_module(url: &str) -> CachedModule {
-    let clean = url.split('?').next().unwrap_or(url);
     code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(clean.to_string())
+        serde_json::Value::String(asset_export_url(url))
     ))
 }
 
@@ -346,10 +376,12 @@ fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &st
         return;
     }
     let patterns: Vec<oj_compiler::glob::GlobMatcher> =
-        oj_compiler::glob::glob_patterns(source, file, Some(&state.root))
-            .iter()
-            .map(|call| call.matcher())
-            .collect();
+        oj_compiler::glob::glob_patterns_aliased(source, file, Some(&state.root), &|id| {
+            oj_compiler::glob::string_alias(&state.glob_alias, id)
+        })
+        .iter()
+        .map(|call| call.matcher())
+        .collect();
     let clean = url.split('?').next().unwrap_or(url).to_string();
     let mut globs = state.glob_importers.lock().unwrap();
     if patterns.is_empty() {
@@ -405,6 +437,10 @@ fn compile_key(
     // must miss (Vite invalidates its whole module graph on that reload).
     mode_key.push_str("+deps");
     mode_key.push_str(&state.optimized.browser_version());
+    if let Some(stylex) = &state.stylex {
+        mode_key.push_str("+stylex");
+        mode_key.push_str(stylex.fingerprint());
+    }
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
@@ -743,6 +779,7 @@ impl CompileJob {
             },
             require_map: Vec::new(),
             css_exports: Vec::new(),
+            stylex_rules: output.stylex_rules,
         })
     }
 
@@ -762,6 +799,7 @@ impl CompileJob {
                 dep_src,
                 &mut |spec: &str| rw.rewrite(spec, &self.state.require_resolver),
                 Some(Arc::clone(&self.state.import_meta_env)),
+                None,
             );
         }
         // Gated on a cheap bare-import scan: the interop rewrite (a full
@@ -787,6 +825,7 @@ impl CompileJob {
             dep_src,
             &mut |spec: &str| rw.rewrite(spec, &self.state.resolver),
             Some(Arc::clone(&self.state.import_meta_env)),
+            None,
         )
     }
 
@@ -807,6 +846,8 @@ impl CompileJob {
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
+        // StyleX ran ahead of the app's plugins (see ensure_module_as).
+        opts.stylex = None;
         oj_compiler::compile_module_with_maps(
             &self.file,
             interopped.as_deref().unwrap_or(&self.source),
@@ -855,6 +896,9 @@ impl ImportRewrite<'_> {
         }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
+        }
+        if crate::stylex::virtual_module(state, spec).is_some() {
+            return Some(format!("/@id/{spec}"));
         }
         // Vite runs plugins' resolveId before its own resolver: a non-bare import
         // a filter claims goes to /@id/, which falls back to disk on decline.
@@ -1061,6 +1105,9 @@ pub(crate) fn fs_allow_from(imports: &[String]) -> Vec<String> {
 }
 
 pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
+    // Every path that hands out a module (compile, memory, disk) lands here,
+    // so the stylesheet always holds the variant being served.
+    crate::stylex::record(state, url, &module.stylex_rules);
     if !module.fs_allow.is_empty() {
         let mut allow = state.fs_allow.lock().unwrap();
         for p in &module.fs_allow {

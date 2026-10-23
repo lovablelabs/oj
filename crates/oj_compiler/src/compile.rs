@@ -83,6 +83,12 @@ pub struct CompileOptions {
     /// The app root (Vite's `config.root`) that `/`-led `import.meta.glob`
     /// patterns resolve against; `None` leaves them matching nothing.
     pub root: Option<PathBuf>,
+    /// The app's string `resolve.alias` entries (find, replacement), which an
+    /// aliased `import.meta.glob("@/x/*.ts")` pattern resolves through.
+    pub alias: Arc<[(String, String)]>,
+    /// The config's `@stylexjs/unplugin`, run on the parsed source before any
+    /// other transform (the plugin is `enforce: 'pre'`).
+    pub stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
 }
 
 impl CompileOptions {
@@ -96,6 +102,8 @@ impl CompileOptions {
             class_field_set_semantics: None,
             env: None,
             root: None,
+            alias: Arc::from([]),
+            stylex: None,
         }
     }
 
@@ -109,6 +117,8 @@ impl CompileOptions {
             class_field_set_semantics: None,
             env: None,
             root: None,
+            alias: Arc::from([]),
+            stylex: None,
         }
     }
 }
@@ -130,6 +140,8 @@ pub struct CompileOutput {
     /// `Some` when the module references `import.meta.hot` (it needs a hot
     /// context injected); what its `accept` calls declared.
     pub hot_accept: Option<HotAccept>,
+    /// The StyleX rules this module compiled to (empty without the plugin).
+    pub stylex_rules: Vec<oj_stylex::rules::StylexRule>,
 }
 
 /// The `import.meta.hot.accept(...)` forms a module uses (Vite's
@@ -204,6 +216,15 @@ pub fn compile_module_with_maps(
     let allocator = Allocator::default();
 
     let mut program = parse(&allocator, path, source_text, source_type)?;
+    let stylex_rules = match &opts.stylex {
+        Some(stylex) if stylex.handles(&path.to_string_lossy(), source_text) => stylex
+            .transform_program(&allocator, &mut program, path, source_text)
+            .map_err(|message| CompileError::Transform {
+                path: path.to_path_buf(),
+                message,
+            })?,
+        _ => Vec::new(),
+    };
     transform(&allocator, path, source_text, opts, &mut program)?;
     apply_defines(&allocator, source_text, opts, &mut program);
     let synthesized = expand_synthesized(&allocator, path, opts, source_text, &mut program);
@@ -225,6 +246,7 @@ pub fn compile_module_with_maps(
         import_bindings: specifiers.bindings,
         is_refresh_boundary,
         hot_accept,
+        stylex_rules,
     })
 }
 
@@ -443,7 +465,8 @@ fn expand_synthesized<'a>(
     let dir = path.parent().unwrap_or(path);
     let mut synthesized = false;
     if scan(&F_IMPORT_META_GLOB, source_text) {
-        glob::expand(allocator, path, opts.root.as_deref(), program);
+        let alias = |id: &str| glob::string_alias(&opts.alias, id);
+        glob::expand(allocator, path, opts.root.as_deref(), &alias, program);
         synthesized = true;
     }
     if scan(&F_IMPORT_PAREN, source_text) {
@@ -502,6 +525,38 @@ fn codegen(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn stylex_compiles_before_typescript_and_reports_rules() {
+        let plugin = oj_stylex::plugin::StylexPlugin::new(
+            &serde_json::json!({}),
+            Path::new("/app"),
+            false,
+            false,
+        )
+        .unwrap();
+        let mut opts = CompileOptions::prod();
+        opts.stylex = Some(Arc::new(plugin));
+        let src = "import * as stylex from '@stylexjs/stylex';\n\
+                   const styles = stylex.create({ root: { color: 'red' } });\n\
+                   export const App = (p: { n: number }) => <div {...stylex.props(styles.root)} />;\n";
+        let out = compile_module(Path::new("/app/src/App.tsx"), src, &opts, None).unwrap();
+        assert!(!out.code.contains("stylex.create"), "{}", out.code);
+        assert!(out.code.contains("x1e2nbdu"), "{}", out.code);
+        assert!(!out.code.contains(": number"), "TypeScript still stripped");
+        assert_eq!(out.stylex_rules.len(), 1);
+        assert_eq!(&*out.stylex_rules[0].ltr, ".x1e2nbdu{color:red}");
+
+        // Off the plugin's gate (no import source), the module is untouched.
+        let plain = compile_module(
+            Path::new("/app/src/b.ts"),
+            "export const x = 1;\n",
+            &opts,
+            None,
+        )
+        .unwrap();
+        assert!(plain.stylex_rules.is_empty());
+    }
 
     #[test]
     fn defines_apply_after_jsx_transform_without_reference_id_panic() {
@@ -679,6 +734,8 @@ import React from "react";
                 class_field_set_semantics: None,
                 env: None,
                 root: None,
+                alias: Arc::from([]),
+                stylex: None,
             },
             None,
         )
@@ -768,6 +825,8 @@ import React from "react";
                 class_field_set_semantics: None,
                 env: None,
                 root: None,
+                alias: Arc::from([]),
+                stylex: None,
             },
             None,
         )

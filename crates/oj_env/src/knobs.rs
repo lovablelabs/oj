@@ -10,6 +10,8 @@ use std::path::PathBuf;
 pub struct Knobs {
     /// The shell's `NODE_ENV`, when set and non-empty.
     pub node_env: Option<String>,
+    /// The shell's `BABEL_ENV`, when set and non-empty (StyleX's `dev` default).
+    pub babel_env: Option<String>,
     /// `NODE_OPTIONS`, for its `--max-old-space-size`.
     pub node_options: Option<String>,
     /// `NO_COLOR` set to anything (even empty).
@@ -49,6 +51,16 @@ pub struct Knobs {
 
     /// `OJ_START_MAX_BODY` bytes.
     pub start_max_body: Option<usize>,
+
+    /// `OJ_STYLEX_NATIVE_SCOPE=1`: StyleX binding analysis from oj_stylex's own
+    /// walk instead of oxc_semantic.
+    pub stylex_native_scope: bool,
+    /// `STYLEX_STAGE_TIMINGS=1`: per-stage StyleX compile timers.
+    pub stylex_stage_timings: bool,
+    /// `STYLEX_CACHE_DIR`, when non-empty: the `oj stylex` compile cache.
+    pub stylex_cache_dir: Option<PathBuf>,
+    /// `STYLEX_CACHE=0`: the `oj stylex` compile cache off, over any dir.
+    pub stylex_cache_off: bool,
 }
 
 impl Knobs {
@@ -60,6 +72,7 @@ impl Knobs {
         let trimmed = |key: &str| var(key).and_then(|v| v.trim().parse::<u64>().ok());
         Knobs {
             node_env: var("NODE_ENV").filter(|v| !v.is_empty()),
+            babel_env: var("BABEL_ENV").filter(|v| !v.is_empty()),
             node_options: var("NODE_OPTIONS"),
             no_color: get("NO_COLOR").is_some(),
             browser: var("BROWSER").filter(|v| !v.trim().is_empty()),
@@ -108,6 +121,12 @@ impl Knobs {
                 .map(|v| v as usize)
                 .filter(|v| *v > 0),
             start_max_body: var("OJ_START_MAX_BODY").and_then(|v| v.trim().parse().ok()),
+            stylex_native_scope: var("OJ_STYLEX_NATIVE_SCOPE").as_deref() == Some("1"),
+            stylex_stage_timings: var("STYLEX_STAGE_TIMINGS").as_deref() == Some("1"),
+            stylex_cache_dir: get("STYLEX_CACHE_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            stylex_cache_off: var("STYLEX_CACHE").as_deref() == Some("0"),
         }
     }
 }
@@ -171,6 +190,14 @@ mod tests {
             .hmr_full_reload
         );
         assert!(!knobs(&[("LOVABLE_HMR_FULL_RELOAD", "false")]).hmr_full_reload);
+        // StyleX: exactly "1" selects the native scope walk; only "0" kills
+        // the CLI cache.
+        assert!(knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "1")]).stylex_native_scope);
+        assert!(!knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "true")]).stylex_native_scope);
+        assert!(!knobs(&[("FRU_NATIVE_SCOPES", "1")]).stylex_native_scope);
+        assert!(knobs(&[("STYLEX_CACHE", "0")]).stylex_cache_off);
+        assert!(!knobs(&[("STYLEX_CACHE", "false")]).stylex_cache_off);
+        assert_eq!(knobs(&[("STYLEX_CACHE_DIR", "")]).stylex_cache_dir, None);
     }
 
     #[test]

@@ -1,0 +1,822 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/stylex-transform-call-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/legacy-call-empty-stylex-call-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          stylex();\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-basic-stylex-call-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-number-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            0: {\n              color: 'red',\n            },\n            1: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles[0], styles[1]);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-computed-nu-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            [0]: {\n              color: 'red',\n            },\n            [1]: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles[0], styles[1]);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-computed-nu-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import {create} from '@stylexjs/stylex';\n          const styles = create({\n            [0]: {\n              color: 'red',\n            },\n            [1]: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles[0], styles[1]);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-computed-st-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            'default': {\n              color: 'red',\n            }\n          });\n          stylex(styles['default']);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-multiple-na-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n            },\n          });\n          const otherStyles = stylex.create({\n            default: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles.default, otherStyles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-within-variable-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: { color: 'red' }\n          });\n          const a = function() {\n            return stylex(styles.foo);\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-styles-vari-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              color: 'red',\n            },\n            bar: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles.foo, styles.bar);\n          const foo = styles;\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-within-export-de-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: { color: 'red' }\n          });\n          export default function MyExportDefault() {\n            return stylex(styles.foo);\n          }\n          export function MyExport() {\n            return stylex(styles.foo);\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-short-form-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-exported-sh-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-keeps-only-the-s-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(styles.foo, somethingElse);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-keeps-all-null-when-a-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(somethingElse, styles.foo);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-keeps-only-the-n-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(styles.baz, styles.foo, somethingElse);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-keeps-only-the-n-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(styles.bar, styles.foo, somethingElse);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-styles-wit-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n              ':hover': {\n                color: 'blue',\n              }\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-styles-wit-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: {\n                default: 'red',\n                ':hover': 'blue',\n              }\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-styles-wit-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: 'red',\n              '@media (min-width: 1000px)': {\n                backgroundColor: 'blue',\n              },\n              '@media (min-width: 2000px)': {\n                backgroundColor: 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-styles-wit-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: {\n                default:'red',\n                '@media (min-width: 1000px)': 'blue',\n                '@media (min-width: 2000px)': 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-styles-wit-021",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: 'red',\n              '@supports (hover: hover)': {\n                backgroundColor: 'blue',\n              },\n              '@supports not (hover: hover)': {\n                backgroundColor: 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-styles-wit-022",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: {\n                default:'red',\n                '@supports (hover: hover)': 'blue',\n                '@supports not (hover: hover)': 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-conditions-023",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                backgroundColor: 'red',\n              },\n              active: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.default, isActive && styles.active);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-conditions-024",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                backgroundColor: 'red',\n              },\n              active: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.default, isActive && styles.active);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-property-co-025",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.red, styles.blue);\n            stylex(styles.blue, styles.red);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-reverting-b-026",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              revert: {\n                color: null,\n              }\n            });\n            stylex(styles.red, styles.revert);\n            stylex(styles.revert, styles.red);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-short-form-027",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                padding: 5,\n                paddingEnd: 10,\n              },\n\n              bar: {\n                padding: 2,\n                paddingStart: 10,\n              },\n            });\n            stylex(styles.foo, styles.bar);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-short-form-028",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                padding: 5,\n                paddingEnd: 10,\n              },\n\n              bar: {\n                padding: 2,\n                paddingStart: null,\n              },\n            });\n            stylex(styles.foo, styles.bar);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-conditions-029",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-conditions-030",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-conditions-031",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: null,\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-conditions-032",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: null,\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-dev-true-and-enableinlinedco-033",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              stylex(styles.default);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "enableDebugClassNames": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-dev-true-and-enableinlinedco-034",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              const otherStyles = stylex.create({\n                default: {\n                  backgroundColor: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && otherStyles.default);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "enableDebugClassNames": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-dev-true-and-enableinlinedco-035",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n                active: {\n                  color: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && styles.active);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "enableDebugClassNames": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-dev-true-036",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              const otherStyles = stylex.create({\n                default: {\n                  backgroundColor: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && otherStyles.default);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-dev-true-037",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n                active: {\n                  color: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && styles.active);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-computed-ke-038",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              [0]: {\n                color: 'red',\n              },\n              [1]: {\n                backgroundColor: 'blue',\n              }\n            });\n            stylex(styles[variant]);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-keeps-spaces-around-o-039",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            default: {\n              margin: 'max(0px, (48px - var(--x16dnrjz)) / 2)',\n            },\n          });\n          stylex(styles.default, props);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-composition-040",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n            },\n          });\n          stylex(styles.default, props);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-exported-s-041",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            default: {\n              ':hover': {\n                color: 'blue',\n              },\n              '@media (min-width: 1000px)': {\n                backgroundColor: 'blue',\n              },\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-exported-s-042",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            default: {\n              color: {\n                ':hover': 'blue',\n              },\n              backgroundColor: {\n                '@media (min-width: 1000px)': 'blue'\n              },\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-computed-ke-043",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex(styles[variant]);\n            const styles = stylex.create({\n              [0]: {\n                color: 'red',\n              },\n              [1]: {\n                backgroundColor: 'blue',\n              }\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-mixed-acces-044",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n\n            function MyComponent() {\n              return (\n                <>\n                  <div className={stylex(styles.foo)} />\n                  <div className={stylex(styles.bar)} />\n                  <CustomComponent xstyle={styles.foo} />\n                  <div className={stylex(styles.foo, styles.bar)} />\n                </>\n              );\n            }\n\n            const styles = stylex.create({\n              foo: {\n                color: 'red',\n              },\n              bar: {\n                backgroundColor: 'blue',\n              }\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-composition-045",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex(styles.default, props);\n            const styles = stylex.create({\n              default: {\n                color: 'red',\n              },\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-with-composition-046",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                borderTop: '5px solid blue',\n                borderLeft: '5px solid blue',\n                borderRight: '5px solid blue',\n                borderBottom: '5px solid blue',\n              },\n            });\n            stylex(styles.default, props);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-stylex-call-using-exported-s-047",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex(styles.default);\n            export const styles = stylex.create({\n              default: {\n                ':hover': {\n                  color: 'blue',\n                },\n                '@media (min-width: 1000px)': {\n                  backgroundColor: 'blue',\n                },\n              }\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-basic-stylex-call-048",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'custom-stylex-path';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "importSources": ["custom-stylex-path"]
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-named-import-from-custom-sou-049",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import {css as stylex} from 'custom-stylex-path';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "importSources": [
+          {
+            "from": "custom-stylex-path",
+            "as": "css"
+          }
+        ]
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-named-import-with-other-name-050",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import {css} from 'custom-stylex-path';\n          const styles = css.create({\n            red: {\n              color: 'red',\n            }\n          });\n          css(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "importSources": [
+          {
+            "from": "custom-stylex-path",
+            "as": "css"
+          }
+        ]
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-basic-stylex-call-051",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/js/components/Foo.react.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          stylex(\n            styles.root,\n            sidebar == null ? styles.noSidebar : styles.withSidebar,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-basic-exported-stylex-create-052",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          stylex(\n            styles.root,\n            sidebar == null ? styles.noSidebar : styles.withSidebar,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-basic-stylex-call-skip-condi-053",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          stylex(\n            styles.root,\n            sidebar == null ? styles.noSidebar : styles.withSidebar,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-basic-stylex-call-054",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          const complex = stylex(\n            styles.root,\n            sidebar == null && !isSidebar ? styles.noSidebar : styles.withSidebar,\n            isSidebar && styles.sidebar,\n            isContent && styles.content,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-using-stylex-in-a-for-loop-055",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          function test(colors, obj) {\n            for (const color of colors) {\n              obj[color.key] = stylex(color.style);\n            }\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-using-stylex-props-in-a-for-056",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          function test(colors, obj) {\n            for (const color of colors) {\n              obj[color.key] = stylex.props(color.style);\n            }\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "props"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-trying-to-use-an-unknown-sty-057",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            tileHeading: {\n              marginRight: 12,\n            },\n          });\n          stylex(styles.unknown);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-call-trying-to-use-an-unknown-sty-058",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            tileHeading: {\n              marginRight: 12,\n            },\n          });\n          stylex.props(styles.unknown);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "props", "create"],
+      "expect": "ok"
+    }
+  ]
+}

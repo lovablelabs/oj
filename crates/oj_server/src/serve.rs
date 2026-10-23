@@ -8,7 +8,7 @@ pub(crate) async fn serve_path(
     let path = state
         .base
         .as_deref()
-        .and_then(|b| uri.path().strip_prefix(b.trim_end_matches('/')))
+        .and_then(|b| strip_base(uri.path(), b))
         .unwrap_or_else(|| uri.path());
     let decoded = urldecode(path.trim_start_matches('/'));
     let rel = if decoded.is_empty() {
@@ -17,7 +17,14 @@ pub(crate) async fn serve_path(
         decoded.as_str()
     };
 
-    if let Some(resp) = serve_internal_route(&state, &headers, &uri).await {
+    let internal = match (path.len() != uri.path().len(), uri.query()) {
+        (false, _) => None,
+        (true, Some(q)) => format!("{path}?{q}").parse::<Uri>().ok(),
+        (true, None) => path.parse::<Uri>().ok(),
+    };
+    if let Some(resp) =
+        serve_internal_route(&state, &headers, internal.as_ref().unwrap_or(&uri)).await
+    {
         return resp;
     }
     let file = match request_file(&state, &headers, &uri, rel).await {
@@ -37,7 +44,12 @@ async fn serve_internal_route(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Option<Response> {
+    // `base` is already stripped (base_middleware); the StyleX runtime's
+    // unprefixed fetch of its sheet passes through it as is.
     let path = uri.path();
+    if let Some(resp) = crate::stylex::serve_route(state, path) {
+        return Some(resp);
+    }
     if let Some(name) = path.strip_prefix("/@oj-deps/") {
         if name.contains('/') || name.contains("..") {
             return Some((StatusCode::FORBIDDEN, "oj: bad optimized dep path").into_response());
@@ -121,6 +133,21 @@ async fn serve_internal_route(
         };
         if is_html_proxy(&spec) {
             return Some(serve_html_proxy(state, headers, &spec, &id_path).await);
+        }
+        if let Some(source) = crate::stylex::virtual_module(state, &spec) {
+            // Compiled like any module: the runtime reads `import.meta.hot`.
+            let file = state.root.join("__oj_stylex_virtual.js");
+            return Some(
+                serve_compiled_from(
+                    state,
+                    &file,
+                    &id_path,
+                    None,
+                    headers,
+                    Some(source.to_string()),
+                )
+                .await,
+            );
         }
         return Some(serve_plugin_id(state, &spec, &importer).await);
     }
@@ -295,10 +322,10 @@ async fn serve_file(
         .as_deref()
         .is_some_and(|p| file.starts_with(p));
     if let Some(kind) = query_asset_kind(query) {
-        return serve_asset_query(state, file, ext, kind, in_public).await;
+        return serve_asset_query(state, file, ext, kind, query, in_public).await;
     }
     if is_style_ext(ext) && !in_public {
-        return serve_style(state, headers, file, query).await;
+        return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
     }
     if in_public {
         return serve_static_file(file, ext).await;
@@ -311,6 +338,21 @@ async fn serve_file(
         let url = format!("{}?react", url_of(&state.root, file));
         return serve_compiled(state, file, &url, None, headers).await;
     }
+    if ext.eq_ignore_ascii_case("svg") || is_importable_asset_ext(ext) {
+        return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
+    }
+    serve_raw_file(state, file, ext).await
+}
+
+/// A bare asset url is the file for an `<img src>` and its URL module for an
+/// import the browser marks `Sec-Fetch-Dest: script`.
+async fn serve_bare_asset(
+    state: &Arc<ServerState>,
+    headers: &HeaderMap,
+    file: &Path,
+    ext: &str,
+    query: Option<&str>,
+) -> Response {
     // A plain `.svg` import goes through the compile path so a configured svgr can
     // componentize it; unmatched svgs fall back to a URL asset there.
     if ext.eq_ignore_ascii_case("svg") && !wants_raw_resource(headers) {
@@ -335,6 +377,7 @@ async fn serve_asset_query(
     file: &Path,
     ext: &str,
     kind: &str,
+    query: Option<&str>,
     in_public: bool,
 ) -> Response {
     // A public file's url is its path under the public dir (`/logo.svg`,
@@ -342,6 +385,10 @@ async fn serve_asset_query(
     let url = match state.public_dir.as_deref().filter(|_| in_public) {
         Some(p) => format!("/{}", file.strip_prefix(p).unwrap_or(file).display()),
         None => url_of(&state.root, file),
+    };
+    let url = match query {
+        Some(q) => format!("{url}?{q}"),
+        None => url,
     };
     let js = if kind == "inline" && is_style_ext(ext) {
         inline_css_module(state, file, &url).await
@@ -427,6 +474,16 @@ fn read_error(err: std::io::Error) -> Response {
         format!("oj: read error: {err}"),
     )
         .into_response()
+}
+
+/// One url, two bodies picked by the request's `Sec-Fetch-Dest`: a cache must
+/// key on it or it hands a module import the image bytes (or the reverse).
+fn vary_on_fetch_dest(mut response: Response) -> Response {
+    response.headers_mut().append(
+        header::VARY,
+        header::HeaderValue::from_static("sec-fetch-dest"),
+    );
+    response
 }
 
 /// A no-cache JavaScript response.

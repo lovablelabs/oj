@@ -1,0 +1,17 @@
+{
+  "name": "sealed",
+  "exports": {
+    "./tokens/*.stylex": "./public/*.stylex.js",
+    "./arrnull.stylex": [
+      null,
+      "./ok.stylex.js"
+    ],
+    "./multistar/*.stylex": "./out/*-*.stylex.js",
+    "./nested.stylex": {
+      "node": {
+        "unknown": "./inner.stylex.js"
+      },
+      "default": "./default.stylex.js"
+    }
+  }
+}

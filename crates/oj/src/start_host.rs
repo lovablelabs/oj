@@ -823,7 +823,10 @@ impl StartHost {
             let code = loaded.unwrap_or_else(|| {
                 format!(
                     "export default {};",
-                    json_str(&format!("/@oj-start/fs{clean}"))
+                    json_str(&format!(
+                        "{}/@oj-start/fs{clean}",
+                        self.bridge.start_url_base()
+                    ))
                 )
             });
             return Ok(js(code));
@@ -960,9 +963,10 @@ impl StartHost {
     /// serving pipeline; oj's pipeline serves the compiled module without the
     /// marker (verified in-browser by e2e/start-ssr-worker-url.mjs).
     fn dev_url(&self, path: &str) -> String {
+        let base = self.bridge.start_url_base();
         match Path::new(path).strip_prefix(&self.root) {
-            Ok(rel) => format!("/{}", rel.to_string_lossy()),
-            Err(_) => format!("/@fs{path}"),
+            Ok(rel) => format!("{base}/{}", rel.to_string_lossy()),
+            Err(_) => format!("{base}/@fs{path}"),
         }
     }
 
@@ -1018,7 +1022,10 @@ impl StartHost {
             // "url" and anything unrecognized: the served-URL module.
             _ => Ok(format!(
                 "export default {};",
-                json_str(&format!("/@oj-start/fs{path}"))
+                json_str(&format!(
+                    "{}/@oj-start/fs{path}",
+                    self.bridge.start_url_base()
+                ))
             )),
         }
     }

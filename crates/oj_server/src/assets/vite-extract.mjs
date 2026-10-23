@@ -1518,6 +1518,50 @@ async function activePluginCount(raw) {
   }
 }
 
+// The option values that cross to Rust: functions (cssInjectionTarget) and
+// other non-JSON values are dropped.
+function jsonOptions(value) {
+  try {
+    return JSON.parse(JSON.stringify(value, (_, v) => (typeof v === "function" ? undefined : v)));
+  } catch {
+    return {};
+  }
+}
+
+// The config's @stylexjs/unplugin, for oj's native StyleX: the options it was
+// given, or null when the config has none.
+async function stylexPlugin(raw) {
+  if (!raw) return null;
+  try {
+    let list = Array.isArray(raw.plugins) ? raw.plugins : raw.plugins ? [raw.plugins] : [];
+    do {
+      list = (await Promise.all(list)).flat(Infinity);
+    } while (list.some((v) => v && typeof v.then === "function"));
+    const plugin = list.find((p) => p && p.name === "@stylexjs/unplugin");
+    if (!plugin) return null;
+    // oj's stand-in for the package (oj_js stand_ins) records them, imported
+    // or require()d, from node_modules/@stylexjs/unplugin.
+    const options = plugin.__ojStylexOptions;
+    if (!options) {
+      warn(
+        "@stylexjs/unplugin was loaded from outside node_modules/@stylexjs/unplugin, so oj cannot read " +
+          "its options and compiles StyleX with the defaults",
+      );
+      return { options: {} };
+    }
+    if (typeof options.cssInjectionTarget === "function") {
+      warn("@stylexjs/unplugin cssInjectionTarget is not applied: the StyleX sheet joins the build's entry stylesheet");
+    }
+    const babel = options.babelConfig;
+    if (babel && ((babel.plugins ?? []).length || (babel.presets ?? []).length)) {
+      warn("@stylexjs/unplugin babelConfig plugins and presets are not applied (oj compiles StyleX natively)");
+    }
+    return { options: jsonOptions(options) };
+  } catch {
+    return null;
+  }
+}
+
 export async function extract(input) {
   configPath = String(input.vite);
   appRoot = String(input.root);
@@ -1642,6 +1686,7 @@ export async function extract(input) {
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
       activePlugins: await activePluginCount(raw),
+      stylex: await stylexPlugin(raw),
     };
   } catch (e) {
     emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);

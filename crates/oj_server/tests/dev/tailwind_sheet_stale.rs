@@ -90,10 +90,16 @@ async fn outside_root_source_refreshes_the_sheet(postcss: bool) {
         ("index.html", crate::INDEX_HTML),
     ]);
     if postcss {
-        app.write(&[(
-            "postcss.config.mjs",
-            "export default { plugins: { \"@tailwindcss/postcss\": {} } };\n",
-        )]);
+        // @tailwindcss/postcss scans `process.cwd()` unless given a `base`,
+        // and the test process's cwd is whichever app root an in-process
+        // plugin host last chdir'd into, or this crate's own sources (whose
+        // tests spell `italic`). Pin it to the app, as running from its root
+        // does.
+        let config = format!(
+            "export default {{ plugins: {{ \"@tailwindcss/postcss\": {{ base: {:?} }} }} }};\n",
+            app.root.display().to_string()
+        );
+        app.write(&[("postcss.config.mjs", &config)]);
     }
     let name = format!("{}-ui", app.root.file_name().unwrap().to_string_lossy());
     let ui = app.root.with_file_name(&name);

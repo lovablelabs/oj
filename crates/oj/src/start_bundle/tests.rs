@@ -99,6 +99,7 @@ fn dev_assets(app: &App, css_urls: &Arc<Mutex<Vec<String>>>) -> SharedPluginable
         AssetMode::Dev {
             css_urls: Arc::clone(css_urls),
             state: Arc::new(DevStyleState::default()),
+            url_base: String::new(),
         },
     ))
 }
@@ -420,6 +421,33 @@ console.log(getGreeting, pages);
         !code.contains("secret-server-only"),
         "the handler never ships to the browser:\n{code}"
     );
+}
+
+// An aliased glob (`@/pages/*.ts`) expands through the app's `resolve.alias`
+// in a Start bundle, as Vite's toAbsoluteGlob resolves it, not as a path
+// under the importer's directory.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_aliased_glob_expands_through_resolve_alias() {
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "const pages = import.meta.glob(\"@/pages/*.ts\", { eager: true });\n\
+             console.log(Object.values(pages).map((p: any) => p.title));\n",
+        ),
+        ("src/pages/a.ts", "export const title = \"page-a\";"),
+        ("src/pages/b.ts", "export const title = \"page-b\";"),
+    ]);
+    let alias = normalize_alias(&serde_json::json!({ "@": app.dir.join("src") }));
+    let code = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(
+            StartCodePlugin::new(&app.dir, CodeTarget::Client).with_alias(alias),
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(code.contains("page-a") && code.contains("page-b"), "{code}");
 }
 
 #[test]
@@ -754,4 +782,48 @@ async fn a_cycle_between_two_client_workers_fails_both() {
         rb.unwrap_err(),
         format!("{cycle}src/b.js -> src/a.js -> src/b.js")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stylex_compiles_app_modules_and_loads_its_runtime() {
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "import * as stylex from \"@stylexjs/stylex\";\n\
+             import \"virtual:stylex:runtime\";\n\
+             const styles = stylex.create({ a: { color: \"olive\" } });\n\
+             export const c = stylex.props(styles.a).className;\n",
+        ),
+        (
+            "node_modules/@stylexjs/stylex/package.json",
+            r#"{"name":"@stylexjs/stylex","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@stylexjs/stylex/index.js",
+            "export const create = () => { throw new Error(\"uncompiled\"); };\n",
+        ),
+    ]);
+    let plugin = std::sync::Arc::new(
+        oj_stylex::plugin::StylexPlugin::new(&serde_json::json!({}), &app.dir, false, false)
+            .unwrap(),
+    );
+    let code = bundle(
+        &app,
+        "src/entry.ts",
+        vec![crate::stylex_plugin::transform(&plugin)],
+    )
+    .await
+    .unwrap();
+    assert!(
+        !code.contains("uncompiled"),
+        "stylex.create compiled away:\n{code}"
+    );
+    assert!(
+        code.contains("__stylex_virtual__"),
+        "the runtime module loaded:\n{code}"
+    );
+    let sheet = plugin.stylesheet().unwrap().expect("the module's rules");
+    assert!(sheet.contains("color:olive"), "{sheet}");
+    let class = sheet.trim_start_matches('.').split('{').next().unwrap();
+    assert!(code.contains(class), "the bundle uses {class}:\n{code}");
 }

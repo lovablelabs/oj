@@ -1,0 +1,516 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-import-export-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/import-export-import-none-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        export const styles = stylex.create({\n          root: {\n            color: 'red'\n          }\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "export const styles = stylex.create({\n  root: {\n    color: 'red'\n  }\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: none",
+          "line": 177
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-import-none-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        export const styles = stylex.create({\n          root: {\n            color: 'red'\n          }\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [],
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: none",
+          "line": 185
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-import-non-stylex-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import {foo, bar} from 'other';\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { foo, bar } from 'other';",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: non-stylex",
+          "line": 197
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-import-non-stylex-004-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import {foo, bar} from 'other';\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [],
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: non-stylex",
+          "line": 201
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-require-non-stylex-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        const {foo, bar} = require('other');\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "const {\n  foo,\n  bar\n} = require('other');",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "require: non-stylex",
+          "line": 213
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-require-non-stylex-006-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        const {foo, bar} = require('other');\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [],
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "require: non-stylex",
+          "line": 220
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-import-wildcard-the-default-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    const viewTransition1 = stylex.viewTransitionClass({\n      group: {\n        transitionProperty: 'none',\n      },\n      imagePair: {\n        borderRadius: 16,\n      },\n      old: {\n        animationDuration: '0.5s',\n      },\n      new: {\n        animationTimingFunction: 'ease-out',\n      },\n    });\n    const fallback1 = stylex.positionTry({\n      anchorName: '--myAnchor',\n      positionArea: 'top left',\n    });\n    const fallback2 = stylex.positionTry({\n      anchorName: '--otherAnchor',\n      top: 'anchor(bottom)',\n      insetInlineStart: 'anchor(start)',\n    });\n    const styles = stylex.create({\n      root: {\n        animationName: stylex.keyframes({\n          from: {\n            backgroundColor: 'yellow'\n          },\n          to: {\n            backgroundColor: 'orange'\n          },\n        }),\n        positionTryFallbacks: `${fallback1}, ${fallback2}`,\n        color: {\n          default: 'red',\n          [constants.mediaQuery]: 'blue'\n        },\n        position: stylex.firstThatWorks('sticky', 'fixed')\n      }\n    });\n\n    const theme = stylex.createTheme(vars, {\n      bar: 'green'\n    });\n\n    stylex.props(styles.root, theme);\n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "import-export",
+        "createTheme",
+        "keyframes",
+        "positionTry",
+        "viewTransitionClass",
+        "firstThatWorks",
+        "props",
+        "create",
+        "assert-code"
+      ],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst viewTransition1 = \"xchu1hv\";\nconst fallback1 = \"--x5jppmd\";\nconst fallback2 = \"--x17pzx6\";\nconst theme = {\n  xop34xu: \"xfnndu4 xop34xu\",\n  $$css: true\n};\n({\n  className: \"x1qar0u3 x7cint9 x1e2nbdu x14693no x15oojuh xfnndu4 xop34xu\"\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: wildcard (the default)",
+          "line": 232
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-import-wildcard-non-stylex-n-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as foo from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    const viewTransition1 = foo.viewTransitionClass({\n      group: {\n        transitionProperty: 'none',\n      },\n      imagePair: {\n        borderRadius: 16,\n      },\n      old: {\n        animationDuration: '0.5s',\n      },\n      new: {\n        animationTimingFunction: 'ease-out',\n      },\n    });\n    const fallback1 = foo.positionTry({\n      anchorName: '--myAnchor',\n      positionArea: 'top left',\n    });\n    const fallback2 = foo.positionTry({\n      anchorName: '--otherAnchor',\n      top: 'anchor(bottom)',\n      insetInlineStart: 'anchor(start)',\n    });\n    const styles = foo.create({\n      root: {\n        animationName: foo.keyframes({\n          from: {\n            backgroundColor: 'yellow'\n          },\n          to: {\n            backgroundColor: 'orange'\n          },\n        }),\n        positionTryFallbacks: `${fallback1}, ${fallback2}`,\n        color: {\n          default: 'red',\n          [constants.mediaQuery]: 'blue'\n        },\n        position: foo.firstThatWorks('sticky', 'fixed')\n      }\n    });\n\n    const theme = foo.createTheme(vars, {\n      bar: 'green'\n    });\n\n    foo.props(styles.root, theme);\n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "import-export",
+        "createTheme",
+        "keyframes",
+        "positionTry",
+        "viewTransitionClass",
+        "firstThatWorks",
+        "props",
+        "create",
+        "assert-code"
+      ],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as foo from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst viewTransition1 = \"xchu1hv\";\nconst fallback1 = \"--x5jppmd\";\nconst fallback2 = \"--x17pzx6\";\nconst theme = {\n  xop34xu: \"xfnndu4 xop34xu\",\n  $$css: true\n};\n({\n  className: \"x1qar0u3 x7cint9 x1e2nbdu x14693no x15oojuh xfnndu4 xop34xu\"\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: wildcard (non-stylex name)",
+          "line": 360
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-import-named-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import { create, createTheme, defineConsts, defineVars, firstThatWorks, keyframes, positionTry, props, viewTransitionClass } from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    const viewTransition1 = viewTransitionClass({\n      group: {\n        transitionProperty: 'none',\n      },\n      imagePair: {\n        borderRadius: 16,\n      },\n      old: {\n        animationDuration: '0.5s',\n      },\n      new: {\n        animationTimingFunction: 'ease-out',\n      },\n    });\n    const fallback1 = positionTry({\n      anchorName: '--myAnchor',\n      positionArea: 'top left',\n    });\n    const fallback2 = positionTry({\n      anchorName: '--otherAnchor',\n      top: 'anchor(bottom)',\n      insetInlineStart: 'anchor(start)',\n    });\n    const styles = create({\n      root: {\n        animationName: keyframes({\n          from: {\n            backgroundColor: 'yellow'\n          },\n          to: {\n            backgroundColor: 'orange'\n          },\n        }),\n        positionTryFallbacks: `${fallback1}, ${fallback2}`,\n        color: {\n          default: 'red',\n          [constants.mediaQuery]: 'blue'\n        },\n        position: firstThatWorks('sticky', 'fixed')\n      }\n    });\n\n    const theme = createTheme(vars, {\n      bar: 'green'\n    });\n\n    props(styles.root, theme);\n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "import-export",
+        "createTheme",
+        "keyframes",
+        "positionTry",
+        "viewTransitionClass",
+        "firstThatWorks",
+        "props",
+        "create",
+        "assert-code"
+      ],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { create, createTheme, defineConsts, defineVars, firstThatWorks, keyframes, positionTry, props, viewTransitionClass } from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst viewTransition1 = \"xchu1hv\";\nconst fallback1 = \"--x5jppmd\";\nconst fallback2 = \"--x17pzx6\";\nconst theme = {\n  xop34xu: \"xfnndu4 xop34xu\",\n  $$css: true\n};\n({\n  className: \"x1qar0u3 x7cint9 x1e2nbdu x14693no x15oojuh xfnndu4 xop34xu\"\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: named",
+          "line": 403
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-import-named-alias-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import { create as _create, createTheme as _createTheme, defineConsts as _defineConsts, defineVars as _defineVars, firstThatWorks as _firstThatWorks, keyframes as _keyframes, positionTry as _positionTry, props as _props, viewTransitionClass as _viewTransitionClass } from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    const viewTransition1 = _viewTransitionClass({\n      group: {\n        transitionProperty: 'none',\n      },\n      imagePair: {\n        borderRadius: 16,\n      },\n      old: {\n        animationDuration: '0.5s',\n      },\n      new: {\n        animationTimingFunction: 'ease-out',\n      },\n    });\n    const fallback1 = _positionTry({\n      anchorName: '--myAnchor',\n      positionArea: 'top left',\n    });\n    const fallback2 = _positionTry({\n      anchorName: '--otherAnchor',\n      top: 'anchor(bottom)',\n      insetInlineStart: 'anchor(start)',\n    });\n    const styles = _create({\n      root: {\n        animationName: _keyframes({\n          from: {\n            backgroundColor: 'yellow'\n          },\n          to: {\n            backgroundColor: 'orange'\n          },\n        }),\n        positionTryFallbacks: `${fallback1}, ${fallback2}`,\n        color: {\n          default: 'red',\n          [constants.mediaQuery]: 'blue'\n        },\n        position: _firstThatWorks('sticky', 'fixed')\n      }\n    });\n\n    const theme = _createTheme(vars, {\n      bar: 'green'\n    });\n\n    _props(styles.root, theme);\n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "import-export",
+        "createTheme",
+        "keyframes",
+        "positionTry",
+        "viewTransitionClass",
+        "firstThatWorks",
+        "props",
+        "create",
+        "assert-code"
+      ],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { create as _create, createTheme as _createTheme, defineConsts as _defineConsts, defineVars as _defineVars, firstThatWorks as _firstThatWorks, keyframes as _keyframes, positionTry as _positionTry, props as _props, viewTransitionClass as _viewTransitionClass } from '@stylexjs/stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst viewTransition1 = \"xchu1hv\";\nconst fallback1 = \"--x5jppmd\";\nconst fallback2 = \"--x17pzx6\";\nconst theme = {\n  xop34xu: \"xfnndu4 xop34xu\",\n  $$css: true\n};\n({\n  className: \"x1qar0u3 x7cint9 x1e2nbdu x14693no x15oojuh xfnndu4 xop34xu\"\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "import: named alias",
+          "line": 455
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-importsources-string-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from 'foo-bar';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    const viewTransition1 = stylex.viewTransitionClass({\n      group: {\n        transitionProperty: 'none',\n      },\n      imagePair: {\n        borderRadius: 16,\n      },\n      old: {\n        animationDuration: '0.5s',\n      },\n      new: {\n        animationTimingFunction: 'ease-out',\n      },\n    });\n    const fallback1 = stylex.positionTry({\n      anchorName: '--myAnchor',\n      positionArea: 'top left',\n    });\n    const fallback2 = stylex.positionTry({\n      anchorName: '--otherAnchor',\n      top: 'anchor(bottom)',\n      insetInlineStart: 'anchor(start)',\n    });\n    const styles = stylex.create({\n      root: {\n        animationName: stylex.keyframes({\n          from: {\n            backgroundColor: 'yellow'\n          },\n          to: {\n            backgroundColor: 'orange'\n          },\n        }),\n        positionTryFallbacks: `${fallback1}, ${fallback2}`,\n        color: {\n          default: 'red',\n          [constants.mediaQuery]: 'blue'\n        },\n        position: stylex.firstThatWorks('sticky', 'fixed')\n      }\n    });\n\n    const theme = stylex.createTheme(vars, {\n      bar: 'green'\n    });\n\n    stylex.props(styles.root, theme);\n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "importSources": ["foo-bar"]
+      },
+      "mode": "prod",
+      "tags": [
+        "import-export",
+        "createTheme",
+        "keyframes",
+        "positionTry",
+        "viewTransitionClass",
+        "firstThatWorks",
+        "props",
+        "create",
+        "assert-code"
+      ],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from 'foo-bar';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst viewTransition1 = \"xchu1hv\";\nconst fallback1 = \"--x5jppmd\";\nconst fallback2 = \"--x17pzx6\";\nconst theme = {\n  xop34xu: \"xfnndu4 xop34xu\",\n  $$css: true\n};\n({\n  className: \"x1qar0u3 x7cint9 x1e2nbdu x14693no x15oojuh xfnndu4 xop34xu\"\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "importSources (string)",
+          "line": 489
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-importsources-object-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import { css, html } from 'react-strict-dom';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    const viewTransition1 = css.viewTransitionClass({\n      group: {\n        transitionProperty: 'none',\n      },\n      imagePair: {\n        borderRadius: 16,\n      },\n      old: {\n        animationDuration: '0.5s',\n      },\n      new: {\n        animationTimingFunction: 'ease-out',\n      },\n    });\n    const fallback1 = css.positionTry({\n      anchorName: '--myAnchor',\n      positionArea: 'top left',\n    });\n    const fallback2 = css.positionTry({\n      anchorName: '--otherAnchor',\n      top: 'anchor(bottom)',\n      insetInlineStart: 'anchor(start)',\n    });\n    const styles = css.create({\n      root: {\n        animationName: css.keyframes({\n          from: {\n            backgroundColor: 'yellow'\n          },\n          to: {\n            backgroundColor: 'orange'\n          },\n        }),\n        positionTryFallbacks: `${fallback1}, ${fallback2}`,\n        color: {\n          default: 'red',\n          [constants.mediaQuery]: 'blue'\n        },\n        position: css.firstThatWorks('sticky', 'fixed')\n      }\n    });\n\n    const theme = css.createTheme(vars, {\n      bar: 'green'\n    });\n\n    css.props(styles.root, theme);\n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "importSources": [
+          {
+            "as": "css",
+            "from": "react-strict-dom"
+          }
+        ]
+      },
+      "mode": "prod",
+      "tags": [
+        "import-export",
+        "createTheme",
+        "keyframes",
+        "positionTry",
+        "viewTransitionClass",
+        "firstThatWorks",
+        "props",
+        "create",
+        "assert-code"
+      ],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { css, html } from 'react-strict-dom';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst viewTransition1 = \"xchu1hv\";\nconst fallback1 = \"--x5jppmd\";\nconst fallback2 = \"--x17pzx6\";\nconst theme = {\n  xop34xu: \"xfnndu4 xop34xu\",\n  $$css: true\n};\n({\n  className: \"x1qar0u3 x7cint9 x1e2nbdu x14693no x15oojuh xfnndu4 xop34xu\"\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "importSources (object)",
+          "line": 536
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-meta-only-import-default-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import stylex from 'stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    const viewTransition1 = stylex.viewTransitionClass({\n      group: {\n        transitionProperty: 'none',\n      },\n      imagePair: {\n        borderRadius: 16,\n      },\n      old: {\n        animationDuration: '0.5s',\n      },\n      new: {\n        animationTimingFunction: 'ease-out',\n      },\n    });\n    const fallback1 = stylex.positionTry({\n      anchorName: '--myAnchor',\n      positionArea: 'top left',\n    });\n    const fallback2 = stylex.positionTry({\n      anchorName: '--otherAnchor',\n      top: 'anchor(bottom)',\n      insetInlineStart: 'anchor(start)',\n    });\n    const styles = stylex.create({\n      root: {\n        animationName: stylex.keyframes({\n          from: {\n            backgroundColor: 'yellow'\n          },\n          to: {\n            backgroundColor: 'orange'\n          },\n        }),\n        positionTryFallbacks: `${fallback1}, ${fallback2}`,\n        color: {\n          default: 'red',\n          [constants.mediaQuery]: 'blue'\n        },\n        position: stylex.firstThatWorks('sticky', 'fixed')\n      }\n    });\n\n    const theme = stylex.createTheme(vars, {\n      bar: 'green'\n    });\n\n    stylex.props(styles.root, theme);\n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "import-export",
+        "createTheme",
+        "keyframes",
+        "positionTry",
+        "viewTransitionClass",
+        "firstThatWorks",
+        "props",
+        "create",
+        "assert-code"
+      ],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import stylex from 'stylex';\nexport const constants = {\n  mediaQuery: \"@media (min-width: 768px)\"\n};\nexport const vars = {\n  bar: \"var(--x1hi1hmf)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst viewTransition1 = \"xchu1hv\";\nconst fallback1 = \"--x5jppmd\";\nconst fallback2 = \"--x17pzx6\";\nconst theme = {\n  xop34xu: \"xfnndu4 xop34xu\",\n  $$css: true\n};\n({\n  className: \"x1qar0u3 x7cint9 x1e2nbdu x14693no x15oojuh xfnndu4 xop34xu\"\n});",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "[META-ONLY] import: default",
+          "line": 570
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-export-named-property-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n        export {styles}\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst styles = {\n  root: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};\nexport { styles };",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "export: named property",
+          "line": 620
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-export-named-declaration-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const styles = {\n  root: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "export: named declaration",
+          "line": 640
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-export-default-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export default (stylex.create({\n      root: {\n        color: 'red',\n      }\n    }));\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport default {\n  root: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "export: default",
+          "line": 659
+        }
+      }
+    },
+    {
+      "id": "assertions/import-export-module-export-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n        module.export = styles;\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["import-export", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst styles = {\n  root: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};\nmodule.export = styles;",
+        "site": {
+          "file": "transform-import-export-test.js",
+          "test": "module.export",
+          "line": 679
+        }
+      }
+    }
+  ]
+}

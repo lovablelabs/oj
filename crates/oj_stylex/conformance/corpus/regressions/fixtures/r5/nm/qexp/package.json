@@ -1,0 +1,7 @@
+{
+  "name": "qexp",
+  "exports": {
+    "./q.stylex": "./out/q.stylex.js?mode=x",
+    "./malformed.stylex": "./out/q%2g.stylex.js"
+  }
+}

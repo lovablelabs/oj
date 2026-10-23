@@ -1,0 +1,311 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-stylex-defineConsts-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/validation-defineConsts-invalid-export-not-bound-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-export-not-bound-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          stylex.defineConsts({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-argument-none-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts();\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-argument-too-many-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({}, {});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-argument-number-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts(1);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-argument-string-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts('1');\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-argument-non-static-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts(genStyles());\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-valid-argument-object-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-defineConsts-valid-export-separate-const-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants };\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-export-re-export-fro-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants } from './other.stylex.js';\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-export-renamed-re-ex-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants as otherConstants } from './other.stylex.js';\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-export-default-expor-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export default constants;\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-export-renamed-expor-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants as themeConstants };\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-valid-key-starts-with-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            '--small': '8px'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-key-non-static-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            [labelColor]: 'red',\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-value-non-static-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            labelColor: labelColor,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-invalid-value-non-static-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            labelColor: labelColor(),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-defineConsts-valid-value-number-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            small: 5,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-defineConsts-valid-value-string-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            small: '5px',\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-defineConsts-valid-value-keyframes-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            fadeIn: stylex.keyframes({\n              '0%': { opacity: 0 },\n              '100%': { opacity: 1}\n            }),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "keyframes", "upstream-skipped"],
+      "expect": "error"
+    }
+  ]
+}

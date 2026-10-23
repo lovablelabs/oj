@@ -1,0 +1,635 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-when-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/when-when-ancestor-function-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor(':hover')]: 'red',\n              },\n            },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { when, create } from '@stylexjs/stylex';\nconst styles = {\n  container: {\n    kWkggS: \"x1t391ir x148kuu\",\n    $$css: true\n  }\n};\nconsole.log(styles.container);",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.ancestor function",
+          "line": 55
+        }
+      }
+    },
+    {
+      "id": "assertions/when-when-ancestor-function-002-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor(':hover')]: 'red',\n              },\n            },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1t391ir",
+            {
+              "ltr": ".x1t391ir{background-color:blue}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x148kuu",
+            {
+              "ltr": ".x148kuu.x148kuu:where(.x-default-marker:hover *){background-color:red}",
+              "rtl": null
+            },
+            3011.3
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.ancestor function",
+          "line": 66
+        }
+      }
+    },
+    {
+      "id": "assertions/when-when-siblingbefore-function-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.siblingBefore(':focus')]: 'red',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { when, create } from '@stylexjs/stylex';\nconst styles = {\n  container: {\n    kWkggS: \"x1t391ir x1i6rnlt\",\n    $$css: true\n  }\n};\nconsole.log(styles.container);",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.siblingBefore function",
+          "line": 104
+        }
+      }
+    },
+    {
+      "id": "assertions/when-when-siblingbefore-function-004-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.siblingBefore(':focus')]: 'red',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1t391ir",
+            {
+              "ltr": ".x1t391ir{background-color:blue}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x1i6rnlt",
+            {
+              "ltr": ".x1i6rnlt.x1i6rnlt:where(.x-default-marker:focus ~ *){background-color:red}",
+              "rtl": null
+            },
+            3031.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.siblingBefore function",
+          "line": 115
+        }
+      }
+    },
+    {
+      "id": "assertions/when-namespace-imports-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        \n        const styles = stylex.create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [stylex.when.ancestor(':hover')]: 'red',\n              [stylex.when.siblingBefore(':focus')]: 'green',\n              [stylex.when.anySibling(':active')]: 'yellow',\n              [stylex.when.siblingAfter(':focus')]: 'purple',\n              [stylex.when.descendant(':focus')]: 'orange',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst styles = {\n  container: {\n    kWkggS: \"x1t391ir x148kuu xpijypl xoev4mv x1v1vkh3 x9zntq3\",\n    $$css: true\n  }\n};\nconsole.log(styles.container);",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "namespace imports",
+          "line": 157
+        }
+      }
+    },
+    {
+      "id": "assertions/when-namespace-imports-006-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        \n        const styles = stylex.create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [stylex.when.ancestor(':hover')]: 'red',\n              [stylex.when.siblingBefore(':focus')]: 'green',\n              [stylex.when.anySibling(':active')]: 'yellow',\n              [stylex.when.siblingAfter(':focus')]: 'purple',\n              [stylex.when.descendant(':focus')]: 'orange',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1t391ir",
+            {
+              "ltr": ".x1t391ir{background-color:blue}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x148kuu",
+            {
+              "ltr": ".x148kuu.x148kuu:where(.x-default-marker:hover *){background-color:red}",
+              "rtl": null
+            },
+            3011.3
+          ],
+          [
+            "xpijypl",
+            {
+              "ltr": ".xpijypl.xpijypl:where(.x-default-marker:focus ~ *){background-color:green}",
+              "rtl": null
+            },
+            3031.5
+          ],
+          [
+            "xoev4mv",
+            {
+              "ltr": ".xoev4mv.xoev4mv:where(.x-default-marker:active ~ *, :has(~ .x-default-marker:active)){background-color:yellow}",
+              "rtl": null
+            },
+            3021.7
+          ],
+          [
+            "x1v1vkh3",
+            {
+              "ltr": ".x1v1vkh3.x1v1vkh3:where(:has(~ .x-default-marker:focus)){background-color:purple}",
+              "rtl": null
+            },
+            3041.5
+          ],
+          [
+            "x9zntq3",
+            {
+              "ltr": ".x9zntq3.x9zntq3:where(:has(.x-default-marker:focus)){background-color:orange}",
+              "rtl": null
+            },
+            3016.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "namespace imports",
+          "line": 168
+        }
+      }
+    },
+    {
+      "id": "assertions/when-aliased-imports-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when as w, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [w.ancestor(':hover')]: 'red',\n              [w.siblingBefore(':focus')]: 'green',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { when as w, create } from '@stylexjs/stylex';\nconst styles = {\n  container: {\n    kWkggS: \"x1t391ir x148kuu xpijypl\",\n    $$css: true\n  }\n};\nconsole.log(styles.container);",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "aliased imports",
+          "line": 239
+        }
+      }
+    },
+    {
+      "id": "assertions/when-aliased-imports-008-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when as w, create } from '@stylexjs/stylex';\n        \n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [w.ancestor(':hover')]: 'red',\n              [w.siblingBefore(':focus')]: 'green',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1t391ir",
+            {
+              "ltr": ".x1t391ir{background-color:blue}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x148kuu",
+            {
+              "ltr": ".x148kuu.x148kuu:where(.x-default-marker:hover *){background-color:red}",
+              "rtl": null
+            },
+            3011.3
+          ],
+          [
+            "xpijypl",
+            {
+              "ltr": ".xpijypl.xpijypl:where(.x-default-marker:focus ~ *){background-color:green}",
+              "rtl": null
+            },
+            3031.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "aliased imports",
+          "line": 250
+        }
+      }
+    },
+    {
+      "id": "assertions/when-validates-pseudo-selector-fo-009-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n          \n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('hover')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Pseudo selector must start with \":\" or \"[\"",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "validates pseudo selector format",
+          "line": 283
+        }
+      }
+    },
+    {
+      "id": "assertions/when-rejects-pseudo-elements-010-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n\n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('::before')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Pseudo selector cannot start with \"::\"",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "rejects pseudo-elements",
+          "line": 300
+        }
+      }
+    },
+    {
+      "id": "assertions/when-validates-attribute-selector-011-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n\n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('[data-state=\"open\"')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Attribute selector must end with \"]\"",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "validates attribute selector format",
+          "line": 317
+        }
+      }
+    },
+    {
+      "id": "assertions/when-rejects-invalid-selector-for-012-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { when, create } from '@stylexjs/stylex';\n\n          const styles = create({\n            container: {\n              backgroundColor: {\n                default: 'blue',\n                [when.ancestor('invalid')]: 'red',\n              },\n            },\n          });\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Pseudo selector must start with \":\" or \"[\"",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "rejects invalid selector format",
+          "line": 334
+        }
+      }
+    },
+    {
+      "id": "assertions/when-when-ancestor-with-attribute-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n\n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.ancestor('[data-panel-state=\"open\"]')]: 'red',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { when, create } from '@stylexjs/stylex';\nconst styles = {\n  container: {\n    kWkggS: \"x1t391ir x11omtej\",\n    $$css: true\n  }\n};\nconsole.log(styles.container);",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.ancestor with attribute selector",
+          "line": 368
+        }
+      }
+    },
+    {
+      "id": "assertions/when-when-ancestor-with-attribute-014-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n\n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.ancestor('[data-panel-state=\"open\"]')]: 'red',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1t391ir",
+            {
+              "ltr": ".x1t391ir{background-color:blue}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x11omtej",
+            {
+              "ltr": ".x11omtej.x11omtej:where(.x-default-marker[data-panel-state=\"open\"] *){background-color:red}",
+              "rtl": null
+            },
+            3040
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.ancestor with attribute selector",
+          "line": 379
+        }
+      }
+    },
+    {
+      "id": "assertions/when-when-descendant-with-attribu-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n\n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.descendant('[data-panel-state=\"open\"]')]: 'green',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { when, create } from '@stylexjs/stylex';\nconst styles = {\n  container: {\n    kWkggS: \"x1t391ir x1doj7mj\",\n    $$css: true\n  }\n};\nconsole.log(styles.container);",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.descendant with attribute selector",
+          "line": 417
+        }
+      }
+    },
+    {
+      "id": "assertions/when-when-descendant-with-attribu-016-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { when, create } from '@stylexjs/stylex';\n\n        const styles = create({\n          container: {\n            backgroundColor: {\n              default: 'blue',\n              [when.descendant('[data-panel-state=\"open\"]')]: 'green',\n            },\n          },\n        });\n\n        console.log(styles.container);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1t391ir",
+            {
+              "ltr": ".x1t391ir{background-color:blue}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x1doj7mj",
+            {
+              "ltr": ".x1doj7mj.x1doj7mj:where(:has(.x-default-marker[data-panel-state=\"open\"])){background-color:green}",
+              "rtl": null
+            },
+            3040
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "when.descendant with attribute selector",
+          "line": 428
+        }
+      }
+    },
+    {
+      "id": "assertions/when-named-import-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import { defaultMarker, props } from '@stylexjs/stylex';\n        \n        const classNames = props(defaultMarker());\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { defaultMarker, props } from '@stylexjs/stylex';\nconst classNames = {\n  className: \"x-default-marker\"\n};",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "named import",
+          "line": 458
+        }
+      }
+    },
+    {
+      "id": "assertions/when-namespace-import-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        \n        const classNames = stylex.props(stylex.defaultMarker());\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["when", "props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst classNames = {\n  className: \"x-default-marker\"\n};",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "namespace import",
+          "line": 472
+        }
+      }
+    },
+    {
+      "id": "assertions/when-named-import-of-custom-marke-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import {customMarker} from 'custom-marker.stylex';\n\n        const styles = stylex.create({\n          foo: {\n            backgroundColor: {\n              default: 'blue',\n              [stylex.when.ancestor(':hover', customMarker)]: 'red',\n            },\n          },\n        });\n        \n        const container = stylex.props(customMarker);\n        const classNames = stylex.props(styles.foo);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["when", "props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\nimport 'custom-marker.stylex';\nimport { customMarker } from 'custom-marker.stylex';\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x7rpj1w.x7rpj1w:where(.x1lc2aw:hover *){background-color:red}\",\n  priority: 3011.3\n});\nconst container = stylex.props(customMarker);\nconst classNames = {\n  className: \"x1t391ir x7rpj1w\"\n};",
+        "site": {
+          "file": "transform-stylex-when-test.js",
+          "test": "named import of custom marker",
+          "line": 503
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,873 @@
+{
+  "header": {
+    "corpus": "regressions/theme-file-extension",
+    "description": "unstable_moduleResolution.themeFileExtension, mined from @stylexjs/babel-plugin 0.19.0 run live: suffix matching (bare + the six code extensions, case-sensitive, no boundary, no leading dot required), the derived `${ext}.const` suffix, hash independence from the option value, import-specifier gating, and the createTheme/create/defineMarker split. Twelve of the 66 mined probes are excluded because they diverge on other option gaps, not on this one: haste (E3), aliases/rewriteAliases (E6, E7, F1-F3), experimental_crossFileParsing (I1, I2), unknown keys inside unstable_moduleResolution (M2) and at the top level (E2), and the logAndDefault degradation of a non-string extension (E4, P1).",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "written": "2026-08-29"
+  },
+  "jobs": [
+    {
+      "id": "regressions/tfe-a1-css-ext-tokens-css-ts",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a2-default-ext-tokens-css-ts",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a3-css-ext-bare-css-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/plain.css",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a4-css-ext-stylex-file-rejected",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a5-no-dot-suffix-cssvars",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/default.cssvars.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": "cssvars"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a6-no-dot-suffix-no-boundary",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/defaultcssvars.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": "cssvars"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a7-case-mismatch-upper-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.CSS.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a8-case-match-upper-both",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.CSS.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".CSS"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a9-empty-string-ext-any-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/whatever.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ""
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a10-null-ext-falls-back-to-stylex",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": null
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a11-css-ext-mts-not-recognized",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.mts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-a12-css-ext-cjs-recognized",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.cjs",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-b1-hash-independent-of-option-empty",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ""
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-b2-hash-independent-of-option-s-ts",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": "s"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-b3-collision-pkgname-colon-a",
+      "root": "corpus/regressions/fixtures/theme-file-extension/collA",
+      "filename": "a",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const v = stylex.defineVars({ c: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "themeFileExtension": ""
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-b4-collision-pkgname-colon-b",
+      "root": "corpus/regressions/fixtures/theme-file-extension/collB",
+      "filename": "sub:a",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const v = stylex.defineVars({ c: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "themeFileExtension": ""
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-b5-debug-names-css-ext",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-c1-consts-file-css-const",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.const.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const cst = stylex.defineConsts({ gutter: '16px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-c2-consts-in-plain-css-theme-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const cst = stylex.defineConsts({ gutter: '16px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-c3-definevars-in-const-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.const.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-c4-stylex-const-file-under-css-ext-rejected",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.stylex.const.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const cst = stylex.defineConsts({ gutter: '16px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d1-import-css-specifier-resolves",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.css';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d2-import-css-specifier-default-ext-fails",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.css';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d3-import-specifier-without-suffix-fails",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d4-import-css-ts-explicit",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.css.ts';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d5-import-literal-css-file-on-disk",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './plain.css';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d6-import-transformed-always-allowed",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.transformed';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d7-import-stylex-specifier-under-css-ext-fails",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d8-createtheme-over-css-vars",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.css';\nexport const theme = stylex.createTheme(vars, { color: 'blue' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-d9-createtheme-in-theme-file-itself",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/other.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.css';\nexport const theme = stylex.createTheme(vars, { color: 'blue' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-e1-no-moduleresolution-css-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-e5-create-still-works-in-css-theme-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ root: { color: 'red' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-g1-ext-dot-js-every-js-import-is-theme",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { x } from './plainjs.js';\nexport const styles = stylex.create({ root: { color: 'red' } });\nconsole.log(x);\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".js"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-g2-ext-dot-js-member-access-becomes-var",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { x } from './plainjs.js';\nexport const styles = stylex.create({ root: { color: x.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".js"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-g3-ext-dot-js-every-ts-file-is-theme-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/anything.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".js"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-h1-ghost-css-import-unresolvable",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './ghost.css';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-h2-real-css-content-never-read-commonjs",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './real.css';\nexport const styles = stylex.create({ root: { color: vars.color } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-h3-consts-import-css-const-value",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { cst } from './tokens.css.const';\nexport const styles = stylex.create({ root: { padding: cst.gutter } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-h4-consts-import-stylex-const-under-css-ext",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { cst } from './tokens.stylex.const';\nexport const styles = stylex.create({ root: { padding: cst.gutter } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-j1-definemarker-in-css-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const marker = stylex.defineMarker();\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-j2-definemarker-in-non-theme-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/app.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const marker = stylex.defineMarker();\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-k1-ext-transformed-collides-with-builtin",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/t.transformed.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".transformed"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-k2-ext-with-slash",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/theme/vars.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": "/vars"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-k3-ext-regex-chars",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokensXcssY.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-l1-dev-mode-css-ext",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "dev": true,
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "dev",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-l2-no-rootdir-package-walk-css",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-m1-nested-definevars-css-ext",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: { default: 'red', '@media (min-width: 600px)': 'blue' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-n1-ext-css-ts-bare-match",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css.ts"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-n2-ext-css-ts-double-ext-match",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css.ts"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-n3-ext-css-ts-const-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts.const.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const cst = stylex.defineConsts({ gutter: '16px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css.ts"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-o1-debug-classnames-create-css-ext",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ root: { color: 'red' } });\n",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": true,
+        "dev": true,
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "dev",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-o2-debug-classnames-create-default-ext",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/tokens.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ root: { color: 'red' } });\n",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": true,
+        "dev": true,
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "dev",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-p2-createtheme-non-theme-file-css-ext",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/deep/nested/app.tsx",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '../../tokens.css';\nexport const theme = stylex.createTheme(vars, { color: 'green' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    },
+    {
+      "id": "regressions/tfe-p3-theme-file-importing-another-theme-file",
+      "root": "corpus/regressions/fixtures/theme-file-extension/pkgA",
+      "filename": "src/other.css.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.css';\nexport const more = stylex.defineVars({ fg: vars.color });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".css"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["themeFileExtension"]
+    }
+  ]
+}

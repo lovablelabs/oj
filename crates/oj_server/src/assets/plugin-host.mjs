@@ -3498,6 +3498,18 @@ async function setupConfigureServer() {
       process.stderr.write(`${OJ} plugin host: failed to set up server.proxy: ${(e && e.stack) || e}\n`);
     }
   }
+  // Vite's baseMiddleware sits here, after the proxy and before the POST
+  // hooks: PRE middleware sees the browser's URL, POST middleware the URL
+  // with the base stripped. oj answers the root redirect and unbased
+  // requests itself, so only the strip runs (Vite's middleware mode).
+  const devBase = ownsServer ? ojDevBase(main.resolvedConfig ?? initial.config ?? {}) : "/";
+  if (devBase !== "/") {
+    middlewares.use(function viteBaseMiddleware(req, _res, next) {
+      const pathname = req.url.split(/[?#]/)[0];
+      if (pathname.startsWith(devBase)) req.url = ojStripBase(req.url, devBase);
+      next();
+    });
+  }
   for (const fn of post) {
     try {
       await fn();
@@ -3523,6 +3535,22 @@ async function setupConfigureServer() {
     // upgrade listeners; on this path no later announce re-checks.
     await ensureConfigureServerMiddleware();
   }
+}
+
+// Vite's resolveBaseUrl in serve: "", "./" and other relative bases are the
+// root, and a URL base keeps only its path.
+function ojDevBase(cfg) {
+  const raw = cfg.rawBase ?? cfg.base;
+  if (typeof raw !== "string" || raw === "" || raw[0] === ".") return "/";
+  const base = new URL(raw, "http://vite.dev").pathname;
+  return base[0] === "/" ? base : `/${base}`;
+}
+
+// Vite's stripBase.
+function ojStripBase(url, base) {
+  if (url === base) return "/";
+  const devBase = base.endsWith("/") ? base : `${base}/`;
+  return url.startsWith(devBase) ? url.slice(devBase.length - 1) : url;
 }
 
 function ojPushServeInfo() {
@@ -4571,10 +4599,34 @@ const htmlWarnOnce = (msg) => {
 // The dev client oj serves stands where Vite injects `/@vite/client`. `extra`
 // carries what the Rust page server knows exactly: the file, and the env map
 // and CSP nonce it derives from the same defines and config Vite reads.
+// @stylexjs/unplugin's transformIndexHtml, for pages this host transforms:
+// oj runs the plugin natively (the host never loads it), but in `full` dev
+// mode its hook adds the runtime script and stylesheet link to every page,
+// a custom server's `server.transformIndexHtml` included.
+function stylexHtmlPlugin(base) {
+  const standIn = nativePlugins.find((p) => p && p.name === "@stylexjs/unplugin");
+  if (!standIn || (standIn.__ojStylexOptions?.devMode ?? "full") !== "full") return null;
+  return {
+    name: "@stylexjs/unplugin",
+    enforce: "pre",
+    transformIndexHtml() {
+      return [
+        {
+          tag: "script",
+          attrs: { type: "module", src: posix.join(base, "/@id/virtual:stylex:runtime") },
+          injectTo: "head",
+        },
+        { tag: "link", attrs: { rel: "stylesheet", href: posix.join(base, "/virtual:stylex.css") }, injectTo: "head" },
+      ];
+    },
+  };
+}
+
 async function devTransformIndexHtml(url, html, originalUrl, extra = {}) {
   const config = { ...(main.resolvedConfig ?? {}) };
   config.root = config.root ?? initial.config?.root ?? process.cwd();
   const base = config.base || "/";
+  const stylex = stylexHtmlPlugin(base);
   return transformDevHtml({
     url,
     html,
@@ -4582,7 +4634,8 @@ async function devTransformIndexHtml(url, html, originalUrl, extra = {}) {
     filename: extra.filename,
     server: devServer,
     config,
-    plugins: main.plugins,
+    // An `enforce: 'pre'` plugin: ahead of the app's in Vite's sorted list.
+    plugins: stylex ? [stylex, ...main.plugins] : main.plugins,
     bind: bindHtmlHook,
     proxy: htmlProxy,
     moduleGraph,

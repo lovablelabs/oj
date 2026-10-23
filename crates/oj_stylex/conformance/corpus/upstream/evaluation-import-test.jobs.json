@@ -1,0 +1,180 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/evaluation-import-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only \u2014 never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/evaluation-import-importing-file-with-stylex-s-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-importing-file-with-stylex-a-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.__varGroupHash__,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-maintains-variable-names-tha-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme['--foreground'],\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-importing-file-with-stylex-s-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const fade = stylex.keyframes({\n          from: {\n            color: MyTheme.foreground,\n          }\n        });\n        const styles = stylex.create({\n          red: {\n            animationName: fade,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "keyframes", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-importing-file-with-stylex-j-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-importing-file-with-stylex-j-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme as mt } from 'otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: mt.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-importing-file-without-a-sty-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/evaluation-import-imported-vars-with-stylex-su-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            [MyTheme.foreground]: 'red',\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-imported-vars-with-stylex-su-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          color: (color) => ({\n            [MyTheme.foreground]: color,\n          })\n        });\n        stylex.props(styles.color('red'));\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "props", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/evaluation-import-recognizes-ts-stylex-imports-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from './otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.__varGroupHash__,\n          }\n        });\n        stylex(styles.red);\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create"],
+      "expect": "ok"
+    }
+  ]
+}

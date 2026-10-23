@@ -1,0 +1,326 @@
+[
+ {
+  "name": "cross-file tokens and theme|flat",
+  "sources": [
+   {
+    "filename": "<FIXROOT>/pkg/src/tokens.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red', gap: '8px', '--raw': 'blue', '2fast': '1s' });\nexport const sizes = stylex.defineVars({ sm: '4px' });\n"
+   },
+   {
+    "filename": "<FIXROOT>/pkg/src/theme.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.stylex';\nexport const theme = stylex.createTheme(vars, { accent: { default: 'blue', '@media print': 'white' }, gap: '4px' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>"
+   }
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": ":root, .x4m1aov{--x1d1e07n:red;--x144az1d:8px;--raw:blue;--xgoz2vj:1s;}\n:root, .x1qnqc51{--xfcmr4z:4px;}\n.x14qaqp4.x14qaqp4, .x14qaqp4.x14qaqp4:root{--x1d1e07n:blue;--x144az1d:4px;}\n@media print{.x14qaqp4.x14qaqp4, .x14qaqp4.x14qaqp4:root{--x1d1e07n:white;}}"
+ },
+ {
+  "name": "cross-file tokens and theme|layers",
+  "sources": [
+   {
+    "filename": "<FIXROOT>/pkg/src/tokens.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red', gap: '8px', '--raw': 'blue', '2fast': '1s' });\nexport const sizes = stylex.defineVars({ sm: '4px' });\n"
+   },
+   {
+    "filename": "<FIXROOT>/pkg/src/theme.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.stylex';\nexport const theme = stylex.createTheme(vars, { accent: { default: 'blue', '@media print': 'white' }, gap: '4px' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>"
+   }
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": "\n@layer priority1;\n@layer priority1{\n:root, .x4m1aov{--x1d1e07n:red;--x144az1d:8px;--raw:blue;--xgoz2vj:1s;}\n:root, .x1qnqc51{--xfcmr4z:4px;}\n.x14qaqp4.x14qaqp4, .x14qaqp4.x14qaqp4:root{--x1d1e07n:blue;--x144az1d:4px;}\n@media print{.x14qaqp4.x14qaqp4, .x14qaqp4.x14qaqp4:root{--x1d1e07n:white;}}\n}"
+ },
+ {
+  "name": "same-file define and theme|flat",
+  "sources": [
+   {
+    "filename": "/fake/root/both.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const local = stylex.defineVars({ accent: 'red', gap: { default: '4px', '@media print': '8px' } });\nexport const theme = stylex.createTheme(local, { accent: 'green' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": ":root, .x1a9afrk{--xordv4g:red;--xq20e3e:4px;}\n@media print{:root, .x1a9afrk{--xq20e3e:8px;}}\n.x1630436.x1630436, .x1630436.x1630436:root{--xordv4g:green;}"
+ },
+ {
+  "name": "same-file define and theme|layers",
+  "sources": [
+   {
+    "filename": "/fake/root/both.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const local = stylex.defineVars({ accent: 'red', gap: { default: '4px', '@media print': '8px' } });\nexport const theme = stylex.createTheme(local, { accent: 'green' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": "\n@layer priority1;\n@layer priority1{\n:root, .x1a9afrk{--xordv4g:red;--xq20e3e:4px;}\n@media print{:root, .x1a9afrk{--xq20e3e:8px;}}\n.x1630436.x1630436, .x1630436.x1630436:root{--xordv4g:green;}\n}"
+ },
+ {
+  "name": "typed vars property rules|flat",
+  "sources": [
+   {
+    "filename": "/fake/root/typed.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ c: stylex.types.color('red'), l: stylex.types.length({ default: 4, '@media print': 8 }), p: stylex.types.percentage(0.5) });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": "@property --x9pzyqx { syntax: \"<color>\"; inherits: true; initial-value: red }\n@property --x1bae8y { syntax: \"<length>\"; inherits: true; initial-value: 4px }\n@property --x1i2jlu1 { syntax: \"<percentage>\"; inherits: true; initial-value: 50% }\n:root, .x1cqtnnb{--x9pzyqx:red;--x1bae8y:4px;--x1i2jlu1:50%;}\n@media print{:root, .x1cqtnnb{--x1bae8y:8px;}}"
+ },
+ {
+  "name": "typed vars property rules|layers",
+  "sources": [
+   {
+    "filename": "/fake/root/typed.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ c: stylex.types.color('red'), l: stylex.types.length({ default: 4, '@media print': 8 }), p: stylex.types.percentage(0.5) });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": "\n@layer priority1;\n@property --x9pzyqx { syntax: \"<color>\"; inherits: true; initial-value: red }\n@property --x1bae8y { syntax: \"<length>\"; inherits: true; initial-value: 4px }\n@property --x1i2jlu1 { syntax: \"<percentage>\"; inherits: true; initial-value: 50% }\n:root, .x1cqtnnb{--x9pzyqx:red;--x1bae8y:4px;--x1i2jlu1:50%;}\n@media print{:root, .x1cqtnnb{--x1bae8y:8px;}}"
+ },
+ {
+  "name": "keyframes valued vars|flat",
+  "sources": [
+   {
+    "filename": "/fake/root/anim.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ spin: stylex.keyframes({ from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } }), fade: stylex.keyframes({ from: { opacity: 0 } }) });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": "@keyframes xw2c1lr-B{from{opacity:0;}}\n@keyframes x1wc8ddo-B{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}\n:root, .xqsnfpt{--xcqpruy:x1wc8ddo-B;--x1l4xu1z:xw2c1lr-B;}"
+ },
+ {
+  "name": "keyframes valued vars|layers",
+  "sources": [
+   {
+    "filename": "/fake/root/anim.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ spin: stylex.keyframes({ from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } }), fade: stylex.keyframes({ from: { opacity: 0 } }) });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": "\n@layer priority1;\n@keyframes xw2c1lr-B{from{opacity:0;}}\n@keyframes x1wc8ddo-B{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}\n:root, .xqsnfpt{--xcqpruy:x1wc8ddo-B;--x1l4xu1z:xw2c1lr-B;}"
+ },
+ {
+  "name": "nested at-rules and self refs|flat",
+  "sources": [
+   {
+    "filename": "/fake/root/deep.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ a: { default: 'x', '@media (max-width: 600px)': { default: 'y', '@supports (display: grid)': 'z' } }, b: () => vars.a });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": ":root, .x1l4udhh{--x1gg10kh:x;--x1x8pkyc:var(--x1gg10kh);}\n@media (max-width: 600px){:root, .x1l4udhh{--x1gg10kh:y;}}\n@supports (display: grid){@media (max-width: 600px){:root, .x1l4udhh{--x1gg10kh:z;}}}"
+ },
+ {
+  "name": "nested at-rules and self refs|layers",
+  "sources": [
+   {
+    "filename": "/fake/root/deep.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ a: { default: 'x', '@media (max-width: 600px)': { default: 'y', '@supports (display: grid)': 'z' } }, b: () => vars.a });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": "\n@layer priority1;\n@layer priority1{\n:root, .x1l4udhh{--x1gg10kh:x;--x1x8pkyc:var(--x1gg10kh);}\n@media (max-width: 600px){:root, .x1l4udhh{--x1gg10kh:y;}}\n@supports (display: grid){@media (max-width: 600px){:root, .x1l4udhh{--x1gg10kh:z;}}}\n}"
+ },
+ {
+  "name": "two groups with themes|flat",
+  "sources": [
+   {
+    "filename": "<FIXROOT>/pkg/src/tokens.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red', gap: '8px', '--raw': 'blue', '2fast': '1s' });\nexport const sizes = stylex.defineVars({ sm: '4px' });\n"
+   },
+   {
+    "filename": "<FIXROOT>/pkg/src/themes.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars, sizes } from './tokens.stylex';\nexport const t1 = stylex.createTheme(vars, { accent: 'navy' });\nexport const t2 = stylex.createTheme(sizes, { sm: '2px' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>"
+   }
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": ":root, .x4m1aov{--x1d1e07n:red;--x144az1d:8px;--raw:blue;--xgoz2vj:1s;}\n:root, .x1qnqc51{--xfcmr4z:4px;}\n.xbtjrq9.xbtjrq9, .xbtjrq9.xbtjrq9:root{--x1d1e07n:navy;}\n.x1ng2zns.x1ng2zns, .x1ng2zns.x1ng2zns:root{--xfcmr4z:2px;}"
+ },
+ {
+  "name": "two groups with themes|layers",
+  "sources": [
+   {
+    "filename": "<FIXROOT>/pkg/src/tokens.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red', gap: '8px', '--raw': 'blue', '2fast': '1s' });\nexport const sizes = stylex.defineVars({ sm: '4px' });\n"
+   },
+   {
+    "filename": "<FIXROOT>/pkg/src/themes.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars, sizes } from './tokens.stylex';\nexport const t1 = stylex.createTheme(vars, { accent: 'navy' });\nexport const t2 = stylex.createTheme(sizes, { sm: '2px' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "<FIXROOT>"
+   }
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": "\n@layer priority1;\n@layer priority1{\n:root, .x4m1aov{--x1d1e07n:red;--x144az1d:8px;--raw:blue;--xgoz2vj:1s;}\n:root, .x1qnqc51{--xfcmr4z:4px;}\n.xbtjrq9.xbtjrq9, .xbtjrq9.xbtjrq9:root{--x1d1e07n:navy;}\n.x1ng2zns.x1ng2zns, .x1ng2zns.x1ng2zns:root{--xfcmr4z:2px;}\n}"
+ },
+ {
+  "name": "debug named group|flat",
+  "sources": [
+   {
+    "filename": "/fake/root/dbg.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red', '2fast': '1s' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   },
+   "debug": true,
+   "enableDebugClassNames": true
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": ":root, .x13x9ibv{--accent-xhxt09h:red;--_2fast-xjl3me5:1s;}"
+ },
+ {
+  "name": "debug named group|layers",
+  "sources": [
+   {
+    "filename": "/fake/root/dbg.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red', '2fast': '1s' });"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   },
+   "debug": true,
+   "enableDebugClassNames": true
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": "\n@layer priority1;\n@layer priority1{\n:root, .x13x9ibv{--accent-xhxt09h:red;--_2fast-xjl3me5:1s;}\n}"
+ },
+ {
+  "name": "empty group and empty theme|flat",
+  "sources": [
+   {
+    "filename": "/fake/root/empty.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({});\nexport const theme = stylex.createTheme(vars, {});"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": false
+  },
+  "css": ""
+ },
+ {
+  "name": "empty group and empty theme|layers",
+  "sources": [
+   {
+    "filename": "/fake/root/empty.stylex.ts",
+    "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({});\nexport const theme = stylex.createTheme(vars, {});"
+   }
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "cfg": {
+   "useLayers": true
+  },
+  "css": ""
+ }
+]

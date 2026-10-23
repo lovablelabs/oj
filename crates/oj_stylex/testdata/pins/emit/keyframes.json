@@ -1,0 +1,1265 @@
+[
+ {
+  "name": "basic from/to",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0
+       ]
+      ]
+     }
+    ],
+    [
+     "to",
+     {
+      "$obj": [
+       [
+        "opacity",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x18re5ia-B",
+   "ltr": "@keyframes x18re5ia-B{from{opacity:0;}to{opacity:1;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "percent keys",
+  "frames": {
+   "$obj": [
+    [
+     "0%",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0
+       ]
+      ]
+     }
+    ],
+    [
+     "50%",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0.5
+       ]
+      ]
+     }
+    ],
+    [
+     "100%",
+     {
+      "$obj": [
+       [
+        "opacity",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1y1pnan-B",
+   "ltr": "@keyframes x1y1pnan-B{0%{opacity:0;}50%{opacity:.5;}100%{opacity:1;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "numeric frame keys reorder",
+  "frames": {
+   "$obj": [
+    [
+     "2",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0.2
+       ]
+      ]
+     }
+    ],
+    [
+     "10",
+     {
+      "$obj": [
+       [
+        "opacity",
+        1
+       ]
+      ]
+     }
+    ],
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xxdfla9-B",
+   "ltr": "@keyframes xxdfla9-B{2{opacity:.2;}10{opacity:1;}from{opacity:0;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "alias paddingStart no rtl",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "paddingStart",
+        0
+       ]
+      ]
+     }
+    ],
+    [
+     "to",
+     {
+      "$obj": [
+       [
+        "paddingStart",
+        10
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x9zp5wb-B",
+   "ltr": "@keyframes x9zp5wb-B{from{padding-inline-start:0;}to{padding-inline-start:10px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "dashed margin-start rtl",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "margin-start",
+        "1px"
+       ]
+      ]
+     }
+    ],
+    [
+     "to",
+     {
+      "$obj": [
+       [
+        "margin-start",
+        "5px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x16228g0-B",
+   "ltr": "@keyframes x16228g0-B{from{margin-left:1px;}to{margin-left:5px;}}",
+   "rtl": "@keyframes x16228g0-B{from{margin-right:1px;}to{margin-right:5px;}}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "float logical flips",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "float",
+        "inline-start"
+       ]
+      ]
+     }
+    ],
+    [
+     "to",
+     {
+      "$obj": [
+       [
+        "float",
+        "inline-end"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1uod70n-B",
+   "ltr": "@keyframes x1uod70n-B{from{float:left;}to{float:right;}}",
+   "rtl": "@keyframes x1uod70n-B{from{float:right;}to{float:left;}}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "clear start",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "clear",
+        "start"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1by32qw-B",
+   "ltr": "@keyframes x1by32qw-B{from{clear:left;}}",
+   "rtl": "@keyframes x1by32qw-B{from{clear:right;}}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "background-position words",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "backgroundPosition",
+        "start top"
+       ]
+      ]
+     }
+    ],
+    [
+     "to",
+     {
+      "$obj": [
+       [
+        "backgroundPosition",
+        "end 10px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xu0t3va-B",
+   "ltr": "@keyframes xu0t3va-B{from{background-position:left top;}to{background-position:right 10px;}}",
+   "rtl": "@keyframes xu0t3va-B{from{background-position:right top;}to{background-position:left 10px;}}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "background-position physical",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "backgroundPosition",
+        "left top"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xwzdfvc-B",
+   "ltr": "@keyframes xwzdfvc-B{from{background-position:left top;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "transitionDuration dashed px quirk",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "transitionDuration",
+        500
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1t1ekxd-B",
+   "ltr": "@keyframes x1t1ekxd-B{from{transition-duration:500px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "animationDelay dashed px quirk",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "animationDelay",
+        100
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xqbz69g-B",
+   "ltr": "@keyframes xqbz69g-B{from{animation-delay:100px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "lineHeight dashed px quirk",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "lineHeight",
+        1.535
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xlzccsj-B",
+   "ltr": "@keyframes xlzccsj-B{from{line-height:1.535px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "opacity rounding",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0.123456
+       ]
+      ]
+     }
+    ],
+    [
+     "to",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0.5
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xa3hohq-B",
+   "ltr": "@keyframes xa3hohq-B{from{opacity:.1235;}to{opacity:.5;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "large number",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "flexGrow",
+        1e+21
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1pjpf79-B",
+   "ltr": "@keyframes x1pjpf79-B{from{flex-grow:1.0000000000000001e+21px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "negative number",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "width",
+        -4
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1u73cv1-B",
+   "ltr": "@keyframes x1u73cv1-B{from{width:-4px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "custom prop dashify quirk",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "--customProp",
+        "red"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1q32k0h-B",
+   "ltr": "@keyframes x1q32k0h-B{from{--custom-prop:red;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "custom prop number",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "--x",
+        10
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1do0usn-B",
+   "ltr": "@keyframes x1do0usn-B{from{--x:10;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "content quoting",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "content",
+        "hello"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x9tsosr-B",
+   "ltr": "@keyframes x9tsosr-B{from{content:\"hello\";}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "content function",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "content",
+        "attr(href)"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1xyjeq4-B",
+   "ltr": "@keyframes x1xyjeq4-B{from{content:attr(href);}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "hyphenate-character quoting",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "hyphenateCharacter",
+        "x"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xl2no1z-B",
+   "ltr": "@keyframes xl2no1z-B{from{hyphenate-character:\"x\";}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "calc whitespace",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "width",
+        "calc( 100% - 8px )"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1oacrce-B",
+   "ltr": "@keyframes x1oacrce-B{from{width:calc(100% - 8px);}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "rgb spaces",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "color",
+        "rgb( 1 , 2 , 3 )"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1anpga5-B",
+   "ltr": "@keyframes x1anpga5-B{from{color:rgb(1,2,3);}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "leading zero",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "width",
+        "0.5px"
+       ]
+      ]
+     }
+    ],
+    [
+     "to",
+     {
+      "$obj": [
+       [
+        "width",
+        ".75px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x18mdlex-B",
+   "ltr": "@keyframes x18mdlex-B{from{width:.5px;}to{width:.75px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "zero dimensions",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "margin",
+        "0px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x19e90kw-B",
+   "ltr": "@keyframes x19e90kw-B{from{margin:0;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "fallback array dropped",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "color",
+        [
+         "red",
+         "blue"
+        ]
+       ],
+       [
+        "width",
+        4
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1dnmnxn-B",
+   "ltr": "@keyframes x1dnmnxn-B{from{width:4px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "null value dropped",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "color",
+        null
+       ],
+       [
+        "width",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x12m4fzw-B",
+   "ltr": "@keyframes x12m4fzw-B{from{width:1px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "bool value dropped",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "color",
+        true
+       ],
+       [
+        "width",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x12m4fzw-B",
+   "ltr": "@keyframes x12m4fzw-B{from{width:1px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "nested object dropped keeps empty frame",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "color",
+        {
+         "$obj": [
+          [
+           "default",
+           "red"
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1r1tjop-B",
+   "ltr": "@keyframes x1r1tjop-B{from{}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "banned shorthand silent",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "border",
+        "1px solid red"
+       ],
+       [
+        "color",
+        "red"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xbjjx1r-B",
+   "ltr": "@keyframes xbjjx1r-B{from{color:red;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "alias dedupe last wins",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "marginStart",
+        1
+       ],
+       [
+        "marginInlineStart",
+        2
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x5b9hmw-B",
+   "ltr": "@keyframes x5b9hmw-B{from{margin-inline-start:2px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "dashify collision last wins",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "marginTop",
+        1
+       ],
+       [
+        "margin-top",
+        2
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x5fnvxm-B",
+   "ltr": "@keyframes x5fnvxm-B{from{margin-top:2px;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "ltr collision",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "margin-start",
+        "1px"
+       ],
+       [
+        "margin-left",
+        "2px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1heapzk-B",
+   "ltr": "@keyframes x1heapzk-B{from{margin-left:2px;}}",
+   "rtl": "@keyframes x1heapzk-B{from{margin-right:1px;margin-left:2px;}}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "empty frames",
+  "frames": {
+   "$obj": []
+  },
+  "options": {},
+  "expected": {
+   "animationName": "xsaryty-B",
+   "ltr": "@keyframes xsaryty-B{}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "empty frame",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": []
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "animationName": "x1r1tjop-B",
+   "ltr": "@keyframes x1r1tjop-B{from{}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "prefix",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {
+   "classNamePrefix": "pfx"
+  },
+  "expected": {
+   "animationName": "pfxw2c1lr-B",
+   "ltr": "@keyframes pfxw2c1lr-B{from{opacity:0;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "dev has no effect",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {
+   "dev": true
+  },
+  "expected": {
+   "animationName": "xw2c1lr-B",
+   "ltr": "@keyframes xw2c1lr-B{from{opacity:0;}}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "frame string",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     "x"
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Every frame within a keyframes() call must be an object.",
+   "code": "NonObjectKeyframe",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "frame array",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     [
+      "x"
+     ]
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Every frame within a keyframes() call must be an object.",
+   "code": "NonObjectKeyframe",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "frame bool",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     true
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Every frame within a keyframes() call must be an object.",
+   "code": "NonObjectKeyframe",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "frame null crash",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     null
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Cannot convert undefined or null to object",
+   "code": "UpstreamTypeError",
+   "messageExact": false
+  }
+ },
+ {
+  "name": "shorthand array throws",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "marginStart",
+        [
+         "1px",
+         "2px"
+        ]
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Cannot use fallbacks for shorthands. Use the expansion instead.",
+   "code": "ShorthandFallback",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "banned shorthand array throws",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "border",
+        [
+         "1px"
+        ]
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Cannot use fallbacks for shorthands. Use the expansion instead.",
+   "code": "ShorthandFallback",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "unclosed function",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "color",
+        "rgb(1,"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Rule contains an unclosed function",
+   "code": "UnclosedFunction",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "unclosed string",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "fontFamily",
+        "\"abc"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Rule contains an unclosed string",
+   "code": "UnclosedString",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "empty value crash",
+  "frames": {
+   "$obj": [
+    [
+     "from",
+     {
+      "$obj": [
+       [
+        "color",
+        " "
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Cannot read properties of undefined (reading 'type')",
+   "code": "EmptyValue",
+   "messageExact": false
+  }
+ },
+ {
+  "name": "non-object arg",
+  "frames": "x",
+  "options": {},
+  "expectedError": {
+   "message": "keyframes() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "array arg",
+  "frames": [
+   "x"
+  ],
+  "options": {},
+  "expectedError": {
+   "message": "keyframes() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ }
+]

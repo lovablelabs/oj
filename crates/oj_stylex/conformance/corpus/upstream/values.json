@@ -1,0 +1,2286 @@
+{
+  "header": {
+    "upstreamPath": "packages/style-value-parser/src/**/__tests__",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "values": [
+    {
+      "value": "foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "123",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo bar baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo, bar, baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo,baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo, baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo   , baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo   ,baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz,foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz, foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz   , foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz   ,foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo baz bar",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "bar foo baz",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "bar baz foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz bar foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "baz foo bar",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo foo foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo foo foo foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo foo foo foo foo",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "bar",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo foo foo bar",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "foo foo foo for",
+      "category": "token-parser",
+      "from": ["__tests__/token-parser-test.js"]
+    },
+    {
+      "value": "0.5",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": ".5",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "0.25",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": ".25",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "0.75",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": ".75",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "1",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "0",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "50%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "25%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "75%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "75.5%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "0.25%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": ".25%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "0%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "100%",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "invalid",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "red",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "initial",
+      "category": "alpha-value",
+      "from": ["css-types/__tests__/alpha-value-test.js"]
+    },
+    {
+      "value": "45deg",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "1rad",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "0.5turn",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "100grad",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "50%",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "100%",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "0%",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "25%",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "abc",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "50",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "10abc",
+      "category": "angle-percentage",
+      "from": ["css-types/__tests__/angle-percentage-test.js"]
+    },
+    {
+      "value": "0deg",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "45deg",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "90deg",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "180deg",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "270deg",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "-90deg",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "0.5turn",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "2rad",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "100grad",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "1.5deg",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "invalid",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "red",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "initial",
+      "category": "angle",
+      "from": ["css-types/__tests__/angle-test.js"]
+    },
+    {
+      "value": "normal",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "multiply",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "screen",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "overlay",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "darken",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "lighten",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "color-dodge",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "color-burn",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "hard-light",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "soft-light",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "difference",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "exclusion",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "hue",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "saturation",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "color",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "luminosity",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "invalid",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "blend",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "123",
+      "category": "blend-mode",
+      "from": ["css-types/__tests__/blend-mode-test.js"]
+    },
+    {
+      "value": "calc(10)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(3.14)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(-5)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(50%)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(100%)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(-25%)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(20px)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(2em)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(1.5rem)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10 + 5)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(20px + 10%)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10 - 5)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(100% - 20px)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10 * 5)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(2 * 50%)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10 / 2)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(100% / 4)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc((10 + 5) * 2)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(100% - (30px / 2))",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(100% - 20px * 2 + 10px)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10+pi)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10*5)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc( 10*5 )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc( 10* 5 )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc( 10 *5 )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc( 10 * 5 )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc()",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10 + )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10 +5 )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10+5 )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10 @ 5)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10px + 5em)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "notcalc(10 + 5)",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "calc(10+ 5 )",
+      "category": "calc",
+      "from": ["css-types/__tests__/calc-test.js"]
+    },
+    {
+      "value": "red",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "blue",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "green",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "transparent",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "#ff0000",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "#00ff00",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "#0000ff",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "#ffffff",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(255, 0, 0)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0, 255, 0)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0, 0, 255)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(255 0 0)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0 255 0)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0 0 255)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgba(255, 0, 0, 0.5)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgba(0, 255, 0, 0.5)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgba(0, 0, 255, 0.5)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(255 0 0 / 0.5)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0 255 0 / 0.5)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0 0 255 / 0.5)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(255 0 0 / 50%)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0 255 0 / 50%)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(0 0 255 / 50%)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "lch(50% 100 270deg)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "invalid",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "#gggggg",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "rgb(256, 0, 0)",
+      "category": "color",
+      "from": ["css-types/__tests__/color-test.js"]
+    },
+    {
+      "value": "myIdentifier",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "custom-name",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "_private",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "identifier123",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "unset",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "initial",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "inherit",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "default",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "none",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "auto",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "normal",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "hidden",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "visible",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "revert",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "revert-layer",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "123invalid",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "invalid!",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "invalid space",
+      "category": "custom-ident",
+      "from": ["css-types/__tests__/custom-ident-test.js"]
+    },
+    {
+      "value": "--custom-property",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "--theme-color",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "--123",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "--_private",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "custom-property",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "-custom-property",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "property",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "--",
+      "category": "dashed-ident",
+      "from": ["css-types/__tests__/dashed-ident-test.js"]
+    },
+    {
+      "value": "linear(1, 2)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "linear(1.5, 2  ,   3)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "linear(  .5  , 2, 3,4  )",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "ease-in",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "ease-out",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "ease-in-out",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "ease",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "step-start",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "step-end",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "steps(1, start)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "steps(1   ,     start)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "steps(1,end)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "cubic-bezier(1,1,1,1)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "cubic-bezier( 1.5 ,    1 ,    .1 , 1 )",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "linear(1 2 3)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "cubic-bezier(1, 2, 3)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "cubic-bezier(1, 2, 3, 4, 5)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "cubic-bezier(1 .25 1 .25)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "out-ease",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "linear()",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "steps(1, 2)",
+      "category": "easing-function",
+      "from": ["css-types/__tests__/easing-function-test.js"]
+    },
+    {
+      "value": "blur(5px)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "brightness(150%)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "contrast(200%)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "grayscale(50%)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "hue-rotate(90deg)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "invert(100%)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "opacity(75%)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "saturate(120%)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "sepia(30%)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "invalid()",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "blur()",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "brightness(abc)",
+      "category": "filter-function",
+      "from": ["css-types/__tests__/filter-function-test.js"]
+    },
+    {
+      "value": "1fr",
+      "category": "flex",
+      "from": ["css-types/__tests__/flex-test.js"]
+    },
+    {
+      "value": "2.5fr",
+      "category": "flex",
+      "from": ["css-types/__tests__/flex-test.js"]
+    },
+    {
+      "value": "0fr",
+      "category": "flex",
+      "from": ["css-types/__tests__/flex-test.js"]
+    },
+    {
+      "value": "-1fr",
+      "category": "flex",
+      "from": ["css-types/__tests__/flex-test.js"]
+    },
+    {
+      "value": "1 fr",
+      "category": "flex",
+      "from": ["css-types/__tests__/flex-test.js"]
+    },
+    {
+      "value": "1px",
+      "category": "flex",
+      "from": ["css-types/__tests__/flex-test.js"]
+    },
+    {
+      "value": "1Hz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "1000KHz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "0Hz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "0KHz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "1.5Hz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "1.5KHz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "1 Hz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "1KHz ",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "1",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "Hz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "KHz",
+      "category": "frequency",
+      "from": ["css-types/__tests__/frequency-test.js"]
+    },
+    {
+      "value": "10px",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "5em",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "2rem",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "1in",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "50%",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "100%",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "0%",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "25%",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "abc",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "50",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "10abc",
+      "category": "length-percentage",
+      "from": ["css-types/__tests__/length-percentage-test.js"]
+    },
+    {
+      "value": "10ch",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "2em",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "1.5ex",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "3ic",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "1.2lh",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "2rem",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "1rlh",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "50vh",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "100vw",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "80svh",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "90lvw",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "70dvh",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "60vmin",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "85vmax",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "30cqw",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "40cqi",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "50cqh",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "60cqb",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "45cqmin",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "75cqmax",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "16px",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "2cm",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "10mm",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "1in",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "12pt",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "10abc",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "20pc",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "30",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "xyz",
+      "category": "length",
+      "from": ["css-types/__tests__/length-test.js"]
+    },
+    {
+      "value": "left",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "right",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "center",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "top",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "bottom",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "left top",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "right bottom",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "center center",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "left bottom",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "right top",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "left 50% top 20px",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "right 20px",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "50% top",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "30px bottom",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "50% 50%",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "20px 30px",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "25% 40px",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "left 20% top 30%",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "right 10px bottom 15px",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "invalid",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "left left",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "top right bottom",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "20",
+      "category": "position",
+      "from": ["css-types/__tests__/position-test.js"]
+    },
+    {
+      "value": "300dpi",
+      "category": "resolution",
+      "from": ["css-types/__tests__/resolution-test.js"]
+    },
+    {
+      "value": "118.11dpcm",
+      "category": "resolution",
+      "from": ["css-types/__tests__/resolution-test.js"]
+    },
+    {
+      "value": "96dppx",
+      "category": "resolution",
+      "from": ["css-types/__tests__/resolution-test.js"]
+    },
+    {
+      "value": "invalid",
+      "category": "resolution",
+      "from": ["css-types/__tests__/resolution-test.js"]
+    },
+    {
+      "value": "10abc",
+      "category": "resolution",
+      "from": ["css-types/__tests__/resolution-test.js"]
+    },
+    {
+      "value": "10",
+      "category": "resolution",
+      "from": ["css-types/__tests__/resolution-test.js"]
+    },
+    {
+      "value": "1s",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "1000ms",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "0s",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "0ms",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "1.5s",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "1.5ms",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "1 s",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "1ms ",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "1",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "s",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "ms",
+      "category": "time",
+      "from": ["css-types/__tests__/time-test.js"]
+    },
+    {
+      "value": "matrix(1, 0, 0, 1, 0, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(1.2,0.2,  -1, 0.9, 0, 20 )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(\n.4,0,0.5,1.200,60,10   )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(0.1, 1, -0.3, 1, 0, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(1, 0, 0, 1, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(1, 0, 0, 1, 0, 0, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(1, 0, 0, 1, 0, foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(1px, 0, 0, 1, 0, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix(1 0 0 1 0 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix3d(\n            1,  0, 0, 0, \n            0,  1, 0, 0,\n            0, .5, 1, 0,\n            0, 0, 0, 1\n          )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix3d(-0.6,1.34788,0,0,-2.34788,-.6,0, 0,0,0,1,0,0,0,10,1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix3d(\n            1,  0, 0, 0, \n            0,  1, 0, 0,\n            0, .5, 1, 0,\n            0, 0, 0\n          )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix3d(\n            1,  0, 0, 0, \n            0,  1, 0, 0,\n            0, .5, 1, 0,\n            0, 0, 0, 1, 0\n          )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix3d(\n            1,  0, 0, 0, \n            0,  1, 0, 0,\n            0, .5, 1, 0,\n            0, 0, 0, foo\n          )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "matrix3d(\n            1px,  0, 0, 0, \n            0,  1, 0, 0,\n            0, .5, 1, 0,\n            0, 0, 0, 1\n          )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "perspective(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "perspective(100px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "perspective(1.5em)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "perspective(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "perspective(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "perspective(1%)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "perspective(1deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(45deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(90deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(180deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(270deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(-90deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(0.5turn)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(2rad)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(100grad)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(1.5deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(360deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(1turn)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(-1turn)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(1%)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate(1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1, 45deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, .1, 90deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0.5, 1, 180rad)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1, 0, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1, foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1, 1%)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotate3d(0, 0, 1, 1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateX(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateX(  0   )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateY( 45deg\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateZ(   90deg     )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateZ( 90rad )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateX(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateX(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateX(1%)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "rotateX(1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(1.5)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(1.5, 2)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(150%, 2.5)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(1.5, 2.5)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale()",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(1, 2, 3)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(1, 1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale(1px, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(0, 0, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(1.5, 2, 0.5)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(150%, 2.5, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(0, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(1, 2, 3, 4)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(foo, 0, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(1px, 0, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scale3d(1, 0, 1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleX(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleX(  0   )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleY( 45\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleY( 45%\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleZ(   90     )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleX(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleX(1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "scaleX(1, 2)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew( 0   \n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(15deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(\n15deg\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(15deg, 2turn)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(15deg,2turn)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(   150deg,\n2.5rad)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew()",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(1deg, 2deg, 3rad)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(1, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skew(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(  0   )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewY( 45deg\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(1ms)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(.1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "skewX(1, 2)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate( 0   \n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(15px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(\n15px\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(15px, 2em)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(15px,2em)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(   150%,\n2.5px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate()",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(1px, 2px, 3px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(1deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(1, 1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate(1px, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(  0,0, 1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(1.5px, 2em,\n.5px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(1.5px, 2em,\n0.5px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(\n\n\n150%,\n2.5em, 1px    )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(0, 0)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(1, 2, 3, 4)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(foo, 0, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(1px, 0, 1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translate3d(1, 0, 1px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(  0   )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(15px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(\n15px\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(150%)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(20)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(20s)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateX(1deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(  0   )",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(15px)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(\n15px\n)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(150%)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(foo)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(1)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(20)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(20s)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    },
+    {
+      "value": "translateY(1deg)",
+      "category": "transform-function",
+      "from": ["css-types/__tests__/transform-function-test.js"]
+    }
+  ]
+}

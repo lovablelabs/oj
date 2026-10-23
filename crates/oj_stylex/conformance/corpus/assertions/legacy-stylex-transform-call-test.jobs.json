@@ -1,0 +1,1402 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/stylex-transform-call-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/legacy-call-empty-stylex-call-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          stylex();\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import stylex from 'stylex';\n\"\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "empty stylex call",
+          "line": 39
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-basic-stylex-call-002-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n\"x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "basic stylex call",
+          "line": 51
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-number-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            0: {\n              color: 'red',\n            },\n            1: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles[0], styles[1]);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n\"x1e2nbdu x1t391ir\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with number",
+          "line": 74
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-computed-nu-004-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            [0]: {\n              color: 'red',\n            },\n            [1]: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles[0], styles[1]);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n\"x1e2nbdu x1t391ir\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with computed number",
+          "line": 104
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-computed-nu-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import {create} from '@stylexjs/stylex';\n          const styles = create({\n            [0]: {\n              color: 'red',\n            },\n            [1]: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles[0], styles[1]);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport { create } from '@stylexjs/stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  \"0\": {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  \"1\": {\n    kWkggS: \"x1t391ir\",\n    $$css: true\n  }\n};\nstylex(styles[0], styles[1]);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with computed number",
+          "line": 134
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-computed-st-006-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            'default': {\n              color: 'red',\n            }\n          });\n          stylex(styles['default']);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n\"x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with computed string",
+          "line": 174
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-multiple-na-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n            },\n          });\n          const otherStyles = stylex.create({\n            default: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles.default, otherStyles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n\"x1e2nbdu x1t391ir\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with multiple namespaces",
+          "line": 197
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-within-variable-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: { color: 'red' }\n          });\n          const a = function() {\n            return stylex(styles.foo);\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst a = function () {\n  return \"x1e2nbdu\";\n};",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call within variable declarations",
+          "line": 229
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-styles-vari-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              color: 'red',\n            },\n            bar: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex(styles.foo, styles.bar);\n          const foo = styles;\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  foo: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  bar: {\n    kWkggS: \"x1t391ir\",\n    $$css: true\n  }\n};\n\"x1e2nbdu x1t391ir\";\nconst foo = styles;",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with styles variable assignment",
+          "line": 254
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-within-export-de-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: { color: 'red' }\n          });\n          export default function MyExportDefault() {\n            return stylex(styles.foo);\n          }\n          export function MyExport() {\n            return stylex(styles.foo);\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nexport default function MyExportDefault() {\n  return \"x1e2nbdu\";\n}\nexport function MyExport() {\n  return \"x1e2nbdu\";\n}",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call within export declarations",
+          "line": 296
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-short-form-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n\"x14odnwx\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with short-form properties",
+          "line": 327
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-exported-sh-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\nexport const styles = {\n  foo: {\n    kmVPX3: \"x14odnwx\",\n    kg3NbH: null,\n    kuDDbn: null,\n    kE3dHu: null,\n    kP0aTx: null,\n    kpe85a: null,\n    k8WAf4: null,\n    kLKAdn: null,\n    kGO01o: null,\n    $$css: true\n  }\n};\n\"x14odnwx\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with exported short-form properties",
+          "line": 350
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-keeps-only-the-s-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(styles.foo, somethingElse);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xp59q4u{padding-block:10px}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xm7lytj{padding-top:7px}\",\n  priority: 4000\n});\nconst styles = {\n  foo: {\n    kmVPX3: \"x14odnwx\",\n    $$css: true\n  }\n};\n\"x14odnwx\";\n\"x14odnwx xp59q4u\";\n\"x14odnwx\";\n\"x14odnwx xp59q4u xm7lytj\";\nstylex(styles.foo, somethingElse);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call keeps only the styles that are needed",
+          "line": 387
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-keeps-all-null-when-a-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(somethingElse, styles.foo);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xp59q4u{padding-block:10px}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xm7lytj{padding-top:7px}\",\n  priority: 4000\n});\nconst styles = {\n  foo: {\n    kmVPX3: \"x14odnwx\",\n    kg3NbH: null,\n    kuDDbn: null,\n    kE3dHu: null,\n    kP0aTx: null,\n    kpe85a: null,\n    k8WAf4: null,\n    kLKAdn: null,\n    kGO01o: null,\n    $$css: true\n  }\n};\n\"x14odnwx\";\n\"x14odnwx xp59q4u\";\n\"x14odnwx\";\n\"x14odnwx xp59q4u xm7lytj\";\nstylex(somethingElse, styles.foo);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex keeps all null when applied after unknown",
+          "line": 438
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-keeps-only-the-n-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(styles.baz, styles.foo, somethingElse);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xp59q4u{padding-block:10px}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xm7lytj{padding-top:7px}\",\n  priority: 4000\n});\nconst styles = {\n  foo: {\n    kmVPX3: \"x14odnwx\",\n    kLKAdn: null,\n    $$css: true\n  },\n  baz: {\n    kLKAdn: \"xm7lytj\",\n    $$css: true\n  }\n};\n\"x14odnwx\";\n\"x14odnwx xp59q4u\";\n\"x14odnwx\";\n\"x14odnwx xp59q4u xm7lytj\";\nstylex(styles.baz, styles.foo, somethingElse);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call keeps only the nulls that are needed",
+          "line": 497
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-keeps-only-the-n-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            },\n            bar: {\n              paddingBlock: 10,\n            },\n            baz: {\n              paddingTop: 7,\n            }\n          });\n          stylex(styles.foo);\n          stylex(styles.foo, styles.bar);\n          stylex(styles.bar, styles.foo);\n          stylex(styles.foo, styles.bar, styles.baz);\n          stylex(styles.bar, styles.foo, somethingElse);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xp59q4u{padding-block:10px}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xm7lytj{padding-top:7px}\",\n  priority: 4000\n});\nconst styles = {\n  foo: {\n    kmVPX3: \"x14odnwx\",\n    k8WAf4: null,\n    $$css: true\n  },\n  bar: {\n    k8WAf4: \"xp59q4u\",\n    $$css: true\n  }\n};\n\"x14odnwx\";\n\"x14odnwx xp59q4u\";\n\"x14odnwx\";\n\"x14odnwx xp59q4u xm7lytj\";\nstylex(styles.bar, styles.foo, somethingElse);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call keeps only the nulls that are needed",
+          "line": 550
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-styles-wit-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n              ':hover': {\n                color: 'blue',\n              }\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n\"x1e2nbdu x17z2mba\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using styles with pseudo selectors",
+          "line": 606
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-styles-wit-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: {\n                default: 'red',\n                ':hover': 'blue',\n              }\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n\"x1e2nbdu x17z2mba\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using styles with pseudo selectors within property",
+          "line": 636
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-styles-wit-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: 'red',\n              '@media (min-width: 1000px)': {\n                backgroundColor: 'blue',\n              },\n              '@media (min-width: 2000px)': {\n                backgroundColor: 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px){.xc445zv.xc445zv{background-color:blue}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (min-width: 2000px){.x1ssfqz5.x1ssfqz5{background-color:purple}}\",\n  priority: 3200\n});\n\"xrkmrrc xc445zv x1ssfqz5\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using styles with Media Queries",
+          "line": 666
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-styles-wit-020-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: {\n                default:'red',\n                '@media (min-width: 1000px)': 'blue',\n                '@media (min-width: 2000px)': 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px) and (max-width: 1999.99px){.xw6up8c.xw6up8c{background-color:blue}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (min-width: 2000px){.x1ssfqz5.x1ssfqz5{background-color:purple}}\",\n  priority: 3200\n});\n\"xrkmrrc xw6up8c x1ssfqz5\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using styles with Media Queries within property",
+          "line": 703
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-styles-wit-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: 'red',\n              '@supports (hover: hover)': {\n                backgroundColor: 'blue',\n              },\n              '@supports not (hover: hover)': {\n                backgroundColor: 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@supports (hover: hover){.x6m3b6q.x6m3b6q{background-color:blue}}\",\n  priority: 3030\n});\n_inject2({\n  ltr: \"@supports not (hover: hover){.x6um648.x6um648{background-color:purple}}\",\n  priority: 3030\n});\n\"xrkmrrc x6m3b6q x6um648\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using styles with Support Queries",
+          "line": 738
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-styles-wit-022-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: {\n                default:'red',\n                '@supports (hover: hover)': 'blue',\n                '@supports not (hover: hover)': 'purple',\n              },\n            },\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@supports (hover: hover){.x6m3b6q.x6m3b6q{background-color:blue}}\",\n  priority: 3030\n});\n_inject2({\n  ltr: \"@supports not (hover: hover){.x6um648.x6um648{background-color:purple}}\",\n  priority: 3030\n});\n\"xrkmrrc x6m3b6q x6um648\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using styles with Support Queries within property",
+          "line": 775
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-conditions-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                backgroundColor: 'red',\n              },\n              active: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.default, isActive && styles.active);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  0: \"xrkmrrc\",\n  1: \"xrkmrrc xju2f9n\"\n})[!!isActive << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with conditions",
+          "line": 811
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-conditions-024-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                backgroundColor: 'red',\n              },\n              active: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.default, isActive && styles.active);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kWkggS: \"xrkmrrc\",\n    $$css: true\n  },\n  active: {\n    kMwMTN: \"xju2f9n\",\n    $$css: true\n  }\n};\nstylex(styles.default, isActive && styles.active);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with conditions - skip conditional",
+          "line": 846
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-property-co-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.red, styles.blue);\n            stylex(styles.blue, styles.red);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n\"xju2f9n\";\n\"x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with property collisions",
+          "line": 889
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-reverting-b-026-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              revert: {\n                color: null,\n              }\n            });\n            stylex(styles.red, styles.revert);\n            stylex(styles.revert, styles.red);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n\"\";\n\"x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with reverting by null",
+          "line": 921
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-short-form-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                padding: 5,\n                paddingEnd: 10,\n              },\n\n              bar: {\n                padding: 2,\n                paddingStart: 10,\n              },\n            });\n            stylex(styles.foo, styles.bar);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1i3ajwb{padding:2px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xe2zdcy{padding-inline-start:10px}\",\n  priority: 3000\n});\n\"x2vl965 x1i3ajwb xe2zdcy\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with short-form property collisions",
+          "line": 949
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-short-form-028-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                padding: 5,\n                paddingEnd: 10,\n              },\n\n              bar: {\n                padding: 2,\n                paddingStart: null,\n              },\n            });\n            stylex(styles.foo, styles.bar);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1i3ajwb{padding:2px}\",\n  priority: 1000\n});\n\"x2vl965 x1i3ajwb\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with short-form property collisions with null",
+          "line": 990
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-conditions-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  0: \"x1e2nbdu\",\n  1: \"xju2f9n\"\n})[!!isActive << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with conditions and collisions",
+          "line": 1027
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-conditions-030-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  red: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  blue: {\n    kMwMTN: \"xju2f9n\",\n    $$css: true\n  }\n};\nstylex(styles.red, isActive && styles.blue);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with conditions and collisions - skip conditional",
+          "line": 1062
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-conditions-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: null,\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  0: \"x1e2nbdu\",\n  1: \"\"\n})[!!isActive << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with conditions and null collisions",
+          "line": 1105
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-conditions-032-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: null,\n              }\n            });\n            stylex(styles.red, isActive && styles.blue);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  red: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  blue: {\n    kMwMTN: null,\n    $$css: true\n  }\n};\nstylex(styles.red, isActive && styles.blue);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with conditions and null collisions - skip conditional",
+          "line": 1136
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-dev-true-and-enableinlinedco-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              stylex(styles.default);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "enableDebugClassNames": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n\"color-x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "dev:true and enableInlinedConditionalMerge:false",
+          "line": 1185
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-dev-true-and-enableinlinedco-034-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              const otherStyles = stylex.create({\n                default: {\n                  backgroundColor: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && otherStyles.default);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "enableDebugClassNames": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    \"color-kMwMTN\": \"color-x1e2nbdu\",\n    $$css: \"js/FooBar.react.js:4\"\n  }\n};\n_inject2({\n  ltr: \".backgroundColor-x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst otherStyles = {\n  default: {\n    \"backgroundColor-kWkggS\": \"backgroundColor-x1t391ir\",\n    $$css: \"js/FooBar.react.js:9\"\n  }\n};\nstylex(styles.default, isActive && otherStyles.default);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "dev:true and enableInlinedConditionalMerge:false",
+          "line": 1209
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-dev-true-and-enableinlinedco-035-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n                active: {\n                  color: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && styles.active);\n            ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "enableDebugClassNames": true,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".color-xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    \"color-kMwMTN\": \"color-x1e2nbdu\",\n    $$css: \"js/FooBar.react.js:4\"\n  },\n  active: {\n    \"color-kMwMTN\": \"color-xju2f9n\",\n    $$css: \"js/FooBar.react.js:7\"\n  }\n};\nstylex(styles.default, isActive && styles.active);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "dev:true and enableInlinedConditionalMerge:false",
+          "line": 1254
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-dev-true-036-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              const otherStyles = stylex.create({\n                default: {\n                  backgroundColor: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && otherStyles.default);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".backgroundColor-x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n({\n  0: \"color-x1e2nbdu\",\n  1: \"color-x1e2nbdu backgroundColor-x1t391ir\"\n})[!!isActive << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "dev:true",
+          "line": 1303
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-dev-true-037-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n                active: {\n                  color: 'blue',\n                }\n              });\n              stylex(styles.default, isActive && styles.active);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".color-xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  0: \"color-x1e2nbdu\",\n  1: \"color-xju2f9n\"\n})[!!isActive << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "dev:true",
+          "line": 1339
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-computed-ke-038-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              [0]: {\n                color: 'red',\n              },\n              [1]: {\n                backgroundColor: 'blue',\n              }\n            });\n            stylex(styles[variant]);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  \"0\": {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  \"1\": {\n    kWkggS: \"x1t391ir\",\n    $$css: true\n  }\n};\nstylex(styles[variant]);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with computed key access",
+          "line": 1377
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-keeps-spaces-around-o-039-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            default: {\n              margin: 'max(0px, (48px - var(--x16dnrjz)) / 2)',\n            },\n          });\n          stylex(styles.default, props);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".x1d6cl6p{margin:max(0px,(48px - var(--x16dnrjz)) / 2)}\",\n  priority: 1000\n});\nconst styles = {\n  default: {\n    kogj98: \"x1d6cl6p\",\n    $$css: true\n  }\n};\nstylex(styles.default, props);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex keeps spaces around operators",
+          "line": 1417
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-composition-040-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n            },\n          });\n          stylex(styles.default, props);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};\nstylex(styles.default, props);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with composition of external styles",
+          "line": 1446
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-exported-s-041-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            default: {\n              ':hover': {\n                color: 'blue',\n              },\n              '@media (min-width: 1000px)': {\n                backgroundColor: 'blue',\n              },\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px){.xc445zv.xc445zv{background-color:blue}}\",\n  priority: 3200\n});\nexport const styles = {\n  default: {\n    kDPRdz: \"x17z2mba\",\n    ksQ81T: \"xc445zv\",\n    $$css: true\n  }\n};\n\"x17z2mba xc445zv\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using exported styles with pseudo selectors, and queries",
+          "line": 1475
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-exported-s-042-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            default: {\n              color: {\n                ':hover': 'blue',\n              },\n              backgroundColor: {\n                '@media (min-width: 1000px)': 'blue'\n              },\n            }\n          });\n          stylex(styles.default);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px){.xc445zv.xc445zv{background-color:blue}}\",\n  priority: 3200\n});\nexport const styles = {\n  default: {\n    kMwMTN: \"x17z2mba\",\n    kWkggS: \"xc445zv\",\n    $$css: true\n  }\n};\n\"x17z2mba xc445zv\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using exported styles with pseudo selectors, and queries within props",
+          "line": 1514
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-computed-ke-043-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex(styles[variant]);\n            const styles = stylex.create({\n              [0]: {\n                color: 'red',\n              },\n              [1]: {\n                backgroundColor: 'blue',\n              }\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nstylex(styles[variant]);\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  \"0\": {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  \"1\": {\n    kWkggS: \"x1t391ir\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with computed key access",
+          "line": 1554
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-mixed-acces-044-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n\n            function MyComponent() {\n              return (\n                <>\n                  <div className={stylex(styles.foo)} />\n                  <div className={stylex(styles.bar)} />\n                  <CustomComponent xstyle={styles.foo} />\n                  <div className={stylex(styles.foo, styles.bar)} />\n                </>\n              );\n            }\n\n            const styles = stylex.create({\n              foo: {\n                color: 'red',\n              },\n              bar: {\n                backgroundColor: 'blue',\n              }\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nfunction MyComponent() {\n  return <>\n                  <div className={\"x1e2nbdu\"} />\n                  <div className={\"x1t391ir\"} />\n                  <CustomComponent xstyle={styles.foo} />\n                  <div className={\"x1e2nbdu x1t391ir\"} />\n                </>;\n}\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  foo: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with mixed access",
+          "line": 1594
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-composition-045-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex(styles.default, props);\n            const styles = stylex.create({\n              default: {\n                color: 'red',\n              },\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nstylex(styles.default, props);\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with composition of external styles",
+          "line": 1647
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-with-composition-046-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                borderTop: '5px solid blue',\n                borderLeft: '5px solid blue',\n                borderRight: '5px solid blue',\n                borderBottom: '5px solid blue',\n              },\n            });\n            stylex(styles.default, props);\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x16gpukw{border-top:5px solid blue}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".x13nwy86{border-left:5px solid blue}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".x2ekbea{border-right:5px solid blue}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".x1o3008b{border-bottom:5px solid blue}\",\n  priority: 2000\n});\nconst styles = {\n  default: {\n    kX8ASl: \"x16gpukw\",\n    kLDBTA: \"x13nwy86\",\n    km2aEK: \"x2ekbea\",\n    k4EQJz: \"x1o3008b\",\n    $$css: true\n  }\n};\nstylex(styles.default, props);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call with composition border shorthands with external styles",
+          "line": 1676
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-stylex-call-using-exported-s-047-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex(styles.default);\n            export const styles = stylex.create({\n              default: {\n                ':hover': {\n                  color: 'blue',\n                },\n                '@media (min-width: 1000px)': {\n                  backgroundColor: 'blue',\n                },\n              }\n            });\n          ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n\"x17z2mba xc445zv\";\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px){.xc445zv.xc445zv{background-color:blue}}\",\n  priority: 3200\n});\nexport const styles = {\n  default: {\n    kDPRdz: \"x17z2mba\",\n    ksQ81T: \"xc445zv\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "stylex call using exported styles with pseudo selectors, and queries",
+          "line": 1723
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-basic-stylex-call-048-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'custom-stylex-path';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "importSources": ["custom-stylex-path"]
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'custom-stylex-path';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n\"x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Basic stylex call",
+          "line": 1764
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-named-import-from-custom-sou-049-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import {css as stylex} from 'custom-stylex-path';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "importSources": [
+          {
+            "from": "custom-stylex-path",
+            "as": "css"
+          }
+        ]
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport { css as stylex } from 'custom-stylex-path';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n\"x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Named import from custom source",
+          "line": 1789
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-named-import-with-other-name-050-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import {css} from 'custom-stylex-path';\n          const styles = css.create({\n            red: {\n              color: 'red',\n            }\n          });\n          css(styles.red);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "importSources": [
+          {
+            "from": "custom-stylex-path",
+            "as": "css"
+          }
+        ]
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport { css } from 'custom-stylex-path';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n\"x1e2nbdu\";",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Named import with other name from custom source",
+          "line": 1814
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-basic-stylex-call-051-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/js/components/Foo.react.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          stylex(\n            styles.root,\n            sidebar == null ? styles.noSidebar : styles.withSidebar,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "\"use strict\";\n\nvar _stylexInject = _interopRequireDefault(require(\"@stylexjs/stylex/lib/stylex-inject\"));\nvar stylex = _interopRequireWildcard(require(\"@stylexjs/stylex\"));\nfunction _interopRequireWildcard(e, t) { if (\"function\" == typeof WeakMap) var r = new WeakMap(), n = new WeakMap(); return (_interopRequireWildcard = function (e, t) { if (!t && e && e.__esModule) return e; var o, i, f = { __proto__: null, default: e }; if (null === e || \"object\" != typeof e && \"function\" != typeof e) return f; if (o = t ? n : r) { if (o.has(e)) return o.get(e); o.set(e, f); } for (const t in e) \"default\" !== t && {}.hasOwnProperty.call(e, t) && ((i = (o = Object.defineProperty) && Object.getOwnPropertyDescriptor(e, t)) && (i.get || i.set) ? o(f, t, i) : f[t] = e[t]); return f; })(e, t); }\nfunction _interopRequireDefault(e) { return e && e.__esModule ? e : { default: e }; }\nvar _inject2 = _stylexInject.default;\n_inject2({\n  ltr: \".boxSizing-x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridArea-x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".gridArea-x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".display-xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateRows-x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateRows-xmr4b4k.gridTemplateRows-xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateAreas-xesbpuc.gridTemplateAreas-xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateColumns-x15nfgh4.gridTemplateColumns-x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\n({\n  0: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4\",\n  1: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x\"\n})[!!(sidebar == null) << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Basic stylex call",
+          "line": 1841
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-basic-exported-stylex-create-052-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          stylex(\n            styles.root,\n            sidebar == null ? styles.noSidebar : styles.withSidebar,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".boxSizing-x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridArea-x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".gridArea-x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".display-xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateRows-x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateRows-xmr4b4k.gridTemplateRows-xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateAreas-xesbpuc.gridTemplateAreas-xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateColumns-x15nfgh4.gridTemplateColumns-x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\nexport const styles = {\n  sidebar: {\n    \"boxSizing-kB7OPa\": \"boxSizing-x9f619\",\n    \"gridArea-kJuA4N\": \"gridArea-x1yc5d2u\",\n    \"gridRow-kbNqZ1\": null,\n    \"gridRowStart-k1lYIM\": null,\n    \"gridRowEnd-kpJH7q\": null,\n    \"gridColumn-kBCFzs\": null,\n    \"gridColumnStart-kEXP64\": null,\n    \"gridColumnEnd-kWZpDQ\": null,\n    $$css: \"@stylexjs/babel-plugin::4\"\n  },\n  content: {\n    \"gridArea-kJuA4N\": \"gridArea-x1fdo2jl\",\n    \"gridRow-kbNqZ1\": null,\n    \"gridRowStart-k1lYIM\": null,\n    \"gridRowEnd-kpJH7q\": null,\n    \"gridColumn-kBCFzs\": null,\n    \"gridColumnStart-kEXP64\": null,\n    \"gridColumnEnd-kWZpDQ\": null,\n    $$css: \"@stylexjs/babel-plugin::8\"\n  },\n  root: {\n    \"display-k1xSpc\": \"display-xrvj5dj\",\n    \"gridTemplateRows-k9llMU\": \"gridTemplateRows-x7k18q3\",\n    \"gridTemplateAreas-kC13JO\": \"gridTemplateAreas-x5gp9wm\",\n    $$css: \"@stylexjs/babel-plugin::11\"\n  },\n  withSidebar: {\n    \"gridTemplateColumns-kumcoG\": \"gridTemplateColumns-x1rkzygb\",\n    \"gridTemplateRows-k9llMU\": \"gridTemplateRows-x7k18q3\",\n    \"gridTemplateAreas-kC13JO\": \"gridTemplateAreas-x17lh93j\",\n    \"@media (max-width: 640px)_gridTemplateRows-k9pwkU\": \"gridTemplateRows-xmr4b4k\",\n    \"@media (max-width: 640px)_gridTemplateAreas-kOnEH4\": \"gridTemplateAreas-xesbpuc\",\n    \"@media (max-width: 640px)_gridTemplateColumns-k1JLwA\": \"gridTemplateColumns-x15nfgh4\",\n    $$css: \"@stylexjs/babel-plugin::16\"\n  },\n  noSidebar: {\n    \"gridTemplateColumns-kumcoG\": \"gridTemplateColumns-x1mkdm3x\",\n    $$css: \"@stylexjs/babel-plugin::26\"\n  }\n};\n({\n  0: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4\",\n  1: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x\"\n})[!!(sidebar == null) << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Basic exported stylex.create call",
+          "line": 1947
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-basic-stylex-call-skip-condi-053-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          stylex(\n            styles.root,\n            sidebar == null ? styles.noSidebar : styles.withSidebar,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".boxSizing-x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridArea-x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".gridArea-x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".display-xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateRows-x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateRows-xmr4b4k.gridTemplateRows-xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateAreas-xesbpuc.gridTemplateAreas-xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateColumns-x15nfgh4.gridTemplateColumns-x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\nexport const styles = {\n  sidebar: {\n    \"boxSizing-kB7OPa\": \"boxSizing-x9f619\",\n    \"gridArea-kJuA4N\": \"gridArea-x1yc5d2u\",\n    \"gridRow-kbNqZ1\": null,\n    \"gridRowStart-k1lYIM\": null,\n    \"gridRowEnd-kpJH7q\": null,\n    \"gridColumn-kBCFzs\": null,\n    \"gridColumnStart-kEXP64\": null,\n    \"gridColumnEnd-kWZpDQ\": null,\n    $$css: \"@stylexjs/babel-plugin::4\"\n  },\n  content: {\n    \"gridArea-kJuA4N\": \"gridArea-x1fdo2jl\",\n    \"gridRow-kbNqZ1\": null,\n    \"gridRowStart-k1lYIM\": null,\n    \"gridRowEnd-kpJH7q\": null,\n    \"gridColumn-kBCFzs\": null,\n    \"gridColumnStart-kEXP64\": null,\n    \"gridColumnEnd-kWZpDQ\": null,\n    $$css: \"@stylexjs/babel-plugin::8\"\n  },\n  root: {\n    \"display-k1xSpc\": \"display-xrvj5dj\",\n    \"gridTemplateRows-k9llMU\": \"gridTemplateRows-x7k18q3\",\n    \"gridTemplateAreas-kC13JO\": \"gridTemplateAreas-x5gp9wm\",\n    $$css: \"@stylexjs/babel-plugin::11\"\n  },\n  withSidebar: {\n    \"gridTemplateColumns-kumcoG\": \"gridTemplateColumns-x1rkzygb\",\n    \"gridTemplateRows-k9llMU\": \"gridTemplateRows-x7k18q3\",\n    \"gridTemplateAreas-kC13JO\": \"gridTemplateAreas-x17lh93j\",\n    \"@media (max-width: 640px)_gridTemplateRows-k9pwkU\": \"gridTemplateRows-xmr4b4k\",\n    \"@media (max-width: 640px)_gridTemplateAreas-kOnEH4\": \"gridTemplateAreas-xesbpuc\",\n    \"@media (max-width: 640px)_gridTemplateColumns-k1JLwA\": \"gridTemplateColumns-x15nfgh4\",\n    $$css: \"@stylexjs/babel-plugin::16\"\n  },\n  noSidebar: {\n    \"gridTemplateColumns-kumcoG\": \"gridTemplateColumns-x1mkdm3x\",\n    $$css: \"@stylexjs/babel-plugin::26\"\n  }\n};\nstylex(styles.root, sidebar == null ? styles.noSidebar : styles.withSidebar);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Basic stylex call - skip conditional",
+          "line": 2091
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-basic-stylex-call-054-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          const complex = stylex(\n            styles.root,\n            sidebar == null && !isSidebar ? styles.noSidebar : styles.withSidebar,\n            isSidebar && styles.sidebar,\n            isContent && styles.content,\n          );\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".boxSizing-x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridArea-x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".gridArea-x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".display-xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateRows-x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateRows-xmr4b4k.gridTemplateRows-xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateAreas-xesbpuc.gridTemplateAreas-xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateColumns-x15nfgh4.gridTemplateColumns-x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\nconst complex = {\n  0: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4\",\n  4: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x\",\n  2: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 boxSizing-x9f619 gridArea-x1yc5d2u\",\n  6: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x boxSizing-x9f619 gridArea-x1yc5d2u\",\n  1: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 gridArea-x1fdo2jl\",\n  5: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x gridArea-x1fdo2jl\",\n  3: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 boxSizing-x9f619 gridArea-x1fdo2jl\",\n  7: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x boxSizing-x9f619 gridArea-x1fdo2jl\"\n}[!!(sidebar == null && !isSidebar) << 2 | !!isSidebar << 1 | !!isContent << 0];",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Basic stylex call",
+          "line": 2233
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-using-stylex-in-a-for-loop-055-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          function test(colors, obj) {\n            for (const color of colors) {\n              obj[color.key] = stylex(color.style);\n            }\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nfunction test(colors, obj) {\n  for (const color of colors) {\n    obj[color.key] = stylex(color.style);\n  }\n}",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Using stylex() in a for loop",
+          "line": 2344
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-using-stylex-props-in-a-for-056-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          function test(colors, obj) {\n            for (const color of colors) {\n              obj[color.key] = stylex.props(color.style);\n            }\n          }\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nfunction test(colors, obj) {\n  for (const color of colors) {\n    obj[color.key] = stylex.props(color.style);\n  }\n}",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "Using stylex.props() in a for loop",
+          "line": 2370
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-trying-to-use-an-unknown-sty-057-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            tileHeading: {\n              marginRight: 12,\n            },\n          });\n          stylex(styles.unknown);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".marginRight-x1wsuqlk{margin-right:12px}\",\n  priority: 4000\n});\nconst styles = {};\nstylex(styles.unknown);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "trying to use an unknown style in stylex()",
+          "line": 2392
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-call-trying-to-use-an-unknown-sty-058-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            tileHeading: {\n              marginRight: 12,\n            },\n          });\n          stylex.props(styles.unknown);\n        ",
+      "options": {
+        "styleResolution": "application-order",
+        "runtimeInjection": true,
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-call", "legacy", "props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".marginRight-x1wsuqlk{margin-right:12px}\",\n  priority: 4000\n});\nconst styles = {};\nstylex.props(styles.unknown);",
+        "site": {
+          "file": "legacy/stylex-transform-call-test.js",
+          "test": "trying to use an unknown style in stylex.props()",
+          "line": 2422
+        }
+      }
+    }
+  ]
+}

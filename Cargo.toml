@@ -13,6 +13,8 @@ members = [
     "crates/oj_server",
     "crates/oj",
     "crates/oj_js",
+    "crates/oj_stylex",
+    "crates/fru",
     "crates/oj_wasm",
     "crates/oj_deno_napi",
     "crates/oj_deno_runtime",
@@ -36,6 +38,7 @@ oj_env = { version = "0.2.45", path = "crates/oj_env" }
 oj_config = { version = "0.2.45", path = "crates/oj_config" }
 oj_server = { version = "0.2.45", path = "crates/oj_server" }
 oj_js = { version = "0.2.45", path = "crates/oj_js" }
+oj_stylex = { version = "0.2.45", path = "crates/oj_stylex" }
 
 # oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
 # to crates.io under these names), carrying oj's napi finalizer-registry patch:
@@ -59,6 +62,7 @@ oxc_transformer_plugins = "0.154.0"
 oxc_minifier = "0.154.0"
 oxc_ecmascript = "0.154.0"
 oxc_syntax = "0.154.0"
+oxc_str = "0.154.0"
 oxc_codegen = "0.154.0"
 oxc_diagnostics = "0.154.0"
 oxc_sourcemap = "9.0.0"
@@ -104,6 +108,8 @@ oj_cache = { opt-level = 3 }
 oj_diag = { opt-level = 3 }
 oj_env = { opt-level = 3 }
 oj_config = { opt-level = 3 }
+oj_stylex = { opt-level = 3 }
+fru = { opt-level = 3 }
 oj_js = { opt-level = 3 }
 oxc = { opt-level = 3 }
 oxc_allocator = { opt-level = 3 }

@@ -1,0 +1,2083 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/transform-logical-properties-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/legacy-logical-properties-borderblockcolor-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1lkbs04{border-block-color:0}\",\n  priority: 3000\n});\nconst classnames = \"x1lkbs04\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockColor\"",
+          "line": 34
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockstartcolor-002-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStartColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x4q076{border-top-color:0}\",\n  priority: 4000\n});\nconst classnames = \"x4q076\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockStartColor\"",
+          "line": 53
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockendcolor-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockEndColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ylptbq{border-bottom-color:0}\",\n  priority: 4000\n});\nconst classnames = \"x1ylptbq\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockEndColor\"",
+          "line": 72
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinecolor-004-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1v09clb{border-inline-color:0}\",\n  priority: 2000\n});\nconst classnames = \"x1v09clb\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineColor\"",
+          "line": 91
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestartcolor-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStartColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1t19a1o{border-inline-start-color:0}\",\n  priority: 3000\n});\nconst classnames = \"x1t19a1o\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineStartColor\"",
+          "line": 110
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlineendcolor-006-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineEndColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14mj1wy{border-inline-end-color:0}\",\n  priority: 3000\n});\nconst classnames = \"x14mj1wy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineEndColor\"",
+          "line": 129
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockstyle-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x7mea6a{border-block-style:0}\",\n  priority: 3000\n});\nconst classnames = \"x7mea6a\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockStyle\"",
+          "line": 150
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockstartstyle-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStartStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1d917x0{border-top-style:0}\",\n  priority: 4000\n});\nconst classnames = \"x1d917x0\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockStartStyle\"",
+          "line": 169
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockendstyle-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockEndStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1nmap2y{border-bottom-style:0}\",\n  priority: 4000\n});\nconst classnames = \"x1nmap2y\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockEndStyle\"",
+          "line": 188
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestyle-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xt8kkye{border-inline-style:0}\",\n  priority: 2000\n});\nconst classnames = \"xt8kkye\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineStyle\"",
+          "line": 207
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestartstyle-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStartStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xl8mozw{border-inline-start-style:0}\",\n  priority: 3000\n});\nconst classnames = \"xl8mozw\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineStartStyle\"",
+          "line": 226
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlineendstyle-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineEndStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x10o505a{border-inline-end-style:0}\",\n  priority: 3000\n});\nconst classnames = \"x10o505a\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineEndStyle\"",
+          "line": 245
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockwidth-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1616tdu{border-block-width:0}\",\n  priority: 3000\n});\nconst classnames = \"x1616tdu\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockWidth\"",
+          "line": 266
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockstartwidth-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStartWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x972fbf{border-top-width:0}\",\n  priority: 4000\n});\nconst classnames = \"x972fbf\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockStartWidth\"",
+          "line": 285
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockendwidth-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockEndWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1qhh985{border-bottom-width:0}\",\n  priority: 4000\n});\nconst classnames = \"x1qhh985\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBlockEndWidth\"",
+          "line": 304
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinewidth-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xuxrje7{border-inline-width:0}\",\n  priority: 2000\n});\nconst classnames = \"xuxrje7\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineWidth\"",
+          "line": 323
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestartwidth-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStartWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14e42zd{border-inline-start-width:0}\",\n  priority: 3000\n});\nconst classnames = \"x14e42zd\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineStartWidth\"",
+          "line": 342
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlineendwidth-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineEndWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x10w94by{border-inline-end-width:0}\",\n  priority: 3000\n});\nconst classnames = \"x10w94by\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderInlineEndWidth\"",
+          "line": 361
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-bordertopstartradius-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderTopStartRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13t61ll{border-start-start-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x13t61ll\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderTopStartRadius\"",
+          "line": 382
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderbottomstartradius-020-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBottomStartRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xbxn0j6{border-end-start-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"xbxn0j6\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBottomStartRadius\"",
+          "line": 401
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-bordertopendradius-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderTopEndRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1kchd1x{border-start-end-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x1kchd1x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderTopEndRadius\"",
+          "line": 420
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderbottomendradius-022-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBottomEndRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1u0fnx4{border-end-end-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x1u0fnx4\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"borderBottomEndRadius\"",
+          "line": 439
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-cornershape-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cornerShape: 'squircle' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xa22041{corner-shape:squircle}\",\n  priority: 2000\n});\nconst classnames = \"xa22041\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"cornerShape\"",
+          "line": 460
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-cornerstartstartshape-024-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cornerStartStartShape: 'bevel' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ao7i56{corner-start-start-shape:bevel}\",\n  priority: 3000\n});\nconst classnames = \"x1ao7i56\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"cornerStartStartShape\"",
+          "line": 479
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-cornertopleftshape-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cornerTopLeftShape: 'notch' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x49z41y{corner-top-left-shape:notch}\",\n  priority: 4000\n});\nconst classnames = \"x49z41y\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"cornerTopLeftShape\"",
+          "line": 498
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblock-026-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetBlock: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x10no89f{inset-block:0}\",\n  priority: 2000\n});\nconst classnames = \"x10no89f\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"insetBlock\"",
+          "line": 519
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblockend-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetBlockEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ey2m1c{bottom:0}\",\n  priority: 4000\n});\nconst classnames = \"x1ey2m1c\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"insetBlockEnd\"",
+          "line": 538
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblockstart-028-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetBlockStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13vifvy{top:0}\",\n  priority: 4000\n});\nconst classnames = \"x13vifvy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"insetBlockStart\"",
+          "line": 557
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinline-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetInline: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x17y0mx6{inset-inline:0}\",\n  priority: 2000\n});\nconst classnames = \"x17y0mx6\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"insetInline\"",
+          "line": 576
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinlineend-030-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetInlineEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xtijo5x{inset-inline-end:0}\",\n  priority: 3000\n});\nconst classnames = \"xtijo5x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"insetInlineEnd\"",
+          "line": 595
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinlinestart-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetInlineStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1o0tod{inset-inline-start:0}\",\n  priority: 3000\n});\nconst classnames = \"x1o0tod\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"insetInlineStart\"",
+          "line": 614
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-marginblock-032-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginBlock: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x10im51j{margin-block:0}\",\n  priority: 2000\n});\nconst classnames = \"x10im51j\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"marginBlock\"",
+          "line": 635
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-marginblockend-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginBlockEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xat24cr{margin-bottom:0}\",\n  priority: 4000\n});\nconst classnames = \"xat24cr\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"marginBlockEnd\"",
+          "line": 654
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-marginblockstart-034-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginBlockStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xdj266r{margin-top:0}\",\n  priority: 4000\n});\nconst classnames = \"xdj266r\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"marginBlockStart\"",
+          "line": 673
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininline-035-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginInline: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrxpjvj{margin-inline:0}\",\n  priority: 2000\n});\nconst classnames = \"xrxpjvj\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"marginInline\"",
+          "line": 692
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininlineend-036-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginInlineEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14z9mp{margin-inline-end:0}\",\n  priority: 3000\n});\nconst classnames = \"x14z9mp\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"marginInlineEnd\"",
+          "line": 711
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininlinestart-037-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginInlineStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1lziwak{margin-inline-start:0}\",\n  priority: 3000\n});\nconst classnames = \"x1lziwak\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"marginInlineStart\"",
+          "line": 730
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddingblock-038-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingBlock: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xt970qd{padding-block:0}\",\n  priority: 2000\n});\nconst classnames = \"xt970qd\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"paddingBlock\"",
+          "line": 751
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddingblockend-039-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingBlockEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x18d9i69{padding-bottom:0}\",\n  priority: 4000\n});\nconst classnames = \"x18d9i69\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"paddingBlockEnd\"",
+          "line": 770
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddingblockstart-040-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingBlockStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xexx8yu{padding-top:0}\",\n  priority: 4000\n});\nconst classnames = \"xexx8yu\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"paddingBlockStart\"",
+          "line": 789
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginline-041-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingInline: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xnjsko4{padding-inline:0}\",\n  priority: 2000\n});\nconst classnames = \"xnjsko4\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"paddingInline\"",
+          "line": 808
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginlineend-042-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingInlineEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xyri2b{padding-inline-end:0}\",\n  priority: 3000\n});\nconst classnames = \"xyri2b\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"paddingInlineEnd\"",
+          "line": 827
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginlinestart-043-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingInlineStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1c1uobl{padding-inline-start:0}\",\n  priority: 3000\n});\nconst classnames = \"x1c1uobl\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "\"paddingInlineStart\"",
+          "line": 846
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-legacy-short-form-property-v-044-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            four: {\n              margin: '1 2 3 4',\n            }\n          });\n          stylex(styles.four);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xi71r3n{margin:1 2 3 4}\",\n  priority: 1000\n});\n\"xi71r3n\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "[legacy] short-form property value flipping",
+          "line": 869
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininline-045-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1hm9lzh{margin-left:10px}\",\n  rtl: \".x1hm9lzh{margin-right:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-right:10px}\",\n  rtl: \".x1sa5p1d{margin-left:10px}\",\n  priority: 3000\n});\nconst classnames = \"x1hm9lzh x1sa5p1d\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "marginInline",
+          "line": 895
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininlinestart-046-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1hm9lzh{margin-left:10px}\",\n  rtl: \".x1hm9lzh{margin-right:10px}\",\n  priority: 3000\n});\nconst classnames = \"x1hm9lzh\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "marginInlineStart",
+          "line": 926
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininlineend-047-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1sa5p1d{margin-right:10px}\",\n  rtl: \".x1sa5p1d{margin-left:10px}\",\n  priority: 3000\n});\nconst classnames = \"x1sa5p1d\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "marginInlineEnd",
+          "line": 952
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginline-048-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xe2zdcy{padding-left:10px}\",\n  rtl: \".xe2zdcy{padding-right:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-right:10px}\",\n  rtl: \".x2vl965{padding-left:10px}\",\n  priority: 3000\n});\nconst classnames = \"xe2zdcy x2vl965\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "paddingInline",
+          "line": 978
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginlinestart-049-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xe2zdcy{padding-left:10px}\",\n  rtl: \".xe2zdcy{padding-right:10px}\",\n  priority: 3000\n});\nconst classnames = \"xe2zdcy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "paddingInlineStart",
+          "line": 1009
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginlineend-050-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x2vl965{padding-right:10px}\",\n  rtl: \".x2vl965{padding-left:10px}\",\n  priority: 3000\n});\nconst classnames = \"x2vl965\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "paddingInlineEnd",
+          "line": 1035
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinecolor-051-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1t19a1o{border-left-color:0}\",\n  rtl: \".x1t19a1o{border-right-color:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x14mj1wy{border-right-color:0}\",\n  rtl: \".x14mj1wy{border-left-color:0}\",\n  priority: 3000\n});\nconst classnames = \"x1t19a1o x14mj1wy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineColor",
+          "line": 1061
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestartcolor-052-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStartColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1t19a1o{border-left-color:0}\",\n  rtl: \".x1t19a1o{border-right-color:0}\",\n  priority: 3000\n});\nconst classnames = \"x1t19a1o\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineStartColor",
+          "line": 1092
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestyle-053-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xl8mozw{border-left-style:0}\",\n  rtl: \".xl8mozw{border-right-style:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x10o505a{border-right-style:0}\",\n  rtl: \".x10o505a{border-left-style:0}\",\n  priority: 3000\n});\nconst classnames = \"xl8mozw x10o505a\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineStyle",
+          "line": 1118
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinewidth-054-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14e42zd{border-left-width:0}\",\n  rtl: \".x14e42zd{border-right-width:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x10w94by{border-right-width:0}\",\n  rtl: \".x10w94by{border-left-width:0}\",\n  priority: 3000\n});\nconst classnames = \"x14e42zd x10w94by\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineWidth",
+          "line": 1149
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockcolor-055-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x4q076{border-top-color:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1ylptbq{border-bottom-color:0}\",\n  priority: 4000\n});\nconst classnames = \"x4q076 x1ylptbq\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBlockColor",
+          "line": 1180
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockstyle-056-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1d917x0{border-top-style:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1nmap2y{border-bottom-style:0}\",\n  priority: 4000\n});\nconst classnames = \"x1d917x0 x1nmap2y\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBlockStyle",
+          "line": 1209
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockwidth-057-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x972fbf{border-top-width:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1qhh985{border-bottom-width:0}\",\n  priority: 4000\n});\nconst classnames = \"x972fbf x1qhh985\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBlockWidth",
+          "line": 1238
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblock-058-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlock: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13vifvy{top:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1ey2m1c{bottom:0}\",\n  priority: 4000\n});\nconst classnames = \"x13vifvy x1ey2m1c\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetBlock",
+          "line": 1267
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblockstart-059-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13vifvy{top:0}\",\n  priority: 4000\n});\nconst classnames = \"x13vifvy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetBlockStart",
+          "line": 1296
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblockend-060-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ey2m1c{bottom:0}\",\n  priority: 4000\n});\nconst classnames = \"x1ey2m1c\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetBlockEnd",
+          "line": 1321
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinline-061-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInline: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1o0tod{left:0}\",\n  rtl: \".x1o0tod{right:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xtijo5x{right:0}\",\n  rtl: \".xtijo5x{left:0}\",\n  priority: 3000\n});\nconst classnames = \"x1o0tod xtijo5x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetInline",
+          "line": 1346
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinlinestart-062-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1o0tod{left:0}\",\n  rtl: \".x1o0tod{right:0}\",\n  priority: 3000\n});\nconst classnames = \"x1o0tod\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetInlineStart",
+          "line": 1377
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinlineend-063-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xtijo5x{right:0}\",\n  rtl: \".xtijo5x{left:0}\",\n  priority: 3000\n});\nconst classnames = \"xtijo5x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetInlineEnd",
+          "line": 1403
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-bordertopstartradius-064-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13t61ll{border-top-left-radius:5px}\",\n  rtl: \".x13t61ll{border-top-right-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x13t61ll\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderTopStartRadius",
+          "line": 1429
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderbottomstartradius-065-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xbxn0j6{border-bottom-left-radius:5px}\",\n  rtl: \".xbxn0j6{border-bottom-right-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"xbxn0j6\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBottomStartRadius",
+          "line": 1455
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-bordertopendradius-066-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1kchd1x{border-top-right-radius:5px}\",\n  rtl: \".x1kchd1x{border-top-left-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x1kchd1x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderTopEndRadius",
+          "line": 1481
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderbottomendradius-067-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1u0fnx4{border-bottom-right-radius:5px}\",\n  rtl: \".x1u0fnx4{border-bottom-left-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x1u0fnx4\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBottomEndRadius",
+          "line": 1507
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininline-068-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1hm9lzh{margin-inline-start:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-inline-end:10px}\",\n  priority: 3000\n});\nconst classnames = \"x1hm9lzh x1sa5p1d\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "marginInline",
+          "line": 1535
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininlinestart-069-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1hm9lzh{margin-inline-start:10px}\",\n  priority: 3000\n});\nconst classnames = \"x1hm9lzh\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "marginInlineStart",
+          "line": 1564
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-margininlineend-070-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1sa5p1d{margin-inline-end:10px}\",\n  priority: 3000\n});\nconst classnames = \"x1sa5p1d\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "marginInlineEnd",
+          "line": 1589
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginline-071-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xe2zdcy{padding-inline-start:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\nconst classnames = \"xe2zdcy x2vl965\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "paddingInline",
+          "line": 1614
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginlinestart-072-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xe2zdcy{padding-inline-start:10px}\",\n  priority: 3000\n});\nconst classnames = \"xe2zdcy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "paddingInlineStart",
+          "line": 1643
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-paddinginlineend-073-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\nconst classnames = \"x2vl965\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "paddingInlineEnd",
+          "line": 1668
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinecolor-074-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1t19a1o{border-inline-start-color:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x14mj1wy{border-inline-end-color:0}\",\n  priority: 3000\n});\nconst classnames = \"x1t19a1o x14mj1wy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineColor",
+          "line": 1693
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestartcolor-075-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStartColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1t19a1o{border-inline-start-color:0}\",\n  priority: 3000\n});\nconst classnames = \"x1t19a1o\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineStartColor",
+          "line": 1722
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinestyle-076-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xl8mozw{border-inline-start-style:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x10o505a{border-inline-end-style:0}\",\n  priority: 3000\n});\nconst classnames = \"xl8mozw x10o505a\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineStyle",
+          "line": 1747
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderinlinewidth-077-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14e42zd{border-inline-start-width:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x10w94by{border-inline-end-width:0}\",\n  priority: 3000\n});\nconst classnames = \"x14e42zd x10w94by\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderInlineWidth",
+          "line": 1776
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockcolor-078-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x4q076{border-top-color:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1ylptbq{border-bottom-color:0}\",\n  priority: 4000\n});\nconst classnames = \"x4q076 x1ylptbq\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBlockColor",
+          "line": 1805
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockstyle-079-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1d917x0{border-top-style:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1nmap2y{border-bottom-style:0}\",\n  priority: 4000\n});\nconst classnames = \"x1d917x0 x1nmap2y\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBlockStyle",
+          "line": 1834
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderblockwidth-080-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x972fbf{border-top-width:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1qhh985{border-bottom-width:0}\",\n  priority: 4000\n});\nconst classnames = \"x972fbf x1qhh985\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBlockWidth",
+          "line": 1863
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblock-081-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlock: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13vifvy{top:0}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1ey2m1c{bottom:0}\",\n  priority: 4000\n});\nconst classnames = \"x13vifvy x1ey2m1c\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetBlock",
+          "line": 1892
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblockstart-082-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13vifvy{top:0}\",\n  priority: 4000\n});\nconst classnames = \"x13vifvy\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetBlockStart",
+          "line": 1921
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetblockend-083-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ey2m1c{bottom:0}\",\n  priority: 4000\n});\nconst classnames = \"x1ey2m1c\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetBlockEnd",
+          "line": 1946
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinline-084-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInline: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1o0tod{inset-inline-start:0}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xtijo5x{inset-inline-end:0}\",\n  priority: 3000\n});\nconst classnames = \"x1o0tod xtijo5x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetInline",
+          "line": 1971
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinlinestart-085-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1o0tod{inset-inline-start:0}\",\n  priority: 3000\n});\nconst classnames = \"x1o0tod\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetInlineStart",
+          "line": 2000
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-insetinlineend-086-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xtijo5x{inset-inline-end:0}\",\n  priority: 3000\n});\nconst classnames = \"xtijo5x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "insetInlineEnd",
+          "line": 2025
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-bordertopstartradius-087-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13t61ll{border-start-start-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x13t61ll\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderTopStartRadius",
+          "line": 2050
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderbottomstartradius-088-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xbxn0j6{border-end-start-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"xbxn0j6\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBottomStartRadius",
+          "line": 2075
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-bordertopendradius-089-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1kchd1x{border-start-end-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x1kchd1x\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderTopEndRadius",
+          "line": 2100
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-properties-borderbottomendradius-090-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1u0fnx4{border-end-end-radius:5px}\",\n  priority: 3000\n});\nconst classnames = \"x1u0fnx4\";",
+        "site": {
+          "file": "legacy/transform-logical-properties-test.js",
+          "test": "borderBottomEndRadius",
+          "line": 2125
+        }
+      }
+    }
+  ]
+}

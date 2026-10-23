@@ -31,7 +31,14 @@ pub(crate) async fn serve_html(
             .to_string();
             host.transform_index_html(&raw, &ctx).await
         }
-        None => native_dev_html(state, &raw, url, original_url, file).await,
+        // The host's transform runs the StyleX plugin's hook itself; here its
+        // tags follow the page's own transform (an ordinary, unordered hook).
+        None => native_dev_html(state, &raw, url, original_url, file)
+            .await
+            .map(|out| {
+                let base = state.base.as_deref().unwrap_or("/");
+                dev_html::inject_head_tags(out, &crate::stylex::html_tags(state, base))
+            }),
     };
     match transformed {
         Ok(out) => (
@@ -217,8 +224,13 @@ pub(crate) fn is_spa_navigation(rel: &str, headers: &HeaderMap) -> bool {
 
 pub(crate) async fn serve_fallback(
     State(state): State<Arc<ServerState>>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
 ) -> Response {
+    // Past the routes, oj's file lookup and plugin middleware see the
+    // browser's URL, base included, as Vite's configureServer middleware does.
+    if let Some(original) = req.extensions().get::<axum::extract::OriginalUri>() {
+        *req.uri_mut() = original.0.clone();
+    }
     // A WebSocket upgrade nothing above claimed (oj's own ws endpoints and
     // `ws: true` proxies run earlier): plugin `upgrade` listeners get it.
     if is_websocket_upgrade(req.headers()) && vite_ws_subprotocol(req.headers()).is_none() {
@@ -247,10 +259,21 @@ pub(crate) async fn serve_fallback(
 /// share one cache entry. `?import` for styles; a pre-bundled entry's current
 /// URL from `entries` (file name to URL), whose version moves with every
 /// rerun; anything else under `/@oj-deps/` bare, as dep files import their
-/// chunks.
-pub(crate) fn preload_href(path: &str, entries: &HashMap<String, String>) -> String {
+/// chunks. An app asset is imported as `?url` (an `.svg` stays bare when
+/// `svg_compiled`, for svgr), never by the url its `<img src>` fetches.
+pub(crate) fn preload_href(
+    path: &str,
+    entries: &HashMap<String, String>,
+    svg_compiled: bool,
+) -> String {
     if is_style_url(path) {
         format!("{path}?import")
+    } else if !path.starts_with("/@")
+        && !path.contains("/node_modules/")
+        && is_asset_path(Path::new(path))
+        && !(svg_compiled && path.ends_with(".svg"))
+    {
+        format!("{path}?url")
     } else if let Some(url) = path
         .strip_prefix("/@oj-deps/")
         .and_then(|file| entries.get(file))
@@ -279,7 +302,7 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState) -> Strin
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\" />\n",
-                preload_href(p, &entries)
+                preload_href(p, &entries, state.plugins_have_transform)
             )
         })
         .collect();

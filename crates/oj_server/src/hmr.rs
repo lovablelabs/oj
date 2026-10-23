@@ -292,8 +292,8 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
     }
 }
 
-/// Append the HMR timestamp to a served module url. Only JS-served modules (compilable,
-/// JSON, style wrappers) are stamped per Vite's importAnalysis; asset and oj-internal urls never.
+/// Append the HMR timestamp to a served module url, as Vite's importAnalysis does for
+/// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj-internal urls.
 pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
     if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
         return url.to_string();
@@ -303,7 +303,7 @@ pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) {
+    if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) && !is_asset_ext(ext) {
         return url.to_string();
     }
     if query.split('&').any(|kv| kv.starts_with("t=")) {
@@ -1209,7 +1209,14 @@ fn decide_file(
                     .any(|p| is_style_url(&p.to_string_lossy()))
             })
     };
-    if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json" || css_dep()) {
+    // An imported asset is a URL module: its importers re-import it under a new
+    // `?t=` and get a url its `<img>` refetches, as in Vite.
+    if !(COMPILABLE.contains(&ext)
+        || is_style_ext(ext)
+        || ext == "json"
+        || is_asset_ext(ext)
+        || css_dep())
+    {
         return Flow::Done;
     }
     if !state.graph.lock().unwrap().contains(Path::new(&url)) {

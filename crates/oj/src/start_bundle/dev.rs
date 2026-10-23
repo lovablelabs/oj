@@ -37,8 +37,8 @@ use crate::build::EmitState;
 
 pub(crate) const CLIENT_ERROR_FILE: &str = "client-error.json";
 pub(crate) const CLIENT_HMR_FILE: &str = "client-hmr.json";
-/// The URL the dev server serves the client entry chunk at.
-const CLIENT_ENTRY_URL: &str = "/@oj-start/client-entry.js";
+/// The path the dev server serves the client entry chunk at, under `base`.
+const CLIENT_ENTRY_PATH: &str = "/@oj-start/client-entry.js";
 
 pub(crate) struct DevBundler {
     start: Arc<StartConfig>,
@@ -61,11 +61,23 @@ pub(crate) struct DevBundler {
     /// Specifiers the app's `external` function kept external, so the dev
     /// bundle's unresolved-import check takes the function's own answers.
     fn_externals: Arc<Mutex<HashSet<String>>>,
+    /// The module ids of the last bundle written, whose StyleX rules a cached
+    /// copy of it carries.
+    bundle_modules: Mutex<Vec<String>>,
 }
 
 impl DevBundler {
     pub(crate) fn new(start: StartConfig, config_file: Option<PathBuf>) -> DevBundler {
         let styles = Arc::new(Styles::new(&start));
+        let hot = Arc::new(crate::start_hot::HotUpdates::new(&start.dev_url_base()));
+        // The server-side manifest (manifest-dev.ts) names the client entry
+        // from here, under the dev `base`.
+        let entry = format!("{}{CLIENT_ENTRY_PATH}", start.dev_url_base());
+        let _ = std::fs::create_dir_all(&start.cache);
+        let _ = std::fs::write(
+            start.cache.join("client-entry.json"),
+            serde_json::Value::String(entry).to_string(),
+        );
         DevBundler {
             start: Arc::new(start),
             config_file,
@@ -73,17 +85,33 @@ impl DevBundler {
             styles,
             session: tokio::sync::Mutex::new(None),
             engine: EngineSlot::default(),
-            hot: Arc::new(crate::start_hot::HotUpdates::new()),
+            hot,
             hot_enabled: std::sync::atomic::AtomicBool::new(!oj_env::get().knobs.hmr_gate),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(HashSet::new()),
             fn_externals: Arc::default(),
+            bundle_modules: Mutex::new(Vec::new()),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn for_tests(root: &Path) -> DevBundler {
         DevBundler::new(tests::start_at(root), None)
+    }
+
+    /// The module ids of the last bundle written.
+    pub(crate) fn bundle_modules(&self) -> Vec<String> {
+        self.bundle_modules.lock().unwrap().clone()
+    }
+
+    /// The app's StyleX plugin, whose rules a cached bundle must carry.
+    pub(crate) fn stylex(&self) -> Option<&std::sync::Arc<oj_stylex::plugin::StylexPlugin>> {
+        self.start.stylex.as_ref()
+    }
+
+    /// Vite's `base`, normalized (`/`, `/x/` or `./`).
+    pub(crate) fn base(&self) -> &str {
+        &self.start.base
     }
 
     pub(crate) fn root(&self) -> &Path {
@@ -280,6 +308,7 @@ impl DevBundler {
             .iter()
             .map(|id| id.to_string())
             .collect();
+        *self.bundle_modules.lock().unwrap() = module_ids.clone();
         let watch_files = match host {
             Some(h) => h.host.watch_files().await.unwrap_or_default(),
             None => Vec::new(),
@@ -315,6 +344,9 @@ impl DevBundler {
         let refresh = hot && host.is_some_and(|h| h.facts.react_refresh);
         let entry = start.cache.join("client-entry.tsx");
         let mut plugins: Vec<SharedPluginable> = Vec::new();
+        if let Some(plugin) = &start.stylex {
+            plugins.push(crate::stylex_plugin::transform(plugin));
+        }
         if refresh {
             plugins.push(Pluginable::new_shared(RefreshPreamble {
                 runtime: start.cache.join("react-refresh-runtime.js"),
@@ -338,6 +370,7 @@ impl DevBundler {
         }
         plugins.push(Pluginable::new_shared(
             StartCodePlugin::new(&start.root, CodeTarget::Client)
+                .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
                 .recording_globs(Arc::clone(&glob_scopes)),
         ));
         plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
@@ -346,6 +379,7 @@ impl DevBundler {
             AssetMode::Dev {
                 css_urls: Arc::clone(&css_urls),
                 state: Arc::clone(&styles),
+                url_base: start.dev_url_base(),
             },
         )));
         plugins.push(Pluginable::new_shared(NodeBuiltinShims {
@@ -455,6 +489,7 @@ impl DevBundler {
             Some(h) => h.host.watch_files().await.unwrap_or_default(),
             None => Vec::new(),
         };
+        *self.bundle_modules.lock().unwrap() = module_ids.clone();
         let css_urls = parts.css_urls.lock().unwrap().clone();
         let scopes = parts.glob_scopes.lock().unwrap().clone();
         write_outputs(
@@ -585,7 +620,7 @@ pub(crate) fn write_outputs<'a>(
         &serde_json::Value::Array(scopes),
     )?;
 
-    let manifest = dev_manifest(css_urls, hot);
+    let manifest = dev_manifest(&start.dev_url_base(), css_urls, hot);
     // Only a changed manifest is written: the client bundle imports it, so a
     // watching engine takes every write as an edit.
     let path = cache.join("manifest.ts");
@@ -601,13 +636,14 @@ pub(crate) fn write_outputs<'a>(
 /// The client-side Start manifest of the dev bundle: the entry at the dev
 /// server's URL and the stylesheets the bundle links. Under a hot engine it
 /// accepts its own update (the pages read it once, at hydration).
-pub(crate) fn dev_manifest(css_urls: &[String], hot: bool) -> String {
+pub(crate) fn dev_manifest(url_base: &str, css_urls: &[String], hot: bool) -> String {
+    let entry = format!("{url_base}{CLIENT_ENTRY_PATH}");
     let manifest = serde_json::json!({
         "routes": {
             "__root__": {
-                "preloads": [CLIENT_ENTRY_URL],
+                "preloads": [entry],
                 "css": css_urls,
-                "scripts": [{ "attrs": { "type": "module", "async": true, "src": CLIENT_ENTRY_URL } }],
+                "scripts": [{ "attrs": { "type": "module", "async": true, "src": entry } }],
             },
         },
     });
@@ -681,6 +717,7 @@ pub(crate) mod tests {
                 "development",
             ),
             base: "/".into(),
+            stylex: None,
         }
     }
 
@@ -740,16 +777,21 @@ pub(crate) mod tests {
 
     #[test]
     fn the_dev_manifest_names_the_entry_and_its_sheets() {
-        let plain = dev_manifest(&["/@oj-start/fs/app/a.css".into()], false);
+        let plain = dev_manifest("", &["/@oj-start/fs/app/a.css".into()], false);
         assert!(
             plain.starts_with("export const tsrStartManifest = () => ({\"routes\""),
             "{plain}"
         );
         assert!(plain.contains("\"/@oj-start/client-entry.js\""));
         assert!(plain.contains("\"css\":[\"/@oj-start/fs/app/a.css\"]"));
-        assert!(!plain.contains("import.meta.hot"));
+        // Under a dev `base`, the entry is named there, as Vite's urls are.
+        let based = dev_manifest("/app", &[], false);
         assert!(
-            dev_manifest(&[], true).ends_with("if (import.meta.hot) import.meta.hot.accept();\n")
+            based.contains("\"/app/@oj-start/client-entry.js\""),
+            "{based}"
         );
+        assert!(!plain.contains("import.meta.hot"));
+        assert!(dev_manifest("", &[], true)
+            .ends_with("if (import.meta.hot) import.meta.hot.accept();\n"));
     }
 }

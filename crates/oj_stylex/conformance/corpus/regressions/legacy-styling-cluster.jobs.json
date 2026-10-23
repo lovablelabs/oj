@@ -1,0 +1,2473 @@
+{
+  "header": {
+    "corpus": "regressions",
+    "gap": "the legacy styling cluster: styleResolution application-order and legacy-expand-shorthands, enableLogicalStylesPolyfill, enableLegacyValueFlipping",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "producedBy": "oracle probes, 2026-08-29",
+    "note": "expect pins verified with src/babel-runner.mjs --mode both"
+  },
+  "jobs": [
+    {
+      "id": "legacy-styling/empty-string",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/spaces-only",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '   ' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/null-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: null } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/num-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: 5 } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/zero-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: 0 } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/slash-radius",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { borderRadius: '10px / 20px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/calc-split",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: 'calc(1px + 2px) min(1px, 2px)' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/unclosed-calc",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: 'calc(1px + 2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/unclosed-calc-ps",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: 'calc(1px + 2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "property-specificity"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "property-specificity"
+      ]
+    },
+    {
+      "id": "legacy-styling/important",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '1px 2px !IMPORTANT' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/important-alone",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '!important' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/important-mid",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '1px !important 2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/five-parts",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '1px 2px 3px 4px 5px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/var-split",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: 'var(--a, 1px) 2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/cis-auto",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { containIntrinsicSize: 'auto 10px auto 20px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/cis-auto2",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { containIntrinsicSize: 'auto 10px 20px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/cis-auto3",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { containIntrinsicSize: '10px auto 20px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/cis-auto4",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { containIntrinsicSize: 'auto auto' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/cis-null",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { containIntrinsicSize: null } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-null",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: null } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-globals",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'inherit' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-bad",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'none inherit' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-dup",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'square circle' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-bad-silent",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'none inherit' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-nonenone",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'none none' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-grad",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'linear-gradient(red,blue)' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-mix",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'outside \"+\" linear-gradient(90deg, white 100%)' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-var",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'var(--x)' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ls-num",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 5 } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/order-insetInline",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { insetInline: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/order-marginH",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginHorizontal: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/order-margin-mt",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '1px', marginTop: '5px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/order-mt-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginTop: '5px', margin: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/order-start-left",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { start: '1px', left: '2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/order-left-start",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { left: '2px', start: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/order-ls-lst",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { listStyle: 'square', listStyleType: 'circle' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ftw-gap",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { gap: stylex.firstThatWorks('1px 2px', '3px') } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { marginHorizontal: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { borderStartColor: 'red', borderEndWidth: '1px' }, to: { borderStartColor: 'blue', borderEndWidth: '2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-nopoly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { borderStartColor: 'red', borderEndWidth: '1px' }, to: { borderStartColor: 'blue', borderEndWidth: '2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/pt-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const pt = stylex.positionTry({ margin: '1px 2px', inset: '3px' });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/pt-start",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const pt = stylex.positionTry({ start: '1px' });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/pt-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const pt = stylex.positionTry({ marginInlineStart: '1px' });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/vtc-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const v = stylex.viewTransitionClass({ group: { marginInlineStart: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/bp-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: 'insetInlineStart 0' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/bp-poly2",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: 'start top' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/bsw-nopoly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { borderStartWidth: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/bsw-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { borderStartWidth: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/mis-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginInlineStart: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-lvf-nopoly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'e-resize' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-lvf-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'e-resize' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLegacyValueFlipping": true,
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-lvf-ps",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'e-resize' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-lvf-ps",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px #000' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-slash",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px / 2px 2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-colon",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px : 2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-empty-groups",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px #000,,2px 2px red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-trailing",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px red , , ' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-varfallback",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: 'var(--a, 1px 1px red)' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-calc",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: 'calc(1px + 2px) 1px red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-hsl",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px hsl(0 0% 0% / 50%)' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-negzero",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '-0px 1px 2px #000' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-zero",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '0px 1px 2px #000' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-dotpx",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '.px 1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-dashspace",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '- 1px 1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-plus",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '+1px 1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-plusdot",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '+.5px 1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-comment",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px red /* c */' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-num",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: 5 } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-num0",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: 0 } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-ftw",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: stylex.firstThatWorks('1px 1px red', 'none') } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-ftw",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: stylex.firstThatWorks('e-resize', 'pointer') } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-shadow-lvf",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { boxShadow: '1px 1px red' }, to: { boxShadow: '2px 2px blue' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/all-legacy-throw",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { all: 'initial', background: 'red', animation: 'a 1s', border: '1px', borderTop: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/float-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { float: 'inline-start', clear: 'end' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/float-legacy-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { float: 'inline-start', clear: 'end' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/float-other",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { float: 'left' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dv-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ margin: '1px 2px' });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/debug-keys",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/minified-keys",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ps-empty-longhand",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginTop: '' } });\n",
+      "options": {
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "property-specificity"
+      ]
+    },
+    {
+      "id": "legacy-styling/leg-empty-longhand",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginTop: '' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ margin: m }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-margin-ps",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ margin: m }) });\n",
+      "options": {
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-start",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ start: m }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-start-ps",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ start: m }) });\n",
+      "options": {
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-hover-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ ':hover': { margin: m } }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-shorthand-100",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (margin) => ({ backgroundColor: 'red', margin: {default: margin, ':hover': margin+4}, marginTop: margin-4 }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-start-left",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ start: m, left: '3px' }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-listStyle",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ listStyle: m }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/dyn-mh",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ marginHorizontal: m }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/arr-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: ['1px 2px', '3px'] } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/arr-marginStart",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginStart: ['1px', '2px'] } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-arr",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { margin: ['1px','2px'] } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-arr-ps",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { margin: ['1px','2px'] } });\n",
+      "options": {
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-arr-plain",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { color: ['red','blue'] } });\n",
+      "options": {
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity"
+      ]
+    },
+    {
+      "id": "legacy-styling/nested-hover",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { ':hover': { margin: '1px 2px' } } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/cond-obj",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: { default: '1px', ':hover': '2px' } } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/cond-obj-null",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: { default: '1px', ':hover': null } } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/media-order",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { margin: { default: '1px', '@media (min-width: 100px)': '2px' } } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-basic",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { border: '1px solid red', gridGap: '1px', all: 'initial' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-throw-all",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { all: 'initial' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order",
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-arr",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { gridGap: ['1px','2px'] } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-kf-arr",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { gridGap: ['1px','2px'] } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginInlineStart: '1px', borderStartColor: 'red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-nopoly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginInlineStart: '1px', borderStartColor: 'red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-pt",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const pt = stylex.positionTry({ margin: '1px 2px' });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-dyn",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (m) => ({ gridGap: m }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "application-order"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/legacy-varkey",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { 'var(--abc)': '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/legacy-custom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { '--margin': '1px 2px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/poly-off-inline-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { borderInlineStart: '1px solid red', insetInlineEnd: '1px', borderStartStartRadius: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands"
+      ]
+    },
+    {
+      "id": "legacy-styling/poly-on-inline-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { borderInlineStart: '1px solid red', insetInlineEnd: '1px', borderStartStartRadius: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/poly-on-paddinginline",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { paddingInlineStart: '1px', paddingInlineEnd: '2px', borderInlineEndStyle: 'solid', borderEndEndRadius: '3px', borderStartEndRadius: '4px', borderEndStartRadius: '5px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/poly-ps-noop",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { marginInlineStart: '1px', borderStartColor: 'red', float: 'start' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/lvf-shadow-leg-nopoly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px #000', textShadow: '1px 1px #000' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/lvf-shadow-leg-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: '1px 1px #000', textShadow: '1px 1px #000' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLegacyValueFlipping": true,
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/lvf-kf-leg-nopoly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { boxShadow: '1px 1px red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/lvf-kf-leg-poly",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { boxShadow: '1px 1px red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLegacyValueFlipping": true,
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/kf-poly-inline",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const kf = stylex.keyframes({ from: { marginInlineStart: '1px' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-noflip",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'n-resize' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-multi",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'url(a.png), e-resize' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-trailspace",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'e-resize ' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-upper",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'E-resize' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/cursor-nesw",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { cursor: 'nesw-resize' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-none",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: 'none' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-var-only",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: 'var(--shadow)' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-inset",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { boxShadow: 'inset 1px 1px #000' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-custom-prop",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { '--myShadow': '1px 1px red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-webkit",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { WebkitBoxShadow: '1px 1px red' } });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/shadow-dyn",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: (s) => ({ boxShadow: s }) });\n",
+      "options": {
+        "enableMinifiedKeys": false,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "property-specificity",
+        "enableLegacyValueFlipping"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"margin\": \"1px 2px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-padding",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"padding\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-border",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"border\": \"1px solid red\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-borderRadius",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"borderRadius\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-borderInlineStart",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"borderInlineStart\": \"1px solid red\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-borderLeft",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"borderLeft\": \"1px solid red\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-gridGap",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"gridGap\": \"1px 2px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-gridRowGap",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"gridRowGap\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-inset",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"inset\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-insetInline",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"insetInline\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-marginInlineStart",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"marginInlineStart\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-marginLeft",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"marginLeft\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-start",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"start\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-left",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"left\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-scrollMargin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"scrollMargin\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-scrollPaddingInline",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"scrollPaddingInline\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-overflow",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"overflow\": \"hidden\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-listStyle",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"listStyle\": \"square\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-background",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"background\": \"red\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-animation",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"animation\": \"a 1s\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-font",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"font\": \"12px serif\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-grid",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"grid\": \"none\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-flex",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"flex\": \"1\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-placeSelf",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"placeSelf\": \"center\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-containIntrinsicSize",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"containIntrinsicSize\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-borderStartStartRadius",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"borderStartStartRadius\": \"1px\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-cornerShape",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"cornerShape\": \"round\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-borderHorizontal",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"borderHorizontal\": \"1px solid red\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-borderBlockStart",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"borderBlockStart\": \"1px solid red\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    },
+    {
+      "id": "legacy-styling/ao-transition",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { \"transition\": \"all 1s\" } });\n",
+      "options": {
+        "styleResolution": "application-order",
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "application-order"
+      ]
+    }
+  ]
+}

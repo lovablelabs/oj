@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 use super::*;
+use crate::glob::no_alias;
 use std::fs;
 
 fn fixture() -> tempfile::TempDir {
@@ -24,7 +25,7 @@ fn root(dir: &tempfile::TempDir) -> PathBuf {
 }
 
 fn glob(code: &str, file: &Path, root: &Path) -> String {
-    transform_glob(code, file, root, &mut Vec::new()).unwrap()
+    transform_glob(code, file, root, &no_alias, &mut Vec::new()).unwrap()
 }
 
 fn re(pattern: &str) -> regex::Regex {
@@ -290,6 +291,7 @@ fn scopes_collect_each_calls_resolved_patterns_and_options() {
         "const m = import.meta.glob(['./*.ts', '!./skip.ts'], { caseSensitive: false, exhaustive: true });",
         Path::new("/app/r/[id]/one.ts"),
         Path::new("/app"),
+        &no_alias,
         &mut scopes,
     )
     .unwrap();
@@ -377,6 +379,7 @@ fn the_base_option_resolves_patterns_and_keys_against_the_base() {
         "const m = import.meta.glob(\"./*.md\", { base: \"content\" });",
         &importer,
         &r,
+        &no_alias,
         &mut Vec::new(),
     )
     .unwrap_err();
@@ -435,6 +438,7 @@ fn the_as_option_maps_to_a_query() {
         "const m = import.meta.glob(\"./content/*.md\", { as: \"raw\", query: \"?x\" });",
         &file,
         &r,
+        &no_alias,
         &mut Vec::new(),
     )
     .unwrap_err();
@@ -447,6 +451,7 @@ fn the_as_option_maps_to_a_query() {
         "const m = import.meta.glob(\"./content/*.md\", { as: \"raw\", import: \"named\" });",
         &file,
         &r,
+        &no_alias,
         &mut Vec::new(),
     )
     .unwrap_err();
@@ -769,4 +774,33 @@ fn a_glob_inside_a_string_or_comment_is_left_alone() {
     );
     assert!(!out.contains("page.tsx\": "), "{out}");
     assert_eq!(out.split('\n').count(), code.split('\n').count(), "{out}");
+}
+
+// Start's client and server bundles expand an aliased glob through the app's
+// `resolve.alias` too (Vite's toAbsoluteGlob -> resolveId), not as a path
+// under the importer's directory.
+#[test]
+fn aliased_glob_resolves_through_the_alias() {
+    let dir = fixture();
+    let r = root(&dir);
+    let file = r.join("pages/home/page.tsx");
+    let src = r.display().to_string();
+    let alias = |id: &str| crate::glob::string_alias(&[("@".to_string(), src.clone())], id);
+    let mut scopes = Vec::new();
+    let out = transform_glob(
+        "const m = import.meta.glob(\"@/content/*.md\");",
+        &file,
+        &r,
+        &alias,
+        &mut scopes,
+    )
+    .unwrap();
+    assert!(
+        out.contains(r#""/content/a.md": () => import("../../content/a.md")"#),
+        "{out}"
+    );
+    assert!(out.contains("/content/b.md"), "{out}");
+    assert!(scopes[0]
+        .matcher()
+        .is_match(&r.join("content/c.md").display().to_string()));
 }

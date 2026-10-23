@@ -33,3 +33,5 @@ pub use sass::{
     SassOptions,
 };
 pub use targets::browser_targets;
+#[cfg(not(target_arch = "wasm32"))]
+pub use {compile::process_for_browserslist, targets::browserslist_targets};

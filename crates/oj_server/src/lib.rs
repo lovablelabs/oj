@@ -79,10 +79,11 @@ pub mod tls;
 pub use html::*;
 mod ssr;
 mod style_file;
+pub mod stylex;
 pub use ssr::*;
 pub use style_file::{
     compile_style_file, needs_css_compile, needs_preprocess_engine, start_dev_inline_style,
-    StyleInputs, StyleModule,
+    start_dev_url_base, StyleInputs, StyleModule,
 };
 mod middleware;
 mod preview;
@@ -297,6 +298,9 @@ struct ServerState {
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
     /// specifiers inside stylesheets (Vite's CSS resolvers).
     css_resolve: oj_css::CssResolveConfig,
+    /// The client `resolve.alias`, which an aliased `import.meta.glob` pattern
+    /// resolves through.
+    glob_alias: Arc<[(String, String)]>,
     preload_snapshot: Vec<String>,
     proxy: Vec<(String, oj_config::ProxyEntry)>,
     /// Per `proxy` entry: the compiled pattern of a `^` (regex) context, `None`
@@ -320,6 +324,10 @@ struct ServerState {
     canon_memo: Mutex<std::collections::HashMap<String, PathBuf>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
     jsx: oj_compiler::JsxConfig,
+    /// The config's `@stylexjs/unplugin`, run natively (see [`stylex`]).
+    stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
+    /// The last processed dev stylesheet and what it was built from.
+    stylex_css: Mutex<Option<(stylex::SheetStamp, String)>>,
     /// The `import.meta.env` / `define` replacements every dev compile applies.
     import_meta_env: Arc<oj_compiler::ImportMetaEnv>,
     host_policy: HostPolicy,
@@ -331,6 +339,8 @@ struct ServerState {
     /// compares across dev server restarts.
     started_at_ms: u64,
     hmr_enabled: bool,
+    /// The files whose change restarts the server ([`restart_files`]).
+    restart_files: Vec<PathBuf>,
     /// The CLI's `--config` file (resolved against root), for the lazily
     /// spawned SSR host's plugin-source pick.
     config_file: Option<PathBuf>,
@@ -1321,6 +1331,18 @@ fn build_router(
     if hmr_ws_path != HMR_WS_PATH && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
         app = app.route(hmr_ws_path, get(ws_upgrade));
     }
+    // The base strip must run before route matching. A layer runs after its
+    // router picked a route, so it sits on an outer router whose only route is
+    // the inner one, which then matches the stripped path.
+    if let Some(base) = state.base.clone() {
+        let routes = app.with_state(Arc::clone(&state));
+        app = Router::new()
+            .fallback_service(routes)
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::<str>::from(base),
+                base_middleware,
+            ));
+    }
     // Layer order is reversed at request time (last added runs first). Vite's
     // sequence is cors, host validation, proxy: proxied requests bypass neither gate.
     if !state.proxy.is_empty() {
@@ -1653,6 +1675,10 @@ impl DevServer {
             modules: css_modules_options(&config),
             lightning: css_lightning_options(&config),
         };
+        let stylex = stylex::plugin_for(&root, &config, "serve").map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(plugin) = &stylex {
+            stylex::notify_clients(plugin, reload_tx.clone());
+        }
         let state = Arc::new(ServerState {
             persistent_cache,
             config_file: config_file.clone(),
@@ -1682,6 +1708,7 @@ impl DevServer {
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
+            glob_alias: Arc::from(css_resolve.alias.clone()),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
@@ -1707,6 +1734,8 @@ impl DevServer {
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
             jsx_overrides,
             jsx,
+            stylex,
+            stylex_css: Mutex::new(None),
             import_meta_env,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),
             hmr_gate,
@@ -1716,6 +1745,7 @@ impl DevServer {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             hmr_enabled: hmr.enabled,
+            restart_files: restart_files(&root, &env_dir, &dev_mode, config_file.as_deref()),
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr: tokio::sync::OnceCell::new(),
@@ -1739,7 +1769,7 @@ impl DevServer {
             html_env: installed.html_env,
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
-            base: config.base.clone().filter(|b| b != "/"),
+            base: dev_base(config.base.as_deref()),
             buffered_frame: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
             client_js_etag: format!(
@@ -1986,6 +2016,8 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     opts.jsx = state.jsx.clone();
     opts.env = Some(Arc::clone(&state.import_meta_env));
     opts.root = Some(state.root.clone());
+    opts.alias = Arc::clone(&state.glob_alias);
+    opts.stylex = state.stylex.clone();
     opts
 }
 

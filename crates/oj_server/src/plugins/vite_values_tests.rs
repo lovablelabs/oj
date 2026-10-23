@@ -1164,6 +1164,7 @@ fn merge_adopts_only_unset_fields() {
         app_type: None,
         html: None,
         active_plugins: None,
+        stylex: None,
     };
     merge_vite_values(&mut config, v);
     assert_eq!(config.base.as_deref(), Some("/vite-base/"));
@@ -1212,6 +1213,7 @@ fn merge_never_overrides_config() {
         app_type: None,
         html: None,
         active_plugins: None,
+        stylex: None,
     };
     merge_vite_values(&mut config, v);
     assert_eq!(config.base.as_deref(), Some("/oj-base/"));

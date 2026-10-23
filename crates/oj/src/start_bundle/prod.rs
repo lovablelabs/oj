@@ -182,6 +182,9 @@ fn client_plugins(
     emit: &Arc<EmitState>,
 ) -> Vec<SharedPluginable> {
     let mut plugins: Vec<SharedPluginable> = Vec::new();
+    if let Some(plugin) = &start.stylex {
+        plugins.push(crate::stylex_plugin::transform(plugin));
+    }
     if let Some(h) = host {
         if !h.facts.alias.is_empty() {
             plugins.push(Pluginable::new_shared(AppAliasPlugin {
@@ -200,10 +203,10 @@ fn client_plugins(
             .with_module_parsed(start.jsx_config()),
         ));
     }
-    plugins.push(Pluginable::new_shared(StartCodePlugin::new(
-        &start.root,
-        target,
-    )));
+    plugins.push(Pluginable::new_shared(
+        StartCodePlugin::new(&start.root, target)
+            .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default()),
+    ));
     plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
         &start.root,
         Arc::clone(styles),
@@ -473,6 +476,17 @@ pub(crate) async fn build(
         // virtual to the same file), so it serves the shape every framework
         // version reads: 1.168+ the per-route `scripts`/`css`, 1.167 and earlier
         // the top-level `clientEntry` and css from per-route `assets`.
+        // The StyleX plugin's sheet, linked after the client's own stylesheets:
+        // the plugin appends it to the first one, which is where it lands in
+        // the cascade, but that sheet is hashed and referenced by the time
+        // every module's rules are known.
+        if let Some(plugin) = &start.stylex {
+            if let Some(sheet) = crate::stylex_plugin::stylesheet(plugin, &start.root)? {
+                emitter
+                    .generated_css("stylex.css", &sheet)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+        }
         let css = emitter.css_urls();
         let root_route = serde_json::json!({
             "preloads": [client_url],
@@ -500,6 +514,9 @@ pub(crate) async fn build(
         );
         let server_plugins = || -> Vec<SharedPluginable> {
             let mut plugins: Vec<SharedPluginable> = Vec::new();
+            if let Some(plugin) = &start.stylex {
+                plugins.push(crate::stylex_plugin::transform(plugin));
+            }
             if let Some(facts) = server_host
                 .as_ref()
                 .map(|h| &h.facts)
@@ -522,10 +539,14 @@ pub(crate) async fn build(
                     .with_module_parsed(start.jsx_config()),
                 ));
             }
-            plugins.push(Pluginable::new_shared(StartCodePlugin::new(
-                &start.root,
-                CodeTarget::Server,
-            )));
+            plugins.push(Pluginable::new_shared(
+                StartCodePlugin::new(&start.root, CodeTarget::Server).with_alias(
+                    server_host
+                        .as_ref()
+                        .map(|h| h.facts.alias.clone())
+                        .unwrap_or_default(),
+                ),
+            ));
             plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
                 &start.root,
                 Arc::clone(&styles),
@@ -927,7 +948,7 @@ async fn prerender(
     routes: &[String],
 ) -> anyhow::Result<()> {
     let scripts = crate::start_host::ScriptEngine::new(&start.root)?;
-    let env = vec![
+    let mut env = vec![
         (
             "OJ_APP_ROOT".to_string(),
             start.root.to_string_lossy().into_owned(),
@@ -948,6 +969,7 @@ async fn prerender(
         ),
         ("NODE_ENV".to_string(), start.node_env().to_string()),
     ];
+    env.extend(super::dotenv_process_vars(oj_env::get(), &start.app_env));
     scripts
         .run_async(&start.cache.join("prerender.mjs"), &env, "prerender")
         .await

@@ -42,7 +42,9 @@ function loadPage({ overlays = [] } = {}) {
   page.window = { addEventListener() {}, scrollX: 0, scrollY: 0 };
   page.globalThis = page;
   vm.createContext(page);
-  const source = readFileSync(asset("start/live-reload.js"), "utf8").replaceAll("__HMR_ENABLE_OVERLAY__", "true");
+  const source = readFileSync(asset("start/live-reload.js"), "utf8")
+    .replaceAll("__HMR_ENABLE_OVERLAY__", "true")
+    .replaceAll("__OJ_DEV_BASE__", '""');
   vm.runInContext(source, page);
   const ws = sockets[0];
   const open = () => {

@@ -56,6 +56,12 @@ impl SsrBridge {
         style_file(&self.state, path, source).await
     }
 
+    /// The prefix Start's dev urls take under the server's `base` (see
+    /// [`crate::start_dev_url_base`]).
+    pub fn start_url_base(&self) -> String {
+        crate::start_dev_url_base(self.state.base.as_deref().unwrap_or("/"))
+    }
+
     /// A stylesheet's `?inline` module under Start dev (see
     /// [`start_dev_inline_style`]), on the server's engines.
     pub async fn start_dev_inline_style(&self, path: &Path) -> Result<String, String> {
@@ -73,7 +79,8 @@ impl SsrBridge {
             resolve: state.css_resolve.as_ref(),
         };
         let tailwind = async || lazy_engine(state, EngineKind::Tailwind).await.cloned();
-        start_dev_inline_style(&inputs, path, source, engine, tailwind).await
+        let url_base = crate::start_dev_url_base(state.base.as_deref().unwrap_or("/"));
+        start_dev_inline_style(&inputs, path, source, engine, tailwind, &url_base).await
     }
 
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
@@ -155,6 +162,10 @@ async fn ssr_resolve_raw(
     importer: &str,
     spec: &str,
 ) -> Result<RawResolution, String> {
+    // The StyleX plugin's virtual runtimes, kept as the id (its resolveId).
+    if crate::stylex::virtual_module(state, spec).is_some() {
+        return Ok(RawResolution::PluginId(spec.to_string()));
+    }
     let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
     let err = match state.ssr_resolver.resolve(importer_dir, spec) {
         Ok(p) => return Ok(RawResolution::Path(p)),
@@ -247,6 +258,10 @@ pub(crate) async fn ssr_module_inner(
     id: &str,
     runner: bool,
 ) -> Result<String, SsrModuleError> {
+    // The StyleX plugin's virtual runtimes (its load), in every environment.
+    if let Some(code) = crate::stylex::virtual_module(state, id) {
+        return ssr_compile_source(state, id, code.to_string(), true, runner);
+    }
     let path = PathBuf::from(id);
     if !ssr_module_allowed(state, &path) {
         return Err(SsrModuleError::Forbidden(
@@ -286,7 +301,19 @@ pub(crate) async fn ssr_transform_source(
     from_plugin: bool,
     runner: bool,
 ) -> Result<String, SsrModuleError> {
-    let source = match ssr_plugin_host(state).await {
+    let host = ssr_plugin_host(state).await;
+    // StyleX ahead of the app's transforms, as the client path runs it.
+    let pre_stylex = match &host {
+        Some(host) if host.hook_wants_transform(id, &source) => {
+            crate::stylex::pre_transform(state, id, &source).map_err(SsrModuleError::Failed)?
+        }
+        _ => None,
+    };
+    let (source, stylex_rules) = match pre_stylex {
+        Some(pre) => (pre.code, Some(pre.rules)),
+        None => (source, None),
+    };
+    let source = match host {
         // Same filter gate as the client path: an unclaimed module skips the
         // isolate RPC and the import pre-resolution that only feeds it.
         Some(host) if host.hook_wants_transform(id, &source) => {
@@ -309,7 +336,7 @@ pub(crate) async fn ssr_transform_source(
         }
         None => source,
     };
-    ssr_compile_source(state, id, source, from_plugin, runner)
+    compile_ssr(state, id, source, from_plugin, runner, stylex_rules)
 }
 
 /// The dev-ssr compile alone (no plugin transforms): TS/JSX strip, define,
@@ -321,6 +348,31 @@ pub(crate) fn ssr_compile_source(
     from_plugin: bool,
     runner: bool,
 ) -> Result<String, SsrModuleError> {
+    compile_ssr(state, id, source, from_plugin, runner, None)
+}
+
+/// [`ssr_compile_source`]; `stylex_rules` when StyleX already compiled the
+/// source (ahead of the app's plugins), which the compile then skips.
+fn compile_ssr(
+    state: &Arc<ServerState>,
+    id: &str,
+    source: String,
+    from_plugin: bool,
+    runner: bool,
+    stylex_rules: Option<Vec<oj_stylex::rules::StylexRule>>,
+) -> Result<String, SsrModuleError> {
+    // A module a plugin `load`ed compiles under a synthetic path, but StyleX
+    // derives its hashes from the file: it runs on the real id, as the
+    // client's compile does.
+    let (source, stylex_rules) = match stylex_rules {
+        None if from_plugin => match crate::stylex::pre_transform(state, id, &source)
+            .map_err(SsrModuleError::Failed)?
+        {
+            Some(pre) => (pre.code, Some(pre.rules)),
+            None => (source, None),
+        },
+        rules => (source, rules),
+    };
     let compile_path: PathBuf = if from_plugin {
         PathBuf::from("virtual.tsx")
     } else {
@@ -331,17 +383,24 @@ pub(crate) fn ssr_compile_source(
     let mut opts = dev_compile_opts(state);
     opts.refresh = false;
     opts.ssr = true;
-    if runner {
-        return match oj_compiler::ssr::ssr_transform_module_with_map(&compile_path, &source, &opts)
-        {
-            Ok((code, map)) => Ok(with_inline_map(code, map)),
-            Err(e) => Err(SsrModuleError::Failed(format!("{e}"))),
-        };
+    if stylex_rules.is_some() {
+        opts.stylex = None;
     }
-    match oj_compiler::compile(&compile_path, &source, &opts) {
-        Ok(out) => Ok(with_inline_map(out.code, out.map_json)),
-        Err(e) => Err(SsrModuleError::Failed(format!("{e}"))),
-    }
+    let out = oj_compiler::compile(&compile_path, &source, &opts)
+        .map_err(|e| SsrModuleError::Failed(format!("{e}")))?;
+    // The plugin collects every environment's rules into the one sheet, by
+    // module id: the file's path, or what a plugin `load`ed it as.
+    crate::stylex::record_id(
+        state,
+        id,
+        stylex_rules.as_deref().unwrap_or(&out.stylex_rules),
+    );
+    let code = if runner {
+        oj_compiler::ssr::ssr_transform(&out.code, &compile_path)
+    } else {
+        out.code
+    };
+    Ok(with_inline_map(code, out.map_json))
 }
 
 pub(crate) async fn ssr_module(

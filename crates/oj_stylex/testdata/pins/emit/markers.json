@@ -1,0 +1,181 @@
+[
+ {
+  "name": "defaultMarker",
+  "kind": "default",
+  "options": {},
+  "exportName": "marker",
+  "expected": {
+   "$obj": [
+    [
+     "x-default-marker",
+     "x-default-marker"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ },
+ {
+  "name": "defaultMarker prefix",
+  "kind": "default",
+  "options": {
+   "classNamePrefix": "pfx"
+  },
+  "exportName": "marker",
+  "expected": {
+   "$obj": [
+    [
+     "pfx-default-marker",
+     "pfx-default-marker"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ },
+ {
+  "name": "defaultMarker empty prefix",
+  "kind": "default",
+  "options": {
+   "classNamePrefix": ""
+  },
+  "exportName": "marker",
+  "expected": {
+   "$obj": [
+    [
+     "-default-marker",
+     "-default-marker"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ },
+ {
+  "name": "defineMarker rootDir",
+  "kind": "define",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "exportName": "marker",
+  "canonicalFileName": "tokens.stylex.ts",
+  "expected": {
+   "$obj": [
+    [
+     "xleysvp",
+     "xleysvp"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ },
+ {
+  "name": "defineMarker prefix",
+  "kind": "define",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   },
+   "classNamePrefix": "pfx"
+  },
+  "exportName": "marker",
+  "canonicalFileName": "tokens.stylex.ts",
+  "expected": {
+   "$obj": [
+    [
+     "pfxleysvp",
+     "pfxleysvp"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ },
+ {
+  "name": "defineMarker export name",
+  "kind": "define",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "exportName": "otherMarker",
+  "canonicalFileName": "tokens.stylex.ts",
+  "expected": {
+   "$obj": [
+    [
+     "x2r3np8",
+     "x2r3np8"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ },
+ {
+  "name": "defineMarker const ext",
+  "kind": "define",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "exportName": "marker",
+  "canonicalFileName": "tokens.stylex.const.ts",
+  "expected": {
+   "$obj": [
+    [
+     "xumwkw4",
+     "xumwkw4"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ },
+ {
+  "name": "defineMarker deep path",
+  "kind": "define",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "exportName": "marker",
+  "canonicalFileName": "a/b/tokens.stylex.ts",
+  "expected": {
+   "$obj": [
+    [
+     "x1nq78oo",
+     "x1nq78oo"
+    ],
+    [
+     "$$css",
+     true
+    ]
+   ]
+  }
+ }
+]

@@ -29,6 +29,7 @@ serde_json.workspace = true
 oxc_codegen.workspace = true
 oxc_sourcemap = "9.0.0"
 thiserror.workspace = true
+oj_stylex.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

@@ -52,6 +52,10 @@ pub struct OjConfig {
     /// extraction (not a config key). `Some(0)`: no host is needed.
     #[serde(skip)]
     pub vite_active_plugins: Option<usize>,
+    /// The config's `@stylexjs/unplugin`, from extraction (not a config key):
+    /// `{ options }`, the object its `stylex.vite(...)` call received.
+    #[serde(skip)]
+    pub vite_stylex: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

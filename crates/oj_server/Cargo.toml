@@ -8,6 +8,7 @@ description = "Dev server: on-demand compile over HTTP, WebSocket HMR channel, f
 
 [dependencies]
 oj_compiler.workspace = true
+oj_stylex.workspace = true
 oj_graph.workspace = true
 oj_resolver.workspace = true
 oj_cache.workspace = true

@@ -27,6 +27,8 @@ struct StartState {
     /// The session's client bundler, shared by the boot bundle and rebundles.
     bundler: Arc<ClientBundler>,
     proxy_prefixes: Vec<String>,
+    /// Vite's `base` without its trailing slash; empty at the root.
+    base: String,
     /// Live plugin-middleware state, shared with oj_server: the middleware port
     /// and whether worker environments serve the documents. A slow plugin host
     /// (many plugins, Miniflare) activates it after boot, so every read goes
@@ -328,6 +330,8 @@ pub async fn start_dev(
             cache: cache.clone(),
             command: crate::start_bundle::Command::Serve,
             mode: mode.clone(),
+            stylex: oj_server::stylex::plugin_for(&root, &inputs.config, "serve")
+                .map_err(|e| anyhow::anyhow!(e))?,
             config: inputs.config,
             app_env: inputs.app_env,
         };
@@ -530,10 +534,13 @@ pub async fn start_dev(
     // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
     // boot's engine at the next rebundle.
     bundler.set_hot_enabled(built.hmr_gate.is_none());
+    // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
+    let base = oj_server::start_dev_url_base(bundler.base());
     let state = Arc::new(StartState {
         script_env: Arc::clone(&script_vars),
         bundler,
         proxy_prefixes: built.proxy_prefixes.clone(),
+        base,
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
         loopback_port,
@@ -867,7 +874,10 @@ fn asset_mime(ext: &str) -> &'static str {
     }
 }
 
-const RELOAD_CLIENT: &str = "<script type=\"module\" src=\"/@oj-start/live-reload.js\"></script>";
+/// The live-reload client's tag, under the dev `base` prefix.
+fn reload_client(url_base: &str) -> String {
+    format!("<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js\"></script>")
+}
 
 /// One rebundle run's inputs, handed from the watcher thread to the coalescing
 /// rebundle worker. Batches landing while a rebundle is in flight merge into
@@ -1424,7 +1434,7 @@ async fn rebundle_worker(
                 let outcome = match bundling.then(|| bundler.bundle(&inputs, false)) {
                     None => ClientRun::Skipped,
                     Some(Ok(true)) => ClientRun::Hot,
-                    Some(Ok(false)) => match pinned_output(&r, &c, &m) {
+                    Some(Ok(false)) => match pinned_output(&bundler, &r, &c, &m) {
                         Some(pinned) => ClientRun::Fresh(pinned),
                         None => ClientRun::Failed("the bundle left no output to serve".into()),
                     },
@@ -1670,13 +1680,25 @@ enum ClientRun {
 
 /// The output a successful bundle wrote, cached for the next boot.
 fn pinned_output(
+    bundler: &ClientBundler,
     root: &Path,
     cache: &Path,
     mode: &str,
 ) -> Option<oj_cache::start_bundle::PinnedBundle> {
     match start_bundle_store(root, mode).persist(cache) {
-        Some((_, pinned)) => Some(pinned),
+        Some((key, pinned)) => {
+            save_stylex_rules(bundler, cache, &key);
+            Some(pinned)
+        }
         None => oj_cache::start_bundle::PinnedBundle::from_build_dir(cache),
+    }
+}
+
+/// The StyleX rules of the bundle just cached under `key`, saved beside it
+/// so a restore of it serves a complete sheet.
+fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
+    if let Some(plugin) = bundler.stylex() {
+        crate::stylex_plugin::save_rules(plugin, cache, key, &bundler.bundle_modules());
     }
 }
 
@@ -1723,7 +1745,8 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         let bundler = Arc::clone(&state.bundler);
         let pinned = tokio::task::spawn_blocking(move || {
             bundler.bundle(&[], true)?;
-            pinned_output(&r, &c, &m).ok_or_else(|| anyhow::anyhow!("no client chunk index"))
+            pinned_output(&bundler, &r, &c, &m)
+                .ok_or_else(|| anyhow::anyhow!("no client chunk index"))
         })
         .await
         .map_err(anyhow::Error::from)
@@ -1780,22 +1803,11 @@ fn script_inputs(
     Ok(ScriptInputs { config, app_env })
 }
 
-/// The `.env` vars with an `envPrefix` that the shell does not already set
-/// (the scripts inherit the shell's own value).
-fn prefixed_dotenv_vars(env: &oj_env::Env, app_env: &oj_env::AppEnv) -> Vec<(String, String)> {
-    app_env
-        .loaded()
-        .iter()
-        .filter(|(k, _)| app_env.has_prefix(k) && env.var_os(k).is_none())
-        .cloned()
-        .collect()
-}
-
 /// The `.env` vars the Start scripts (route codegen, the SSR runtime's
-/// `process.env`) see: the mode's vars with an `envPrefix`, the shell winning,
-/// as in Vite's loadEnv.
+/// `process.env`) see: every var of the mode's files, the shell winning, as
+/// TanStack Start's load-env plugin assigns them to `process.env`.
 fn start_script_vars(env: &oj_env::Env, inputs: &ScriptInputs) -> Vec<(String, String)> {
-    prefixed_dotenv_vars(env, &inputs.app_env)
+    crate::start_bundle::dotenv_process_vars(env, &inputs.app_env)
 }
 
 /// [`start_script_vars`] for one command, resolved against the process snapshot.
@@ -1924,6 +1936,8 @@ pub async fn start_build(
         cache: cache.clone(),
         command: crate::start_bundle::Command::Build,
         mode: mode.to_string(),
+        stylex: oj_server::stylex::plugin_for(&root, &config, "build")
+            .map_err(|e| anyhow::anyhow!(e))?,
         config,
         app_env,
     };
@@ -2191,7 +2205,16 @@ fn bundle_client_entry_cached(
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
+    let stylex = bundler.stylex();
     match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
+        // A restored bundle never ran the StyleX transform: its modules'
+        // rules come from the sidecar saved with it, or it is rebuilt.
+        Ok((stats, _))
+            if stylex
+                .is_some_and(|p| !crate::stylex_plugin::restore_rules(p, cache, &stats.key)) =>
+        {
+            println!("  oj start: client bundle cache miss (no StyleX rules saved for it)")
+        }
         Ok((stats, pinned)) => {
             let rehashed = match stats.rehashed {
                 0 => String::new(),
@@ -2210,6 +2233,7 @@ fn bundle_client_entry_cached(
     }
     bundler.bundle(&[], false)?;
     if let Some((key, pinned)) = store.persist(cache) {
+        save_stylex_rules(bundler, cache, &key);
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
             key.get(..8).unwrap_or(&key),
@@ -2293,15 +2317,27 @@ enum Route {
     Pass,
 }
 
+#[cfg(test)]
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
-    let path = req.uri().path();
+    classify_path(
+        req.uri().path(),
+        req.uri().path(),
+        req.method(),
+        proxy_prefixes,
+    )
+}
+
+/// [`classify`] with `path` the request's path past the dev `base` (what
+/// oj's own routes see) and `raw` the path as sent (what `server.proxy`
+/// matches, as Vite's proxy runs ahead of its base middleware).
+fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[String]) -> Route {
     // Only oj's own `/__` endpoints are the dev server's: Vite reserves no
     // `/__` prefix, so an app route or a plugin middleware page under it
     // goes through the middleware and SSR like any document.
     if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
         return Route::Pass;
     }
-    if proxy_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
+    if proxy_prefixes.iter().any(|p| raw.starts_with(p.as_str())) {
         return Route::Pass;
     }
     // A dotted non-GET (`POST /api/export.csv`, `PUT /files/a.b`) can only be
@@ -2309,16 +2345,16 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     // to the SSR handler like every other request nothing else owns.
     let last = path.rsplit('/').next().unwrap_or("");
     if last != "index.html" && last.contains('.') {
-        return if *req.method() == Method::GET {
+        return if *method == Method::GET {
             Route::StaticOrDocument
         } else {
             Route::Api
         };
     }
-    if proxy_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
+    if proxy_prefixes.iter().any(|p| raw.starts_with(p.as_str())) {
         return Route::Pass;
     }
-    match *req.method() {
+    match *method {
         Method::GET => Route::Document,
         _ => Route::Api,
     }
@@ -2336,8 +2372,21 @@ fn document_url(url: &str) -> String {
     format!("{path}{query}")
 }
 
+/// `path` with the dev `base` stripped (Vite's base middleware); a path
+/// outside it is left as it is.
+fn strip_base<'a>(base: &str, path: &'a str) -> &'a str {
+    match path.strip_prefix(base) {
+        Some(rest) if !base.is_empty() && rest.starts_with('/') => rest,
+        _ => path,
+    }
+}
+
 async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: Next) -> Response {
-    if req.uri().path() == "/@oj-start/hmr" {
+    // oj's own urls answer under `base` too, as Vite's do; a document or a
+    // server function is forwarded with its full url.
+    let path = strip_base(&state.base, req.uri().path()).to_string();
+    let path = path.as_str();
+    if path == "/@oj-start/hmr" {
         let (mut parts, _) = req.into_parts();
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
             Ok(ws) => {
@@ -2379,14 +2428,14 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
             Err(e) => e.into_response(),
         };
     }
-    if req.uri().path() == "/@oj-start/live-reload.js" {
+    if path == "/@oj-start/live-reload.js" {
         return match tokio::fs::read_to_string(&state.live_reload).await {
             Ok(js) => (
                 [
                     (header::CONTENT_TYPE, "text/javascript"),
                     (header::CACHE_CONTROL, "no-cache"),
                 ],
-                render_live_reload(&js, state.hmr_overlay),
+                render_live_reload(&js, state.hmr_overlay, &state.base),
             )
                 .into_response(),
             Err(e) => (
@@ -2398,24 +2447,20 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     }
     // The overlay element the live-reload client shows build errors in,
     // written beside it by write_start_assets.
-    if req.uri().path() == "/@oj-start/error-overlay.js" {
+    if path == "/@oj-start/error-overlay.js" {
         let overlay = state.live_reload.with_file_name("error-overlay.js");
         return serve_js(&overlay, "error overlay").await;
     }
-    if let Some(name) = req
-        .uri()
-        .path()
-        .strip_prefix(crate::start_hot::PATCH_PREFIX)
-    {
+    if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
         return state.bundler.hot.serve(name);
     }
-    if let Some(rest) = req.uri().path().strip_prefix("/@oj-start/fs/") {
+    if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
         return serve_fs_asset(&state, &format!("/{rest}")).await;
     }
-    if let Some(name) = req.uri().path().strip_prefix("/@oj-start/") {
+    if let Some(name) = path.strip_prefix("/@oj-start/") {
         return serve_client_chunk(&state, req.headers(), name).await;
     }
-    if req.uri().path().starts_with("/_serverFn/") {
+    if path.starts_with("/_serverFn/") {
         return forward_with_body(&state, req).await;
     }
     // A WebSocket upgrade is never a document: the inner app owns them all
@@ -2423,7 +2468,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if oj_server::is_websocket_upgrade(req.headers()) {
         return next.run(req).await;
     }
-    match classify(&req, &state.proxy_prefixes) {
+    match classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes) {
         Route::Document => {
             let raw = path_and_query(&req);
             forward_document(&state, raw, req.headers()).await
@@ -2600,13 +2645,14 @@ async fn forward_document(
         if let Some(resp) = oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
             // A worker-served document needs the live-reload client like the
             // runner-served ones, or edits never reload the page.
-            return inject_reload_client(resp);
+            return inject_reload_client(resp, &state.base);
         }
     }
     ensure_bundle_current(state).await;
     ensure_runner_fresh(state).await;
     forward(
         &state.engine,
+        &state.base,
         "GET".into(),
         document_url(&raw),
         headers,
@@ -2692,7 +2738,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             Ok(body) => body,
             Err(resp) => return resp,
         };
-        return forward(&state.engine, method, url, &headers, body).await;
+        return forward(&state.engine, &state.base, method, url, &headers, body).await;
     };
     if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {
         headers.insert("x-oj-forward-to", v);
@@ -2711,7 +2757,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             "oj start: request fell through the plugin middleware without reaching the app",
         )
             .into_response(),
-        Ok(resp) => inject_reload_client(resp),
+        Ok(resp) => inject_reload_client(resp, &state.base),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}")).into_response(),
     }
 }
@@ -2798,10 +2844,14 @@ async fn serve_client_chunk(
 }
 
 /// The live-reload client with Vite's `__HMR_ENABLE_OVERLAY__` filled in.
-fn render_live_reload(js: &str, overlay: bool) -> String {
+fn render_live_reload(js: &str, overlay: bool, url_base: &str) -> String {
     js.replace(
         "__HMR_ENABLE_OVERLAY__",
         if overlay { "true" } else { "false" },
+    )
+    .replace(
+        "__OJ_DEV_BASE__",
+        &serde_json::Value::String(url_base.to_string()).to_string(),
     )
 }
 
@@ -2995,6 +3045,7 @@ fn engine_response(resp: StartResponse) -> Response {
 
 async fn forward(
     engine: &StartEngine,
+    url_base: &str,
     method: String,
     url: String,
     req_headers: &header::HeaderMap,
@@ -3004,7 +3055,7 @@ async fn forward(
         .handle(engine_request(method, url, req_headers, body, false))
         .await
     {
-        Ok(resp) => inject_reload_client(engine_response(resp)),
+        Ok(resp) => inject_reload_client(engine_response(resp), url_base),
         Err(e) => {
             // The runner's 500 page shape (Vite's errorMiddleware): message +
             // stack in an HTML page the overlay can read.
@@ -3064,7 +3115,7 @@ async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> 
 /// passed through untouched (TanStack streams its dehydrated data into the
 /// page) and the script tag follows the final chunk; browsers parse a trailing
 /// `<script>` after `</html>` into the body.
-fn inject_reload_client(resp: Response) -> Response {
+fn inject_reload_client(resp: Response, url_base: &str) -> Response {
     use tokio_stream::StreamExt;
     let is_html = resp
         .headers()
@@ -3082,8 +3133,8 @@ fn inject_reload_client(resp: Response) -> Response {
         return resp;
     }
     let (parts, body) = resp.into_parts();
-    let tail = tokio_stream::once(Ok::<_, axum::Error>(axum::body::Bytes::from_static(
-        RELOAD_CLIENT.as_bytes(),
+    let tail = tokio_stream::once(Ok::<_, axum::Error>(axum::body::Bytes::from(
+        reload_client(url_base),
     )));
     let stream = body.into_data_stream().chain(tail);
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
@@ -3530,9 +3581,13 @@ mod tests {
         oj_server::write_start_assets(&dir).unwrap();
         let js = std::fs::read_to_string(dir.join("live-reload.js")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        let on = render_live_reload(&js, true);
-        let off = render_live_reload(&js, false);
+        let on = render_live_reload(&js, true, "/app");
+        let off = render_live_reload(&js, false, "");
         assert!(on.contains("const enableOverlay = true;"), "{on}");
+        // The dev urls' prefix under `base`, filled in as a string.
+        assert!(on.contains("const base = \"/app\";"), "{on}");
+        assert!(off.contains("const base = \"\";"), "{off}");
+        assert!(!on.contains("__OJ_DEV_BASE__"));
         assert!(off.contains("const enableOverlay = false;"), "{off}");
         assert!(!off.contains("__HMR_ENABLE_OVERLAY__"));
         // Off, an error frame is logged and the overlay never mounts.
@@ -4161,7 +4216,7 @@ mod tests {
     // Vite's loadEnv rule for the Start scripts: `.env.<mode>` vars with any
     // configured envPrefix (not just VITE_) pass, unprefixed ones never do.
     #[test]
-    fn start_script_env_honors_env_prefix() {
+    fn start_script_env_carries_every_dotenv_var() {
         let root = tmp("script-env");
         std::fs::write(
             root.join("oj.config.json"),
@@ -4173,14 +4228,15 @@ mod tests {
         let get = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get("VITE_X").as_deref(), Some("1"));
         assert_eq!(get("APP_Y").as_deref(), Some("2"));
-        assert_eq!(get("SECRET_Z"), None);
+        // Server code reads unprefixed secrets: envPrefix only gates what
+        // reaches `import.meta.env` on the client.
+        assert_eq!(get("SECRET_Z").as_deref(), Some("3"));
 
-        // Defaults: VITE_ only.
         let plain = tmp("script-env-plain");
-        std::fs::write(plain.join(".env"), "VITE_X=1\nAPP_Y=2\n").unwrap();
+        std::fs::write(plain.join(".env"), "VITE_X=1\nDATABASE_URL=postgres://x\n").unwrap();
         let vars = start_script_env(&plain, None, "serve", "development").unwrap();
         let names: Vec<&str> = vars.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["VITE_X"]);
+        assert_eq!(names, ["DATABASE_URL", "VITE_X"]);
     }
 
     // The static Cloudflare hint gates skipping the boot prewarm: true only
@@ -4226,17 +4282,17 @@ mod tests {
             }
             b.body(axum::body::Body::from("<html></html>")).unwrap()
         };
-        assert!(body_of(inject_reload_client(resp("text/html", None))).contains(RELOAD_CLIENT));
+        // Under the dev `base`, as Vite's urls are.
+        let tag = reload_client("/app");
         assert!(
-            !body_of(inject_reload_client(resp("text/html", Some("gzip")))).contains(RELOAD_CLIENT)
+            tag.contains("src=\"/app/@oj-start/live-reload.js\""),
+            "{tag}"
         );
-        assert!(
-            body_of(inject_reload_client(resp("text/html", Some("identity"))))
-                .contains(RELOAD_CLIENT)
-        );
-        assert!(
-            !body_of(inject_reload_client(resp("text/javascript", None))).contains(RELOAD_CLIENT)
-        );
+        let inject = |r| body_of(inject_reload_client(r, "/app"));
+        assert!(inject(resp("text/html", None)).contains(&tag));
+        assert!(!inject(resp("text/html", Some("gzip"))).contains(&tag));
+        assert!(inject(resp("text/html", Some("identity"))).contains(&tag));
+        assert!(!inject(resp("text/javascript", None)).contains(&tag));
     }
 
     // Vite's NODE_ENV rule for the dev server: the shell wins (so
@@ -4272,7 +4328,7 @@ mod tests {
 
     // A `.env` value reaches the scripts only when the shell lacks the key.
     #[test]
-    fn prefixed_dotenv_vars_skip_keys_the_shell_sets() {
+    fn dotenv_process_vars_skip_keys_the_shell_sets() {
         let root = tmp("dotenv-shell");
         std::fs::write(root.join(".env"), "VITE_A=file\nVITE_B=file\nOTHER=x\n").unwrap();
         let env = oj_env::Env::from_vars([("VITE_B", "shell")]);
@@ -4283,8 +4339,14 @@ mod tests {
             vec!["VITE_".into()],
             "development",
         );
-        let vars = prefixed_dotenv_vars(&env, &app_env);
-        assert_eq!(vars, vec![("VITE_A".to_string(), "file".to_string())]);
+        let vars = crate::start_bundle::dotenv_process_vars(&env, &app_env);
+        assert_eq!(
+            vars,
+            vec![
+                ("OTHER".to_string(), "x".to_string()),
+                ("VITE_A".to_string(), "file".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -4416,6 +4478,33 @@ mod tests {
         assert!(!app_uses_tailwind(&base));
         let none = tmp("tw-none");
         assert!(!app_uses_tailwind(&none));
+    }
+
+    #[test]
+    fn oj_routes_classify_past_the_base_and_proxies_on_the_raw_path() {
+        assert_eq!(strip_base("/app", "/app/@oj-start/hmr"), "/@oj-start/hmr");
+        assert_eq!(strip_base("/app", "/application"), "/application");
+        assert_eq!(strip_base("", "/@oj-start/hmr"), "/@oj-start/hmr");
+        let get = Method::GET;
+        let no_proxy: Vec<String> = vec![];
+        assert!(matches!(
+            classify_path("/@id/x", "/app/@id/x", &get, &no_proxy),
+            Route::Pass
+        ));
+        assert!(matches!(
+            classify_path("/about", "/app/about", &get, &no_proxy),
+            Route::Document
+        ));
+        // Vite's proxy matches the url as sent, ahead of the base middleware.
+        let proxy = vec!["/api".to_string()];
+        assert!(matches!(
+            classify_path("/api/x", "/app/api/x", &get, &proxy),
+            Route::Document
+        ));
+        assert!(matches!(
+            classify_path("/api/x", "/api/x", &get, &proxy),
+            Route::Pass
+        ));
     }
 
     #[test]
