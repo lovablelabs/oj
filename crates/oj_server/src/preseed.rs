@@ -257,9 +257,6 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
 /// Pre-seed the deps caches for runner-backed vite configs, before the host
 /// spawns. Failure is never fatal: the host's own optimizer remains the fallback.
 pub(crate) async fn preseed_server_deps(root: &Path, env_mode: &str) {
-    if oj_env::get().knobs.no_deps_preseed {
-        return;
-    }
     // A fresh config extraction means the config inputs changed (or were never
     // seen): Vite's configHash may have moved, which the stamp cannot see.
     if !crate::plugins::extraction_ran_fresh() && stamp_is_warm(root) {

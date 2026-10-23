@@ -47,11 +47,11 @@ enum Command {
         /// Vite's `--mode` for the dev server (default `development`).
         #[arg(long)]
         mode: Option<String>,
-        /// Enable the experimental on-disk module cache (also OJ_ENABLE_CACHE=1).
+        /// Enable the experimental on-disk module cache.
         /// Off by default; warm restarts then re-serve compiled modules from disk.
         #[arg(long)]
         enable_cache: bool,
-        /// Force the on-disk module cache off even if enabled (also OJ_NO_CACHE=1).
+        /// Force the on-disk module cache off even if enabled.
         #[arg(long)]
         no_cache: bool,
         /// Compile modules on demand instead of eagerly crawling the whole graph

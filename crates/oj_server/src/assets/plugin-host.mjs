@@ -783,10 +783,10 @@ let resolvedConfig = environment.config;
 // build.outDir/sourcemap/rollupOptions, cacheDir, env, envPrefix, assetsInclude(),
 // css, ssr, worker, createResolver, logger. oj's own plugin instances are spliced
 // in and their config hooks still run on top. Without Vite the synthesized
-// defaults stand. OJ_PLUGIN_SYNTH_CONFIG=1 forces the synthesized path.
+// defaults stand.
 let userResolvedViteConfig = null;
 async function loadUserResolvedViteConfig() {
-  if (initial.pluginsFormat !== "vite" || process.env.OJ_PLUGIN_SYNTH_CONFIG === "1") return null;
+  if (initial.pluginsFormat !== "vite") return null;
   const appRoot = initial.config?.root ?? process.cwd();
   let vite;
   try {

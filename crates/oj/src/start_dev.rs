@@ -45,7 +45,6 @@ struct StartState {
     /// randomly hide a change it wrote first.
     regen_hashes: std::sync::Mutex<std::collections::HashMap<PathBuf, Option<u64>>>,
     bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
-    verify: oj_cache::integrity::VerifyMode,
     /// Gzip bodies of the live client chunks, by content hash.
     gzip: crate::start_chunks::GzipCache,
     live_reload: PathBuf,
@@ -539,7 +538,6 @@ pub async fn start_dev(
         engine,
         loopback_port,
         bundle: std::sync::RwLock::new(Arc::new(pinned)),
-        verify: oj_cache::integrity::VerifyMode::from_env(),
         gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
         hmr_overlay,
@@ -2180,7 +2178,7 @@ fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartB
     oj_cache::start_bundle::StartBundleStore::for_mode(
         root,
         env!("CARGO_PKG_VERSION"),
-        oj_cache::integrity::VerifyMode::from_env(),
+        oj_cache::integrity::VerifyMode::Standard,
         mode,
     )
 }
@@ -2736,10 +2734,6 @@ async fn serve_client_chunk(
         )
             .into_response();
     };
-    let mode = match &chunk.hash {
-        Some(_) => state.verify,
-        None => oj_cache::integrity::VerifyMode::Standard,
-    };
     let expected = oj_cache::integrity::ExpectedFile {
         size: chunk.size,
         hash: chunk.hash.clone().unwrap_or_default(),
@@ -2748,7 +2742,11 @@ async fn serve_client_chunk(
     let what = name.clone();
     let read = move || async move {
         match tokio::task::spawn_blocking(move || {
-            oj_cache::integrity::verified_read(&path, &expected, mode)
+            oj_cache::integrity::verified_read(
+                &path,
+                &expected,
+                oj_cache::integrity::VerifyMode::Standard,
+            )
         })
         .await
         {

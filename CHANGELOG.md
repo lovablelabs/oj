@@ -5,6 +5,12 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- Unused and debug-only environment knobs: `OJ_V8_COMPILE_CACHE` and `NODE_COMPILE_CACHE` (nothing read them anymore), `OJ_HMR_DEBOUNCE_MS` (the watcher debounce stays 10ms), `OJ_CACHE_VERIFY`, `OJ_PLUGIN_SYNTH_CONFIG`, `OJ_NO_DEPS_PRESEED` and `OJ_OBSERVED_READS_MAX`. `OJ_ENABLE_CACHE` and `OJ_NO_CACHE` are gone too; use `--enable-cache` and `--no-cache`.
+
 ## [0.2.45] - 2026-10-23
 
 ### Changed

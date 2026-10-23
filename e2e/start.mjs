@@ -25,8 +25,8 @@ if (!installed) {
 }
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
-// Retried: SIGKILLed servers orphan node children for a beat, and their
-// NODE_COMPILE_CACHE flush into .oj-cache/v8 races the removal (ENOTEMPTY).
+// Retried: a SIGKILLed server's children outlive it for a beat, and their
+// writes into .oj-cache race the removal (ENOTEMPTY).
 const rm = (p) => {
   for (let i = 0; ; i++) {
     try {

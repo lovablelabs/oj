@@ -1087,7 +1087,7 @@ pub(crate) fn spawn_watcher(
         }
         let _ = ready.send(true);
 
-        let debounce_ms: u64 = oj_env::get().knobs.hmr_debounce_ms.unwrap_or(10);
+        let debounce_ms: u64 = 10;
         // The paths the watcher knows, chokidar's watched set, with each
         // one's stamp when last seen: the boot scan plus every path a batch
         // named. A Create for a known path is an edit (chokidar: add once,

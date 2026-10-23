@@ -1,6 +1,6 @@
 //! oj's own settings read from the environment, parsed once.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 /// Every `OJ_*` (and related) variable oj reads, parsed with the rules its
@@ -21,22 +21,11 @@ pub struct Knobs {
 
     /// `OJ_CACHE_DIR`, when non-empty: the cache base instead of `<app>/.oj-cache`.
     pub cache_dir: Option<PathBuf>,
-    /// `OJ_CACHE_VERIFY=full` (any case).
-    pub cache_verify_full: bool,
-    /// `OJ_ENABLE_CACHE` / `OJ_NO_CACHE` truthy (non-empty and not `0`).
-    pub enable_cache: bool,
-    pub no_cache: bool,
-    /// `NODE_COMPILE_CACHE`, raw.
-    pub node_compile_cache: Option<OsString>,
-    /// `OJ_V8_COMPILE_CACHE`, raw.
-    pub v8_compile_cache: Option<OsString>,
 
     /// `OJ_HMR_GATE` or `LOVABLE_DEV_SERVER` is `1` / `true`.
     pub hmr_gate: bool,
     /// `OJ_HMR_FULL_RELOAD` (else `LOVABLE_HMR_FULL_RELOAD`) is not `false`.
     pub hmr_full_reload: bool,
-    /// `OJ_HMR_DEBOUNCE_MS` as an integer.
-    pub hmr_debounce_ms: Option<u64>,
     /// `OJ_MEMORY_CACHE_MB` as an integer (`0` = unlimited, the consumer's rule).
     pub memory_cache_mb: Option<usize>,
     /// `OJ_CODE_CACHE_MAX_BYTES` as an integer (`0` = unbounded; unset = the
@@ -55,8 +44,6 @@ pub struct Knobs {
     /// `OJ_DEBUG_HOOK_GATE` is exactly `1`.
     pub debug_hook_gate: bool,
 
-    /// `OJ_NO_DEPS_PRESEED` truthy.
-    pub no_deps_preseed: bool,
     /// `OJ_PLUGIN_MEMORY_MB`, when positive.
     pub plugin_memory_mb: Option<usize>,
 
@@ -67,7 +54,6 @@ pub struct Knobs {
 impl Knobs {
     pub(crate) fn parse<'a>(get: impl Fn(&str) -> Option<&'a OsStr>) -> Self {
         let var = |key: &str| get(key).and_then(OsStr::to_str).map(str::to_owned);
-        let os = |key: &str| get(key).map(OsStr::to_os_string);
         // Set, non-empty and not "0".
         let truthy = |key: &str| var(key).is_some_and(|v| !v.is_empty() && v != "0");
         let one_or_true = |key: &str| matches!(var(key).as_deref(), Some("1") | Some("true"));
@@ -81,18 +67,11 @@ impl Knobs {
             cache_dir: get("OJ_CACHE_DIR")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
-            cache_verify_full: var("OJ_CACHE_VERIFY")
-                .is_some_and(|v| v.eq_ignore_ascii_case("full")),
-            enable_cache: truthy("OJ_ENABLE_CACHE"),
-            no_cache: truthy("OJ_NO_CACHE"),
-            node_compile_cache: os("NODE_COMPILE_CACHE"),
-            v8_compile_cache: os("OJ_V8_COMPILE_CACHE"),
             hmr_gate: one_or_true("OJ_HMR_GATE") || one_or_true("LOVABLE_DEV_SERVER"),
             hmr_full_reload: var("OJ_HMR_FULL_RELOAD")
                 .or_else(|| var("LOVABLE_HMR_FULL_RELOAD"))
                 .as_deref()
                 != Some("false"),
-            hmr_debounce_ms: var("OJ_HMR_DEBOUNCE_MS").and_then(|v| v.parse().ok()),
             memory_cache_mb: var("OJ_MEMORY_CACHE_MB").and_then(|v| v.trim().parse().ok()),
             code_cache_max_bytes: var("OJ_CODE_CACHE_MAX_BYTES")
                 .and_then(|v| v.trim().parse().ok()),
@@ -125,7 +104,6 @@ impl Knobs {
                 || var("CURSOR_EXTENSION_HOST_ROLE").as_deref() == Some("agent-exec"),
             debug_mem: truthy("OJ_DEBUG_MEM"),
             debug_hook_gate: var("OJ_DEBUG_HOOK_GATE").as_deref() == Some("1"),
-            no_deps_preseed: truthy("OJ_NO_DEPS_PRESEED"),
             plugin_memory_mb: trimmed("OJ_PLUGIN_MEMORY_MB")
                 .map(|v| v as usize)
                 .filter(|v| *v > 0),
@@ -145,15 +123,13 @@ mod tests {
     #[test]
     fn flags_follow_their_consumers_rules() {
         let k = knobs(&[]);
-        assert!(!k.enable_cache && !k.no_color && !k.boot_phases && !k.hmr_gate);
+        assert!(!k.no_color && !k.boot_phases && !k.hmr_gate);
         assert!(k.hmr_full_reload, "full reload is the default");
         assert_eq!(k.node_env, None);
 
         // Truthy: set, non-empty and not "0".
-        assert!(knobs(&[("OJ_ENABLE_CACHE", "1")]).enable_cache);
-        assert!(knobs(&[("OJ_ENABLE_CACHE", "yes")]).enable_cache);
-        assert!(!knobs(&[("OJ_ENABLE_CACHE", "0")]).enable_cache);
-        assert!(!knobs(&[("OJ_ENABLE_CACHE", "")]).enable_cache);
+        assert!(knobs(&[("OJ_LOG_JSON", "yes")]).log_json);
+        assert!(!knobs(&[("OJ_LOG_JSON", "")]).log_json);
         assert!(knobs(&[("OJ_LOG_JSON", "1")]).log_json);
         assert!(!knobs(&[("OJ_LOG_JSON", "0")]).log_json);
         assert!(!knobs(&[]).log_json);
@@ -195,7 +171,6 @@ mod tests {
             .hmr_full_reload
         );
         assert!(!knobs(&[("LOVABLE_HMR_FULL_RELOAD", "false")]).hmr_full_reload);
-        assert!(knobs(&[("OJ_CACHE_VERIFY", "FULL")]).cache_verify_full);
     }
 
     #[test]
@@ -222,12 +197,6 @@ mod tests {
         );
         assert_eq!(
             knobs(&[("OJ_CODE_CACHE_MAX_BYTES", "0")]).code_cache_max_bytes,
-            Some(0)
-        );
-        // No trim for the debounce, as its consumer did.
-        assert_eq!(knobs(&[("OJ_HMR_DEBOUNCE_MS", " 5")]).hmr_debounce_ms, None);
-        assert_eq!(
-            knobs(&[("OJ_HMR_DEBOUNCE_MS", "0")]).hmr_debounce_ms,
             Some(0)
         );
     }

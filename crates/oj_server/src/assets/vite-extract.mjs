@@ -168,7 +168,7 @@ const unsetOjNodeEnvForResolve = () => {
 // being worse than no cache entry.
 const observedConfigReads = new Set();
 let observedReadsTruncated = false;
-const OBSERVED_READS_MAX = Number(process.env.OJ_OBSERVED_READS_MAX) || 512;
+const OBSERVED_READS_MAX = 512;
 let recorderInstalled = false;
 function installConfigReadRecorder() {
   if (recorderInstalled) return;

@@ -654,35 +654,32 @@ test("recorder overflow sets __depsTruncated; re-reads at the cap do not", () =>
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
     copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
-    writeFileSync(join(base, "a.json"), "{}");
-    writeFileSync(join(base, "b.json"), "{}");
-    writeFileSync(
-      join(base, "vite.config.mjs"),
-      `import fs from "node:fs";
-      fs.readFileSync(new URL("./a.json", import.meta.url), "utf8");
-      fs.readFileSync(new URL("./b.json", import.meta.url), "utf8");
-      export default { base: "/t/" };\n`,
-    );
-    writeFileSync(
-      join(base, "dupe.config.mjs"),
-      `import fs from "node:fs";
-      fs.readFileSync(new URL("./a.json", import.meta.url), "utf8");
-      fs.readFileSync(new URL("./a.json", import.meta.url), "utf8");
-      export default { base: "/d/" };\n`,
-    );
-    const run = (config, env) => JSON.parse(runExtractor(base, config, [], { env: { ...process.env, ...env } }));
-    const capped = run("vite.config.mjs", { OJ_OBSERVED_READS_MAX: "1" });
+    // The cap is 512 paths: `n` probes of missing .json files, then the
+    // first one again.
+    const config = (name, n) =>
+      writeFileSync(
+        join(base, name),
+        `import fs from "node:fs";
+        for (let i = 0; i < ${n}; i++) fs.existsSync(new URL(\`./m\${i}.json\`, import.meta.url));
+        fs.existsSync(new URL("./m0.json", import.meta.url));
+        export default { base: "/t/" };\n`,
+      );
+    config("vite.config.mjs", 513);
+    config("whole.config.mjs", 2);
+    config("dupe.config.mjs", 512);
+    const run = (name) => JSON.parse(runExtractor(base, name, []));
+    const capped = run("vite.config.mjs");
     assert.equal(capped.__ok, true);
     assert.equal(capped.__depsTruncated, true, "a dropped NEW path past the cap flags the emit");
-    const whole = run("vite.config.mjs", {});
+    const whole = run("whole.config.mjs");
     assert.equal(whole.__ok, true);
     assert.equal(whole.__depsTruncated, undefined, "no overflow, no flag");
     const real = fs.realpathSync(base);
-    assert.ok(whole.__deps.includes(join(real, "b.json")));
-    const dupe = run("dupe.config.mjs", { OJ_OBSERVED_READS_MAX: "1" });
+    assert.ok(whole.__deps.includes(join(real, "m1.json")));
+    const dupe = run("dupe.config.mjs");
     assert.equal(dupe.__ok, true);
     assert.equal(dupe.__depsTruncated, undefined, "re-reading a recorded path at the cap is not truncation");
-    assert.ok(dupe.__deps.includes(join(real, "a.json")));
+    assert.ok(dupe.__deps.includes(join(real, "m0.json")));
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

@@ -97,20 +97,15 @@ export default { base };"#);
 #[test]
 fn truncated_observed_reads_serve_but_never_cache() {
     let _g = lock();
-    // Cap the recorder at one path; the config reads two .json files, so the
-    // dep stamp is incomplete and the result must not be cached.
-    std::env::set_var("OJ_OBSERVED_READS_MAX", "1");
+    // The recorder caps at 512 paths; the config probes 513 missing .json
+    // files, so the dep stamp is incomplete and the result must not be cached.
     let dir = app(r#"import fs from "node:fs";
-const a = JSON.parse(fs.readFileSync(new URL("./a.json", import.meta.url), "utf8"));
-const b = JSON.parse(fs.readFileSync(new URL("./b.json", import.meta.url), "utf8"));
-export default { base: a.base + b.base };"#);
+for (let i = 0; i <= 512; i++) fs.existsSync(new URL(`./m${i}.json`, import.meta.url));
+export default { base: "/t/" };"#);
     let root = dir.path();
-    std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
-    std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
-    let result = extract_vite_values_with(root, None, "serve", "development", true);
-    std::env::remove_var("OJ_OBSERVED_READS_MAX");
-    let v = result.expect("the result is still served");
-    assert_eq!(v.base.as_deref(), Some("/a/b"));
+    let v = extract_vite_values_with(root, None, "serve", "development", true)
+        .expect("the result is still served");
+    assert_eq!(v.base.as_deref(), Some("/t/"));
     assert!(
         extraction_store(root)
             .lookup(&root.join("vite.config.mjs"), "serve", "development")

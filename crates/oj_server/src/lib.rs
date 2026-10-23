@@ -179,22 +179,6 @@ pub fn engine_code_cache_dir(root: &Path) -> PathBuf {
         .join(oj_js::engine_abi_key())
 }
 
-pub fn node_compile_cache(root: &Path) -> std::ffi::OsString {
-    oj_env::get()
-        .knobs
-        .node_compile_cache
-        .clone()
-        .unwrap_or_else(|| oj_cache::cache_root(root).join("v8").into_os_string())
-}
-
-pub fn node_compile_cache_opt_in(root: &Path) -> Option<std::ffi::OsString> {
-    let v = oj_env::get().knobs.v8_compile_cache.as_ref()?;
-    if v.is_empty() || v == "0" {
-        return None;
-    }
-    Some(node_compile_cache(root))
-}
-
 pub fn prepare_cache_root(root: &Path) {
     let dir = oj_cache::cache_base(root);
     if std::fs::create_dir_all(&dir).is_err() {
@@ -1424,13 +1408,10 @@ impl DevServer {
         Ok(())
     }
 
-    /// On-disk module cache: experimental, off by default (--enable-cache /
-    /// OJ_ENABLE_CACHE=1); --no-cache / OJ_NO_CACHE=1 forces it off.
+    /// On-disk module cache: experimental, off by default (--enable-cache);
+    /// --no-cache forces it off.
     fn persistent_cache_enabled(&self) -> bool {
-        let knobs = &oj_env::get().knobs;
-        let enabled = self.enable_cache || knobs.enable_cache;
-        let forced_off = self.no_cache || knobs.no_cache;
-        enabled && !forced_off
+        self.enable_cache && !self.no_cache
     }
 
     fn dev_mode(&self) -> String {
