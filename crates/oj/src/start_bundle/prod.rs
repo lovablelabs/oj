@@ -181,6 +181,9 @@ fn client_plugins(
     emit: &Arc<EmitState>,
 ) -> Vec<SharedPluginable> {
     let mut plugins: Vec<SharedPluginable> = Vec::new();
+    if let Some(plugin) = &start.stylex {
+        plugins.push(crate::stylex_plugin::transform(plugin));
+    }
     if let Some(h) = host {
         if !h.facts.alias.is_empty() {
             plugins.push(Pluginable::new_shared(AppAliasPlugin {
@@ -460,6 +463,17 @@ pub(crate) async fn build(
         // virtual to the same file), so it serves the shape every framework
         // version reads: 1.168+ the per-route `scripts`/`css`, 1.167 and earlier
         // the top-level `clientEntry` and css from per-route `assets`.
+        // The StyleX plugin's sheet, linked after the client's own stylesheets:
+        // the plugin appends it to the first one, which is where it lands in
+        // the cascade, but that sheet is hashed and referenced by the time
+        // every module's rules are known.
+        if let Some(plugin) = &start.stylex {
+            if let Some(sheet) = crate::stylex_plugin::stylesheet(plugin, &start.root)? {
+                emitter
+                    .generated_css("stylex.css", &sheet)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+        }
         let css = emitter.css_urls();
         let root_route = serde_json::json!({
             "preloads": [client_url],
@@ -487,6 +501,9 @@ pub(crate) async fn build(
         );
         let server_plugins = || -> Vec<SharedPluginable> {
             let mut plugins: Vec<SharedPluginable> = Vec::new();
+            if let Some(plugin) = &start.stylex {
+                plugins.push(crate::stylex_plugin::transform(plugin));
+            }
             if let Some(facts) = server_host
                 .as_ref()
                 .map(|h| &h.facts)

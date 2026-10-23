@@ -9,6 +9,7 @@ mod start_chunks;
 mod start_dev;
 mod start_host;
 mod start_hot;
+mod stylex_plugin;
 
 // Linking-only for now: build.rs exports the Node-API symbols these crates
 // define, so they must be part of the binary (rustc drops unused crates from
@@ -443,9 +444,10 @@ fn main() -> anyhow::Result<()> {
     // parser would drift from clap the moment a flag is added.
     let cli = Cli::parse();
     // Synchronous and self-contained (its own worker threads, no engine), so
-    // it runs before any runtime or env snapshot exists.
+    // it runs before any runtime exists, on an env snapshot of its own.
     let cli = match cli.command {
         Command::Stylex { command } => {
+            oj_env::init();
             oj_stylex::cli::run(command);
             return Ok(());
         }

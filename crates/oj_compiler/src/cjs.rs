@@ -183,6 +183,7 @@ pub fn wrap_cjs(
         import_bindings: Vec::new(),
         is_refresh_boundary: false,
         hot_accept: None,
+        stylex_rules: Vec::new(),
     })
 }
 

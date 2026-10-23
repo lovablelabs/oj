@@ -48,6 +48,8 @@ pub(crate) struct StartConfig {
     pub app_env: oj_env::AppEnv,
     /// Vite's `base`, normalized (`/`, `/x/` or `./`).
     pub base: String,
+    /// The config's `@stylexjs/unplugin`, run natively in every app bundle.
+    pub stylex: Option<std::sync::Arc<oj_stylex::plugin::StylexPlugin>>,
 }
 
 impl StartConfig {

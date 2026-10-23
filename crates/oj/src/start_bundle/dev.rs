@@ -86,6 +86,12 @@ impl DevBundler {
         DevBundler::new(tests::start_at(root), None)
     }
 
+    /// Whether the app runs the StyleX plugin, whose rules only a bundle that
+    /// actually transforms its modules can collect.
+    pub(crate) fn runs_stylex(&self) -> bool {
+        self.start.stylex.is_some()
+    }
+
     pub(crate) fn root(&self) -> &Path {
         &self.start.root
     }
@@ -315,6 +321,9 @@ impl DevBundler {
         let refresh = hot && host.is_some_and(|h| h.facts.react_refresh);
         let entry = start.cache.join("client-entry.tsx");
         let mut plugins: Vec<SharedPluginable> = Vec::new();
+        if let Some(plugin) = &start.stylex {
+            plugins.push(crate::stylex_plugin::transform(plugin));
+        }
         if refresh {
             plugins.push(Pluginable::new_shared(RefreshPreamble {
                 runtime: start.cache.join("react-refresh-runtime.js"),
@@ -681,6 +690,7 @@ pub(crate) mod tests {
                 "development",
             ),
             base: "/".into(),
+            stylex: None,
         }
     }
 

@@ -145,7 +145,7 @@ fn posix_normalize(p: &str) -> String {
 }
 
 /// Node's `path.posix.join`.
-fn posix_join(parts: &[&str]) -> String {
+pub(crate) fn posix_join(parts: &[&str]) -> String {
     let joined: Vec<&str> = parts.iter().copied().filter(|p| !p.is_empty()).collect();
     if joined.is_empty() {
         return ".".to_string();
@@ -813,6 +813,23 @@ fn inject_to_head(html: &str, tags: &[&Tag], prepend: bool) -> String {
         }
     }
     prepend_inject_fallback(html, tags)
+}
+
+/// Tags a natively run plugin's `transformIndexHtml` returned, `injectTo:
+/// 'head'`, applied to an already transformed page.
+pub(crate) fn inject_head_tags(
+    html: String,
+    tags: &[(&'static str, Vec<(&'static str, String)>)],
+) -> String {
+    let tags: Vec<Tag> = tags
+        .iter()
+        .map(|(tag, attrs)| Tag {
+            tag,
+            attrs: attrs.clone(),
+            inject_to: InjectTo::Head,
+        })
+        .collect();
+    inject_tags(html, &tags)
 }
 
 /// One hook result's tags, injected as applyHtmlTransforms does (only the

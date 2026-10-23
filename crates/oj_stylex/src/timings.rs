@@ -2,7 +2,6 @@
 //! stage, so re-entrant paths (nested eval, cross-file parse) never double-count.
 
 use std::cell::RefCell;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -69,8 +68,7 @@ static COUNTS: [AtomicU64; STAGE_COUNT] = [const { AtomicU64::new(0) }; STAGE_CO
 
 #[inline]
 pub fn enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("STYLEX_STAGE_TIMINGS").is_ok_and(|v| v == "1"))
+    oj_env::get().knobs.stylex_stage_timings
 }
 
 thread_local! {

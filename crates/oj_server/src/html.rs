@@ -33,6 +33,11 @@ pub(crate) async fn serve_html(
         }
         None => native_dev_html(state, &raw, url, original_url, file).await,
     };
+    // oj's native plugins' tags, after the page's own transform (the
+    // StyleX plugin's hook is an ordinary, unordered one).
+    let base = state.base.as_deref().unwrap_or("/");
+    let transformed = transformed
+        .map(|out| dev_html::inject_head_tags(out, &crate::stylex::html_tags(state, base)));
     match transformed {
         Ok(out) => (
             [(header::CONTENT_TYPE, "text/html; charset=utf-8")],

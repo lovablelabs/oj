@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 oj_stylex.workspace = true
+oj_env.workspace = true
 clap.workspace = true
 mimalloc = "0.1"
 

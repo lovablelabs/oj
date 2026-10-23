@@ -79,6 +79,7 @@ pub mod tls;
 pub use html::*;
 mod ssr;
 mod style_file;
+pub mod stylex;
 pub use ssr::*;
 pub use style_file::{
     compile_style_file, needs_css_compile, needs_preprocess_engine, start_dev_inline_style,
@@ -320,6 +321,8 @@ struct ServerState {
     canon_memo: Mutex<std::collections::HashMap<String, PathBuf>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
     jsx: oj_compiler::JsxConfig,
+    /// The config's `@stylexjs/unplugin`, run natively (see [`stylex`]).
+    stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
     /// The `import.meta.env` / `define` replacements every dev compile applies.
     import_meta_env: Arc<oj_compiler::ImportMetaEnv>,
     host_policy: HostPolicy,
@@ -1653,6 +1656,10 @@ impl DevServer {
             modules: css_modules_options(&config),
             lightning: css_lightning_options(&config),
         };
+        let stylex = stylex::plugin_for(&root, &config, "serve").map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(plugin) = &stylex {
+            stylex::notify_clients(plugin, reload_tx.clone());
+        }
         let state = Arc::new(ServerState {
             persistent_cache,
             config_file: config_file.clone(),
@@ -1707,6 +1714,7 @@ impl DevServer {
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
             jsx_overrides,
             jsx,
+            stylex,
             import_meta_env,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),
             hmr_gate,
@@ -1986,6 +1994,7 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     opts.jsx = state.jsx.clone();
     opts.env = Some(Arc::clone(&state.import_meta_env));
     opts.root = Some(state.root.clone());
+    opts.stylex = state.stylex.clone();
     opts
 }
 

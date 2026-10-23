@@ -70,6 +70,7 @@ mod preprocessors;
 mod query_assets;
 mod redirect_passthrough;
 mod resolve_created_files;
+mod stylex;
 mod svelte;
 mod svgr;
 mod tailwind_js_import;
@@ -138,7 +139,7 @@ impl App {
         }
     }
 
-    /// Symlinks `node_modules/<pkg>` to the start-app fixture's copy.
+    /// Symlinks `node_modules/<pkg>` to the fixtures' copy (see [`fixture`]).
     pub fn link_fixture(&self, pkg: &str) {
         let target = fixture(pkg).unwrap_or_else(|| panic!("fixture {pkg} installed"));
         let link = self.root.join("node_modules").join(pkg);
@@ -165,11 +166,20 @@ impl App {
     }
 }
 
-/// The start-app fixture's installed package, or None when the fixture is
+/// A fixture app's installed package, or None when the fixture is
 /// not installed (CI's first workspace run): callers skip on None.
 pub fn fixture(pkg: &str) -> Option<PathBuf> {
+    // The StyleX packages are an install of their own: their plugin's
+    // `unplugin` peer conflicts with the one TanStack's packages need.
+    let app = if pkg.starts_with("@stylexjs/") {
+        "stylex-app"
+    } else {
+        "start-app"
+    };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../e2e/fixtures/start-app/node_modules")
+        .join("../../e2e/fixtures")
+        .join(app)
+        .join("node_modules")
         .join(pkg);
     path.exists().then(|| path.canonicalize().unwrap())
 }

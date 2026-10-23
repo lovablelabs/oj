@@ -39,6 +39,7 @@ pub fn module(code: &str) -> CachedModule {
         watch_files: vec!["/tailwind.config.ts".into()],
         import_bindings: vec![("/src/dep.js".into(), vec!["a".into()])],
         hot: None,
+        stylex_rules: Vec::new(),
     }
 }
 

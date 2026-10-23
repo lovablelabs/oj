@@ -226,6 +226,7 @@ fn code_module(code: String) -> CachedModule {
         fs_allow: Vec::new(),
         watch_files: Vec::new(),
         import_bindings: Vec::new(),
+        stylex_rules: Vec::new(),
     }
 }
 
@@ -405,6 +406,10 @@ fn compile_key(
     // must miss (Vite invalidates its whole module graph on that reload).
     mode_key.push_str("+deps");
     mode_key.push_str(&state.optimized.browser_version());
+    if let Some(stylex) = &state.stylex {
+        mode_key.push_str("+stylex");
+        mode_key.push_str(stylex.fingerprint());
+    }
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
@@ -743,6 +748,7 @@ impl CompileJob {
             },
             require_map: Vec::new(),
             css_exports: Vec::new(),
+            stylex_rules: output.stylex_rules,
         })
     }
 
@@ -855,6 +861,9 @@ impl ImportRewrite<'_> {
         }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
+        }
+        if crate::stylex::virtual_module(state, spec).is_some() {
+            return Some(format!("/@id/{spec}"));
         }
         // Vite runs plugins' resolveId before its own resolver: a non-bare import
         // a filter claims goes to /@id/, which falls back to disk on decline.
@@ -1061,6 +1070,9 @@ pub(crate) fn fs_allow_from(imports: &[String]) -> Vec<String> {
 }
 
 pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
+    // Every path that hands out a module (compile, memory, disk) lands here,
+    // so the stylesheet always holds the variant being served.
+    crate::stylex::record(state, url, &module.stylex_rules);
     if !module.fs_allow.is_empty() {
         let mut allow = state.fs_allow.lock().unwrap();
         for p in &module.fs_allow {

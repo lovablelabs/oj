@@ -16,5 +16,7 @@ struct Cli {
 }
 
 fn main() {
+    // Snapshot the env before any compile thread starts (oj_env's contract).
+    oj_env::init();
     oj_stylex::cli::run(Cli::parse().command);
 }

@@ -331,17 +331,22 @@ pub(crate) fn ssr_compile_source(
     let mut opts = dev_compile_opts(state);
     opts.refresh = false;
     opts.ssr = true;
-    if runner {
-        return match oj_compiler::ssr::ssr_transform_module_with_map(&compile_path, &source, &opts)
-        {
-            Ok((code, map)) => Ok(with_inline_map(code, map)),
-            Err(e) => Err(SsrModuleError::Failed(format!("{e}"))),
-        };
+    let out = oj_compiler::compile(&compile_path, &source, &opts)
+        .map_err(|e| SsrModuleError::Failed(format!("{e}")))?;
+    // The plugin collects every environment's rules into the one sheet.
+    if !from_plugin {
+        crate::stylex::record(
+            state,
+            &url_of(&state.root, &compile_path),
+            &out.stylex_rules,
+        );
     }
-    match oj_compiler::compile(&compile_path, &source, &opts) {
-        Ok(out) => Ok(with_inline_map(out.code, out.map_json)),
-        Err(e) => Err(SsrModuleError::Failed(format!("{e}"))),
-    }
+    let code = if runner {
+        oj_compiler::ssr::ssr_transform(&out.code, &compile_path)
+    } else {
+        out.code
+    };
+    Ok(with_inline_map(code, out.map_json))
 }
 
 pub(crate) async fn ssr_module(

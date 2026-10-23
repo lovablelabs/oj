@@ -1,3 +1,6 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+
 use lightningcss::targets::{Browsers, Targets};
 
 /// Vite 8's `baseline-widely-available` (the `build.cssTarget` default).
@@ -57,6 +60,41 @@ fn parse_browsers<'a>(list: impl Iterator<Item = &'a str>) -> Option<Browsers> {
     any.then_some(b)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+/// The targets `browserslist()` gives a plugin running in the app: the
+/// `browserslist` config found from `root` (package.json, `.browserslistrc`)
+/// under `env`, else browserslist's `defaults`.
+pub fn browserslist_targets(root: &Path, env: &str) -> Result<Targets, String> {
+    let opts = browserslist::Opts {
+        path: Some(root.to_string_lossy().into_owned()),
+        env: Some(env.to_string()),
+        ..Default::default()
+    };
+    let distribs = browserslist::execute(&opts).map_err(|e| format!("browserslist: {e}"))?;
+    let mut b = Browsers::default();
+    for distrib in distribs {
+        // A range (`ios_saf 16.4-16.5`) counts as its low end.
+        let low = distrib.version().split('-').next().unwrap_or_default();
+        let Some(v) = parse_version(low) else {
+            continue;
+        };
+        let slot = match distrib.name() {
+            "android" => &mut b.android,
+            "chrome" | "and_chr" => &mut b.chrome,
+            "edge" => &mut b.edge,
+            "firefox" | "and_ff" => &mut b.firefox,
+            "ie" => &mut b.ie,
+            "ios_saf" => &mut b.ios_saf,
+            "opera" | "op_mob" => &mut b.opera,
+            "safari" => &mut b.safari,
+            "samsung" => &mut b.samsung,
+            _ => continue,
+        };
+        *slot = Some(slot.map_or(v, |cur| cur.min(v)));
+    }
+    Ok(Targets::from(b))
+}
+
 /// `16.4` as lightningcss' `major << 16 | minor << 8`.
 fn parse_version(version: &str) -> Option<u32> {
     let mut parts = version.split('.').map(|v| v.parse::<u32>().ok());
@@ -69,6 +107,26 @@ fn parse_version(version: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::*;
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stylex_pass_uses_the_apps_browserslist() {
+        let dir = tempfile::tempdir().unwrap();
+        let css = ".a{user-select:none}";
+        // No config: browserslist `defaults`, which still lists Safari.
+        let out = process_for_browserslist("stylex.css", css, dir.path(), "development").unwrap();
+        assert!(out.contains("-webkit-user-select"), "{out}");
+        assert!(out.contains('\n'), "printed unminified: {out}");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"browserslist":{"production":["chrome 120"],"development":["safari 12"]}}"#,
+        )
+        .unwrap();
+        let prod = process_for_browserslist("stylex.css", css, dir.path(), "production").unwrap();
+        assert!(!prod.contains("-webkit-"), "{prod}");
+        let dev = process_for_browserslist("stylex.css", css, dir.path(), "development").unwrap();
+        assert!(dev.contains("-webkit-user-select"), "{dev}");
+    }
 
     #[test]
     fn browser_targets_follow_vite_convert_targets() {

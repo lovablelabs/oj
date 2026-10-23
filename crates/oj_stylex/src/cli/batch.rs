@@ -305,10 +305,8 @@ pub fn run(
 // The cache stores splice-backend results, so `ast` cannot use it: an explicit
 // flag conflict is a usage error; an env-only dir is skipped with a note.
 fn resolve_cache(flag_dir: Option<PathBuf>, verify: bool, backend: Backend) -> Option<CacheCtx> {
-    let env_dir = std::env::var("STYLEX_CACHE_DIR")
-        .ok()
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from);
+    let knobs = &oj_env::get().knobs;
+    let env_dir = knobs.stylex_cache_dir.clone();
     let explicit = flag_dir.is_some();
     let dir = flag_dir.or(env_dir);
     if verify && dir.is_none() {
@@ -319,7 +317,7 @@ fn resolve_cache(flag_dir: Option<PathBuf>, verify: bool, backend: Backend) -> O
     }
     let dir = dir?;
     // The kill-switch wins over everything, --cache-verify included.
-    if std::env::var("STYLEX_CACHE").is_ok_and(|v| v == "0") {
+    if knobs.stylex_cache_off {
         eprintln!("{}", json!({ "note": "cache disabled by STYLEX_CACHE=0" }));
         return None;
     }

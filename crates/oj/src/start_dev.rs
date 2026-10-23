@@ -328,6 +328,8 @@ pub async fn start_dev(
             cache: cache.clone(),
             command: crate::start_bundle::Command::Serve,
             mode: mode.clone(),
+            stylex: oj_server::stylex::plugin_for(&root, &inputs.config, "serve")
+                .map_err(|e| anyhow::anyhow!(e))?,
             config: inputs.config,
             app_env: inputs.app_env,
         };
@@ -1924,6 +1926,8 @@ pub async fn start_build(
         cache: cache.clone(),
         command: crate::start_bundle::Command::Build,
         mode: mode.to_string(),
+        stylex: oj_server::stylex::plugin_for(&root, &config, "build")
+            .map_err(|e| anyhow::anyhow!(e))?,
         config,
         app_env,
     };
@@ -2191,7 +2195,16 @@ fn bundle_client_entry_cached(
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
-    match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
+    // A restored bundle never ran the StyleX transform, so the dev stylesheet
+    // would lack every client module's rules: such apps always bundle.
+    let restored = if bundler.runs_stylex() {
+        Err("the app runs StyleX".to_string())
+    } else {
+        store
+            .restore(cache, |scopes| restorable_glob_members(scopes, cache))
+            .map_err(|miss| miss.to_string())
+    };
+    match restored {
         Ok((stats, pinned)) => {
             let rehashed = match stats.rehashed {
                 0 => String::new(),

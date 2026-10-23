@@ -10,6 +10,7 @@ pub mod imports;
 pub mod jsrt;
 pub mod module_resolution;
 pub mod options;
+pub mod plugin;
 pub mod rules;
 pub mod scopes;
 pub mod state;

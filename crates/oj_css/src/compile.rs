@@ -209,6 +209,33 @@ pub(crate) fn compile_css_depth(
     Ok(CssOutput { css, exports })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+/// `@stylexjs/unplugin`'s pass over its assembled sheet: lightningcss for the
+/// app's browserslist targets (see [`crate::browserslist_targets`]), printed
+/// unminified, as its `transform({ targets, code })` call does.
+pub fn process_for_browserslist(
+    filename: &str,
+    source: &str,
+    root: &std::path::Path,
+    env: &str,
+) -> Result<String, String> {
+    let targets = crate::targets::browserslist_targets(root, env)?;
+    let mut stylesheet = parse_stylesheet(source, filename, None, ParserFlags::empty())?;
+    stylesheet
+        .minify(MinifyOptions {
+            targets,
+            ..MinifyOptions::default()
+        })
+        .map_err(|err| format!("css error in {filename}: {err}"))?;
+    let result = stylesheet
+        .to_css(PrinterOptions {
+            targets,
+            ..PrinterOptions::default()
+        })
+        .map_err(|err| format!("css print error in {filename}: {err}"))?;
+    Ok(result.code)
+}
+
 /// Vite's build `minifyCSS` (lightningcss, the default `build.cssMinify`):
 /// a finished sheet minified for `build.cssTarget` under `css.lightningcss`,
 /// nothing else rewritten.

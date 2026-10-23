@@ -179,13 +179,8 @@ pub fn run(
     // --cache-dir wins; STYLEX_CACHE_DIR is the fallback; STYLEX_CACHE=0 kills.
     let cache_dir = cache_dir
         .map(Path::to_path_buf)
-        .or_else(|| {
-            std::env::var("STYLEX_CACHE_DIR")
-                .ok()
-                .filter(|d| !d.is_empty())
-                .map(PathBuf::from)
-        })
-        .filter(|_| !std::env::var("STYLEX_CACHE").is_ok_and(|v| v == "0"));
+        .or_else(|| oj_env::get().knobs.stylex_cache_dir.clone())
+        .filter(|_| !oj_env::get().knobs.stylex_cache_off);
     let cache = cache_dir.map(|dir| match crate::cache::CacheStore::new(&dir) {
         Ok(store) => store,
         Err(err) => usage_error(format!("cannot open cache dir {}: {err}", dir.display())),

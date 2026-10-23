@@ -1,0 +1,459 @@
+//! `@stylexjs/unplugin`'s Vite plugin over the native compiler: its option
+//! split, its transform gate, its per-module rule store and stylesheet, and its
+//! dev endpoints. oj claims the plugin by name and runs this in its place.
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use oxc_allocator::Allocator;
+use oxc_ast::ast::Program;
+use serde_json::{Map, Value, json};
+
+use crate::api::{FileContext, MapMode, transform_program, transform_source_in_with_map};
+use crate::assemble::{AssembleConfig, RuleRegistry};
+use crate::module_resolution::MemoFs;
+use crate::options::{CompilerOptions, ResolvedOptions};
+use crate::rules::StylexRule;
+
+pub const PLUGIN_NAME: &str = "@stylexjs/unplugin";
+/// The dev stylesheet, served whole on every request.
+pub const DEV_CSS_PATH: &str = "/virtual:stylex.css";
+/// The `devMode: 'full'` runtime as a plain script.
+pub const DEV_RUNTIME_PATH: &str = "/virtual:stylex.js";
+pub const RUNTIME_ID: &str = "virtual:stylex:runtime";
+pub const CSS_ONLY_ID: &str = "virtual:stylex:css-only";
+/// The HMR event the runtimes refetch the stylesheet on.
+pub const CSS_UPDATE_EVENT: &str = "stylex:css-update";
+
+pub const RUNTIME_JS: &str = include_str!("assets/runtime.js");
+pub const CSS_ONLY_JS: &str = include_str!("assets/css-only.js");
+pub const DEV_RUNTIME_JS: &str = include_str!("assets/dev-runtime.js");
+
+/// Options the plugin consumes itself; the rest go to the compiler.
+const PLUGIN_KEYS: &[&str] = &[
+    "dev",
+    "unstable_moduleResolution",
+    "babelConfig",
+    "importSources",
+    "useCSSLayers",
+    "lightningcssOptions",
+    "cssInjectionTarget",
+    "externalPackages",
+    "devPersistToDisk",
+    "devMode",
+    "treeshakeCompensation",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DevMode {
+    /// Inject the stylesheet link and runtime into served HTML.
+    Full,
+    /// Serve the stylesheet; the app imports `virtual:stylex:css-only`.
+    CssOnly,
+    /// No dev endpoints, and no transform under `serve`.
+    Off,
+}
+
+pub struct StylexPlugin {
+    options: ResolvedOptions,
+    assemble: AssembleConfig,
+    dev_mode: DevMode,
+    import_sources: Vec<String>,
+    root: PathBuf,
+    fs: MemoFs,
+    registry: Mutex<RuleRegistry>,
+    fingerprint: String,
+    on_change: Mutex<Option<ChangeListener>>,
+}
+
+/// Called after a recorded module changed the stylesheet.
+pub type ChangeListener = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+impl std::fmt::Debug for StylexPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StylexPlugin")
+            .field("dev_mode", &self.dev_mode)
+            .field("fingerprint", &self.fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One string-level transform: the compiled code and its map, or `None` when
+/// the module has no StyleX to compile.
+pub struct SourceOutput {
+    pub code: String,
+    pub map: Option<String>,
+    pub rules: Vec<StylexRule>,
+}
+
+impl StylexPlugin {
+    /// `user`: the object given to `stylex.vite(...)`. `node_env_dev`: whether
+    /// `NODE_ENV` was `development` when the config loaded, the plugin's `dev`
+    /// default. `live_fs`: re-stat package manifests (dev) instead of freezing
+    /// them for the process (build).
+    pub fn new(
+        user: &Value,
+        root: &Path,
+        node_env_dev: bool,
+        live_fs: bool,
+    ) -> Result<Self, String> {
+        let empty = Map::new();
+        let user = match user {
+            Value::Object(map) => map,
+            Value::Null => &empty,
+            other => {
+                return Err(format!(
+                    "{PLUGIN_NAME} options must be an object, got {other}"
+                ));
+            }
+        };
+        let dev_mode = match user.get("devMode").and_then(Value::as_str) {
+            None | Some("full") => DevMode::Full,
+            Some("css-only") => DevMode::CssOnly,
+            Some("off") => DevMode::Off,
+            Some(other) => return Err(format!("{PLUGIN_NAME}: unknown devMode \"{other}\"")),
+        };
+        let import_sources = user
+            .get("importSources")
+            .cloned()
+            .unwrap_or_else(|| json!(["stylex", "@stylexjs/stylex"]));
+        let mut compiler: Map<String, Value> = user
+            .iter()
+            .filter(|(k, _)| !PLUGIN_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        compiler.insert("importSources".into(), import_sources.clone());
+        compiler.insert(
+            "treeshakeCompensation".into(),
+            user.get("treeshakeCompensation")
+                .cloned()
+                .unwrap_or(Value::Bool(true)),
+        );
+        compiler.insert(
+            "dev".into(),
+            user.get("dev")
+                .cloned()
+                .unwrap_or(Value::Bool(node_env_dev)),
+        );
+        compiler.insert(
+            "unstable_moduleResolution".into(),
+            user.get("unstable_moduleResolution")
+                .cloned()
+                .unwrap_or_else(
+                    || json!({ "type": "commonJS", "rootDir": root.to_string_lossy() }),
+                ),
+        );
+        let compiler = Value::Object(compiler);
+        let options = CompilerOptions::from_json(&compiler)
+            .and_then(|o| o.resolve())
+            .map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;
+        let mut sheet = Map::new();
+        sheet.insert(
+            "useLayers".into(),
+            user.get("useCSSLayers")
+                .cloned()
+                .unwrap_or(Value::Bool(false)),
+        );
+        if let Some(v) = user.get("enableLTRRTLComments") {
+            sheet.insert("enableLTRRTLComments".into(), v.clone());
+        }
+        let assemble = AssembleConfig::from_json(&Value::Object(sheet))
+            .map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;
+        let fingerprint = blake3::hash(
+            format!(
+                "{}:{}:{compiler}",
+                crate::cache::compiler_fingerprint(),
+                options.cache_repr
+            )
+            .as_bytes(),
+        )
+        .to_hex()[..16]
+            .to_string();
+        Ok(Self {
+            import_sources: source_names(&import_sources),
+            options,
+            assemble,
+            dev_mode,
+            root: root.to_path_buf(),
+            fs: if live_fs {
+                MemoFs::live()
+            } else {
+                MemoFs::snapshot()
+            },
+            registry: Mutex::new(RuleRegistry::new()),
+            fingerprint,
+            on_change: Mutex::new(None),
+        })
+    }
+
+    pub fn dev_mode(&self) -> DevMode {
+        self.dev_mode
+    }
+
+    /// The plugin's `load` for its virtual runtimes in the current dev mode
+    /// (matched as it matches them, by `includes`).
+    pub fn virtual_module(&self, id: &str) -> Option<&'static str> {
+        match self.dev_mode {
+            DevMode::Full if id.contains(RUNTIME_ID) => Some(RUNTIME_JS),
+            DevMode::CssOnly if id.contains(CSS_ONLY_ID) => Some(CSS_ONLY_JS),
+            _ => None,
+        }
+    }
+
+    /// Changes whenever compiled output could: the compiler and its options.
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    /// The plugin's `transformInclude` and `shouldHandle`: a JS-like id whose
+    /// code imports one of the import sources.
+    pub fn handles(&self, id: &str, code: &str) -> bool {
+        is_js_like(id) && self.import_sources.iter().any(|s| imports_source(code, s))
+    }
+
+    /// Compiles `program` (the parse of `source`) in place; the module's rules.
+    pub fn transform_program<'a>(
+        &self,
+        allocator: &'a Allocator,
+        program: &mut Program<'a>,
+        file: &Path,
+        source: &str,
+    ) -> Result<Vec<StylexRule>, String> {
+        let ctx = self.context(file, source);
+        transform_program(allocator, program, &ctx, &self.options, &self.fs)
+            .map(|out| out.rules)
+            .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
+    }
+
+    /// The string-level transform bundlers run.
+    pub fn transform_source(
+        &self,
+        file: &Path,
+        source: &str,
+    ) -> Result<Option<SourceOutput>, String> {
+        let ctx = self.context(file, source);
+        let allocator = Allocator::default();
+        let out = transform_source_in_with_map(
+            &allocator,
+            &ctx,
+            &self.options,
+            &self.fs,
+            MapMode::WithContent,
+        )
+        .map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;
+        Ok(out.filter(|o| o.modified).map(|o| SourceOutput {
+            code: o.code,
+            map: o.map,
+            rules: o.rules,
+        }))
+    }
+
+    /// Records a module's rules (none removes it); whether the sheet changed.
+    pub fn set_module_rules(&self, id: &str, rules: Vec<StylexRule>) -> bool {
+        let changed = {
+            let mut registry = self.registry.lock().unwrap();
+            let before = registry.generation();
+            if rules.is_empty() {
+                registry.remove_file(id);
+            } else {
+                registry.set_file_rules(id, rules);
+            }
+            registry.generation() != before
+        };
+        if changed {
+            let listener = self.on_change.lock().unwrap().clone();
+            if let Some(listener) = listener {
+                listener();
+            }
+        }
+        changed
+    }
+
+    /// Replaces the listener told about every stylesheet change.
+    pub fn set_change_listener(&self, listener: ChangeListener) {
+        *self.on_change.lock().unwrap() = Some(listener);
+    }
+
+    /// `processStylexRules` over every recorded module, or `None` with none.
+    pub fn stylesheet(&self) -> Result<Option<String>, String> {
+        let mut registry = self.registry.lock().unwrap();
+        if registry.file_count() == 0 {
+            return Ok(None);
+        }
+        registry
+            .emit(&self.assemble)
+            .map(Some)
+            .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
+    }
+
+    fn context<'s>(&'s self, file: &'s Path, source: &'s str) -> FileContext<'s> {
+        FileContext {
+            filename: file,
+            source_text: source,
+            cwd: &self.root,
+        }
+    }
+}
+
+/// `importSources` entries as module names (`{ from, as }` keeps `from`).
+fn source_names(sources: &Value) -> Vec<String> {
+    sources
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| match s {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(o) => o.get("from").and_then(Value::as_str).map(str::to_string),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `/\.[cm]?[jt]sx?(\?|$)/`.
+fn is_js_like(id: &str) -> bool {
+    let path = id.split('?').next().unwrap_or(id);
+    let Some((_, ext)) = path.rsplit_once('.') else {
+        return false;
+    };
+    let ext = ext.strip_prefix(['c', 'm']).unwrap_or(ext);
+    matches!(ext, "js" | "jsx" | "ts" | "tsx")
+}
+
+/// The plugin's `containsStylexImport`: `from 's'`, `import('s')`,
+/// `require('s')`, or a line-leading `import 's'`, either quote.
+fn imports_source(code: &str, source: &str) -> bool {
+    for quote in ['\'', '"'] {
+        let needle = format!("{quote}{source}{quote}");
+        let mut at = 0;
+        while let Some(found) = code[at..].find(&needle) {
+            let start = at + found;
+            at = start + needle.len();
+            let before = code[..start].trim_end_matches([' ', '\t', '\n', '\r']);
+            if before.ends_with("from") {
+                return true;
+            }
+            if let Some(call) = before.strip_suffix('(') {
+                let call = call.trim_end_matches([' ', '\t', '\n', '\r']);
+                if call.ends_with("import") || call.ends_with("require") {
+                    return true;
+                }
+            }
+            if let Some(stmt) = before.strip_suffix("import") {
+                let line = stmt.rsplit('\n').next().unwrap_or(stmt);
+                if line.trim().is_empty() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SRC: &str = "import * as stylex from '@stylexjs/stylex';\n\
+                       export const styles = stylex.create({ root: { color: 'red' } });\n";
+
+    fn plugin(user: Value) -> StylexPlugin {
+        StylexPlugin::new(&user, Path::new("/app"), false, false).unwrap()
+    }
+
+    #[test]
+    fn gate_is_the_plugins_include_and_import_scan() {
+        let p = plugin(json!({}));
+        assert!(p.handles("/app/src/a.tsx", SRC));
+        assert!(p.handles("/app/src/a.mts?v=1", SRC));
+        assert!(!p.handles("/app/src/a.css", SRC));
+        assert!(p.handles("/a.js", "const s = await import ( \"stylex\" );"));
+        assert!(p.handles("/a.js", "const s = require('stylex');"));
+        assert!(p.handles("/a.js", "  import '@stylexjs/stylex';"));
+        assert!(!p.handles("/a.js", "const s = '@stylexjs/stylex';"));
+        assert!(!p.handles("/a.js", "<div sx={x} />"));
+        let custom = plugin(json!({ "importSources": [{ "from": "my-sx", "as": "css" }] }));
+        assert!(custom.handles("/a.ts", "import { css } from 'my-sx';"));
+        assert!(!custom.handles("/a.ts", SRC));
+    }
+
+    #[test]
+    fn options_split_between_plugin_and_compiler() {
+        // Plugin-only keys never reach the compiler (which rejects unknown keys).
+        let p = plugin(json!({
+            "devMode": "css-only",
+            "useCSSLayers": true,
+            "externalPackages": ["x"],
+            "lightningcssOptions": {},
+            "classNamePrefix": "q",
+        }));
+        assert_eq!(p.dev_mode(), DevMode::CssOnly);
+        let out = p
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap();
+        assert!(out.code.contains("\"q"), "{}", out.code);
+        assert!(p.set_module_rules("/app/src/a.ts", out.rules));
+        assert!(
+            p.stylesheet()
+                .unwrap()
+                .unwrap()
+                .contains("@layer priority1{")
+        );
+        assert!(
+            StylexPlugin::new(&json!({ "devMode": "x" }), Path::new("/app"), false, false).is_err()
+        );
+    }
+
+    #[test]
+    fn dev_follows_node_env_unless_set() {
+        let dev = StylexPlugin::new(&json!({}), Path::new("/app"), true, false).unwrap();
+        let out = dev
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap();
+        assert!(out.code.contains("a__styles.root"), "{}", out.code);
+        let prod =
+            StylexPlugin::new(&json!({ "dev": false }), Path::new("/app"), true, false).unwrap();
+        let out = prod
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap();
+        assert!(!out.code.contains("a__styles.root"), "{}", out.code);
+    }
+
+    #[test]
+    fn registry_tracks_modules_and_reports_changes() {
+        let p = plugin(json!({}));
+        assert_eq!(p.stylesheet().unwrap(), None);
+        let rules = p
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap()
+            .rules;
+        assert!(p.set_module_rules("/app/src/a.ts", rules.clone()));
+        assert!(
+            !p.set_module_rules("/app/src/a.ts", rules),
+            "same rules, no change"
+        );
+        assert_eq!(p.stylesheet().unwrap().unwrap(), ".x1e2nbdu{color:red}");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&calls);
+        p.set_change_listener(std::sync::Arc::new(move || {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        assert!(p.set_module_rules("/app/src/a.ts", Vec::new()));
+        assert!(!p.set_module_rules("/app/src/a.ts", Vec::new()));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only a change notifies"
+        );
+        assert_eq!(p.stylesheet().unwrap(), None);
+        // A module with no StyleX compiles to nothing.
+        assert!(
+            p.transform_source(Path::new("/app/src/b.ts"), "export const x = 1;\n")
+                .unwrap()
+                .is_none()
+        );
+    }
+}

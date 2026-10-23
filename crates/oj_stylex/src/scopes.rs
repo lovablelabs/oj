@@ -1,8 +1,7 @@
-//! fru-native binding analysis (`FRU_NATIVE_SCOPES=1`): CompileState's queries from one Visit walk.
+//! Native binding analysis (`OJ_STYLEX_NATIVE_SCOPE=1`): CompileState's queries from one Visit walk.
 // parity: oxc_semantic 0.154 SemanticBuilder + Binder (declaration, hoisting, flags, resolution).
 
 use std::cell::Cell;
-use std::sync::OnceLock;
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::*;
@@ -29,12 +28,9 @@ pub enum ScopeBackend {
 }
 
 impl ScopeBackend {
-    /// `FRU_NATIVE_SCOPES=1` selects the native walk; anything else keeps oxc.
+    /// `OJ_STYLEX_NATIVE_SCOPE=1` selects the native walk; anything else keeps oxc.
     pub fn from_env() -> Self {
-        static NATIVE: OnceLock<bool> = OnceLock::new();
-        let native =
-            *NATIVE.get_or_init(|| std::env::var("FRU_NATIVE_SCOPES").is_ok_and(|v| v == "1"));
-        if native {
+        if oj_env::get().knobs.stylex_native_scope {
             ScopeBackend::Native
         } else {
             ScopeBackend::Oxc
@@ -2088,7 +2084,7 @@ function f() { return stylex.props(s.a); }";
     #[test]
     fn native_matches_oxc_on_corpora() {
         let mut sources = crate::transform::visitor::tests::corpus_sources();
-        if let Ok(paths) = std::env::var("FRU_SCOPES_CORPUS") {
+        if let Ok(paths) = std::env::var("OJ_STYLEX_SCOPES_CORPUS") {
             for path in paths.split(':').filter(|p| !p.is_empty()) {
                 let text = std::fs::read_to_string(path).expect("corpus ndjson");
                 for line in text.lines() {

@@ -7,7 +7,8 @@ repository.workspace = true
 description = "CSS pipeline: Lightning CSS transforms, CSS Modules scoping"
 
 [dependencies]
-lightningcss = "1.0.0-alpha.72"
+lightningcss = { version = "1.0.0-alpha.72", features = ["browserslist"] }
+browserslist-rs = "0.19"
 grass = "0.13.4"
 serde_json.workspace = true
 base64.workspace = true

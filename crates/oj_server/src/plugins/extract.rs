@@ -58,6 +58,8 @@ pub struct ViteValues {
     /// The config's plugins the plugin host would run (none of oj's native
     /// set); an over-count. None when extraction could not read the list.
     pub active_plugins: Option<usize>,
+    /// The config's `@stylexjs/unplugin` (`{ options }`), which oj runs natively.
+    pub stylex: Option<serde_json::Value>,
 }
 
 /// The oj executable one-shot engine jobs run in, set once by the binary's main.
@@ -689,6 +691,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             .get("activePlugins")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize),
+        stylex: non_null(json, "stylex"),
     }
 }
 
@@ -746,6 +749,7 @@ fn no_values_verdict(root: &Path, config_file: Option<&Path>) -> Result<(), Stri
 /// Fills every field oj's own config left unset from the vite.config values.
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     config.vite_active_plugins = v.active_plugins;
+    config.vite_stylex = v.stylex;
     if config.base.is_none() {
         config.base = v.base;
     }

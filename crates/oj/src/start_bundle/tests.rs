@@ -643,3 +643,47 @@ async fn a_factory_reexported_by_app_modules_compiles() {
     assert!(client.contains("client-side"), "{client}");
     assert!(!client.contains("server-side"), "{client}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stylex_compiles_app_modules_and_loads_its_runtime() {
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "import * as stylex from \"@stylexjs/stylex\";\n\
+             import \"virtual:stylex:runtime\";\n\
+             const styles = stylex.create({ a: { color: \"olive\" } });\n\
+             export const c = stylex.props(styles.a).className;\n",
+        ),
+        (
+            "node_modules/@stylexjs/stylex/package.json",
+            r#"{"name":"@stylexjs/stylex","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@stylexjs/stylex/index.js",
+            "export const create = () => { throw new Error(\"uncompiled\"); };\n",
+        ),
+    ]);
+    let plugin = std::sync::Arc::new(
+        oj_stylex::plugin::StylexPlugin::new(&serde_json::json!({}), &app.dir, false, false)
+            .unwrap(),
+    );
+    let code = bundle(
+        &app,
+        "src/entry.ts",
+        vec![crate::stylex_plugin::transform(&plugin)],
+    )
+    .await
+    .unwrap();
+    assert!(
+        !code.contains("uncompiled"),
+        "stylex.create compiled away:\n{code}"
+    );
+    assert!(
+        code.contains("__stylex_virtual__"),
+        "the runtime module loaded:\n{code}"
+    );
+    let sheet = plugin.stylesheet().unwrap().expect("the module's rules");
+    assert!(sheet.contains("color:olive"), "{sheet}");
+    let class = sheet.trim_start_matches('.').split('{').next().unwrap();
+    assert!(code.contains(class), "the bundle uses {class}:\n{code}");
+}

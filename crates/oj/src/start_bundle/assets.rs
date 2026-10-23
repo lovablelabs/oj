@@ -426,6 +426,17 @@ impl Emitter {
         result
     }
 
+    /// A stylesheet oj generated (no source file), written as `name` names it
+    /// and linked from every page like the client's own stylesheets.
+    pub fn generated_css(&self, name: &str, css: &str) -> Result<String, String> {
+        let url = self.write(Path::new(name), css.as_bytes())?;
+        let mut urls = self.css_urls.lock().unwrap();
+        if !urls.contains(&url) {
+            urls.push(url.clone());
+        }
+        Ok(url)
+    }
+
     /// A `?inline` sheet's text: compiled and its `url()`s emitted as `css`
     /// does, but returned, minified under the importing environment's
     /// cssMinify with no trailing newline.
