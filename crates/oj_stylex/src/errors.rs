@@ -198,9 +198,7 @@ impl StylexError {
     pub fn unknown_option(key: &str) -> Self {
         Self::new(
             ErrorCode::UnknownOption,
-            format!(
-                "Unknown option `{key}`: not a recognized @stylexjs/babel-plugin option. See crates/stylex/docs."
-            ),
+            format!("Unknown option `{key}`: not a recognized @stylexjs/babel-plugin option."),
         )
     }
 

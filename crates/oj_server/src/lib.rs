@@ -323,6 +323,8 @@ struct ServerState {
     jsx: oj_compiler::JsxConfig,
     /// The config's `@stylexjs/unplugin`, run natively (see [`stylex`]).
     stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
+    /// The last processed dev stylesheet and what it was built from.
+    stylex_css: Mutex<Option<(stylex::SheetStamp, String)>>,
     /// The `import.meta.env` / `define` replacements every dev compile applies.
     import_meta_env: Arc<oj_compiler::ImportMetaEnv>,
     host_policy: HostPolicy,
@@ -1715,6 +1717,7 @@ impl DevServer {
             jsx_overrides,
             jsx,
             stylex,
+            stylex_css: Mutex::new(None),
             import_meta_env,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),
             hmr_gate,

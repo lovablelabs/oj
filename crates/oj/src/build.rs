@@ -4217,6 +4217,12 @@ pub(crate) async fn build_ssr(
             emitted.push((c.filename.to_string(), c.code.len()));
         }
     }
+    // An SSR build emits no stylesheet, so the StyleX plugin's sheet takes
+    // its writeBundle fallback there too.
+    if let Some(plugin) = &stylex {
+        let sheet = crate::stylex_plugin::stylesheet(plugin, root)?;
+        write_stylex_fallback(out_dir, sheet, &mut emitted)?;
+    }
     println!(
         "oj build (ssr): {} in {:?}",
         out_dir.display(),
@@ -5465,6 +5471,29 @@ fn emit_split_css_files(
     }
     let mut seen_assets: std::collections::HashMap<PathBuf, String> =
         std::collections::HashMap::new();
+    // The StyleX sheet joins the first entry chunk's stylesheet (where the
+    // plugin's lands under Vite, whose entry CSS is emitted first), else the
+    // first stylesheet: never a lazy chunk's when an entry has one.
+    let chunks_with_css: Vec<&rolldown_common::OutputChunk> = output
+        .assets
+        .iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c)
+                if c.modules
+                    .keys
+                    .iter()
+                    .any(|m| css_map.contains_key(m.as_str())) =>
+            {
+                Some(c.as_ref())
+            }
+            _ => None,
+        })
+        .collect();
+    let stylex_chunk = chunks_with_css
+        .iter()
+        .find(|c| c.is_entry)
+        .or(chunks_with_css.first())
+        .map(|c| c.filename.to_string());
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
             continue;
@@ -5496,7 +5525,11 @@ fn emit_split_css_files(
         if css.is_empty() {
             continue;
         }
-        let css = append_stylex(css, stylex_css.take());
+        let css = if stylex_chunk.as_deref() == Some(chunk.filename.as_str()) {
+            append_stylex(css, stylex_css.take())
+        } else {
+            css
+        };
         let hash = content_hash(css.as_bytes());
         let css_name = render_asset_name(
             opts.asset_names,

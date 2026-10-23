@@ -2195,16 +2195,16 @@ fn bundle_client_entry_cached(
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = start_bundle_store(root, mode);
-    // A restored bundle never ran the StyleX transform, so the dev stylesheet
-    // would lack every client module's rules: such apps always bundle.
-    let restored = if bundler.runs_stylex() {
-        Err("the app runs StyleX".to_string())
-    } else {
-        store
-            .restore(cache, |scopes| restorable_glob_members(scopes, cache))
-            .map_err(|miss| miss.to_string())
-    };
-    match restored {
+    let stylex = bundler.stylex();
+    match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
+        // A restored bundle never ran the StyleX transform: its modules'
+        // rules come from the sidecar saved with it, or it is rebuilt.
+        Ok((stats, _))
+            if stylex
+                .is_some_and(|p| !crate::stylex_plugin::restore_rules(p, cache, &stats.key)) =>
+        {
+            println!("  oj start: client bundle cache miss (no StyleX rules saved for it)")
+        }
         Ok((stats, pinned)) => {
             let rehashed = match stats.rehashed {
                 0 => String::new(),
@@ -2223,6 +2223,9 @@ fn bundle_client_entry_cached(
     }
     bundler.bundle(&[], false)?;
     if let Some((key, pinned)) = store.persist(cache) {
+        if let Some(plugin) = stylex {
+            crate::stylex_plugin::save_rules(plugin, cache, &key);
+        }
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
             key.get(..8).unwrap_or(&key),

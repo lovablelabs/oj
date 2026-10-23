@@ -117,7 +117,19 @@ pub(crate) async fn ensure_module_as(
     }
 
     let transform_id = transform_id.map_or_else(|| hook_id(file, url), str::to_string);
-    let transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
+    let pre_stylex = if state.plugins_have_transform {
+        crate::stylex::pre_transform(state, &transform_id, &source)?
+    } else {
+        None
+    };
+    let (source, stylex_map, stylex_rules) = match pre_stylex {
+        Some(pre) => (pre.code, pre.map, Some(pre.rules)),
+        None => (source, None, None),
+    };
+    let mut transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
+    if let Some(map) = stylex_map {
+        transformed.maps.insert(0, map);
+    }
     let source = if is_preprocessor(url) {
         preprocess_less_stylus(state, url, transformed.code).await?
     } else {
@@ -176,12 +188,16 @@ pub(crate) async fn ensure_module_as(
         css,
         plugin_maps: transformed.maps,
         dep_map,
+        stylex_done: stylex_rules.is_some(),
     };
     let compiled = tokio::task::spawn_blocking(move || job.run()).await;
 
     let module = match compiled {
         Ok(Ok(mut module)) => {
             module.watch_files = transformed.watch_files;
+            if let Some(rules) = stylex_rules {
+                module.stylex_rules = rules;
+            }
             Arc::new(module)
         }
         Ok(Err(err)) => {
@@ -648,6 +664,8 @@ struct CompileJob {
     css: CssState,
     plugin_maps: Vec<String>,
     dep_map: Arc<optimize::DepMap>,
+    /// StyleX already compiled the source, ahead of the app's plugins.
+    stylex_done: bool,
 }
 
 impl CompileJob {
@@ -768,7 +786,7 @@ impl CompileJob {
                 dep_src,
                 &mut |spec: &str| rw.rewrite(spec, &self.state.require_resolver),
                 Some(Arc::clone(&self.state.import_meta_env)),
-                self.state.stylex.as_ref(),
+                self.state.stylex.as_ref().filter(|_| !self.stylex_done),
             );
         }
         // Gated on a cheap bare-import scan: the interop rewrite (a full
@@ -794,7 +812,7 @@ impl CompileJob {
             dep_src,
             &mut |spec: &str| rw.rewrite(spec, &self.state.resolver),
             Some(Arc::clone(&self.state.import_meta_env)),
-            self.state.stylex.as_ref(),
+            self.state.stylex.as_ref().filter(|_| !self.stylex_done),
         )
     }
 
@@ -815,6 +833,9 @@ impl CompileJob {
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
+        if self.stylex_done {
+            opts.stylex = None;
+        }
         oj_compiler::compile_module_with_maps(
             &self.file,
             interopped.as_deref().unwrap_or(&self.source),

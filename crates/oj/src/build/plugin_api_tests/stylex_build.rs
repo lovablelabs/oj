@@ -214,3 +214,72 @@ async fn a_library_without_a_stylesheet_gets_the_fallback_file() {
         .expect("assets/stylex.css written");
     assert!(sheet.contains("color: olive"), "{sheet}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sheet_joins_the_entrys_stylesheet_not_a_lazy_ones() {
+    let Some(root) = app(
+        "stylex-split",
+        &[
+            (
+                "src/main.ts",
+                &format!("import \"./app.css\";\nimport(\"./lazy\");\n{MAIN}"),
+            ),
+            ("src/app.css", ".from-entry { margin: 0 }\n"),
+            (
+                "src/lazy.ts",
+                "import \"./lazy.css\";\nexport const lazy = 1;\n",
+            ),
+            ("src/lazy.css", ".from-lazy { padding: 0 }\n"),
+        ],
+    ) else {
+        return;
+    };
+    build_app(&root).await.expect("the StyleX app builds");
+    let files = files_under(&root.join("dist"));
+    let sheets: Vec<&String> = files
+        .iter()
+        .filter(|(p, _)| p.ends_with(".css"))
+        .map(|(_, c)| c)
+        .collect();
+    assert_eq!(sheets.len(), 2, "{sheets:?}");
+    let with_stylex: Vec<&&String> = sheets
+        .iter()
+        .filter(|c| c.contains("color: olive"))
+        .collect();
+    assert_eq!(with_stylex.len(), 1, "{sheets:?}");
+    assert!(
+        with_stylex[0].contains("from-entry"),
+        "the entry's sheet: {sheets:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ssr_build_compiles_and_writes_the_fallback_sheet() {
+    let Some(root) = app(
+        "stylex-ssr",
+        &[(
+            "src/entry-server.ts",
+            "import * as stylex from \"@stylexjs/stylex\";\n\
+             const styles = stylex.create({ title: { color: \"olive\" } });\n\
+             export const render = () => `<h1 class=\"${stylex.props(styles.title).className}\">x</h1>`;\n",
+        )],
+    ) else {
+        return;
+    };
+    let cli = super::CliOptions {
+        ssr: Some("src/entry-server.ts".into()),
+        ..Default::default()
+    };
+    super::build(root.clone(), None, cli)
+        .await
+        .expect("the StyleX SSR build");
+    let js: String = files_under(&root.join("dist"))
+        .into_iter()
+        .filter(|(p, _)| p.ends_with(".js") || p.ends_with(".mjs"))
+        .map(|(_, c)| c)
+        .collect();
+    assert!(!js.contains("stylex.create"), "compiled: {js}");
+    let sheet =
+        std::fs::read_to_string(root.join("dist/assets/stylex.css")).expect("the fallback sheet");
+    assert!(sheet.contains("color: olive"), "{sheet}");
+}

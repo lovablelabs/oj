@@ -286,7 +286,19 @@ pub(crate) async fn ssr_transform_source(
     from_plugin: bool,
     runner: bool,
 ) -> Result<String, SsrModuleError> {
-    let source = match ssr_plugin_host(state).await {
+    let host = ssr_plugin_host(state).await;
+    // StyleX ahead of the app's transforms, as the client path runs it.
+    let pre_stylex = match &host {
+        Some(host) if host.hook_wants_transform(id, &source) => {
+            crate::stylex::pre_transform(state, id, &source).map_err(SsrModuleError::Failed)?
+        }
+        _ => None,
+    };
+    let (source, stylex_rules) = match pre_stylex {
+        Some(pre) => (pre.code, Some(pre.rules)),
+        None => (source, None),
+    };
+    let source = match host {
         // Same filter gate as the client path: an unclaimed module skips the
         // isolate RPC and the import pre-resolution that only feeds it.
         Some(host) if host.hook_wants_transform(id, &source) => {
@@ -309,7 +321,7 @@ pub(crate) async fn ssr_transform_source(
         }
         None => source,
     };
-    ssr_compile_source(state, id, source, from_plugin, runner)
+    compile_ssr(state, id, source, from_plugin, runner, stylex_rules)
 }
 
 /// The dev-ssr compile alone (no plugin transforms): TS/JSX strip, define,
@@ -321,6 +333,19 @@ pub(crate) fn ssr_compile_source(
     from_plugin: bool,
     runner: bool,
 ) -> Result<String, SsrModuleError> {
+    compile_ssr(state, id, source, from_plugin, runner, None)
+}
+
+/// [`ssr_compile_source`]; `stylex_rules` when StyleX already compiled the
+/// source (ahead of the app's plugins), which the compile then skips.
+fn compile_ssr(
+    state: &Arc<ServerState>,
+    id: &str,
+    source: String,
+    from_plugin: bool,
+    runner: bool,
+    stylex_rules: Option<Vec<oj_stylex::rules::StylexRule>>,
+) -> Result<String, SsrModuleError> {
     let compile_path: PathBuf = if from_plugin {
         PathBuf::from("virtual.tsx")
     } else {
@@ -331,16 +356,18 @@ pub(crate) fn ssr_compile_source(
     let mut opts = dev_compile_opts(state);
     opts.refresh = false;
     opts.ssr = true;
+    if stylex_rules.is_some() {
+        opts.stylex = None;
+    }
     let out = oj_compiler::compile(&compile_path, &source, &opts)
         .map_err(|e| SsrModuleError::Failed(format!("{e}")))?;
-    // The plugin collects every environment's rules into the one sheet.
-    if !from_plugin {
-        crate::stylex::record(
-            state,
-            &url_of(&state.root, &compile_path),
-            &out.stylex_rules,
-        );
-    }
+    // The plugin collects every environment's rules into the one sheet, by
+    // module id: the file's path, or what a plugin `load`ed it as.
+    crate::stylex::record_id(
+        state,
+        id,
+        stylex_rules.as_deref().unwrap_or(&out.stylex_rules),
+    );
     let code = if runner {
         oj_compiler::ssr::ssr_transform(&out.code, &compile_path)
     } else {

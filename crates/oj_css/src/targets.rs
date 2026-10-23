@@ -95,6 +95,34 @@ pub fn browserslist_targets(root: &Path, env: &str) -> Result<Targets, String> {
     Ok(Targets::from(b))
 }
 
+/// A lightningcss `targets` object (`{ chrome: 95 << 16, ... }`), the shape
+/// its JS API takes; unknown browsers and non-numbers are skipped.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn browsers_from_json(targets: &serde_json::Value) -> Option<Browsers> {
+    let mut b = Browsers::default();
+    let mut any = false;
+    for (name, version) in targets.as_object()? {
+        let Some(v) = version.as_u64().and_then(|v| u32::try_from(v).ok()) else {
+            continue;
+        };
+        let slot = match name.as_str() {
+            "android" => &mut b.android,
+            "chrome" => &mut b.chrome,
+            "edge" => &mut b.edge,
+            "firefox" => &mut b.firefox,
+            "ie" => &mut b.ie,
+            "ios_saf" => &mut b.ios_saf,
+            "opera" => &mut b.opera,
+            "safari" => &mut b.safari,
+            "samsung" => &mut b.samsung,
+            _ => continue,
+        };
+        *slot = Some(v);
+        any = true;
+    }
+    any.then_some(b)
+}
+
 /// `16.4` as lightningcss' `major << 16 | minor << 8`.
 fn parse_version(version: &str) -> Option<u32> {
     let mut parts = version.split('.').map(|v| v.parse::<u32>().ok());
@@ -114,7 +142,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let css = ".a{user-select:none}";
         // No config: browserslist `defaults`, which still lists Safari.
-        let out = process_for_browserslist("stylex.css", css, dir.path(), "development").unwrap();
+        let none = serde_json::Value::Null;
+        let out =
+            process_for_browserslist("stylex.css", css, dir.path(), "development", &none).unwrap();
         assert!(out.contains("-webkit-user-select"), "{out}");
         assert!(out.contains('\n'), "printed unminified: {out}");
         std::fs::write(
@@ -122,10 +152,18 @@ mod tests {
             r#"{"browserslist":{"production":["chrome 120"],"development":["safari 12"]}}"#,
         )
         .unwrap();
-        let prod = process_for_browserslist("stylex.css", css, dir.path(), "production").unwrap();
+        let prod =
+            process_for_browserslist("stylex.css", css, dir.path(), "production", &none).unwrap();
         assert!(!prod.contains("-webkit-"), "{prod}");
-        let dev = process_for_browserslist("stylex.css", css, dir.path(), "development").unwrap();
+        let dev =
+            process_for_browserslist("stylex.css", css, dir.path(), "development", &none).unwrap();
         assert!(dev.contains("-webkit-user-select"), "{dev}");
+        // lightningcssOptions: its own targets win over browserslist, and
+        // `minify` prints compactly.
+        let opts = serde_json::json!({ "targets": { "chrome": 120 << 16 }, "minify": true });
+        let own =
+            process_for_browserslist("stylex.css", css, dir.path(), "development", &opts).unwrap();
+        assert_eq!(own, ".a{user-select:none}");
     }
 
     #[test]

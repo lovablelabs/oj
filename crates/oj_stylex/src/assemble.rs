@@ -1275,6 +1275,13 @@ impl RuleRegistry {
         self.files.len()
     }
 
+    /// Every file's rules, in path order.
+    pub fn files(&self) -> impl Iterator<Item = (&str, &[StylexRule])> {
+        self.files
+            .iter()
+            .map(|(file, rules)| (file.as_str(), rules.as_slice()))
+    }
+
     // The one-shot-equivalent rule list: files in path order, rules in file order.
     pub fn all_rules(&self) -> Vec<StylexRule> {
         self.files.values().flatten().cloned().collect()

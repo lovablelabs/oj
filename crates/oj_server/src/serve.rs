@@ -37,8 +37,19 @@ async fn serve_internal_route(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Option<Response> {
-    let path = uri.path();
-    if let Some(resp) = crate::stylex::serve_route(state, path) {
+    // Vite's base middleware strips `base` before its own routes see the url.
+    let path = state
+        .base
+        .as_deref()
+        .and_then(|b| uri.path().strip_prefix(b.trim_end_matches('/')))
+        .filter(|p| p.starts_with('/'))
+        .unwrap_or_else(|| uri.path());
+    // The StyleX plugin's middleware runs ahead of that, on the raw url (its
+    // runtime fetches the unprefixed sheet); the page's link names it under
+    // `base`.
+    if let Some(resp) = crate::stylex::serve_route(state, uri.path())
+        .or_else(|| crate::stylex::serve_route(state, path))
+    {
         return Some(resp);
     }
     if let Some(name) = path.strip_prefix("/@oj-deps/") {

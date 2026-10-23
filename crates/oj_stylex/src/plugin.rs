@@ -11,6 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::api::{FileContext, MapMode, transform_program, transform_source_in_with_map};
 use crate::assemble::{AssembleConfig, RuleRegistry};
+use crate::errors::ErrorCode;
 use crate::module_resolution::MemoFs;
 use crate::options::{CompilerOptions, ResolvedOptions};
 use crate::rules::StylexRule;
@@ -58,12 +59,14 @@ pub struct StylexPlugin {
     options: ResolvedOptions,
     assemble: AssembleConfig,
     dev_mode: DevMode,
+    lightningcss_options: Value,
     import_sources: Vec<String>,
     root: PathBuf,
     fs: MemoFs,
     registry: Mutex<RuleRegistry>,
     fingerprint: String,
     on_change: Mutex<Option<ChangeListener>>,
+    warnings: Vec<String>,
 }
 
 /// Called after a recorded module changed the stylesheet.
@@ -143,6 +146,21 @@ impl StylexPlugin {
                     || json!({ "type": "commonJS", "rootDir": root.to_string_lossy() }),
                 ),
         );
+        // The babel plugin's setOptions reads the keys it knows, so an unknown
+        // one is ignored, and a known one of the wrong type is logged and
+        // left at its default (logAndDefault).
+        let mut warnings = Vec::new();
+        compiler.retain(|key, value| {
+            let one = Value::Object(Map::from_iter([(key.clone(), value.clone())]));
+            match CompilerOptions::from_json(&one).and_then(|o| o.resolve()) {
+                Ok(_) => true,
+                Err(e) if e.code == ErrorCode::UnknownOption => false,
+                Err(e) => {
+                    warnings.push(format!("[@stylexjs/babel-plugin] {}", e.message));
+                    false
+                }
+            }
+        });
         let compiler = Value::Object(compiler);
         let options = CompilerOptions::from_json(&compiler)
             .and_then(|o| o.resolve())
@@ -170,6 +188,10 @@ impl StylexPlugin {
         .to_hex()[..16]
             .to_string();
         Ok(Self {
+            lightningcss_options: user
+                .get("lightningcssOptions")
+                .cloned()
+                .unwrap_or(Value::Null),
             import_sources: source_names(&import_sources),
             options,
             assemble,
@@ -183,11 +205,23 @@ impl StylexPlugin {
             registry: Mutex::new(RuleRegistry::new()),
             fingerprint,
             on_change: Mutex::new(None),
+            warnings,
         })
     }
 
     pub fn dev_mode(&self) -> DevMode {
         self.dev_mode
+    }
+
+    /// What the option checks logged: values of the wrong type, left at
+    /// their defaults.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// `lightningcssOptions`, spread into the stylesheet's lightningcss pass.
+    pub fn lightningcss_options(&self) -> &Value {
+        &self.lightningcss_options
     }
 
     /// The plugin's `load` for its virtual runtimes in the current dev mode
@@ -250,6 +284,11 @@ impl StylexPlugin {
 
     /// Records a module's rules (none removes it); whether the sheet changed.
     pub fn set_module_rules(&self, id: &str, rules: Vec<StylexRule>) -> bool {
+        // With runtime injection the modules insert their own styles, and the
+        // plugin keeps no rules (so serves and emits no sheet).
+        if self.options.runtime_injection.is_some() {
+            return false;
+        }
         let changed = {
             let mut registry = self.registry.lock().unwrap();
             let before = registry.generation();
@@ -269,9 +308,24 @@ impl StylexPlugin {
         changed
     }
 
+    /// Every recorded module's rules, by module id: what a cache that skips
+    /// the transform must restore with [`Self::set_module_rules`].
+    pub fn module_rules(&self) -> Vec<(String, Vec<StylexRule>)> {
+        let registry = self.registry.lock().unwrap();
+        registry
+            .files()
+            .map(|(id, rules)| (id.to_string(), rules.to_vec()))
+            .collect()
+    }
+
     /// Replaces the listener told about every stylesheet change.
     pub fn set_change_listener(&self, listener: ChangeListener) {
         *self.on_change.lock().unwrap() = Some(listener);
+    }
+
+    /// Bumped by every change [`Self::set_module_rules`] makes to the sheet.
+    pub fn generation(&self) -> u64 {
+        self.registry.lock().unwrap().generation()
     }
 
     /// `processStylexRules` over every recorded module, or `None` with none.
@@ -343,15 +397,17 @@ pub fn dependency_packages(user: &Value, root: &Path) -> Vec<String> {
         }
     }
     for dep in deps {
-        let Some(dep_manifest) = app
+        let Some(dep_dir) = app
             .ancestors()
-            .map(|d| d.join("node_modules").join(dep).join("package.json"))
-            .find(|p| p.is_file())
-            .and_then(|p| read_json(&p))
+            .map(|d| d.join("node_modules").join(dep))
+            .find(|d| d.join("package.json").is_file())
         else {
             continue;
         };
-        if !exports_package_json(dep_manifest.get("exports")) {
+        let Some(dep_manifest) = read_json(&dep_dir.join("package.json")) else {
+            continue;
+        };
+        if !exports_package_json(dep_manifest.get("exports"), &dep_dir) {
             continue;
         }
         let depends = ["dependencies", "peerDependencies", "optionalDependencies"]
@@ -388,16 +444,44 @@ fn package_of(source: &str) -> Option<String> {
     Some(first.to_string())
 }
 
-/// Whether Node can resolve `<pkg>/package.json` past an `exports` map: no
-/// map, or one whose subpaths expose it (`./package.json` or a `./*` pattern).
-fn exports_package_json(exports: Option<&Value>) -> bool {
-    match exports {
-        None | Some(Value::Null) => true,
-        Some(Value::Object(map)) if map.keys().any(|k| k.starts_with('.')) => map
-            .keys()
-            .any(|k| k == "./package.json" || k == "./*" || k == "./*.json"),
+/// Whether Node's `require.resolve("<pkg>/package.json")` gets past the
+/// package's `exports`: no map, or a `./package.json` subpath (exact, or by a
+/// `./*` / `./*.json` pattern) whose `require` target exists in `dir`.
+fn exports_package_json(exports: Option<&Value>, dir: &Path) -> bool {
+    let map = match exports {
+        None | Some(Value::Null) => return true,
+        Some(Value::Object(map)) if map.keys().any(|k| k.starts_with('.')) => map,
         // A string, an array or a conditions object maps "." alone.
-        Some(_) => false,
+        Some(_) => return false,
+    };
+    let (target, star) = if let Some(t) = map.get("./package.json") {
+        (t, None)
+    } else if let Some(t) = map.get("./*") {
+        (t, Some("package.json"))
+    } else if let Some(t) = map.get("./*.json") {
+        (t, Some("package"))
+    } else {
+        return false;
+    };
+    require_target(target)
+        .map(|t| match star {
+            Some(sub) => t.replace('*', sub),
+            None => t.to_string(),
+        })
+        .is_some_and(|t| dir.join(t.trim_start_matches("./")).is_file())
+}
+
+/// An exports target under `require`'s conditions (`require`, `node`,
+/// `default`, in the map's order); `null` blocks.
+fn require_target(target: &Value) -> Option<&str> {
+    match target {
+        Value::String(s) => Some(s),
+        Value::Array(items) => items.iter().find_map(require_target),
+        Value::Object(conditions) => conditions
+            .iter()
+            .filter(|(k, _)| matches!(k.as_str(), "require" | "node" | "default"))
+            .find_map(|(_, v)| require_target(v)),
+        _ => None,
     }
 }
 
@@ -415,14 +499,27 @@ fn source_names(sources: &Value) -> Vec<String> {
         .collect()
 }
 
-/// `/\.[cm]?[jt]sx?(\?|$)/`.
+/// The plugin's `/\.[cm]?[jt]sx?(\?|$)/`, anywhere in the id: a query can
+/// carry the extension (`App.vue?vue&type=script&lang.ts`).
 fn is_js_like(id: &str) -> bool {
-    let path = id.split('?').next().unwrap_or(id);
-    let Some((_, ext)) = path.rsplit_once('.') else {
-        return false;
-    };
-    let ext = ext.strip_prefix(['c', 'm']).unwrap_or(ext);
-    matches!(ext, "js" | "jsx" | "ts" | "tsx")
+    let bytes = id.as_bytes();
+    bytes.iter().enumerate().any(|(dot, &b)| {
+        if b != b'.' {
+            return false;
+        }
+        let mut at = dot + 1;
+        if matches!(bytes.get(at), Some(b'c' | b'm')) {
+            at += 1;
+        }
+        if !matches!(bytes.get(at), Some(b'j' | b't')) || bytes.get(at + 1) != Some(&b's') {
+            return false;
+        }
+        at += 2;
+        if bytes.get(at) == Some(&b'x') && matches!(bytes.get(at + 1), None | Some(b'?')) {
+            return true;
+        }
+        matches!(bytes.get(at), None | Some(b'?'))
+    })
 }
 
 /// The plugin's `containsStylexImport`: `from 's'`, `import('s')`,
@@ -472,6 +569,9 @@ mod tests {
         assert!(p.handles("/app/src/a.tsx", SRC));
         assert!(p.handles("/app/src/a.mts?v=1", SRC));
         assert!(!p.handles("/app/src/a.css", SRC));
+        assert!(p.handles("/app/src/App.vue?vue&type=script&setup=true&lang.ts", SRC));
+        assert!(!p.handles("/app/src/a.json", SRC));
+        assert!(!p.handles("/app/src/a.tsv", SRC));
         assert!(p.handles("/a.js", "const s = await import ( \"stylex\" );"));
         assert!(p.handles("/a.js", "const s = require('stylex');"));
         assert!(p.handles("/a.js", "  import '@stylexjs/stylex';"));
@@ -511,6 +611,47 @@ mod tests {
     }
 
     #[test]
+    fn unknown_options_are_ignored_and_bad_values_defaulted() {
+        let p = plugin(json!({
+            "useRemForFontSize": true,
+            "genConditionalClasses": true,
+            "dev": "true",
+            "classNamePrefix": "q",
+        }));
+        assert_eq!(p.warnings().len(), 1, "{:?}", p.warnings());
+        assert!(
+            p.warnings()[0].contains("options.dev"),
+            "{:?}",
+            p.warnings()
+        );
+        let out = p
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap();
+        assert!(
+            out.code.contains("\"q"),
+            "the valid option still applies: {}",
+            out.code
+        );
+        assert!(
+            !out.code.contains("a__styles"),
+            "dev defaulted to false: {}",
+            out.code
+        );
+    }
+
+    #[test]
+    fn runtime_injection_collects_no_rules() {
+        let p = plugin(json!({ "runtimeInjection": true }));
+        let out = p
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap();
+        assert!(!p.set_module_rules("/app/src/a.ts", out.rules));
+        assert_eq!(p.stylesheet().unwrap(), None);
+    }
+
+    #[test]
     fn dev_follows_node_env_unless_set() {
         let dev = StylexPlugin::new(&json!({}), Path::new("/app"), true, false).unwrap();
         let out = dev
@@ -538,7 +679,7 @@ mod tests {
         };
         write(
             "package.json",
-            r#"{"dependencies":{"ui":"1","plain":"1","sealed":"1","peer-ui":"1"},"devDependencies":{"custom":"1"}}"#,
+            r#"{"dependencies":{"ui":"1","plain":"1","sealed":"1","peer-ui":"1","starred":"1","open":"1"},"devDependencies":{"custom":"1"}}"#,
         );
         write(
             "node_modules/ui/package.json",
@@ -558,6 +699,16 @@ mod tests {
             "node_modules/peer-ui/package.json",
             r#"{"peerDependencies":{"@stylexjs/stylex":"*"}}"#,
         );
+        // `./*` maps package.json to dist/package.json, which is not there:
+        // Node's resolve fails. `./*` onto the root does expose it.
+        write(
+            "node_modules/starred/package.json",
+            r#"{"exports":{".":"./i.js","./*":"./dist/*"},"dependencies":{"@stylexjs/stylex":"0.19.0"}}"#,
+        );
+        write(
+            "node_modules/open/package.json",
+            r#"{"exports":{".":"./i.js","./*":{"require":"./*"}},"dependencies":{"@stylexjs/stylex":"0.19.0"}}"#,
+        );
         write(
             "node_modules/custom/package.json",
             r#"{"dependencies":{"my-sx":"1"}}"#,
@@ -565,13 +716,16 @@ mod tests {
         let app = dir.join("src");
         std::fs::create_dir_all(&app).unwrap();
 
-        assert_eq!(dependency_packages(&json!({}), &app), ["ui", "peer-ui"]);
+        assert_eq!(
+            dependency_packages(&json!({}), &app),
+            ["ui", "peer-ui", "open"]
+        );
         assert_eq!(
             dependency_packages(
                 &json!({ "importSources": [{ "from": "my-sx/sub", "as": "css" }], "externalPackages": ["extra"] }),
                 &dir
             ),
-            ["extra", "ui", "peer-ui", "custom"]
+            ["extra", "ui", "peer-ui", "open", "custom"]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

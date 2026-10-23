@@ -86,10 +86,9 @@ impl DevBundler {
         DevBundler::new(tests::start_at(root), None)
     }
 
-    /// Whether the app runs the StyleX plugin, whose rules only a bundle that
-    /// actually transforms its modules can collect.
-    pub(crate) fn runs_stylex(&self) -> bool {
-        self.start.stylex.is_some()
+    /// The app's StyleX plugin, whose rules a cached bundle must carry.
+    pub(crate) fn stylex(&self) -> Option<&std::sync::Arc<oj_stylex::plugin::StylexPlugin>> {
+        self.start.stylex.as_ref()
     }
 
     pub(crate) fn root(&self) -> &Path {

@@ -10,6 +10,8 @@ use std::path::PathBuf;
 pub struct Knobs {
     /// The shell's `NODE_ENV`, when set and non-empty.
     pub node_env: Option<String>,
+    /// The shell's `BABEL_ENV`, when set and non-empty (StyleX's `dev` default).
+    pub babel_env: Option<String>,
     /// `NODE_OPTIONS`, for its `--max-old-space-size`.
     pub node_options: Option<String>,
     /// `NO_COLOR` set to anything (even empty).
@@ -70,6 +72,7 @@ impl Knobs {
         let trimmed = |key: &str| var(key).and_then(|v| v.trim().parse::<u64>().ok());
         Knobs {
             node_env: var("NODE_ENV").filter(|v| !v.is_empty()),
+            babel_env: var("BABEL_ENV").filter(|v| !v.is_empty()),
             node_options: var("NODE_OPTIONS"),
             no_color: get("NO_COLOR").is_some(),
             browser: var("BROWSER").filter(|v| !v.trim().is_empty()),

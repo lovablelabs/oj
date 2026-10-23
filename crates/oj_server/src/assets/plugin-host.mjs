@@ -4446,10 +4446,34 @@ const htmlWarnOnce = (msg) => {
 // The dev client oj serves stands where Vite injects `/@vite/client`. `extra`
 // carries what the Rust page server knows exactly: the file, and the env map
 // and CSP nonce it derives from the same defines and config Vite reads.
+// @stylexjs/unplugin's transformIndexHtml, for pages this host transforms:
+// oj runs the plugin natively (the host never loads it), but in `full` dev
+// mode its hook adds the runtime script and stylesheet link to every page,
+// a custom server's `server.transformIndexHtml` included.
+function stylexHtmlPlugin(base) {
+  const standIn = nativePlugins.find((p) => p && p.name === "@stylexjs/unplugin");
+  if (!standIn || (standIn.__ojStylexOptions?.devMode ?? "full") !== "full") return null;
+  return {
+    name: "@stylexjs/unplugin",
+    enforce: "pre",
+    transformIndexHtml() {
+      return [
+        {
+          tag: "script",
+          attrs: { type: "module", src: posix.join(base, "/@id/virtual:stylex:runtime") },
+          injectTo: "head",
+        },
+        { tag: "link", attrs: { rel: "stylesheet", href: posix.join(base, "/virtual:stylex.css") }, injectTo: "head" },
+      ];
+    },
+  };
+}
+
 async function devTransformIndexHtml(url, html, originalUrl, extra = {}) {
   const config = { ...(resolvedConfig ?? {}) };
   config.root = config.root ?? initial.config?.root ?? process.cwd();
   const base = config.base || "/";
+  const stylex = stylexHtmlPlugin(base);
   return transformDevHtml({
     url,
     html,
@@ -4457,7 +4481,8 @@ async function devTransformIndexHtml(url, html, originalUrl, extra = {}) {
     filename: extra.filename,
     server: devServer,
     config,
-    plugins,
+    // An `enforce: 'pre'` plugin: ahead of the app's in Vite's sorted list.
+    plugins: stylex ? [stylex, ...plugins] : plugins,
     bind: bindHtmlHook,
     proxy: htmlProxy,
     moduleGraph,

@@ -35,27 +35,27 @@ pub fn plugin_for(
     };
     let options = stylex.get("options").unwrap_or(&serde_json::Value::Null);
     let build = command == "build";
-    // The plugin's `dev` default reads NODE_ENV as the config loads, which is
-    // the shell's value or Vite's per-command default.
-    let node_env = oj_env::get().knobs.node_env.as_deref().unwrap_or(if build {
-        "production"
-    } else {
-        "development"
-    });
+    // The plugin's `dev` default reads NODE_ENV (the shell's value or Vite's
+    // per-command default) and BABEL_ENV as the config loads.
+    let knobs = &oj_env::get().knobs;
+    let node_env =
+        knobs
+            .node_env
+            .as_deref()
+            .unwrap_or(if build { "production" } else { "development" });
+    let dev = node_env == "development" || knobs.babel_env.as_deref() == Some("development");
     // Canonical, so callers spelling the root differently share one plugin.
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let key = format!("{command}\0{node_env}\0{}\0{options}", canonical.display());
+    let key = format!("{command}\0{dev}\0{}\0{options}", canonical.display());
     let mut shared = SHARED.lock().unwrap();
     shared.retain(|_, plugin| plugin.strong_count() > 0);
     let plugin = match shared.get(&key).and_then(std::sync::Weak::upgrade) {
         Some(plugin) => plugin,
         None => {
-            let plugin = Arc::new(StylexPlugin::new(
-                options,
-                root,
-                node_env == "development",
-                !build,
-            )?);
+            let plugin = Arc::new(StylexPlugin::new(options, root, dev, !build)?);
+            for warning in plugin.warnings() {
+                eprintln!("{warning}");
+            }
             shared.insert(key, Arc::downgrade(&plugin));
             plugin
         }
@@ -87,12 +87,68 @@ pub(crate) fn notify_clients(plugin: &StylexPlugin, tx: broadcast::Sender<String
     }));
 }
 
-/// Stores a module's rules under its served url (query dropped: one file is
-/// one entry, whichever variant compiled last).
-pub(crate) fn record(state: &ServerState, url: &str, rules: &[oj_stylex::rules::StylexRule]) {
-    if let Some(plugin) = &state.stylex {
-        plugin.set_module_rules(url.split('?').next().unwrap_or(url), rules.to_vec());
+/// What the plugin's transform made of a module ahead of the app's plugins.
+pub(crate) struct PreTransformed {
+    pub code: String,
+    pub map: Option<String>,
+    pub rules: Vec<oj_stylex::rules::StylexRule>,
+}
+
+/// The plugin's transform where Vite runs it, before the app plugins'
+/// (`enforce: 'pre'`), for a module those plugins transform too: `None` when
+/// the plugin passes over `id`. With no app transform in the way, the
+/// compile runs it on the parsed source instead.
+pub(crate) fn pre_transform(
+    state: &ServerState,
+    id: &str,
+    source: &str,
+) -> Result<Option<PreTransformed>, String> {
+    let Some(plugin) = &state.stylex else {
+        return Ok(None);
+    };
+    if !plugin.handles(id, source) {
+        return Ok(None);
     }
+    let file = Path::new(id.split('?').next().unwrap_or(id));
+    Ok(Some(match plugin.transform_source(file, source)? {
+        Some(out) => PreTransformed {
+            code: out.code,
+            map: out.map,
+            rules: out.rules,
+        },
+        None => PreTransformed {
+            code: source.to_string(),
+            map: None,
+            rules: Vec::new(),
+        },
+    }))
+}
+
+/// Stores a served module's rules under its id (see [`module_id`]).
+pub(crate) fn record(state: &ServerState, url: &str, rules: &[oj_stylex::rules::StylexRule]) {
+    record_id(state, &module_id(&state.root, url), rules);
+}
+
+/// Stores a module's rules under `id`, Vite's module id: the plugin keys its
+/// rule store by it, so every environment (and a Start bundle) that compiles
+/// one module shares one entry, and each query variant has its own.
+pub(crate) fn record_id(state: &ServerState, id: &str, rules: &[oj_stylex::rules::StylexRule]) {
+    if let Some(plugin) = &state.stylex {
+        plugin.set_module_rules(id, rules.to_vec());
+    }
+}
+
+/// A served url's module id: the file's absolute path with the query kept,
+/// minus the HMR timestamp; oj's own `/@` urls stay as they are.
+fn module_id(root: &Path, url: &str) -> String {
+    let url = strip_hmr_timestamp(url);
+    if let Some(path) = url.strip_prefix("/@fs/") {
+        return format!("/{path}");
+    }
+    if url.starts_with("/@") {
+        return url;
+    }
+    format!("{}{url}", root.display())
 }
 
 /// The plugin's dev routes: the stylesheet and, in `full` mode, the plain
@@ -100,21 +156,8 @@ pub(crate) fn record(state: &ServerState, url: &str, rules: &[oj_stylex::rules::
 pub(crate) fn serve_route(state: &ServerState, path: &str) -> Option<Response> {
     let plugin = state.stylex.as_ref()?;
     if path == DEV_CSS_PATH {
-        let css = match plugin.stylesheet() {
-            Ok(Some(sheet)) => match oj_css::process_for_browserslist(
-                "stylex.css",
-                &sheet,
-                &state.root,
-                "development",
-            ) {
-                Ok(css) => css,
-                Err(e) => {
-                    return Some(
-                        (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {e}")).into_response(),
-                    )
-                }
-            },
-            Ok(None) => String::new(),
+        let css = match dev_stylesheet(state, plugin) {
+            Ok(css) => css,
             Err(e) => {
                 return Some(
                     (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {e}")).into_response(),
@@ -136,6 +179,45 @@ pub(crate) fn serve_route(state: &ServerState, path: &str) -> Option<Response> {
         return Some(js(DEV_RUNTIME_JS));
     }
     None
+}
+
+/// The browserslist config files at the app root, whose edits change the
+/// sheet's targets without changing any rule.
+const BROWSERSLIST_FILES: [&str; 3] = ["package.json", ".browserslistrc", "browserslist"];
+
+/// What a processed dev stylesheet was built from: the registry generation
+/// and the root's browserslist files' mtimes.
+pub(crate) type SheetStamp = (u64, [Option<std::time::SystemTime>; 3]);
+
+/// The dev stylesheet as the plugin serves it (assembled, then lightningcss
+/// for the app's browserslist and `lightningcssOptions`), rebuilt only when
+/// its stamp moved: every update event makes each open tab refetch it.
+fn dev_stylesheet(state: &ServerState, plugin: &StylexPlugin) -> Result<String, String> {
+    let stamp: SheetStamp = (
+        plugin.generation(),
+        BROWSERSLIST_FILES.map(|f| {
+            std::fs::metadata(state.root.join(f))
+                .and_then(|m| m.modified())
+                .ok()
+        }),
+    );
+    if let Some((built, css)) = &*state.stylex_css.lock().unwrap() {
+        if *built == stamp {
+            return Ok(css.clone());
+        }
+    }
+    let css = match plugin.stylesheet()? {
+        Some(sheet) => oj_css::process_for_browserslist(
+            "stylex.css",
+            &sheet,
+            &state.root,
+            "development",
+            plugin.lightningcss_options(),
+        )?,
+        None => String::new(),
+    };
+    *state.stylex_css.lock().unwrap() = Some((stamp, css.clone()));
+    Ok(css)
 }
 
 /// The plugin's virtual module for `id`: its source, compiled like any module

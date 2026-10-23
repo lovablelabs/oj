@@ -85,11 +85,18 @@ impl Plugin for StylexTransform {
             return Ok(None);
         };
         self.plugin.set_module_rules(id, out.rules);
-        let map = out.map.and_then(|m| {
-            oxc_sourcemap::SourceMap::from_json_string(&m)
-                .ok()
-                .map(|s| s.into_owned())
-        });
+        // A map the compiler wrote and nothing can read would break the
+        // module's map chain without a word: fail the module instead.
+        let map = out
+            .map
+            .map(|m| {
+                oxc_sourcemap::SourceMap::from_json_string(&m)
+                    .map(|s| s.into_owned())
+                    .map_err(|e| {
+                        anyhow::anyhow!("StyleX wrote an unreadable sourcemap for {file}: {e}")
+                    })
+            })
+            .transpose()?;
         Ok(Some(HookTransformOutput {
             code: Some(out.code),
             map: match map {
@@ -114,7 +121,89 @@ pub(crate) fn stylesheet(plugin: &StylexPlugin, root: &Path) -> anyhow::Result<O
     let Some(sheet) = plugin.stylesheet().map_err(|e| anyhow::anyhow!(e))? else {
         return Ok(None);
     };
-    oj_css::process_for_browserslist("stylex.css", &sheet, root, "production")
-        .map(Some)
-        .map_err(|e| anyhow::anyhow!(e))
+    oj_css::process_for_browserslist(
+        "stylex.css",
+        &sheet,
+        root,
+        "production",
+        plugin.lightningcss_options(),
+    )
+    .map(Some)
+    .map_err(|e| anyhow::anyhow!(e))
+}
+
+/// The sidecar beside a cached Start client bundle: the rules its modules
+/// compiled to, valid for that bundle's store key and this plugin's options.
+const RULES_SIDECAR: &str = "stylex-rules.json";
+
+/// Saves every recorded module's rules for the bundle cached under `key`.
+pub(crate) fn save_rules(plugin: &StylexPlugin, dir: &Path, key: &str) {
+    let sidecar = serde_json::json!({
+        "key": key,
+        "fingerprint": plugin.fingerprint(),
+        "modules": plugin.module_rules(),
+    });
+    let _ = std::fs::write(dir.join(RULES_SIDECAR), sidecar.to_string());
+}
+
+/// Restores the rules saved for the bundle cached under `key`; false when
+/// none were saved for it (or for these options), and the bundle must be
+/// rebuilt for its modules to compile.
+pub(crate) fn restore_rules(plugin: &StylexPlugin, dir: &Path, key: &str) -> bool {
+    let Some(sidecar) = std::fs::read(dir.join(RULES_SIDECAR))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    else {
+        return false;
+    };
+    let saved_for =
+        |field: &str, want: &str| sidecar.get(field).and_then(|v| v.as_str()) == Some(want);
+    if !saved_for("key", key) || !saved_for("fingerprint", plugin.fingerprint()) {
+        return false;
+    }
+    let Some(modules) = sidecar.get("modules").cloned().and_then(|m| {
+        serde_json::from_value::<Vec<(String, Vec<oj_stylex::rules::StylexRule>)>>(m).ok()
+    }) else {
+        return false;
+    };
+    for (id, rules) in modules {
+        plugin.set_module_rules(&id, rules);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SRC: &str = "import * as stylex from \"@stylexjs/stylex\";\n\
+                       export const s = stylex.create({ a: { color: \"olive\" } });\n";
+
+    fn plugin(options: serde_json::Value) -> StylexPlugin {
+        StylexPlugin::new(&options, Path::new("/app"), false, true).unwrap()
+    }
+
+    #[test]
+    fn saved_rules_restore_only_for_their_bundle_and_options() {
+        let dir = std::env::temp_dir().join(format!("oj-stylex-sidecar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cold = plugin(serde_json::json!({}));
+        let rules = cold
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap()
+            .rules;
+        cold.set_module_rules("/app/src/a.ts", rules);
+        save_rules(&cold, &dir, "k1");
+
+        let warm = plugin(serde_json::json!({}));
+        assert!(!restore_rules(&warm, &dir, "k2"), "another bundle's key");
+        assert_eq!(warm.stylesheet().unwrap(), None);
+        assert!(restore_rules(&warm, &dir, "k1"));
+        assert_eq!(warm.stylesheet().unwrap(), cold.stylesheet().unwrap());
+
+        let other_options = plugin(serde_json::json!({ "classNamePrefix": "q" }));
+        assert!(!restore_rules(&other_options, &dir, "k1"), "other options");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

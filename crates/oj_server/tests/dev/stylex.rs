@@ -402,3 +402,130 @@ async fn every_import_form_hands_its_options_over() {
         assert!(main.contains("main__styles.title q"), "{config}\n{main}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ssr_modules_a_plugin_loads_feed_the_sheet() {
+    require_fixture!("vite");
+    let app = app("{}");
+    app.write(&[(
+        "vite.config.js",
+        "import stylex from \"@stylexjs/unplugin\";\n\
+         const gen = { name: \"gen\", load(id) { if (id.endsWith(\"/src/gen.ts\")) return \"import * as stylex from '@stylexjs/stylex';\\nexport const s = stylex.props(stylex.create({ x: { color: 'maroon' } }).x);\\n\"; } };\n\
+         export default { plugins: [stylex.vite({}), gen] };\n",
+    )]);
+    let server = app.serve().await;
+    let id = app.root.join("src/gen.ts");
+    let module = server
+        .text(&format!("/@ssr-module?id={}", id.display()))
+        .await;
+    assert!(!module.contains("stylex.create"), "{module}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: maroon"), "{css}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stylex_runs_before_the_apps_transforms() {
+    require_fixture!("vite");
+    let app = app("{}");
+    // Rewrites the StyleX import away: StyleX must have compiled first.
+    app.write(&[(
+        "vite.config.js",
+        "import stylex from \"@stylexjs/unplugin\";\n\
+         const late = { name: \"late\", transform(code, id) { if (id.endsWith(\"/src/main.ts\")) return code.replaceAll(\"@stylexjs/stylex\", \"not-stylex\"); } };\n\
+         export default { plugins: [late, stylex.vite({})] };\n",
+    )]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.ts").await;
+    assert!(
+        !main.contains("stylex.create"),
+        "StyleX compiled first:\n{main}"
+    );
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: red"), "{css}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_query_variant_keeps_its_own_rules() {
+    require_fixture!("vite");
+    let app = app("{}");
+    let alt = main_ts("olive").replace('"', "\\\"").replace('\n', "\\n");
+    app.write(&[(
+        "vite.config.js",
+        &format!(
+            "import stylex from \"@stylexjs/unplugin\";\n\
+             const alt = {{ name: \"alt\", load(id) {{ if (id.endsWith(\"/src/main.ts?alt\")) return \"{alt}\"; }} }};\n\
+             export default {{ plugins: [stylex.vite({{}}), alt] }};\n"
+        ),
+    )]);
+    let server = app.serve().await;
+    server.text("/src/main.ts").await;
+    let variant = server.text("/src/main.ts?alt").await;
+    assert!(!variant.contains("stylex.create"), "{variant}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(
+        css.contains("color: red") && css.contains("color: olive"),
+        "both variants' rules:\n{css}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_base_prefixes_the_page_tags_that_then_load() {
+    require_fixture!("vite");
+    let app = app("{}");
+    app.write(&[(
+        "vite.config.js",
+        "import stylex from \"@stylexjs/unplugin\";\nexport default { base: \"/app/\", plugins: [stylex.vite({})] };\n",
+    )]);
+    let server = app.serve().await;
+    let html = server.text("/app/").await;
+    assert!(
+        html.contains(r#"src="/app/@id/virtual:stylex:runtime""#),
+        "{html}"
+    );
+    assert!(html.contains(r#"href="/app/virtual:stylex.css""#), "{html}");
+    let runtime = server.text("/app/@id/virtual:stylex:runtime").await;
+    assert!(runtime.contains("__stylex_virtual__"), "{runtime}");
+    server.text("/app/src/main.ts").await;
+    // The page's link, and the unprefixed path the runtime fetches.
+    for sheet in ["/app/virtual:stylex.css", "/virtual:stylex.css"] {
+        let css = server.text(sheet).await;
+        assert!(css.contains("color: red"), "{sheet}: {css}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pages_the_plugin_host_transforms_get_the_tags_once() {
+    require_fixture!("vite");
+    let app = app("{}");
+    app.write(&[(
+        "vite.config.js",
+        "import stylex from \"@stylexjs/unplugin\";\n\
+         const custom = {\n\
+           name: \"custom\",\n\
+           transformIndexHtml(html) { return html; },\n\
+           configureServer(server) {\n\
+             server.middlewares.use(async (req, res, next) => {\n\
+               if (req.url !== \"/custom\") return next();\n\
+               const html = await server.transformIndexHtml(req.url, \"<html><head><title>c</title></head><body></body></html>\");\n\
+               res.setHeader(\"content-type\", \"text/html\");\n\
+               res.end(html);\n\
+             });\n\
+           },\n\
+         };\n\
+         export default { plugins: [stylex.vite({}), custom] };\n",
+    )]);
+    let server = app.serve().await;
+    let runtime = r#"src="/@id/virtual:stylex:runtime""#;
+    let page = server.text("/").await;
+    assert_eq!(page.matches(runtime).count(), 1, "{page}");
+    assert_eq!(
+        page.matches(r#"href="/virtual:stylex.css""#).count(),
+        1,
+        "{page}"
+    );
+    let custom = server.text("/custom").await;
+    assert!(
+        custom.contains(runtime),
+        "a custom server's page:\n{custom}"
+    );
+}

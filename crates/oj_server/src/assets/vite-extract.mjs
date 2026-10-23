@@ -1540,8 +1540,18 @@ async function stylexPlugin(raw) {
     const plugin = list.find((p) => p && p.name === "@stylexjs/unplugin");
     if (!plugin) return null;
     // oj's stand-in for the package (oj_js stand_ins) records them, imported
-    // or require()d.
-    const options = plugin.__ojStylexOptions ?? {};
+    // or require()d, from node_modules/@stylexjs/unplugin.
+    const options = plugin.__ojStylexOptions;
+    if (!options) {
+      warn(
+        "@stylexjs/unplugin was loaded from outside node_modules/@stylexjs/unplugin, so oj cannot read " +
+          "its options and compiles StyleX with the defaults",
+      );
+      return { options: {} };
+    }
+    if (typeof options.cssInjectionTarget === "function") {
+      warn("@stylexjs/unplugin cssInjectionTarget is not applied: the StyleX sheet joins the build's entry stylesheet");
+    }
     const babel = options.babelConfig;
     if (babel && ((babel.plugins ?? []).length || (babel.presets ?? []).length)) {
       warn("@stylexjs/unplugin babelConfig plugins and presets are not applied (oj compiles StyleX natively)");
