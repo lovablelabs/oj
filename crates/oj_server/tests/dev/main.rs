@@ -58,6 +58,7 @@ mod plugin_middleware;
 mod plugin_module_graph;
 mod plugin_object_hooks;
 mod plugin_parse;
+mod plugin_react_native;
 mod plugin_skip;
 mod plugin_watch_change;
 mod plugin_ws;

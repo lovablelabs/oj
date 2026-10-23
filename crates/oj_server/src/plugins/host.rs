@@ -680,6 +680,12 @@ impl PluginHost {
         .map_err(|e| e.to_string())?;
         ensure_asset(
             oj_cache::cache_root(&self.boot.root).as_path(),
+            "native-plugins.mjs",
+            NATIVE_PLUGINS_JS,
+        )
+        .map_err(|e| e.to_string())?;
+        ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
             "vite-html.mjs",
             VITE_HTML_JS,
         )

@@ -13,6 +13,7 @@ pub const DISCOVERED_DEPS_JS: &str = include_str!("../assets/discovered-deps.mjs
 /// the app's config file: the plugin host, the extractor, the preseed child and
 /// the Start scripts.
 pub const VITE_CONFIG_NODE_JS: &str = include_str!("../assets/vite-config-node.mjs");
+pub const NATIVE_PLUGINS_JS: &str = include_str!("../assets/native-plugins.mjs");
 /// Sibling module (`./vite-html.mjs`) of the plugin host: Vite's dev HTML transform.
 pub const VITE_HTML_JS: &str = include_str!("../assets/vite-html.mjs");
 /// Vite's own picomatch and tinyglobby, loaded from the app's vite: a Start

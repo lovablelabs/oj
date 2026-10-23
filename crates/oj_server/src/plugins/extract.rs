@@ -55,6 +55,9 @@ pub struct ViteValues {
     pub app_type: Option<String>,
     /// `html` block (`cspNonce`).
     pub html: Option<serde_json::Value>,
+    /// The config's plugins the plugin host would run (none of oj's native
+    /// set); an over-count. None when extraction could not read the list.
+    pub active_plugins: Option<usize>,
 }
 
 /// The oj executable one-shot engine jobs run in, set once by the binary's main.
@@ -365,6 +368,41 @@ pub(crate) fn extract_vite_values_with(
     extract_vite_values_timed(root, config, command, mode, mode_explicit, None)
 }
 
+/// Keyed per (config, command, mode); a default-mode evaluation gets its own
+/// key. `worker` options reach only a build's worker bundles, which an SPA
+/// build makes without them (the Start build applies them, dev bundles none),
+/// so only an SPA build warns; its stderr is cached apart.
+fn extraction_mode_key(mode: &str, mode_explicit: bool, spa_build: bool) -> String {
+    let key = if mode_explicit {
+        mode.to_string()
+    } else {
+        format!("{mode}@default")
+    };
+    if spa_build {
+        format!("{key}@spa-build")
+    } else {
+        key
+    }
+}
+
+/// The active plugin count the last dev extraction of this config recorded,
+/// while its inputs are unchanged: known before the config is evaluated
+/// again, so a boot that needs no plugin host never starts its engine.
+pub(crate) fn cached_active_plugins(
+    root: &Path,
+    config: Option<&Path>,
+    mode: &str,
+) -> Option<usize> {
+    if plugins_file(root).is_some() {
+        return None;
+    }
+    let vite = vite_config_file(root, config)?;
+    let hit =
+        extraction_store(root).lookup(&vite, "serve", &extraction_mode_key(mode, true, false))?;
+    let json: serde_json::Value = serde_json::from_str(&hit.output).ok()?;
+    json.get("activePlugins")?.as_u64().map(|n| n as usize)
+}
+
 /// [`extract_vite_values_with`] with the evaluation bound explicit (tests).
 pub(crate) fn extract_vite_values_timed(
     root: &Path,
@@ -377,21 +415,8 @@ pub(crate) fn extract_vite_values_timed(
     if plugins_file(root).is_some() {
         return None;
     }
-    // Keyed per (config, command, mode); a default-mode evaluation gets its own key.
-    let mode_key = if mode_explicit {
-        mode.to_string()
-    } else {
-        format!("{mode}@default")
-    };
-    // `worker` options reach only a build's worker bundles, which an SPA build
-    // makes without them (the Start build applies them, dev bundles none), so
-    // only an SPA build warns; its stderr is cached apart.
     let spa_build = command == "build" && !crate::is_tanstack_start_app(root);
-    let mode_key = if spa_build {
-        format!("{mode_key}@spa-build")
-    } else {
-        mode_key
-    };
+    let mode_key = extraction_mode_key(mode, mode_explicit, spa_build);
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
     let store = extraction_store(root);
@@ -455,6 +480,7 @@ fn materialize_extract_script(cache: &Path) -> Option<PathBuf> {
     static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     super::ensure_asset(cache, "vite-config-node.mjs", super::VITE_CONFIG_NODE_JS).ok()?;
+    super::ensure_asset(cache, "native-plugins.mjs", super::NATIVE_PLUGINS_JS).ok()?;
     let script = cache.join("oj-vite-extract.mjs");
     if std::fs::read(&script).ok().as_deref() != Some(VITE_EXTRACT_JS.as_bytes()) {
         let tmp = cache.join(format!(
@@ -659,6 +685,10 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         preview: non_null(json, "preview"),
         app_type: str_field(json, "appType"),
         html: non_null(json, "html"),
+        active_plugins: json
+            .get("activePlugins")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize),
     }
 }
 
@@ -715,6 +745,7 @@ fn no_values_verdict(root: &Path, config_file: Option<&Path>) -> Result<(), Stri
 
 /// Fills every field oj's own config left unset from the vite.config values.
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
+    config.vite_active_plugins = v.active_plugins;
     if config.base.is_none() {
         config.base = v.base;
     }

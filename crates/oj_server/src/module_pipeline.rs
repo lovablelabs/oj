@@ -837,12 +837,21 @@ impl ImportRewrite<'_> {
     fn rewrite(&self, spec: &str, resolver: &OjResolver) -> Option<String> {
         let job = self.job;
         let state = &*job.state;
-        // Only a plugin's resolveId can answer what oj's resolver cannot. The
-        // host runs for every app (it hosts the dev HTML transform), plugins
-        // or not, so its presence alone says nothing.
+        // Only a plugin's resolveId can answer what oj's resolver cannot. A
+        // host may run with no plugin (it hosts `server.proxy`), so its
+        // presence alone says nothing.
         let plugin_fallback = state.plugins.is_some() && state.plugins_have_resolve_id;
         if spec == "virtual:oj-routes" {
             return Some("/@oj/routes.js".to_string());
+        }
+        // @vitejs/plugin-react's refresh runtime and its virtual preamble (the
+        // react-refresh and virtual-preamble plugins, which oj does natively).
+        match spec {
+            "/@react-refresh" => return Some("/@oj/refresh-runtime.js".to_string()),
+            "@vitejs/plugin-react/preamble" | "@vitejs/plugin-react-swc/preamble" => {
+                return Some("/@oj/refresh-preamble.js".to_string())
+            }
+            _ => {}
         }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));

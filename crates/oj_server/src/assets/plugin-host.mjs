@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import { appViteEntry, asNode } from "./vite-config-node.mjs";
+import { OJ_NATIVE_PLUGIN_NAMES, OJ_UNSUPPORTED_PLUGIN_NAMES } from "./native-plugins.mjs";
 import { idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
@@ -1183,29 +1184,6 @@ async function loadViteConfig(configPath) {
   return typeof mod.default === "function" ? await mod.default(env) : mod.default;
 }
 
-const OJ_NATIVE_PLUGIN_NAMES = new Set([
-  "vite:react-babel",
-  "vite:react-refresh",
-  "vite:react-swc",
-  "vite:react-swc:resolve-runtime",
-  // rolldown-vite's @vitejs/plugin-react does its client Fast Refresh wrapping by
-  // returning the rolldown builtin `builtin:vite-react-refresh-wrapper` from this
-  // plugin's `applyToEnvironment`. oj already reimplements React refresh natively
-  // (its own preamble + refresh runtime), so this is redundant; left active the
-  // builtin's transform runs and throws "Missing field `moduleType`" (oj drives
-  // transform hooks with Vite's { ssr } options, not the builtin's rolldown
-  // { moduleType } extra args), which 500s the client entry and stops the browser
-  // from ever hydrating. Skipping the parent here removes it before
-  // applyToEnvironment can introduce the builtin.
-  "vite:react:refresh-wrapper",
-]);
-
-// Dev-tooling plugins oj cannot host: they drive a full Vite dev server (ws
-// error overlay, file watcher, a worker running tsc/eslint) that oj does not
-// provide, and they have no effect on the served or built output. Left in, the
-// worker they spawn throws asynchronously; skip them outright.
-const OJ_UNSUPPORTED_PLUGIN_NAMES = new Set(["vite-plugin-checker"]);
-
 let plugins = [];
 let allPlugins = [];
 // The React-family plugins oj reimplements natively. They run no hooks here but
@@ -1476,6 +1454,9 @@ const ctx = {
   },
   async resolve(source, importer, options) {
     if (source === "/@react-refresh") return { id: "/@oj/refresh-runtime.js" };
+    if (source === "@vitejs/plugin-react/preamble" || source === "@vitejs/plugin-react-swc/preamble") {
+      return { id: "/@oj/refresh-preamble.js" };
+    }
     // Vite (pluginContainer ctx.resolve): the container's resolveId chain runs
     // first, and only then Vite's own resolver. A sibling plugin's virtual id
     // resolves here instead of falling through to oj's disk resolver and coming

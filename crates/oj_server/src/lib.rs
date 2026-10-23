@@ -1483,9 +1483,14 @@ impl DevServer {
         // The plugin host's engine boots and imports vite while the config is
         // extracted, instead of after: neither needs the other until the host's
         // payload, which the extracted values build.
+        // Not when the last extraction found no plugin to host (the boot
+        // then drops the host below, once the config confirms it).
         let prewarm = plugin_file
             .as_ref()
             .filter(|f| f.format == PluginsFormat::Vite)
+            .filter(|_| {
+                plugins::cached_active_plugins(&root, config_file.as_deref(), &dev_mode) != Some(0)
+            })
             .and_then(|_| PluginHost::prewarm(&root, Some(engine_registry.clone())));
         let config = load_dev_config(&root, config_file.as_deref(), &dev_mode)?;
         let has_proxy = config
@@ -1493,6 +1498,19 @@ impl DevServer {
             .as_ref()
             .and_then(|s| s.proxy.as_ref())
             .is_some_and(|p| !p.is_empty());
+        // Every plugin the config declares is one oj does natively (its
+        // React plugin, say): no host, and the prewarmed engine goes.
+        let (plugin_file, prewarm) = match plugin_file {
+            Some(f)
+                if f.format == PluginsFormat::Vite
+                    && config.vite_active_plugins == Some(0)
+                    && !has_proxy =>
+            {
+                println!("  plugins: {} (none active; served natively)", f.label);
+                (None, None)
+            }
+            other => (other, prewarm),
+        };
         let plugin_file =
             plugin_file.or_else(|| has_proxy.then(|| empty_plugin_file(&root)).flatten());
 
