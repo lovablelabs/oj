@@ -1303,7 +1303,11 @@ fn stamp_import_url_marks_only_compilable_module_urls() {
         stamp_import_url("/src/a.css?inline", 5),
         "/src/a.css?inline&t=5"
     );
-    assert_eq!(stamp_import_url("/logo.svg?url", 5), "/logo.svg?url");
+    assert_eq!(
+        stamp_import_url("/src/hero.png?url", 5),
+        "/src/hero.png?url&t=5",
+        "an updated image's importer must fetch its new url"
+    );
     assert_eq!(
         stamp_import_url("/@oj-deps/react.js", 5),
         "/@oj-deps/react.js"
@@ -1397,29 +1401,54 @@ fn preload_hints_name_the_exact_import_url() {
         "/@oj-deps/react.mjs?v=1d335a14".to_string(),
     )]
     .into();
-    assert_eq!(preload_href("/src/main.tsx", &entries), "/src/main.tsx");
-    assert_eq!(preload_href("/src/a.css", &entries), "/src/a.css?import");
+    assert_eq!(
+        preload_href("/src/main.tsx", &entries, false),
+        "/src/main.tsx"
+    );
+    assert_eq!(
+        preload_href("/src/a.css", &entries, false),
+        "/src/a.css?import"
+    );
     // A pre-bundled entry preloads under the URL importers name it by now,
     // not the session's base version, so the preload and the later import
     // hit one immutable cache entry and a rerun leaves no stale hint.
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &entries),
+        preload_href("/@oj-deps/react.mjs", &entries, false),
         "/@oj-deps/react.mjs?v=1d335a14"
     );
     assert_eq!(
-        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries),
+        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries, false),
         "/@oj-deps/chunk-AB12CD.mjs",
         "dep files import chunks bare"
     );
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &HashMap::new()),
+        preload_href("/@oj-deps/react.mjs", &HashMap::new(), false),
         "/@oj-deps/react.mjs",
         "no entry, no query"
     );
     assert_eq!(
-        preload_href("/@id/6e6f6465", &entries),
+        preload_href("/@id/6e6f6465", &entries, false),
         "/@id/6e6f6465",
         "stubs are unversioned"
+    );
+    // The bare asset url is the `<img src>`'s raw file; the import is `?url`.
+    assert_eq!(
+        preload_href("/src/assets/hero.png", &entries, false),
+        "/src/assets/hero.png?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, false),
+        "/src/logo.svg?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, true),
+        "/src/logo.svg",
+        "a transform plugin may componentize a bare svg import"
+    );
+    assert_eq!(
+        preload_href("/node_modules/pkg/icon.png", &entries, false),
+        "/node_modules/pkg/icon.png",
+        "a dependency's asset import is not marked"
     );
 }
 

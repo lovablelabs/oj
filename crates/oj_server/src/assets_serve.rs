@@ -23,6 +23,16 @@ pub(crate) fn query_asset_kind(query: Option<&str>) -> Option<&'static str> {
     None
 }
 
+/// The url a `?url` module exports: the file's, keeping the request's HMR
+/// `t=` stamp so an updated asset gets a url its `<img>` refetches (Vite).
+pub(crate) fn asset_export_url(url: &str) -> String {
+    let (clean, query) = url.split_once('?').unwrap_or((url, ""));
+    match query.split('&').find(|kv| kv.starts_with("t=")) {
+        Some(t) => format!("{clean}?{t}"),
+        None => clean.to_string(),
+    }
+}
+
 pub(crate) async fn asset_module(file: &Path, url: &str, kind: &str) -> Result<String, String> {
     let clean_url = url.split('?').next().unwrap_or(url);
     match kind {
@@ -33,7 +43,7 @@ pub(crate) async fn asset_module(file: &Path, url: &str, kind: &str) -> Result<S
             if is_style_ext(ext) {
                 return Ok(format!("export default {:?};\n", format!("{clean_url}?direct")));
             }
-            Ok(format!("export default {clean_url:?};\n"))
+            Ok(format!("export default {:?};\n", asset_export_url(url)))
         }
         "raw" => {
             let text = tokio::fs::read_to_string(file)

@@ -247,10 +247,21 @@ pub(crate) async fn serve_fallback(
 /// share one cache entry. `?import` for styles; a pre-bundled entry's current
 /// URL from `entries` (file name to URL), whose version moves with every
 /// rerun; anything else under `/@oj-deps/` bare, as dep files import their
-/// chunks.
-pub(crate) fn preload_href(path: &str, entries: &HashMap<String, String>) -> String {
+/// chunks. An app asset is imported as `?url` (an `.svg` stays bare when
+/// `svg_compiled`, for svgr), never by the url its `<img src>` fetches.
+pub(crate) fn preload_href(
+    path: &str,
+    entries: &HashMap<String, String>,
+    svg_compiled: bool,
+) -> String {
     if is_style_url(path) {
         format!("{path}?import")
+    } else if !path.starts_with("/@")
+        && !path.contains("/node_modules/")
+        && is_asset_path(Path::new(path))
+        && !(svg_compiled && path.ends_with(".svg"))
+    {
+        format!("{path}?url")
     } else if let Some(url) = path
         .strip_prefix("/@oj-deps/")
         .and_then(|file| entries.get(file))
@@ -279,7 +290,7 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState) -> Strin
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\" />\n",
-                preload_href(p, &entries)
+                preload_href(p, &entries, state.plugins_have_transform)
             )
         })
         .collect();

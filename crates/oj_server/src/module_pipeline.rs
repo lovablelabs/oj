@@ -231,10 +231,9 @@ fn code_module(code: String) -> CachedModule {
 
 /// `export default "<url>"`: how a non-compiled asset import is served.
 fn url_asset_module(url: &str) -> CachedModule {
-    let clean = url.split('?').next().unwrap_or(url);
     code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(clean.to_string())
+        serde_json::Value::String(asset_export_url(url))
     ))
 }
 

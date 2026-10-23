@@ -295,10 +295,10 @@ async fn serve_file(
         .as_deref()
         .is_some_and(|p| file.starts_with(p));
     if let Some(kind) = query_asset_kind(query) {
-        return serve_asset_query(state, file, ext, kind, in_public).await;
+        return serve_asset_query(state, file, ext, kind, query, in_public).await;
     }
     if is_style_ext(ext) && !in_public {
-        return serve_style(state, headers, file, query).await;
+        return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
     }
     if in_public {
         return serve_static_file(file, ext).await;
@@ -311,6 +311,21 @@ async fn serve_file(
         let url = format!("{}?react", url_of(&state.root, file));
         return serve_compiled(state, file, &url, None, headers).await;
     }
+    if ext.eq_ignore_ascii_case("svg") || is_importable_asset_ext(ext) {
+        return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
+    }
+    serve_raw_file(state, file, ext).await
+}
+
+/// A bare asset url is the file for an `<img src>` and its URL module for an
+/// import the browser marks `Sec-Fetch-Dest: script`.
+async fn serve_bare_asset(
+    state: &Arc<ServerState>,
+    headers: &HeaderMap,
+    file: &Path,
+    ext: &str,
+    query: Option<&str>,
+) -> Response {
     // A plain `.svg` import goes through the compile path so a configured svgr can
     // componentize it; unmatched svgs fall back to a URL asset there.
     if ext.eq_ignore_ascii_case("svg") && !wants_raw_resource(headers) {
@@ -335,6 +350,7 @@ async fn serve_asset_query(
     file: &Path,
     ext: &str,
     kind: &str,
+    query: Option<&str>,
     in_public: bool,
 ) -> Response {
     // A public file's url is its path under the public dir (`/logo.svg`,
@@ -342,6 +358,10 @@ async fn serve_asset_query(
     let url = match state.public_dir.as_deref().filter(|_| in_public) {
         Some(p) => format!("/{}", file.strip_prefix(p).unwrap_or(file).display()),
         None => url_of(&state.root, file),
+    };
+    let url = match query {
+        Some(q) => format!("{url}?{q}"),
+        None => url,
     };
     let js = if kind == "inline" && is_style_ext(ext) {
         inline_css_module(state, file, &url).await
@@ -427,6 +447,16 @@ fn read_error(err: std::io::Error) -> Response {
         format!("oj: read error: {err}"),
     )
         .into_response()
+}
+
+/// One url, two bodies picked by the request's `Sec-Fetch-Dest`: a cache must
+/// key on it or it hands a module import the image bytes (or the reverse).
+fn vary_on_fetch_dest(mut response: Response) -> Response {
+    response.headers_mut().append(
+        header::VARY,
+        header::HeaderValue::from_static("sec-fetch-dest"),
+    );
+    response
 }
 
 /// A no-cache JavaScript response.
