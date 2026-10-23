@@ -156,7 +156,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &rel.main_css,
-        r#"url\("\./bg-[a-z0-9]+\.png"\)"#,
+        r#"url\(\./bg-[a-z0-9]+\.png\)"#,
         "css url() is a sibling reference",
     );
     assert_match(

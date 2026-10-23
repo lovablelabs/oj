@@ -3405,7 +3405,8 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     )
                 })
                 .collect::<Vec<_>>()
-                .join("\n");
+                .concat();
+            let combined = chunk_css_asset(&combined, &css_asset_opts.resolve)?;
             let combined = append_stylex(combined, stylex_css.take());
             let hash = content_hash(combined.as_bytes());
             let css_name = render_asset_name(css_asset_opts.asset_names, "style", &hash, "css");
@@ -5106,7 +5107,9 @@ async fn build_client_entry(
             .into_iter()
             .map(|(_, css)| css)
             .collect::<Vec<_>>()
-            .join("\n");
+            .concat();
+        let resolve = css_resolve_of(root, config, "client", is_production);
+        let combined = chunk_css_asset(&combined, &resolve.as_ref())?;
         let combined = append_stylex(combined, stylex_css);
         let hash = format!("{:016x}", {
             use std::hash::{Hash, Hasher};
@@ -5359,7 +5362,9 @@ async fn build_library(
             .into_iter()
             .map(|(_, css)| css)
             .collect::<Vec<_>>()
-            .join("\n");
+            .concat();
+        let resolve = css_resolve_of(root, config, "client", is_production);
+        let combined = chunk_css_asset(&combined, &resolve.as_ref())?;
         let combined = append_stylex(combined, stylex_css.take());
         // Vite: `build.lib.cssFileName`, else the library's file name / package name.
         let css_stem = lib
@@ -5565,6 +5570,12 @@ fn preload_deps(
 
 /// `@stylexjs/unplugin`'s generateBundle: its sheet appended to a stylesheet
 /// the build emits, before that file is hashed.
+/// A chunk's module stylesheets as the CSS asset Vite writes: concatenated,
+/// then finished as one sheet ([`oj_css::finalize_chunk_css`]).
+fn chunk_css_asset(css: &str, resolve: &oj_css::CssResolve<'_>) -> anyhow::Result<String> {
+    oj_css::finalize_chunk_css(css, resolve).map_err(|e| anyhow::anyhow!(e))
+}
+
 fn append_stylex(css: String, stylex: Option<String>) -> String {
     match stylex {
         Some(sheet) if css.is_empty() => sheet,
@@ -5802,9 +5813,6 @@ fn emit_split_css_files(
                     .parent()
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| root.to_path_buf());
-                if !css.is_empty() {
-                    css.push('\n');
-                }
                 css.push_str(&rebase_css_urls(
                     src,
                     &dir,
@@ -5819,6 +5827,7 @@ fn emit_split_css_files(
         if css.is_empty() {
             continue;
         }
+        let css = chunk_css_asset(&css, &opts.resolve)?;
         let css = if stylex_chunk.as_deref() == Some(chunk.filename.as_str()) {
             append_stylex(css, stylex_css.take())
         } else {

@@ -36,6 +36,11 @@ jobs:
       # archive in the restored cache.
       - name: install start-app fixture (vite for the config and Start tests)
         run: npm ci --prefix e2e/fixtures/start-app
+      # The StyleX e2e (crates/oj/tests/stylex_e2e.rs) runs the real
+      # @stylexjs packages and Vite's build of the same app; its own fixture,
+      # as @stylexjs/unplugin's unplugin@2 peer conflicts with TanStack's @3.
+      - name: install stylex-app fixture
+        run: npm ci --prefix e2e/fixtures/stylex-app
       # The dev tests that need a page drive headless Chrome over the DevTools
       # protocol and skip without one; Playwright only installs the browser.
       - run: npm install --prefix e2e

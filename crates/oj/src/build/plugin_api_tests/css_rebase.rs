@@ -57,7 +57,7 @@ async fn relative_css_urls_rebase_to_hashed_assets_and_data_urls_stay() {
     let css = fs::read_to_string(assets.join(style)).unwrap();
 
     assert!(
-        Regex::new(r#"url\("/assets/bg-[0-9a-f]+\.png"\)"#)
+        Regex::new(r#"url\(/assets/bg-[0-9a-f]+\.png\)"#)
             .unwrap()
             .is_match(&css),
         "relative url() rebased to a hashed /assets/ file:\n{css}"

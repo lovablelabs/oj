@@ -1,0 +1,20 @@
+{
+  "name": "oj-stylex-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@stylexjs/stylex": "0.19.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@stylexjs/unplugin": "0.19.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "unplugin": "^2.3.11",
+    "vite": "^8.2.0"
+  }
+}
