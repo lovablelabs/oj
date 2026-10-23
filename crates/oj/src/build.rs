@@ -146,6 +146,7 @@ struct OutputOverrides {
     name: Option<String>,
     extend: Option<bool>,
     inline_dynamic_imports: bool,
+    hash_characters: Option<rolldown_common::HashCharacters>,
 }
 
 fn ro_output_overrides(ro: Option<&serde_json::Value>) -> OutputOverrides {
@@ -212,6 +213,15 @@ fn ro_output_overrides(ro: Option<&serde_json::Value>) -> OutputOverrides {
     ov.paths = str_map("paths");
     ov.name = out.get("name").and_then(|v| v.as_str()).map(String::from);
     ov.extend = out.get("extend").and_then(|v| v.as_bool());
+    ov.hash_characters = match out.get("hashCharacters").and_then(|v| v.as_str()) {
+        None | Some("base64") => None,
+        Some("base36") => Some(rolldown_common::HashCharacters::Base36),
+        Some("hex") => Some(rolldown_common::HashCharacters::Hex),
+        Some(other) => {
+            eprintln!("oj build: (!) build.rollupOptions.output.hashCharacters \"{other}\" is not supported; using base64.");
+            None
+        }
+    };
     ov.inline_dynamic_imports = out.get("inlineDynamicImports").and_then(|v| v.as_bool())
         == Some(true)
         || out.get("codeSplitting").and_then(|v| v.as_bool()) == Some(false)
@@ -271,7 +281,7 @@ struct OjCssPlugin {
     /// Where split chunk stylesheets go and how they are named, so a chunk's
     /// hash covers its stylesheet's name (vite:css-post's augmentChunkHash);
     /// None for builds that emit no split CSS.
-    chunk_css_hashing: Option<(PathBuf, String)>,
+    chunk_css_hashing: Option<(PathBuf, String, u8)>,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -1434,7 +1444,7 @@ impl Plugin for OjCssPlugin {
         let name = self
             .chunk_css_hashing
             .as_ref()
-            .and_then(|(out_dir, asset_names)| {
+            .and_then(|(out_dir, asset_names, hash_base)| {
                 let css_map: std::collections::HashMap<String, String> =
                     self.collected.lock().unwrap().iter().cloned().collect();
                 let module_ids: Vec<String> =
@@ -1444,6 +1454,7 @@ impl Plugin for OjCssPlugin {
                     inline_limit: self.inline_limit,
                     asset_names: Some(asset_names.as_str()),
                     resolve,
+                    hash_base: *hash_base,
                 };
                 chunk_stylesheet(
                     &chunk.name,
@@ -3369,6 +3380,8 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
+    let out_ov = ro_output_overrides(ro_opts);
+    let asset_hash_base = hash_base(out_ov.hash_characters);
     let emit = Arc::new(EmitState::with_pages(
         root.to_path_buf(),
         Arc::clone(&page_setup),
@@ -3418,9 +3431,14 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         })),
         worker_entries: Arc::clone(&worker_entries),
         pages: Arc::clone(&page_setup.pages),
-        chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
+        chunk_css_hashing: css_split.then(|| {
+            (
+                out_dir.clone(),
+                asset_names_pattern.clone(),
+                asset_hash_base,
+            )
+        }),
     }));
-    let out_ov = ro_output_overrides(ro_opts);
     // Vite's build import analysis (preload wrapping, polyfill) only applies to
     // es output; umd/iife/cjs bundles cannot use `import.meta.url`.
     let es_output = out_ov.format.is_none();
@@ -3460,6 +3478,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 .map(|p| rolldown_common::PathsOutputOption::FxHashMap(p.into_iter().collect())),
             name: out_ov.name,
             extend: out_ov.extend,
+            hash_characters: out_ov.hash_characters,
             treeshake: ro_treeshake(ro_opts),
             // Vite sets `preserveEntrySignatures: false` for app builds; oj keeps
             // rolldown's exports-only default because plugin-emitted chunks (crx
@@ -3588,6 +3607,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         inline_limit: assets_inline_limit_of(&config),
         asset_names: Some(asset_names_pattern.as_str()),
         resolve: css_asset_resolve.as_ref(),
+        hash_base: asset_hash_base,
     };
     let mut manifest_entries: Vec<ManifestEntry> = Vec::new();
     let mut manifest_assets: Vec<ManifestAsset> = Vec::new();
@@ -3689,7 +3709,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             let combined = chunk_css_asset(&combined, &css_asset_opts.resolve)?;
             // Named before the StyleX sheet joins it, as Vite names the asset
             // before the plugin's generateBundle appends to it.
-            let hash = css_asset_hash(&combined);
+            let hash = css_asset_hash_in(&combined, asset_hash_base);
             // Vite emits the bundle from the generateBundle that strips the
             // hash marker off every other sheet, too late to be stripped.
             let combined = append_stylex(format!("{combined}/*$vite$:1*/"), stylex_css.take());
@@ -4484,7 +4504,7 @@ fn emit_html_asset(
         }
         return Some(format!("data:{};base64,{}", asset_mime(ext), b64(&data)));
     }
-    let hash = content_hash(&data);
+    let hash = content_hash_in(&data, opts.hash_base);
     let stem = abs.file_stem().and_then(|s| s.to_str()).unwrap_or("asset");
     let name = render_asset_name(opts.asset_names, &sanitize_asset_name(stem), &hash, ext);
     let dest = out_dir.join(&name);
@@ -5817,7 +5837,18 @@ fn sanitize_asset_name(s: &str) -> String {
 /// xxh3-128 of the bytes in rolldown's url-safe base64 (21 characters; a
 /// file name takes the first 8, or `[hash:N]`'s N).
 pub(crate) fn content_hash(bytes: &[u8]) -> String {
-    rolldown_utils::xxhash::xxhash_with_base(bytes, 64)
+    content_hash_in(bytes, 64)
+}
+
+/// [`content_hash`] in `output.hashCharacters`' base (64, 36 or 16), as
+/// rolldown names its own files.
+fn content_hash_in(bytes: &[u8], base: u8) -> String {
+    rolldown_utils::xxhash::xxhash_with_base(bytes, base)
+}
+
+/// The base of `output.hashCharacters`.
+fn hash_base(chars: Option<rolldown_common::HashCharacters>) -> u8 {
+    chars.unwrap_or_default().base()
 }
 
 /// A stylesheet asset's hash: Vite's finalizeCss emits the sheet with
@@ -5825,7 +5856,11 @@ pub(crate) fn content_hash(bytes: &[u8]) -> String {
 /// its links gained `crossorigin`) and strips it in generateBundle, so the
 /// name hashes the marker the file no longer has.
 pub(crate) fn css_asset_hash(css: &str) -> String {
-    content_hash(format!("{css}/*$vite$:1*/").as_bytes())
+    css_asset_hash_in(css, 64)
+}
+
+fn css_asset_hash_in(css: &str, base: u8) -> String {
+    content_hash_in(format!("{css}/*$vite$:1*/").as_bytes(), base)
 }
 
 /// Emit a CSS-referenced asset (font/image) under a content hash and return its
@@ -5839,6 +5874,8 @@ struct CssAssetOpts<'a> {
     asset_names: Option<&'a str>,
     /// Alias and root-absolute resolution for `url()` specifiers.
     resolve: oj_css::CssResolve<'a>,
+    /// `output.hashCharacters`' base for the names oj hashes itself.
+    hash_base: u8,
 }
 
 /// Render Vite/rolldown `assetFileNames` placeholders (`[name]`, `[hash]`,
@@ -5917,7 +5954,7 @@ fn emit_css_url(
         }
         return Some(format!("data:{};base64,{}", asset_mime(ext), b64(&data)));
     }
-    let hash = content_hash(&data);
+    let hash = content_hash_in(&data, opts.hash_base);
     let stem = abs.file_stem().and_then(|s| s.to_str()).unwrap_or("asset");
     let name = render_asset_name(opts.asset_names, &sanitize_asset_name(stem), &hash, ext);
     let dest = out_dir.join(&name);
@@ -6116,7 +6153,7 @@ fn chunk_stylesheet(
     let name = render_asset_name(
         opts.asset_names,
         &sanitize_asset_name(chunk_name),
-        &css_asset_hash(&css),
+        &css_asset_hash_in(&css, opts.hash_base),
         "css",
     );
     Ok(Some(ChunkStylesheet { css, name, sources }))

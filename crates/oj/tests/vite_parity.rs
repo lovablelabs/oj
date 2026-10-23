@@ -457,3 +457,39 @@ fn pure_css_chunks_build_vites_exact_files() {
     };
     assert_same_output(&root);
 }
+
+/// `output.hashCharacters` names every file: chunks, stylesheets, and the
+/// assets imported, referenced from CSS or from the page.
+#[test]
+fn hash_characters_build_vites_exact_files() {
+    let (logo, bg, hero) = ("l".repeat(6000), "b".repeat(6000), "h".repeat(6000));
+    for chars in ["hex", "base36"] {
+        let config = format!(
+            "export default {{ build: {{ rolldownOptions: {{ output: {{ hashCharacters: \"{chars}\" }} }} }} }};\n"
+        );
+        let Some(root) = app(
+            &format!("hash-{chars}"),
+            &[
+                ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+                ("vite.config.js", Some(&config)),
+                (
+                    "index.html",
+                    Some(r#"<!doctype html><html><head><title>p</title></head><body><img src="/src/hero.png"><script type="module" src="/src/main.js"></script></body></html>"#),
+                ),
+                (
+                    "src/main.js",
+                    Some("import \"./main.css\";\nimport logo from \"./logo.png\";\nconsole.log(logo);\nwindow.l = () => import(\"./lazy.js\");\n"),
+                ),
+                ("src/lazy.js", Some("import \"./lazy.css\";\nexport default 1;\n")),
+                ("src/main.css", Some("body { background: url(./bg.png); }\n")),
+                ("src/lazy.css", Some(".lazy { color: red; }\n")),
+                ("src/logo.png", Some(&logo)),
+                ("src/bg.png", Some(&bg)),
+                ("src/hero.png", Some(&hero)),
+            ],
+        ) else {
+            return;
+        };
+        assert_same_output(&root);
+    }
+}
