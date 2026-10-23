@@ -63,7 +63,7 @@ try {
     "utf8",
   );
   assert.ok(
-    files.some((f) => /^w-[^.]+\.js$/.test(f)),
+    files.some((f) => /^w-[^.]+\.js$/.test(f) && !f.startsWith("w-lazy-")),
     `worker chunk emitted: ${files}`,
   );
   assert.ok(!files.some((f) => f.endsWith(".ts")), `raw .ts shipped as an asset: ${files}`);
@@ -72,10 +72,12 @@ try {
   assert.match(main, /other-[^.]+\.png/, "glob map includes every match");
   // A worker chunk (and the chunks only it loads) runs without a document: no
   // __vitePreload wrapping or stylesheet injection lands in it (Vite: isWorker).
+  // `w-lazy-*` is the worker's own lazy chunk, not the worker: never pick it
+  // by listing order, which follows the hash in the names.
   const workerChunk = fs.readFileSync(
     path.join(
       assets,
-      files.find((f) => /^w-[^.]+\.js$/.test(f)),
+      files.find((f) => /^w-[^.]+\.js$/.test(f) && !f.startsWith("w-lazy-")),
     ),
     "utf8",
   );
