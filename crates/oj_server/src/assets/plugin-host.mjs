@@ -1298,19 +1298,22 @@ const transformEmitStore = new AsyncLocalStorage();
 // look up a plugin named "vite:css-post" in `config.plugins` during their build
 // hook and call its `transform` with the CSS they generate, to route it into
 // the output. oj collects that CSS here and folds it into the build stylesheet
-// (see getPluginCss). Only relevant fields are implemented.
+// (see getPluginCss). Only relevant fields are implemented. Each container's
+// resolved config lists its own, as each Vite environment resolves its own
+// css-post: a worker bundle's CSS never joins the app's stylesheet.
 const ojPluginCss = [];
-const cssPostShim = {
+const cssPostShimInto = (sink) => ({
   name: "vite:css-post",
   transform: {
     handler(code, id) {
       if (typeof code === "string" && code.length > 0) {
-        ojPluginCss.push({ id: typeof id === "string" ? id : "", css: code });
+        sink.push({ id: typeof id === "string" ? id : "", css: code });
       }
       return null;
     },
   },
-};
+});
+const cssPostShim = cssPostShimInto(ojPluginCss);
 
 // A plugin container: the plugins one bundle runs and the state their hooks
 // share (Vite's EnvironmentPluginContainer). The host's own environment is
@@ -1775,9 +1778,9 @@ async function runConfigHooks() {
 }
 // The plugin array a resolved config lists: `list` in enforce order, with the
 // vite:css-post shim when no plugin of that name is there.
-function withCssPostShim(list) {
+function withCssPostShim(list, shim = cssPostShim) {
   const out = list.slice().sort((a, b) => enforceRank(a) - enforceRank(b));
-  if (!out.some((p) => p && p.name === "vite:css-post")) out.push(cssPostShim);
+  if (!out.some((p) => p && p.name === "vite:css-post")) out.push(shim);
   return out;
 }
 await runConfigHooks();
@@ -3870,6 +3873,9 @@ async function switchEnvironment(c, name) {
 // `client` environment of that config. The reply is the container's id.
 let workerPluginsArrayWarned = false;
 async function openWorkerContainer(bundleChain) {
+  // Vite reads `worker.plugins` off the config its config hooks returned: a
+  // plugin's own value, else the user's. Not hookedUserConfig's, which sits on
+  // Vite's resolved config, whose `worker.plugins` is Vite's own resolver.
   let create = pluginConfigDelta.worker?.plugins ?? userViteConfig?.worker?.plugins;
   if (Array.isArray(create)) {
     const list = create;
@@ -3895,7 +3901,7 @@ async function openWorkerContainer(bundleChain) {
     mainConfig: main.resolvedConfig,
     bundleChain,
   };
-  resolved.plugins = withCssPostShim(workerPlugins);
+  resolved.plugins = withCssPostShim(workerPlugins, cssPostShimInto([]));
   await runConfigResolved(workerPlugins, resolved, c);
   c.resolvedConfig = resolved;
   await resolveEnvironment(c, "client");

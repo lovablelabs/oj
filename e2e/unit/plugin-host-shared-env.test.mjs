@@ -381,3 +381,59 @@ test(
     }
   },
 );
+
+// Each Vite environment resolves its own `vite:css-post`: CSS a worker
+// plugin routes through it stays out of the app's stylesheet.
+test(
+  "a worker container's css-post keeps its CSS from the app's",
+  { skip: !fs.existsSync(viteSrc) && "fixture vite not installed" },
+  async () => {
+    const fx = tmpProject({ prefix: "oj-worker-css-" });
+    // Each plugin hands CSS to the css-post its resolved config lists.
+    fx.write(
+      "vite.config.mjs",
+      `const routes = (name) => {
+         let resolved;
+         return {
+           name,
+           configResolved(c) { resolved = c; },
+           buildStart() {
+             const post = resolved.plugins.find((p) => p.name === "vite:css-post");
+             post.transform.handler("." + name + "{}", "/" + name + ".css");
+           },
+         };
+       };
+       export default { plugins: [routes("app")], worker: { plugins: () => [routes("worker")] } };\n`,
+    );
+    const host = rpcSidecar("plugin-host.mjs", {
+      args: [
+        path.join(fx.root, "vite.config.mjs"),
+        JSON.stringify({
+          pluginsFormat: "vite",
+          config: { root: fx.root, base: "/", mode: "production", command: "build" },
+          env: { command: "build", mode: "production" },
+          environment: { name: "client", mode: "build" },
+          ojStartMode: true,
+          ojBundleHost: true,
+        }),
+      ],
+      env: { OJ_CACHE_ROOT: fx.root },
+      cwd: fx.root,
+    });
+    const call = async (id, hook, args, container) => {
+      const r = await host.send({ id, hook, args, container });
+      assert.equal(r.error, undefined, `${hook}: ${r.error}\n${host.stderr()}`);
+      return r.result;
+    };
+    try {
+      await host.initSignal();
+      const worker = Number(await call(1, "openWorkerContainer", [JSON.stringify(["/app/src/w.ts"])]));
+      await call(2, "buildStart", [], worker);
+      await call(3, "buildStart", []);
+      assert.deepEqual(JSON.parse(await call(4, "getPluginCss", [])), [{ id: "/app.css", css: ".app{}" }]);
+    } finally {
+      host.close();
+      fx.cleanup();
+    }
+  },
+);

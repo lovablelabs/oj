@@ -202,6 +202,7 @@ console.log(a, b);
         AssetMode::Build {
             emitter: Arc::clone(&emitter),
             server: false,
+            worker_chain: Vec::new(),
         },
     ));
     let code = bundle(&app, "src/entry.js", vec![plugin]).await.unwrap();
@@ -247,6 +248,7 @@ async fn a_failed_asset_load_says_why() {
         AssetMode::Build {
             emitter,
             server: false,
+            worker_chain: Vec::new(),
         },
     ));
     let err = bundle(&app, "src/entry.js", vec![plugin])
@@ -642,4 +644,62 @@ async fn a_factory_reexported_by_app_modules_compiles() {
     .unwrap_or_else(|e| panic!("the client bundle: {}", e.message));
     assert!(client.contains("client-side"), "{client}");
     assert!(!client.contains("server-side"), "{client}");
+}
+
+/// Vite's bundleWorkerEntry: a worker a worker imports bundles under the
+/// importer's chain, and a worker reached again through its own chain fails
+/// naming it (it would otherwise wait on its own unfinished bundle).
+#[tokio::test(flavor = "multi_thread")]
+async fn nested_workers_carry_the_chain_and_a_cycle_fails() {
+    let app = App::new(&[("src/a.js", ""), ("src/b.js", "")]);
+    let start = app.start();
+    let styles = Arc::new(Styles::new(&start));
+    let emitter = Arc::new(Emitter::new(
+        &app.dir.join("dist/client"),
+        "/",
+        Arc::clone(&styles),
+    ));
+    let (a, b) = (app.dir.join("src/a.js"), app.dir.join("src/b.js"));
+    let chains: Arc<Mutex<Vec<Vec<PathBuf>>>> = Arc::default();
+    let weak = Arc::downgrade(&emitter);
+    let seen = Arc::clone(&chains);
+    let next = b.clone();
+    emitter.set_worker_bundler(
+        Arc::new(move |file: PathBuf, chain: Vec<PathBuf>| {
+            seen.lock().unwrap().push(chain.clone());
+            let emitter = weak.upgrade().unwrap();
+            // a inlines b, b takes a's URL (as the client did).
+            let into_b = file != next;
+            let import = if into_b {
+                next.clone()
+            } else {
+                chain[0].clone()
+            };
+            Box::pin(async move {
+                if into_b {
+                    emitter.worker_code(&import, &chain).await?;
+                } else {
+                    emitter.worker(&import, &chain).await?;
+                }
+                Ok(super::assets::WorkerBundle {
+                    code: String::new(),
+                    file_name: "w.js".into(),
+                })
+            })
+        }),
+        false,
+    );
+    let err = match emitter.worker(&a, &[]).await {
+        Ok(_) => panic!("a circular worker import bundled"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        err,
+        "Circular worker imports detected. Vite does not support it. Import chain: src/a.js -> src/b.js -> src/a.js"
+    );
+    assert_eq!(
+        *chains.lock().unwrap(),
+        vec![vec![a.clone()], vec![a.clone(), b.clone()]],
+        "each bundle sees its importers, then itself"
+    );
 }

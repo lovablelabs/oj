@@ -189,6 +189,10 @@ impl Styles {
         }
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn inputs(&self) -> oj_server::StyleInputs<'_> {
         oj_server::StyleInputs {
             root: &self.root,
@@ -277,10 +281,12 @@ pub(crate) struct WorkerBundle {
     pub file_name: String,
 }
 
-/// Bundles a worker entry on its own (Vite's bundleWorkerEntry).
+/// Bundles a worker entry on its own (Vite's bundleWorkerEntry), given the
+/// entry and its bundle chain (the workers importing it, then the entry).
 pub(crate) type WorkerBundler = Arc<
     dyn Fn(
             PathBuf,
+            Vec<PathBuf>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<WorkerBundle, String>> + Send>,
         > + Send
@@ -484,8 +490,38 @@ impl Emitter {
         Ok(out)
     }
 
-    /// A worker entry's bundle, bundled once per file.
-    pub async fn worker_code(&self, path: &Path) -> Result<WorkerBundle, String> {
+    /// `chain` (the workers whose bundles import `path`, empty from the
+    /// client or server) with `path` last; a worker importing itself through
+    /// them fails, as in Vite, before it could wait on its own bundle.
+    fn worker_chain(&self, path: &Path, chain: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+        let mut new_chain = chain.to_vec();
+        new_chain.push(path.to_path_buf());
+        if !chain.iter().any(|p| p == path) {
+            return Ok(new_chain);
+        }
+        let root = self.styles.root();
+        let names: Vec<String> = new_chain
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        Err(format!(
+            "Circular worker imports detected. Vite does not support it. Import chain: {}",
+            names.join(" -> ")
+        ))
+    }
+
+    /// A worker entry's bundle, bundled once per file, under `chain`.
+    pub async fn worker_code(
+        &self,
+        path: &Path,
+        chain: &[PathBuf],
+    ) -> Result<WorkerBundle, String> {
+        let new_chain = self.worker_chain(path, chain)?;
         let cell = Arc::clone(
             self.worker_codes
                 .lock()
@@ -498,7 +534,7 @@ impl Emitter {
             .get_or_try_init(|| async move {
                 let bundler = bundler
                     .ok_or_else(|| format!("oj: no worker bundler for {}", path.display()))?;
-                bundler(path.to_path_buf()).await
+                bundler(path.to_path_buf(), new_chain).await
             })
             .await
             .cloned();
@@ -512,7 +548,8 @@ impl Emitter {
     }
 
     /// The emitted URL of a worker entry's bundle.
-    pub async fn worker(&self, path: &Path) -> Result<String, String> {
+    pub async fn worker(&self, path: &Path, chain: &[PathBuf]) -> Result<String, String> {
+        self.worker_chain(path, chain)?;
         let cell = Arc::clone(
             self.worker_urls
                 .lock()
@@ -521,7 +558,7 @@ impl Emitter {
                 .or_default(),
         );
         cell.get_or_try_init(|| async move {
-            let bundle = self.worker_code(path).await?;
+            let bundle = self.worker_code(path, chain).await?;
             let assets = self.assets_dir.parent().unwrap_or(&self.assets_dir);
             let dest = assets.join(&bundle.file_name);
             if let Some(parent) = dest.parent() {
@@ -708,7 +745,13 @@ pub(crate) enum AssetMode {
     },
     /// The build's emitter; `server` for the server bundle (which links no
     /// stylesheet and minifies `?inline` sheets under ssr's cssMinify).
-    Build { emitter: Arc<Emitter>, server: bool },
+    /// `worker_chain` is a worker bundle's chain (empty for the client and
+    /// server), the workers it imports bundling under it.
+    Build {
+        emitter: Arc<Emitter>,
+        server: bool,
+        worker_chain: Vec<PathBuf>,
+    },
 }
 
 pub(crate) const DEV_FS_BASE: &str = "/@oj-start/fs";
@@ -749,7 +792,11 @@ impl StartAssetsPlugin {
                 Ok(rel) => format!("/{}", rel.to_string_lossy().replace('\\', "/")),
                 Err(_) => format!("/@fs{}", path.display()),
             }),
-            AssetMode::Build { emitter, .. } => emitter.worker(path).await,
+            AssetMode::Build {
+                emitter,
+                worker_chain,
+                ..
+            } => emitter.worker(path, worker_chain).await,
         }
     }
 
@@ -781,7 +828,9 @@ impl StartAssetsPlugin {
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                     self.styles.dev_inline(path).await?
                 }
-                AssetMode::Build { emitter, server } => {
+                AssetMode::Build {
+                    emitter, server, ..
+                } => {
                     let compiled = self.styles.compile(path).await?;
                     // A build gives a CSS module's class map even inlined.
                     if is_css_module(&path_str) {
@@ -800,9 +849,18 @@ impl StartAssetsPlugin {
                     AssetMode::Build { emitter, .. } => emitter.worker_is_module(),
                 };
                 match (form, &self.mode) {
-                    (WorkerForm::Inline, AssetMode::Build { emitter, .. }) => {
-                        inline_worker_module(shared, &emitter.worker_code(path).await?.code, module)
-                    }
+                    (
+                        WorkerForm::Inline,
+                        AssetMode::Build {
+                            emitter,
+                            worker_chain,
+                            ..
+                        },
+                    ) => inline_worker_module(
+                        shared,
+                        &emitter.worker_code(path, worker_chain).await?.code,
+                        module,
+                    ),
                     (WorkerForm::Url, _) => {
                         format!("export default {};", json(&self.worker_url_for(path).await?))
                     }
@@ -838,6 +896,7 @@ impl StartAssetsPlugin {
                     AssetMode::Build {
                         emitter,
                         server: false,
+                        ..
                     } => match &compiled {
                         Some(c) => {
                             emitter.css(path, c.css.clone()).await?;

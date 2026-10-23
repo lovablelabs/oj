@@ -57,6 +57,7 @@ const write = (rel, text) => {
 };
 const report = path.join(app, "worker-seen.json");
 const appSeen = path.join(app, "app-seen.json");
+const chains = path.join(app, "worker-chains.log");
 
 write("src/lib/wk/helper.ts", "export const n: number = 41;\n");
 write("src/lib/wk/lazy.ts", 'export const lazy: string = "lazy-ok";\n');
@@ -79,7 +80,7 @@ const configPath = path.join(app, "vite.config.ts");
 let config = fs.readFileSync(configPath, "utf8");
 config = config.replace(
   "export default defineConfig({",
-  `import { writeFileSync } from "node:fs";
+  `import { appendFileSync, writeFileSync } from "node:fs";
 
 let workerPluginCalls = 0;
 // Filled by the worker plugins, read by the app's: one realm, as in Vite.
@@ -95,6 +96,7 @@ function workerPlugins() {
         add("config", env.command);
       },
       configResolved(this: any, resolved: any) {
+        appendFileSync(${JSON.stringify(chains)}, resolved.bundleChain.map((f: string) => f.split("/").pop()).join(">") + "\\n");
         add("configResolved", [resolved.isWorker, resolved.bundleChain?.some((f: string) => f.endsWith("/wk/worker.ts")), !!this.meta?.rolldownVersion].join(","));
       },
       buildStart() {
@@ -248,11 +250,42 @@ try {
   // `virtual:build-info`) does not resolve inside a worker: the build fails
   // naming it. The plugin belongs in `worker.plugins` too.
   const workerFile = path.join(app, "src/lib/wk/worker.ts");
+  const workerSource = fs.readFileSync(workerFile, "utf8");
+
+  // A worker's own `?worker` imports bundle under its chain: the nested
+  // worker's plugins see [outer, inner], as Vite's bundleChain.
+  write("src/lib/wk/inner.ts", "self.onmessage = () => self.postMessage(1);\n");
   fs.writeFileSync(
     workerFile,
-    'import { buildTag } from "virtual:build-info";\n' +
-      fs.readFileSync(workerFile, "utf8") +
-      "console.log(buildTag);\n",
+    'import innerUrl from "./inner.ts?worker&url";\nconsole.log(innerUrl);\n' + workerSource,
+  );
+  fs.rmSync(chains, { force: true });
+  buildWith(undefined);
+  const seenChains = fs.readFileSync(chains, "utf8").trim().split("\n").sort();
+  must(
+    JSON.stringify(seenChains) === JSON.stringify(["worker.ts", "worker.ts>inner.ts"]),
+    `the nested worker's bundle chain is not [outer, inner]: ${JSON.stringify(seenChains)}`,
+  );
+
+  // A worker importing itself fails the build naming the chain, as in Vite.
+  fs.writeFileSync(workerFile, 'import selfUrl from "./worker.ts?worker&url";\nconsole.log(selfUrl);\n' + workerSource);
+  let circular = null;
+  try {
+    buildWith(undefined);
+  } catch (e) {
+    circular = e.message;
+  }
+  must(circular, "a worker importing itself built; Vite fails on circular worker imports");
+  must(
+    circular.includes(
+      "Circular worker imports detected. Vite does not support it. Import chain: src/lib/wk/worker.ts -> src/lib/wk/worker.ts",
+    ),
+    `the failure does not name the circular worker chain:\n${circular}`,
+  );
+
+  fs.writeFileSync(
+    workerFile,
+    'import { buildTag } from "virtual:build-info";\n' + workerSource + "console.log(buildTag);\n",
   );
   let failure = null;
   try {

@@ -176,6 +176,7 @@ fn client_plugins(
     start: &StartConfig,
     host: Option<&BundleHost>,
     target: CodeTarget,
+    worker_chain: Vec<PathBuf>,
     styles: &Arc<Styles>,
     emitter: &Arc<Emitter>,
     emit: &Arc<EmitState>,
@@ -209,6 +210,7 @@ fn client_plugins(
         AssetMode::Build {
             emitter: Arc::clone(emitter),
             server: false,
+            worker_chain,
         },
     )));
     plugins.push(Pluginable::new_shared(NodeBuiltinShims {
@@ -334,7 +336,7 @@ pub(crate) async fn build(
         let minify = minify.clone();
         let sourcemap_kind = out.sourcemap;
         let worker = worker_options.clone();
-        let bundler: WorkerBundler = Arc::new(move |file: PathBuf| {
+        let bundler: WorkerBundler = Arc::new(move |file: PathBuf, chain: Vec<PathBuf>| {
             let start = Arc::clone(&start);
             let styles = Arc::clone(&styles);
             let emitter = weak_emitter.upgrade();
@@ -347,13 +349,14 @@ pub(crate) async fn build(
             Box::pin(async move {
                 let emitter = emitter.ok_or("the build is over")?;
                 let host = match &app_host {
-                    Some(h) => Some(h.worker(&[&file]).await.map_err(|e| e.to_string())?),
+                    Some(h) => Some(h.worker(&chain).await.map_err(|e| e.to_string())?),
                     None => None,
                 };
                 let result = bundle_worker(
                     &start,
                     host.as_ref(),
                     &file,
+                    chain,
                     &styles,
                     &emitter,
                     &client_dir,
@@ -386,6 +389,7 @@ pub(crate) async fn build(
                 &start,
                 client_host.as_ref(),
                 CodeTarget::Client,
+                Vec::new(),
                 &styles,
                 &emitter,
                 &emit,
@@ -519,6 +523,7 @@ pub(crate) async fn build(
                 AssetMode::Build {
                     emitter: Arc::clone(&emitter),
                     server: true,
+                    worker_chain: Vec::new(),
                 },
             )));
             plugins
@@ -770,6 +775,7 @@ async fn bundle_worker(
     start: &StartConfig,
     host: Option<&BundleHost>,
     file: &Path,
+    chain: Vec<PathBuf>,
     styles: &Arc<Styles>,
     emitter: &Arc<Emitter>,
     client_dir: &Path,
@@ -783,6 +789,7 @@ async fn bundle_worker(
         CodeTarget::Worker {
             entry: file.to_path_buf(),
         },
+        chain,
         styles,
         emitter,
         &emit,

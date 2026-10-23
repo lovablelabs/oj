@@ -6,7 +6,7 @@
 //! reimplements left out, a plugin's `this.resolve` ending in the bundle's
 //! own resolution).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use oj_server::plugins::PluginHost;
@@ -116,8 +116,8 @@ impl BundleHost {
     /// container of its own over `worker.plugins`, a fresh set beside the
     /// app's plugins, its resolved config `isWorker` with `chain`. Its
     /// `this.resolve` ends in the worker's own bundle. [`BundleHost::close_worker`]
-    /// ends it.
-    pub async fn worker(&self, chain: &[&Path]) -> anyhow::Result<BundleHost> {
+    /// ends it; a container that fails to start is closed here.
+    pub async fn worker(&self, chain: &[PathBuf]) -> anyhow::Result<BundleHost> {
         let chain: Vec<String> = chain.iter().map(|p| p.display().to_string()).collect();
         let host = Arc::new(
             self.host
@@ -126,7 +126,13 @@ impl BundleHost {
                 .map_err(|e| anyhow::anyhow!("the worker plugin container: {e}"))?,
         );
         let ctx = serve_bundler_resolve(&host);
-        let (facts, defines, env_delta) = read_facts(&host, "worker").await?;
+        let (facts, defines, env_delta) = match read_facts(&host, "worker").await {
+            Ok(facts) => facts,
+            Err(e) => {
+                let _ = host.close_container().await;
+                return Err(e);
+            }
+        };
         Ok(BundleHost {
             host,
             ctx,
