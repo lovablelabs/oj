@@ -228,7 +228,7 @@ try {
       `built /about returned ${res.status}:\n${page.slice(0, 800)}\n---\n${builtLog.slice(-1200)}`,
     );
     const buildClasses = checkStyles("build", page, builtJs, builtCss);
-    const inlined = checkInline("build", page, builtJs, (u) => /^\/assets\/hero-[0-9a-f]+\.png$/.test(u));
+    const inlined = checkInline("build", page, builtJs, (u) => /^\/assets\/hero-[A-Za-z0-9_-]{8}\.png$/.test(u));
     // Vite's build.cssMinify (on by default for both environments): emitted
     // sheets and inlined text are minified.
     must(!/\s{2}|\n/.test(inlined), `build: inline sheet not minified: ${JSON.stringify(inlined)}`);

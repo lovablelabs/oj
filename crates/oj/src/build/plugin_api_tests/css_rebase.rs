@@ -57,7 +57,7 @@ async fn relative_css_urls_rebase_to_hashed_assets_and_data_urls_stay() {
     let css = fs::read_to_string(assets.join(style)).unwrap();
 
     assert!(
-        Regex::new(r#"url\(/assets/bg-[0-9a-f]+\.png\)"#)
+        Regex::new(r#"url\(/assets/bg-[A-Za-z0-9_-]{8}\.png\)"#)
             .unwrap()
             .is_match(&css),
         "relative url() rebased to a hashed /assets/ file:\n{css}"
@@ -71,7 +71,7 @@ async fn relative_css_urls_rebase_to_hashed_assets_and_data_urls_stay() {
         "a data: url() is left untouched:\n{css}"
     );
 
-    let png_re = Regex::new(r"^bg-[0-9a-f]+\.png$").unwrap();
+    let png_re = Regex::new(r"^bg-[A-Za-z0-9_-]{8}\.png$").unwrap();
     let emitted = files
         .iter()
         .find(|f| png_re.is_match(f))

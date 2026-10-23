@@ -3455,8 +3455,10 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 .collect::<Vec<_>>()
                 .concat();
             let combined = chunk_css_asset(&combined, &css_asset_opts.resolve)?;
+            // Named before the StyleX sheet joins it, as Vite names the asset
+            // before the plugin's generateBundle appends to it.
+            let hash = css_asset_hash(&combined);
             let combined = append_stylex(combined, stylex_css.take());
-            let hash = content_hash(combined.as_bytes());
             let css_name = render_asset_name(css_asset_opts.asset_names, "style", &hash, "css");
             if let Some(parent) = out_dir.join(&css_name).parent() {
                 fs::create_dir_all(parent)?;
@@ -3663,7 +3665,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     &mut emitted,
                     &mut seen_link_assets,
                 );
-                let hash = content_hash(css.as_bytes());
+                let hash = css_asset_hash(&css);
                 let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("style");
                 let name = render_asset_name(
                     css_asset_opts.asset_names,
@@ -5310,13 +5312,8 @@ async fn build_client_entry(
             .concat();
         let resolve = css_resolve_of(root, config, "client", is_production);
         let combined = chunk_css_asset(&combined, &resolve.as_ref())?;
+        let hash = css_asset_hash(&combined);
         let combined = append_stylex(combined, stylex_css);
-        let hash = format!("{:016x}", {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            combined.hash(&mut h);
-            h.finish()
-        });
         let name = oj_config::assets_dir_path(&assets_dir, &format!("style-{}.css", &hash[..8]));
         if let Some(parent) = out_dir.join(&name).parent() {
             fs::create_dir_all(parent)?;
@@ -5813,8 +5810,19 @@ fn sanitize_asset_name(s: &str) -> String {
         .collect()
 }
 
-fn content_hash(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex()[..16].to_string()
+/// The hash rolldown names an emitted asset by, which Vite's assets carry:
+/// xxh3-128 of the bytes in rolldown's url-safe base64 (21 characters; a
+/// file name takes the first 8, or `[hash:N]`'s N).
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
+    rolldown_utils::xxhash::xxhash_with_base(bytes, 64)
+}
+
+/// A stylesheet asset's hash: Vite's finalizeCss emits the sheet with
+/// `/*$vite$:1*/` appended (vitejs/vite#18038, so a sheet's name moved when
+/// its links gained `crossorigin`) and strips it in generateBundle, so the
+/// name hashes the marker the file no longer has.
+pub(crate) fn css_asset_hash(css: &str) -> String {
+    content_hash(format!("{css}/*$vite$:1*/").as_bytes())
 }
 
 /// Emit a CSS-referenced asset (font/image) under a content hash and return its
@@ -5839,11 +5847,25 @@ fn render_asset_name(pattern: Option<&str>, name: &str, hash: &str, ext: &str) -
     } else {
         format!(".{ext}")
     };
-    pattern
+    let mut out = pattern
         .replace("[name]", name)
-        .replace("[hash]", &hash[..hash.len().min(8)])
         .replace("[extname]", &extname)
-        .replace("[ext]", ext)
+        .replace("[ext]", ext);
+    // `[hash]` is 8 characters, `[hash:N]` N of them (1 to 21), as rolldown
+    // renders a file name.
+    while let Some(start) = out.find("[hash") {
+        let Some(len) = out[start..].find(']') else {
+            break;
+        };
+        let spec = &out[start + "[hash".len()..start + len];
+        let n = match spec.strip_prefix(':') {
+            Some(n) => n.parse::<usize>().unwrap_or(8).clamp(1, 21),
+            None if spec.is_empty() => 8,
+            None => break,
+        };
+        out.replace_range(start..=start + len, &hash[..hash.len().min(n)]);
+    }
+    out
 }
 
 fn emit_css_url(
@@ -6029,12 +6051,14 @@ fn emit_split_css_files(
             continue;
         }
         let css = chunk_css_asset(&css, &opts.resolve)?;
+        // Named before the StyleX sheet joins it, as Vite names the asset
+        // before the plugin's generateBundle appends to it.
+        let hash = css_asset_hash(&css);
         let css = if stylex_chunk.as_deref() == Some(chunk.filename.as_str()) {
             append_stylex(css, stylex_css.take())
         } else {
             css
         };
-        let hash = content_hash(css.as_bytes());
         let css_name = render_asset_name(
             opts.asset_names,
             &sanitize_asset_name(&chunk.name),
@@ -8280,16 +8304,30 @@ mod tests {
     }
 
     #[test]
-    fn content_hashes_are_stable_and_content_addressed() {
-        // Pinned: filenames derived from this end up in caching headers, so the
-        // value must not drift with the toolchain that built oj.
-        assert_eq!(content_hash(b""), "af1349b9f5f9a1a6");
-        assert_eq!(content_hash(b"oj"), "b74f11b8dbbdd6b4");
-        assert_eq!(content_hash(b"oj").len(), 16);
-        assert!(content_hash(b"oj").chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(content_hash(b"a"), content_hash(b"b"));
-        // A one-bit difference is a different name.
+    fn content_hashes_are_rolldowns_and_name_files_as_vite_does() {
+        // Pinned: rolldown's own vector for its asset hash (xxh3-128, url-safe
+        // base64), so oj's names cannot drift from Vite's.
+        assert_eq!(content_hash(b"hello"), "YOFJeqs95x38-Gwetwem1");
         assert_ne!(content_hash(&[0x00]), content_hash(&[0x01]));
+        // The stylesheet Vite 8 wrote as `index-Dd1cQZtR.css`: its name hashes
+        // the sheet with Vite's `/*$vite$:1*/` marker the file does not keep.
+        let sheet =
+            "body{margin:0}.b{color:#00f;background:url(/assets/bg-ImMoGWfP.png)}.a{color:red}\n";
+        assert_eq!(&css_asset_hash(sheet)[..8], "Dd1cQZtR");
+        assert_eq!(
+            render_asset_name(None, "index", &css_asset_hash(sheet), "css"),
+            "assets/index-Dd1cQZtR.css"
+        );
+        // `[hash:N]` takes N characters (1 to 21), `[hash]` 8.
+        let hash = content_hash(b"hello");
+        assert_eq!(
+            render_asset_name(Some("x/[name].[hash:4]-[hash][extname]"), "a", &hash, "png"),
+            "x/a.YOFJ-YOFJeqs9.png"
+        );
+        assert_eq!(
+            render_asset_name(Some("[hash:99][ext]"), "a", &hash, "png"),
+            "YOFJeqs95x38-Gwetwem1png"
+        );
     }
 
     #[test]

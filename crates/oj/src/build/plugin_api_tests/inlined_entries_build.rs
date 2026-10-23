@@ -90,9 +90,13 @@ async fn css_only_pages_emit_no_js_chunk_and_load_the_shared_polyfill() {
             )
             .await;
             assert_eq!(page.errors(), Vec::<String>::new(), "{path} page errors");
+            // The page's own files: Chrome's favicon probe is not one of them.
             assert!(
-                !page.console().iter().any(|m| m.contains("Failed to load")),
-                "{path} loaded every script: {:?}",
+                !page
+                    .console()
+                    .iter()
+                    .any(|m| m.contains("Failed to load") && m.contains("/assets/")),
+                "{path} loaded every asset: {:?}",
                 page.console()
             );
             page.close().await;

@@ -53,8 +53,8 @@ async fn html_links_and_inline_modules_are_built_entries() {
         .captures_iter(&html)
         .map(|c| c[1].to_string())
         .collect();
-    let theme_re = Regex::new(r"^/assets/theme-[0-9a-f]+\.css$").unwrap();
-    let base_re = Regex::new(r"^/assets/base-[0-9a-f]+\.css$").unwrap();
+    let theme_re = Regex::new(r"^/assets/theme-[A-Za-z0-9_-]{8}\.css$").unwrap();
+    let base_re = Regex::new(r"^/assets/base-[A-Za-z0-9_-]{8}\.css$").unwrap();
     assert!(
         css_links.iter().any(|h| theme_re.is_match(h)),
         "scss link hashed: {css_links:?}"

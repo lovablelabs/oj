@@ -60,7 +60,7 @@ async fn imports_inline_limit_and_asset_file_names_in_build() {
         .find(|f| f.ends_with(".css"))
         .unwrap_or_else(|| panic!("chunk stylesheet named by assetFileNames: {files:?}"));
     assert!(
-        Regex::new(r"^index\.[0-9a-f]{8}\.css$")
+        Regex::new(r"^index\.[A-Za-z0-9_-]{8}\.css$")
             .unwrap()
             .is_match(css_file),
         "stylesheet name follows [name].[hash][extname]: {css_file}"
@@ -78,7 +78,7 @@ async fn imports_inline_limit_and_asset_file_names_in_build() {
         built.contains("data:image/png;base64,"),
         "100-byte png inlined under assetsInlineLimit:\n{built}"
     );
-    let big_re = Regex::new(r"^big\.[0-9a-f]{8}\.png$").unwrap();
+    let big_re = Regex::new(r"^big\.[A-Za-z0-9_-]{8}\.png$").unwrap();
     let big = files
         .iter()
         .find(|f| big_re.is_match(f))

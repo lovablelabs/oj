@@ -386,7 +386,13 @@ impl Emitter {
                 }
             })
             .collect();
-        let hash = &blake3::hash(bytes).to_hex()[..8];
+        // A stylesheet hashes as Vite names one (with its hash marker).
+        let hash = if ext == ".css" {
+            crate::build::css_asset_hash(&String::from_utf8_lossy(bytes))
+        } else {
+            crate::build::content_hash(bytes)
+        };
+        let hash = &hash[..8];
         let name = format!("{stem}-{hash}{ext}");
         if self.written.lock().unwrap().insert(name.clone()) {
             std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
