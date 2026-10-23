@@ -146,7 +146,13 @@ pub(super) fn inject_to_head(html: &str, tags: &[Tag]) -> String {
 /// A page's module script (its `src`) or bundled stylesheet link (its `href`).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PageRef {
-    Script { src: String, is_async: bool },
+    /// A `public` one stays on the page (Vite's `checkPublicFile`), its `src`
+    /// based, yet counts toward the page's polyfill and `async`.
+    Script {
+        src: String,
+        is_async: bool,
+        public: bool,
+    },
     Style(String),
 }
 
@@ -166,6 +172,7 @@ pub(super) fn page_refs(html: &str, is_css_request: impl Fn(&str) -> bool) -> Ve
                 out.push(PageRef::Script {
                     src: src.to_string(),
                     is_async: has_attr(tag, "async"),
+                    public: false,
                 });
             }
         } else if let Some(href) = bundled_stylesheet(tag, &is_css_request) {
@@ -182,8 +189,10 @@ pub(super) fn strip_page_refs(html: &str, refs: &[PageRef]) -> String {
     let scripts: Vec<&str> = refs
         .iter()
         .filter_map(|r| match r {
-            PageRef::Script { src, .. } => Some(src.as_str()),
-            PageRef::Style(_) => None,
+            PageRef::Script {
+                src, public: false, ..
+            } => Some(src.as_str()),
+            _ => None,
         })
         .collect();
     let styles: Vec<&str> = refs
@@ -213,6 +222,30 @@ pub(super) fn strip_page_refs(html: &str, refs: &[PageRef]) -> String {
         };
         out.push_str(&html[last..line_start_if_blank(html, start)]);
         last = end;
+    }
+    out.push_str(&html[last..]);
+    out
+}
+
+/// `html` with each `<script src>` that `rewrite` maps given its new value
+/// (Vite points a public file's script, module or classic, at its built URL).
+pub(super) fn rewrite_script_srcs(html: &str, rewrite: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut last = 0;
+    for (_, tag, name) in tags(html) {
+        if !name.eq_ignore_ascii_case("script") {
+            continue;
+        }
+        let Some(src) = html_attr(tag, "src") else {
+            continue;
+        };
+        let Some(new) = rewrite(src) else {
+            continue;
+        };
+        let at = src.as_ptr() as usize - html.as_ptr() as usize;
+        out.push_str(&html[last..at]);
+        out.push_str(&new);
+        last = at + src.len();
     }
     out.push_str(&html[last..]);
     out
@@ -347,10 +380,27 @@ mod tests {
                 PageRef::Style("/a.css".into()),
                 PageRef::Script {
                     src: "/m.js".into(),
-                    is_async: true
+                    is_async: true,
+                    public: false
                 },
                 PageRef::Style("/b.scss".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn public_scripts_stay_and_get_their_built_url() {
+        let page = r#"<script type="module" src="/pub.js?v=1"></script><script src='/c.js'></script><script type="module" src="/m.js"></script>"#;
+        let mut refs = page_refs(page, |_| true);
+        for r in &mut refs {
+            if let PageRef::Script { src, public, .. } = r {
+                *public = src.starts_with("/pub");
+            }
+        }
+        let html = strip_page_refs(page, &refs);
+        assert_eq!(
+            rewrite_script_srcs(&html, |s| (s != "/m.js").then(|| format!("/app{s}"))),
+            r#"<script type="module" src="/app/pub.js?v=1"></script><script src='/app/c.js'></script>"#
         );
     }
 

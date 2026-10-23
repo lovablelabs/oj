@@ -3202,6 +3202,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     }
 
     let mut html_docs: Vec<HtmlDoc> = Vec::new();
+    let page_public_dir = oj_config::public_dir(&config, &root);
     let html_inline: Arc<Mutex<std::collections::HashMap<String, String>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
     let mut inputs: Vec<InputItem> = Vec::new();
@@ -3253,6 +3254,14 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     PageRef::Style(href) => resolve_html_ref(href, &html_dir, &root).is_file(),
                     PageRef::Script { .. } => true,
                 })
+                .map(|r| match r {
+                    PageRef::Script { src, is_async, .. } => PageRef::Script {
+                        public: is_public_file(&src, page_public_dir.as_deref()),
+                        src,
+                        is_async,
+                    },
+                    style => style,
+                })
                 .collect();
             let ref_abs = |r: &PageRef| match r {
                 PageRef::Script { src, .. } => match inline.iter().find(|(p, _, _)| p == src) {
@@ -3264,11 +3273,13 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             let scripts: Vec<HtmlScript> = refs
                 .iter()
                 .filter_map(|r| match r {
-                    PageRef::Script { src, .. } => Some(HtmlScript {
+                    PageRef::Script {
+                        src, public: false, ..
+                    } => Some(HtmlScript {
                         src: src.clone(),
                         abs: ref_abs(r),
                     }),
-                    PageRef::Style(_) => None,
+                    _ => None,
                 })
                 .collect();
             // The page itself is the rollup input, as in Vite: a proxy
@@ -3278,14 +3289,16 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             // stylesheet, take the input's name: `index` for the default
             // index.html, the key of an object `input`, never a script's own
             // file name.
-            if !refs.is_empty() {
-                let mut proxy = String::new();
-                if page_polyfill && !scripts.is_empty() {
-                    proxy.push_str("import \"vite/modulepreload-polyfill\";\n");
-                }
-                for r in &refs {
+            let mut proxy = String::new();
+            if page_polyfill && refs.iter().any(|r| matches!(r, PageRef::Script { .. })) {
+                proxy.push_str("import \"vite/modulepreload-polyfill\";\n");
+            }
+            for r in &refs {
+                if !matches!(r, PageRef::Script { public: true, .. }) {
                     proxy.push_str(&format!("import {:?};\n", ref_abs(r).to_string_lossy()));
                 }
+            }
+            if !proxy.is_empty() {
                 pages.insert(abs.to_string_lossy().into_owned(), proxy);
                 push_input(&abs, name.clone(), &mut inputs, &mut seen_imports);
             }
@@ -3760,9 +3773,14 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         // The tags injectToHead writes for the page's entry chunk, once its
         // other assets are rewritten.
         let mut entry_tags: Vec<Tag> = Vec::new();
+        if doc.entry.is_some() {
+            rewritten_html = html_tags::strip_page_refs(&rewritten_html, &doc.refs);
+            rewritten_html = html_tags::rewrite_script_srcs(&rewritten_html, |src| {
+                is_public_file(src, public_dir.as_deref()).then(|| with_base(src, &page_base))
+            });
+        }
         match doc.entry.as_ref().and_then(|e| facade_to_file.get(e)) {
             Some(file) => {
-                rewritten_html = html_tags::strip_page_refs(&rewritten_html, &doc.refs);
                 let is_async = doc.refs.iter().all(|r| match r {
                     PageRef::Script { is_async, .. } => *is_async,
                     PageRef::Style(_) => true,
@@ -4444,6 +4462,15 @@ fn link_rel_forbids_inline(tag: &str) -> bool {
             )
         })
     })
+}
+
+/// Vite's `checkPublicFile`: a root-absolute URL naming a file in `publicDir`.
+fn is_public_file(url: &str, public_dir: Option<&Path>) -> bool {
+    let clean = url.split(['?', '#']).next().unwrap_or(url);
+    match (clean.strip_prefix('/'), public_dir) {
+        (Some(rest), Some(dir)) if !rest.is_empty() => dir.join(rest).is_file(),
+        _ => false,
+    }
 }
 
 /// Vite's `isCSSRequest`.

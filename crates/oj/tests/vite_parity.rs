@@ -352,3 +352,34 @@ fn without_css_code_split_vites_exact_files() {
     };
     assert_same_output(&root);
 }
+
+/// Scripts served from `public/`: they stay on the page with their built
+/// URL (query kept, module or classic), and still count as the page's module
+/// scripts, so a page of only a public one loads the modulepreload polyfill.
+#[test]
+fn public_dir_scripts_build_vites_exact_files() {
+    let Some(root) = app(
+        "public-scripts",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            (
+                "vite.config.js",
+                Some("export default { base: \"./\", build: { rollupOptions: { input: { main: \"index.html\", deep: \"a/index.html\" } } } };\n"),
+            ),
+            (
+                "index.html",
+                Some("<!doctype html>\n<html>\n  <head>\n    <script type=\"module\" async src=\"/pub.js?v=1\"></script>\n  </head>\n  <body>\n    <script src=\"/classic.js\"></script>\n    <script type=\"module\" src=\"/src/main.js\"></script>\n  </body>\n</html>\n"),
+            ),
+            (
+                "a/index.html",
+                Some("<html><head></head><body><script type=\"module\" src=\"/pub.js\"></script></body></html>\n"),
+            ),
+            ("src/main.js", Some("console.log(\"main\");\n")),
+            ("public/pub.js", Some("console.log(\"pub\");\n")),
+            ("public/classic.js", Some("console.log(\"classic\");\n")),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
