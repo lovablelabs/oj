@@ -94,15 +94,17 @@ async fn html_links_and_inline_modules_are_built_entries() {
             .captures_iter(&html)
             .map(|c| c[1].to_string())
             .collect();
+    // The page is one entry, as in Vite: its inline and external module
+    // scripts load through a single chunk.
     assert_eq!(
         scripts.len(),
-        2,
-        "inline + main scripts externalized: {scripts:?}\n{html}"
+        1,
+        "inline + main scripts are one page entry: {scripts:?}\n{html}"
     );
     let chunk_re = Regex::new(r"^/assets/.+\.js$").unwrap();
     assert!(
         scripts.iter().all(|s| chunk_re.is_match(s)),
-        "both point at hashed chunks: {scripts:?}"
+        "it points at a hashed chunk: {scripts:?}"
     );
     assert!(
         !Regex::new(r"import \{ x \}|@oj-inline")
@@ -117,6 +119,11 @@ async fn html_links_and_inline_modules_are_built_entries() {
                 .unwrap()
                 .contains("from-inline")),
         "inline script bundled with its relative import: {scripts:?}"
+    );
+    let entry = fs::read_to_string(dist.join(scripts[0].trim_start_matches('/'))).unwrap();
+    assert!(
+        entry.find("__INLINE") < entry.find("__MAIN") && entry.contains("__MAIN"),
+        "the inline script runs before the external one, in document order:\n{entry}"
     );
 
     if super::browser::skip() {

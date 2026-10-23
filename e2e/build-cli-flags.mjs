@@ -160,8 +160,8 @@ try {
   assert.ok(main1.includes("sourceMappingURL=data:"), "--sourcemap inline embeds the map");
   assert.ok(readCss(out1, "static").includes("\n  color: red;"), "cssMinify follows minify: false");
   const manifest = JSON.parse(fs.readFileSync(path.join(out1, ".vite", "manifest.json"), "utf8"));
-  const entry = manifest["src/main.js"];
-  assert.ok(entry && entry.isEntry, "entry row keyed by source path");
+  const entry = manifest["index.html"];
+  assert.ok(entry && entry.isEntry, "entry row keyed by its page, as Vite");
   assert.match(entry.file, /^static\/index-/);
   assert.deepEqual(entry.css.length, 1, "entry lists its stylesheet");
   assert.ok(

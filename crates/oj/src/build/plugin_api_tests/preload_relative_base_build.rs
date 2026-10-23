@@ -27,6 +27,8 @@ struct Built {
     main: String,
     lazy: String,
     main_css: String,
+    /// The modulepreload polyfill chunk, when the build has one.
+    polyfill: Option<String>,
 }
 
 fn app() -> std::path::PathBuf {
@@ -98,6 +100,10 @@ async fn build_with(root: &Path, config: &str) -> Built {
         main: read_asset(&dist, "index-", ".js", "__LAZY_DONE"),
         lazy: read_asset(&dist, "lazy-", ".js", ""),
         main_css: read_asset(&dist, "index-", ".css", ""),
+        polyfill: asset_names(&dist)
+            .iter()
+            .find(|a| a.starts_with("modulepreload-polyfill-") && a.ends_with(".js"))
+            .map(|f| fs::read_to_string(dist.join("assets").join(f)).unwrap()),
     }
 }
 
@@ -182,10 +188,18 @@ async fn relative_base_urls_and_vite_preload_helper() {
         r"vite:preloadError",
         "preload helper dispatches vite:preloadError",
     );
+    // Both pages import Vite's polyfill module, so it is their shared chunk.
     assert_match(
         &rel.main,
-        r"relList\.supports",
-        "page entry carries the modulepreload polyfill",
+        r#"import\s*["']\./modulepreload-polyfill-[^"']+\.js["']"#,
+        "the page entry imports the shared modulepreload polyfill",
+    );
+    assert_match(
+        rel.polyfill
+            .as_deref()
+            .expect("a modulepreload-polyfill chunk"),
+        r"supports\(.modulepreload.\)",
+        "the polyfill chunk is the polyfill",
     );
     assert_no_match(
         &rel.lazy,

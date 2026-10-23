@@ -90,7 +90,7 @@ async fn rolldown_output_options_shape_an_iife_bundle() {
             ),
             (
                 "oj.config.json",
-                r#"{"build":{"minify":false,"rolldownOptions":{"external":["cdn-lib"],"treeshake":false,"output":[{"format":"iife","name":"App","banner":"/* BANNER */","footer":"/* FOOTER */","inlineDynamicImports":true,"globals":{"cdn-lib":"CdnLib"}},{"format":"cjs"}]}}}"#,
+                r#"{"build":{"minify":false,"rolldownOptions":{"input":{"index":"src/main.js"},"external":["cdn-lib"],"treeshake":false,"output":[{"format":"iife","name":"App","banner":"/* BANNER */","footer":"/* FOOTER */","inlineDynamicImports":true,"globals":{"cdn-lib":"CdnLib"}},{"format":"cjs"}]}}}"#,
             ),
             ("index.html", INDEX_HTML),
         ],
@@ -151,7 +151,7 @@ async fn rolldown_output_paths_rewrite_externals_in_es_output() {
             ("src/lazy.js", "export const lazy = \"LAZY_MARKER\";\n"),
             (
                 "src/main.js",
-                "import { thing } from \"cdn-lib\";\nwindow.__X = thing;\nexport const load = () => import(\"./lazy.js\");\n",
+                "import { thing } from \"cdn-lib\";\nwindow.__X = thing;\nwindow.__load = () => import(\"./lazy.js\");\n",
             ),
             (
                 "oj.config.json",

@@ -263,6 +263,10 @@ struct OjCssPlugin {
     worker_entries: Arc<Mutex<std::collections::HashSet<String>>>,
     /// The normalized `base` a public-file import's URL is built on.
     base: String,
+    /// Each HTML page input (its absolute path) to the module it loads as:
+    /// Vite's html proxy, importing the modulepreload polyfill and then the
+    /// page's module scripts in order.
+    pages: Arc<std::collections::HashMap<String, String>>,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -1343,6 +1347,7 @@ impl Plugin for OjCssPlugin {
         ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
+        let is_polyfill = args.specifier == MODULEPRELOAD_POLYFILL_SPEC;
         let is_routes = args.specifier == "virtual:oj-routes";
         let routes_id = self
             .root
@@ -1374,6 +1379,11 @@ impl Plugin for OjCssPlugin {
         });
         let ctx = ctx.clone();
         async move {
+            if is_polyfill {
+                return Ok(Some(HookResolveIdOutput::from_id(
+                    MODULEPRELOAD_POLYFILL_ID,
+                )));
+            }
             if is_routes {
                 return Ok(Some(HookResolveIdOutput::from_id(routes_id)));
             }
@@ -1462,7 +1472,21 @@ impl Plugin for OjCssPlugin {
         let html_inline = Arc::clone(&self.html_inline);
         let worker = self.worker.clone();
         let base = self.base.clone();
+        let page = self.pages.get(&id).cloned();
         let load = async move {
+            let js = |code: String| {
+                Ok(Some(rolldown_plugin::HookLoadOutput {
+                    code: arcstr::ArcStr::from(code),
+                    module_type: Some(rolldown_common::ModuleType::Js),
+                    ..Default::default()
+                }))
+            };
+            if let Some(proxy) = page {
+                return js(proxy);
+            }
+            if id == MODULEPRELOAD_POLYFILL_ID {
+                return js(MODULEPRELOAD_POLYFILL_JS.to_string());
+            }
             if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
                 return public_file_module(&css_resolve.public_dir, rest, &base, client).map(
                     |code| {
@@ -1689,6 +1713,7 @@ impl Plugin for OjCssPlugin {
                         resolve: css_resolve.clone(),
                         worker_entries: Arc::clone(&worker_entries),
                         base: base.clone(),
+                        pages: Default::default(),
                     };
                     let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
                     let literal = serde_json::Value::String(code).to_string();
@@ -2221,6 +2246,7 @@ fn forward_emitted_html(ctx: &PluginContext, c: &oj_server::plugins::ChunkEmit, 
         src_html: content,
         scripts,
         dir: emit.root.clone(),
+        entry: None,
     });
 }
 
@@ -3008,6 +3034,10 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let mut inputs: Vec<InputItem> = Vec::new();
     let mut seen_imports: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut had_html = false;
+    let mut pages: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Vite's build import analysis, the polyfill included, is es output only.
+    let page_polyfill = oj_config::module_preload_polyfill(&config)
+        && ro_output_overrides(ro_opts).format.is_none();
     let push_input = |abs: &Path,
                       name: String,
                       inputs: &mut Vec<InputItem>,
@@ -3053,12 +3083,26 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     HtmlScript { src, abs }
                 })
                 .collect();
-            // The page is Vite's rollup input, so its entry chunk (and that
-            // chunk's stylesheet) takes the input's name: `index` for the
-            // default index.html, the key of an object `input`, never the
-            // script's own file name.
-            for s in &scripts {
-                push_input(&s.abs, name.clone(), &mut inputs, &mut seen_imports);
+            // The page itself is the rollup input, as in Vite: a proxy
+            // module importing the modulepreload polyfill (when a module
+            // script has a `src`) and then each module script in order. Its
+            // entry chunk, and that chunk's stylesheet, take the input's
+            // name: `index` for the default index.html, the key of an object
+            // `input`, never a script's own file name.
+            if !scripts.is_empty() {
+                let mut proxy = String::new();
+                if page_polyfill
+                    && scripts
+                        .iter()
+                        .any(|s| !s.abs.to_string_lossy().contains("?html-proxy&index="))
+                {
+                    proxy.push_str("import \"vite/modulepreload-polyfill\";\n");
+                }
+                for s in &scripts {
+                    proxy.push_str(&format!("import {:?};\n", s.abs.to_string_lossy()));
+                }
+                pages.insert(abs.to_string_lossy().into_owned(), proxy);
+                push_input(&abs, name.clone(), &mut inputs, &mut seen_imports);
             }
             let out_rel = if rel_path.is_absolute() {
                 abs.strip_prefix(&root)
@@ -3074,6 +3118,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 src_html: content,
                 scripts,
                 dir: html_dir,
+                entry: Some(abs.clone()),
             });
         } else {
             if !abs.exists() {
@@ -3150,6 +3195,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             minify: client_minify,
         })),
         worker_entries: Arc::clone(&worker_entries),
+        pages: Arc::new(pages),
     }));
     let out_ov = ro_output_overrides(ro_opts);
     // Vite's build import analysis (preload wrapping, polyfill) only applies to
@@ -3473,6 +3519,17 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     // Page script entries across all documents: the only chunks that get the
     // modulepreload polyfill (a worker or plugin-emitted entry has no document).
     let mut page_entry_files: Vec<String> = Vec::new();
+    let chunk_code: std::collections::HashMap<String, &str> = output
+        .assets
+        .iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c) => Some((c.filename.to_string(), c.code.as_str())),
+            _ => None,
+        })
+        .collect();
+    // Entry chunks their page loads through their imports instead: removed
+    // from the output once every page is written.
+    let mut inlined_entries: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Vite's build transformIndexHtml ctx (html.ts) carries the output bundle
     // and the page's entry chunk; serialized once for every page, and not at
     // all when no plugin has the hook (the bundle JSON carries every chunk's
@@ -3489,15 +3546,52 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     for doc in &html_docs {
         let mut rewritten_html = oj_env::replace_html_env(&doc.src_html, &html_env);
         let page_base = page_base(&base, &doc.out_rel);
-        // Rewrite each `<script src>` to its hashed output chunk and collect
-        // this page's own entry chunks (for modulepreload and split CSS).
+        // Rewrite the page's module scripts to its hashed entry chunk and
+        // collect the page's own entry chunks (for modulepreload and split
+        // CSS). A built page is one entry, so its first module script loads
+        // that chunk and the others go, as Vite's build-html does.
         let mut doc_entry_files: Vec<String> = Vec::new();
-        for s in &doc.scripts {
-            if let Some(file) = facade_to_file.get(&s.abs) {
-                let out_src = with_base(file, &page_base);
-                rewritten_html = rewritten_html.replace(&s.src, &out_src);
-                rewritten_html = add_script_crossorigin(&rewritten_html, &out_src);
+        let mut inlined_entry = false;
+        match doc.entry.as_ref().and_then(|e| facade_to_file.get(e)) {
+            Some(file) => {
+                for s in doc.scripts.iter().skip(1) {
+                    rewritten_html = replace_script_element(&rewritten_html, &s.src, "");
+                }
+                if let Some(first) = doc.scripts.first() {
+                    // Vite's inlined entry: a chunk of nothing but side-effect
+                    // imports (a page whose scripts only pull in CSS and shared
+                    // chunks) is not emitted; the page loads what it imports.
+                    if chunk_code.get(file).is_some_and(|c| is_entirely_import(c)) {
+                        inlined_entry = true;
+                        inlined_entries.insert(file.clone());
+                        let tags = imported_chunks(file, &imports_map)
+                            .iter()
+                            .map(|c| {
+                                format!(
+                                    "<script type=\"module\" crossorigin src=\"{}\"></script>",
+                                    with_base(c, &page_base)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        rewritten_html = replace_script_element(&rewritten_html, &first.src, &tags);
+                    } else {
+                        let out_src = with_base(file, &page_base);
+                        rewritten_html = rewritten_html.replace(&first.src, &out_src);
+                        rewritten_html = add_script_crossorigin(&rewritten_html, &out_src);
+                    }
+                }
                 doc_entry_files.push(file.clone());
+            }
+            None => {
+                for s in &doc.scripts {
+                    if let Some(file) = facade_to_file.get(&s.abs) {
+                        let out_src = with_base(file, &page_base);
+                        rewritten_html = rewritten_html.replace(&s.src, &out_src);
+                        rewritten_html = add_script_crossorigin(&rewritten_html, &out_src);
+                        doc_entry_files.push(file.clone());
+                    }
+                }
             }
         }
         page_entry_files.extend(doc_entry_files.iter().cloned());
@@ -3514,7 +3608,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 preloads.insert(dep);
             }
         }
-        if !preloads.is_empty() && oj_config::module_preload_links(&config) {
+        if !preloads.is_empty() && !inlined_entry && oj_config::module_preload_links(&config) {
             let links = preloads
                 .iter()
                 .map(|f| {
@@ -3666,10 +3760,19 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         fs::write(&dest, rewritten_html)?;
     }
 
+    // Inlined entries are not emitted (Vite deletes them from the bundle once
+    // their pages load their imports instead).
+    for file in &inlined_entries {
+        let _ = fs::remove_file(out_dir.join(file));
+        let _ = fs::remove_file(out_dir.join(format!("{file}.map")));
+    }
+    emitted.retain(|(name, _)| !inlined_entries.contains(name));
+    manifest_entries.retain(|e| !inlined_entries.contains(&e.file));
+
     // Vite's build import analysis: wrap dynamic imports in `__vitePreload` so a
     // lazy chunk's own dependencies and stylesheets load in parallel (and its
-    // CSS is applied before it runs), inject the modulepreload polyfill into
-    // page entries, and give async-only chunks a stylesheet fallback.
+    // CSS is applied before it runs), and give async-only chunks a stylesheet
+    // fallback. The modulepreload polyfill is a module each page imports.
     if es_output {
         apply_preload_helper(
             &output,
@@ -3678,8 +3781,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             &imports_map,
             &chunk_css,
             &all_sync_chunks,
-            &page_entry_files,
-            oj_config::module_preload_polyfill(&config),
             out_banner.as_deref(),
             &worker_entries.lock().unwrap().clone(),
         )?;
@@ -3796,6 +3897,9 @@ struct HtmlDoc {
     scripts: Vec<HtmlScript>,
     /// Directory of the source page; relative `<link href>`s resolve against it.
     dir: PathBuf,
+    /// The page as the build's input (its proxy module's id); None for a page
+    /// a plugin emitted, whose scripts are entries of their own.
+    entry: Option<PathBuf>,
 }
 
 /// Inline `<script type="module">…</script>` blocks (no `src`): the byte range
@@ -3952,6 +4056,97 @@ fn add_script_crossorigin(html: &str, src: &str) -> String {
         rest = &rest[start + end..];
     }
     out.push_str(rest);
+    out
+}
+
+/// `html` with the `<script src="{src}">…</script>` element replaced by `with`.
+fn replace_script_element(html: &str, src: &str, with: &str) -> String {
+    let mut from = 0;
+    while let Some(found) = html[from..].find("<script") {
+        let start = from + found;
+        let Some(tag_end) = html[start..].find('>').map(|e| start + e) else {
+            break;
+        };
+        if html_attr(&html[start..tag_end], "src") == Some(src) {
+            let end = html[tag_end..]
+                .find("</script>")
+                .map_or(tag_end + 1, |e| tag_end + e + "</script>".len());
+            return format!("{}{with}{}", &html[..start], &html[end..]);
+        }
+        from = tag_end;
+    }
+    html.to_string()
+}
+
+/// Vite's isEntirelyImport: the chunk is only whitespace, comments and
+/// side-effect `import "x";` statements (false negatives are fine).
+fn is_entirely_import(code: &str) -> bool {
+    let b = code.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_whitespace() {
+            i += 1;
+        } else if code[i..].starts_with("/*") {
+            match code[i + 2..].find("*/") {
+                Some(e) => i += 2 + e + 2,
+                None => return false,
+            }
+        } else if code[i..].starts_with("//") {
+            i = code[i..].find('\n').map_or(b.len(), |e| i + e + 1);
+        } else if code[i..].starts_with("import") {
+            i += "import".len();
+            while i < b.len() && b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let Some(&quote) = b.get(i).filter(|q| **q == b'"' || **q == b'\'') else {
+                return false;
+            };
+            i += 1;
+            loop {
+                match b.get(i) {
+                    None | Some(b'\n') => return false,
+                    Some(b'\\') => i += 2,
+                    Some(c) if *c == quote => {
+                        i += 1;
+                        break;
+                    }
+                    Some(_) => i += 1,
+                }
+            }
+            while i < b.len() && b[i].is_ascii_whitespace() && b[i] != b'\n' {
+                i += 1;
+            }
+            while b.get(i) == Some(&b';') {
+                i += 1;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// Vite's getImportedChunks: a chunk's static imports, transitively, in
+/// post-order (each chunk after what it imports), each once.
+fn imported_chunks(
+    file: &str,
+    imports_map: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    fn walk(
+        file: &str,
+        imports_map: &std::collections::HashMap<String, Vec<String>>,
+        seen: &mut std::collections::HashSet<String>,
+        out: &mut Vec<String>,
+    ) {
+        for dep in imports_map.get(file).into_iter().flatten() {
+            if seen.insert(dep.clone()) {
+                walk(dep, imports_map, seen, out);
+                out.push(dep.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(file, imports_map, &mut Default::default(), &mut out);
     out
 }
 
@@ -4429,6 +4624,7 @@ pub(crate) async fn build_ssr(
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
         worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pages: Default::default(),
     }));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
@@ -4613,6 +4809,7 @@ async fn build_server_fns(
                 html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 worker: None,
                 worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+                pages: Default::default(),
             })])
             .with_options(BundlerOptions {
                 input: Some(vec![InputItem {
@@ -5021,6 +5218,7 @@ async fn build_client_entry(
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
         worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pages: Default::default(),
     }));
 
     let mut bundler = BundlerBuilder::default()
@@ -5297,6 +5495,7 @@ async fn build_library(
             html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
             worker: None,
             worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            pages: Default::default(),
         }));
         let mut bundler = BundlerBuilder::default()
             .with_plugins(plugins)
@@ -5893,15 +6092,19 @@ fn split_css_links(
 /// resolves deps against the importing chunk, an absolute base is prefixed.
 const PRELOAD_HELPER_JS: &str = r#"const __vite__scriptRel=(function(){var r=typeof document!=="undefined"&&document.createElement("link").relList;return r&&r.supports&&r.supports("modulepreload")?"modulepreload":"preload"})();const __vite__seen={};function __vitePreload(baseModule,deps,importerUrl){var promise=Promise.resolve();if(deps&&deps.length>0){var links=document.getElementsByTagName("link");var cspNonceMeta=document.querySelector("meta[property=csp-nonce]");var cspNonce=cspNonceMeta&&(cspNonceMeta.nonce||cspNonceMeta.getAttribute("nonce"));var allSettled=function(ps){return Promise.all(ps.map(function(p){return Promise.resolve(p).then(function(value){return{status:"fulfilled",value:value}},function(reason){return{status:"rejected",reason:reason}})}))};promise=allSettled(deps.map(function(dep){dep=new URL(__vite__assetsURL(dep,importerUrl),import.meta.url).href;if(dep in __vite__seen)return;__vite__seen[dep]=true;var isCss=dep.endsWith(".css");for(var i=links.length-1;i>=0;i--){var l=links[i];if(l.href===dep&&(!isCss||l.rel==="stylesheet"))return}var link=document.createElement("link");link.rel=isCss?"stylesheet":__vite__scriptRel;if(!isCss){link.as="script"}link.crossOrigin="";link.href=dep;if(cspNonce)link.setAttribute("nonce",cspNonce);document.head.appendChild(link);if(isCss){return new Promise(function(res,rej){link.addEventListener("load",res);link.addEventListener("error",function(){rej(new Error("Unable to preload CSS for "+dep))})})}}))}function handlePreloadError(err){var e=new Event("vite:preloadError",{cancelable:true});e.payload=err;window.dispatchEvent(e);if(!e.defaultPrevented)throw err}return promise.then(function(res){for(var i=0;i<(res||[]).length;i++){var item=res[i];if(item.status!=="rejected")continue;handlePreloadError(item.reason)}return baseModule().catch(handlePreloadError)})}"#;
 
+/// The polyfill's specifier, imported first by each page proxy, and the id it
+/// resolves to (Vite's, whose chunk is named `modulepreload-polyfill`).
+const MODULEPRELOAD_POLYFILL_SPEC: &str = "vite/modulepreload-polyfill";
+const MODULEPRELOAD_POLYFILL_ID: &str = "\0vite/modulepreload-polyfill.js";
+
 /// Vite's `vite/modulepreload-polyfill` (fetches `<link rel=modulepreload>` on
 /// browsers without native support), injected into page entry chunks.
 const MODULEPRELOAD_POLYFILL_JS: &str = r#"(function(){var relList=document.createElement("link").relList;if(relList&&relList.supports&&relList.supports("modulepreload"))return;for(var i=0,ls=document.querySelectorAll('link[rel="modulepreload"]');i<ls.length;i++)processPreload(ls[i]);new MutationObserver(function(mutations){for(var m=0;m<mutations.length;m++){var mutation=mutations[m];if(mutation.type!=="childList")continue;for(var n=0;n<mutation.addedNodes.length;n++){var node=mutation.addedNodes[n];if(node.tagName==="LINK"&&node.rel==="modulepreload")processPreload(node)}}}).observe(document,{childList:true,subtree:true});function getFetchOpts(link){var fetchOpts={};if(link.integrity)fetchOpts.integrity=link.integrity;if(link.referrerPolicy)fetchOpts.referrerPolicy=link.referrerPolicy;if(link.crossOrigin==="use-credentials")fetchOpts.credentials="include";else if(link.crossOrigin==="anonymous")fetchOpts.credentials="omit";else fetchOpts.credentials="same-origin";return fetchOpts}function processPreload(link){if(link.ep)return;link.ep=true;var fetchOpts=getFetchOpts(link);fetch(link.href,fetchOpts)}})();"#;
 
 /// Wrap each `import("./chunk.js")` in a chunk with `__vitePreload`, passing the
 /// dependency list Vite would (the lazy chunk, its statically imported chunks
-/// and their stylesheets, minus what the importer already has), prepend the
-/// modulepreload polyfill to page entries, and give async-only chunks that own
-/// CSS a self-injecting fallback link. Everything is prepended on the chunk's
+/// and their stylesheets, minus what the importer already has), and give
+/// async-only chunks that own CSS a self-injecting fallback link. Everything is prepended on the chunk's
 /// first line so existing sourcemap line numbers stay valid.
 #[allow(clippy::too_many_arguments)]
 fn apply_preload_helper(
@@ -5911,8 +6114,6 @@ fn apply_preload_helper(
     imports_map: &std::collections::HashMap<String, Vec<String>>,
     chunk_css: &[(String, String)],
     sync_chunks: &std::collections::BTreeSet<String>,
-    page_entries: &[String],
-    polyfill: bool,
     banner: Option<&str>,
     worker_entries: &std::collections::HashSet<String>,
 ) -> anyhow::Result<()> {
@@ -5963,10 +6164,6 @@ fn apply_preload_helper(
             continue;
         };
         let mut prefix = String::new();
-
-        if polyfill && page_entries.iter().any(|e| e == &file) {
-            prefix.push_str(MODULEPRELOAD_POLYFILL_JS);
-        }
 
         let mut dep_list: Vec<String> = Vec::new();
         let mut wrapped = false;
@@ -6670,20 +6867,24 @@ mod tests {
         for (index, (config_name, config, expected)) in [
             (
                 "oj.config.json",
-                r#"{"build":{"modulePreload":false}}"#,
+                r#"{"build":{"modulePreload":false,"rollupOptions":{"input":["index.html","other.html"]}}}"#,
                 false,
             ),
             (
                 "vite.config.mjs",
-                "export default { build: { modulePreload: false } };",
+                "export default { build: { modulePreload: false, rollupOptions: { input: [\"index.html\", \"other.html\"] } } };",
                 false,
             ),
             (
                 "oj.config.json",
-                r#"{"build":{"modulePreload":{"polyfill":false}}}"#,
+                r#"{"build":{"modulePreload":{"polyfill":false},"rollupOptions":{"input":["index.html","other.html"]}}}"#,
                 true,
             ),
-            ("oj.config.json", "{}", true),
+            (
+                "oj.config.json",
+                r#"{"build":{"rollupOptions":{"input":["index.html","other.html"]}}}"#,
+                true,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -6698,10 +6899,14 @@ mod tests {
             fs::write(root.join(config_name), config).unwrap();
             fs::write(
                 root.join("index.html"),
-                r#"<html><head></head><body>
-                    <script type="module" src="/first.js"></script>
-                    <script type="module" src="/second.js"></script>
-                </body></html>"#,
+                r#"<html><head></head><body><script type="module" src="/first.js"></script></body></html>"#,
+            )
+            .unwrap();
+            // A second page sharing a module, so the build has a shared
+            // chunk the pages modulepreload (one page is one entry).
+            fs::write(
+                root.join("other.html"),
+                r#"<html><head></head><body><script type="module" src="/second.js"></script></body></html>"#,
             )
             .unwrap();
             fs::write(

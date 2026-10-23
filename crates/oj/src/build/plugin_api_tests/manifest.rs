@@ -57,8 +57,8 @@ async fn manifest_lists_non_entry_chunks_and_references_them_by_key() {
     let keys: Vec<&String> = m.keys().collect();
 
     let entry = m
-        .get("src/main.tsx")
-        .unwrap_or_else(|| panic!("entry keyed by its source path: {keys:?}"));
+        .get("index.html")
+        .unwrap_or_else(|| panic!("entry keyed by its page, as Vite: {keys:?}"));
     assert_eq!(entry["isEntry"], true, "entry row is isEntry:\n{raw}");
 
     let vendor_re = regex::Regex::new(r"^_vendor-.*\.js$").unwrap();

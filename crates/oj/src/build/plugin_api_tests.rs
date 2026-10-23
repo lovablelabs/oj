@@ -33,6 +33,7 @@ mod html_attribute_quotes;
 mod html_entries_build;
 mod html_entry_build;
 mod html_env_build;
+mod inlined_entries_build;
 mod jsx_import_source_build;
 mod load_error_build;
 mod manifest;

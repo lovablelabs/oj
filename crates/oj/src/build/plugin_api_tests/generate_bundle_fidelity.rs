@@ -44,9 +44,10 @@ export default [{
   },
   generateBundle(options, bundle) {
     let info = null;
+    let keepExports = null;
     for (const key of Object.keys(bundle)) {
       const c = bundle[key];
-      if (c.type === "chunk" && c.isEntry && c.facadeModuleId && c.facadeModuleId.endsWith("entry.js")) {
+      if (c.type === "chunk" && c.isEntry && c.facadeModuleId && c.facadeModuleId.endsWith("index.html")) {
         info = {
           facadeModuleId: c.facadeModuleId,
           imports: c.imports,
@@ -57,10 +58,13 @@ export default [{
           lengths: Object.entries(c.modules).map(([id, m]) => [id.split("/").pop(), m.renderedLength]),
         };
       }
-      if (c.type === "chunk" && c.name === "keepme") c.fileName = "assets/renamed-keepme.js";
+      if (c.type === "chunk" && c.name === "keepme") {
+        keepExports = c.exports;
+        c.fileName = "assets/renamed-keepme.js";
+      }
       if (c.type === "chunk" && c.name === "goneme") delete bundle[key];
     }
-    this.emitFile({ type: "asset", fileName: "gb-info.json", source: JSON.stringify(info) });
+    this.emitFile({ type: "asset", fileName: "gb-info.json", source: JSON.stringify({ ...info, keepExports }) });
   },
 }];
 "#,
@@ -78,22 +82,27 @@ export default [{
         info.is_object(),
         "the entry chunk was found in generateBundle: {raw}"
     );
+    // The page is the entry, as in Vite: its proxy imports the script.
     assert!(
         info["facadeModuleId"]
             .as_str()
-            .is_some_and(|id| id.ends_with("entry.js")),
-        "facadeModuleId is the entry's source id: {raw}"
+            .is_some_and(|id| id.ends_with("index.html")),
+        "facadeModuleId is the page's id: {raw}"
     );
     assert!(
         info["imports"].is_array(),
         "chunk.imports is an array: {raw}"
     );
-    let exports = info["exports"]
+    assert!(
+        info["exports"].as_array().is_some_and(|e| e.is_empty()),
+        "a page entry exports nothing: {raw}"
+    );
+    let exports = info["keepExports"]
         .as_array()
         .unwrap_or_else(|| panic!("chunk.exports is an array: {raw}"));
     assert!(
-        exports.iter().any(|e| e == "v"),
-        "chunk.exports lists the entry's export: {raw}"
+        exports.iter().any(|e| e == "keep"),
+        "chunk.exports lists the emitted chunk's export: {raw}"
     );
     assert!(
         info["moduleCount"].as_u64().is_some_and(|n| n >= 1),
